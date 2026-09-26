@@ -719,6 +719,21 @@ def granted_switch_verbs(root: Path | None = None) -> frozenset[str]:
                      if isinstance(v, str) and SWITCH_VERB_DISPOSITIONS.get(v) == disposition)
 
 
+def granted_read_verbs(root: Path | None = None) -> frozenset[str]:
+    """The verbs the committed policy lists for the assistant's read door
+    (``control_channel.assistant_read.verbs``), read now.
+
+    Consulted only by a read the door carries dormant until the policy names it
+    (``read_bridge.POLICY_GATED_READS``), the way :func:`granted_switch_verbs` is. Fail-closed: an
+    unreadable or malformed policy grants nothing, and the reads that are not policy-gated never ask,
+    so a policy read failing can never blind the assistant to a board."""
+    clause = _control_channel_clause(root, "assistant_read")
+    verbs = clause.get("verbs") if isinstance(clause, dict) else None
+    if not isinstance(verbs, list):
+        return frozenset()
+    return frozenset(v for v in verbs if isinstance(v, str))
+
+
 def command_verb(head: str, *, slash_seen: bool) -> str:
     """Normalize one control-channel command token: strip the optional leading slash,
     lowercase, and drop a Telegram ``@botname`` suffix. Telegram clients append the bot's

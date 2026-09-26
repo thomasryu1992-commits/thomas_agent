@@ -92,6 +92,29 @@
         "times": null
       },
       "deliver": "${HERMES_DELIVER_TARGET}"
+    },
+    {
+      "id": "d833527ea631",
+      "name": "주간 레인 요약",
+      "enabled": true,
+      "schedule": {
+        "kind": "cron",
+        "expr": "10 0 * * 1",
+        "display": "10 0 * * 1"
+      },
+      "prompt": "lane_digest 를 인자 없이 정확히 한 번 불러라(지난 7일). 응답이 REFUSED [CONTROL_VERB_NOT_GRANTED] 면 '[레인 요약] 아직 켜지지 않음 — 정책 1.6.1 적용 대기' 한 줄만 출력해라. 다른 REFUSED 나 UNAVAILABLE 이면 그 줄을 그대로 인용해라. 성공하면 첫 줄을 [레인 요약] 으로 시작하고, 응답의 레인 블록을 숫자 하나 바꾸지 말고 그대로 옮겨라. 해석·권고·추정을 덧붙이지 마라 — 판정은 Thomas 가 한다. 마지막 줄에 'D8 기한 2026-11-25: 그때까지 사용·품질 증거가 없는 레인은 제거 검토 대상' 을 붙여라. [SILENT] 는 쓰지 마라 — 실행이 0건인 주도 증거다.",
+      "model": "qwen/qwen3.7-flash",
+      "provider": "openrouter",
+      "enabled_toolsets": null,
+      "skills": [],
+      "skill": null,
+      "no_agent": false,
+      "context_from": null,
+      "origin": null,
+      "repeat": {
+        "times": null
+      },
+      "deliver": "${HERMES_DELIVER_TARGET}"
     }
   ]
 }

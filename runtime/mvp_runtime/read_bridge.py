@@ -80,7 +80,19 @@ _READS: dict[str, tuple[str, Any]] = {
     "scheduler_events": (_STORES, store_reads.SCHEDULER_EVENTS),
     "heartbeat":        (_STORES, store_reads.HEARTBEAT),
     "approval_status":  (_STORES, store_reads.APPROVAL_STATUS),
+    # Review D8 (Thomas 2026-09-26: "주간 다이제스트는 Hermes가 돌린다"). Counts per lane over the run
+    # ledger — never a record — so the assistant can hand Thomas the weekly lane evidence. Dormant:
+    # refused by name until the committed policy lists it (POLICY_GATED_READS below).
+    "lane_digest":      (_STORES, store_reads.LANE_DIGEST),
 }
+
+# The reads this door carries dormant, the switch door's pattern (`switch_bridge.POLICY_GATED_COMMANDS`):
+# each refuses as CONTROL_VERB_NOT_GRANTED until the committed policy lists it under
+# `control_channel.assistant_read.verbs` (`control.granted_read_verbs`), read at the call. The other
+# reads never consult the policy, so a policy that cannot be read can never blind the assistant to a
+# board. The code is the same before and after the grant; the policy line is the switch
+# (`docs/runtime-contracts/POLICY_1_6_1_DRAFT.md`).
+POLICY_GATED_READS: frozenset[str] = frozenset({"lane_digest"})
 
 # Why each read is permitted — the same inventory the operator channel keeps
 # (`operator.CHANNEL_VERB_AUTHORITY`), so a verb cannot join `_READS` without naming the clause
@@ -102,13 +114,14 @@ READ_VERB_AUTHORITY: dict[str, str] = {
     "scheduler_events": _AUDIT_READ,
     "heartbeat": "policy:kill_switch.kill_allows read_only_status",
     "approval_status": _AUDIT_READ + " (summary only; approvals/ records never exposed)",
+    "lane_digest": _AUDIT_READ + " (per-lane counts over the run ledger; dormant until policy 1.6.1)",
 }
 
-# The only two that mean anything with an argument. Everything else refuses one rather than
-# accepting it silently — a caller that passed an argument believed it would be used, and
-# answering as though it had not been passed is the kind of quiet mismatch that later reads
-# as a wrong answer.
-_TAKES_ARGUMENT = frozenset({"history", "result", "scheduler_events", "approval_status"})
+# The reads that mean anything with an argument (a count, an id, a window in days). Everything
+# else refuses one rather than accepting it silently — a caller that passed an argument believed
+# it would be used, and answering as though it had not been passed is the kind of quiet mismatch
+# that later reads as a wrong answer.
+_TAKES_ARGUMENT = frozenset({"history", "result", "scheduler_events", "approval_status", "lane_digest"})
 
 
 def socket_path(root: Path | None = None) -> Path:
@@ -150,6 +163,12 @@ def apply_read(
             "VERB_NOT_PERMITTED",
             f"{command!r} is not a read this door serves; it carries {sorted(_READS)}",
         )
+    if command in POLICY_GATED_READS and command not in control.granted_read_verbs(repo_root):
+        raise ControlBlocked(
+            control.VERB_NOT_GRANTED,
+            f"{command} is not granted by the committed Governance Policy yet "
+            "(control_channel.assistant_read.verbs); nothing was read",
+        )
 
     argument = request.get("argument")
     if argument is not None and not isinstance(argument, str):
@@ -186,6 +205,8 @@ def apply_read(
             outcome = store_reads.read_scheduler_events(ledger, argument, now=stamp)
         elif spec == store_reads.HEARTBEAT:
             outcome = store_reads.read_heartbeat(now=stamp, repo_root=repo_root)
+        elif spec == store_reads.LANE_DIGEST:
+            outcome = store_reads.read_lane_digest(ledger, argument, now=stamp)
         else:
             outcome = store_reads.read_approval_status(approval_store, argument, now=stamp)
     else:

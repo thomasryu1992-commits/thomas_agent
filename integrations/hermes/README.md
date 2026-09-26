@@ -13,7 +13,7 @@ Sequence 2, **P02** (2026-09-14). Decision record: [`docs/HERMES_ORCHESTRATOR_AR
 | `config/SOUL.md` | the operational prompt (Korean) | Hermes system prompt |
 | `config/skills/thomas-ops/` | the `thomas-ops` skill (`SKILL.md` 1.5.7) and its references | Hermes skill |
 | `config/config.template.yaml` | `config.yaml` with the operator's Telegram ids replaced by placeholders; no secret was ever in that file | template — copy, fill the two ids |
-| `config/cron-jobs.template.json` | the four cron jobs' configuration fields (schedule, prompt, model, toolsets) — the fourth, 워크플로 서술, is P08's polling narration (install it when the runtime runs the workflow manager); run state omitted; delivery target a placeholder | template |
+| `config/cron-jobs.template.json` | the five cron jobs' configuration fields (schedule, prompt, model, toolsets) — the fourth, 워크플로 서술, is P08's polling narration (install it when the runtime runs the workflow manager); the fifth, 주간 레인 요약, relays `lane_digest` weekly (review D8; install it after policy 1.6.1 is deployed); run state omitted; delivery target a placeholder | template |
 | `MANIFEST.yaml` | which image, shim revision, prompt version and runtime were measured together | the record a deploy compares against |
 
 Not here, on purpose: the container environment (three values from `.env`, see `docs/DEPLOYMENT.md`), sessions, memories, `state.db` and its snapshots, `auth.json`, logs and caches, and the `hermes-agent` build context (its own repository).

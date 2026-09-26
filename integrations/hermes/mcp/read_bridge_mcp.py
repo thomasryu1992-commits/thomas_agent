@@ -47,6 +47,11 @@ members, and a component that joins needs no new sentence. The runtime test is n
 closes with `LIVE ENTRY POSSIBLE`, names this container's verdict `THIS PROCESS:`, and marks its
 env rows n/a wherever no fresh record says the gate was closed — so "env rows always FAIL here"
 went with it.
+
+v2.15 (2026-09-26, review D8): `lane_digest`, the weekly lane evidence — what each non-crypto lane's
+runs did over N days. The runtime carries the verb dormant until policy 1.6.1 lists it
+(`docs/runtime-contracts/POLICY_1_6_1_DRAFT.md`); before that the door refuses it by name as
+CONTROL_VERB_NOT_GRANTED, and this tool says so rather than guessing numbers.
 """
 
 from __future__ import annotations
@@ -178,6 +183,15 @@ def approval_status(approval_id: str) -> str:
     the decision is Thomas's `/approve` on the control bot. `[data]` carries the recorded and
     effective status and `expires_at` as fields."""
     return _ask("approval_status", approval_id, with_data=True)
+
+
+@mcp.tool()
+def lane_digest(days: str = "") -> str:
+    """What each lane's runs did over the last `days` (default 7, at most 31): runs, delivered,
+    delivered unverified, withheld (REVISE/BLOCK), which checks withheld them, which model answered,
+    failovers. Relay the counts as given. `REFUSED [CONTROL_VERB_NOT_GRANTED]` = not switched on yet
+    (policy 1.6.1) — say that, never estimate."""
+    return _ask("lane_digest", days or None, with_data=True)
 
 
 if __name__ == "__main__":

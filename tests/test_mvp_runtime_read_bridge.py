@@ -335,7 +335,7 @@ def test_every_read_names_the_clause_that_admits_it_and_nothing_else_is_named():
 
 def test_the_store_family_names_only_reads():
     verbs = {v for v, (family, _spec) in read_bridge._READS.items() if family == read_bridge._STORES}
-    assert verbs == {"schedules", "scheduler_events", "heartbeat", "approval_status"}
+    assert verbs == {"schedules", "scheduler_events", "heartbeat", "approval_status", "lane_digest"}
     for verb in verbs:
         assert not any(word in verb for word in ("enable", "disable", "remove", "add", "approve", "reject"))
 
@@ -454,3 +454,109 @@ def test_the_readiness_read_carries_the_view_a_summariser_needs(tmp_path):
     assert data["infrastructure_ready"] is False and data["live_entry_possible"] is False
     assert data["readiness"]["blocking"]
     assert "reply" not in data and out["reply"].startswith("=== live trading readiness ===")
+
+
+# --- lane_digest: a dormant read (review D8) -------------------------------------------------
+#
+# Thomas 2026-09-26: the weekly lane digest is the assistant's to run. The read door's verbs are
+# closed in the policy (`control_channel.assistant_read.verbs`), so the door carries the verb
+# dormant until policy 1.6.1 lists it — the switch door's pattern for `emergency_close`.
+
+import yaml
+
+from runtime.mvp_runtime import lane_digest
+
+DIGEST_NOW = "2026-09-26T00:00:00Z"
+
+
+class _ExplodingLedger(FakeLedger):
+    def iter_records_with_archive(self, **_kw):
+        raise AssertionError("a refused read opened the ledger")
+
+
+def _policy_root(tmp_path, verbs):
+    (tmp_path / "governance").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "governance" / "GOVERNANCE_POLICY.yaml").write_text(
+        yaml.safe_dump({"control_channel": {"assistant_read": {"verbs": verbs}}}), encoding="utf-8")
+    return tmp_path
+
+
+def _ledger_with_runs(tmp_path):
+    ledger = LedgerStore(tmp_path / "ledger")
+    for trace, received, result in (("trace_a", "2026-09-24T09:00:00Z", "PASS"),
+                                    ("trace_b", "2026-09-25T09:00:00Z", "REVISE"),
+                                    ("trace_old", "2026-09-01T09:00:00Z", "PASS")):
+        ledger.append_records(trace, {
+            "task": {"request": {"received_at": received}},
+            "role_assignment": {"role_id": "general.specialist"},
+            "invocation": {"model_id": "openrouter/x", "latency_ms": 900},
+            "validation_result": {"validation": {"result": result, "checks": []}},
+        })
+    return ledger
+
+
+def test_lane_digest_is_refused_by_name_while_the_policy_does_not_list_it(tmp_path):
+    """Against a policy whose read clause omits it and against a root with no policy at all: refused
+    before the ledger is opened, and not as an unknown verb — the door knows it. (Temporary roots, not
+    the committed policy: once 1.6.1 is applied the committed one lists it, and
+    `tests/test_policy_lane_digest_read_grant.py` pins that side.)"""
+    assert "lane_digest" in read_bridge.POLICY_GATED_READS
+    for root in (tmp_path / "no-policy", _policy_root(tmp_path / "without", ["runtime_status", "heartbeat"])):
+        with pytest.raises(ControlBlocked) as exc:
+            _apply({"command": "lane_digest"}, ControlStore(tmp_path), _ExplodingLedger(), repo_root=root)
+        assert exc.value.reason_code == control.VERB_NOT_GRANTED
+
+
+@pytest.mark.parametrize("verbs", [["runtime_status"], {"lane_digest": "read_only"}, "lane_digest", None])
+def test_only_a_list_that_names_it_grants_it(tmp_path, verbs):
+    """Fail-closed on shape: a mapping, a bare string or a missing list grants nothing."""
+    root = _policy_root(tmp_path, verbs)
+    assert "lane_digest" not in control.granted_read_verbs(root)
+    with pytest.raises(ControlBlocked) as exc:
+        _apply({"command": "lane_digest"}, ControlStore(tmp_path), _ExplodingLedger(), repo_root=root)
+    assert exc.value.reason_code == control.VERB_NOT_GRANTED
+
+
+def test_the_other_reads_never_consult_the_policy(tmp_path):
+    """A policy that cannot be read refuses the dormant read and blinds nothing else."""
+    (tmp_path / "governance").mkdir()
+    (tmp_path / "governance" / "GOVERNANCE_POLICY.yaml").write_text("{{ not yaml", encoding="utf-8")
+    assert control.granted_read_verbs(tmp_path) == frozenset()
+    out = _apply({"command": "runtime_status"}, ControlStore(tmp_path), repo_root=tmp_path)
+    assert out["ok"] is True and ACTIVE in out["reply"]
+
+
+def test_once_granted_it_renders_the_operator_scripts_digest_over_the_last_week(tmp_path):
+    root = _policy_root(tmp_path, ["runtime_status", "lane_digest"])
+    ledger = _ledger_with_runs(tmp_path)
+    out = read_bridge.apply_read({"command": "lane_digest", "proto": 2}, control_store=ControlStore(tmp_path),
+                                 ledger=ledger, now=DIGEST_NOW, repo_root=root)
+    since = "2026-09-19T00:00:00Z"
+    expected = lane_digest.lane_digest(ledger, since=since, until=DIGEST_NOW)
+    assert out["ok"] is True and out["action"] == "LANE_DIGEST_READ"
+    assert out["reply"] == lane_digest.render(expected, since=since, until=DIGEST_NOW)
+    data = out["data"]
+    assert (data["since"], data["until"], data["days"]) == (since, DIGEST_NOW, 7)
+    specialist = data["lanes"]["general.specialist"]
+    assert (specialist["runs"], specialist["delivered"], specialist["revise"]) == (2, 1, 1)   # trace_old is outside
+
+
+@pytest.mark.parametrize("argument, days, noted", [("30", 30, False), ("400", 31, True), ("abc", 7, True)])
+def test_the_window_is_a_day_count_clamped_to_a_month_and_never_silently(tmp_path, argument, days, noted):
+    root = _policy_root(tmp_path, ["lane_digest"])
+    ledger = _ledger_with_runs(tmp_path)
+    out = read_bridge.apply_read({"command": "lane_digest", "argument": argument},
+                                 control_store=ControlStore(tmp_path), ledger=ledger,
+                                 now=DIGEST_NOW, repo_root=root)
+    assert out["data"]["days"] == days
+    assert out["data"]["lanes"]["general.specialist"]["runs"] == (3 if days >= 30 else 2)
+    plain = lane_digest.render(out["data"]["lanes"], since=out["data"]["since"], until=DIGEST_NOW)
+    assert out["reply"].startswith(plain)
+    assert (out["reply"] != plain) is noted            # a substituted window says so in the reply
+
+
+def test_once_granted_a_door_without_the_run_ledger_refuses_typed(tmp_path):
+    root = _policy_root(tmp_path, ["lane_digest"])
+    with pytest.raises(ControlBlocked) as exc:
+        _apply({"command": "lane_digest"}, ControlStore(tmp_path), FakeLedger(), repo_root=root)
+    assert exc.value.reason_code == "RUN_LEDGER_UNAVAILABLE"
