@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **37**건: `DRAFT` 6 · `PARTIALLY DECIDED` 6 · `DECIDED` 2 · `IMPLEMENTED` 21 · `SUPERSEDED` 1 · `RECORD` 1
+제안서 **37**건: `DRAFT` 3 · `PARTIALLY DECIDED` 8 · `DECIDED` 3 · `IMPLEMENTED` 21 · `SUPERSEDED` 1 · `RECORD` 1
 
-## Thomas 결정 대기 (12)
+## Thomas 결정 대기 (11)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -15,17 +15,16 @@
 | [CONVERSATIONAL_ORCHESTRATION_FRONT_V0.1.md](CONVERSATIONAL_ORCHESTRATION_FRONT_V0.1.md) | `PARTIALLY DECIDED` | 2026-07-25 | D1–D3 결정·구현(task registry, frontdesk, provider). D4(standing grant, `approval.v0.3`)는 결정 대기, D5는 D4를 기다린다. |
 | [APPROVAL_CONVERSATION_V0.1.md](APPROVAL_CONVERSATION_V0.1.md) | `DRAFT` | 2026-07-28 | §6의 V1–V4 결정 대기. 결정 기록도, 권고한 옵션 B(승인 명령을 제안하는 턴)의 구현도 없다(2026-09-26 확인). |
 | [CONTROL_LANE_SEPARATION_V0.1.md](CONTROL_LANE_SEPARATION_V0.1.md) | `PARTIALLY DECIDED` | 2026-07-29 | K2′(단계 경계 halt peek)는 결정·구현(`operator.peek_for_halt`). K4(실행 중인 분석 중단)·K5는 결정 대기, K1은 결정 기록이 없다(`docs/BUILD_HISTORY.md`, `docs/REMAINING_WORK.md`). |
-| [COST_GATE_RESET_THE_RECORD_V0.1.md](COST_GATE_RESET_THE_RECORD_V0.1.md) | `DRAFT` | 2026-08-03 | §6의 결정 3건은 기록이 없다. §4.1(펀딩)은 제안과 달리 게이트가 아니라 보고로만 반영됐고(`crypto/cost.py`, "Reported, not gated"), 오염 행 재검증 흔적도 없다(2026-09-26 확인). |
-| [RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md](RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md) | `DRAFT` | 2026-08-06 | 결정 (a)–(d) 모두 Thomas 결정 대기. **값은 하나도 바뀌지 않았다**(`crypto/guards.py`). 날짜는 부모 절의 측정일이다. |
 | [EVALUATION_CANNOT_ACT_PER_STRATEGY_V0.1.md](EVALUATION_CANNOT_ACT_PER_STRATEGY_V0.1.md) | `PARTIALLY DECIDED` | 2026-08-08 | §5 계보별 LIVE 허용치는 구현됐다(`crypto/live_allowance.py`: 연속 2패 또는 누적 −2.0R이면 강등; 결정 인용도 구현일 기록도 찾지 못해 날짜는 작성일이다). 제안한 셋째 기준(예산 1/4)은 빠졌고 그 기록이 없다. §8의 B(복귀 경로)·D(연속손실 브레이커 래치)는 결정 대기. |
 | [AUTOMATIC_SELECTION_NEEDS_A_LIVE_DOOR_V0.1.md](AUTOMATIC_SELECTION_NEEDS_A_LIVE_DOOR_V0.1.md) | `PARTIALLY DECIDED` | 2026-08-09 | Part 1(OBSERVATION/LIVE 티어)은 2026-08-09 구현(#648, `crypto/live_tier.py`; 승인 인용은 찾지 못했다). Part 2(관찰 티어 자동 설치)는 결정도 구현도 없다. |
 | [WALK_FORWARD_TEMPORAL_STABILITY_V0.1.md](WALK_FORWARD_TEMPORAL_STABILITY_V0.1.md) | `DRAFT` | 2026-08-12 | PR-2(판정 활성화) 결정 대기. PR-1(기록 전용)은 구현됐고, 결정 근거인 §4 측정 결과는 아직 기록되지 않았다. 날짜는 추정이다(FACTORY_ABLATION 결정 이후 작성). |
 | [TEMPLATE_RSI_DRAW_MASS_V0.1.md](TEMPLATE_RSI_DRAW_MASS_V0.1.md) | `DRAFT` | 2026-08-17 | Thomas 결정 대기. 권고(현상 유지 + §5 재독)의 재독·결정 기록이 없다. |
-| [FAMILY_EXHAUSTION_V0.1.md](FAMILY_EXHAUSTION_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-24 | Q1 B·Q2·Q3 결정. Q1 B의 퍼널 family 소진 절(30일 CONFIRMED·마지막 CONFIRMED)은 아직 없다. 1h 스케줄이 BTCUSDT만 민팅하는 것(§6)이 의도인지 Thomas 확인 대기. |
-| [RESEARCH_EPOCH_V0.1.md](RESEARCH_EPOCH_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-24 | Q1·Q2(판정 규칙 지문과 그 표시)는 #972·#976으로 구현. Q3(완화는 에포크 경계에서만)·Q4는 "A가 들어간 뒤 재질문"이었고 A가 #972로 들어왔으므로 결정 대기. |
-| [SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md](SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md) | `DRAFT` | 2026-09-25 | §5의 결정 D1–D8은 Thomas 결정 대기. 결정이 필요 없는 단계 0은 #980으로 구현됐고, 단계 1의 선행 조건 없는 항목은 진행 중이다(§3). 정책 활성화 없음. |
+| [COST_GATE_RESET_THE_RECORD_V0.1.md](COST_GATE_RESET_THE_RECORD_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | §6-2(펀딩 게이팅)는 게이트 없이 보고만 하는 현재 구현(`crypto/cost.py`, "Reported, not gated")을 추인했다(Thomas 2026-09-26). §6-1(오염된 폐기 판정 11개)·§6-3(반사실 레지스트리 측정)은 결정 기록이 없다. |
+| [RESEARCH_EPOCH_V0.1.md](RESEARCH_EPOCH_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | Q1·Q2(판정 규칙 지문과 그 표시)는 #972·#976으로 구현. Q3는 B로 결정(Thomas 2026-09-26, 경계 주기는 미정). Q4(다음 cohort에 판정 지문)는 다음 cohort를 동결할 때 정한다. |
+| [RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md](RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | (c) 순서 결정: 슬리피지 실측이 먼저다. (a)(b)(d)는 실측 뒤에 정하고, 그때까지 현재 값을 유지하며 LIVE_AUTONOMOUS로 올리지 않는다(Thomas 2026-09-26, 시스템 점검 D5). **값은 하나도 바뀌지 않았다**. |
+| [SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md](SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | §5의 D1·D2·D3·D4·D7·D8 채택, D6 보류(현상 유지). D5는 슬리피지 실측 뒤에 결정한다(§5 뒤 "결정" 절). 단계 0은 #980, 단계 1의 선행 조건 없는 항목은 #982–#989로 구현됐다. |
 
-## 결정됨 — 구현 남음 (2)
+## 결정됨 — 구현 남음 (3)
 
 결정은 끝났고 결정된 것이 아직 다 지어지지 않았다. 결정이 만든 구현 대기열이다.
 
@@ -33,6 +32,7 @@
 |---|---|---|---|
 | [EQUITY_PERP_LANE_V0.1.md](EQUITY_PERP_LANE_V0.1.md) | `DECIDED` | 2026-08-03 | ① 팩터/디스퍼전 재정의 ② 스프레드 v1 제외(2026-08-03), S0 규제 기록(2026-08-04, 잠정). S1은 2026-08-04부터 운영 중이고 S2(a)는 2026-08-09 완료(§8b). S2(b)는 데이터 깊이 때문에 아직 평가할 수 없고 S3–S5는 미착수다(`docs/REMAINING_WORK.md` §H). S3 이후 실주문은 S0의 확정 승격이라는 별도 결정 전에는 열리지 않는다. |
 | [NAVER_BLOG_CONTENT_LANE_V0.1.md](NAVER_BLOG_CONTENT_LANE_V0.1.md) | `DECIDED` | 2026-08-30 | 결정은 모두 내려졌다(A안·network env 2026-08-09; 파일 쓰기, 주간 `content_ideation` 스케줄, MVP 용례 확장, 키워드 규칙, URL 기록 2026-08-30). Phase 1은 구현됐고 남은 구현은 Phase 4 순위 추적이다 (`docs/REMAINING_WORK.md` §J, 이 문서 하단의 체크리스트). |
+| [FAMILY_EXHAUSTION_V0.1.md](FAMILY_EXHAUSTION_V0.1.md) | `DECIDED` | 2026-09-26 | Q1 B·Q2·Q3 결정, §6 확인 완료(1h는 5심볼 모두가 의도). 남은 구현: Q1 B의 퍼널 family 소진 절(30일 CONFIRMED·마지막 CONFIRMED)과 1h 5심볼 풀링. |
 
 ## 구현됨 (21)
 
@@ -41,7 +41,7 @@
 | 제안서 | 상태 | 날짜 | 요약 |
 |---|---|---|---|
 | [HERMES_AGENT_SWITCH_V0.1.md](HERMES_AGENT_SWITCH_V0.1.md) | `IMPLEMENTED` | 2026-07-31 | S1·S3 채택·출시(#387), S2 거부. S4(자금 스냅샷)는 아래 표가 적은 뒤에 출시됐다 (#755: 스케줄러가 쓰고 read 문의 `crypto_funds`가 보여 준다). 레인은 policy 1.4.0에 조문화됐다. |
-| [GATE0_CANNOT_BE_SATISFIED_V0.1.md](GATE0_CANNOT_BE_SATISFIED_V0.1.md) | `IMPLEMENTED` | 2026-08-03 | Gate 0의 런타임 강제와 운영자 확인이 #473으로 제거됐다(`crypto/live_entry.py` 2b). 실제 돈 문을 넓힌 변경인데, 아래 성격 줄이 요구한 Thomas 승인의 인용은 찾지 못했다(2026-09-26 확인). |
+| [GATE0_CANNOT_BE_SATISFIED_V0.1.md](GATE0_CANNOT_BE_SATISFIED_V0.1.md) | `IMPLEMENTED` | 2026-08-03 | Gate 0의 런타임 강제와 운영자 확인이 #473으로 제거됐다(`crypto/live_entry.py` 2b). 실제 돈 문을 넓힌 변경이다. 저장소에 승인 인용이 없었고, Thomas가 2026-09-26에 당시 승인했음을 확인했다. |
 | [EQUITY_PERP_S1_COLLECTOR_V0.1.md](EQUITY_PERP_S1_COLLECTOR_V0.1.md) | `IMPLEMENTED` | 2026-08-04 | 구현·운영 중. `crypto/market_data.py`의 `hyperliquid` 수집기가 2026-08-04부터 매시간 `candle_archive`로 돈다(`docs/REMAINING_WORK.md` §H, H0에 첫날 결함과 수정). 날짜는 가동일이다. |
 | [CREDENTIAL_PLANE_SEPARATION_PHASE2_V0.1.md](CREDENTIAL_PLANE_SEPARATION_PHASE2_V0.1.md) | `IMPLEMENTED` | 2026-08-10 | D4 채택·구현(PR-C). 아래 원문은 D5·D6을 미결로 적었지만 둘 다 이후 구현됐다 (`crypto_data_review`·`crypto_propose`의 모델 호출이 `pipeline-worker`로 위임되어 스케줄러에 모델 자격증명이 없다 — `docker-compose.yml` scheduler 블록 주석). D5·D6의 결정 기록은 찾지 못했다(2026-09-26 확인). |
 | [CREDENTIAL_PLANE_SEPARATION_V0.1.md](CREDENTIAL_PLANE_SEPARATION_V0.1.md) | `IMPLEMENTED` | 2026-08-10 | D1·D2 채택, D3 방향 승인. PR-A(pipeline-worker, 문 전환)와 PR-B(스케줄러 Naver env 제거) 구현. |
