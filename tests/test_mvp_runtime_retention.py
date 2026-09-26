@@ -284,6 +284,36 @@ def test_an_unparseable_limit_falls_back_to_the_default_never_to_a_smaller_one(t
     assert len(_read_lines(ledger.root / RECORDS_FILE)) == 300
 
 
+def test_a_partial_rotation_is_a_failed_fire_and_the_operator_is_told(tmp_path, monkeypatch):
+    """A ledger that cannot rotate keeps growing — the root-owned-file case CLAUDE.md warns
+    about. The fire used to count as `fired` with "failed=" in its text, and the operator
+    is told only on a FAILED transition, so the growth ran behind a green status."""
+    from runtime.mvp_runtime import scheduler
+
+    ledger = _store(tmp_path)
+    _fill(ledger, RECORDS_FILE, 300)
+    _fill(ledger, BLOCKS_FILE, 300)
+    real_rotate = retention.rotate_file
+
+    def rotate_or_refuse(store, filename, **kwargs):
+        if filename == BLOCKS_FILE:
+            raise PersistenceError("LEDGER_WRITE_FAILED", "permission denied")
+        return real_rotate(store, filename, **kwargs)
+
+    monkeypatch.setattr(retention, "rotate_file", rotate_or_refuse)
+    sent: list[str] = []
+    schedules = _rotate_schedule(tmp_path, request="50")
+
+    summary = scheduler.run_due(schedules, now=_due(NOW), ledger=ledger, repo_root=tmp_path,
+                                notifier=lambda _schedule_id, text: sent.append(text))
+
+    assert summary["failed"] == 1 and summary["fired"] == 0
+    assert summary["results"][0]["status"] == "failed:ROTATION_PARTIAL"
+    assert len(sent) == 1 and "ROTATION_PARTIAL" in sent[0]
+    # What could move, moved — failing the fire does not undo the rotation that worked.
+    assert len(_read_lines(ledger.root / RECORDS_FILE)) == 50
+
+
 def test_scheduled_rotation_never_touches_the_protected_ledgers(tmp_path):
     from runtime.mvp_runtime import scheduler
 

@@ -645,6 +645,15 @@ def _apply_job(
         raise ControlBlocked("PROPOSAL_INPUTS_REQUIRED", "'focus' must be a string when given")
 
     from .crypto import proposer as crypto_proposer
+    from .crypto.strategy import ALLOWED_TIMEFRAMES
+
+    # The frame's timeframe name, so the prompt allows only the timeframe the caller will score
+    # on. Optional (an older caller sends none and gets the open list); an unknown one is refused
+    # rather than passed into a prompt.
+    timeframe = inputs.get("timeframe")
+    if timeframe is not None and timeframe not in ALLOWED_TIMEFRAMES:
+        raise ControlBlocked("PROPOSAL_INPUTS_REQUIRED",
+                             f"'timeframe' must be one of {sorted(ALLOWED_TIMEFRAMES)} when given")
 
     provider = (
         resolved.get("validator_provider") or crypto_proposer.MockProposerProvider()
@@ -652,7 +661,7 @@ def _apply_job(
     # Only the model half runs here. The verdicts — which need the market frame — are the
     # caller's, and this worker never sees one.
     generation = crypto_proposer.generate_proposals(
-        provider=provider, existing_families=families, focus=focus,
+        provider=provider, existing_families=families, focus=focus, timeframe=timeframe,
     )
     return {"ok": True, "job": job, "generation": generation}
 

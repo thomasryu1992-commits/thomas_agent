@@ -12,6 +12,7 @@ a second module, which is either shared vocabulary (declare it) or two meanings 
 
 from __future__ import annotations
 
+import functools
 import pathlib
 import sys
 from collections import defaultdict
@@ -21,12 +22,20 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from build_diagnostic_code_index import (  # noqa: E402
     OUTPUT_REL,
-    build,
     collect_sites,
     is_reason_code,
     module_string_constants,
+    render,
     resolve_string_constants,
 )
+
+
+@functools.lru_cache(maxsize=None)
+def _collected():
+    """One AST walk of the runtime for the whole module. Every test here reads the same source, and
+    each used to re-parse all of it — about 4.5 s apiece, ~48 s of every pytest job per OS. Nothing
+    below mutates the result."""
+    return collect_sites()
 
 # Codes raised from more than one module as of 2026-08-06, when this check was introduced.
 #
@@ -117,7 +126,7 @@ SHARED_ACROSS_MODULES = frozenset({
 
 
 def _modules_per_code() -> dict[str, set[str]]:
-    sites, *_ = collect_sites()
+    sites, *_ = _collected()
     per_code: dict[str, set[str]] = defaultdict(set)
     for site in sites:
         per_code[site.code].add(site.module)
@@ -127,7 +136,7 @@ def _modules_per_code() -> dict[str, set[str]]:
 def test_the_committed_index_matches_the_source():
     """An index that can go stale is the artifact §G3 is complaining about, one layer up."""
     committed = (ROOT / OUTPUT_REL).read_text(encoding="utf-8")
-    assert committed == build(), (
+    assert committed == render(*_collected()), (
         f"{OUTPUT_REL} is stale — run `python scripts/build_diagnostic_code_index.py`"
     )
 
@@ -235,7 +244,7 @@ def test_a_delegated_code_is_indexed_under_the_class_that_actually_carries_it():
     ``counterfactual`` keeps ``ToolError`` because the tool chokepoints above it catch that and
     would not catch ``jsonl``'s default. An index that reported the primitive's default here would
     send an operator to the wrong handler."""
-    sites, *_ = collect_sites()
+    sites, *_ = _collected()
     cf = [s for s in sites if s.code == "COUNTERFACTUAL_HISTORY_UNREADABLE"]
     assert cf and all(s.error_class == "ToolError" for s in cf), cf
     ledger = [s for s in sites if s.code == "LEDGER_UNREADABLE"]
@@ -250,7 +259,7 @@ def test_a_message_is_not_indexed_as_a_code():
     them, each inflating the vocabulary and none of them greppable. §G3 built this to answer "a
     code came out of the runtime, where is it raised", and no operator greps an English sentence.
     """
-    sites, _skipped, messages = collect_sites()
+    sites, _skipped, messages = _collected()
     assert messages, "the message count should be reported, not silently zero"
     offenders = sorted({s.code for s in sites if " " in s.code})
     assert not offenders, f"these are messages, not codes, and must not be indexed: {offenders}"
@@ -314,14 +323,14 @@ def test_module_paths_are_platform_independent():
     nothing to do with the code changing. CI caught it after the merge; this pins the fix, since
     the failure is invisible to anyone developing on one platform.
     """
-    sites, *_ = collect_sites()
+    sites, *_ = _collected()
     offenders = sorted({site.module for site in sites if "\\" in site.module})
     assert not offenders, f"module paths must be POSIX-style: {offenders[:5]}"
 
 
 def test_every_indexed_site_names_a_real_file_and_line():
     """The index is a lookup an operator follows. A row pointing nowhere is worse than no row."""
-    sites, *_ = collect_sites()
+    sites, *_ = _collected()
     assert sites, "no raise sites found at all — the extractor is broken, not the runtime clean"
     for site in sites:
         path = ROOT / site.module

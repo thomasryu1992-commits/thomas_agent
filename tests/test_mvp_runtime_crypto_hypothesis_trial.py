@@ -193,7 +193,7 @@ def test_the_fire_level_skips_refuse_no_proposal(case):
     elif case == "not_cohort":
         cohort = None
     else:
-        existing = [{"derivation_type": "hypothesis_trial",
+        existing = [{"candidate_id": f"cand_open_{i}", "derivation_type": "hypothesis_trial",
                      "trial_source": {"strategy_rule_hash": f"h{i}"}}
                     for i in range(factory.MAX_OPEN_TRIALS)]
     result = _run(snapshot, cohort, trials=trials, existing=existing)
@@ -323,23 +323,29 @@ def _fire(tmp_path, request, *, proposals=()):
     return summary["results"][0]["status"], factory_records[-1]
 
 
+# Both fires run at 1d. At 1h the factory replays ~24,000 bars per leg, which made these two the
+# slowest tests in the suite (40 s and 19 s) for wiring that does not depend on the timeframe; the
+# 1h pooling rule itself is pinned above, on `run_factory`, by
+# `test_a_1h_cohort_fire_pools_the_trial_but_not_its_own_mints`.
+
 def test_a_single_symbol_fire_is_not_asked_and_its_line_is_unchanged(tmp_path):
-    status, record = _fire(tmp_path, "BTCUSDT 1h")
+    status, record = _fire(tmp_path, "BTCUSDT 1d")
     assert "trial=" not in status
     assert "trial" not in record
 
 
 def test_a_cohort_fire_reads_the_queue_from_the_ledger_and_says_what_it_did(tmp_path):
-    spec = _proposal_spec(timeframe="1h")
-    proposals = [_proposal_row("2026-07-22T06:18:00Z", [_accepted(spec)])]
-    status, record = _fire(tmp_path, "BTCUSDT,ETHUSDT 1h", proposals=proposals)
-    assert " trial=" in status
-    assert record["trial"]["status"] in {"minted", "refused"}
-    screened = [*record["trial"]["minted"], *record["trial"]["refused"]]
-    assert [s["strategy_rule_hash"] for s in screened] == [spec["strategy_rule_hash"]]
-    if record["trial"]["status"] == "minted":
-        stored = [r for r in pool.read_candidates(tmp_path) if factory.is_trial(r)]
-        assert len(stored) == 1
+    """The fixture frame is deterministic, so the outcome is pinned: an assertion that accepts
+    either `minted` or `refused` passes whether or not the queue reached the factory at all."""
+    spec = _proposal_spec(timeframe="1d")
+    proposals = [_proposal_row("2026-07-22T06:18:00Z", [_accepted(spec)], timeframe="1d")]
+    status, record = _fire(tmp_path, "BTCUSDT,ETHUSDT 1d", proposals=proposals)
+    assert " trial=minted:proposed_trend_long" in status
+    assert record["trial"]["status"] == "minted" and record["trial"]["refused"] == []
+    minted = record["trial"]["minted"]
+    assert [m["strategy_rule_hash"] for m in minted] == [spec["strategy_rule_hash"]]
+    stored = [r for r in pool.read_candidates(tmp_path) if factory.is_trial(r)]
+    assert [r["candidate_id"] for r in stored] == [minted[0]["candidate_id"]]
 
 
 # --- the readers that render every fire ------------------------------------------------------
