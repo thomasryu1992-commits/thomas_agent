@@ -397,6 +397,14 @@ def test_status_line_shows_a_cap_refusal_with_the_books_shape():
     assert "refused=POSITION_LIMIT_PORTFOLIO" in counted and "lean=" not in counted
 
 
+def test_status_line_names_a_pool_entry_the_forward_book_cannot_walk():
+    """Printed only when it happened: a silent skip there left a lineage without forward evidence."""
+    base = {"verdict_status": "ALLOW", "route_status": "ENTRY_CANDIDATE"}
+    line = cycle_status_line({**base, "forward_book": {"unparseable": ["S9-GEN-1"]}})
+    assert "forward_unparseable=S9-GEN-1" in line
+    assert "forward_unparseable" not in cycle_status_line({**base, "forward_book": {"settled": []}})
+
+
 # --- the scheduler template ---------------------------------------------------
 
 def test_scheduler_fires_crypto_cycle_and_ledgers_it(tmp_path, monkeypatch):
