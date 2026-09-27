@@ -4,7 +4,7 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **38**건: `DRAFT` 4 · `PARTIALLY DECIDED` 8 · `DECIDED` 2 · `IMPLEMENTED` 22 · `SUPERSEDED` 1 · `RECORD` 1
+제안서 **39**건: `DRAFT` 4 · `PARTIALLY DECIDED` 8 · `DECIDED` 2 · `IMPLEMENTED` 22 · `SUPERSEDED` 1 · `RECORD` 2
 
 ## Thomas 결정 대기 (12)
 
@@ -71,10 +71,11 @@
 |---|---|---|---|
 | [LIVE_OUTCOME_CORRECTION_RECORD_V0.1.md](LIVE_OUTCOME_CORRECTION_RECORD_V0.1.md) | `SUPERSEDED` | 2026-08-23 | `LIVE_OUTCOME_CORRECTION_RECORD_V0.2.md`가 대신한다. 이 설계는 구현된 적 없다. |
 
-## 측정 기록 (1)
+## 측정 기록 (2)
 
 결정할 것이 없는 관측 기록.
 
 | 제안서 | 상태 | 날짜 | 요약 |
 |---|---|---|---|
 | [EQUITY_PERP_S1_MEASUREMENTS_V0.1.md](EQUITY_PERP_S1_MEASUREMENTS_V0.1.md) | `RECORD` | 2026-08-05 | 2026-08-04~05 측정 기록. 설계 제안이 아니라 **관측값**이며, 재현 방법을 함께 적는다. |
+| [FORWARD_VERDICT_REGIME_EPISODES_V0.1.md](FORWARD_VERDICT_REGIME_EPISODES_V0.1.md) | `RECORD` | 2026-09-27 | 측정 기록. forward 판정 6건이 BTC 일봉 regime 구간 3–5개(하락 추세 0일)에서 나왔고, 반박·성숙 판정은 시간 분산 검사 없이 나온다. 에포크 경계에서 볼 결정 항목 2개(§5)를 함께 적는다. |
