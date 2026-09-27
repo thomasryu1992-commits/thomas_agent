@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -100,9 +101,12 @@ def assert_workflow() -> None:
     if not path.is_file():
         raise AssertionError("GitHub Actions runtime validation workflow is missing")
     text = path.read_text(encoding="utf-8")
+    # Actions are pinned to a full commit SHA (a tag can be moved under the workflow); the
+    # version rides in a trailing comment, which is not what this checks.
+    for action in ("actions/checkout", "actions/setup-python"):
+        if not re.search(rf"uses: {re.escape(action)}@[0-9a-f]{{40}}\b", text):
+            raise AssertionError(f"workflow must pin {action} to a full commit SHA")
     required = [
-        "actions/checkout@v6",
-        "actions/setup-python@v6",
         "python -m pip install -r requirements-validation.lock",
         "python scripts/run_repository_release_gate.py --full --check-only",
         "ubuntu-latest",
