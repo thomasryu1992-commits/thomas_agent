@@ -14,6 +14,6 @@
   reports it (`LIVE_POSITION_PERSIST_FAILED`, `LIVE_OUTCOME_PERSIST_FAILED`,
   `BRACKET_BREAKER_UNRECORDED`, the API breaker's `unrecorded`, `AUDIT_NOT_RECORDED`). Before this
   change each of them could hang forever instead. Pre-venue locks refuse the entry. The PR body has
-  the site table; Thomas reviewed it before merge, as the review's sequence 1-1 required.
+  the site table for Thomas to review before merge, as the review's sequence 1-1 requires.
 - **Deliberately not done:** the holder's PID and label in the sidecar. The sidecar is never read or
   written, and a byte-locked region cannot be read on Windows.
