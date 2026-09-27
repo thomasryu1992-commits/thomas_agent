@@ -4770,6 +4770,46 @@ I1 argues is not what is blocking.
 
 ## J. Naver blog content lane — Phase 1 built, the cadence was not
 
+**Held 2026-09-27 (Thomas) — the weekly row is disabled, and Phase 4 is off the queue.** The row
+(`schedule_1d25e2cef74b8a48adec`) fired three times — 2026-09-06, 09-13 and 09-20 — and all three
+failed at selection with `NO_ELIGIBLE_KEYWORD`. No package was ever assembled: the ledger holds no
+`blog_content_package` row and `workspace/blog/` is empty. The cause is the keyword source, not
+the week:
+
+- `select_target_keyword` drops Search Ad `compIdx` "높음" as unwinnable, but `compIdx` is
+  advertiser bid competition, not blog competition. Of the ten related keywords the fixed seeds
+  return, eight are "높음" and the other two are `low_volume` (the 09-20 brief).
+- The seeds never change, so every fire gets the same answer. Reading `competing_posts` instead of
+  `compIdx` does not rescue them: the three rows that carry a count have 637K–1.75M competing
+  posts, and the other seven have none (the brief looks up the top three only).
+
+Thomas's call: posts are made on request, outside the weekly lane. The row was **disabled, not
+removed** (`scheduler_cli disable`, 2026-09-27T05:53:56Z), so the row, its run history and the code
+all stay. The ledger's `disabled` event carries the 2026-08-30 registration reason, because the CLI
+records none of its own for `disable` — this paragraph is the reason. `scheduler_cli enable
+schedule_1d25e2cef74b8a48adec` resumes it, and doing that before the keyword source is fixed
+reproduces the same failure. With the row off the lane accrues no evidence, so D8's deadline
+(2026-11-25, `docs/proposals/SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md`) will find none; that review
+decides between removal and revival.
+
+A four-PR plan (target evidence, structured output with one automatic revision, rank feedback, a
+content budget and KPIs) was proposed the same day and is shelved with the lane. Its premises were
+checked against the code first. These are real, and deliberately not fixed while the lane is held —
+a revival starts here, after the keyword source:
+
+1. The package's `keyword_evidence` is built from the selection brief (all seeds). The content
+   run's own brief on the exact target (`keyword_seeds=target`) is discarded. `keyword_evidence`
+   is a closed object, so carrying both is a schema change.
+2. `render_post_md` reports `metrics[0]`, the top-volume row of that brief, not the target's row.
+3. `total_competing_posts` sums the counts of the top three rows, which are three different
+   keywords.
+4. The trend series is fetched for the first seed (`run_keyword_brief`:
+   `primary = seeds.split(",")[0]`), not for the target. For the current seeds it came back empty.
+5. `title_candidates` are the draft's own headings (the content prompt asks for no titles), and
+   `fact_checks` is always `[]`.
+6. System review B9 is still open: 8,000 tokens per agent, half of it the output allowance
+   (`budgets.py`).
+
 Authority for the design is `docs/proposals/NAVER_BLOG_CONTENT_LANE_V0.1.md`. This section
 exists because until 2026-08-23 this file did not track the lane **at all** — not one checkbox,
 in a document whose job is "what is still to build". The lane's own proposal carried the
@@ -4796,7 +4836,8 @@ What that cost is measurable: every capability the weekly loop needs shipped by 
 - [ ] the package as a **file**. `workspace.run_write` is behind `filesystem_write`, which is
       unset on this deployment and not passed to `pipeline-worker`; the package is a ledger row
       until that opens. §4b's two paste files (`POST.md` / `PASTE.txt`) do not exist yet.
-- [ ] Phase 4 — rank tracking feeding the next keyword choice. **Its prerequisite now exists
+- [ ] Phase 4 — rank tracking feeding the next keyword choice. **Held 2026-09-27 with the lane (top
+      of this section) — not in the build queue.** **Its prerequisite now exists
       (2026-08-30, Thomas decision on §J question 4):** `scripts/record_published_url.py` is
       the writer `published_url` never had — the operator tells the runtime after publishing
       by appending a second package row (`publish_state: published`) under the same
