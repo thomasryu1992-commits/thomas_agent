@@ -1,6 +1,6 @@
 # The execution stage gets an anti-rollback ledger
 
-**Status:** PROPOSAL 2026-09-27 — four decisions for Thomas (§6). Nothing is built.
+**Status:** DRAFT 2026-09-27 — §6의 D1–D4 결정 대기(앵커 위치, 장부가 파일을 대체, BOOTSTRAP으로 첫 행, 복원 뒤 재승인 비용). 구현 없음.
 
 The stage record (`crypto/execution_stage.json`) can be put back. The module says so itself
 (`execution_stage.py:42`): "one who kept a copy of an earlier witnessed record can put it back,
