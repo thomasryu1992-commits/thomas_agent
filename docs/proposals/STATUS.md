@@ -4,7 +4,7 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **37**건: `DRAFT` 3 · `PARTIALLY DECIDED` 8 · `DECIDED` 3 · `IMPLEMENTED` 21 · `SUPERSEDED` 1 · `RECORD` 1
+제안서 **37**건: `DRAFT` 3 · `PARTIALLY DECIDED` 8 · `DECIDED` 2 · `IMPLEMENTED` 22 · `SUPERSEDED` 1 · `RECORD` 1
 
 ## Thomas 결정 대기 (11)
 
@@ -24,17 +24,16 @@
 | [RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md](RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | (c) 순서 결정: 슬리피지 실측이 먼저다. (a)(b)(d)는 실측 뒤에 정하고, 그때까지 현재 값을 유지하며 LIVE_AUTONOMOUS로 올리지 않는다(Thomas 2026-09-26, 시스템 점검 D5). **값은 하나도 바뀌지 않았다**. |
 | [SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md](SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | §5의 D1·D2·D3·D4·D7·D8 채택, D6 보류(현상 유지). D5는 슬리피지 실측 뒤에 결정한다(§5 뒤 "결정" 절). 단계 0은 #980, 단계 1의 선행 조건 없는 항목은 #982–#989로 구현됐다. |
 
-## 결정됨 — 구현 남음 (3)
+## 결정됨 — 구현 남음 (2)
 
 결정은 끝났고 결정된 것이 아직 다 지어지지 않았다. 결정이 만든 구현 대기열이다.
 
 | 제안서 | 상태 | 날짜 | 요약 |
 |---|---|---|---|
 | [EQUITY_PERP_LANE_V0.1.md](EQUITY_PERP_LANE_V0.1.md) | `DECIDED` | 2026-08-03 | ① 팩터/디스퍼전 재정의 ② 스프레드 v1 제외(2026-08-03), S0 규제 기록(2026-08-04, 잠정). S1은 2026-08-04부터 운영 중이고 S2(a)는 2026-08-09 완료(§8b). S2(b)는 데이터 깊이 때문에 아직 평가할 수 없고 S3–S5는 미착수다(`docs/REMAINING_WORK.md` §H). S3 이후 실주문은 S0의 확정 승격이라는 별도 결정 전에는 열리지 않는다. |
-| [NAVER_BLOG_CONTENT_LANE_V0.1.md](NAVER_BLOG_CONTENT_LANE_V0.1.md) | `DECIDED` | 2026-08-30 | 결정은 모두 내려졌다(A안·network env 2026-08-09; 파일 쓰기, 주간 `content_ideation` 스케줄, MVP 용례 확장, 키워드 규칙, URL 기록 2026-08-30). Phase 1은 구현됐고 남은 구현은 Phase 4 순위 추적이다 (`docs/REMAINING_WORK.md` §J, 이 문서 하단의 체크리스트). |
 | [FAMILY_EXHAUSTION_V0.1.md](FAMILY_EXHAUSTION_V0.1.md) | `DECIDED` | 2026-09-26 | Q1 B·Q2·Q3 결정, §6 확인 완료(1h는 5심볼 모두가 의도). 남은 구현: Q1 B의 퍼널 family 소진 절(30일 CONFIRMED·마지막 CONFIRMED). 1h 5심볼 민팅은 이미 돌고 있었다(§6 정정, 2026-09-26). |
 
-## 구현됨 (21)
+## 구현됨 (22)
 
 결정되고 지어졌다. 문서는 결정의 근거 기록으로 남는다.
 
@@ -61,6 +60,7 @@
 | [HYPOTHESIS_TRIAL_V0.1.md](HYPOTHESIS_TRIAL_V0.1.md) | `IMPLEMENTED` | 2026-09-24 | C안 결정, PR1–PR4 구현(#977·#978·#979·#981). 선언형 family는 결정대로 만들지 않았다. |
 | [PORTFOLIO_INDEPENDENCE_V0.1.md](PORTFOLIO_INDEPENDENCE_V0.1.md) | `IMPLEMENTED` | 2026-09-24 | Q1 A(퍼널의 독립 베팅 절) #974, Q2 B(LIVE 요청문의 forward 상관·N_eff) #976 구현. Q3(상관 게이트)는 조건이 차면 재질문. |
 | [SEQUENTIAL_FORWARD_TEST_V0.1.md](SEQUENTIAL_FORWARD_TEST_V0.1.md) | `IMPLEMENTED` | 2026-09-24 | Q1(조기 판정 전제) 기각, Q2 A 구현(#971 첫 판정 시각·보드 누적, #976 LIVE 요청 문구). Q3·Q4는 조건부 보류. |
+| [NAVER_BLOG_CONTENT_LANE_V0.1.md](NAVER_BLOG_CONTENT_LANE_V0.1.md) | `IMPLEMENTED` | 2026-09-27 | 결정된 것은 지어졌고(A안·network env 2026-08-09; 파일 쓰기, 주간 `content_ideation` 스케줄, MVP 용례 확장, 키워드 규칙, URL 기록 2026-08-30), 2026-09-27 Thomas가 레인을 보류했다. 주간 행은 비활성(삭제 아님)이고 Phase 4 순위 추적은 구현 대기열에서 빠졌다. 발화 3회(09-06·13·20)가 모두 선정 단계에서 `NO_ELIGIBLE_KEYWORD`로 끝나 패키지가 한 번도 만들어지지 않았고, 원인은 고정 시드라는 키워드 원천이다. 글은 필요할 때 요청으로 만든다. 경위·재개 조건·확인된 결함은 `docs/REMAINING_WORK.md` §J. |
 
 ## 대체됨 (1)
 
