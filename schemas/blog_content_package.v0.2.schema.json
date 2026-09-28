@@ -157,7 +157,40 @@
                     "type": "null"
                   }
                 ]
+              },
+              "queue_score": {
+                "description": "The vault queue's score for this candidate (demand weighted by reach), when the seeds came from the queue.",
+                "type": "number",
+                "minimum": 0
               }
+            }
+          }
+        },
+        "seed_source": {
+          "description": "Where the seeds came from: the schedule's request (`request`) or the vault keyword pipeline's queue (`vault_queue`, with the queue's date, how many candidates it listed, and how many were skipped as already written).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "request",
+                "vault_queue"
+              ]
+            },
+            "as_of": {
+              "type": "string",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+            },
+            "candidates_read": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "skipped_written": {
+              "type": "integer",
+              "minimum": 0
             }
           }
         }

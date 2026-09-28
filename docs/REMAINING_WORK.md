@@ -4877,12 +4877,15 @@ nothing publishes, and no schedule was added. Items 1–8 below and B9 are fixed
 
 Still open before any revival:
 
-- The seeds are still the schedule's fixed request column, and the vault queue is not wired in.
+- ~~The seeds are still the schedule's fixed request column~~ — `source=queue` (2026-09-28) takes
+  them from the vault queue and restricts the choice to its reach-checked candidates
+  (`docs/history/2026-09-28-blog-queue-seeds.md`). The disabled row's request still names the
+  fixed seeds; switching it to `source=queue` is part of the revival, not done.
 - ~~`thomas-pipeline-worker` does not mount the vault~~ — mounted 2026-09-28 (Thomas): the two post
   folders, read-only, from `THOMAS_BLOG_VAULT_DIR` in the host `.env`
   (`docs/history/2026-09-28-blog-vault-mount.md`).
-- The runtime has no blog-SERP reach gate like `kw_pipeline`'s. With `compIdx` gone, selection
-  can pick a head term with a million competing posts.
+- The runtime has no blog-SERP reach gate of its own. Under `source=queue` the queue's gate
+  (`kw_pipeline`) stands in; with fixed seeds, selection can still pick a head term.
 
 The four-PR plan below was proposed on 2026-09-27 and shelved with the lane. Its premises were
 checked against the code first. These are real, and deliberately not fixed while the lane is held —
