@@ -4810,6 +4810,45 @@ a revival starts here, after the keyword source:
 6. System review B9 is still open: 8,000 tokens per agent, half of it the output allowance
    (`budgets.py`).
 
+**Re-checked 2026-09-28 against an outside status table — still held, nothing to fix now.** A
+thirteen-row table (pasted by Thomas) graded the lane: schedule off ✅, `written_keywords()` ✅,
+CI ✅, and nine rows ❌. Checked against `origin/main` at `cf254bc3`:
+
+- The nine ❌ rows are real. Six are items 1–6 above, one is Phase 4 below, and two more follow:
+  7. The draft score is recorded, not enforced (`run_content_ideation` → `blog_draft_score`).
+     The module docstring states that as the design ("advisory here, not a gate"), so turning it
+     into a gate is a decision, not a fix.
+  8. The draft is parsed from free-form markdown: `_parse_draft` and `_title_candidates` split it
+     with regexes. The content role returns no structured output.
+- One ✅ holds only inside the lane. `written_keywords()` (#980) reads `blog_content_package` rows
+  from the ledger, and there are none. Every post written so far (69 Naver, 77 Tistory by
+  2026-09-28) lives in the vault (`/root/obsidian-thomas`, one front-matter file per post), which
+  the lane never reads. Enabled as it stands, the lane would pick keywords already published. The
+  "never supplied" note further down is therefore half-closed.
+- The table leaves out the cause of all three failures: the fixed seeds (top of this section).
+  Fixing all nine rows still leaves every fire ending in `NO_ELIGIBLE_KEYWORD`.
+
+Why these stay unfixed: posts are made outside the lane (Thomas 2026-09-27), and that flow
+already covers what the nine rows are about:
+
+- Reach is measured on the live search results, not `compIdx`. `tools/kw_pipeline.py` passes a
+  keyword when the top ten's median daily visitors are ≤ 250 and ≤ 9 titles match it exactly.
+- Used keywords are excluded from the vault's front matter.
+- Facts are checked against primary sources by hand.
+- Structure is checked by `blog-preflight.py` and `blog-variety.py`.
+- Ranks are tracked weekly by `kw_pipeline.py rank`.
+
+Building the same in the lane would make two copies of each, for a lane that is off.
+
+If the lane is revived, the order matters:
+
+1. The keyword source first. Take seeds from the vault queue (`analytics/keywords/queue.md`), and
+   feed `already_written` from the vault's posts as well as the ledger.
+2. Then the target evidence, items 1–4.
+3. Then the rest: items 5–8 and Phase 4.
+
+The natural time to decide is D8's deadline, 2026-11-25. Bring this list to that review.
+
 Authority for the design is `docs/proposals/NAVER_BLOG_CONTENT_LANE_V0.1.md`. This section
 exists because until 2026-08-23 this file did not track the lane **at all** — not one checkbox,
 in a document whose job is "what is still to build". The lane's own proposal carried the
@@ -4867,6 +4906,9 @@ is obvious from the code:
   passes only `{seeds, source_ref}`, so the exclusion list is always empty and the same seed
   set picks the same winner every week. Whoever registers this will want `target=<keyword>` in
   the request, or a remove+add each week — `scheduler_cli` has no `update`.
+  **Half-closed 2026-09-25 (#980):** `written_keywords()` now fills it from the ledger's package
+  rows. Those rows number zero, and the posts actually written live in the vault — see the
+  2026-09-28 re-check near the top of this section.
 
 **Decisions this lane is waiting on** — the code above is inert without them, deliberately: a
 schedule row is a state write, and no row means no fire.
