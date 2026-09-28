@@ -397,6 +397,37 @@ def test_status_line_shows_a_cap_refusal_with_the_books_shape():
     assert "refused=POSITION_LIMIT_PORTFOLIO" in counted and "lean=" not in counted
 
 
+def test_an_unwalkable_forward_entry_is_a_reason_code_and_changes_no_decision(tmp_path, monkeypatch):
+    """The forward book runs inside the cycle that feeds the live leg, which is why #980 left its
+    skip alone. Naming the entry must stay observational: the code joins `reason_codes` and the
+    record, and the verdict and route are the ones the same cycle reaches without it."""
+    from runtime.mvp_runtime.crypto import cycle as cycle_module
+    from runtime.mvp_runtime.crypto.forward_book import FORWARD_SPEC_UNPARSEABLE
+
+    _install_pool(tmp_path / "plain", _always_spec())
+    plain = _cycle(tmp_path / "plain", FakeExchangeCollector())
+
+    real = cycle_module.run_forward_book_update
+    monkeypatch.setattr(cycle_module, "run_forward_book_update",
+                        lambda *a, **k: {**real(*a, **k), "unparseable": ["S9-GEN-1"]})
+    _install_pool(tmp_path / "named", _always_spec())
+    named = _cycle(tmp_path / "named", FakeExchangeCollector())
+
+    assert FORWARD_SPEC_UNPARSEABLE in named["reason_codes"]
+    assert FORWARD_SPEC_UNPARSEABLE not in plain["reason_codes"]
+    assert named["forward_book"]["unparseable"] == ["S9-GEN-1"]
+    assert (named["verdict_status"], named["route_status"]) == (plain["verdict_status"], plain["route_status"])
+    assert named["opened"] is not None and plain["opened"] is not None
+
+
+def test_status_line_names_a_pool_entry_the_forward_book_cannot_walk():
+    """Printed only when it happened: a silent skip there left a lineage without forward evidence."""
+    base = {"verdict_status": "ALLOW", "route_status": "ENTRY_CANDIDATE"}
+    line = cycle_status_line({**base, "forward_book": {"unparseable": ["S9-GEN-1"]}})
+    assert "forward_unparseable=S9-GEN-1" in line
+    assert "forward_unparseable" not in cycle_status_line({**base, "forward_book": {"settled": []}})
+
+
 # --- the scheduler template ---------------------------------------------------
 
 def test_scheduler_fires_crypto_cycle_and_ledgers_it(tmp_path, monkeypatch):
