@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **636** distinct codes across **1233** raise sites
+- **638** distinct codes across **1235** raise sites
 - **23** exception classes carry them
 - **75** codes are raised from more than one module (see below)
 - **135** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -205,6 +205,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `BRIDGE_CONCURRENCY_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | `__init__` | `max_concurrent_requests < 1` |
 | `BRIDGE_LIMITS_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | `__init__` | `max_frame_bytes < 1 or request_timeout_seconds <= 0` |
 | `BUDGET_EXHAUSTED` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow.py` | `validate_plan` | `needed > budget.max_model_calls` |
+| `BUDGET_PROFILE_KIND_MISMATCH` | `PlannerBlocked` | `runtime/mvp_runtime/budgets.py` | `require_budget_profile` | `request_kind not in BUDGET_PROFILES[profile]['request_kinds']` |
 | `CANARY_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/live_promotion.py` | `read_canary_orders` | `order_id in seen` |
 | `CANARY_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_promotion.py` | `read_canary_orders` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
 | `CANARY_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_promotion.py` | `read_canary_orders` | `—` |
@@ -1234,6 +1235,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `UNKNOWN_APPROVAL` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | `apply_command` | `approval is None` |
 | `UNKNOWN_APPROVAL` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | `validate_spendable_approval` | `approval_rec is None` |
 | `UNKNOWN_APPROVAL` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | `_spend` | `record is None` |
+| `UNKNOWN_BUDGET_PROFILE` | `PlannerBlocked` | `runtime/mvp_runtime/budgets.py` | `tokens_per_agent` | `spec is None` |
 | `UNKNOWN_CANDIDATE` | `MvpRuntimeError` | `runtime/mvp_runtime/approval_cli.py` | `_find_candidate` | `entry is None` |
 | `UNKNOWN_CANDIDATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | `resolve_candidates` | `missing` |
 | `UNKNOWN_COMMAND` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | `apply_command` | `verb not in COMMANDS` |

@@ -51,7 +51,7 @@ from typing import Any, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity, schema_validation
 
-from . import blog_draft, blog_draft_score, naver_research, timeutil
+from . import blog_draft, blog_draft_score, budgets, naver_research, timeutil
 from .errors import MvpRuntimeError, ToolError
 from .pipeline import run_task
 
@@ -1012,6 +1012,9 @@ def run_content_ideation(
         "content", content_request(target),
         blocked_code=IDEATION_CONTENT_BLOCKED,
         keyword_seeds=target,   # `run_task` has no `naver_keywords`; the brief keyword is `keyword_seeds`
+        # The draft and its JSON frame need more than the generic 4,000-token output half
+        # (review B9); the profile is bound to `content` runs and refused anywhere else.
+        budget_profile=budgets.BLOG_CONTENT_BUDGET_PROFILE,
         **common,
     )
     content_records = content.get("records") or {}
@@ -1033,7 +1036,8 @@ def run_content_ideation(
             try:
                 revision = _run(
                     "content", request, blocked_code=IDEATION_REVISION_BLOCKED,
-                    source_ref=f"{common['source_ref']}:revision", **revision_common,
+                    source_ref=f"{common['source_ref']}:revision",
+                    budget_profile=budgets.BLOG_CONTENT_BUDGET_PROFILE, **revision_common,
                 )
             except ToolError as exc:
                 revision_outcome = f"REVISION_BLOCKED:{exc.reason_code}"

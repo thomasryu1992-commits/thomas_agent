@@ -126,6 +126,7 @@ def plan_task(
     controlled_write: bool = False,
     keyword_research: bool = False,
     request_kind: str | None = None,
+    budget_profile: str | None = None,
 ) -> dict[str, Any]:
     """Plan a RECEIVED task end-to-end. Returns a dict with the coherent records.
 
@@ -196,6 +197,8 @@ def plan_task(
     )
 
     expires_at = timeutil.plus_minutes(now, MVP_TTL_MINUTES)
+    # ``budget_profile`` sizes the specialist's share only; the task allocation was sized with
+    # the same profile at intake, so the assignment stays within its parent's budget.
     role_assignment = build_role_assignment(
         bound,
         role,
@@ -204,6 +207,7 @@ def plan_task(
         created_at=now,
         expires_at=expires_at,
         repo_root=root,
+        budget_profile=budget_profile,
     )
 
     # R7.2 (the "auto" policy): when the classification does not already decide the review

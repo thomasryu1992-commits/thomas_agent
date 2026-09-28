@@ -150,6 +150,7 @@ def build_task(
     created_by: str | None = None,
     planned_agents: int = 1,
     planned_triage_calls: int = 0,
+    budget_profile: str | None = None,
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
     """Build and validate a RECEIVED ``task.v0.3`` record. Fail-closed.
@@ -282,7 +283,7 @@ def build_task(
             "validation_output_refs": [],
         },
         "execution_budget": default_execution_budget(
-            agents=planned_agents, triage_calls=planned_triage_calls
+            agents=planned_agents, triage_calls=planned_triage_calls, profile=budget_profile,
         ),
         "results": {
             "agent_output_refs": [],
