@@ -108,6 +108,29 @@ QUEUE_REL = "analytics/keywords/queue.md"
 # rebuild; older than that, its reach measurements (top-ten visitors, exact-title count) are
 # describing a SERP that has moved on.
 QUEUE_MAX_AGE_DAYS = 14
+# The OpenRouter model for the DRAFT and its revision only (Thomas 2026-09-28). The analysis
+# chain's free OpenRouter model is served from Google AI Studio's shared free pool, which was
+# rate-limiting upstream while Google's own free tier answered 503 on six of seven models. So
+# every blog draft fell to the chain's last member, groq. Unset or blank keeps the analysis
+# chain as it is; the research run never uses this.
+BLOG_OPENROUTER_MODEL_ENV = "MVP_BLOG_OPENROUTER_MODEL"
+# Per-member ceiling for the draft chain. The measured non-Google free model took 68 s for one
+# real-sized draft, and the analysis chain's 45 s cap (40 s at a 120 s budget) would have timed
+# it out every time. With the blog profile's 360 s, each member gets up to 120 s.
+BLOG_DRAFT_MEMBER_TIMEOUT_SECONDS = 120
+
+
+def draft_provider(provider: Any) -> Any:
+    """The provider the draft and its revision run on: ``provider`` with its OpenRouter member
+    swapped to ``MVP_BLOG_OPENROUTER_MODEL`` when that is set, ``provider`` itself otherwise."""
+    model = os.environ.get(BLOG_OPENROUTER_MODEL_ENV, "").strip()
+    if not model or provider is None:
+        return provider
+    from . import providers as _providers  # function-local: only the drafting path needs it
+    return _providers.with_openrouter_model(
+        provider, model, member_timeout_cap=BLOG_DRAFT_MEMBER_TIMEOUT_SECONDS)
+
+
 # Search Ad takes at most five hint keywords per call, and the brief is one call.
 MAX_QUEUE_SEEDS = naver_research.MAX_HINT_KEYWORDS
 IDEATION_RESEARCH_BLOCKED = "IDEATION_RESEARCH_BLOCKED"
@@ -1257,6 +1280,7 @@ def run_content_ideation(
         raise ToolError(NO_ELIGIBLE_KEYWORD, _no_eligible_message(reasoning))
 
     mode = "operator_override" if target_override else "rule"
+    draft_common = {**common, "provider": draft_provider(common.get("provider"))}
     # The content leg runs the brief on the target (`keyword_seeds=target`), so the target's
     # own evidence is gathered inside the same governed run that drafts against it.
     content = _run(
@@ -1266,7 +1290,7 @@ def run_content_ideation(
         # The draft and its JSON frame need more than the generic 4,000-token output half
         # (review B9); the profile is bound to `content` runs and refused anywhere else.
         budget_profile=budgets.BLOG_CONTENT_BUDGET_PROFILE,
-        **common,
+        **draft_common,
     )
     content_records = content.get("records") or {}
     first = interpret_draft(_draft_text(content), target, content_records)
@@ -1284,7 +1308,7 @@ def run_content_ideation(
         if len(request) > MAX_REVISION_REQUEST_CHARS:
             revision_outcome = "REVISION_SKIPPED:REQUEST_TOO_LONG"
         else:
-            revision_common = {k: v for k, v in common.items() if k != "source_ref"}
+            revision_common = {k: v for k, v in draft_common.items() if k != "source_ref"}
             try:
                 revision = _run(
                     "content", request, blocked_code=IDEATION_REVISION_BLOCKED,
