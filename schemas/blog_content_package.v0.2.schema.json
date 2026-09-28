@@ -688,6 +688,12 @@
             "type": "integer"
           },
           "maxProperties": 20
+        },
+        "revision_detail": {
+          "description": "When the one revision was blocked: the governed run's own block message (which provider failed and how), so the reason survives past the lane's outer code.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
         }
       }
     },

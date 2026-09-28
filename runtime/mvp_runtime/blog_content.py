@@ -819,6 +819,7 @@ def quality_record(
     first_failures: Sequence[str],
     revision_count: int,
     revision_outcome: str | None,
+    revision_detail: str | None = None,
 ) -> dict[str, Any]:
     """What the package's reviewer needs to know about the draft's quality, in one place.
 
@@ -837,6 +838,8 @@ def quality_record(
     }
     if revision_outcome:
         record["revision_outcome"] = revision_outcome[:120]
+    if revision_detail:
+        record["revision_detail"] = revision_detail[:300]
     return record
 
 
@@ -865,6 +868,8 @@ def render_post_md(package: Mapping[str, Any]) -> str:
         lines += [f"- 기준: {quality.get('standards_version')} · 초안 형식: {quality.get('draft_format')}"
                   f" · 자동 수정 {quality.get('revision_count')}회"
                   + (f" ({quality['revision_outcome']})" if quality.get("revision_outcome") else "")]
+        if quality.get("revision_detail"):
+            lines += [f"- 자동 수정이 막힌 이유: {quality['revision_detail']}"]
         if quality.get("failures"):
             lines += [f"- ⚠ 남은 미달 항목: {', '.join(quality['failures'])} — 발행 전 직접 손볼 것"]
 
@@ -946,7 +951,11 @@ def _render_selection_evidence(evidence: Mapping[str, Any]) -> list[str]:
     else:
         lines = [f"- 규칙: {evidence.get('rule')}"]
     for c in (evidence.get("candidates") or [])[:10]:
-        verdict = "선정" if c.get("keyword") == evidence.get("selected_keyword") else (
+        # Normalized: the queue spells '사업자등록증 발급', Search Ad '사업자등록증발급' — the
+        # first package printed its own choice as a plain candidate.
+        chosen = naver_research.normalize_keyword(c.get("keyword")) == naver_research.normalize_keyword(
+            evidence.get("selected_keyword"))
+        verdict = "선정" if chosen else (
             c.get("excluded_because") or "후보")
         posts = (f", 블로그 문서 {c['blog_competing_posts']}"
                  if "blog_competing_posts" in c else "")
@@ -1080,11 +1089,16 @@ def _draft_text(result: Mapping[str, Any]) -> str:
 def _run(kind: str, request: str, *, blocked_code: str, **kwargs: Any) -> dict[str, Any]:
     result = run_task(request, request_kind=kind, **kwargs)
     if result.get("status") != "COMPLETED":
+        # The inner code AND its message ride along. The first blog fire's revision died as
+        # `IDEATION_REVISION_BLOCKED` alone: the pipeline's own reason (PROVIDER_ERROR, and which
+        # chain member failed how) was in the run's result and nowhere after it.
         block = result.get("block") or {}
+        inner = str(block.get("reason_code") or result.get("status"))
+        detail = str(block.get("message") or "")[:300]
         raise ToolError(
             blocked_code,
-            f"the {kind} run did not complete: "
-            f"{block.get('reason_code') or result.get('status')}",
+            f"the {kind} run did not complete: {inner}" + (f" — {detail}" if detail else ""),
+            data={"inner_reason_code": inner, "inner_message": detail},
         )
     return result
 
@@ -1212,6 +1226,7 @@ def run_content_ideation(
     final = first
     revision: Mapping[str, Any] | None = None
     revision_outcome: str | None = None
+    revision_detail: str | None = None
     if first["failures"]:
         request = revision_request(target, first, _draft_text(content))
         if len(request) > MAX_REVISION_REQUEST_CHARS:
@@ -1225,7 +1240,9 @@ def run_content_ideation(
                     budget_profile=budgets.BLOG_CONTENT_BUDGET_PROFILE, **revision_common,
                 )
             except ToolError as exc:
-                revision_outcome = f"REVISION_BLOCKED:{exc.reason_code}"
+                inner = (exc.data or {})
+                revision_outcome = f"REVISION_BLOCKED:{inner.get('inner_reason_code') or exc.reason_code}"
+                revision_detail = inner.get("inner_message") or None
             else:
                 second = interpret_draft(_draft_text(revision), target, revision.get("records"))
                 if (second["draft_format"] != blog_draft.DRAFT_FORMAT_STRUCTURED
@@ -1249,7 +1266,8 @@ def run_content_ideation(
     }
     quality = quality_record(final, first_failures=first["failures"],
                              revision_count=1 if revision is not None else 0,
-                             revision_outcome=revision_outcome)
+                             revision_outcome=revision_outcome,
+                             revision_detail=revision_detail)
     package = build_package(
         target_keyword=target, draft=final,
         selection=selection_evidence(keyword_record, reasoning, selected_keyword=target,
