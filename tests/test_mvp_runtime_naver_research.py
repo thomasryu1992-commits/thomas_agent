@@ -398,6 +398,54 @@ def test_a_brief_bundles_volume_competition_and_trend():
     assert record["read_only"] is True and record["external_action"] is False
 
 
+class _RowsKeywordTool:
+    """Search Ad's shape for a one-keyword brief: the hint's own row comes back space-stripped,
+    and here it ranks fourth by volume — outside the top three the brief always counts."""
+
+    tool_id, tool_version, network_egress = naver_research.KEYWORD_TOOL_ID, "0.1.0", False
+
+    def keywords(self, seed, *, max_results, timeout_seconds):
+        from runtime.mvp_runtime.naver_research import KeywordMetric, KeywordResult
+        rows = [("미리캔버스", 90000), ("캔바", 80000), ("포스터", 70000),
+                ("미리캔버스포스터", 9000), ("무료포스터", 800)]
+        return KeywordResult(seed=seed, metrics=[
+            KeywordMetric(keyword=k, monthly_pc=v // 4, monthly_mobile=v - v // 4,
+                          competition="높음", source="naver_searchad") for k, v in rows])
+
+
+class _CountingCompetition:
+    tool_id, tool_version = naver_research.COMPETITION_TOOL_ID, "0.1.0"
+
+    def __init__(self):
+        self.queries = []
+
+    def competition(self, keyword, *, display, timeout_seconds):
+        self.queries.append(keyword)
+        return naver_research.CompetitionResult(keyword=keyword, total_posts=len(self.queries))
+
+
+def test_the_seeds_own_row_gets_its_blog_count_wherever_it_ranks():
+    competition = _CountingCompetition()
+    rows, record = naver_research.run_keyword_brief(
+        "미리캔버스 포스터", now=NOW, keyword_tool=_RowsKeywordTool(),
+        trend_tool=naver_research.MockTrendTool(), competition_tool=competition)
+    target = next(r for r in rows if r["keyword"] == "미리캔버스포스터")
+    assert "competing_posts" in target
+    # Queried as the operator wrote it — API HUB counts a different set for the stripped form.
+    assert target["competing_posts_query"] == "미리캔버스 포스터"
+    assert competition.queries == ["미리캔버스", "캔바", "포스터", "미리캔버스 포스터"]
+    assert "competing_posts" not in next(r for r in rows if r["keyword"] == "무료포스터")
+    # ...and the trend series names the keyword it belongs to.
+    assert record["trend_keyword"] == "미리캔버스 포스터"
+
+
+def test_keyword_normalization_matches_search_ads_spelling_of_a_seed():
+    assert naver_research.normalize_keyword("AI 회계") == naver_research.normalize_keyword("AI회계")
+    assert naver_research.normalize_keyword("chatgpt 사용법") == naver_research.normalize_keyword(
+        "CHATGPT사용법")
+    assert naver_research.normalize_keyword("AI 회계") != naver_research.normalize_keyword("AI 회계사")
+
+
 def test_a_dead_volume_leg_degrades_the_whole_brief():
     """Measured demand IS the brief — rows without it would present a guess as research."""
     class _Boom:

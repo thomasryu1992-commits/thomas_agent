@@ -59,6 +59,7 @@ import hmac
 import json
 import os
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -124,6 +125,20 @@ _LOW_VOLUME_SENTINEL = "< 10"
 _LOW_VOLUME_VALUE = 5  # midpoint of [0, 10) — deliberately not 0, which would read as "no demand"
 
 _COMPETITION_LEVELS = frozenset({"높음", "중간", "낮음"})
+
+
+def normalize_keyword(keyword: Any) -> str:
+    """The one comparison key for a keyword across Naver's surfaces. Deterministic.
+
+    Search Ad hands back ``relKeyword`` with its spaces removed and its Latin letters upper-
+    cased (the hint ``AI 회계`` comes back as ``AI회계``, ``chatgpt 사용법`` as
+    ``CHATGPT사용법``), while the operator, API HUB and the vault spell the same keyword with
+    spaces and in any case. Comparing the raw strings therefore misses the exact-target row
+    of the very brief that was run on it. NFC first, so a decomposed Hangul syllable and a
+    composed one compare equal; then every whitespace character out; then casefold.
+    """
+    text = unicodedata.normalize("NFC", str(keyword or ""))
+    return "".join(text.split()).casefold()
 
 
 def _rejected(exc: urllib.error.HTTPError, what: str) -> ToolError:
@@ -199,6 +214,8 @@ class CompetitionResult:
     # Naver's reported total matching documents — the competition proxy.
     total_posts: int
     recent_titles: list[str] = field(default_factory=list)
+    # The result links in the order the search returned them — what a rank lookup reads.
+    links: list[str] = field(default_factory=list)
     tool_id: str = COMPETITION_TOOL_ID
     tool_version: str = TOOL_VERSION
     latency_ms: int = 0
@@ -300,7 +317,9 @@ class MockCompetitionTool:
 
     def competition(self, keyword: str, *, display: int, timeout_seconds: int) -> CompetitionResult:
         titles = [f"[목업] {keyword} 관련 글 {i + 1}" for i in range(min(display, 3))]
-        return CompetitionResult(keyword=keyword, total_posts=12_345, recent_titles=titles, latency_ms=0)
+        links = [f"https://blog.naver.com/mock/{100000000 + i}" for i in range(min(display, 3))]
+        return CompetitionResult(keyword=keyword, total_posts=12_345, recent_titles=titles,
+                                 links=links, latency_ms=0)
 
 
 def run_keyword_research(
@@ -412,18 +431,34 @@ def run_keyword_brief(
         volume_record = degraded_keyword_record(keyword_tool, seeds, exc.reason_code, now=now)
         degraded_legs["volume"] = exc.reason_code
 
-    for row in rows[:BRIEF_COMPETITION_TOP]:
+    # The seeds' own rows get a count too, wherever they rank. A brief run on ONE keyword (the
+    # content run's exact target) exists to measure that keyword, and its row is often not in
+    # the top three by volume — '미리캔버스' outranks '미리캔버스 포스터' — so a top-three-only
+    # lookup left the target without the one number it was run for. Such a row is queried with
+    # the seed as written: Search Ad hands `relKeyword` back space-stripped, and API HUB blog
+    # search (which accepts the space) counts a different result set for the stripped form.
+    seed_spelling = {normalize_keyword(s): s.strip() for s in seeds.split(",") if s.strip()}
+    lookups = list(rows[:BRIEF_COMPETITION_TOP]) + [
+        row for row in rows[BRIEF_COMPETITION_TOP:]
+        if normalize_keyword(row["keyword"]) in seed_spelling
+    ]
+    for row in lookups:
+        query = seed_spelling.get(normalize_keyword(row["keyword"]), row["keyword"])
         try:
             competition = competition_tool.competition(
-                row["keyword"], display=1, timeout_seconds=timeout_seconds
+                query, display=1, timeout_seconds=timeout_seconds
             )
             row["competing_posts"] = competition.total_posts
+            row["competing_posts_query"] = query
         except (ToolError, ToolBlocked) as exc:
             # Column absent, not zero: 0 competing posts is a CLAIM (an empty niche), and
             # a failed lookup must not accidentally make it.
             degraded_legs["competition"] = getattr(exc, "reason_code", "TOOL_ERROR")
 
     trend_points: list[dict[str, Any]] = []
+    # The first seed's series. For a selection brief over several seeds that is context only;
+    # for the content run's brief the only seed IS the target, and `trend_keyword` says which
+    # keyword the ratios belong to so a consumer can refuse a series that is not its own.
     primary = seeds.split(",")[0].strip()
     if rows and primary:
         try:
@@ -836,10 +871,16 @@ class BlogCompetitionTool(_ApiHubTool):
             for item in items
             if isinstance(item, dict) and item.get("title")
         ]
+        links = [
+            str(item.get("link", ""))
+            for item in items
+            if isinstance(item, dict) and item.get("link")
+        ]
         return CompetitionResult(
             keyword=keyword,
             total_posts=max(0, total),
             recent_titles=titles,
+            links=links,
             tool_version=self.tool_version,
             latency_ms=latency_ms,
         )

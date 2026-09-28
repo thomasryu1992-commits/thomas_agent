@@ -18,7 +18,7 @@ from runtime.mvp_runtime.paths import repo_root
 from runtime.read_only_kernel.schema_validation import validate_against_schema
 from tests._helpers import requires_local_core
 
-SCHEMA = repo_root() / "schemas" / "blog_content_package.v0.1.schema.json"
+SCHEMA = repo_root() / "schemas" / "blog_content_package.v0.2.schema.json"
 NOW = "2026-08-23T09:00:00Z"
 
 DRAFT = """# 미리캔버스로 포스터 만들기
@@ -67,14 +67,55 @@ def _brief(**over):
     return base
 
 
+def _target_brief(target="미리캔버스 포스터", **over):
+    """The content run's own brief on the target: Search Ad hands the target's row back
+    space-stripped, and it is NOT the top-volume row."""
+    base = {
+        "created_at": "2026-08-23T08:58:00Z",
+        "degraded": False,
+        "degraded_legs": {},
+        "metrics": [
+            {"keyword": "미리캔버스", "monthly_pc": 40000, "monthly_mobile": 90000,
+             "monthly_total": 130000, "competition": "높음", "low_volume": False,
+             "source": "naver_searchad", "competing_posts": 1_750_000,
+             "competing_posts_query": "미리캔버스"},
+            {"keyword": "미리캔버스포스터", "monthly_pc": 3000, "monthly_mobile": 6000,
+             "monthly_total": 9000, "competition": "중간", "low_volume": False,
+             "source": "naver_searchad", "competing_posts": 120,
+             "competing_posts_query": target},
+        ],
+        "trend_keyword": target,
+        "trend_points": [{"period": "2026-08-01", "ratio": 55.0}],
+    }
+    base.update(over)
+    return base
+
+
+def _build(draft=DRAFT, *, target="미리캔버스 포스터", selection_record=None, target_record=None):
+    selection_record = _brief() if selection_record is None else selection_record
+    target_record = _target_brief(target) if target_record is None else target_record
+    _k, reasoning = blog_content.select_target_keyword(selection_record.get("metrics") or [])
+    interpreted = blog_content.interpret_draft(draft, target)
+    return blog_content.build_package(
+        target_keyword=target, draft=interpreted,
+        quality=blog_content.quality_record(interpreted, first_failures=interpreted["failures"],
+                                            revision_count=0, revision_outcome=None),
+        selection=blog_content.selection_evidence(
+            selection_record, reasoning, selected_keyword=target, mode="rule",
+            seeds=["미리캔버스 포스터"], now=NOW),
+        target=blog_content.target_evidence(target, target_record or None, now=NOW),
+        lineage={"selection_research_trace_id": "trace-sel", "target_research_trace_id": "trace-c",
+                 "content_trace_id": "trace-c", "revision_trace_id": None},
+        now=NOW)
+
+
 # --- the package satisfies its own schema ------------------------------------
 
 def test_the_assembled_package_validates_against_the_closed_schema():
     """The whole point of the producer. A closed schema with `additionalProperties: false`
     rejects a package that carries one key the contract did not name, so assembling by hand
     and hoping is not a strategy."""
-    package = blog_content.build_package(
-        target_keyword="미리캔버스 포스터", draft=DRAFT, keyword_record=_brief(), now=NOW)
+    package = _build()
     validate_against_schema(package, SCHEMA, "blog_content_package")          # raises on any drift
     assert package["publish_state"] == "draft"
     assert package["package_id"].startswith("bcp_")
@@ -83,11 +124,11 @@ def test_the_assembled_package_validates_against_the_closed_schema():
 def test_a_draft_with_nothing_extractable_still_produces_a_valid_package():
     """`title_candidates` has minItems 1. A draft with no heading, no marker and no tag must
     still validate, or a plain answer from the model kills the fire at the validator."""
-    package = blog_content.build_package(
-        target_keyword="포스터", draft="문단 하나뿐인 초안입니다.", keyword_record=None, now=NOW)
+    package = _build("문단 하나뿐인 초안입니다.", target="포스터", target_record={})
     validate_against_schema(package, SCHEMA, "blog_content_package")
     assert package["title_candidates"]
-    assert package["keyword_evidence"]["degraded"] is True
+    assert package["target_evidence"]["status"] == "missing"
+    assert package["target_evidence"]["degraded"] is True
 
 
 @pytest.mark.parametrize("field,cap", [
@@ -100,8 +141,7 @@ def test_the_parser_truncates_at_the_schemas_ceiling(field, cap):
     an invalid one. Truncating deterministically beats failing the fire on the validator."""
     body = "\n\n".join(
         f"## 제목 {i}\n\n문단 {i} 입니다. [캡처: 화면 {i}] #태그{i}" for i in range(40))
-    package = blog_content.build_package(
-        target_keyword="포스터", draft=body, keyword_record=_brief(), now=NOW)
+    package = _build(body, target="포스터")
     assert len(package[field]) <= cap
     validate_against_schema(package, SCHEMA, "blog_content_package")
 
@@ -109,8 +149,7 @@ def test_the_parser_truncates_at_the_schemas_ceiling(field, cap):
 def test_the_paste_body_carries_no_editor_markers():
     """`body_paste` goes into SmartEditor, which interprets none of this. The markers become
     instructions beside the text instead of noise inside it."""
-    package = blog_content.build_package(
-        target_keyword="미리캔버스 포스터", draft=DRAFT, keyword_record=_brief(), now=NOW)
+    package = _build()
     assert "[캡처:" not in package["body_paste"]
     assert "##" not in package["body_paste"]
     assert "#미리캔버스" not in package["body_paste"]
@@ -121,53 +160,96 @@ def test_the_paste_body_carries_no_editor_markers():
     assert [b["action"] for b in package["body_blocks"]] == ["heading", "heading", "heading"]
 
 
-def test_the_keyword_evidence_is_the_brief_the_run_actually_made():
-    package = blog_content.build_package(
-        target_keyword="미리캔버스 포스터", draft=DRAFT, keyword_record=_brief(), now=NOW)
-    evidence = package["keyword_evidence"]
-    assert evidence["as_of"] == "2026-08-23T08:55:00Z"
-    assert evidence["total_competing_posts"] == 1020        # 120 + 900
-    assert evidence["trend_points"]
+def test_the_target_evidence_is_the_targets_own_row_not_the_top_volume_row():
+    """`metrics[0]` of the target's brief is '미리캔버스' (130,000/mo); the target's own row is
+    the space-stripped '미리캔버스포스터' (9,000/mo). Only the latter describes the target."""
+    evidence = _build()["target_evidence"]
+    assert evidence["status"] == "measured"
+    assert evidence["matched_keyword"] == "미리캔버스포스터"
+    assert (evidence["monthly_pc"], evidence["monthly_mobile"], evidence["monthly_total"]) == (
+        3000, 6000, 9000)
+    assert evidence["ad_competition"] == "중간"
+    assert evidence["as_of"] == "2026-08-23T08:58:00Z"      # the target brief, not selection's
 
 
-def test_the_briefs_extra_column_is_lifted_out_rather_than_passed_through():
-    """`run_keyword_brief` attaches `competing_posts` to the rows whose competition leg
-    answered, and the schema's metrics item is `additionalProperties: false` without it. Handing
-    the rows straight through fails validation every time — nobody had hit it because nothing
-    had ever assembled a package. The count is not lost: the schema carries it one level up."""
-    package = blog_content.build_package(
-        target_keyword="미리캔버스 포스터", draft=DRAFT, keyword_record=_brief(), now=NOW)
+def test_the_blog_post_count_is_the_targets_alone_never_a_sum():
+    """v0.1 summed the top three rows — three different keywords — into one 'competing posts'
+    number (120 + 900 = 1,020 in this fixture). The target's count is 120, from its own row."""
+    package = _build()
+    evidence = package["target_evidence"]
+    assert evidence["blog_competing_posts"] == 120
+    assert evidence["blog_competing_posts_query"] == "미리캔버스 포스터"
+    assert 1020 not in [evidence.get("blog_competing_posts")]
+    assert "total_competing_posts" not in evidence
     validate_against_schema(package, SCHEMA, "blog_content_package")
-    assert all("competing_posts" not in m for m in package["keyword_evidence"]["metrics"])
-    assert package["keyword_evidence"]["total_competing_posts"] == 1020
 
 
-def test_a_row_missing_a_required_column_is_dropped_not_emitted_half():
-    """Half a row is not evidence, and emitting one fails the whole package on the validator —
-    taking a perfectly good draft down with it."""
-    brief = _brief()
-    brief["metrics"] = brief["metrics"] + [{"keyword": "반쪽", "monthly_total": 500}]
-    package = blog_content.build_package(
-        target_keyword="미리캔버스 포스터", draft=DRAFT, keyword_record=brief, now=NOW)
+def test_the_trend_belongs_to_the_target_or_is_absent():
+    assert _build()["target_evidence"]["trend_keyword"] == "미리캔버스 포스터"
+    other = _build(target_record=_target_brief(trend_keyword="미리캔버스"))["target_evidence"]
+    assert "trend_points" not in other and "TARGET_TREND_ABSENT" in other["degraded_reason_code"]
+
+
+def test_a_missing_target_row_is_missing_not_a_neighbours_numbers():
+    brief = _target_brief()
+    brief["metrics"] = brief["metrics"][:1]                  # only '미리캔버스' came back
+    package = _build(target_record=brief)
+    evidence = package["target_evidence"]
+    assert evidence["status"] == "missing"
+    assert evidence["degraded_reason_code"].startswith("TARGET_ROW_ABSENT")
+    for field in ("monthly_total", "monthly_pc", "blog_competing_posts", "ad_competition"):
+        assert field not in evidence
     validate_against_schema(package, SCHEMA, "blog_content_package")
-    assert [m["keyword"] for m in package["keyword_evidence"]["metrics"]] == [
-        "미리캔버스 포스터", "포스터 만들기", "무료 포스터 템플릿"]
+    post = blog_content.render_post_md(package)
+    assert "130000" not in post and "1750000" not in post.split("## 선정 근거")[0]
+    assert "타깃 키워드 자체의 검색량 행이 조사 결과에 없다" in post
 
 
-def test_a_degraded_brief_says_which_leg_failed():
-    package = blog_content.build_package(
-        target_keyword="포스터", draft=DRAFT,
-        keyword_record=_brief(degraded=True, degraded_legs=["trend"]), now=NOW)
+def test_a_target_row_without_its_counts_is_not_read_as_zero_demand():
+    brief = _target_brief()
+    brief["metrics"][1] = {"keyword": "미리캔버스포스터", "monthly_total": 9000}
+    evidence = _build(target_record=brief)["target_evidence"]
+    assert evidence["status"] == "missing"
+    assert evidence["degraded_reason_code"].startswith("TARGET_ROW_INCOMPLETE")
+    assert "monthly_pc" not in evidence
+
+
+def test_the_selection_evidence_keeps_the_candidates_under_their_own_names():
+    selection = _build()["selection_evidence"]
+    assert selection["mode"] == "rule" and selection["selected_keyword"] == "미리캔버스 포스터"
+    names = {c["keyword"]: c for c in selection["candidates"]}
+    assert names["포스터 만들기"]["ad_competition"] == "높음"
+    assert names["포스터 만들기"]["blog_competing_posts"] == 900
+
+
+def test_a_degraded_target_brief_says_which_leg_failed():
+    package = _build(target_record=_target_brief(degraded=True, degraded_legs={"trend": "X"}))
     validate_against_schema(package, SCHEMA, "blog_content_package")
-    assert "trend" in package["keyword_evidence"]["degraded_reason_code"]
+    assert "trend" in package["target_evidence"]["degraded_reason_code"]
+
+
+def test_the_lineage_names_real_traces_and_null_for_runs_that_did_not_happen():
+    lineage = _build()["lineage"]
+    assert lineage == {"selection_research_trace_id": "trace-sel",
+                       "target_research_trace_id": "trace-c", "content_trace_id": "trace-c",
+                       "revision_trace_id": None}
+
+
+def test_a_v0_1_package_row_stays_valid_against_its_own_schema():
+    """v0.2 is a new version, not a reinterpretation: the old contract still holds its rows."""
+    v01 = repo_root() / "schemas" / "blog_content_package.v0.1.schema.json"
+    assert blog_content.package_schema_path("blog_content_package.v0.1") == v01
+    from tests.test_blog_content_package_schema import VALID
+    validate_against_schema(VALID, v01, "blog_content_package")
 
 
 # --- which keyword, and why --------------------------------------------------
 
-def test_the_most_searched_winnable_unused_keyword_wins():
+def test_the_most_searched_unused_keyword_wins_whatever_its_ad_competition():
+    """`compIdx` is advertiser bid competition, not blog difficulty (§J). 22,000 used to lose to
+    9,000 because Search Ad rated it 높음; it wins now, and 300 is still below the floor."""
     keyword, reasoning = blog_content.select_target_keyword(_brief()["metrics"])
-    # 22,000 is bigger but its competition is 높음; 300 is below the reporting floor.
-    assert keyword == "미리캔버스 포스터"
+    assert keyword == "포스터 만들기"
     assert reasoning["rule"]
 
 
@@ -177,15 +259,18 @@ def test_every_exclusion_is_recorded_with_its_reason():
     _keyword, reasoning = blog_content.select_target_keyword(
         _brief()["metrics"], already_written=["미리캔버스 포스터"])
     excluded = {c["keyword"]: c["excluded_because"] for c in reasoning["considered"]}
-    assert excluded["미리캔버스 포스터"] == "already written"
-    assert excluded["포스터 만들기"] == "competition high"
+    assert excluded["미리캔버스 포스터"].startswith("already written")
+    assert excluded["포스터 만들기"] is None
     assert excluded["무료 포스터 템플릿"] == "volume below the venue's reporting floor"
+    # The two competition columns ride along, under names that say what they measure.
+    row = next(c for c in reasoning["considered"] if c["keyword"] == "포스터 만들기")
+    assert row["ad_competition"] == "높음" and row["blog_competing_posts"] == 900
 
 
 def test_no_eligible_keyword_is_an_outcome_not_a_fallback():
     """Drafting against a keyword the rule excluded would be worse than reporting none."""
     keyword, _ = blog_content.select_target_keyword(
-        _brief()["metrics"], already_written=["미리캔버스 포스터"])
+        _brief()["metrics"], already_written=["미리캔버스 포스터", "포스터 만들기"])
     assert keyword is None
 
 
@@ -207,9 +292,11 @@ def test_a_keyword_already_drafted_is_read_off_the_ledger_archives_included(tmp_
     assert blog_content.written_keywords(None) == []
 
 
-def test_the_weekly_run_does_not_redraft_a_keyword_the_ledger_already_holds(tmp_path, monkeypatch):
-    """End of the wiring: with last week's package on the ledger, the brief's only winnable
-    keyword is excluded and the fire reports that none qualifies instead of drafting it twice."""
+def test_the_weekly_run_does_not_redraft_a_keyword_the_ledger_or_the_vault_holds(
+        tmp_path, monkeypatch):
+    """End of the wiring: last week's package is on the ledger, the other winnable keyword was
+    published from the vault, and the fire reports that none qualifies instead of drafting
+    either twice."""
     from runtime.mvp_runtime.errors import ToolError
     from runtime.mvp_runtime.store import LedgerStore
 
@@ -224,10 +311,22 @@ def test_the_weekly_run_does_not_redraft_a_keyword_the_ledger_already_holds(tmp_
 
     monkeypatch.setattr(blog_content, "_run", fake_run)
     with pytest.raises(ToolError) as exc:
-        blog_content.run_content_ideation({"seeds": "미리캔버스 포스터, 포스터 만들기"},
-                                          ledger=ledger, now=NOW, repo_root=tmp_path)
+        blog_content.run_content_ideation(
+            {"seeds": "미리캔버스 포스터, 포스터 만들기"}, ledger=ledger, now=NOW,
+            repo_root=tmp_path, published_source=_StaticSource(["포스터만들기"]))
     assert exc.value.reason_code == blog_content.NO_ELIGIBLE_KEYWORD
+    assert "already written: 2" in exc.value.reason
     assert kinds_run == ["research"]            # no content draft was asked for
+
+
+class _StaticSource:
+    """A published-keyword source with fixed contents — the vault adapter's interface."""
+
+    def __init__(self, keywords=(), tags=()):
+        self._published = blog_content.PublishedKeywords(tuple(keywords), tuple(tags))
+
+    def load(self):
+        return self._published
 
 
 # --- the operator's override -------------------------------------------------
@@ -262,8 +361,7 @@ class _ListLedger:
 
 
 def _package():
-    return blog_content.build_package(
-        target_keyword="미리캔버스 포스터", draft=DRAFT, keyword_record=_brief(), now=NOW)
+    return _build()
 
 
 def _real_writer():
@@ -282,10 +380,13 @@ def test_the_paste_file_is_the_paste_body_and_nothing_else():
 def test_the_reading_file_carries_the_4b_sections_and_the_return_path():
     package = _package()
     post = blog_content.render_post_md(package)
-    for section in ("## 선정 근거", "## 제목 후보", "## 본문", "## 발행 전 확인"):
+    for section in ("## 타깃 키워드 근거", "## 선정 근거", "## 제목 후보", "## 본문", "## 발행 전 확인"):
         assert section in post
     # The evidence numbers ride along — a package whose numbers cannot be traced is a guess.
     assert "9000" in post and "naver_searchad" in post
+    # ...and the target block carries only the target's numbers.
+    target_block = post.split("## 선정 근거")[0]
+    assert "130000" not in target_block and "블로그 문서수 ('미리캔버스 포스터' 검색): 120" in target_block
     # ...and the file tells the operator how to close the loop (#802's writer).
     assert package["package_id"] in post and "record_published_url" in post
 
@@ -373,15 +474,31 @@ def test_the_weekly_run_reaches_the_pipeline_as_the_scheduler_and_hands_it_strin
         {"seeds": "미리캔버스 포스터, 포스터 만들기"},
         providers={"provider": MockProvider()},
         now=NOW,
+        published_source=_StaticSource(["포스터 만들기"]),
     )
 
     assert sheet["target_keyword"] == "미리캔버스 포스터"
     assert briefs == ["미리캔버스 포스터, 포스터 만들기", "미리캔버스 포스터"]
     profile = pipeline_worker._ACTOR_PROFILES[pipeline_worker.SCHEDULER_PROFILE]
-    assert [c["request_kind"] for c in calls] == ["research", "content"]
+    # The mock answers in prose, not the structured contract, so the one revision runs — and
+    # only one — without re-running the Naver brief.
+    assert [c["request_kind"] for c in calls] == ["research", "content", "content"]
+    assert "keyword_seeds" not in calls[2]
+    assert sheet["package"]["quality"]["revision_count"] == 1
+    assert sheet["package"]["quality"]["quality_state"] == "needs_edit"
+    assert sheet["lineage"]["revision_trace_id"] not in (None, sheet["lineage"]["content_trace_id"])
     for call in calls:
         assert (call["requester_id"], call["requester_type"], call["channel"]) == (
             profile["requester_id"], profile["requester_type"], profile["channel"])
         assert "naver_keywords" not in call
     assert calls[0]["keyword_seeds"] == "미리캔버스 포스터, 포스터 만들기"
     assert calls[1]["keyword_seeds"] == "미리캔버스 포스터"
+    # The package's target evidence came from the content run's brief, and the lineage names
+    # the two real runs — not one trace for both, not an invented id.
+    lineage = sheet["lineage"]
+    assert lineage["selection_research_trace_id"] and lineage["content_trace_id"]
+    assert lineage["selection_research_trace_id"] != lineage["content_trace_id"]
+    assert lineage["target_research_trace_id"] == lineage["content_trace_id"]
+    assert sheet["target_evidence"]["keyword"] == "미리캔버스 포스터"
+    assert set(sheet["trace_ids"]) == {lineage["selection_research_trace_id"],
+                                       lineage["content_trace_id"], lineage["revision_trace_id"]}

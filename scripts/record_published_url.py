@@ -53,7 +53,6 @@ from runtime.read_only_kernel.schema_validation import (  # noqa: E402
 _ISO = "%Y-%m-%dT%H:%M:%SZ"
 # Mirrors the schema's own pattern so the refusal names the rule instead of a validator trace.
 _URL_PATTERN = re.compile(r"^https://blog\.naver\.com/.+")
-_SCHEMA_PATH = ROOT / "schemas" / "blog_content_package.v0.1.schema.json"
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -93,13 +92,18 @@ def latest_packages(store: LedgerStore) -> dict[str, dict]:
 
 
 def build_published_row(package: dict, *, url: str, now: str) -> dict:
-    """The published revision of one package — copy, stamp, revalidate. Pure."""
+    """The published revision of one package — copy, stamp, revalidate. Pure.
+
+    Revalidated against the schema of the row's OWN version (v0.1 or v0.2): the published row
+    is the same package, so it must satisfy the contract it was produced under."""
     updated = dict(package)
     updated["publish_state"] = "published"
     updated["published_url"] = url
     updated["published_at_utc"] = now
     try:
-        validate_against_schema(updated, _SCHEMA_PATH, "blog_content_package")
+        schema_path = blog_content.package_schema_path(
+            str(updated.get("schema_version")), ROOT)
+        validate_against_schema(updated, schema_path, "blog_content_package")
     except RuntimeSchemaError as exc:
         raise ToolError(blog_content.BLOG_PACKAGE_SCHEMA_INVALID, str(exc)) from exc
     return updated

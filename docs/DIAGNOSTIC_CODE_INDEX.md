@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **634** distinct codes across **1228** raise sites
+- **640** distinct codes across **1237** raise sites
 - **23** exception classes carry them
 - **75** codes are raised from more than one module (see below)
 - **136** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -193,6 +193,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `AUTHORITY_RECORD_INVALID` | `KernelBlocked` | `runtime/read_only_kernel/policy.py` | `adapt_policy` | `authority.get('effective_permission_level') is None` |
 | `AUTHORITY_RECORD_INVALID` | `KernelBlocked` | `runtime/read_only_kernel/preflight.py` | `run_preflight` | `—` |
 | `BINDING_FAILED` | `PlannerBlocked` | `runtime/mvp_runtime/binding.py` | `bind_task_to_core` | `—` |
+| `BLOG_PACKAGE_SCHEMA_INVALID` | `ToolError` | `runtime/mvp_runtime/blog_content.py` | `package_schema_path` | `version not in PACKAGE_SCHEMA_VERSIONS` |
+| `BLOG_PACKAGE_SCHEMA_INVALID` | `ToolError` | `runtime/mvp_runtime/blog_content.py` | `run_content_ideation` | `—` |
 | `BRIDGE_ALREADY_RUNNING` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | `__init__` | `door_is_live(path)` |
 | `BRIDGE_CLIENT_GID_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | `resolve_client_gid` | `—` |
 | `BRIDGE_CLIENT_GID_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | `resolve_client_gid` | `gid < 0` |
@@ -203,6 +205,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `BRIDGE_CONCURRENCY_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | `__init__` | `max_concurrent_requests < 1` |
 | `BRIDGE_LIMITS_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | `__init__` | `max_frame_bytes < 1 or request_timeout_seconds <= 0` |
 | `BUDGET_EXHAUSTED` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow.py` | `validate_plan` | `needed > budget.max_model_calls` |
+| `BUDGET_PROFILE_KIND_MISMATCH` | `PlannerBlocked` | `runtime/mvp_runtime/budgets.py` | `require_budget_profile` | `request_kind not in BUDGET_PROFILES[profile]['request_kinds']` |
 | `CANARY_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/live_promotion.py` | `read_canary_orders` | `order_id in seen` |
 | `CANARY_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_promotion.py` | `read_canary_orders` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
 | `CANARY_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_promotion.py` | `read_canary_orders` | `—` |
@@ -250,6 +253,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `CHANNEL_TRANSPORT` | `OperatorBlocked` | `runtime/mvp_runtime/operator.py` | `_call` | `—` |
 | `CHANNEL_TRANSPORT` | `OperatorBlocked` | `runtime/mvp_runtime/operator.py` | `_call` | `not isinstance(payload, dict) or not payload.get('ok')` |
 | `CHAT_NOT_REGISTERED` | `OperatorBlocked` | `runtime/mvp_runtime/operator.py` | `verify_control_channel` | `not isinstance(message.chat_id, str) or message.chat_id != registration.chat_id` |
+| `CHECKPOINT_NOT_DUE` | `ToolError` | `runtime/mvp_runtime/blog_rank.py` | `check_rank` | `checkpoint not in dict(CHECKPOINTS)` |
 | `CONSUMED_NOT_PROMOTED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | `consume_approval` | `—` |
 | `CONSUMED_UNAUDITED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | `consume_approval` | `—` |
 | `CONSUMPTION_DISABLED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | `consume` | `—` |
@@ -892,6 +896,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `OUTCOME_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | `read_outcomes` | `—` |
 | `OUTPUT_SCHEMA_INVALID` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | `run_analysis_worker` | `—` |
 | `OUT_OF_MVP_SCOPE` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | `classify_task` | `_READ_ONLY_CONSTRAINT not in constraints` |
+| `PACKAGE_NOT_PUBLISHED` | `ToolError` | `runtime/mvp_runtime/blog_rank.py` | `check_rank` | `not trackable(package)` |
 | `PATH_ESCAPE` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | `resolve_target` | `'..' in candidate.parts` |
 | `PATH_ESCAPE` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | `resolve_target` | `target != base_real and base_real not in target.parents` |
 | `PATH_TOO_LONG` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | `resolve_target` | `len(relative_path) > MAX_PATH_CHARS` |
@@ -1032,6 +1037,9 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `PROVIDER_TRANSPORT` | `ProviderError` | `runtime/mvp_runtime/providers.py` | `_post_json_with_retry` | `—` |
 | `PROVIDER_UNAVAILABLE` | `ProviderError` | `runtime/mvp_runtime/providers.py` | `_post_json_with_retry` | `exc.code in _RETRYABLE_HTTP` |
 | `PROVIDER_UNAVAILABLE` | `ProviderError` | `runtime/mvp_runtime/providers.py` | `generate` | `all((f['kind'] == FAILOVER_UNAVAILABLE for f in failovers))` |
+| `PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE` | `ToolError` | `runtime/mvp_runtime/blog_content.py` | `load` | `not self.root.is_dir()` |
+| `PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE` | `ToolError` | `runtime/mvp_runtime/blog_content.py` | `load` | `posts == 0` |
+| `PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE` | `ToolError` | `runtime/mvp_runtime/blog_content.py` | `run_content_ideation` | `source is None` |
 | `QUERY_TOO_LONG` | `ToolBlocked` | `runtime/mvp_runtime/tools.py` | `_require_query` | `len(query) > MAX_QUERY_CHARS` |
 | `QUEUE_FULL` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | `submit_within_depth` | `depth >= limit` |
 | `REASON_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | `apply_dispatch` | `not isinstance(reason, str) or not reason.strip()` |
@@ -1229,6 +1237,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `UNKNOWN_APPROVAL` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | `apply_command` | `approval is None` |
 | `UNKNOWN_APPROVAL` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | `validate_spendable_approval` | `approval_rec is None` |
 | `UNKNOWN_APPROVAL` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | `_spend` | `record is None` |
+| `UNKNOWN_BUDGET_PROFILE` | `PlannerBlocked` | `runtime/mvp_runtime/budgets.py` | `tokens_per_agent` | `spec is None` |
 | `UNKNOWN_CANDIDATE` | `MvpRuntimeError` | `runtime/mvp_runtime/approval_cli.py` | `_find_candidate` | `entry is None` |
 | `UNKNOWN_CANDIDATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | `resolve_candidates` | `missing` |
 | `UNKNOWN_COMMAND` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | `apply_command` | `verb not in COMMANDS` |
