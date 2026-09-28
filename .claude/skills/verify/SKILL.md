@@ -156,5 +156,11 @@ it prints is read per-run, never cached.
 .venv/bin/python scripts/run_repository_release_gate.py --full --check-only
 ```
 
+On this host, `scripts/ops/test_run.sh --gate` runs both with the local traps handled: it refuses
+to start on a nearly full `/tmp` or low memory, activates a Core when the pointer is missing, uses
+one short basetemp and a fresh pycache and removes them, fails a run whose tree changed mid-suite,
+runs `scripts/check_test_skips.py`, and ends with `TEST_RUN_EXIT=<n>` to wait on (not `pgrep -f`).
+Pytest arguments pass through (`scripts/ops/test_run.sh tests/test_x.py`).
+
 The gate is what CI runs and is the real acceptance signal. `--check-only` writes no Release
 Gate evidence and grants no Release, Core, Runtime, or execution authority.
