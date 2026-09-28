@@ -1026,6 +1026,49 @@ def _no_eligible_message(reasoning: Mapping[str, Any]) -> str:
 # rather than truncating the draft it is meant to revise.
 MAX_REVISION_REQUEST_CHARS = 19_000
 
+# The draft's LENGTH PLAN: a concrete shape, not a set of totals. The first package (2026-09-28,
+# 730 characters against the 1,800 floor) showed why. The old request asked for "10~20
+# paragraphs, 70~150 characters each, 1,800~3,500 in total" at once. Those three are consistent
+# only well above their minimums: ten paragraphs at the 150 ceiling is 1,500. The model hit the
+# two minimums it could satisfy literally (10 paragraphs, average 73) and landed at 730. A plan
+# that adds up states the one shape that clears every standard. Its arithmetic is checked against
+# `blog_draft_score.STANDARDS` in the tests, so moving a standard cannot silently break it.
+PLAN_INTRO_PARAGRAPHS = 2
+PLAN_SECTIONS = 5
+PLAN_PARAGRAPHS_PER_SECTION = 3
+PLAN_PARAGRAPH_CHARS = (110, 140)          # visible characters, whitespace excluded
+PLAN_SENTENCES_PER_PARAGRAPH = "3~4"
+
+
+def plan_paragraphs() -> int:
+    return PLAN_INTRO_PARAGRAPHS + PLAN_SECTIONS * PLAN_PARAGRAPHS_PER_SECTION
+
+
+def plan_body_chars() -> tuple[int, int]:
+    low, high = PLAN_PARAGRAPH_CHARS
+    return plan_paragraphs() * low, plan_paragraphs() * high
+
+
+def _length_plan() -> str:
+    low, high = PLAN_PARAGRAPH_CHARS
+    total_low, total_high = plan_body_chars()
+    return (
+        f"분량 계획(이대로 써라): intro 문단 {PLAN_INTRO_PARAGRAPHS}개 + sections "
+        f"{PLAN_SECTIONS}개 × 섹션마다 paragraphs {PLAN_PARAGRAPHS_PER_SECTION}개 = 문단 "
+        f"{plan_paragraphs()}개. 문단 하나는 {PLAN_SENTENCES_PER_PARAGRAPH}문장, 공백 빼고 "
+        f"{low}~{high}자. 합계 약 {total_low:,}~{total_high:,}자이고, 1,800자에 못 미치면 불합격이다. "
+        "한두 문장짜리 문단을 만들지 마라 — 각 문단은 방법·이유·예시·주의점 중 둘 이상을 담아 풀어 "
+        f"써라. JSON을 내기 전에 문단이 {plan_paragraphs()}개인지, 각 문단이 {low}자 이상인지 세어 "
+        "확인하라."
+    )
+
+
+def _length_asks(measured: Mapping[str, Any]) -> str:
+    """For a revision: the plan against what the draft actually measured."""
+    return (f"현재 문단 {measured.get('paragraphs', '-')}개·문단 평균 {measured.get('para_chars', '-')}자·"
+            f"합계 {measured.get('body_chars', '-')}자. {_length_plan()}")
+
+
 _FAILURE_ASKS = {
     "body_chars": "본문 문단(도입·섹션 문단)의 글자수 합을 공백 제외 1,800~3,500자로 맞춰라",
     "headings": "섹션(소제목)을 4~7개로 맞춰라",
@@ -1033,6 +1076,8 @@ _FAILURE_ASKS = {
     "title_candidates": "title_candidates에 소제목과 다른 제목 후보를 3~5개 넣어라(타깃 키워드를 앞쪽에 자연스럽게)",
     "structured_output": "content_draft를 지정한 JSON 객체 하나로만 출력하라(설명·마크다운 금지)",
 }
+# The failures a length plan answers. When any of them is asked, the plan rides along once.
+_LENGTH_FAILURES = frozenset({"body_chars", "para_chars"})
 
 _DRAFT_SHAPE = (
     '{"title_candidates": ["제목 후보 3~5개"], "intro": ["도입 문단"], '
@@ -1044,31 +1089,38 @@ _DRAFT_SHAPE = (
 
 
 def content_request(target: str) -> str:
-    """The blog request: the structured contract, the standards, and the no-invention rule."""
+    """The blog request: the structured contract, the length plan, the standards, and the
+    no-invention rule."""
     return (
         f"'{target}' 키워드로 네이버 블로그 글 초안을 작성해라. content_draft 필드에는 아래 형식의 "
         f"JSON 객체 하나만 문자열로 넣어라(마크다운·설명 금지): {_DRAFT_SHAPE}\n"
+        f"{_length_plan()}\n"
         f"규칙: title_candidates는 소제목과 별개인 글 제목 3~5개이고 각각 '{target}'를 앞쪽에 "
-        "자연스럽게 포함한다. sections 4~7개, 도입·섹션 문단 합계 공백 제외 1,800~3,500자, 문단 "
-        "10~20개·문단당 70~150자, image_shots 4~8개(after_section은 0부터 센 섹션 번호, 생성 "
-        "이미지가 아니라 실제 화면 캡처), 표 1개(행을 ' | '로 구분한 문단), tags 3~8개, sources "
-        "2~5개. 가격·무료 범위·사용 한도·기능 제공 여부·정책·버전·날짜를 쓴 문장은 모두 "
-        "fact_checks에 넣어라. 근거 블록([S#]·[K#])에 없는 수치·가격·출처를 지어내지 마라 — "
-        "근거가 없으면 source_ref를 null로 둬라. 문단 안에 #, **, > 같은 마크다운 기호를 쓰지 마라."
+        "자연스럽게 포함한다. image_shots 4~8개(after_section은 0부터 센 섹션 번호, 생성 "
+        "이미지가 아니라 실제 화면 캡처), 표 1개(행을 ' | '로 구분한 문단 — 섹션 문단 하나로 "
+        "센다), tags 3~8개, sources 2~5개. 가격·무료 범위·사용 한도·기능 제공 여부·정책·버전·"
+        "날짜를 쓴 문장은 모두 fact_checks에 넣어라. 근거 블록([S#]·[K#])에 없는 수치·가격·"
+        "출처를 지어내지 마라 — 근거가 없으면 source_ref를 null로 둬라. 문단 안에 #, **, > 같은 "
+        "마크다운 기호를 쓰지 마라."
     )
 
 
 def revision_request(target: str, first: Mapping[str, Any], text: str) -> str:
-    """The one revision's request: only the failed items, the facts frozen, the draft attached."""
+    """The one revision's request: only the failed items, the facts frozen, the draft attached.
+
+    A length failure also carries the plan against the draft's own measurement: "longer" is what
+    the first request already said, and the first package showed that saying it was not enough."""
     measured = first.get("measured") or {}
     asks = [f"- {_FAILURE_ASKS.get(f, f)} (현재 {measured.get(f, '-')})" for f in first["failures"]]
+    if _LENGTH_FAILURES & set(first["failures"]):
+        asks.append(f"- {_length_asks(measured)}")
     previous = (json.dumps(first["structured"], ensure_ascii=False)
                 if first.get("structured") is not None else text)
     return (
         f"아래 '{target}' 네이버 블로그 초안을 고쳐라. 고칠 항목은 다음뿐이다:\n" + "\n".join(asks)
         + "\n사실·수치·가격·날짜·출처는 바꾸지 말고 새 사실이나 새 출처를 추가하지 마라. 분량을 "
-        "늘릴 때는 설명·예시·절차를 풀어 써라. content_draft에는 같은 JSON 형식으로 전체 초안을 "
-        f"다시 넣어라: {_DRAFT_SHAPE}\n이전 초안:\n{previous}"
+        "늘릴 때는 이미 쓴 내용의 방법·이유·예시·주의점을 풀어 써라. content_draft에는 같은 JSON "
+        f"형식으로 전체 초안을 다시 넣어라: {_DRAFT_SHAPE}\n이전 초안:\n{previous}"
     )
 
 
