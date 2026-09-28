@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **37**건: `DRAFT` 3 · `PARTIALLY DECIDED` 8 · `DECIDED` 2 · `IMPLEMENTED` 22 · `SUPERSEDED` 1 · `RECORD` 1
+제안서 **40**건: `DRAFT` 5 · `PARTIALLY DECIDED` 8 · `DECIDED` 2 · `IMPLEMENTED` 22 · `SUPERSEDED` 1 · `RECORD` 2
 
-## Thomas 결정 대기 (11)
+## Thomas 결정 대기 (13)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -23,6 +23,8 @@
 | [RESEARCH_EPOCH_V0.1.md](RESEARCH_EPOCH_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | Q1·Q2(판정 규칙 지문과 그 표시)는 #972·#976으로 구현. Q3는 B로 결정(Thomas 2026-09-26, 경계 주기는 미정). Q4(다음 cohort에 판정 지문)는 다음 cohort를 동결할 때 정한다. |
 | [RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md](RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | (c) 순서 결정: 슬리피지 실측이 먼저다. (a)(b)(d)는 실측 뒤에 정하고, 그때까지 현재 값을 유지하며 LIVE_AUTONOMOUS로 올리지 않는다(Thomas 2026-09-26, 시스템 점검 D5). **값은 하나도 바뀌지 않았다**. |
 | [SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md](SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | §5의 D1·D2·D3·D4·D7·D8 채택, D6 보류(현상 유지). D5는 슬리피지 실측 뒤에 결정한다(§5 뒤 "결정" 절). 단계 0은 #980, 단계 1의 선행 조건 없는 항목은 #982–#989로 구현됐다. |
+| [EXECUTION_STAGE_ANTI_ROLLBACK_V0.1.md](EXECUTION_STAGE_ANTI_ROLLBACK_V0.1.md) | `DRAFT` | 2026-09-27 | §6의 D1–D4 결정 대기(앵커 위치, 장부가 파일을 대체, BOOTSTRAP으로 첫 행, 복원 뒤 재승인 비용). 구현 없음. |
+| [PROTECTION_UNKNOWN_ESCALATION_V0.1.md](PROTECTION_UNKNOWN_ESCALATION_V0.1.md) | `DRAFT` | 2026-09-27 | §6의 D1–D4 결정 대기(임계값, 런타임의 HARD 정지 권한, UNKNOWN에 청산하지 않음, 시계 저장 위치). 구현 없음. |
 
 ## 결정됨 — 구현 남음 (2)
 
@@ -70,10 +72,11 @@
 |---|---|---|---|
 | [LIVE_OUTCOME_CORRECTION_RECORD_V0.1.md](LIVE_OUTCOME_CORRECTION_RECORD_V0.1.md) | `SUPERSEDED` | 2026-08-23 | `LIVE_OUTCOME_CORRECTION_RECORD_V0.2.md`가 대신한다. 이 설계는 구현된 적 없다. |
 
-## 측정 기록 (1)
+## 측정 기록 (2)
 
 결정할 것이 없는 관측 기록.
 
 | 제안서 | 상태 | 날짜 | 요약 |
 |---|---|---|---|
 | [EQUITY_PERP_S1_MEASUREMENTS_V0.1.md](EQUITY_PERP_S1_MEASUREMENTS_V0.1.md) | `RECORD` | 2026-08-05 | 2026-08-04~05 측정 기록. 설계 제안이 아니라 **관측값**이며, 재현 방법을 함께 적는다. |
+| [FORWARD_VERDICT_REGIME_EPISODES_V0.1.md](FORWARD_VERDICT_REGIME_EPISODES_V0.1.md) | `RECORD` | 2026-09-27 | 측정 기록. forward 판정 6건이 BTC 일봉 regime 구간 3–5개(하락 추세 0일)에서 나왔고, 반박·성숙 판정은 시간 분산 검사 없이 나온다. 에포크 경계에서 볼 결정 항목 2개(§5)를 함께 적는다. |

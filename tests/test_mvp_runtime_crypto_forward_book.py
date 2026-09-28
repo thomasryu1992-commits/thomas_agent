@@ -296,6 +296,20 @@ def test_an_unattributable_entry_is_not_tracked(tmp_path):
     assert fb.lineage_key(entry) == ""  # the cycle and the seeder share this refusal
 
 
+def test_an_unparseable_spec_is_named_not_silently_skipped(tmp_path):
+    """A pool entry whose stored spec no longer parses cannot be walked, so its lineage accrues
+    no forward evidence. It used to vanish behind a bare `continue`; now the summary names it,
+    the walkable entry beside it still advances, and nothing raises (the step is observational)."""
+    broken = _pool_entry(strategy_id="S9-GEN-1", candidate_id="cand_forwardbook0009",
+                         strategy_spec={"family": "not a spec"})
+    s = _update(_pool(_pool_entry(), broken), ROW, _candle("2026-08-29T00:00:00Z"), tmp_path)
+    assert s["unparseable"] == ["S9-GEN-1"]
+    assert s["opened"] and s["open_count"] == 1
+
+    clean = _update(_pool(_pool_entry()), ROW, _candle("2026-08-30T00:00:00Z"), tmp_path / "clean")
+    assert "unparseable" not in clean
+
+
 def test_the_no_signal_marker_names_its_own_context_only(tmp_path):
     entry = _pool_entry(strategy_spec=_spec_dict(entry_rules={
         "operator": "AND",

@@ -115,17 +115,18 @@ leaves a rollback point that really is the image that was running. These rules c
 standing as the guardrails above:
 
 ```
-docker inspect thomas-scheduler --format '{{.Image}}'    # the RUNNING image …
-docker images thomas-agent-runtime                        # … must be what `latest` points at
+python3 scripts/ops/deploy_preflight.py <PR#>                  # read-only: merged? RUNNING image vs `latest`? tags free?
 docker tag thomas-agent-runtime:latest thomas-agent-runtime:rollback-pre-<PR#>
 git worktree add <tmp> origin/main --detach
 docker build -t thomas-agent-runtime:candidate-<PR#> <tmp>
 docker run --rm --entrypoint python thomas-agent-runtime:candidate-<PR#> -c "<assert the fix>"
-#   … repeat the running-vs-latest check here, immediately before the promote …
+python3 scripts/ops/deploy_preflight.py <PR#> --promote --tree <tmp>   # re-read the host, immediately before the promote
 docker tag thomas-agent-runtime:candidate-<PR#> thomas-agent-runtime:latest
-docker compose up -d
+docker compose -p thomas_agent --env-file /root/thomas_agent/.env -f <tmp>/docker-compose.yml up -d
 git worktree remove <tmp>
 ```
+
+The `deploy` skill walks these in order.
 
 - **Tag the rollback point before any build.** A build that targets `latest`
   (`docker compose build`, `docker build -t …:latest`) removes the running image from the image
@@ -139,6 +140,12 @@ git worktree remove <tmp>
 - **Re-read the host immediately before the promote, never your own notes.** A concurrent session
   redeploys everything, not just its own slice, and the window between build and promote is where
   it lands. A `rollback-pre-<N>` tag you did not create is the signal that it already has.
+- **Compose from `<tmp>`, naming the project and the env file.** Without `-p thomas_agent` the
+  directory name becomes the project and nothing is recreated. Without `--env-file` the state
+  volume resolves relative to the compose file, and the live scheduler starts on an empty state
+  directory. A bare `docker compose up -d` in the primary checkout uses whatever compose file that
+  branch has. The running containers' compose labels show the stack was started this way
+  (`project=thomas_agent`, `environment_file=/root/thomas_agent/.env`, `config_files=/root/deploy-<PR#>/…`).
 - **Never `compose up --build`** — it builds the primary checkout, whatever is in it. Judge what an
   image contains by asserting against the image, never by the commit a worktree was on.
 - If the rollback point is lost anyway, rebuild the previous commit to a candidate tag from a clean
@@ -165,6 +172,7 @@ Development and deployment are on one **Linux Docker host**. Run from the repo r
 ```
 .venv/bin/python -m pytest tests/ -q
 .venv/bin/python scripts/run_repository_release_gate.py --full --check-only   # governance validators; runs no pytest
+scripts/ops/test_run.sh --gate      # both, with this host's traps handled (resources, Core, skips, basetemp)
 docker exec thomas-scheduler python -m runtime.mvp_runtime.cli "이 사업 아이디어를 분석해줘: ..."
 ```
 
