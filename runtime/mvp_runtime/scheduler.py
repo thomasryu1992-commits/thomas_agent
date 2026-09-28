@@ -1091,18 +1091,23 @@ def format_ideation_sheet(reply: Mapping[str, Any]) -> str:
     bar — the body itself is in the package record, and pasting three thousand characters into
     a Telegram message would bury both.
     """
-    evidence = reply.get("keyword_evidence") or {}
+    evidence = reply.get("target_evidence") or {}
     score = reply.get("score") or {}
     measured = score.get("measured") or {}
+    # The target's own numbers only (package v0.2). The line used to count the selection
+    # brief's rows and print the SUM of three different keywords' post counts beside them.
+    if evidence.get("status") == "measured":
+        target_line = (f"{evidence.get('monthly_total')}/mo, as of {evidence.get('as_of')}"
+                       + (f", {evidence['blog_competing_posts']} blog posts"
+                          if evidence.get("blog_competing_posts") is not None else ""))
+    else:
+        target_line = f"no row for the target itself ({evidence.get('degraded_reason_code')})"
     lines = [
         "=== blog package ===",
         "",
         f"keyword   : {reply.get('target_keyword')}",
         f"package   : {reply.get('package_id')}",
-        f"evidence  : {len(evidence.get('metrics') or [])} keyword(s) measured, "
-        f"as of {evidence.get('as_of')}"
-        + (f", {evidence['total_competing_posts']} competing posts"
-           if evidence.get("total_competing_posts") is not None else ""),
+        f"evidence  : {target_line}",
         f"draft     : {measured.get('body_chars', '?')} chars, "
         f"{measured.get('headings', '?')} headings, {measured.get('images', '?')} image cues",
         f"standards : {'PASS' if score.get('critical_pass') else 'MISS'} "

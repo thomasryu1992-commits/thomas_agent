@@ -54,8 +54,11 @@ from . import blog_draft_score, naver_research, timeutil
 from .errors import MvpRuntimeError, ToolError
 from .pipeline import run_task
 
-PACKAGE_SCHEMA_VERSION = "blog_content_package.v0.1"
+PACKAGE_SCHEMA_VERSION = "blog_content_package.v0.2"
 PACKAGE_RECORD_KIND = "blog_content_package"
+# Every version a ledger row may carry. v0.1 rows (none exist on the host, but the schema shipped)
+# stay valid against their own schema; readers pick the schema by the row's `schema_version`.
+PACKAGE_SCHEMA_VERSIONS = ("blog_content_package.v0.1", "blog_content_package.v0.2")
 
 # The schema's own ceilings, mirrored here so the parser truncates deterministically instead of
 # handing the validator a draft-shaped reason to fail the whole fire. A model that emits 24
@@ -67,17 +70,8 @@ MAX_IMAGE_SHOTS = 20
 MAX_FACT_CHECKS = 30
 MAX_METRICS = 50
 
-# The seven fields `keyword_evidence.metrics` names, and the only seven. The brief's own rows
-# carry an eighth on their top entries — `run_keyword_brief` attaches `competing_posts` where
-# the competition leg answered (`naver_research.py`) — and the schema's item is
-# `additionalProperties: false`, so handing the rows straight through fails validation every
-# time. Nobody had hit it because nothing had ever assembled a package. The count is not
-# dropped: the schema already carries it one level up as `total_competing_posts`, which is
-# where a per-evidence total belongs anyway.
-_METRIC_FIELDS = (
-    "keyword", "monthly_pc", "monthly_mobile", "monthly_total",
-    "competition", "low_volume", "source",
-)
+# The competition vocabulary the package schemas accept; anything else is "unknown".
+_AD_COMPETITION_LEVELS = frozenset({"높음", "중간", "낮음"})
 
 # There is no competition gate in selection, deliberately. The one competition number the brief
 # carries for every row is Search Ad's `compIdx`, and that is ADVERTISER BID competition — how
@@ -339,36 +333,136 @@ def select_published_source(inputs: Mapping[str, Any] | None = None) -> VaultPub
     return VaultPublishedKeywordSource(root) if root else None
 
 
-def _keyword_evidence(record: Mapping[str, Any] | None) -> dict[str, Any]:
-    """The brief, in the shape the package schema names. Absent brief is an honest empty one."""
-    if not isinstance(record, Mapping):
-        return {"as_of": timeutil.utc_now_iso(), "degraded": True,
-                "degraded_reason_code": "KEYWORD_BRIEF_ABSENT", "metrics": []}
-    rows = [m for m in (record.get("metrics") or []) if isinstance(m, Mapping)]
-    # A row missing any of the seven cannot satisfy the item schema, and half a row is not
-    # evidence — it is dropped rather than emitted incomplete, which would fail the whole
-    # package on the validator and take the draft down with it.
-    metrics = [
-        {field: row[field] for field in _METRIC_FIELDS}
-        for row in rows[:MAX_METRICS]
-        if all(field in row for field in _METRIC_FIELDS)
-    ]
+def package_schema_path(version: str, root: Path | None = None) -> Path:
+    """The closed schema a package row of ``version`` validates against. Fails closed on a
+    version this module does not know."""
+    if version not in PACKAGE_SCHEMA_VERSIONS:
+        raise ToolError(BLOG_PACKAGE_SCHEMA_INVALID, f"unknown package schema_version {version!r}")
+    from .paths import repo_root as _repo_root
+    return (root if root is not None else _repo_root()) / "schemas" / f"{version}.schema.json"
+
+
+def _ad_competition(value: Any) -> str:
+    text = str(value or "").strip()
+    return text if text in _AD_COMPETITION_LEVELS else "unknown"
+
+
+def _degraded_code(record: Mapping[str, Any]) -> str | None:
+    legs = record.get("degraded_legs") or {}
+    if legs:
+        return f"KEYWORD_BRIEF_DEGRADED:{','.join(sorted(legs))}"
+    code = record.get("degraded_reason_code")
+    return str(code) if code else None
+
+
+def selection_evidence(
+    record: Mapping[str, Any] | None,
+    reasoning: Mapping[str, Any],
+    *,
+    selected_keyword: str,
+    mode: str,
+    seeds: Sequence[str],
+    now: str,
+) -> dict[str, Any]:
+    """How the target was chosen: the selection brief's candidates and the rule's verdict on
+    each. Nothing here describes the target's own numbers — that is :func:`target_evidence`."""
     evidence: dict[str, Any] = {
-        "as_of": str(record.get("created_at") or timeutil.utc_now_iso()),
-        "degraded": bool(record.get("degraded")),
-        "metrics": metrics,
+        "mode": mode,
+        "rule": str(reasoning.get("rule") or "operator override")[:300],
+        "selected_keyword": selected_keyword,
+        "seeds": [str(s) for s in seeds][:30],
+        "as_of": str((record or {}).get("created_at") or now),
+        "degraded": bool((record or {}).get("degraded")) if record is not None else mode == "rule",
+        "candidates": [],
     }
-    legs = record.get("degraded_legs")
-    if evidence["degraded"] and legs:
-        evidence["degraded_reason_code"] = f"KEYWORD_BRIEF_DEGRADED:{','.join(sorted(legs))}"
-    competing = [m.get("competing_posts") for m in rows
-                 if isinstance(m.get("competing_posts"), int)]
-    if competing:
-        evidence["total_competing_posts"] = sum(competing)
-    points = record.get("trend_points")
-    if points:
-        evidence["trend_points"] = list(points)
+    if isinstance(record, Mapping):
+        code = _degraded_code(record)
+        if evidence["degraded"] and code:
+            evidence["degraded_reason_code"] = code[:80]
+    for entry in (reasoning.get("considered") or [])[:MAX_METRICS]:
+        candidate = {
+            "keyword": str(entry.get("keyword")),
+            "monthly_total": int(entry.get("monthly_total") or 0),
+            "ad_competition": _ad_competition(entry.get("ad_competition")),
+            "low_volume": bool(entry.get("low_volume")),
+            "excluded_because": (str(entry["excluded_because"])[:300]
+                                 if entry.get("excluded_because") else None),
+        }
+        if isinstance(entry.get("blog_competing_posts"), int):
+            candidate["blog_competing_posts"] = entry["blog_competing_posts"]
+        evidence["candidates"].append(candidate)
     return evidence
+
+
+def target_evidence(target: str, record: Mapping[str, Any] | None, *, now: str) -> dict[str, Any]:
+    """The target's own numbers, from the brief run on the target — or an explicit absence.
+
+    Every number is bound to ``target`` by normalized equality (Search Ad hands the row back
+    space-stripped and upper-cased). The failures this replaced all borrowed another keyword's
+    number: ``metrics[0]`` (the top-volume row), a SUM of three keywords' post counts, the first
+    seed's trend. So when the target's row is not in the brief the status is ``missing`` and
+    the numbers are absent — never zero, never the neighbour's.
+    """
+    want = naver_research.normalize_keyword(target)
+    evidence: dict[str, Any] = {"keyword": target, "status": "missing",
+                                "as_of": now, "degraded": True}
+    if not isinstance(record, Mapping):
+        evidence["degraded_reason_code"] = "TARGET_BRIEF_ABSENT"
+        return evidence
+    evidence["as_of"] = str(record.get("created_at") or now)
+    row = next((r for r in (record.get("metrics") or [])
+                if isinstance(r, Mapping) and naver_research.normalize_keyword(r.get("keyword")) == want),
+               None)
+    reasons: list[str] = []
+    code = _degraded_code(record) if record.get("degraded") else None
+    if code:
+        reasons.append(code)
+    counts = ("monthly_pc", "monthly_mobile", "monthly_total")
+    if row is not None and not all(
+            isinstance(row.get(k), int) and not isinstance(row.get(k), bool) for k in counts):
+        # A matching row without its counts is not a measurement; reading the gaps as 0 would
+        # claim "no demand" for a keyword nobody measured.
+        reasons.insert(0, "TARGET_ROW_INCOMPLETE")
+        row = None
+    elif row is None:
+        reasons.insert(0, "TARGET_ROW_ABSENT")
+    if row is not None:
+        evidence["status"] = "measured"
+        evidence.update({
+            "matched_keyword": str(row.get("keyword")),
+            "monthly_pc": row["monthly_pc"],
+            "monthly_mobile": row["monthly_mobile"],
+            "monthly_total": row["monthly_total"],
+            "low_volume": bool(row.get("low_volume")),
+            "ad_competition": _ad_competition(row.get("competition")),
+            "volume_source": str(row.get("source") or "unknown"),
+        })
+        if isinstance(row.get("competing_posts"), int):
+            evidence["blog_competing_posts"] = row["competing_posts"]
+            evidence["blog_competing_posts_query"] = str(row.get("competing_posts_query") or target)
+        else:
+            reasons.append("TARGET_BLOG_COUNT_ABSENT")
+    trend_keyword = record.get("trend_keyword")
+    points = record.get("trend_points") or []
+    if points and naver_research.normalize_keyword(trend_keyword) == want:
+        evidence["trend_keyword"] = str(trend_keyword)
+        evidence["trend_points"] = [dict(p) for p in points][:60]
+    else:
+        reasons.append("TARGET_TREND_ABSENT")
+    evidence["degraded"] = bool(reasons)
+    if reasons:
+        evidence["degraded_reason_code"] = ";".join(reasons)[:120]
+    return evidence
+
+
+def _trace_id(result: Mapping[str, Any] | None) -> str | None:
+    """The trace id of a governed run's task, or None when there was no such run."""
+    records = (result or {}).get("records") or {}
+    for kind in ("task", "received_task"):
+        trace = ((records.get(kind) or {}).get("identity") or {}).get("trace_id")
+        if trace:
+            return str(trace)
+    return None
 
 
 # The `\s+` after the hashes is load-bearing, not style. A Korean hashtag line —
@@ -457,15 +551,23 @@ def _title_candidates(draft: str, target_keyword: str, parsed: Mapping[str, Any]
 
 
 def build_package(
-    *, target_keyword: str, draft: str, keyword_record: Mapping[str, Any] | None, now: str,
+    *,
+    target_keyword: str,
+    draft: str,
+    selection: Mapping[str, Any],
+    target: Mapping[str, Any],
+    lineage: Mapping[str, Any],
+    now: str,
 ) -> dict[str, Any]:
-    """Assemble one `blog_content_package.v0.1`. Pure — no ledger, no clock, no I/O."""
+    """Assemble one `blog_content_package.v0.2`. Pure — no ledger, no clock, no I/O."""
     parsed = _parse_draft(draft)
     package: dict[str, Any] = {
         "schema_version": PACKAGE_SCHEMA_VERSION,
         "created_at_utc": now,
         "target_keyword": target_keyword,
-        "keyword_evidence": _keyword_evidence(keyword_record),
+        "selection_evidence": dict(selection),
+        "target_evidence": dict(target),
+        "lineage": dict(lineage),
         "title_candidates": _title_candidates(draft, target_keyword, parsed),
         "body_paste": parsed["body_paste"],
         "body_blocks": parsed["body_blocks"],
@@ -496,21 +598,11 @@ def render_post_md(package: Mapping[str, Any]) -> str:
     """`POST.md` — the operator's single reading file, per the §4b table: evidence, titles,
     body, edit directives, capture directives, tags, pre-publish checks. A rendering of the
     package record, never an authority of its own."""
-    evidence = package.get("keyword_evidence") or {}
-    metrics = (evidence.get("metrics") or [{}])[0]
     lines: list[str] = [f"# {package.get('target_keyword')}", ""]
-
-    lines += ["## 선정 근거"]
-    lines += [f"- 타깃 키워드: {package.get('target_keyword')}"]
-    if metrics:
-        lines += [
-            f"- 월간검색수: PC {metrics.get('monthly_pc')} / 모바일 {metrics.get('monthly_mobile')}"
-            f" (합 {metrics.get('monthly_total')})",
-            f"- 경쟁정도: {metrics.get('competition')} / 경쟁 문서수: {evidence.get('total_competing_posts')}",
-            f"- 근거 시점: {evidence.get('as_of')} (출처: {metrics.get('source')})",
-        ]
-    if evidence.get("degraded"):
-        lines += ["- ⚠ 근거 수집이 degraded 상태에서 만들어진 패키지다 — 숫자를 재확인할 것"]
+    lines += ["## 타깃 키워드 근거 (이 키워드 자체를 조사한 값)"]
+    lines += _render_target_evidence(package.get("target_evidence") or {})
+    lines += ["", "## 선정 근거 (후보 비교 — 아래 숫자는 각 후보의 것)"]
+    lines += _render_selection_evidence(package.get("selection_evidence") or {})
 
     lines += ["", "## 제목 후보"]
     lines += [f"{i}. {t}" for i, t in enumerate(package.get("title_candidates") or [], start=1)]
@@ -543,6 +635,54 @@ def render_post_md(package: Mapping[str, Any]) -> str:
     lines += ["", f"---", f"package_id: {package.get('package_id')} · publish 후: "
               f"`python -m scripts.record_published_url --package-id {package.get('package_id')} --url <URL>`"]
     return "\n".join(lines) + "\n"
+
+
+def _render_target_evidence(evidence: Mapping[str, Any]) -> list[str]:
+    """The target's numbers, each labelled with the keyword it belongs to — or the absence,
+    said out loud. Never a neighbouring row's number standing in."""
+    lines = [f"- 타깃 키워드: {evidence.get('keyword')}"]
+    if evidence.get("status") != "measured":
+        lines.append("- ⚠ 타깃 키워드 자체의 검색량 행이 조사 결과에 없다 — 검색량·경쟁 수치 없음"
+                     " (다른 키워드 수치로 대신하지 않음)")
+    else:
+        mock = str(evidence.get("volume_source") or "").startswith("mock.")
+        lines.append(
+            f"- 월간검색수 ({evidence.get('matched_keyword')}): PC {evidence.get('monthly_pc')} / "
+            f"모바일 {evidence.get('monthly_mobile')} (합 {evidence.get('monthly_total')}, "
+            f"출처: {evidence.get('volume_source')})"
+            + (" — 목업 데이터, 실측 아님" if mock else ""))
+        lines.append(f"- 광고 입찰 경쟁도(검색광고 compIdx, 블로그 난이도 아님): "
+                     f"{evidence.get('ad_competition')}")
+        if "blog_competing_posts" in evidence:
+            lines.append(f"- 블로그 문서수 ('{evidence.get('blog_competing_posts_query')}' 검색): "
+                         f"{evidence['blog_competing_posts']}")
+        else:
+            lines.append("- 블로그 문서수: 조회 실패 — 값 없음")
+    if evidence.get("trend_points"):
+        points = evidence["trend_points"]
+        lines.append(f"- 추세 ({evidence.get('trend_keyword')}, 창 안 최고=100): "
+                     + ", ".join(f"{p.get('period')} {p.get('ratio')}" for p in points[-6:]))
+    else:
+        lines.append("- 추세: 타깃 키워드의 추세 없음")
+    lines.append(f"- 근거 시점: {evidence.get('as_of')}")
+    if evidence.get("degraded"):
+        lines.append(f"- ⚠ degraded: {evidence.get('degraded_reason_code')} — 숫자를 재확인할 것")
+    return lines
+
+
+def _render_selection_evidence(evidence: Mapping[str, Any]) -> list[str]:
+    if evidence.get("mode") == "operator_override":
+        lines = ["- 운영자 지정(target=) — 규칙 선정 아님"]
+    else:
+        lines = [f"- 규칙: {evidence.get('rule')}"]
+    for c in (evidence.get("candidates") or [])[:10]:
+        verdict = "선정" if c.get("keyword") == evidence.get("selected_keyword") else (
+            c.get("excluded_because") or "후보")
+        posts = (f", 블로그 문서 {c['blog_competing_posts']}"
+                 if "blog_competing_posts" in c else "")
+        lines.append(f"  - {c.get('keyword')}: 월 {c.get('monthly_total')}, 광고경쟁 "
+                     f"{c.get('ad_competition')}{posts} — {verdict}")
+    return lines
 
 
 def package_dir(package: Mapping[str, Any]) -> str:
@@ -655,6 +795,7 @@ def run_content_ideation(
     }
 
     keyword_record: Mapping[str, Any] | None = None
+    research: Mapping[str, Any] | None = None
     reasoning: dict[str, Any] = {"rule": "operator override", "considered": []}
     target = target_override
     published: PublishedKeywords | None = None
@@ -690,6 +831,7 @@ def run_content_ideation(
     if not target:
         raise ToolError(NO_ELIGIBLE_KEYWORD, _no_eligible_message(reasoning))
 
+    mode = "operator_override" if target_override else "rule"
     content = _run(
         "content",
         f"'{target}' 키워드로 네이버 블로그 글 초안을 작성해라. "
@@ -700,8 +842,23 @@ def run_content_ideation(
     )
     draft = str(content.get("final_response") or "")
 
+    # The target's evidence is the content run's OWN brief (`keyword_seeds=target`), which was
+    # previously discarded in favour of the selection brief. The selection brief stays, as what
+    # it is: the comparison the choice was made from.
+    target_record = (content.get("records") or {}).get("keyword_research")
+    content_trace = _trace_id(content)
+    lineage = {
+        "selection_research_trace_id": _trace_id(research) if research is not None else None,
+        "target_research_trace_id": content_trace if target_record is not None else None,
+        "content_trace_id": content_trace,
+        "revision_trace_id": None,
+    }
     package = build_package(
-        target_keyword=target, draft=draft, keyword_record=keyword_record, now=now
+        target_keyword=target, draft=draft,
+        selection=selection_evidence(keyword_record, reasoning, selected_keyword=target,
+                                     mode=mode, seeds=seeds, now=now),
+        target=target_evidence(target, target_record, now=now),
+        lineage=lineage, now=now,
     )
     # Scored on the draft the model produced, NOT on `body_paste`: the paste body has had its
     # capture markers and tag lines lifted out, so scoring it would report zero images and zero
@@ -728,10 +885,9 @@ def run_content_ideation(
         "selection": reasoning,
         "score": score,
         "scorecard_lines": lines,
-        "keyword_evidence": package["keyword_evidence"],
-        "trace_ids": [t for t in (
-            ((content.get("records") or {}).get("task") or {}).get("identity", {}).get("trace_id"),
-        ) if t],
+        "target_evidence": package["target_evidence"],
+        "lineage": package["lineage"],
+        "trace_ids": [t for t in dict.fromkeys(package["lineage"].values()) if t],
         "written": written,
         "files": files,
         "filesystem_write": write_note,

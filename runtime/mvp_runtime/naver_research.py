@@ -427,18 +427,34 @@ def run_keyword_brief(
         volume_record = degraded_keyword_record(keyword_tool, seeds, exc.reason_code, now=now)
         degraded_legs["volume"] = exc.reason_code
 
-    for row in rows[:BRIEF_COMPETITION_TOP]:
+    # The seeds' own rows get a count too, wherever they rank. A brief run on ONE keyword (the
+    # content run's exact target) exists to measure that keyword, and its row is often not in
+    # the top three by volume — '미리캔버스' outranks '미리캔버스 포스터' — so a top-three-only
+    # lookup left the target without the one number it was run for. Such a row is queried with
+    # the seed as written: Search Ad hands `relKeyword` back space-stripped, and API HUB blog
+    # search (which accepts the space) counts a different result set for the stripped form.
+    seed_spelling = {normalize_keyword(s): s.strip() for s in seeds.split(",") if s.strip()}
+    lookups = list(rows[:BRIEF_COMPETITION_TOP]) + [
+        row for row in rows[BRIEF_COMPETITION_TOP:]
+        if normalize_keyword(row["keyword"]) in seed_spelling
+    ]
+    for row in lookups:
+        query = seed_spelling.get(normalize_keyword(row["keyword"]), row["keyword"])
         try:
             competition = competition_tool.competition(
-                row["keyword"], display=1, timeout_seconds=timeout_seconds
+                query, display=1, timeout_seconds=timeout_seconds
             )
             row["competing_posts"] = competition.total_posts
+            row["competing_posts_query"] = query
         except (ToolError, ToolBlocked) as exc:
             # Column absent, not zero: 0 competing posts is a CLAIM (an empty niche), and
             # a failed lookup must not accidentally make it.
             degraded_legs["competition"] = getattr(exc, "reason_code", "TOOL_ERROR")
 
     trend_points: list[dict[str, Any]] = []
+    # The first seed's series. For a selection brief over several seeds that is context only;
+    # for the content run's brief the only seed IS the target, and `trend_keyword` says which
+    # keyword the ratios belong to so a consumer can refuse a series that is not its own.
     primary = seeds.split(",")[0].strip()
     if rows and primary:
         try:

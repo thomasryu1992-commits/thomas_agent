@@ -144,3 +144,28 @@ def test_list_is_read_only_and_names_the_state(tmp_path, capsys):
     out = capsys.readouterr().out
     assert DRAFT_PACKAGE["package_id"] in out and "draft" in out
     assert len(_rows(store)) == 1
+
+
+def test_a_v0_2_package_is_published_against_its_own_schema(tmp_path, capsys):
+    """The lane produces v0.2 now. The writer validates each row against the schema of the
+    version it was produced under — v0.1 above, v0.2 here — rather than one hardcoded path."""
+    from tests.test_mvp_runtime_blog_content import _build
+
+    package = _build()
+    assert package["schema_version"] == "blog_content_package.v0.2"
+    store = _seed(tmp_path, package)
+    rc = record_published_url.main([
+        "--package-id", package["package_id"], "--url", URL, "--root", str(tmp_path)])
+    assert rc == 0, capsys.readouterr().err
+    assert _rows(store)[-1]["record"]["target_evidence"] == package["target_evidence"]
+
+
+def test_an_unknown_package_version_refuses_by_name(tmp_path):
+    import pytest
+
+    from runtime.mvp_runtime.errors import ToolError
+
+    package = dict(DRAFT_PACKAGE, schema_version="blog_content_package.v9.9")
+    with pytest.raises(ToolError) as exc:
+        record_published_url.build_published_row(package, url=URL, now="2026-08-30T09:00:00Z")
+    assert exc.value.reason_code == blog_content.BLOG_PACKAGE_SCHEMA_INVALID
