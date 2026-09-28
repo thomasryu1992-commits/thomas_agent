@@ -765,3 +765,34 @@ def test_the_dispatch_door_can_bind_a_task_because_its_manager_mints_approval_as
     for target in ("/app/THOMAS_CORE/activations", "/app/THOMAS_CORE/approvals"):
         (mount,) = [m for m in mounts if f":{target}" in m]
         assert mount.endswith(":ro"), mount
+
+
+# --- the blog lane's published-post source (Thomas 2026-09-28) ------------------------------
+
+def _vault_mounts(service: str) -> list[str]:
+    return [str(v) for v in _service(service).get("volumes") or [] if "blog_vault" in str(v)]
+
+
+def test_the_pipeline_worker_reads_the_vaults_post_folders_read_only():
+    """Rule-based blog selection refuses without the published posts (`blog_content`), and the
+    lane runs only here. The two post folders and nothing else of the vault, and read-only."""
+    from runtime.mvp_runtime import blog_content
+
+    mounts = _vault_mounts("pipeline-worker")
+    targets = sorted(m.rsplit(":", 2)[1] for m in mounts)   # "${VAR:-default}/…:target:ro"
+    assert targets == ["/app/blog_vault/content/naver", "/app/blog_vault/content/tistory"]
+    assert all(m.endswith(":ro") for m in mounts), mounts
+    assert all(m.startswith("${THOMAS_BLOG_VAULT_DIR:-") for m in mounts), mounts
+    environment = _service_environment("pipeline-worker")
+    assert environment.get(blog_content.PUBLISHED_ROOT_ENV) == "/app/blog_vault"
+    # The adapter reads `<root>/content/{naver,tistory}` — the mount targets under that root.
+    root = environment[blog_content.PUBLISHED_ROOT_ENV]
+    assert targets == sorted(f"{root}/content/{p}" for p in blog_content._PUBLISHED_PLATFORM_DIRS)
+
+
+@pytest.mark.parametrize("service", sorted(
+    s for s in yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))["services"]
+    if s != "pipeline-worker"))
+def test_no_other_service_mounts_the_vault(service):
+    assert _vault_mounts(service) == []
+    assert "MVP_BLOG_PUBLISHED_ROOT" not in (_service(service).get("environment") or {})

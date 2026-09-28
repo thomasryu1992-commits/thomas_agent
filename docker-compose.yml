@@ -561,6 +561,15 @@ services:
       # relative default would scatter packages across build directories. The dir must be
       # writable by uid 10001 (chown once at adoption; state_guard's rule, same reason).
       - ${THOMAS_WORKSPACE_DIR:-./workspace}:/app/workspace
+      # The blog lane's published posts (Thomas 2026-09-28): rule-based keyword selection
+      # excludes every keyword the vault already wrote, and refuses without this source
+      # (PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE). Only the two post folders, read-only — the
+      # rest of the vault (analytics, portfolio, paste packages) has no business in a
+      # container. THOMAS_BLOG_VAULT_DIR is the host vault root, absolute in the .env like the
+      # others. Unset, the relative default is an empty folder in the deploy tree, and the
+      # adapter reads "no posts" as unavailable rather than as "nothing was ever published".
+      - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/content/naver:/app/blog_vault/content/naver:ro
+      - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/content/tistory:/app/blog_vault/content/tistory:ro
     healthcheck:
       test: ["CMD", "test", "-S", "/app/.runtime_governance_state/internal/pipeline.sock"]
       interval: 60s
@@ -605,6 +614,9 @@ services:
       # their standing exclusion (test_deployment_env_passthrough's NOT_DEPLOYED carries
       # the reasoning). Unset = the dry-run writer, exactly the pre-decision lane.
       MVP_WORKSPACE_WRITER: ${MVP_WORKSPACE_WRITER:-}
+      # Where the read-only vault mount above lands. A literal, not a passthrough: it names a
+      # path inside this container, which only this file decides.
+      MVP_BLOG_PUBLISHED_ROOT: /app/blog_vault
       # Read-only web search (optional), same Safety-Flag Gate.
       MVP_SEARCH_TOOL: ${MVP_SEARCH_TOOL:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}

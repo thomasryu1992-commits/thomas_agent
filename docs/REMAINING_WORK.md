@@ -4878,8 +4878,9 @@ nothing publishes, and no schedule was added. Items 1–8 below and B9 are fixed
 Still open before any revival:
 
 - The seeds are still the schedule's fixed request column, and the vault queue is not wired in.
-- `thomas-pipeline-worker` does not mount the vault, so rule-based selection there refuses until
-  a deployment decision mounts it.
+- ~~`thomas-pipeline-worker` does not mount the vault~~ — mounted 2026-09-28 (Thomas): the two post
+  folders, read-only, from `THOMAS_BLOG_VAULT_DIR` in the host `.env`
+  (`docs/history/2026-09-28-blog-vault-mount.md`).
 - The runtime has no blog-SERP reach gate like `kw_pipeline`'s. With `compIdx` gone, selection
   can pick a head term with a million competing posts.
 
