@@ -326,3 +326,57 @@ def test_body_chars_is_prose_only_in_the_text_measurement_too():
     text = "## 소제목\n\n본문 열 글자입니다.\n\n[캡처: 아주 긴 캡처 설명 문구]\n\n#태그하나 #태그둘"
     assert blog_draft_score.measure(text)["body_chars"] == len("본문열글자입니다.")
     assert blog_draft_score.STANDARDS_VERSION == "blog_draft_standards.2026-09-28"
+
+
+# --- what the first real package showed (2026-09-28) ----------------------------------------
+
+def test_a_blocked_revision_keeps_the_pipelines_own_reason(monkeypatch):
+    """The first package's revision died as `REVISION_BLOCKED:IDEATION_REVISION_BLOCKED`; the
+    pipeline's PROVIDER_ERROR and its message were in the run result and nowhere after it."""
+    short = json.dumps(_draft(sections=2, per_section=1), ensure_ascii=False)
+    calls: list[str] = []
+
+    def fake_run_task(request, **kwargs):
+        calls.append(kwargs["request_kind"])
+        if len(calls) == 1:
+            return _run_result(short)
+        return {"status": "BLOCKED", "records": {},
+                "block": {"stage": "worker", "reason_code": "PROVIDER_ERROR",
+                          "message": "every provider in the chain failed: openrouter HTTP 429; "
+                                     "google_ai_studio HTTP 503; groq HTTP 429"}}
+
+    monkeypatch.setattr(blog_content, "run_task", fake_run_task)
+    sheet = blog_content.run_content_ideation(
+        {"seeds": f"target={TARGET}"}, now=NOW, published_source=_StaticSource())
+    quality = sheet["package"]["quality"]
+    assert quality["revision_outcome"] == "REVISION_BLOCKED:PROVIDER_ERROR"
+    assert "groq HTTP 429" in quality["revision_detail"]
+    assert "자동 수정이 막힌 이유: every provider" in blog_content.render_post_md(sheet["package"])
+    validate_against_schema(sheet["package"], SCHEMA, "blog_content_package")
+
+
+def test_a_blocked_content_run_names_the_inner_reason_and_its_message(monkeypatch):
+    monkeypatch.setattr(blog_content, "run_task", lambda request, **k: {
+        "status": "BLOCKED", "records": {},
+        "block": {"reason_code": "VALIDATION_REVISE", "message": "Missing required sections"}})
+    with pytest.raises(ToolError) as exc:
+        blog_content._run("content", "r", blocked_code=blog_content.IDEATION_CONTENT_BLOCKED)
+    assert exc.value.reason_code == blog_content.IDEATION_CONTENT_BLOCKED
+    assert "VALIDATION_REVISE — Missing required sections" in exc.value.reason
+    assert exc.value.data == {"inner_reason_code": "VALIDATION_REVISE",
+                              "inner_message": "Missing required sections"}
+
+
+def test_post_md_marks_the_chosen_keyword_whatever_its_spacing():
+    """The queue spells '사업자등록증 발급', Search Ad '사업자등록증발급' — the first package
+    listed its own choice as a plain candidate."""
+    selection = blog_content.selection_evidence(
+        None, {"rule": "r", "considered": [
+            {"keyword": "사업자등록증발급", "monthly_total": 26500, "ad_competition": "높음",
+             "low_volume": False, "excluded_because": None},
+            {"keyword": "퇴직금지급기준", "monthly_total": 32830, "ad_competition": "높음",
+             "low_volume": False, "excluded_because": None}]},
+        selected_keyword="사업자등록증 발급", mode="rule", seeds=[], now=NOW)
+    lines = blog_content._render_selection_evidence(selection)
+    assert any("사업자등록증발급" in ln and ln.endswith("— 선정") for ln in lines)
+    assert any("퇴직금지급기준" in ln and ln.endswith("— 후보") for ln in lines)
