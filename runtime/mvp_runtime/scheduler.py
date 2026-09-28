@@ -1113,6 +1113,9 @@ def format_ideation_sheet(reply: Mapping[str, Any]) -> str:
         f"standards : {'PASS' if score.get('critical_pass') else 'MISS'} "
         f"({score.get('standards_version')})",
     ]
+    if score.get("quality_state"):
+        lines.append(f"quality   : {score['quality_state']}"
+                     " (a draft for review either way; nothing is published)")
     if not score.get("critical_pass"):
         lines += ["", "critical criteria missed — the package is recorded, not discarded:"]
         lines += [f"  {line}" for line in (reply.get("scorecard_lines") or [])
@@ -1985,7 +1988,8 @@ def _execute(
         score = reply.get("score") or {}
         return (f"content_ideation={reply.get('package_id')} "
                 f"keyword={reply.get('target_keyword')!r} "
-                f"standards={'pass' if score.get('critical_pass') else 'miss'}{delivery}")
+                f"standards={'pass' if score.get('critical_pass') else 'miss'} "
+                f"quality={score.get('quality_state') or '-'}{delivery}")
     if schedule.kind == KIND_CANDLE_ARCHIVE:
         # Read-only, and the archive feeds nothing — so this fire cannot change what the
         # runtime trades. What it can do is fail to keep a bar that will not be offered

@@ -95,8 +95,11 @@ def _build(draft=DRAFT, *, target="미리캔버스 포스터", selection_record=
     selection_record = _brief() if selection_record is None else selection_record
     target_record = _target_brief(target) if target_record is None else target_record
     _k, reasoning = blog_content.select_target_keyword(selection_record.get("metrics") or [])
+    interpreted = blog_content.interpret_draft(draft, target)
     return blog_content.build_package(
-        target_keyword=target, draft=draft,
+        target_keyword=target, draft=interpreted,
+        quality=blog_content.quality_record(interpreted, first_failures=interpreted["failures"],
+                                            revision_count=0, revision_outcome=None),
         selection=blog_content.selection_evidence(
             selection_record, reasoning, selected_keyword=target, mode="rule",
             seeds=["미리캔버스 포스터"], now=NOW),
@@ -477,7 +480,13 @@ def test_the_weekly_run_reaches_the_pipeline_as_the_scheduler_and_hands_it_strin
     assert sheet["target_keyword"] == "미리캔버스 포스터"
     assert briefs == ["미리캔버스 포스터, 포스터 만들기", "미리캔버스 포스터"]
     profile = pipeline_worker._ACTOR_PROFILES[pipeline_worker.SCHEDULER_PROFILE]
-    assert [c["request_kind"] for c in calls] == ["research", "content"]
+    # The mock answers in prose, not the structured contract, so the one revision runs — and
+    # only one — without re-running the Naver brief.
+    assert [c["request_kind"] for c in calls] == ["research", "content", "content"]
+    assert "keyword_seeds" not in calls[2]
+    assert sheet["package"]["quality"]["revision_count"] == 1
+    assert sheet["package"]["quality"]["quality_state"] == "needs_edit"
+    assert sheet["lineage"]["revision_trace_id"] not in (None, sheet["lineage"]["content_trace_id"])
     for call in calls:
         assert (call["requester_id"], call["requester_type"], call["channel"]) == (
             profile["requester_id"], profile["requester_type"], profile["channel"])
@@ -492,4 +501,4 @@ def test_the_weekly_run_reaches_the_pipeline_as_the_scheduler_and_hands_it_strin
     assert lineage["target_research_trace_id"] == lineage["content_trace_id"]
     assert sheet["target_evidence"]["keyword"] == "미리캔버스 포스터"
     assert set(sheet["trace_ids"]) == {lineage["selection_research_trace_id"],
-                                       lineage["content_trace_id"]}
+                                       lineage["content_trace_id"], lineage["revision_trace_id"]}

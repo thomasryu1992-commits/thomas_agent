@@ -42,15 +42,16 @@ measuring, not discarding.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from runtime.read_only_kernel import integrity
+from runtime.read_only_kernel import integrity, schema_validation
 
-from . import blog_draft_score, naver_research, timeutil
+from . import blog_draft, blog_draft_score, naver_research, timeutil
 from .errors import MvpRuntimeError, ToolError
 from .pipeline import run_task
 
@@ -94,6 +95,7 @@ NO_ELIGIBLE_KEYWORD = "NO_ELIGIBLE_KEYWORD"
 PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE = "PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE"
 IDEATION_RESEARCH_BLOCKED = "IDEATION_RESEARCH_BLOCKED"
 IDEATION_CONTENT_BLOCKED = "IDEATION_CONTENT_BLOCKED"
+IDEATION_REVISION_BLOCKED = "IDEATION_REVISION_BLOCKED"
 BLOG_PACKAGE_SCHEMA_INVALID = "BLOG_PACKAGE_SCHEMA_INVALID"
 
 __all__ = [
@@ -529,38 +531,102 @@ def _parse_draft(draft: str) -> dict[str, Any]:
     }
 
 
-def _title_candidates(draft: str, target_keyword: str, parsed: Mapping[str, Any]) -> list[str]:
-    """At least one title, because the schema requires it and a package without one is unusable.
+_TITLE_RE = re.compile(r"^\s{0,3}#\s+(?P<text>.+?)\s*$")
 
-    The first heading is the draft's own title when it has one; the keyword is the fallback, so
-    this never returns empty for a draft that produced any text at all.
-    """
+
+def _legacy_title_candidates(draft: str) -> list[str]:
+    """Titles from a prose draft: its level-1 headings (``# …``) only.
+
+    Every heading used to qualify, so a section called '프롬프트 만들기' was offered as the post's
+    title. A section heading is a section; a draft with no ``#`` title line yields no candidate,
+    and the quality check names the gap rather than a heading standing in for one."""
     titles: list[str] = []
-    for para in re.split(r"\n\s*\n", draft or ""):
-        match = _HEADING_RE.match(para.strip())
+    for line in (draft or "").splitlines():
+        match = _TITLE_RE.match(line)
         if match:
             text = match.group("text").strip()
             if text and text not in titles:
-                titles.append(text)
-        if len(titles) >= MAX_TITLES:
-            break
-    if not titles:
-        first = (parsed.get("body_paste") or "").split("\n", 1)[0].strip()
-        titles = [first[:80]] if first else [target_keyword]
+                titles.append(text[:100])
     return titles[:MAX_TITLES]
+
+
+def interpret_draft(
+    text: str, target_keyword: str, records: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """One model answer as the package's parts, its measurement and what it fails. Pure.
+
+    The structured JSON contract (`blog_draft`) is the primary path; a draft that is not a
+    usable JSON document goes through the legacy regex parser and is recorded as such — and
+    failing the structured contract is itself one of the draft's failures, so it is what the
+    one revision is asked to fix first. ``records`` is the run's own record set: sources and
+    fact-check references resolve against the evidence THAT run had, never another run's."""
+    index = blog_draft.evidence_index(records)
+    structured, parse_reason = blog_draft.parse_structured(text)
+    if structured is not None:
+        rendered = blog_draft.render_blocks(structured)
+        sources = blog_draft.resolve_sources(structured["sources"], index)
+        prose = list(structured["intro"]) + [
+            p for section in structured["sections"] for p in section["paragraphs"]]
+        measured = blog_draft_score.measure_structured(
+            intro=structured["intro"], sections=structured["sections"],
+            image_count=len(rendered["image_shots"]), tags=structured["tags"],
+            source_count=len(sources), keyword=target_keyword)
+        parts = {
+            "draft_format": blog_draft.DRAFT_FORMAT_STRUCTURED,
+            "title_candidates": structured["title_candidates"],
+            "body_paste": rendered["body_paste"],
+            "body_blocks": rendered["body_blocks"][:MAX_BODY_BLOCKS],
+            "tags": structured["tags"][:MAX_TAGS],
+            "image_shots": rendered["image_shots"],
+            "sources": sources,
+            "fact_checks": blog_draft.fact_checks(structured["fact_checks"], prose, index),
+            "structured": structured,
+        }
+    else:
+        parsed = _parse_draft(text)
+        paragraphs = [p for p in parsed["body_paste"].split("\n\n") if p.strip()]
+        heading_indexes = {b["paragraph_index"] for b in parsed["body_blocks"]}
+        prose = [p for i, p in enumerate(paragraphs) if i not in heading_indexes]
+        measured = blog_draft_score.measure(text, target_keyword)
+        parts = {
+            "draft_format": blog_draft.DRAFT_FORMAT_LEGACY,
+            "parse_reason": parse_reason,
+            "title_candidates": _legacy_title_candidates(text),
+            "body_paste": parsed["body_paste"],
+            "body_blocks": parsed["body_blocks"],
+            "tags": parsed["tags"],
+            "image_shots": parsed["image_shots"],
+            "sources": [],
+            "fact_checks": blog_draft.fact_checks([], prose, index),
+            "structured": None,
+        }
+    failures = list(blog_draft_score.critical_failures(measured))
+    if len(parts["title_candidates"]) < blog_draft.MIN_TITLES:
+        failures.append("title_candidates")
+    if parts["draft_format"] != blog_draft.DRAFT_FORMAT_STRUCTURED:
+        failures.append("structured_output")
+    parts.update({"measured": measured, "failures": failures})
+    return parts
 
 
 def build_package(
     *,
     target_keyword: str,
-    draft: str,
+    draft: Mapping[str, Any],
     selection: Mapping[str, Any],
     target: Mapping[str, Any],
     lineage: Mapping[str, Any],
+    quality: Mapping[str, Any],
     now: str,
 ) -> dict[str, Any]:
-    """Assemble one `blog_content_package.v0.2`. Pure — no ledger, no clock, no I/O."""
-    parsed = _parse_draft(draft)
+    """Assemble one `blog_content_package.v0.2` from an :func:`interpret_draft` result. Pure —
+    no ledger, no clock, no I/O.
+
+    ``title_candidates`` has minItems 1 in the schema, and a draft that produced no title is
+    still a package worth reviewing — so the target keyword stands in, and the quality record
+    already names `title_candidates` as a failure (the package is `needs_edit`)."""
+    titles = list(draft.get("title_candidates") or []) or [target_keyword]
+    body = str(draft.get("body_paste") or "") or target_keyword
     package: dict[str, Any] = {
         "schema_version": PACKAGE_SCHEMA_VERSION,
         "created_at_utc": now,
@@ -568,14 +634,14 @@ def build_package(
         "selection_evidence": dict(selection),
         "target_evidence": dict(target),
         "lineage": dict(lineage),
-        "title_candidates": _title_candidates(draft, target_keyword, parsed),
-        "body_paste": parsed["body_paste"],
-        "body_blocks": parsed["body_blocks"],
-        "tags": parsed["tags"],
-        "image_shots": parsed["image_shots"],
-        # The draft's own sourcing is not machine-extractable from plain text, and inventing
-        # entries would be worse than an empty list the operator can see is empty.
-        "fact_checks": [],
+        "title_candidates": titles[:MAX_TITLES],
+        "body_paste": body,
+        "body_blocks": list(draft.get("body_blocks") or [])[:MAX_BODY_BLOCKS],
+        "tags": list(draft.get("tags") or [])[:MAX_TAGS],
+        "image_shots": list(draft.get("image_shots") or [])[:MAX_IMAGE_SHOTS],
+        "sources": list(draft.get("sources") or []),
+        "fact_checks": list(draft.get("fact_checks") or [])[:MAX_FACT_CHECKS],
+        "quality": dict(quality),
         "publish_state": "draft",
     }
     package["package_id"] = integrity.short_id("bcp", {
@@ -584,6 +650,33 @@ def build_package(
         "created_at_utc": now,
     })
     return package
+
+
+def quality_record(
+    final: Mapping[str, Any],
+    *,
+    first_failures: Sequence[str],
+    revision_count: int,
+    revision_outcome: str | None,
+) -> dict[str, Any]:
+    """What the package's reviewer needs to know about the draft's quality, in one place.
+
+    `ready_for_review` only when the final draft cleared every critical standard AND the
+    structural contract (three titles, structured output); otherwise `needs_edit`. Neither
+    state publishes anything — both are a draft waiting for a human."""
+    record: dict[str, Any] = {
+        "standards_version": blog_draft_score.STANDARDS_VERSION,
+        "draft_format": final["draft_format"],
+        "quality_state": "ready_for_review" if not final["failures"] else "needs_edit",
+        "critical_pass": not blog_draft_score.critical_failures(final["measured"]),
+        "failures": list(final["failures"]),
+        "first_draft_failures": list(first_failures),
+        "revision_count": int(revision_count),
+        "measured": {k: int(v) for k, v in final["measured"].items()},
+    }
+    if revision_outcome:
+        record["revision_outcome"] = revision_outcome[:120]
+    return record
 
 
 def render_paste_txt(package: Mapping[str, Any]) -> str:
@@ -604,33 +697,49 @@ def render_post_md(package: Mapping[str, Any]) -> str:
     lines += ["", "## 선정 근거 (후보 비교 — 아래 숫자는 각 후보의 것)"]
     lines += _render_selection_evidence(package.get("selection_evidence") or {})
 
-    lines += ["", "## 제목 후보"]
+    quality = package.get("quality") or {}
+    if quality:
+        state = quality.get("quality_state")
+        lines += ["", f"## 품질 상태: {state}"]
+        lines += [f"- 기준: {quality.get('standards_version')} · 초안 형식: {quality.get('draft_format')}"
+                  f" · 자동 수정 {quality.get('revision_count')}회"
+                  + (f" ({quality['revision_outcome']})" if quality.get("revision_outcome") else "")]
+        if quality.get("failures"):
+            lines += [f"- ⚠ 남은 미달 항목: {', '.join(quality['failures'])} — 발행 전 직접 손볼 것"]
+
+    lines += ["", "## 제목 후보 (소제목과 별개)"]
     lines += [f"{i}. {t}" for i, t in enumerate(package.get("title_candidates") or [], start=1)]
 
-    lines += ["", "## 본문 (PASTE.txt와 동일)", "", str(package.get("body_paste") or "")]
-
-    blocks = package.get("body_blocks") or []
-    if blocks:
-        lines += ["", "## 편집 지시"]
-        lines += [f"- {b.get('paragraph_index')}번째 문단: {b.get('action')} — {b.get('note')}"
-                  for b in blocks]
+    headings = {b.get("paragraph_index") for b in package.get("body_blocks") or []
+                if b.get("action") == "heading"}
+    paragraphs = str(package.get("body_paste") or "").split("\n\n")
+    lines += ["", "## 본문 (소제목 표시는 이 파일에만 — PASTE.txt는 기호 없음)", ""]
+    lines += [f"### {p}" if i in headings else p for i, p in enumerate(paragraphs)]
 
     shots = package.get("image_shots") or []
     if shots:
         lines += ["", "## 캡처 지시 (이미지 생성이 아니라 실제 화면 캡처)"]
         lines += [f"- {s.get('after_paragraph')}번째 문단 뒤: {s.get('what_to_capture')}"
-                  f" ({s.get('tool_name')})" for s in shots]
+                  + (f" ({s['tool_name']})" if s.get("tool_name") else "") for s in shots]
 
     tags = package.get("tags") or []
     if tags:
         lines += ["", "## 태그", " ".join(f"#{t}" for t in tags)]
 
+    sources = package.get("sources") or []
+    lines += ["", "## 출처 (이 실행의 근거로 확인된 것만)"]
+    lines += ([f"- {s.get('source_ref')} {s.get('title') or ''} {s.get('url') or ''}".rstrip()
+               for s in sources] or ["- (확인된 출처 없음)"])
+
     checks = package.get("fact_checks") or []
-    lines += ["", "## 발행 전 확인"]
+    lines += ["", "## 발행 전 확인 (자동 판정 아님 — 사람이 1차 출처로 확인)"]
     if checks:
-        lines += [f"- [ ] {c.get('claim')} — {c.get('why')}" for c in checks]
+        for c in checks:
+            state = c.get("verification_state", "needs_manual_verification")
+            ref = f" · 근거 {c['source_ref']}" if c.get("source_ref") else ""
+            lines.append(f"- [ ] {c.get('claim')} — {c.get('why')} ({state}{ref})")
     else:
-        lines += ["- (기계 추출된 검증 문장 없음 — 가격·무료범위·기능 문장을 직접 표시할 것)"]
+        lines += ["- (표시된 변동 정보 문장 없음 — 가격·무료범위·기능 문장이 있는지 직접 볼 것)"]
 
     lines += ["", f"---", f"package_id: {package.get('package_id')} · publish 후: "
               f"`python -m scripts.record_published_url --package-id {package.get('package_id')} --url <URL>`"]
@@ -742,6 +851,71 @@ def _no_eligible_message(reasoning: Mapping[str, Any]) -> str:
     return f"no keyword had measured demand and was unused; considered {len(considered)} ({detail})"
 
 
+# The revision request carries the whole first draft back to the model; intake refuses a
+# request over `intake.MAX_REQUEST_CHARS` (20,000), so the revision is skipped — and says so —
+# rather than truncating the draft it is meant to revise.
+MAX_REVISION_REQUEST_CHARS = 19_000
+
+_FAILURE_ASKS = {
+    "body_chars": "본문 문단(도입·섹션 문단)의 글자수 합을 공백 제외 1,800~3,500자로 맞춰라",
+    "headings": "섹션(소제목)을 4~7개로 맞춰라",
+    "para_chars": "문단 평균 길이를 공백 제외 70~150자로 맞춰라(긴 문단은 나누고 짧은 문단은 합쳐라)",
+    "title_candidates": "title_candidates에 소제목과 다른 제목 후보를 3~5개 넣어라(타깃 키워드를 앞쪽에 자연스럽게)",
+    "structured_output": "content_draft를 지정한 JSON 객체 하나로만 출력하라(설명·마크다운 금지)",
+}
+
+_DRAFT_SHAPE = (
+    '{"title_candidates": ["제목 후보 3~5개"], "intro": ["도입 문단"], '
+    '"sections": [{"heading": "소제목", "paragraphs": ["문단"]}], "tags": ["태그(# 없이)"], '
+    '"image_shots": [{"after_section": 0, "what_to_capture": "캡처할 실제 화면", "tool_name": null}], '
+    '"fact_checks": [{"claim": "본문 문장", "why": "확인이 필요한 이유", "source_ref": null}], '
+    '"sources": [{"source_ref": "[S1]", "title": null}]}'
+)
+
+
+def content_request(target: str) -> str:
+    """The blog request: the structured contract, the standards, and the no-invention rule."""
+    return (
+        f"'{target}' 키워드로 네이버 블로그 글 초안을 작성해라. content_draft 필드에는 아래 형식의 "
+        f"JSON 객체 하나만 문자열로 넣어라(마크다운·설명 금지): {_DRAFT_SHAPE}\n"
+        f"규칙: title_candidates는 소제목과 별개인 글 제목 3~5개이고 각각 '{target}'를 앞쪽에 "
+        "자연스럽게 포함한다. sections 4~7개, 도입·섹션 문단 합계 공백 제외 1,800~3,500자, 문단 "
+        "10~20개·문단당 70~150자, image_shots 4~8개(after_section은 0부터 센 섹션 번호, 생성 "
+        "이미지가 아니라 실제 화면 캡처), 표 1개(행을 ' | '로 구분한 문단), tags 3~8개, sources "
+        "2~5개. 가격·무료 범위·사용 한도·기능 제공 여부·정책·버전·날짜를 쓴 문장은 모두 "
+        "fact_checks에 넣어라. 근거 블록([S#]·[K#])에 없는 수치·가격·출처를 지어내지 마라 — "
+        "근거가 없으면 source_ref를 null로 둬라. 문단 안에 #, **, > 같은 마크다운 기호를 쓰지 마라."
+    )
+
+
+def revision_request(target: str, first: Mapping[str, Any], text: str) -> str:
+    """The one revision's request: only the failed items, the facts frozen, the draft attached."""
+    measured = first.get("measured") or {}
+    asks = [f"- {_FAILURE_ASKS.get(f, f)} (현재 {measured.get(f, '-')})" for f in first["failures"]]
+    previous = (json.dumps(first["structured"], ensure_ascii=False)
+                if first.get("structured") is not None else text)
+    return (
+        f"아래 '{target}' 네이버 블로그 초안을 고쳐라. 고칠 항목은 다음뿐이다:\n" + "\n".join(asks)
+        + "\n사실·수치·가격·날짜·출처는 바꾸지 말고 새 사실이나 새 출처를 추가하지 마라. 분량을 "
+        "늘릴 때는 설명·예시·절차를 풀어 써라. content_draft에는 같은 JSON 형식으로 전체 초안을 "
+        f"다시 넣어라: {_DRAFT_SHAPE}\n이전 초안:\n{previous}"
+    )
+
+
+def _draft_text(result: Mapping[str, Any]) -> str:
+    """The Role's deliverable itself — `content_draft` — not the rendered reply.
+
+    The rendered `final_response` wraps the draft in a `## Draft` heading and appends the
+    run's review sections, and the lane used to parse and SCORE that whole reply as the post.
+    It is only the fallback for a run whose agent output did not carry the key."""
+    records = result.get("records") or {}
+    rso = (records.get("agent_output") or {}).get("role_specific_output") or {}
+    draft = rso.get("content_draft")
+    if isinstance(draft, str) and draft.strip():
+        return draft
+    return str(result.get("final_response") or "")
+
+
 def _run(kind: str, request: str, *, blocked_code: str, **kwargs: Any) -> dict[str, Any]:
     result = run_task(request, request_kind=kind, **kwargs)
     if result.get("status") != "COMPLETED":
@@ -832,43 +1006,79 @@ def run_content_ideation(
         raise ToolError(NO_ELIGIBLE_KEYWORD, _no_eligible_message(reasoning))
 
     mode = "operator_override" if target_override else "rule"
+    # The content leg runs the brief on the target (`keyword_seeds=target`), so the target's
+    # own evidence is gathered inside the same governed run that drafts against it.
     content = _run(
-        "content",
-        f"'{target}' 키워드로 네이버 블로그 글 초안을 작성해라. "
-        f"소제목 4~7개, 본문 1,800자 이상, 이미지 지시는 [캡처: …] 형식으로 넣어라.",
+        "content", content_request(target),
         blocked_code=IDEATION_CONTENT_BLOCKED,
         keyword_seeds=target,   # `run_task` has no `naver_keywords`; the brief keyword is `keyword_seeds`
         **common,
     )
-    draft = str(content.get("final_response") or "")
+    content_records = content.get("records") or {}
+    first = interpret_draft(_draft_text(content), target, content_records)
+
+    # At most ONE automatic revision, and only when the first draft missed something that
+    # gates (a critical standard, the structured contract, the three titles). The request
+    # names only what failed. Whatever the revision returns, the fire ends with a package:
+    # `needs_edit` is a state for a human, not a reason to hide the draft.
+    final = first
+    revision: Mapping[str, Any] | None = None
+    revision_outcome: str | None = None
+    if first["failures"]:
+        request = revision_request(target, first, _draft_text(content))
+        if len(request) > MAX_REVISION_REQUEST_CHARS:
+            revision_outcome = "REVISION_SKIPPED:REQUEST_TOO_LONG"
+        else:
+            revision_common = {k: v for k, v in common.items() if k != "source_ref"}
+            try:
+                revision = _run(
+                    "content", request, blocked_code=IDEATION_REVISION_BLOCKED,
+                    source_ref=f"{common['source_ref']}:revision", **revision_common,
+                )
+            except ToolError as exc:
+                revision_outcome = f"REVISION_BLOCKED:{exc.reason_code}"
+            else:
+                second = interpret_draft(_draft_text(revision), target, revision.get("records"))
+                if (second["draft_format"] != blog_draft.DRAFT_FORMAT_STRUCTURED
+                        and first["draft_format"] == blog_draft.DRAFT_FORMAT_STRUCTURED):
+                    # A revision that lost the structure is worse than the draft it revised.
+                    revision_outcome = "REVISION_UNSTRUCTURED:KEPT_FIRST_DRAFT"
+                else:
+                    final = second
+                    revision_outcome = "REVISED" if not second["failures"] else "REVISED_STILL_FAILING"
 
     # The target's evidence is the content run's OWN brief (`keyword_seeds=target`), which was
     # previously discarded in favour of the selection brief. The selection brief stays, as what
     # it is: the comparison the choice was made from.
-    target_record = (content.get("records") or {}).get("keyword_research")
+    target_record = content_records.get("keyword_research")
     content_trace = _trace_id(content)
     lineage = {
         "selection_research_trace_id": _trace_id(research) if research is not None else None,
         "target_research_trace_id": content_trace if target_record is not None else None,
         "content_trace_id": content_trace,
-        "revision_trace_id": None,
+        "revision_trace_id": _trace_id(revision) if revision is not None else None,
     }
+    quality = quality_record(final, first_failures=first["failures"],
+                             revision_count=1 if revision is not None else 0,
+                             revision_outcome=revision_outcome)
     package = build_package(
-        target_keyword=target, draft=draft,
+        target_keyword=target, draft=final,
         selection=selection_evidence(keyword_record, reasoning, selected_keyword=target,
                                      mode=mode, seeds=seeds, now=now),
         target=target_evidence(target, target_record, now=now),
-        lineage=lineage, now=now,
+        lineage=lineage, quality=quality, now=now,
     )
-    # Scored on the draft the model produced, NOT on `body_paste`: the paste body has had its
-    # capture markers and tag lines lifted out, so scoring it would report zero images and zero
-    # hashtags for a draft that has both.
-    measured = blog_draft_score.measure(draft, target)
-    lines, critical_pass = blog_draft_score.scorecard(measured)
+    try:
+        schema_validation.validate_against_schema(
+            package, package_schema_path(PACKAGE_SCHEMA_VERSION, repo_root), "blog_content_package")
+    except schema_validation.RuntimeSchemaError as exc:
+        raise ToolError(BLOG_PACKAGE_SCHEMA_INVALID, str(exc)) from exc
+    lines, critical_pass = blog_draft_score.scorecard(final["measured"])
     score = {
         "standards_version": blog_draft_score.STANDARDS_VERSION,
         "critical_pass": bool(critical_pass),
-        "measured": measured,
+        "quality_state": quality["quality_state"],
+        "measured": final["measured"],
     }
 
     if ledger is not None:
