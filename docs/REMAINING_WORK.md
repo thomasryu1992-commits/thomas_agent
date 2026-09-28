@@ -4819,8 +4819,34 @@ reproduces the same failure. With the row off the lane accrues no evidence, so D
 (2026-11-25, `docs/proposals/SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md`) will find none; that review
 decides between removal and revival.
 
-A four-PR plan (target evidence, structured output with one automatic revision, rank feedback, a
-content budget and KPIs) was proposed the same day and is shelved with the lane. Its premises were
+**Fixed in code 2026-09-28 (Thomas's request) — the lane is still held.** The row stays disabled,
+nothing publishes, and no schedule was added. Items 1–8 below and B9 are fixed on `origin/main`
+(`docs/history/2026-09-28-blog-lane-correctness.md`):
+
+- Selection gates on measured demand only; `compIdx` is recorded as `ad_competition` and gates
+  nothing. "Already written" is the ledger UNION the vault's post front matter
+  (`MVP_BLOG_PUBLISHED_ROOT`, matched with `kw_pipeline.covered_by`'s rule). With no published
+  source configured, rule-based selection refuses (`PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE`).
+- `blog_content_package.v0.2` splits `selection_evidence` from `target_evidence`, which comes
+  from the content run's own brief. Volume, blog post count and trend are the target's own, or
+  `status: missing`. The package also carries `lineage`.
+- The draft is a JSON contract inside the role's `content_draft` string, and the role contract is
+  unchanged. Titles are their own field. One bounded revision runs, and the result is
+  `quality_state` `ready_for_review` or `needs_edit`. Fact checks are generated and never marked
+  verified.
+- A `blog_content` token profile (16,000) applies to content runs only.
+- Phase 4 is a record only: `blog_rank_snapshot.v0.1` plus `scripts/track_blog_rank.py`, run by
+  hand. Nothing is scheduled.
+
+Still open before any revival:
+
+- The seeds are still the schedule's fixed request column, and the vault queue is not wired in.
+- `thomas-pipeline-worker` does not mount the vault, so rule-based selection there refuses until
+  a deployment decision mounts it.
+- The runtime has no blog-SERP reach gate like `kw_pipeline`'s. With `compIdx` gone, selection
+  can pick a head term with a million competing posts.
+
+The four-PR plan below was proposed on 2026-09-27 and shelved with the lane. Its premises were
 checked against the code first. These are real, and deliberately not fixed while the lane is held —
 a revival starts here, after the keyword source:
 
