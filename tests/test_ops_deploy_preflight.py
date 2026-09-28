@@ -59,7 +59,7 @@ def _host(**over):
         if argv[-1] == "HEAD":
             return 0, facts["tree_head"]
         if argv[-1] == "origin/main":
-            return 0, facts["main"]
+            return (0, facts["main"]) if facts["main"] else (1, "")
         if argv[:2] == ["docker", "compose"]:
             config = {"services": {
                 "scheduler": {"container_name": "thomas-scheduler", "volumes": [
@@ -136,9 +136,26 @@ def test_promote_does_not_stop_on_the_tags_you_created():
     assert "tags" not in levels and "STOP" not in levels.values()
 
 
-def test_a_dirty_tree_stops_and_a_tree_off_main_warns():
+def test_a_dirty_tree_stops():
     assert _levels(pf.preflight(_host(tree_status=" M x.py"), 42, TREE))["tree"] == "STOP"
-    assert _levels(pf.preflight(_host(tree_head="o" * 40), 42, TREE))["tree"] == "WARN"
+
+
+def test_a_clean_tree_off_origin_main_stops_and_the_run_fails(capsys):
+    # A stale, detached or branch tree can be perfectly clean and still ship something other than
+    # origin/main — the procedure's one rule. Clean is not enough.
+    results = pf.preflight(_host(tree_head="o" * 40), 42, TREE)
+    assert _levels(results)["tree"] == "STOP"
+    # The exit code is the tree's doing: the same host with the tree at origin/main exits 0.
+    assert pf.main(["42", "--tree", TREE], run=_host()) == 0
+    assert pf.main(["42", "--tree", TREE], run=_host(tree_head="o" * 40)) == 1
+
+
+def test_a_tree_that_cannot_resolve_origin_main_stops():
+    assert _levels(pf.preflight(_host(main=None), 42, TREE))["tree"] == "STOP"
+
+
+def test_a_clean_tree_exactly_at_origin_main_passes():
+    assert _levels(pf.preflight(_host(), 42, TREE))["tree"] == "PASS"
 
 
 @pytest.mark.parametrize("source", ["./.runtime_governance_state", f"{TREE}/.runtime_governance_state"])
