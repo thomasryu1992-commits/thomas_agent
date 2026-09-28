@@ -80,7 +80,7 @@ from .market_data import (  # noqa: F401
 )
 from .cooldown import CooldownMarkStore
 from .counterfactual import read_counterfactual_outcomes, run_counterfactual_update
-from .forward_book import run_forward_book_update
+from .forward_book import FORWARD_SPEC_UNPARSEABLE, run_forward_book_update
 from .lifecycle import run_lifecycle, split_for_record as lifecycle_split
 from .live_allowance import evaluate_live_allowance
 from .live_pnl import excluded_outcomes_digest, live_outcomes_for_analysis, read_live_outcomes
@@ -494,6 +494,8 @@ def run_crypto_cycle(
     )
     if forward_summary.get("degraded"):
         reason_codes.append(forward_summary["degraded"])
+    if forward_summary.get("unparseable"):
+        reason_codes.append(FORWARD_SPEC_UNPARSEABLE)
 
     # 5) feedback (C6) — every cycle, even a no-trade one. The report reads the
     # store as persisted: in dry-run it honestly reports the durable (empty) truth.
@@ -1072,6 +1074,11 @@ def cycle_status_line(record: dict[str, Any]) -> str:
     excluded = record.get("regime_excluded") or []
     if excluded:
         parts.append(f"regime_excluded={','.join(str(s) for s in excluded)}")
+    # A pool entry the forward book cannot walk is a lineage silently accruing no evidence;
+    # printed only when it happens, like the token above.
+    unwalkable = (record.get("forward_book") or {}).get("unparseable") or []
+    if unwalkable:
+        parts.append(f"forward_unparseable={','.join(str(s) for s in unwalkable)}")
     # Only when the live leg actually did something. A DISABLED leg is every machine that has
     # not been through the operator checklist, and printing it on every line would train the
     # reader to skip exactly the field that matters on the machine where it is not DISABLED.

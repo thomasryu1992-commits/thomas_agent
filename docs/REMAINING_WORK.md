@@ -49,7 +49,9 @@ Earlier the same day, re-measuring **section F** on a candidate store
 that has doubled since it was written. Its question — whether this venue's fee schedule permits a
 fast strategy at all — is answered **yes**: 1h now pays at the median (+0.0241R/trade against
 −0.0185R) and 15m's deficit has more than halved, almost all of it the `stop_atr` floor from #420
-finally reaching the generations minted after it. **What binds is no longer cost.** Zero of the 474
+finally reaching the generations minted after it. **What binds is no longer cost.** *(Superseded
+2026-09-28: on today's store 1h is back to −0.0451R at the median. Its gross edge fell, not its
+cost. See section F.)* Zero of the 474
 candidates carrying the current basis survive their own holdout, and the promotion board reports
 `0 promotable` without being able to say that. Section F carries the numbers and what is open.
 **It does not outrank section C**, which is still what to read first on arrival.
@@ -1752,6 +1754,31 @@ basis — the population has doubled, and two of this section's three claims did
   #420 landed 2026-08-02 and this section judged it the same day — against a store in which
   almost nothing had yet been minted at the new floor.
 - **15m still does not pay at the median.** That claim survives, and only that one.
+
+**Re-measured 2026-09-28** (`main` = `cf254bc3`) over the **1,272** lineages carrying the current
+basis. That basis now includes funding (`funding_1.0bps/8h(venue_history)`). The measure is the
+median per candidate of `backtest_evidence`; lineages are collapsed to their latest row.
+`cost_summary` keeps fees (taker + maker) and slippage but no separate funding total, so funding
+stays inside net and gross here is net + fees + slippage. The columns are separate medians and do
+not sum.
+
+| tf | n | gross | fees | slippage | **total cost** | **net** | was (2026-08-04) |
+|---|---|---|---|---|---|---|---|
+| 1h | 593 | +0.0520 | 0.0738 | 0.0355 | **0.1099** | **−0.0451** | +0.0241 |
+| 4h | 413 | +0.0885 | 0.0315 | 0.0150 | **0.0465** | **+0.0436** | +0.1083 |
+| 1d | 266 | +0.1446 | 0.0113 | 0.0055 | **0.0166** | **+0.1274** | — |
+
+(15m: no candidate carries the current basis.)
+
+- **1h no longer pays at the median.** The claim above ("1h pays") held for the store of
+  2026-08-04 and does not hold now. Only 31% of 1h lineages are net positive, against 69% at 4h and
+  83% at 1d.
+- **What moved is the edge, not the cost.** 1h friction is about what it was (0.1230 → 0.1099R).
+  1h gross fell from +0.1495 to +0.0520R, and 4h gross from +0.1661 to +0.0885R. The store grew
+  from 474 to 1,272 lineages on this basis, and the later generations carry less edge per trade.
+  The mechanism paragraph above still holds: at 1h, friction is twice the gross edge.
+- **Read these as backtest medians over mined survivors,** i.e. selection-biased upward. They rank
+  the timeframes. They are not an estimate of what any one strategy earns.
 
 **By mint date, which is where #420 actually shows up** (`stop_atr` is the 15m median; the cost
 and net columns are per trade):
@@ -4810,6 +4837,45 @@ a revival starts here, after the keyword source:
 6. System review B9 is still open: 8,000 tokens per agent, half of it the output allowance
    (`budgets.py`).
 
+**Re-checked 2026-09-28 against an outside status table — still held, nothing to fix now.** A
+thirteen-row table (pasted by Thomas) graded the lane: schedule off ✅, `written_keywords()` ✅,
+CI ✅, and nine rows ❌. Checked against `origin/main` at `cf254bc3`:
+
+- The nine ❌ rows are real. Six are items 1–6 above, one is Phase 4 below, and two more follow:
+  7. The draft score is recorded, not enforced (`run_content_ideation` → `blog_draft_score`).
+     The module docstring states that as the design ("advisory here, not a gate"), so turning it
+     into a gate is a decision, not a fix.
+  8. The draft is parsed from free-form markdown: `_parse_draft` and `_title_candidates` split it
+     with regexes. The content role returns no structured output.
+- One ✅ holds only inside the lane. `written_keywords()` (#980) reads `blog_content_package` rows
+  from the ledger, and there are none. Every post written so far (69 Naver, 77 Tistory by
+  2026-09-28) lives in the vault (`/root/obsidian-thomas`, one front-matter file per post), which
+  the lane never reads. Enabled as it stands, the lane would pick keywords already published. The
+  "never supplied" note further down is therefore half-closed.
+- The table leaves out the cause of all three failures: the fixed seeds (top of this section).
+  Fixing all nine rows still leaves every fire ending in `NO_ELIGIBLE_KEYWORD`.
+
+Why these stay unfixed: posts are made outside the lane (Thomas 2026-09-27), and that flow
+already covers what the nine rows are about:
+
+- Reach is measured on the live search results, not `compIdx`. `tools/kw_pipeline.py` passes a
+  keyword when the top ten's median daily visitors are ≤ 250 and ≤ 9 titles match it exactly.
+- Used keywords are excluded from the vault's front matter.
+- Facts are checked against primary sources by hand.
+- Structure is checked by `blog-preflight.py` and `blog-variety.py`.
+- Ranks are tracked weekly by `kw_pipeline.py rank`.
+
+Building the same in the lane would make two copies of each, for a lane that is off.
+
+If the lane is revived, the order matters:
+
+1. The keyword source first. Take seeds from the vault queue (`analytics/keywords/queue.md`), and
+   feed `already_written` from the vault's posts as well as the ledger.
+2. Then the target evidence, items 1–4.
+3. Then the rest: items 5–8 and Phase 4.
+
+The natural time to decide is D8's deadline, 2026-11-25. Bring this list to that review.
+
 Authority for the design is `docs/proposals/NAVER_BLOG_CONTENT_LANE_V0.1.md`. This section
 exists because until 2026-08-23 this file did not track the lane **at all** — not one checkbox,
 in a document whose job is "what is still to build". The lane's own proposal carried the
@@ -4867,6 +4933,9 @@ is obvious from the code:
   passes only `{seeds, source_ref}`, so the exclusion list is always empty and the same seed
   set picks the same winner every week. Whoever registers this will want `target=<keyword>` in
   the request, or a remove+add each week — `scheduler_cli` has no `update`.
+  **Half-closed 2026-09-25 (#980):** `written_keywords()` now fills it from the ledger's package
+  rows. Those rows number zero, and the posts actually written live in the vault — see the
+  2026-09-28 re-check near the top of this section.
 
 **Decisions this lane is waiting on** — the code above is inert without them, deliberately: a
 schedule row is a state write, and no row means no fire.

@@ -90,6 +90,10 @@ FORWARD_HISTORY_UNREADABLE = "FORWARD_HISTORY_UNREADABLE"
 FORWARD_HISTORY_TAMPERED = "FORWARD_HISTORY_TAMPERED"
 FORWARD_HISTORY_DUPLICATE = "FORWARD_HISTORY_DUPLICATE"
 FORWARD_STORE_LOCKED = "FORWARD_STORE_LOCKED"
+# An occupying pool entry whose stored spec no longer parses. It cannot be walked, so its
+# lineage accrues no forward evidence; that used to be a bare `continue` nobody could see
+# (system review 2026-09-26). Reported on the summary and the cycle's reason codes.
+FORWARD_SPEC_UNPARSEABLE = "FORWARD_SPEC_UNPARSEABLE"
 
 # Display-only staleness horizon: a lineage tracked this long with zero virtual opens is
 # named in its own context's cycle summary (and nowhere else). 14 days is two 1h lifecycle
@@ -566,12 +570,16 @@ def run_forward_book_update(
         entries = book["entries"]
         settled_rows: list[dict[str, Any]] = []
         opened_ids: list[str] = []
+        unparseable: list[str] = []
         for pool_entry in (pool.get("active_strategies") or []):
             if pool_entry.get("status") not in OCCUPYING_STATUSES or not pool_entry.get("strategy_spec"):
                 continue
             try:
                 spec = StrategySpec.from_dict(pool_entry["strategy_spec"])
-            except Exception:
+            except Exception:  # noqa: BLE001 — observational: name it, never abort the cycle
+                # Before the scope test, because scope is what failed to parse: every context's
+                # cycle names the entry, which is the point — it is a pool fact, not a context's.
+                unparseable.append(str(pool_entry.get("strategy_id") or lineage_key(pool_entry) or "?"))
                 continue
             if symbol not in spec.symbol_scope or spec.timeframe != timeframe:
                 continue
@@ -635,6 +643,7 @@ def run_forward_book_update(
             "open_count": open_count,
             "no_signal": sorted(no_signal),
             **({"expired": expired} if expired else {}),
+            **({"unparseable": sorted(set(unparseable))} if unparseable else {}),
         }
 
     try:

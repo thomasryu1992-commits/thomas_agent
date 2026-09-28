@@ -95,6 +95,13 @@ BACKLOG_REFUSAL_AXES = (
 # why restating this horizon in TRADES would bind 4h hardest (median holdout 23 trades against
 # `robustness.MIN_HOLDOUT_TRADES` = 25) rather than 15m.
 #
+# **The two paragraphs above are dated snapshots, not today's economics.** Re-measured
+# 2026-09-28 the same way (the median per candidate, over the 1,272 lineages on the current
+# basis, which now carries funding): **1h −0.0451R, 4h +0.0436R, 1d +0.1274R**, and no 15m
+# candidate carries the current basis. 1h stopped paying again. Its friction barely moved
+# (0.1230R → 0.1099R), but its gross edge fell from +0.1495R to +0.0520R. `REMAINING_WORK.md` section F
+# keeps the dated series. This moves the constant no more than the 2026-08-04 figures did.
+#
 # **What settles the new number is that the old one was hiding the operator's own decision.**
 # Every one of the five lineages promoted 2026-07-31 sits above 14 days — 40.5, 50.4, 81.4,
 # 107.7 and 127.3 — so the board was refusing to advertise the exact class of thing the
