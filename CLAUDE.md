@@ -115,18 +115,19 @@ leaves a rollback point that really is the image that was running. These rules c
 standing as the guardrails above:
 
 ```
-python3 scripts/ops/deploy_preflight.py <PR#>                  # read-only: merged? RUNNING image vs `latest`? tags free?
+git fetch origin main && git worktree add <tmp> origin/main --detach
+python3 <tmp>/scripts/ops/deploy_preflight.py <PR#>            # read-only: merged? RUNNING image vs `latest`? tags free?
 docker tag thomas-agent-runtime:latest thomas-agent-runtime:rollback-pre-<PR#>
-git worktree add <tmp> origin/main --detach
 docker build -t thomas-agent-runtime:candidate-<PR#> <tmp>
 docker run --rm --entrypoint python thomas-agent-runtime:candidate-<PR#> -c "<assert the fix>"
-python3 scripts/ops/deploy_preflight.py <PR#> --promote --tree <tmp>   # re-read the host, immediately before the promote
+python3 <tmp>/scripts/ops/deploy_preflight.py <PR#> --promote --tree <tmp>   # re-read the host, immediately before the promote
 docker tag thomas-agent-runtime:candidate-<PR#> thomas-agent-runtime:latest
 docker compose -p thomas_agent --env-file /root/thomas_agent/.env -f <tmp>/docker-compose.yml up -d
 git worktree remove <tmp>
 ```
 
-The `deploy` skill walks these in order.
+The `deploy` skill walks these in order. Run the preflight from `<tmp>`, never from the primary
+checkout: that checkout is often far behind origin/main and may not have the script at all.
 
 - **Tag the rollback point before any build.** A build that targets `latest`
   (`docker compose build`, `docker build -t …:latest`) removes the running image from the image

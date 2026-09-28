@@ -10,15 +10,18 @@ preflight runs re-read the host at the points where concurrent sessions have cau
 before. The preflight is read-only (`scripts/ops/deploy_preflight.py`, docstring says why each
 check exists). A `STOP` means stop and report. Never work around one.
 
-1. **Preflight:** `python3 scripts/ops/deploy_preflight.py <N>`. The `rollback` line names what to
-   tag from: `latest`, or an older `rollback-pre-*` when another session built without deploying.
-2. **Rollback point:** `docker tag thomas-agent-runtime:<from> thomas-agent-runtime:rollback-pre-<N>`.
-3. **Clean tree:** `git -C /root/thomas_agent fetch -q origin main && git -C /root/thomas_agent worktree add /root/deploy-<N> origin/main --detach`.
+1. **Clean tree first:** `git -C /root/thomas_agent fetch -q origin main && git -C /root/thomas_agent worktree add /root/deploy-<N> origin/main --detach`.
+   Every later step runs the preflight from this tree. The primary checkout is often far behind
+   origin/main and may not have the script at all (2026-09-28: 42 commits behind, no script).
+2. **Preflight:** `python3 /root/deploy-<N>/scripts/ops/deploy_preflight.py <N>`. The `rollback`
+   line names what to tag from: `latest`, or an older `rollback-pre-*` when another session built
+   without deploying. On a STOP, remove the tree and report.
+3. **Rollback point:** `docker tag thomas-agent-runtime:<from> thomas-agent-runtime:rollback-pre-<N>`.
 4. **Build:** `docker build -t thomas-agent-runtime:candidate-<N> /root/deploy-<N>`. Never `compose up --build`.
 5. **Assert in the image:** call the changed behaviour, don't grep for it:
    `docker run --rm --entrypoint python thomas-agent-runtime:candidate-<N> -c "…"`. A docs-only PR
    needs no deploy. Say so and stop.
-6. **Preflight again:** `python3 scripts/ops/deploy_preflight.py <N> --promote --tree /root/deploy-<N>`.
+6. **Preflight again:** `python3 /root/deploy-<N>/scripts/ops/deploy_preflight.py <N> --promote --tree /root/deploy-<N>`.
    A `promote` STOP means another session redeployed after your tag. Re-read the host. If its
    image already contains your merge, verify that deploy instead of racing it.
 7. **Promote and up**, in one step:
