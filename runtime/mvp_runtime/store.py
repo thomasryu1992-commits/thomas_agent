@@ -109,6 +109,9 @@ _RECORD_KINDS = (
     # writer is behind `filesystem_write`, which is unset on this deployment, so the record IS
     # the artefact until that opens.
     "blog_content_package",
+    # Append-only rank observations of a published package (blog_rank.py). Recorded only;
+    # nothing reads them into keyword selection until several have accumulated.
+    "blog_rank_snapshot",
     "programization_observation", "programization_pattern",
 )
 

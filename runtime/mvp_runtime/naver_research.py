@@ -214,6 +214,8 @@ class CompetitionResult:
     # Naver's reported total matching documents — the competition proxy.
     total_posts: int
     recent_titles: list[str] = field(default_factory=list)
+    # The result links in the order the search returned them — what a rank lookup reads.
+    links: list[str] = field(default_factory=list)
     tool_id: str = COMPETITION_TOOL_ID
     tool_version: str = TOOL_VERSION
     latency_ms: int = 0
@@ -315,7 +317,9 @@ class MockCompetitionTool:
 
     def competition(self, keyword: str, *, display: int, timeout_seconds: int) -> CompetitionResult:
         titles = [f"[목업] {keyword} 관련 글 {i + 1}" for i in range(min(display, 3))]
-        return CompetitionResult(keyword=keyword, total_posts=12_345, recent_titles=titles, latency_ms=0)
+        links = [f"https://blog.naver.com/mock/{100000000 + i}" for i in range(min(display, 3))]
+        return CompetitionResult(keyword=keyword, total_posts=12_345, recent_titles=titles,
+                                 links=links, latency_ms=0)
 
 
 def run_keyword_research(
@@ -867,10 +871,16 @@ class BlogCompetitionTool(_ApiHubTool):
             for item in items
             if isinstance(item, dict) and item.get("title")
         ]
+        links = [
+            str(item.get("link", ""))
+            for item in items
+            if isinstance(item, dict) and item.get("link")
+        ]
         return CompetitionResult(
             keyword=keyword,
             total_posts=max(0, total),
             recent_titles=titles,
+            links=links,
             tool_version=self.tool_version,
             latency_ms=latency_ms,
         )
