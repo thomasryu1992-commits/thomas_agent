@@ -164,10 +164,11 @@ def test_a_degraded_brief_says_which_leg_failed():
 
 # --- which keyword, and why --------------------------------------------------
 
-def test_the_most_searched_winnable_unused_keyword_wins():
+def test_the_most_searched_unused_keyword_wins_whatever_its_ad_competition():
+    """`compIdx` is advertiser bid competition, not blog difficulty (§J). 22,000 used to lose to
+    9,000 because Search Ad rated it 높음; it wins now, and 300 is still below the floor."""
     keyword, reasoning = blog_content.select_target_keyword(_brief()["metrics"])
-    # 22,000 is bigger but its competition is 높음; 300 is below the reporting floor.
-    assert keyword == "미리캔버스 포스터"
+    assert keyword == "포스터 만들기"
     assert reasoning["rule"]
 
 
@@ -177,15 +178,18 @@ def test_every_exclusion_is_recorded_with_its_reason():
     _keyword, reasoning = blog_content.select_target_keyword(
         _brief()["metrics"], already_written=["미리캔버스 포스터"])
     excluded = {c["keyword"]: c["excluded_because"] for c in reasoning["considered"]}
-    assert excluded["미리캔버스 포스터"] == "already written"
-    assert excluded["포스터 만들기"] == "competition high"
+    assert excluded["미리캔버스 포스터"].startswith("already written")
+    assert excluded["포스터 만들기"] is None
     assert excluded["무료 포스터 템플릿"] == "volume below the venue's reporting floor"
+    # The two competition columns ride along, under names that say what they measure.
+    row = next(c for c in reasoning["considered"] if c["keyword"] == "포스터 만들기")
+    assert row["ad_competition"] == "높음" and row["blog_competing_posts"] == 900
 
 
 def test_no_eligible_keyword_is_an_outcome_not_a_fallback():
     """Drafting against a keyword the rule excluded would be worse than reporting none."""
     keyword, _ = blog_content.select_target_keyword(
-        _brief()["metrics"], already_written=["미리캔버스 포스터"])
+        _brief()["metrics"], already_written=["미리캔버스 포스터", "포스터 만들기"])
     assert keyword is None
 
 
@@ -207,9 +211,11 @@ def test_a_keyword_already_drafted_is_read_off_the_ledger_archives_included(tmp_
     assert blog_content.written_keywords(None) == []
 
 
-def test_the_weekly_run_does_not_redraft_a_keyword_the_ledger_already_holds(tmp_path, monkeypatch):
-    """End of the wiring: with last week's package on the ledger, the brief's only winnable
-    keyword is excluded and the fire reports that none qualifies instead of drafting it twice."""
+def test_the_weekly_run_does_not_redraft_a_keyword_the_ledger_or_the_vault_holds(
+        tmp_path, monkeypatch):
+    """End of the wiring: last week's package is on the ledger, the other winnable keyword was
+    published from the vault, and the fire reports that none qualifies instead of drafting
+    either twice."""
     from runtime.mvp_runtime.errors import ToolError
     from runtime.mvp_runtime.store import LedgerStore
 
@@ -224,10 +230,22 @@ def test_the_weekly_run_does_not_redraft_a_keyword_the_ledger_already_holds(tmp_
 
     monkeypatch.setattr(blog_content, "_run", fake_run)
     with pytest.raises(ToolError) as exc:
-        blog_content.run_content_ideation({"seeds": "미리캔버스 포스터, 포스터 만들기"},
-                                          ledger=ledger, now=NOW, repo_root=tmp_path)
+        blog_content.run_content_ideation(
+            {"seeds": "미리캔버스 포스터, 포스터 만들기"}, ledger=ledger, now=NOW,
+            repo_root=tmp_path, published_source=_StaticSource(["포스터만들기"]))
     assert exc.value.reason_code == blog_content.NO_ELIGIBLE_KEYWORD
+    assert "already written: 2" in exc.value.reason
     assert kinds_run == ["research"]            # no content draft was asked for
+
+
+class _StaticSource:
+    """A published-keyword source with fixed contents — the vault adapter's interface."""
+
+    def __init__(self, keywords=(), tags=()):
+        self._published = blog_content.PublishedKeywords(tuple(keywords), tuple(tags))
+
+    def load(self):
+        return self._published
 
 
 # --- the operator's override -------------------------------------------------
@@ -373,6 +391,7 @@ def test_the_weekly_run_reaches_the_pipeline_as_the_scheduler_and_hands_it_strin
         {"seeds": "미리캔버스 포스터, 포스터 만들기"},
         providers={"provider": MockProvider()},
         now=NOW,
+        published_source=_StaticSource(["포스터 만들기"]),
     )
 
     assert sheet["target_keyword"] == "미리캔버스 포스터"

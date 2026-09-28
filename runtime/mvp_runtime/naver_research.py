@@ -59,6 +59,7 @@ import hmac
 import json
 import os
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -124,6 +125,20 @@ _LOW_VOLUME_SENTINEL = "< 10"
 _LOW_VOLUME_VALUE = 5  # midpoint of [0, 10) — deliberately not 0, which would read as "no demand"
 
 _COMPETITION_LEVELS = frozenset({"높음", "중간", "낮음"})
+
+
+def normalize_keyword(keyword: Any) -> str:
+    """The one comparison key for a keyword across Naver's surfaces. Deterministic.
+
+    Search Ad hands back ``relKeyword`` with its spaces removed and its Latin letters upper-
+    cased (the hint ``AI 회계`` comes back as ``AI회계``, ``chatgpt 사용법`` as
+    ``CHATGPT사용법``), while the operator, API HUB and the vault spell the same keyword with
+    spaces and in any case. Comparing the raw strings therefore misses the exact-target row
+    of the very brief that was run on it. NFC first, so a decomposed Hangul syllable and a
+    composed one compare equal; then every whitespace character out; then casefold.
+    """
+    text = unicodedata.normalize("NFC", str(keyword or ""))
+    return "".join(text.split()).casefold()
 
 
 def _rejected(exc: urllib.error.HTTPError, what: str) -> ToolError:

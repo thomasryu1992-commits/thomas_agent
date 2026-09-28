@@ -42,13 +42,15 @@ measuring, not discarding.
 
 from __future__ import annotations
 
+import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
-from . import blog_draft_score, timeutil
+from . import blog_draft_score, naver_research, timeutil
 from .errors import MvpRuntimeError, ToolError
 from .pipeline import run_task
 
@@ -77,12 +79,25 @@ _METRIC_FIELDS = (
     "competition", "low_volume", "source",
 )
 
-# Competition rated this high means the first page is already owned; the lane's leverage is in
-# measured demand nobody has answered yet (proposal §2). `low_volume` rows are Search Ad's own
-# "too small to report" marker and are not a target either.
-_UNWINNABLE_COMPETITION = frozenset({"높음", "HIGH", "high"})
+# There is no competition gate in selection, deliberately. The one competition number the brief
+# carries for every row is Search Ad's `compIdx`, and that is ADVERTISER BID competition — how
+# many advertisers bid on the keyword — not how hard the blog tab is. Gating on it excluded eight
+# of the ten rows of every weekly brief (2026-09-06..09-20, all `NO_ELIGIBLE_KEYWORD`) for a
+# reason that says nothing about blog ranking. It is still recorded, as `ad_competition`, beside
+# `blog_competing_posts` where the API HUB leg answered; neither is a gate, because the runtime
+# has no measured blog-SERP difficulty to gate on and inventing one would be worse.
+# `low_volume` rows are Search Ad's own "too small to report" marker and are not a target.
+
+# Where the vault's published posts live, when the deployment mounts one. Unset means the
+# lane cannot know what was already published outside it (every post so far), and rule-based
+# selection refuses rather than re-picking a published keyword (see `run_content_ideation`).
+PUBLISHED_ROOT_ENV = "MVP_BLOG_PUBLISHED_ROOT"
+# The vault's layout: one front-matter file per post under these platform folders
+# (the same folders `tools/kw_pipeline.py own_posts` reads).
+_PUBLISHED_PLATFORM_DIRS = ("naver", "tistory")
 
 NO_ELIGIBLE_KEYWORD = "NO_ELIGIBLE_KEYWORD"
+PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE = "PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE"
 IDEATION_RESEARCH_BLOCKED = "IDEATION_RESEARCH_BLOCKED"
 IDEATION_CONTENT_BLOCKED = "IDEATION_CONTENT_BLOCKED"
 BLOG_PACKAGE_SCHEMA_INVALID = "BLOG_PACKAGE_SCHEMA_INVALID"
@@ -93,6 +108,10 @@ __all__ = [
     "IDEATION_RESEARCH_BLOCKED",
     "NO_ELIGIBLE_KEYWORD",
     "PACKAGE_RECORD_KIND",
+    "PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE",
+    "PublishedKeywords",
+    "VaultPublishedKeywordSource",
+    "covering_keyword",
     "build_package",
     "parse_seeds",
     "run_content_ideation",
@@ -124,17 +143,133 @@ def parse_seeds(request: str) -> tuple[list[str], str | None]:
     return seeds, target
 
 
+@dataclass(frozen=True)
+class PublishedKeywords:
+    """What an outside source says was already written: topic keywords and post tags.
+
+    Two lists because they are matched differently (:func:`covering_keyword`): a topic keyword
+    covers its near variants, a tag only its exact spelling — a short tag like '인스타그램'
+    would otherwise swallow every new topic that mentions it."""
+
+    keywords: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
+
+
+class VaultPublishedKeywordSource:
+    """Keywords of the posts in the Obsidian vault — where every post so far was written.
+
+    Reads the front matter the vault's own keyword pipeline reads (`tools/kw_pipeline.py
+    own_posts`): `keywords: [..]`, `google_kw:` and `tags: [..]` of every
+    `content/{naver,tistory}/**/*.md`. Drafts count as well as published posts, which is the
+    ledger's own rule — a post waiting to be published is already that keyword's week.
+
+    Fails closed (``PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE``) when the root is missing or holds no
+    post at all: a wrong mount path reads as "nothing was ever published", which is exactly the
+    answer that would re-draft a published keyword.
+    """
+
+    def __init__(self, root: Path | str):
+        self.root = Path(root)
+
+    def load(self) -> PublishedKeywords:
+        if not self.root.is_dir():
+            raise ToolError(PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE,
+                            f"published-post root is not a directory: {self.root}")
+        keywords: list[str] = []
+        tags: list[str] = []
+        posts = 0
+        for platform in _PUBLISHED_PLATFORM_DIRS:
+            for path in sorted((self.root / "content" / platform).glob("**/*.md")):
+                front = _front_matter(path.read_text(encoding="utf-8", errors="replace"))
+                if front is None:
+                    continue
+                posts += 1
+                keywords.extend(_front_list(front, "keywords"))
+                google = _front_value(front, "google_kw")
+                if google:
+                    keywords.append(google)
+                tags.extend(_front_list(front, "tags"))
+        if posts == 0:
+            raise ToolError(PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE,
+                            f"no post front matter under {self.root}/content/{{naver,tistory}}")
+        return PublishedKeywords(keywords=tuple(_dedupe(keywords)), tags=tuple(_dedupe(tags)))
+
+
+_FRONT_MATTER_RE = re.compile(r"^---\n(.*?)\n---", re.S)
+
+
+def _front_matter(text: str) -> str | None:
+    match = _FRONT_MATTER_RE.match(text)
+    return match.group(1) if match else None
+
+
+def _front_value(front: str, key: str) -> str:
+    match = re.search(rf"^{re.escape(key)}:[ \t]*(.*)$", front, re.M)
+    return match.group(1).strip().strip("\"'") if match else ""
+
+
+def _front_list(front: str, key: str) -> list[str]:
+    raw = _front_value(front, key).strip("[]")
+    return [item.strip().strip("\"'") for item in raw.split(",") if item.strip().strip("\"'")]
+
+
+def _dedupe(values: Sequence[str]) -> list[str]:
+    seen: set[str] = set()
+    return [v for v in values if not (v in seen or seen.add(v))]
+
+
+def covering_keyword(
+    keyword: str, written: Sequence[str] = (), tags: Sequence[str] = (),
+) -> str | None:
+    """The already-written keyword (or tag) that covers ``keyword``, or None.
+
+    The vault pipeline's rule (`kw_pipeline.covered_by`), ported rather than re-invented,
+    because exact string equality re-picks '미리캔버스 포스터' after '미리캔버스포스터':
+
+    - equal after :func:`naver_research.normalize_keyword`;
+    - one contains the other, the shorter at least 4 characters and at least 60% of the longer
+      ('휴무안내문' ⊂ '추석휴무안내문' is covered; '네이버플레이스' ⊂
+      '네이버플레이스영업시간변경' is a new topic);
+    - the word sets overlap by Jaccard >= 2/3, compared as integers (0.67 dropped 2/3);
+    - a tag covers only on exact normalized equality, and only at 4+ characters.
+    """
+    norm = naver_research.normalize_keyword(keyword)
+    if not norm:
+        return None
+    tokens = set(str(keyword).casefold().split())
+    for other in written:
+        other_norm = naver_research.normalize_keyword(other)
+        if not other_norm:
+            continue
+        if other_norm == norm:
+            return str(other)
+        short, long_ = sorted((len(norm), len(other_norm)))
+        if (other_norm in norm or norm in other_norm) and short >= 4 and short * 10 >= long_ * 6:
+            return str(other)
+        other_tokens = set(str(other).casefold().split())
+        if tokens and other_tokens and 3 * len(tokens & other_tokens) >= 2 * len(tokens | other_tokens):
+            return str(other)
+    for tag in tags:
+        tag_norm = naver_research.normalize_keyword(tag)
+        if len(tag_norm) >= 4 and tag_norm == norm:
+            return str(tag)
+    return None
+
+
 def select_target_keyword(
-    metrics: Sequence[Mapping[str, Any]], *, already_written: Sequence[str] = ()
+    metrics: Sequence[Mapping[str, Any]],
+    *,
+    already_written: Sequence[str] = (),
+    already_tagged: Sequence[str] = (),
 ) -> tuple[str | None, dict[str, Any]]:
-    """The most-searched keyword that is winnable and not already used. Pure and deterministic.
+    """The most-searched keyword with measured demand that is not already written. Pure.
 
     Returns ``(keyword, reasoning)``; the reasoning is recorded so a week's choice can be
     argued with rather than believed. Refusing (``None``) when nothing qualifies is a real
     outcome — a fire that drafts against a keyword the rule excluded would be worse than a
-    fire that reports it found none.
+    fire that reports it found none. The competition columns ride along in ``considered``
+    for the operator and gate nothing (see the note above ``PUBLISHED_ROOT_ENV``).
     """
-    used = {str(k).strip() for k in already_written if str(k).strip()}
     considered: list[dict[str, Any]] = []
     best: tuple[int, Mapping[str, Any]] | None = None
     for row in metrics:
@@ -144,19 +279,28 @@ def select_target_keyword(
         total = row.get("monthly_total")
         total = int(total) if isinstance(total, (int, float)) else 0
         reason = None
-        if keyword in used:
-            reason = "already written"
+        covered = covering_keyword(keyword, already_written, already_tagged)
+        if covered is not None:
+            reason = f"already written ({covered})"
         elif row.get("low_volume"):
             reason = "volume below the venue's reporting floor"
-        elif str(row.get("competition") or "") in _UNWINNABLE_COMPETITION:
-            reason = "competition high"
         elif total <= 0:
             reason = "no measured demand"
-        considered.append({"keyword": keyword, "monthly_total": total, "excluded_because": reason})
+        entry: dict[str, Any] = {
+            "keyword": keyword,
+            "monthly_total": total,
+            "ad_competition": str(row.get("competition") or "unknown"),
+            "low_volume": bool(row.get("low_volume")),
+            "excluded_because": reason,
+        }
+        if isinstance(row.get("competing_posts"), int):
+            entry["blog_competing_posts"] = row["competing_posts"]
+        considered.append(entry)
         if reason is None and (best is None or total > best[0]):
             best = (total, row)
     reasoning = {
-        "rule": "highest measured monthly demand among winnable, unused keywords",
+        "rule": "highest measured monthly demand among keywords not already written "
+                "(ad competition and blog post counts are recorded, not gated)",
         "considered": considered[:MAX_TAGS],
     }
     if best is None:
@@ -164,17 +308,18 @@ def select_target_keyword(
     return str(best[1].get("keyword")).strip(), reasoning
 
 
-def written_keywords(ledger: Any) -> list[str]:
-    """Every target keyword a package on the ledger was drafted for, archives included.
+def written_keywords(ledger: Any, published: PublishedKeywords | None = None) -> list[str]:
+    """Every keyword already used: ledger packages (archives included) UNION published posts.
 
-    What :func:`select_target_keyword` excludes as "already written". The weekly schedule never
-    supplied it, so the rule's exclusion was dead: every fire picked whatever ranked first that
-    week, a keyword drafted last week included. Drafted counts, not only published — a package
-    waiting to be posted is already the week's work for that keyword; ``target=`` still forces
-    one. Archives are read because packages are records, and records rotate."""
+    What :func:`select_target_keyword` excludes as "already written". The ledger half alone was
+    true only inside the lane, which has never produced a package — every post so far (69 Naver,
+    77 Tistory by 2026-09-28) was written in the vault, so a ledger-only answer was "nothing"
+    and a revived lane would have re-picked published keywords. Drafted counts, not only
+    published; ``target=`` still forces one. Archives are read because packages are records,
+    and records rotate."""
+    keywords: set[str] = set(published.keywords) if published is not None else set()
     if ledger is None:
-        return []
-    keywords: set[str] = set()
+        return sorted(keywords)
     for row in ledger.iter_records_with_archive(kinds=[PACKAGE_RECORD_KIND]):
         if not isinstance(row, Mapping) or row.get("kind") != PACKAGE_RECORD_KIND:
             continue
@@ -185,6 +330,13 @@ def written_keywords(ledger: Any) -> list[str]:
         if keyword:
             keywords.add(keyword)
     return sorted(keywords)
+
+
+def select_published_source(inputs: Mapping[str, Any] | None = None) -> VaultPublishedKeywordSource | None:
+    """The configured published-post source, or None. No host path is written into the code:
+    the root comes from the fire's inputs or from ``MVP_BLOG_PUBLISHED_ROOT``."""
+    root = (inputs or {}).get("published_root") or os.environ.get(PUBLISHED_ROOT_ENV, "").strip()
+    return VaultPublishedKeywordSource(root) if root else None
 
 
 def _keyword_evidence(record: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -434,6 +586,22 @@ def _write_package_files(
     return True, files, f"workspace/{base}"
 
 
+def _no_eligible_message(reasoning: Mapping[str, Any]) -> str:
+    """Why nothing qualified, counted by reason — the operator's next step depends on which
+    (all already written: widen the seeds; all low volume: different seeds; an empty brief:
+    the research leg)."""
+    considered = reasoning.get("considered") or []
+    if not considered:
+        return "the keyword brief returned no rows to choose from"
+    counts: dict[str, int] = {}
+    for entry in considered:
+        reason = str(entry.get("excluded_because") or "")
+        reason = "already written" if reason.startswith("already written") else reason
+        counts[reason] = counts.get(reason, 0) + 1
+    detail = ", ".join(f"{reason}: {n}" for reason, n in sorted(counts.items()))
+    return f"no keyword had measured demand and was unused; considered {len(considered)} ({detail})"
+
+
 def _run(kind: str, request: str, *, blocked_code: str, **kwargs: Any) -> dict[str, Any]:
     result = run_task(request, request_kind=kind, **kwargs)
     if result.get("status") != "COMPLETED":
@@ -456,6 +624,7 @@ def run_content_ideation(
     now: str,
     repo_root: Path | None = None,
     writer: Any = None,
+    published_source: Any = None,
 ) -> dict[str, Any]:
     """Research -> pick -> draft -> score -> package. Returns the sheet the scheduler renders.
 
@@ -488,6 +657,18 @@ def run_content_ideation(
     keyword_record: Mapping[str, Any] | None = None
     reasoning: dict[str, Any] = {"rule": "operator override", "considered": []}
     target = target_override
+    published: PublishedKeywords | None = None
+    if target is None:
+        # Before any research is spent: without the published posts the rule cannot know what
+        # was already written outside the lane, and "nothing" is the one wrong answer here.
+        source = published_source if published_source is not None else select_published_source(inputs)
+        if source is None:
+            raise ToolError(
+                PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE,
+                f"rule-based selection needs the published posts; set {PUBLISHED_ROOT_ENV} "
+                "(or pass target= to name the keyword yourself)",
+            )
+        published = source.load()
     if seeds:
         research = _run(
             "research",
@@ -500,16 +681,14 @@ def run_content_ideation(
         keyword_record = (research.get("records") or {}).get("keyword_research")
         if target is None:
             metrics = (keyword_record or {}).get("metrics") or []
-            already_written = inputs.get("already_written")
-            if already_written is None:
-                already_written = written_keywords(ledger)
-            target, reasoning = select_target_keyword(metrics, already_written=already_written)
+            already_written = list(written_keywords(ledger, published))
+            already_written += [str(k) for k in (inputs.get("already_written") or [])]
+            target, reasoning = select_target_keyword(
+                metrics, already_written=already_written,
+                already_tagged=published.tags if published is not None else (),
+            )
     if not target:
-        raise ToolError(
-            NO_ELIGIBLE_KEYWORD,
-            "no seed keyword was winnable, in demand and unused; "
-            f"considered {len(reasoning.get('considered') or [])}",
-        )
+        raise ToolError(NO_ELIGIBLE_KEYWORD, _no_eligible_message(reasoning))
 
     content = _run(
         "content",
