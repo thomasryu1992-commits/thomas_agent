@@ -49,7 +49,9 @@ Earlier the same day, re-measuring **section F** on a candidate store
 that has doubled since it was written. Its question — whether this venue's fee schedule permits a
 fast strategy at all — is answered **yes**: 1h now pays at the median (+0.0241R/trade against
 −0.0185R) and 15m's deficit has more than halved, almost all of it the `stop_atr` floor from #420
-finally reaching the generations minted after it. **What binds is no longer cost.** Zero of the 474
+finally reaching the generations minted after it. **What binds is no longer cost.** *(Superseded
+2026-09-28: on today's store 1h is back to −0.0451R at the median. Its gross edge fell, not its
+cost. See section F.)* Zero of the 474
 candidates carrying the current basis survive their own holdout, and the promotion board reports
 `0 promotable` without being able to say that. Section F carries the numbers and what is open.
 **It does not outrank section C**, which is still what to read first on arrival.
@@ -1752,6 +1754,31 @@ basis — the population has doubled, and two of this section's three claims did
   #420 landed 2026-08-02 and this section judged it the same day — against a store in which
   almost nothing had yet been minted at the new floor.
 - **15m still does not pay at the median.** That claim survives, and only that one.
+
+**Re-measured 2026-09-28** (`main` = `cf254bc3`) over the **1,272** lineages carrying the current
+basis. That basis now includes funding (`funding_1.0bps/8h(venue_history)`). The measure is the
+median per candidate of `backtest_evidence`; lineages are collapsed to their latest row.
+`cost_summary` keeps fees (taker + maker) and slippage but no separate funding total, so funding
+stays inside net and gross here is net + fees + slippage. The columns are separate medians and do
+not sum.
+
+| tf | n | gross | fees | slippage | **total cost** | **net** | was (2026-08-04) |
+|---|---|---|---|---|---|---|---|
+| 1h | 593 | +0.0520 | 0.0738 | 0.0355 | **0.1099** | **−0.0451** | +0.0241 |
+| 4h | 413 | +0.0885 | 0.0315 | 0.0150 | **0.0465** | **+0.0436** | +0.1083 |
+| 1d | 266 | +0.1446 | 0.0113 | 0.0055 | **0.0166** | **+0.1274** | — |
+
+(15m: no candidate carries the current basis.)
+
+- **1h no longer pays at the median.** The claim above ("1h pays") held for the store of
+  2026-08-04 and does not hold now. Only 31% of 1h lineages are net positive, against 69% at 4h and
+  83% at 1d.
+- **What moved is the edge, not the cost.** 1h friction is about what it was (0.1230 → 0.1099R).
+  1h gross fell from +0.1495 to +0.0520R, and 4h gross from +0.1661 to +0.0885R. The store grew
+  from 474 to 1,272 lineages on this basis, and the later generations carry less edge per trade.
+  The mechanism paragraph above still holds: at 1h, friction is twice the gross edge.
+- **Read these as backtest medians over mined survivors,** i.e. selection-biased upward. They rank
+  the timeframes. They are not an estimate of what any one strategy earns.
 
 **By mint date, which is where #420 actually shows up** (`stop_atr` is the 15m median; the cost
 and net columns are per trade):
