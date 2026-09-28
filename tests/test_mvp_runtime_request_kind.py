@@ -323,8 +323,10 @@ def test_the_openrouter_body_carries_the_bound_keys():
 
 
 def test_groq_needs_no_fold_in_and_says_why():
-    """Groq constrains no keys (`json_object`), so a bound Role changes nothing about its body —
-    the prompt already asks, and the vendor does not reject what it does not enforce."""
+    """Groq constrains no keys (`json_object`), so a bound Role changes nothing about its
+    response_format — the vendor does not reject what it does not enforce. The Role's keys reach
+    Groq through the appended format instruction instead (`providers.response_instruction`),
+    which until 2026-09-28 named the analysis keys only."""
     from runtime.mvp_runtime.providers import GroqProvider
 
     bound = GroqProvider(authorization=None).bind_role_output_keys(_spec())
