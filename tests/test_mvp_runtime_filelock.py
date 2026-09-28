@@ -63,3 +63,64 @@ def test_unopenable_lock_path_fails_closed(tmp_path):
         with locked(blocker / "sub" / ".lock", code="LOCK_TEST", label="test store"):
             pass
     assert exc.value.reason_code == "LOCK_TEST"
+
+
+def test_a_wait_past_the_deadline_fails_closed_and_the_holder_keeps_its_lock(tmp_path, monkeypatch):
+    """A stuck holder turns into the contender's refusal, never an unbounded wait (review A1:
+    on Linux `flock(LOCK_EX)` used to block forever). The holder is unaffected: its section
+    runs to the end and its lock is released and re-acquirable."""
+    import time
+
+    from runtime.mvp_runtime import filelock
+
+    monkeypatch.setattr(filelock, "ACQUIRE_DEADLINE_SECONDS", 0.3)
+    lock_path = tmp_path / ".test.lock"
+    entered = threading.Event()
+    release = threading.Event()
+    holder_done: list[str] = []
+
+    def holder():
+        with locked(lock_path, code="LOCK_TEST", label="test store"):
+            entered.set()
+            release.wait(timeout=10)
+        holder_done.append("released")
+
+    thread = threading.Thread(target=holder)
+    thread.start()
+    try:
+        assert entered.wait(timeout=10)
+        started = time.monotonic()
+        with pytest.raises(PersistenceError) as exc:
+            with locked(lock_path, code="LOCK_TEST", label="test store"):
+                pytest.fail("entered a lock another holder still owns")
+        waited = time.monotonic() - started
+    finally:
+        release.set()
+        thread.join(timeout=30)
+    assert exc.value.reason_code == "LOCK_TEST"
+    assert "test store" in str(exc.value) and "0.3s" in str(exc.value)
+    assert 0.3 <= waited < 5
+    assert holder_done == ["released"]
+    with locked(lock_path, code="LOCK_TEST", label="test store"):
+        pass
+
+
+def test_a_holder_that_releases_inside_the_deadline_is_waited_for(tmp_path, monkeypatch):
+    """The deadline refuses only a wait that outlives it; a normal hand-over still succeeds."""
+    from runtime.mvp_runtime import filelock
+
+    monkeypatch.setattr(filelock, "ACQUIRE_DEADLINE_SECONDS", 10.0)
+    lock_path = tmp_path / ".test.lock"
+    entered = threading.Event()
+
+    def holder():
+        with locked(lock_path, code="LOCK_TEST", label="test store"):
+            entered.set()
+            threading.Event().wait(0.3)
+
+    thread = threading.Thread(target=holder)
+    thread.start()
+    assert entered.wait(timeout=10)
+    with locked(lock_path, code="LOCK_TEST", label="test store"):
+        pass
+    thread.join(timeout=30)
