@@ -56,8 +56,13 @@ FRONTDESK_TIMEOUT_SECONDS = 30
 # construction (16,000 x planned agents >= the one 16,000 assignment). The validator and the
 # triage keep their own allowances.
 BLOG_CONTENT_BUDGET_PROFILE = "blog_content"
+# `max_runtime_seconds` too (2026-09-28): the blog draft runs on a slower non-Google model
+# (68 s measured for one real-sized draft), and the chain's 120 s left its first member 40 s.
+# 360 s gives each of three members up to 120 s (`FailoverProvider` member cap) and keeps a
+# whole fire (research + draft + one revision) inside the scheduler's 1,500 s deadline.
 BUDGET_PROFILES: dict[str, dict[str, Any]] = {
-    BLOG_CONTENT_BUDGET_PROFILE: {"tokens_per_agent": 16000, "request_kinds": frozenset({"content"})},
+    BLOG_CONTENT_BUDGET_PROFILE: {"tokens_per_agent": 16000, "max_runtime_seconds": 360,
+                                  "request_kinds": frozenset({"content"})},
 }
 
 
@@ -171,6 +176,7 @@ def default_execution_budget(
     is unchanged, and ``None`` is the generic allocation byte for byte.
     """
     per_agent = tokens_per_agent(profile)
+    runtime_seconds = int(BUDGET_PROFILES[profile].get("max_runtime_seconds", 120)) if profile else 120
     agents = max(1, int(agents))
     triage_calls = max(0, int(triage_calls))
     return {
@@ -189,7 +195,7 @@ def default_execution_budget(
             "max_validation_cycles": 1,
             "max_retry_count": 1,
             "max_parallel_workers": 1,
-            "max_runtime_seconds": 120,
+            "max_runtime_seconds": runtime_seconds,
             "token_budget": per_agent * agents + TRIAGE_TOKEN_ALLOWANCE * triage_calls,
             "cost_budget": 0,
             "cost_currency": "USD",

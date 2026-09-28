@@ -1047,10 +1047,14 @@ class FailoverProvider:
 
     network_egress = True  # every member is a network provider by construction
 
-    def __init__(self, providers: list[Any]):
+    def __init__(self, providers: list[Any], *, member_timeout_cap: int = FAILOVER_MEMBER_TIMEOUT_SECONDS):
         if len(providers) < 2:
             raise ProviderError("INVALID_CHAIN", "a failover chain needs at least two providers")
         self._providers = list(providers)
+        # The per-member ceiling (see FAILOVER_MEMBER_TIMEOUT_SECONDS). A chain derived for a
+        # slower drafting model (`with_openrouter_model`) carries a larger one; the default is
+        # the analysis chain's, unchanged.
+        self._member_timeout_cap = int(member_timeout_cap)
         # Named for banners/diagnostics; the serving member's id lands in each result.
         self.model_id = "+".join(getattr(p, "model_id", "?") for p in self._providers)
         self.model_version = self.model_id
@@ -1071,12 +1075,12 @@ class FailoverProvider:
                     "output contract; the chain refuses rather than answering for one member",
                 )
             bound.append(binder(role_output_spec))
-        return FailoverProvider(bound)
+        return FailoverProvider(bound, member_timeout_cap=self._member_timeout_cap)
 
     def generate(self, prompt: str, *, max_output_tokens: int, timeout_seconds: int) -> ProviderResult:
         deadline = time.monotonic() + float(timeout_seconds)
         per_member = max(_FAILOVER_MIN_MEMBER_SECONDS,
-                         min(FAILOVER_MEMBER_TIMEOUT_SECONDS, int(timeout_seconds) // len(self._providers)))
+                         min(self._member_timeout_cap, int(timeout_seconds) // len(self._providers)))
         failovers: list[dict[str, Any]] = []
         for index, provider in enumerate(self._providers):
             member = str(getattr(provider, "model_id", "?"))
@@ -1115,3 +1119,31 @@ class FailoverProvider:
             f"every provider in the failover chain failed ({summary})",
             data={"failovers": failovers},
         ) from None
+
+
+def with_openrouter_model(provider: Any, model: str, *, member_timeout_cap: int | None = None) -> Any:
+    """A copy of ``provider`` whose OpenRouter member asks for ``model`` — everything else as is.
+
+    For a lane whose request needs a different model than the analysis chain's (Thomas
+    2026-09-28: blog drafts on a non-Google free model while Google's free tier is at capacity,
+    `docs/history/2026-09-28-blog-draft-model.md`). No new gate call and no new authority: the
+    member is rebuilt with the SAME ``Authorization`` object the env gate handed the original,
+    and OpenRouter's opt-in already covers whatever slug is configured (``OpenRouterProvider``).
+    Only the exact ``OpenRouterProvider`` is swapped — the light tier has its own gate entry and
+    its own slug. A bound Role's keys are carried over. ``member_timeout_cap`` replaces the
+    chain's per-member ceiling for a model that is slower than the analysis chain's.
+
+    A provider with no OpenRouter member (the Mocks, a chain without one) comes back unchanged.
+    """
+    def swap(member: Any) -> Any:
+        if type(member) is not OpenRouterProvider:
+            return member
+        copy = OpenRouterProvider(model=model, api_key_env=member._api_key_env,
+                                  authorization=member._authorization)
+        copy._role_output_spec = member._role_output_spec
+        return copy
+
+    if isinstance(provider, FailoverProvider):
+        cap = provider._member_timeout_cap if member_timeout_cap is None else member_timeout_cap
+        return FailoverProvider([swap(m) for m in provider._providers], member_timeout_cap=cap)
+    return swap(provider)

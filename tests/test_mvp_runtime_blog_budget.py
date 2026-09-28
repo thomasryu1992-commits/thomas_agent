@@ -39,10 +39,13 @@ def test_the_blog_profile_doubles_one_agents_share_and_its_output_allowance():
     limits = default_execution_budget(profile=BLOG_CONTENT_BUDGET_PROFILE)["limits"]
     assert limits["token_budget"] == 16000
     assert output_allowance(limits["token_budget"]) == 8000
-    # Nothing else in the allocation moves.
+    # Nothing else in the allocation moves but the runtime, which the slower draft model needs
+    # (2026-09-28, tests/test_mvp_runtime_blog_draft_model.py).
     generic = default_execution_budget()["limits"]
-    assert {k: v for k, v in limits.items() if k != "token_budget"} == {
-        k: v for k, v in generic.items() if k != "token_budget"}
+    moved = {"token_budget", "max_runtime_seconds"}
+    assert {k: v for k, v in limits.items() if k not in moved} == {
+        k: v for k, v in generic.items() if k not in moved}
+    assert (limits["max_runtime_seconds"], generic["max_runtime_seconds"]) == (360, 120)
 
 
 def test_without_a_profile_every_allocation_is_what_it_was():
