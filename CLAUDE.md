@@ -165,6 +165,7 @@ Development and deployment are on one **Linux Docker host**. Run from the repo r
 ```
 .venv/bin/python -m pytest tests/ -q
 .venv/bin/python scripts/run_repository_release_gate.py --full --check-only   # governance validators; runs no pytest
+scripts/ops/test_run.sh --gate      # both, with this host's traps handled (resources, Core, skips, basetemp)
 docker exec thomas-scheduler python -m runtime.mvp_runtime.cli "이 사업 아이디어를 분석해줘: ..."
 ```
 
