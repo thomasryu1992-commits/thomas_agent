@@ -3008,6 +3008,43 @@ and there are no open positions left to close. **The only path that fills this i
 deliberately as measurement**, which is an operator action — real orders, Thomas's to place. Until
 then §F8's sensitivity stands on one stop fill, and the constant it re-prices stays INHERITED.
 
+#### Re-run 2026-09-28 (review C2): the sample exists, and it is too small to reset a constant
+
+**The instrument had gone blind, not the venue quiet.** Ledger rotation moved every live row
+(positions opened 2026-08-04..21) from `records.jsonl` into `runtime_ledger/archive/`. The script
+read the active file alone, so it found no bracket and no entry for any position. It printed "no exit
+leg has both an intended and a realized price yet" and "entries with no recorded intent: 0" over a
+sample that was on disk.
+- The script now reads the archives (`LedgerStore.iter_records_with_archive`).
+- A probe's stop is taken from its own outcome's `stop_price`: probe positions never reach
+  `live_opened`.
+- Stops are reported by source, with the mean beside the median, against `DEFAULT_STOP_SLIPPAGE_BPS`
+  (1.4) rather than the entry constant.
+
+It was read in a one-off container as the service uid (the lock file is opened, nothing is written):
+
+```
+stop fills: n=12  mean 3.06 bps  median 1.08 bps (0.8x modelled 1.4)  worst 23.47 (16.8x)
+  strategy stops: n=3  mean 8.57 bps  median 2.25 bps (1.6x modelled 1.4)  worst 23.47 (16.8x)
+  probe stops: n=9  mean 1.22 bps  median 1.03 bps (0.7x modelled 1.4)  worst 8.28 (5.9x)
+entry fills: n=3  median -4.67 bps        (-4.67, -4.99, -2.60: all BTCUSDT, all better than intended)
+entries with no recorded intent: 2   canaries with none: 4   (both predate `intended_price`)
+```
+
+- **Entry (`DEFAULT_SLIPPAGE_BPS` = 3.0, INHERITED).** Three fills, one symbol, all in the runtime's
+  favour. That is not a distribution, and it cannot move the constant in either direction.
+- **Stop (`DEFAULT_STOP_SLIPPAGE_BPS` = 1.4, from the probe).**
+  - The cost model charges every stop the same figure, so the mean is what the constant must match.
+    Over all twelve fills the mean is 3.06 bps, about 2.2× the model.
+  - One fill (ETHUSDT, 23.47 bps) carries most of that mean, and the three strategy stops sit
+    above the nine probe stops.
+  - A third strategy stop (BTCUSDT, 2.25 bps) was in the archive all along. Earlier readings of
+    this section counted two.
+- **What would settle it is unchanged, and it cannot happen at PAPER.** No new entries or stops
+  accrue at this stage. The only instruments that add rows are canaries and probe batches, both
+  real orders placed by Thomas. Until then both constants stay as they are, and review D5 (loss
+  breaker values wait on the slippage measurement) has a concrete blocker instead of an open item.
+
 ### F9. Symbol pooling is built, unused, and the data it needs is already being bought — audited 2026-08-06, **decided and shipped 2026-08-09**
 
 > **Status 2026-08-10 — the decision this section asks for was taken. Everything below is now
