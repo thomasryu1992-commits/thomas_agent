@@ -570,6 +570,10 @@ services:
       # adapter reads "no posts" as unavailable rather than as "nothing was ever published".
       - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/content/naver:/app/blog_vault/content/naver:ro
       - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/content/tistory:/app/blog_vault/content/tistory:ro
+      # The vault keyword pipeline's output (`source=queue` seeds): queue.md and its inputs,
+      # keyword data only. The folder, not the file — a bind-mounted file keeps its old inode
+      # when the writer replaces rather than rewrites it.
+      - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/analytics/keywords:/app/blog_vault/analytics/keywords:ro
     healthcheck:
       test: ["CMD", "test", "-S", "/app/.runtime_governance_state/internal/pipeline.sock"]
       interval: 60s

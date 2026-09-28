@@ -524,7 +524,8 @@ def build_schedule(
         raise SchedulerBlocked(
             "MISSING_REQUEST",
             "a content_ideation schedule requires seed keywords in its request "
-            "(comma separated; `target=<keyword>` overrides the week's selection)",
+            "(comma separated; `source=queue` takes them from the vault keyword queue; "
+            "`target=<keyword>` overrides the week's selection)",
         )
     if not (isinstance(created_by, str) and created_by.strip()):
         raise SchedulerBlocked("MISSING_CREATOR", "a schedule requires a created_by identity")

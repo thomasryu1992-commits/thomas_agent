@@ -42,6 +42,7 @@ measuring, not discarding.
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -93,6 +94,22 @@ _PUBLISHED_PLATFORM_DIRS = ("naver", "tistory")
 
 NO_ELIGIBLE_KEYWORD = "NO_ELIGIBLE_KEYWORD"
 PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE = "PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE"
+KEYWORD_QUEUE_UNAVAILABLE = "KEYWORD_QUEUE_UNAVAILABLE"
+KEYWORD_QUEUE_STALE = "KEYWORD_QUEUE_STALE"
+IDEATION_INPUTS_CONFLICT = "IDEATION_INPUTS_CONFLICT"
+
+# `source=queue` in the schedule's request: take the seeds from the vault keyword pipeline's
+# queue (`tools/kw_pipeline.py run` -> `analytics/keywords/queue.md`) instead of a fixed list.
+# The fixed list was the root cause of all three `NO_ELIGIBLE_KEYWORD` fires: the same four
+# seeds every week, so the same answer every week.
+QUEUE_SOURCE_TOKEN = "source=queue"
+QUEUE_REL = "analytics/keywords/queue.md"
+# The queue is rebuilt weekly (root crontab, Sunday 06:30 KST). Two weeks allows one missed
+# rebuild; older than that, its reach measurements (top-ten visitors, exact-title count) are
+# describing a SERP that has moved on.
+QUEUE_MAX_AGE_DAYS = 14
+# Search Ad takes at most five hint keywords per call, and the brief is one call.
+MAX_QUEUE_SEEDS = naver_research.MAX_HINT_KEYWORDS
 IDEATION_RESEARCH_BLOCKED = "IDEATION_RESEARCH_BLOCKED"
 IDEATION_CONTENT_BLOCKED = "IDEATION_CONTENT_BLOCKED"
 IDEATION_REVISION_BLOCKED = "IDEATION_REVISION_BLOCKED"
@@ -114,6 +131,22 @@ __all__ = [
     "select_target_keyword",
     "written_keywords",
 ]
+
+
+def parse_request(request: str) -> tuple[list[str], str | None, bool]:
+    """``(seeds, target override, use_queue)`` from a schedule's request column.
+
+    ``source=queue`` asks for the vault queue as the seed source (see ``QUEUE_SOURCE_TOKEN``);
+    everything else is :func:`parse_seeds`'s grammar, unchanged."""
+    use_queue = False
+    kept: list[str] = []
+    for part in str(request or "").split(","):
+        if part.strip().lower() == QUEUE_SOURCE_TOKEN:
+            use_queue = True
+        else:
+            kept.append(part)
+    seeds, target = parse_seeds(",".join(kept))
+    return seeds, target, use_queue
 
 
 def parse_seeds(request: str) -> tuple[list[str], str | None]:
@@ -257,8 +290,15 @@ def select_target_keyword(
     *,
     already_written: Sequence[str] = (),
     already_tagged: Sequence[str] = (),
+    queue: Sequence[QueueCandidate] | None = None,
 ) -> tuple[str | None, dict[str, Any]]:
     """The most-searched keyword with measured demand that is not already written. Pure.
+
+    With ``queue`` (the seeds came from the vault queue) the choice is restricted to those
+    candidates and ordered by the queue's score, which already weighs demand by reach; this
+    brief's fresh measurement still has to confirm demand. A related keyword the brief
+    surfaced is not eligible — it never went through the queue's reach check. The chosen
+    keyword keeps the queue's spelling (Search Ad strips the spaces).
 
     Returns ``(keyword, reasoning)``; the reasoning is recorded so a week's choice can be
     argued with rather than believed. Refusing (``None``) when nothing qualifies is a real
@@ -267,7 +307,9 @@ def select_target_keyword(
     for the operator and gate nothing (see the note above ``PUBLISHED_ROOT_ENV``).
     """
     considered: list[dict[str, Any]] = []
-    best: tuple[int, Mapping[str, Any]] | None = None
+    best: tuple[tuple[float, int], Mapping[str, Any], str] | None = None
+    by_key = {naver_research.normalize_keyword(c.keyword): c for c in queue or ()}
+    measured: set[str] = set()
     for row in metrics:
         keyword = str(row.get("keyword") or "").strip()
         if not keyword:
@@ -275,8 +317,11 @@ def select_target_keyword(
         total = row.get("monthly_total")
         total = int(total) if isinstance(total, (int, float)) else 0
         reason = None
+        candidate = by_key.get(naver_research.normalize_keyword(keyword))
         covered = covering_keyword(keyword, already_written, already_tagged)
-        if covered is not None:
+        if queue is not None and candidate is None:
+            reason = "not a queue candidate (never passed the queue's reach check)"
+        elif covered is not None:
             reason = f"already written ({covered})"
         elif row.get("low_volume"):
             reason = "volume below the venue's reporting floor"
@@ -291,17 +336,33 @@ def select_target_keyword(
         }
         if isinstance(row.get("competing_posts"), int):
             entry["blog_competing_posts"] = row["competing_posts"]
+        if candidate is not None:
+            entry["queue_score"] = candidate.score
+            measured.add(naver_research.normalize_keyword(candidate.keyword))
         considered.append(entry)
-        if reason is None and (best is None or total > best[0]):
-            best = (total, row)
+        rank = (candidate.score if candidate is not None else 0.0, total)
+        if reason is None and (best is None or rank > best[0]):
+            best = (rank, row, candidate.keyword if candidate is not None else keyword)
+    for key, candidate in by_key.items():
+        if key not in measured:
+            considered.append({"keyword": candidate.keyword, "monthly_total": 0,
+                               "ad_competition": "unknown", "low_volume": False,
+                               "queue_score": candidate.score,
+                               "excluded_because": "no row for it in this brief"})
+    if queue is not None:
+        # Queue rows first, in score order, so the record reads as the candidate list it was.
+        considered.sort(key=lambda e: -float(e.get("queue_score", -1)))
     reasoning = {
-        "rule": "highest measured monthly demand among keywords not already written "
-                "(ad competition and blog post counts are recorded, not gated)",
+        "rule": ("highest vault-queue score among queue candidates with measured demand, not "
+                 "already written (the queue's reach check stands in for blog difficulty)"
+                 if queue is not None else
+                 "highest measured monthly demand among keywords not already written "
+                 "(ad competition and blog post counts are recorded, not gated)"),
         "considered": considered[:MAX_TAGS],
     }
     if best is None:
         return None, reasoning
-    return str(best[1].get("keyword")).strip(), reasoning
+    return str(best[2]).strip(), reasoning
 
 
 def written_keywords(ledger: Any, published: PublishedKeywords | None = None) -> list[str]:
@@ -326,6 +387,101 @@ def written_keywords(ledger: Any, published: PublishedKeywords | None = None) ->
         if keyword:
             keywords.add(keyword)
     return sorted(keywords)
+
+
+@dataclass(frozen=True)
+class QueueCandidate:
+    keyword: str
+    score: float
+    lane: str
+
+
+@dataclass(frozen=True)
+class KeywordQueue:
+    as_of: str
+    candidates: tuple[QueueCandidate, ...]
+
+
+_QUEUE_TITLE_RE = re.compile(r"^#\s+키워드 큐\s+—\s+(?P<date>\d{4}-\d{2}-\d{2})\s*$", re.M)
+_QUEUE_LANE_RE = re.compile(r"^##\s+(?P<lane>.+?)\s+—\s+다음 편 후보\s*$")
+_QUEUE_ITEM_RE = re.compile(
+    r"^\d+\.\s+\*\*(?P<keyword>[^*]+?)\*\*\s+—\s+점수\s+(?P<score>[\d,]+(?:\.\d+)?)")
+
+
+class VaultKeywordQueue:
+    """The vault keyword pipeline's queue, read as the lane's seed source.
+
+    Only the "<lane> — 다음 편 후보" sections count. Those candidates already passed
+    `kw_pipeline`'s reach gate (top-ten median daily visitors <= 250, exact-title matches <= 9),
+    the blog-SERP check this runtime cannot make for itself. The queue's other sections are
+    deliberately not seeds: "지금 체급 밖" is the gate's own rejects, "보유 키워드의 변형"
+    and "시즌 임박" point at posts that already exist, and "내 글 순위" is a rank report.
+
+    Fails closed: a missing or unparseable queue is ``KEYWORD_QUEUE_UNAVAILABLE``, one older
+    than ``QUEUE_MAX_AGE_DAYS`` is ``KEYWORD_QUEUE_STALE``.
+    """
+
+    def __init__(self, root: Path | str):
+        self.root = Path(root)
+
+    def load(self, now: str) -> KeywordQueue:
+        path = self.root / QUEUE_REL
+        if not path.is_file():
+            raise ToolError(KEYWORD_QUEUE_UNAVAILABLE, f"no keyword queue at {path}")
+        text = path.read_text(encoding="utf-8", errors="replace")
+        title = _QUEUE_TITLE_RE.search(text)
+        if title is None:
+            raise ToolError(KEYWORD_QUEUE_UNAVAILABLE,
+                            f"{path} has no '# 키워드 큐 — YYYY-MM-DD' title; not a queue")
+        as_of = title.group("date")
+        age = (timeutil.parse_iso(now).date() - datetime.date.fromisoformat(as_of)).days
+        if age > QUEUE_MAX_AGE_DAYS:
+            raise ToolError(KEYWORD_QUEUE_STALE,
+                            f"the keyword queue is from {as_of}, {age} days old "
+                            f"(limit {QUEUE_MAX_AGE_DAYS}); rebuild it with kw_pipeline run")
+        candidates: list[QueueCandidate] = []
+        lane: str | None = None
+        for line in text.splitlines():
+            if line.startswith("## "):
+                heading = _QUEUE_LANE_RE.match(line)
+                lane = heading.group("lane").strip() if heading else None
+                continue
+            if lane is None:
+                continue
+            item = _QUEUE_ITEM_RE.match(line.strip())
+            if item:
+                candidates.append(QueueCandidate(
+                    keyword=item.group("keyword").strip(),
+                    score=float(item.group("score").replace(",", "")), lane=lane))
+        if not candidates:
+            raise ToolError(KEYWORD_QUEUE_UNAVAILABLE, f"{path} lists no '다음 편 후보' candidates")
+        return KeywordQueue(as_of=as_of, candidates=tuple(candidates))
+
+
+def queue_seeds(
+    queue: KeywordQueue, *, already_written: Sequence[str] = (), already_tagged: Sequence[str] = (),
+    limit: int = MAX_QUEUE_SEEDS,
+) -> tuple[list[QueueCandidate], list[str]]:
+    """``(seeds, skipped)`` — the highest-scored queue candidates not already written, at most
+    ``limit`` (one Search Ad call), across every lane; ``skipped`` names the written ones.
+
+    The queue is rebuilt weekly but posts are written daily, so a candidate can be published
+    between the rebuild and the fire (kw_pipeline's own `--max-age` reuse has the same check)."""
+    ranked = sorted(queue.candidates, key=lambda c: -c.score)
+    seeds: list[QueueCandidate] = []
+    skipped: list[str] = []
+    seen: set[str] = set()
+    for candidate in ranked:
+        key = naver_research.normalize_keyword(candidate.keyword)
+        if key in seen:
+            continue
+        seen.add(key)
+        if covering_keyword(candidate.keyword, already_written, already_tagged) is not None:
+            skipped.append(candidate.keyword)
+            continue
+        if len(seeds) < limit:
+            seeds.append(candidate)
+    return seeds, skipped
 
 
 def select_published_source(inputs: Mapping[str, Any] | None = None) -> VaultPublishedKeywordSource | None:
@@ -365,6 +521,7 @@ def selection_evidence(
     mode: str,
     seeds: Sequence[str],
     now: str,
+    seed_source: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """How the target was chosen: the selection brief's candidates and the rule's verdict on
     each. Nothing here describes the target's own numbers — that is :func:`target_evidence`."""
@@ -392,7 +549,11 @@ def selection_evidence(
         }
         if isinstance(entry.get("blog_competing_posts"), int):
             candidate["blog_competing_posts"] = entry["blog_competing_posts"]
+        if isinstance(entry.get("queue_score"), (int, float)):
+            candidate["queue_score"] = float(entry["queue_score"])
         evidence["candidates"].append(candidate)
+    if seed_source:
+        evidence["seed_source"] = dict(seed_source)
     return evidence
 
 
@@ -939,14 +1100,19 @@ def run_content_ideation(
     repo_root: Path | None = None,
     writer: Any = None,
     published_source: Any = None,
+    keyword_queue: Any = None,
 ) -> dict[str, Any]:
     """Research -> pick -> draft -> score -> package. Returns the sheet the scheduler renders.
 
     Raises ``ToolError`` when a governed run blocks or no keyword qualifies; the scheduler
     turns that into the fire's status, which is the same shape a blocked data-review fire has.
     """
-    seeds, target_override = parse_seeds(str(inputs.get("seeds") or ""))
-    if not seeds and not target_override:
+    seeds, target_override, use_queue = parse_request(str(inputs.get("seeds") or ""))
+    if use_queue and seeds:
+        raise ToolError(IDEATION_INPUTS_CONFLICT,
+                        f"{QUEUE_SOURCE_TOKEN} takes the seeds from the vault queue; drop the "
+                        f"fixed seeds ({', '.join(seeds)}) or drop {QUEUE_SOURCE_TOKEN}")
+    if not seeds and not target_override and not use_queue:
         raise ToolError("IDEATION_INPUTS_REQUIRED", "no keyword seeds and no target= override")
     resolved = dict(providers or {})
     common: dict[str, Any] = {
@@ -984,6 +1150,24 @@ def run_content_ideation(
                 "(or pass target= to name the keyword yourself)",
             )
         published = source.load()
+    queue_candidates: list[QueueCandidate] | None = None
+    seed_source: dict[str, Any] = {"kind": "request"}
+    if use_queue and target is None:
+        queue_source = keyword_queue if keyword_queue is not None else VaultKeywordQueue(
+            getattr(source, "root", ""))
+        loaded = queue_source.load(now)
+        queue_candidates, skipped = queue_seeds(
+            loaded, already_written=written_keywords(ledger, published),
+            already_tagged=published.tags if published is not None else ())
+        seed_source = {"kind": "vault_queue", "as_of": loaded.as_of,
+                       "candidates_read": len(loaded.candidates),
+                       "skipped_written": len(skipped)}
+        if not queue_candidates:
+            raise ToolError(NO_ELIGIBLE_KEYWORD,
+                            f"the vault queue ({loaded.as_of}) is exhausted: all "
+                            f"{len(loaded.candidates)} candidates are already written; "
+                            "rebuild it with kw_pipeline run")
+        seeds = [c.keyword for c in queue_candidates]
     if seeds:
         research = _run(
             "research",
@@ -1001,6 +1185,7 @@ def run_content_ideation(
             target, reasoning = select_target_keyword(
                 metrics, already_written=already_written,
                 already_tagged=published.tags if published is not None else (),
+                queue=queue_candidates,
             )
     if not target:
         raise ToolError(NO_ELIGIBLE_KEYWORD, _no_eligible_message(reasoning))
@@ -1068,7 +1253,7 @@ def run_content_ideation(
     package = build_package(
         target_keyword=target, draft=final,
         selection=selection_evidence(keyword_record, reasoning, selected_keyword=target,
-                                     mode=mode, seeds=seeds, now=now),
+                                     mode=mode, seeds=seeds, now=now, seed_source=seed_source),
         target=target_evidence(target, target_record, now=now),
         lineage=lineage, quality=quality, now=now,
     )

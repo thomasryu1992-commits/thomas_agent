@@ -775,19 +775,23 @@ def _vault_mounts(service: str) -> list[str]:
 
 def test_the_pipeline_worker_reads_the_vaults_post_folders_read_only():
     """Rule-based blog selection refuses without the published posts (`blog_content`), and the
-    lane runs only here. The two post folders and nothing else of the vault, and read-only."""
+    lane runs only here. The two post folders and the keyword queue's folder — nothing else of
+    the vault — and read-only."""
     from runtime.mvp_runtime import blog_content
 
     mounts = _vault_mounts("pipeline-worker")
     targets = sorted(m.rsplit(":", 2)[1] for m in mounts)   # "${VAR:-default}/…:target:ro"
-    assert targets == ["/app/blog_vault/content/naver", "/app/blog_vault/content/tistory"]
+    assert targets == ["/app/blog_vault/analytics/keywords", "/app/blog_vault/content/naver",
+                       "/app/blog_vault/content/tistory"]
     assert all(m.endswith(":ro") for m in mounts), mounts
     assert all(m.startswith("${THOMAS_BLOG_VAULT_DIR:-") for m in mounts), mounts
     environment = _service_environment("pipeline-worker")
     assert environment.get(blog_content.PUBLISHED_ROOT_ENV) == "/app/blog_vault"
     # The adapter reads `<root>/content/{naver,tistory}` — the mount targets under that root.
     root = environment[blog_content.PUBLISHED_ROOT_ENV]
-    assert targets == sorted(f"{root}/content/{p}" for p in blog_content._PUBLISHED_PLATFORM_DIRS)
+    expected = [f"{root}/content/{p}" for p in blog_content._PUBLISHED_PLATFORM_DIRS]
+    expected.append(f"{root}/{blog_content.QUEUE_REL.rsplit('/', 1)[0]}")
+    assert targets == sorted(expected)
 
 
 @pytest.mark.parametrize("service", sorted(
