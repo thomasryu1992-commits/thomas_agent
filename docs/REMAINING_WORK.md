@@ -4,7 +4,7 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-09-25** — §I's heading and its "nothing here is built" line corrected (decided
+Last updated: **2026-09-28** — §L added (E1/E2 from the regime-episode RECORD, held until the first forward-cohort verdict). Before that, **2026-09-25** — §I's heading and its "nothing here is built" line corrected (decided
 2026-09-24, option C; PR1–PR3 built as #977–#979). No other section was re-surveyed. Before that,
 **2026-09-03** — §K added (Hermes orchestrator integration, decided 2026-09-03, documentation-first PR sequence). Before that, **2026-08-29** — the header date had sat at 08-10 while the body took 08-23 and
 08-25 updates, exactly the "a document is a claim about a moved main" pattern this file warns
@@ -5144,6 +5144,49 @@ delegation goes live only with its own policy bump.
       (shims with the installer, prompt and skill by hand, the fourth cron job, a hermes restart) and the backup
       scripts, the post-deploy checks, the pilot's scope and measures, and the rollback evidence. **Still
       Thomas's to decide and run:** the later `--v2-intake closed` cutover after the pilot, and policy 1.6.0. Legacy writer retirement per entry point follows the cutover runbook.
+
+## L. Held until the first forward-cohort verdict — E1 and E2 (recorded 2026-09-28)
+
+**Not buildable now, and on purpose.** Both items come from
+`docs/proposals/FORWARD_VERDICT_REGIME_EPISODES_V0.1.md` §5 (RECORD, #1003): the six forward verdicts
+of 2026-09-27 rest on three to five BTC-1d regime episodes with no TREND_DOWN day. Two rules hold them:
+- **E1 loosens a judgment rule.** `RESEARCH_EPOCH_V0.1.md` Q3 (Thomas 2026-09-26) puts that at an
+  epoch boundary.
+- **E2 is new measurement machinery.** System review D3 (Thomas 2026-09-26, `CLAUDE.md`) pauses
+  that in `crypto/` until the first cohort verdict.
+
+**The trigger:** the first forward-cohort verdict, i.e. the first FORWARD_CONFIRMED in the cohort
+(the board's `확정` count leaving 0), or an epoch boundary Thomas declares, whichever comes first.
+When it fires, raise E1 first. It is small and reversible.
+
+- [ ] **E1 — time spread before a negative forward verdict.**
+  - **Today:** `forward_confirmation.judge_forward` returns CONTRADICTED/UNDERPOWERED at the trade
+    floor, before the slice test (`forward_confirmation.py:279-287`). CONFIRMED needs ≥ 8 active
+    14-day slices (about 112 days). Under option A a CONTRADICTED drops a member from the leaders
+    with no time-spread requirement.
+  - **The ask:** require the slice test, or an episode floor on the macro proxy, before a negative
+    verdict. Until then the record reads INSUFFICIENT.
+  - **Why it is a loosening:** fewer members leave the leaders.
+  - **The alternative Thomas may prefer:** keep the early return and read CONTRADICTED only beside
+    the null arm's same-timeframe count, which the board already shows.
+  - `robustness.holdout_status` has the same shape (`robustness.py:484-495`) but a 300–600-day
+    window, so it is out of scope unless measured otherwise.
+- [ ] **E2 — regime-episode identity on candidate evidence.**
+  - **Today:** `factory` keeps `per_regime` totals per label and no trade times, so
+    `robustness.regime_breadth` counts labels, and no per-candidate episode count is possible.
+  - **The ask:** stamp each replayed trade's opening episode (or bar time) into the evidence, so
+    breadth can count episodes and the RECORD's §2 can be computed per candidate. New mints only:
+    nothing backfills.
+  - **Precondition, and it is a decision, not a build:** fix the episode definition first. That
+    means the macro proxy (BTC-1d labels, or something else), the gap tolerance and the minimum
+    length.
+  - The RECORD's sensitivity table shows the count moving several-fold with that choice (4h holdout
+    TREND_UP episodes: 3 to 19). Wiring an undecided definition into a verdict would add a tuning
+    knob, not evidence. It is a record-schema change, so the closed schema moves with it.
+
+**What is not here:** the verdict machinery itself (null arm, independence, slice test) is built.
+Nothing in this section makes a strategy confirm sooner. The forward sample needs a second market
+phase, and only time supplies that.
 
 ## Per-machine setup that does NOT travel via git
 
