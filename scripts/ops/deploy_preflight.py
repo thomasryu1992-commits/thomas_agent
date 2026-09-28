@@ -177,8 +177,13 @@ def check_tree(run: Runner, tree: str) -> list[Result]:
         return [Result("STOP", "tree", f"{tree} is not a readable git worktree")]
     if status:
         results.append(Result("STOP", "tree", f"{tree} has uncommitted changes; build only a clean tree"))
+    elif main is None:
+        results.append(Result("STOP", "tree", f"{tree} cannot resolve origin/main; build only a clean origin/main tree"))
     elif head != main:
-        results.append(Result("WARN", "tree", f"{tree} HEAD {head[:10]} is not origin/main {str(main)[:10]}"))
+        # A STOP, not a WARN: a clean tree at another commit ships something other than origin/main,
+        # which is the one thing this procedure exists to rule out. A clean tree is not enough.
+        results.append(Result("STOP", "tree", f"{tree} HEAD {head[:10]} is not origin/main {main[:10]}; "
+                                              f"build only a clean origin/main tree"))
     else:
         results.append(Result("PASS", "tree", f"{tree} is clean at origin/main {head[:10]}"))
 
