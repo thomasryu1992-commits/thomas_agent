@@ -1137,14 +1137,57 @@ def revision_request(target: str, first: Mapping[str, Any], text: str) -> str:
     asks = [f"- {_FAILURE_ASKS.get(f, f)} (현재 {measured.get(f, '-')})" for f in first["failures"]]
     if _LENGTH_FAILURES & set(first["failures"]):
         asks.append(f"- {_length_asks(measured)}")
-    previous = (json.dumps(first["structured"], ensure_ascii=False)
-                if first.get("structured") is not None else text)
     return (
         f"아래 '{target}' 네이버 블로그 초안을 고쳐라. 고칠 항목은 다음뿐이다:\n" + "\n".join(asks)
-        + "\n사실·수치·가격·날짜·출처는 바꾸지 말고 새 사실이나 새 출처를 추가하지 마라. 분량을 "
-        "늘릴 때는 이미 쓴 내용의 방법·이유·예시·주의점을 풀어 써라. content_draft에는 같은 JSON "
-        f"형식으로 전체 초안을 다시 넣어라: {_DRAFT_SHAPE}\n이전 초안:\n{previous}"
+        + "\n사실·수치·가격·날짜는 바꾸지 말고 새 사실이나 새 출처를 추가하지 마라. 분량을 늘릴 때는 이미 쓴 "
+        "내용의 방법·이유·예시·주의점을 풀어 써라. 이 수정 실행에는 근거 블록이 없다 — [S1]·[K1] 같은 "
+        "근거 번호를 본문·facts·fact_checks 어디에도 쓰지 말고, sources는 빈 목록 []으로 둬라(첫 "
+        "초안의 출처는 그대로 유지된다). content_draft에는 같은 JSON 형식으로 전체 초안을 다시 "
+        f"넣어라: {_DRAFT_SHAPE}\n이전 초안:\n{_revision_previous(first, text)}"
     )
+
+
+_EVIDENCE_REF_RE = re.compile(r"\[[SK]\d{1,3}\]")
+
+
+def _revision_previous(first: Mapping[str, Any], text: str) -> str:
+    """The first draft as the revision sees it: its evidence references taken out.
+
+    The revision is its own governed run, and it has no evidence of its own. Its web search runs
+    on this request text and comes back empty, and it runs no keyword brief. So any `[S#]`/`[K#]`
+    carried into it cites a source THAT run never had. The pipeline's validation said exactly
+    that on 2026-09-28 ("A fact cites a source this run never provided: [S1]") and withheld the
+    revision. The first draft's resolved sources are carried into the package instead
+    (:func:`_carry_first_evidence`)."""
+    if first.get("structured") is not None:
+        draft = dict(first["structured"])
+        draft["sources"] = []
+        draft["fact_checks"] = [{**c, "source_ref": None} for c in draft.get("fact_checks") or []]
+        previous = json.dumps(draft, ensure_ascii=False)
+    else:
+        previous = text
+    return _EVIDENCE_REF_RE.sub("", previous)
+
+
+def _carry_first_evidence(first: Mapping[str, Any], second: dict[str, Any]) -> dict[str, Any]:
+    """The revised draft, with the evidence the FIRST draft resolved carried over.
+
+    The revision may not change facts, and it ran with no evidence of its own, so its sources
+    are necessarily empty and its fact checks unsourced. The first draft's sources did resolve
+    against the content run's real evidence and stay true of the same facts. A fact check whose
+    claim is unchanged keeps its first-draft state; a claim the revision reworded stays
+    `needs_manual_verification`, because the source was checked against the old wording, not
+    the new."""
+    carried = dict(second)
+    carried["sources"] = list(first.get("sources") or [])
+    by_claim = {c["claim"]: c for c in first.get("fact_checks") or []
+                if c.get("verification_state") == blog_draft.VERIFICATION_SOURCE_CITED}
+    carried["fact_checks"] = [by_claim.get(c["claim"], c) for c in second.get("fact_checks") or []]
+    measured = dict(second.get("measured") or {})
+    if second.get("draft_format") == blog_draft.DRAFT_FORMAT_STRUCTURED:
+        measured["sources"] = len(carried["sources"])
+    carried["measured"] = measured
+    return carried
 
 
 def _draft_text(result: Mapping[str, Any]) -> str:
@@ -1326,7 +1369,7 @@ def run_content_ideation(
                     # A revision that lost the structure is worse than the draft it revised.
                     revision_outcome = "REVISION_UNSTRUCTURED:KEPT_FIRST_DRAFT"
                 else:
-                    final = second
+                    final = _carry_first_evidence(first, second)
                     revision_outcome = "REVISED" if not second["failures"] else "REVISED_STILL_FAILING"
 
     # The target's evidence is the content run's OWN brief (`keyword_seeds=target`), which was

@@ -419,3 +419,60 @@ def test_a_length_revision_carries_the_plan_against_the_drafts_own_numbers(monke
 def test_a_revision_for_titles_alone_does_not_carry_the_length_plan(monkeypatch):
     _sheet, calls = _ideate(monkeypatch, [_draft(titles=1), _draft()])
     assert "분량 계획" not in calls[1][1]
+
+
+# --- the revision carries no evidence references (2026-09-28, bcp_ea2d271d8bd9cd453c2d) -------
+#
+# The revision is its own governed run with no evidence: its web search runs on the long request
+# text and came back empty, and it runs no keyword brief. Handing it the first draft's [S1] made
+# the pipeline's validation withhold it: "A fact cites a source this run never provided: [S1]".
+
+def _cited_draft(**over):
+    draft = _draft(sections=5, per_section=1, **over)            # short: forces the revision
+    draft["intro"][0] = "프로 요금제는 월 14,900원입니다 [S1]. " + draft["intro"][0]
+    draft["fact_checks"] = [{"claim": "프로 요금제는 월 14,900원입니다", "why": "가격 변동",
+                             "source_ref": "[S1]"}]
+    return draft
+
+
+def test_the_revision_request_carries_no_evidence_reference_and_says_why():
+    first = blog_content.interpret_draft(json.dumps(_cited_draft(), ensure_ascii=False), TARGET,
+                                         _records())
+    assert first["sources"]                                        # the first draft did resolve [S1]
+    request = blog_content.revision_request(TARGET, first, "")
+    previous = request.split("이전 초안:\n", 1)[1]
+    assert "[S1]" not in previous and "[S2]" not in previous and "[K1]" not in previous
+    assert json.loads(previous)["sources"] == []
+    assert all(c["source_ref"] is None for c in json.loads(previous)["fact_checks"])
+    assert "근거 번호를 본문·facts·fact_checks 어디에도 쓰지 말고" in request
+
+
+def test_a_revised_draft_keeps_the_first_drafts_sources_and_cited_checks(monkeypatch):
+    first_draft = _cited_draft()
+    revised = _draft()                                            # long enough, cites nothing
+    revised["intro"][0] = "프로 요금제는 월 14,900원입니다. " + revised["intro"][0]
+    revised["fact_checks"] = [{"claim": "프로 요금제는 월 14,900원입니다", "why": "가격 변동",
+                               "source_ref": None}]
+    runs = iter([_run_result(first_draft, records=_records(trace="t-content")),
+                 _run_result(revised, records=_records(hits=0, trace="t-revision"))])
+    monkeypatch.setattr(blog_content, "_run", lambda *a, **k: next(runs))
+    sheet = blog_content.run_content_ideation(
+        {"seeds": f"target={TARGET}"}, now=NOW, published_source=_StaticSource())
+    package = sheet["package"]
+    assert package["quality"]["revision_outcome"] == "REVISED"
+    assert [s["source_ref"] for s in package["sources"]] == ["[S1]", "[S2]"]
+    assert package["quality"]["measured"]["sources"] == 2
+    cited = next(c for c in package["fact_checks"] if c["claim"] == "프로 요금제는 월 14,900원입니다")
+    assert (cited["verification_state"], cited["source_ref"]) == ("source_cited", "[S1]")
+    validate_against_schema(package, SCHEMA, "blog_content_package")
+
+
+def test_a_reworded_claim_does_not_inherit_the_old_wordings_source():
+    first = blog_content.interpret_draft(json.dumps(_cited_draft(), ensure_ascii=False), TARGET,
+                                         _records())
+    second = blog_content.interpret_draft(json.dumps(dict(_draft(), fact_checks=[
+        {"claim": "프로 요금제는 한 달에 14,900원이다", "why": "가격 변동", "source_ref": None}]),
+        ensure_ascii=False), TARGET, _records(hits=0))
+    carried = blog_content._carry_first_evidence(first, second)
+    reworded = next(c for c in carried["fact_checks"] if c["claim"].startswith("프로 요금제는 한 달에"))
+    assert reworded["verification_state"] == "needs_manual_verification"
