@@ -380,3 +380,42 @@ def test_post_md_marks_the_chosen_keyword_whatever_its_spacing():
     lines = blog_content._render_selection_evidence(selection)
     assert any("사업자등록증발급" in ln and ln.endswith("— 선정") for ln in lines)
     assert any("퇴직금지급기준" in ln and ln.endswith("— 후보") for ln in lines)
+
+
+# --- the length plan (the first package: 730 characters against 1,800) ----------------------
+
+def test_the_length_plan_adds_up_to_every_standard():
+    """The old request's totals were consistent only well above their minimums (10 x 150 =
+    1,500 < 1,800); the model met the minimums and landed at 730. The plan is the one shape that
+    clears every standard, checked here against the standards themselves."""
+    S = blog_draft_score.STANDARDS
+    low, high = blog_content.PLAN_PARAGRAPH_CHARS
+    total_low, total_high = blog_content.plan_body_chars()
+    assert S["body_chars"].within(total_low) and S["body_chars"].within(total_high)
+    assert S["paragraphs"].within(blog_content.plan_paragraphs())
+    assert S["para_chars"].within(low) and S["para_chars"].within(high)
+    assert S["headings"].within(blog_content.PLAN_SECTIONS)
+
+
+def test_the_request_states_the_plan_not_only_the_totals():
+    request = blog_content.content_request(TARGET)
+    assert f"문단 {blog_content.plan_paragraphs()}개" in request
+    assert "110~140자" in request and "1,800자에 못 미치면 불합격" in request
+    # The contradictory triple is gone from the first request.
+    assert "문단 10~20개·문단당 70~150자" not in request
+
+
+def test_a_length_revision_carries_the_plan_against_the_drafts_own_numbers(monkeypatch):
+    short = _draft(sections=5, per_section=1)
+    _sheet, calls = _ideate(monkeypatch, [short, _draft()])
+    request = calls[1][1]
+    parts = blog_content.interpret_draft(json.dumps(short, ensure_ascii=False), TARGET)
+    measured = parts["measured"]
+    assert (f"현재 문단 {measured['paragraphs']}개·문단 평균 {measured['para_chars']}자·"
+            f"합계 {measured['body_chars']}자") in request
+    assert f"문단 {blog_content.plan_paragraphs()}개" in request
+
+
+def test_a_revision_for_titles_alone_does_not_carry_the_length_plan(monkeypatch):
+    _sheet, calls = _ideate(monkeypatch, [_draft(titles=1), _draft()])
+    assert "분량 계획" not in calls[1][1]
