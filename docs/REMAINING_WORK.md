@@ -4836,9 +4836,9 @@ I1 argues is not what is blocking.
 
 **Revived 2026-09-28 (Thomas) — a new weekly row, `schedule_876d53b39de29b2af417`, enabled with
 request `source=queue`, first fire 2026-10-05T13:19:36Z.** The seeds now come from the vault
-keyword queue (#1014) and the vault's published posts are excluded (#1012, #1013). The row
-added below the fixed seeds stays disabled and is kept for its history, because `scheduler_cli`
-has no edit command. The runtime still never publishes: a fire ends in a draft package for a
+keyword queue (#1014) and the vault's published posts are excluded (#1012, #1013). The old
+fixed-seed row below stays disabled and is kept for its history, because `scheduler_cli` has no
+edit command. The runtime still never publishes: a fire ends in a draft package for a
 human (`docs/history/2026-09-28-blog-lane-revived.md`). The held record below is kept as it was
 written.
 
