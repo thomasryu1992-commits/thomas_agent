@@ -182,13 +182,15 @@ def measure_structured(
     tags: list[str],
     source_count: int,
     keyword: str | None = None,
+    has_table: bool = False,
 ) -> dict[str, int]:
     """The same standards, measured on the structured draft's own fields. Pure.
 
     Nothing here is a heuristic: headings are the sections, images the capture directions,
     hashtags the tags, sources the cited references that resolved to the run's evidence (the
-    caller resolves them — an invented reference does not count). Only the table stays a
-    shape rule, because a table is a paragraph whose lines carry `' | '`."""
+    caller resolves them — an invented reference does not count). The table is the draft's own
+    `table` field (``has_table``), and is not a prose paragraph, so it counts toward none of the
+    length measures. A ' | ' paragraph from an older draft still counts as a table."""
     paragraphs = [p for p in intro] + [p for s in sections for p in s.get("paragraphs", [])]
     headings = [str(s.get("heading", "")) for s in sections]
     lengths = [_visible_chars(p) for p in paragraphs] or [0]
@@ -199,7 +201,7 @@ def measure_structured(
         "paragraphs": len(paragraphs),
         "para_chars": sum(lengths) // len(lengths),
         "images": int(image_count),
-        "tables": 1 if any(" | " in line for p in paragraphs for line in p.splitlines()) else 0,
+        "tables": 1 if has_table or any(" | " in line for p in paragraphs for line in p.splitlines()) else 0,
         "sources": int(source_count),
         "keyword_hits": text.count(keyword) if keyword else -1,
         "hashtags": len(tags),
