@@ -814,3 +814,46 @@ def test_the_cut_touches_only_the_named_paragraphs_and_states_both_floors():
     assert f"어떤 문단도 {low}자 아래로 줄이지 마라" in request
     assert "본문 합계가 1,800자 아래면 불합격이다" in request
     assert "한두 문장" not in request
+
+
+# --- a draft that stopped with brackets still open -------------------------------------------
+#
+# bcp_cbbabb9953f3c67ba332 (2026-09-29): the first draft ended '…"]}' after its last section —
+# no ']' for sections, no root '}', nothing after — and went to the legacy parser, so the
+# revision had no paragraph to name.
+
+def _stopped_after(draft: dict, marker: str) -> str:
+    text = json.dumps(draft, ensure_ascii=False)
+    assert text.count(marker) == 1
+    return text[:text.index(marker) + len(marker)]
+
+
+def test_a_draft_that_stopped_after_its_last_section_is_closed_at_the_end():
+    draft = _draft()
+    text = _stopped_after(draft, '"]}], "tags"')[:-len('], "tags"')]      # ends '…"]}'
+    assert text.endswith('"]}')
+    parsed, reason = blog_draft.parse_structured(text)
+    assert reason is None and parsed["brackets_inserted"] == 2
+    assert [s["paragraphs"] for s in parsed["sections"]] == [
+        s["paragraphs"] for s in draft["sections"]]
+    assert parsed["tags"] == [] and parsed["image_shots"] == []          # never filled in
+
+
+def test_a_value_after_the_last_close_brace_is_kept_when_closing_at_the_end():
+    draft = _draft()
+    text = _stopped_after(draft, '"tags": ["미리캔버스", "포스터제작", "소상공인"]')
+    parsed, reason = blog_draft.parse_structured(text)
+    assert reason is None and parsed["brackets_inserted"] == 1
+    assert parsed["tags"] == draft["tags"]
+
+
+@pytest.mark.parametrize("cut", ['"tags": ["미리캔버스", ', '"tags": ', '"tags": ["미리'])
+def test_a_draft_cut_after_a_comma_a_colon_or_inside_a_string_is_not_closed(cut):
+    text = _stopped_after(_draft(), cut)
+    assert blog_draft.parse_structured(text) == (None, "JSON_UNPARSEABLE")
+
+
+def test_closing_at_the_end_is_opt_in():
+    text = '{"sections": [{"heading": "a", "paragraphs": ["b"]}'
+    assert blog_draft.repair_brackets(text) is None
+    assert blog_draft.repair_brackets(text, close_at_end=True) == (text + "]}", 2)
