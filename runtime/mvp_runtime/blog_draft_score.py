@@ -36,9 +36,13 @@ from dataclasses import dataclass
 # `body_chars`: it counted every visible character of the draft, headings, the hashtag line and
 # every `[캡처: …]` marker included, so a draft could clear 1,800 on scaffolding. It now counts
 # body prose only, in both measurements below.
-STANDARDS_VERSION = "blog_draft_standards.2026-09-28"
+#
+# 2026-09-29: `keyword_hits` ignores spacing (:func:`keyword_hits`) — '소상공인스마트상점' and
+# '소상공인 스마트 상점' are the keyword '소상공인 스마트상점' as a Naver reader types it.
+STANDARDS_VERSION = "blog_draft_standards.2026-09-29"
 
-__all__ = ["STANDARDS", "STANDARDS_VERSION", "Standard", "measure", "measure_structured", "scorecard"]
+__all__ = ["STANDARDS", "STANDARDS_VERSION", "Standard", "keyword_hits", "measure",
+           "measure_structured", "scorecard"]
 
 # --- the standards (Thomas, 2026-08-10) ------------------------------------------------
 #
@@ -94,6 +98,19 @@ _NOT_HEADING_PREFIXES = ("[", "#", "출처", "참고", "-", "*", "•")
 def _visible_chars(text: str) -> int:
     """Characters excluding all whitespace — the count Korean blog guidance means."""
     return len(re.sub(r"\s", "", text))
+
+
+def keyword_hits(text: str, keyword: str | None) -> int:
+    """How often ``keyword`` appears in ``text``, spacing ignored; -1 with no keyword.
+
+    Exact matching undercounted a multi-word keyword: a draft that used '소상공인 스마트상점'
+    once and shortened it to '스마트상점' six times, and one that wrote it without the space,
+    both read the same. The spacing is what is ignored — a part of the keyword on its own
+    ('스마트상점') is still not the keyword."""
+    key = re.sub(r"\s", "", keyword or "")
+    if not key:
+        return -1
+    return len(re.findall(r"\s*".join(re.escape(ch) for ch in key), text))
 
 
 def _paragraphs(text: str) -> list[str]:
@@ -155,7 +172,7 @@ def measure(text: str, keyword: str | None = None) -> dict[str, int]:
         "images": len(re.findall(r"\[캡처\s*[::]", text)),
         "tables": sum(1 for line in text.splitlines() if " | " in line) and 1 or 0,
         "sources": len(re.findall(r"https?://|\[S\d+\]", text)),
-        "keyword_hits": text.count(keyword) if keyword else -1,
+        "keyword_hits": keyword_hits(text, keyword),
         "hashtags": len(re.findall(r"#\w+", text)),
     }
 
@@ -203,7 +220,7 @@ def measure_structured(
         "images": int(image_count),
         "tables": 1 if has_table or any(" | " in line for p in paragraphs for line in p.splitlines()) else 0,
         "sources": int(source_count),
-        "keyword_hits": text.count(keyword) if keyword else -1,
+        "keyword_hits": keyword_hits(text, keyword),
         "hashtags": len(tags),
     }
 

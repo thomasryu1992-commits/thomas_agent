@@ -325,7 +325,7 @@ def test_body_chars_is_prose_only_in_the_text_measurement_too():
     """Headings, the tag line and capture markers used to count toward the 1,800 floor."""
     text = "## 소제목\n\n본문 열 글자입니다.\n\n[캡처: 아주 긴 캡처 설명 문구]\n\n#태그하나 #태그둘"
     assert blog_draft_score.measure(text)["body_chars"] == len("본문열글자입니다.")
-    assert blog_draft_score.STANDARDS_VERSION == "blog_draft_standards.2026-09-28"
+    assert blog_draft_score.STANDARDS_VERSION == "blog_draft_standards.2026-09-29"
 
 
 # --- what the first real package showed (2026-09-28) ----------------------------------------
@@ -682,3 +682,31 @@ def test_a_colon_inside_a_paragraph_string_is_not_a_key():
     assert blog_draft.repair_brackets(text) is None
     parsed, reason = blog_draft.parse_structured(_missing_paragraphs_closer(draft))
     assert reason is None and parsed["brackets_inserted"] == 1
+
+
+# --- the keyword in the body, spacing ignored ----------------------------------------------
+
+def test_keyword_hits_ignore_spacing_but_not_a_shortened_keyword():
+    text = ("소상공인 스마트상점 신청. 소상공인스마트상점 대상. 소상공인 스마트 상점 요건. "
+            "스마트상점 기술보급. 소상공인 지원.")
+    assert blog_draft_score.keyword_hits(text, "소상공인 스마트상점") == 3
+    assert blog_draft_score.keyword_hits(text, None) == -1
+    assert blog_draft_score.keyword_hits(text, " ") == -1
+
+
+def test_both_measurements_count_the_keyword_the_same_way():
+    intro = ["소상공인스마트상점 사업은 매장에 기술을 들이는 사업입니다."]
+    sections = [{"heading": "소상공인 스마트 상점 신청", "paragraphs": ["스마트상점만 쓴 문단."]}]
+    structured = blog_draft_score.measure_structured(
+        intro=intro, sections=sections, image_count=0, tags=[], source_count=0,
+        keyword="소상공인 스마트상점")
+    assert structured["keyword_hits"] == 2
+    text = "\n\n".join(intro + ["소상공인 스마트 상점 신청", "스마트상점만 쓴 문단."])
+    assert blog_draft_score.measure(text, "소상공인 스마트상점")["keyword_hits"] == 2
+
+
+def test_the_request_asks_for_the_keyword_in_the_body_in_the_scorers_numbers():
+    request = blog_content.content_request("소상공인 스마트상점")
+    standard = blog_draft_score.STANDARDS["keyword_hits"]
+    assert f"'소상공인 스마트상점'를 {standard.low}~{standard.high}회" in request
+    assert "intro 첫 문단" in request and "줄여 쓴 것은 세지 않는다" in request
