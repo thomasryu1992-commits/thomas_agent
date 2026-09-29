@@ -18,8 +18,8 @@ SCRIPT = REPO_ROOT / "scripts" / "ops" / "backup_watch.sh"
 
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="backup_watch.sh is a bash script")
 
-OK_LINE = "2026-09-07T08:15:29Z OK mode=core govstate-20260907-0815.tar.gz 28M kept=7 hermes-snapshot=ok workflow-snapshot=ok\n"
-PRE_P10_LINE = "2026-09-07T08:15:29Z OK mode=core govstate-20260907-0815.tar.gz 28M kept=7 hermes-snapshot=ok\n"
+OK_LINE = "2026-09-07T08:15:29Z OK mode=core govstate-20260907-0815.tar.gz.age 28M kept=7 enc=age recipient=age1qqqqqqqq anchor=excluded hermes-snapshot=ok workflow-snapshot=ok\n"
+PRE_P10_LINE = "2026-09-07T08:15:29Z OK mode=core govstate-20260907-0815.tar.gz.age 28M kept=7 enc=age recipient=age1qqqqqqqq anchor=excluded hermes-snapshot=ok\n"
 FAILED_LINE = "2026-09-07T07:45:05Z FAILED mode=core rc=2 hermes-snapshot=ok workflow-snapshot=ok\n"
 
 
@@ -28,7 +28,7 @@ def _dest(tmp_path: Path, *, core: bool = True, candles: bool = True, log: str =
     dest.mkdir(exist_ok=True)
     (dest / "backup.log").write_text(log, encoding="utf-8")
     if core:
-        (dest / "govstate-20260907-0815.tar.gz").write_text("x", encoding="utf-8")
+        (dest / "govstate-20260907-0815.tar.gz.age").write_text("x", encoding="utf-8")
     if candles:
         (dest / "govstate-candles-20260906-0815.tar.gz").write_text("x", encoding="utf-8")
     return dest
@@ -70,7 +70,7 @@ def test_a_failed_core_run_is_reported(tmp_path):
 @posix_only
 def test_an_archive_that_is_too_old_is_reported(tmp_path):
     dest = _dest(tmp_path)
-    old = dest / "govstate-20260907-0815.tar.gz"
+    old = dest / "govstate-20260907-0815.tar.gz.age"
     os.utime(old, (0, 0))
     result = _run(tmp_path, dest, _health_log(tmp_path))
     assert result.returncode == 1 and "core 아카이브가" in result.stdout
@@ -121,9 +121,9 @@ def test_an_unknown_argument_refuses_to_run(tmp_path):
 
 # --- P10: the workflow snapshot marker ------------------------------------------------------------
 
-OK_WITH_WORKFLOW = "2026-09-14T07:45:29Z OK mode=core govstate-20260914-0745.tar.gz 28M kept=7 hermes-snapshot=ok workflow-snapshot=ok\n"
-OK_ABSENT = "2026-09-14T07:45:29Z OK mode=core govstate-20260914-0745.tar.gz 28M kept=7 hermes-snapshot=ok workflow-snapshot=absent\n"
-OK_WF_FAILED = "2026-09-14T07:45:29Z OK mode=core govstate-20260914-0745.tar.gz 28M kept=7 hermes-snapshot=ok workflow-snapshot=FAILED\n"
+OK_WITH_WORKFLOW = "2026-09-14T07:45:29Z OK mode=core govstate-20260914-0745.tar.gz.age 28M kept=7 enc=age recipient=age1qqqqqqqq anchor=excluded hermes-snapshot=ok workflow-snapshot=ok\n"
+OK_ABSENT = "2026-09-14T07:45:29Z OK mode=core govstate-20260914-0745.tar.gz.age 28M kept=7 enc=age recipient=age1qqqqqqqq anchor=excluded hermes-snapshot=ok workflow-snapshot=absent\n"
+OK_WF_FAILED = "2026-09-14T07:45:29Z OK mode=core govstate-20260914-0745.tar.gz.age 28M kept=7 enc=age recipient=age1qqqqqqqq anchor=excluded hermes-snapshot=ok workflow-snapshot=FAILED\n"
 
 
 @posix_only
@@ -146,31 +146,63 @@ def test_a_core_line_without_the_marker_means_an_old_backup_script(tmp_path):
     assert result.returncode == 1 and "workflow-snapshot 표기가 없습니다" in result.stdout
 
 
-@posix_only
-def test_an_archive_that_carries_the_execution_stage_anchor_is_reported(tmp_path):
-    """EXECUTION_STAGE_ANTI_ROLLBACK D1 a: the anchor vouches for the stage ledger, and restored with
-    it would vouch for an older stage. The backup excludes it; the watch catches a backup that did not."""
-    import tarfile
-
-    dest = _dest(tmp_path, core=False)
-    src = tmp_path / "src" / "thomas_agent" / ".runtime_governance_state" / "crypto"
-    src.mkdir(parents=True)
-    (src / "execution_stage_anchor.json").write_text("{}", encoding="utf-8")
-    with tarfile.open(dest / "govstate-20260907-0815.tar.gz", "w:gz") as archive:
-        archive.add(tmp_path / "src" / "thomas_agent", arcname="root/thomas_agent")
-    result = _run(tmp_path, dest, _health_log(tmp_path))
-    assert "실행 단계 앵커" in result.stdout + result.stderr
+# The core archive is encrypted to an age public key (2026-09-29). The watch tells the four ways
+# that can go wrong apart, because each one has a different fix.
+ENCRYPT_FAILED = "2026-09-29T07:45:02Z FAILED mode=core stage=encrypt reason=no-recipients-file\n"
+ARCHIVE_FAILED = "2026-09-29T07:45:05Z FAILED mode=core stage=archive rc=2 missing=thomas_agent/.env hermes-snapshot=ok workflow-snapshot=ok\n"
+PLAIN_OK = "2026-09-28T07:45:29Z OK mode=core govstate-20260928-0745.tar.gz 28M kept=7 hermes-snapshot=ok workflow-snapshot=ok\n"
 
 
 @posix_only
-def test_an_archive_without_the_anchor_says_nothing(tmp_path):
-    import tarfile
+def test_an_encryption_failure_is_named_as_one(tmp_path):
+    result = _run(tmp_path, _dest(tmp_path, log=OK_LINE + ENCRYPT_FAILED), _health_log(tmp_path))
+    assert result.returncode == 1 and "암호화 단계에서 실패" in result.stdout
+    assert "아카이브 생성(tar)" not in result.stdout
 
-    dest = _dest(tmp_path, core=False)
-    src = tmp_path / "src" / "thomas_agent" / ".runtime_governance_state" / "crypto"
-    src.mkdir(parents=True)
-    (src / "execution_stage_ledger.jsonl").write_text("{}\n", encoding="utf-8")
-    with tarfile.open(dest / "govstate-20260907-0815.tar.gz", "w:gz") as archive:
-        archive.add(tmp_path / "src" / "thomas_agent", arcname="root/thomas_agent")
+
+@posix_only
+def test_an_archive_failure_is_named_as_one(tmp_path):
+    result = _run(tmp_path, _dest(tmp_path, log=OK_LINE + ARCHIVE_FAILED), _health_log(tmp_path))
+    assert result.returncode == 1 and "아카이브 생성(tar) 단계에서 실패" in result.stdout
+    assert "암호화 단계" not in result.stdout
+
+
+@posix_only
+def test_only_plaintext_archives_count_as_no_encrypted_backup(tmp_path):
+    # A plaintext core archive — what the pre-encryption script writes — is not a backup the watch
+    # accepts, and an OK line without enc=age names the old script.
+    dest = _dest(tmp_path, core=False, log=PLAIN_OK)
+    (dest / "govstate-20260928-0745.tar.gz").write_text("x", encoding="utf-8")
     result = _run(tmp_path, dest, _health_log(tmp_path))
-    assert "실행 단계 앵커" not in result.stdout + result.stderr
+    assert result.returncode == 1
+    assert "암호화된 core 아카이브(.tar.gz.age)가 하나도 없습니다" in result.stdout
+    assert "enc=age 표기가 없습니다" in result.stdout
+
+
+@posix_only
+def test_a_stale_encrypted_archive_is_not_the_same_message_as_a_missing_one(tmp_path):
+    dest = _dest(tmp_path)
+    os.utime(dest / "govstate-20260907-0815.tar.gz.age", (0, 0))
+    result = _run(tmp_path, dest, _health_log(tmp_path))
+    assert result.returncode == 1 and "암호화된 core 아카이브가" in result.stdout and "시간 지났습니다" in result.stdout
+    assert "하나도 없습니다" not in result.stdout
+
+
+# EXECUTION_STAGE_ANTI_ROLLBACK D1 a: the archive must not carry the execution stage anchor. The
+# archive is encrypted and cannot be listed on this host, so the backup script checks tar's own member
+# list and says so on the log line; the watch reads that word.
+ANCHOR_FAILED = "2026-09-30T07:45:09Z FAILED mode=core stage=archive reason=anchor-in-archive hermes-snapshot=ok workflow-snapshot=ok\n"
+OK_NO_ANCHOR_MARK = "2026-09-30T07:45:29Z OK mode=core govstate-20260930-0745.tar.gz.age 28M kept=7 enc=age recipient=age1qqqqqqqq hermes-snapshot=ok workflow-snapshot=ok\n"
+
+
+@posix_only
+def test_a_backup_refused_for_carrying_the_anchor_is_named_as_that(tmp_path):
+    result = _run(tmp_path, _dest(tmp_path, log=OK_LINE + ANCHOR_FAILED), _health_log(tmp_path))
+    assert result.returncode == 1 and "실행 단계 앵커" in result.stdout and "--exclude" in result.stdout
+    assert "아카이브 생성(tar) 단계에서 실패" not in result.stdout
+
+
+@posix_only
+def test_an_ok_line_without_the_anchor_marker_means_a_script_that_never_checked(tmp_path):
+    result = _run(tmp_path, _dest(tmp_path, log=OK_NO_ANCHOR_MARK), _health_log(tmp_path))
+    assert result.returncode == 1 and "anchor=excluded 표기가 없습니다" in result.stdout

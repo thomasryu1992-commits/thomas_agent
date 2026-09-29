@@ -8,7 +8,7 @@
 #              thomas_agent/.runtime_governance_state   (approvals, ledgers, schedules, crypto state)
 #              thomas_agent/THOMAS_CORE/{activations,approvals}   (root-owned Core activation, was never backed up)
 #              thomas_agent/workspace                   (content-lane deliverables)
-#              thomas_agent/.env                        (the single secret source, 0600 — inside a 0600 archive)
+#              thomas_agent/.env                        (the single secret source, 0600)
 #              hermes-trial/data                        (SOUL, MCP shims, skills, cron, memories, sessions,
 #                                                        and a consistent SQLite copy via `hermes backup --quick`)
 #   candles  weekly Sun 08:15Z, keep 4 — crypto/candle_archive only (unchanged from 2026-08-31).
@@ -21,6 +21,16 @@
 # knows where each root goes. Archives before 2026-09-04 start at `.runtime_governance_state/` instead.
 # File names keep the `govstate-` prefix: the Mac pull (`com.thomas.govstate-pull`) globs on it.
 #
+# The core archive is ENCRYPTED to an age public key (Thomas decision, 2026-09-29): it carries .env
+# and the assistant's data, and it leaves the host every day. `tar | age -R <recipients>` streams,
+# so no plaintext archive is ever written to disk. The recipients file holds PUBLIC keys only
+# (`age1…`); the private key lives on the Mac, and decryption happens there — never on this host.
+# A missing age binary, a missing or malformed recipients file, or a private key found in it fails
+# the run before tar starts: no archive is better than a plaintext one. The file is
+# `govstate-<stamp>.tar.gz.age`; the candle archive stays plaintext (public market data, no secret).
+# Log: `FAILED mode=core stage=encrypt|archive …` says which half failed; `OK mode=core … enc=age
+# recipient=<prefix> anchor=excluded` names the key the archive is for.
+#
 # Live SQLite files are NOT tarred (a WAL-mode database copied mid-write is not a backup). The
 # assistant's own `hermes backup --quick` copies state.db with the sqlite backup API into
 # data/state-snapshots/<stamp>-daily/, and that directory IS tarred. The workflow store (sequence 2,
@@ -31,26 +41,54 @@
 # snapshot directory is kept. The execution stage ANCHOR is excluded on purpose (Thomas 2026-09-30,
 # EXECUTION_STAGE_ANTI_ROLLBACK D1 a): it vouches for the stage ledger, and restored together with the
 # ledger it would vouch for an older stage. Without it a restore reads READ_ONLY until a BOOTSTRAP,
-# which is the point. backup_watch.sh reports an archive that carries it.
+# which is the point. The archive is encrypted and cannot be listed on this host, so the check sits
+# here: tar writes its member list beside the stream, and an archive that lists the anchor is
+# deleted before it is renamed into place (`FAILED … stage=archive reason=anchor-in-archive`). An OK
+# line says `anchor=excluded`; backup_watch.sh reads that word, never the archive.
 # Recreatable caches, installed packages and logs are excluded — they
 # are not state.
 set -u
 
 MODE="${1:-core}"
 DEST="${HARNESS_BACKUP_DEST:-/root/backups/governance-state}"
-HOST_ROOT=/root
+HOST_ROOT="${HARNESS_BACKUP_HOST_ROOT:-/root}"
 THOMAS=thomas_agent
 HERMES=hermes-trial
 STAMP=$(date -u +%Y%m%d-%H%M)
+AGE="${AGE_BIN:-age}"
+RECIPIENTS="${HARNESS_BACKUP_AGE_RECIPIENTS:-/root/backups/age-recipients.txt}"
+umask 077
 mkdir -p "$DEST" && chmod 700 "$DEST"
 
 log() { echo "$(date -u +%FT%TZ) $*" >> "$DEST/backup.log"; }
 
+# The encryption precondition, checked before anything is written. Prints the reason on failure.
+# Only the key's prefix is ever logged; a public key is not a secret, but the log needs no more.
+age_ready() {
+  command -v "$AGE" >/dev/null 2>&1 || { echo "reason=no-age-binary"; return 1; }
+  [ -f "$RECIPIENTS" ] || { echo "reason=no-recipients-file"; return 1; }
+  # A private key here would put decryption on the host, which is what this design rules out.
+  if grep -q 'AGE-SECRET-KEY' "$RECIPIENTS"; then echo "reason=private-key-in-recipients-file"; return 1; fi
+  local keys bad
+  keys=$(grep -v '^[[:space:]]*\(#\|$\)' "$RECIPIENTS")
+  [ -n "$keys" ] || { echo "reason=no-recipient"; return 1; }
+  bad=$(printf '%s\n' "$keys" | grep -cvE '^age1[02-9ac-hj-np-z]{58}$')
+  [ "$bad" -eq 0 ] || { echo "reason=malformed-recipient"; return 1; }
+}
+
 case "$MODE" in
   core)
-    OUT="$DEST/govstate-$STAMP.tar.gz"
+    OUT="$DEST/govstate-$STAMP.tar.gz.age"
+    PART="$OUT.part"
     KEEP=7
-    PRUNE_GLOB="$DEST/govstate-[0-9]*.tar.gz"
+    PRUNE_GLOB="$DEST/govstate-[0-9]*.tar.gz.age"
+    # 0. Encryption first: refuse before the snapshots and before tar, so a failed precondition
+    #    leaves nothing behind — and certainly no plaintext archive.
+    if ! AGE_REASON=$(age_ready); then
+      log "FAILED mode=core stage=encrypt $AGE_REASON"
+      exit 3
+    fi
+    RECIPIENT_NOTE="enc=age recipient=$(grep -m1 -E '^age1' "$RECIPIENTS" | cut -c1-12)"
     # 1. A consistent copy of the assistant's SQLite state, made by the assistant itself (uid 10000).
     #    Non-fatal: if the container is down, the tar still carries everything but state.db and the
     #    log line says so — a backup with a hole you can see beats no backup.
@@ -93,10 +131,15 @@ case "$MODE" in
       [ -e "$HOST_ROOT/$member" ] || MISSING+=("$member")
     done
     if [ "${#MISSING[@]}" -gt 0 ]; then
-      log "FAILED mode=$MODE rc=2 missing=$(IFS=,; echo "${MISSING[*]}") $SNAP_NOTE"
+      log "FAILED mode=$MODE stage=archive rc=2 missing=$(IFS=,; echo "${MISSING[*]}") $SNAP_NOTE"
       exit 2
     fi
-    tar czf "$OUT" --warning=no-file-changed -C "$HOST_ROOT" \
+    # Streamed: tar's plaintext goes straight into age and only ciphertext reaches the disk, as
+    # a .part file renamed into place once both halves succeeded (a watch never sees a partial).
+    # tar also writes its member list (names only, no content) to INDEX: the ciphertext cannot be
+    # listed on this host, so this list is the only place the archive's contents can be checked.
+    INDEX="$PART.index"
+    tar czvf - --index-file="$INDEX" --warning=no-file-changed -C "$HOST_ROOT" \
         --exclude="$THOMAS/.runtime_governance_state/crypto/candle_archive" \
         --exclude="$THOMAS/.runtime_governance_state/crypto/execution_stage_anchor.json" \
         --exclude="$WF_DIR/workflow.db" --exclude="$WF_DIR/workflow.db-*" \
@@ -108,8 +151,37 @@ case "$MODE" in
         --exclude="$HERMES/data/logs" --exclude="$HERMES/data/sandboxes" \
         --exclude="$HERMES/data/image_cache" --exclude="$HERMES/data/audio_cache" \
         --exclude="$HERMES/data/models_dev_cache.json" \
-        "${MEMBERS[@]}"
-    RC=$?
+        "${MEMBERS[@]}" | "$AGE" -R "$RECIPIENTS" -o "$PART"
+    PIPE=("${PIPESTATUS[@]}")
+    TAR_RC=${PIPE[0]}
+    AGE_RC=${PIPE[1]}
+    # tar exits 1 when a live append-mode file changed under it (a valid snapshot); 2+ fails.
+    if [ "$TAR_RC" -gt 1 ]; then
+      rm -f "$PART" "$INDEX"
+      log "FAILED mode=$MODE stage=archive rc=$TAR_RC $SNAP_NOTE"
+      exit "$TAR_RC"
+    fi
+    # The execution stage anchor must not be in the archive (EXECUTION_STAGE_ANTI_ROLLBACK D1 a).
+    # The --exclude above keeps it out; this proves it did, from what tar actually wrote. No list
+    # at all is not proof of absence, so it fails the same way.
+    if [ ! -s "$INDEX" ] || grep -q 'crypto/execution_stage_anchor\.json$' "$INDEX"; then
+      REASON=anchor-in-archive
+      [ -s "$INDEX" ] || REASON=no-member-list
+      rm -f "$PART" "$INDEX"
+      log "FAILED mode=$MODE stage=archive reason=$REASON $SNAP_NOTE"
+      exit 2
+    fi
+    rm -f "$INDEX"
+    # age's exit code, and then its output: an age file starts with its version line. Anything
+    # else in the .part file is not ciphertext and must not be kept under an .age name.
+    if [ "$AGE_RC" -ne 0 ] || [ "$(head -c 21 "$PART" 2>/dev/null)" != "age-encryption.org/v1" ]; then
+      rm -f "$PART"
+      log "FAILED mode=$MODE stage=encrypt rc=$AGE_RC $SNAP_NOTE"
+      exit 3
+    fi
+    mv -f "$PART" "$OUT"
+    SNAP_NOTE="$RECIPIENT_NOTE anchor=excluded $SNAP_NOTE"
+    RC=0
     ;;
   candles)
     OUT="$DEST/govstate-candles-$STAMP.tar.gz"
@@ -133,4 +205,14 @@ if [ "$RC" -gt 1 ]; then
 fi
 chmod 600 "$OUT"
 ls -1t $PRUNE_GLOB 2>/dev/null | tail -n +$((KEEP + 1)) | xargs -r rm -f
+# The plaintext core archives from before encryption match no prune glob now and would stay forever
+# with .env inside. Once KEEP encrypted archives exist they are older than every kept restore point
+# — exactly what the old retention would have deleted — so remove them then, not before.
+if [ "$MODE" = core ] && [ "$(ls -1 $PRUNE_GLOB 2>/dev/null | wc -l)" -ge "$KEEP" ]; then
+  LEGACY=$(ls -1 "$DEST"/govstate-[0-9]*.tar.gz 2>/dev/null | wc -l)
+  if [ "$LEGACY" -gt 0 ]; then
+    rm -f "$DEST"/govstate-[0-9]*.tar.gz
+    SNAP_NOTE="$SNAP_NOTE legacy-plaintext-removed=$LEGACY"
+  fi
+fi
 log "OK mode=$MODE $(basename "$OUT") $(du -h "$OUT" | cut -f1) kept=$(ls -1 $PRUNE_GLOB 2>/dev/null | wc -l) $SNAP_NOTE"
