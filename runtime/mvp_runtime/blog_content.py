@@ -754,7 +754,8 @@ def interpret_draft(
         measured = blog_draft_score.measure_structured(
             intro=structured["intro"], sections=structured["sections"],
             image_count=len(rendered["image_shots"]), tags=structured["tags"],
-            source_count=len(sources), keyword=target_keyword)
+            source_count=len(sources), keyword=target_keyword,
+            has_table=structured.get("table") is not None)
         parts = {
             "draft_format": blog_draft.DRAFT_FORMAT_STRUCTURED,
             "title_candidates": structured["title_candidates"],
@@ -1062,7 +1063,9 @@ PLAN_PARAGRAPHS_PER_SECTION = 3
 # 120~150 since the second measured round (2026-09-29): asked for 110~140, the drafts averaged
 # 62, 76 and 93, always below the floor they were given. A floor is where a model's paragraphs
 # start, not where they land, so the plan's floor sits above the standard's need.
-PLAN_PARAGRAPH_CHARS = (120, 150)          # visible characters, whitespace excluded
+# 120~140 since the third round (2026-09-29): asked for 120~150, the draft averaged 155 and
+# broke the standard's 150 ceiling the other way. The plan leaves the ceiling headroom.
+PLAN_PARAGRAPH_CHARS = (120, 140)          # visible characters, whitespace excluded
 PLAN_SENTENCES_PER_PARAGRAPH = "4"
 # One paragraph of the planned length, shown as a LENGTH reference only (its content is
 # generic on purpose and the request says not to reuse it). A total alone did not move the
@@ -1146,7 +1149,9 @@ _LENGTH_FAILURES = frozenset({"body_chars", "para_chars"})
 
 _DRAFT_SHAPE = (
     '{"title_candidates": ["제목 후보 3~5개"], "intro": ["도입 문단"], '
-    '"sections": [{"heading": "소제목", "paragraphs": ["문단"]}], "tags": ["태그(# 없이)"], '
+    '"sections": [{"heading": "소제목", "paragraphs": ["문단"]}], '
+    '"table": {"after_section": 1, "rows": [["구분", "항목1", "항목2"], ["행 이름", "값", "값"]]}, '
+    '"tags": ["태그(# 없이)"], '
     '"image_shots": [{"after_section": 0, "what_to_capture": "캡처할 실제 화면", "tool_name": null}], '
     '"fact_checks": [{"claim": "본문 문장", "why": "확인이 필요한 이유", "source_ref": null}], '
     '"sources": [{"source_ref": "[S1]", "title": null}]}'
@@ -1162,8 +1167,8 @@ def content_request(target: str) -> str:
         f"{_length_plan()}\n"
         f"규칙: title_candidates는 소제목과 별개인 글 제목 3~5개이고 각각 '{target}'를 앞쪽에 "
         "자연스럽게 포함한다. image_shots 4~8개(after_section은 0부터 센 섹션 번호, 생성 "
-        "이미지가 아니라 실제 화면 캡처), 표 1개(행을 ' | '로 구분한 문단 — 섹션 문단 하나로 "
-        "센다), tags 3~8개, sources 2~5개. 가격·무료 범위·사용 한도·기능 제공 여부·정책·버전·"
+        "이미지가 아니라 실제 화면 캡처), 표 1개는 table 필드에만(첫 행이 머리글, 2행 이상, "
+        "paragraphs 안에 ' | ' 행을 쓰지 마라 — 표는 문단 수에 세지 않는다), tags 3~8개, sources 2~5개. 가격·무료 범위·사용 한도·기능 제공 여부·정책·버전·"
         "날짜를 쓴 문장은 모두 fact_checks에 넣어라. 근거 블록([S#]·[K#])에 없는 수치·가격·"
         "출처를 지어내지 마라 — 근거가 없으면 source_ref를 null로 둬라. 문단 안에 #, **, > 같은 "
         "마크다운 기호를 쓰지 마라."
@@ -1182,14 +1187,12 @@ def revision_request(target: str, first: Mapping[str, Any], text: str) -> str:
     return (
         f"아래 '{target}' 네이버 블로그 초안을 고쳐라. 고칠 항목은 다음뿐이다:\n" + "\n".join(asks)
         + "\n사실·수치·가격·날짜는 바꾸지 말고 새 사실이나 새 출처를 추가하지 마라. 분량을 늘릴 때는 이미 쓴 "
-        "내용의 방법·이유·예시·주의점을 풀어 써라. 이 수정 실행에는 근거 블록이 없다 — [S1]·[K1] 같은 "
+        "내용의 방법·이유·예시·주의점을 풀어 써라. image_shots 4~8개와 table은 첫 초안의 것을 "
+        "그대로 유지하라(없으면 새로 채워라). 이 수정 실행에는 근거 블록이 없다 — [S1]·[K1] 같은 "
         "근거 번호를 본문·facts·fact_checks 어디에도 쓰지 말고, sources는 빈 목록 []으로 둬라(첫 "
         "초안의 출처는 그대로 유지된다). content_draft에는 같은 JSON 형식으로 전체 초안을 다시 "
         f"넣어라: {_DRAFT_SHAPE}\n이전 초안:\n{_revision_previous(first, text)}"
     )
-
-
-_EVIDENCE_REF_RE = re.compile(r"\[[SK]\d{1,3}\]")
 
 
 def _revision_previous(first: Mapping[str, Any], text: str) -> str:
@@ -1208,7 +1211,7 @@ def _revision_previous(first: Mapping[str, Any], text: str) -> str:
         previous = json.dumps(draft, ensure_ascii=False)
     else:
         previous = text
-    return _EVIDENCE_REF_RE.sub("", previous)
+    return blog_draft.strip_evidence_refs(previous)
 
 
 def _carry_first_evidence(first: Mapping[str, Any], second: dict[str, Any]) -> dict[str, Any]:
@@ -1228,8 +1231,37 @@ def _carry_first_evidence(first: Mapping[str, Any], second: dict[str, Any]) -> d
     measured = dict(second.get("measured") or {})
     if second.get("draft_format") == blog_draft.DRAFT_FORMAT_STRUCTURED:
         measured["sources"] = len(carried["sources"])
+        _carry_first_layout(first, carried, measured)
     carried["measured"] = measured
     return carried
+
+
+def _carry_first_layout(first: Mapping[str, Any], carried: dict[str, Any], measured: dict[str, Any]) -> None:
+    """Capture directions and the table a revision dropped, taken from the first draft.
+
+    Measured 2026-09-29: the revision came back with `image_shots: []`, and the package lost all
+    of its capture directions. The request now says to keep them. When a revision still drops
+    them, the first draft's own (section-addressed, so they survive re-layout) are put back and
+    the paste layout is rendered again. Only a structured first draft has them in that form."""
+    old = first.get("structured") if first.get("draft_format") == blog_draft.DRAFT_FORMAT_STRUCTURED else None
+    new = carried.get("structured")
+    if not old or not new:
+        return
+    patched = dict(new)
+    last = max(len(new.get("sections") or []) - 1, 0)
+    if not new.get("image_shots") and old.get("image_shots"):
+        patched["image_shots"] = [dict(shot, after_section=min(shot["after_section"], last))
+                                  for shot in old["image_shots"]]
+    if new.get("table") is None and old.get("table") is not None:
+        patched["table"] = dict(old["table"], after_section=min(old["table"]["after_section"], last))
+    if patched == new:
+        return
+    rendered = blog_draft.render_blocks(patched)
+    carried.update({"structured": patched, "body_paste": rendered["body_paste"],
+                    "body_blocks": rendered["body_blocks"][:MAX_BODY_BLOCKS],
+                    "image_shots": rendered["image_shots"]})
+    measured["images"] = len(rendered["image_shots"])
+    measured["tables"] = 1 if patched.get("table") is not None else measured.get("tables", 0)
 
 
 def _draft_text(result: Mapping[str, Any]) -> str:

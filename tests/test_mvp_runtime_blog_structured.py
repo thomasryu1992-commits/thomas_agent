@@ -400,7 +400,7 @@ def test_the_length_plan_adds_up_to_every_standard():
 def test_the_request_states_the_plan_not_only_the_totals():
     request = blog_content.content_request(TARGET)
     assert f"문단 {blog_content.plan_paragraphs()}개" in request
-    assert "120~150자" in request and "1,800자에 못 미치면 불합격" in request
+    assert "120~140자" in request and "1,800자에 못 미치면 불합격" in request
     # The contradictory triple is gone from the first request.
     assert "문단 10~20개·문단당 70~150자" not in request
 
@@ -519,3 +519,69 @@ def test_the_named_list_is_capped():
     named = request.split("못 미치는 문단(번호는 0부터): ", 1)[1].split(". 이 문단마다", 1)[0]
     assert named.count("(현재 ") == blog_content.MAX_NAMED_SHORT_PARAGRAPHS
     assert f"외 {15 - blog_content.MAX_NAMED_SHORT_PARAGRAPHS}개" in request
+
+
+# --- the third round (2026-09-29, bcp_e8571b880a95946c9103) -----------------------------------
+#
+# The body passed at 2,645 but the paragraph average overshot to 155 (cap 150). The first draft's
+# JSON broke inside a pipe-table section ('{": | : | :", "paragraphs": ...}') and lost every key
+# after it, so the revision came back with `image_shots: []`. And "[S1, S3]" slipped the
+# reference strip.
+
+def test_the_plan_leaves_the_paragraph_ceiling_headroom():
+    low, high = blog_content.PLAN_PARAGRAPH_CHARS
+    assert (low, high) == (120, 140) and high < blog_draft_score.STANDARDS["para_chars"].high
+
+
+def test_the_table_is_its_own_field_rendered_after_its_section_and_not_a_prose_paragraph():
+    draft = _draft(table={"after_section": 1,
+                          "rows": [["구분", "무료", "유료"], ["템플릿", "있음", "더 많음"], ["용량", "5GB", "1TB"]]})
+    parts = blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET)
+    paragraphs = parts["body_paste"].split("\n\n")
+    # intro 2, then section 0 (heading + 3), section 1 (heading + 3), then the table.
+    assert paragraphs[10] == "구분 | 무료 | 유료\n템플릿 | 있음 | 더 많음\n용량 | 5GB | 1TB"
+    assert parts["measured"]["tables"] == 1
+    assert parts["measured"]["paragraphs"] == 17                 # the table is not counted
+    assert [b["paragraph_index"] for b in parts["body_blocks"]] == [2, 6, 11, 15, 19]
+    request = blog_content.content_request(TARGET)
+    assert '"table": {"after_section"' in request and "paragraphs 안에 ' | ' 행을 쓰지 마라" in request
+
+
+@pytest.mark.parametrize("table", [
+    {"rows": [["only header"]]},                  # a single-cell row is not a row
+    {"rows": [["구분", "값"]]},                    # a header alone is not a table
+    "구분 | 값",                                   # not an object
+])
+def test_a_malformed_table_is_dropped_not_guessed(table):
+    parts = blog_content.interpret_draft(json.dumps(_draft(table=table), ensure_ascii=False), TARGET)
+    assert parts["structured"]["table"] is None and parts["measured"]["tables"] == 0
+
+
+def test_a_revision_that_drops_the_capture_directions_gets_the_first_drafts_back(monkeypatch):
+    first = _draft(sections=5, per_section=1,
+                   table={"after_section": 0, "rows": [["a", "b"], ["c", "d"]]})
+    revised = dict(_draft(), image_shots=[])
+    revised.pop("table", None)
+    runs = iter([_run_result(first), _run_result(revised, records=_records(hits=0))])
+    monkeypatch.setattr(blog_content, "_run", lambda *a, **k: next(runs))
+    package = blog_content.run_content_ideation(
+        {"seeds": f"target={TARGET}"}, now=NOW, published_source=_StaticSource())["package"]
+    assert len(package["image_shots"]) == 4 and package["quality"]["measured"]["images"] == 4
+    assert "a | b\nc | d" in package["body_paste"] and package["quality"]["measured"]["tables"] == 1
+    validate_against_schema(package, SCHEMA, "blog_content_package")
+
+
+def test_the_revision_request_asks_to_keep_images_and_the_table():
+    first = blog_content.interpret_draft(json.dumps(_draft(sections=5, per_section=1), ensure_ascii=False),
+                                         TARGET)
+    assert "image_shots 4~8개와 table은 첫 초안의 것을 그대로 유지하라" in blog_content.revision_request(
+        TARGET, first, "")
+
+
+@pytest.mark.parametrize("cited", ["[S1, S3]", "[S1,K2]", "[ S2 , 3 ]"])
+def test_grouped_citations_are_stripped_from_the_revision_and_resolved_in_sources(cited):
+    assert blog_draft.strip_evidence_refs(f"문장 {cited} 끝") == "문장  끝"
+    index = {"S1": {"title": "a", "url": "u1"}, "S2": {"title": "b", "url": None},
+             "S3": {"title": "c", "url": None}, "K2": {"title": "k", "url": None}}
+    resolved = [s["source_ref"] for s in blog_draft.resolve_sources([{"source_ref": cited}], index)]
+    assert resolved and all(ref.strip("[]") in index for ref in resolved)
