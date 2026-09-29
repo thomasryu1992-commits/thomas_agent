@@ -897,7 +897,7 @@ def render_post_md(package: Mapping[str, Any]) -> str:
         lines += [f"- 기준: {quality.get('standards_version')} · 초안 형식: {quality.get('draft_format')}"
                   f" · 자동 수정 {quality.get('revision_count')}회"
                   + (f" ({quality['revision_outcome']})" if quality.get("revision_outcome") else "")
-                  + (f" · 빠진 닫는 괄호 {quality['brackets_inserted']}개 보정"
+                  + (f" · 빠진 괄호 {quality['brackets_inserted']}개 보정"
                      if quality.get("brackets_inserted") else "")]
         if quality.get("revision_detail"):
             lines += [f"- 자동 수정이 막힌 이유: {quality['revision_detail']}"]

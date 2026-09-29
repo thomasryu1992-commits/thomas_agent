@@ -111,24 +111,42 @@ def _strip_captures(text: str) -> tuple[str, list[str]]:
 _CLOSER = {"{": "}", "[": "]"}
 
 
+def _is_key(raw: str, quote: int) -> bool:
+    """Whether the string opening at ``raw[quote]`` is followed by ``:`` — an object key."""
+    i, escaped = quote + 1, False
+    while i < len(raw):
+        if escaped:
+            escaped = False
+        elif raw[i] == "\\":
+            escaped = True
+        elif raw[i] == '"':
+            break
+        i += 1
+    rest = raw[i + 1:].lstrip()
+    return rest.startswith(":")
+
+
 def repair_brackets(raw: str) -> tuple[str, int] | None:
-    """``raw`` with the closing brackets a model dropped put back, and how many were inserted.
+    """``raw`` with the brackets a model dropped put back, and how many were inserted.
 
     On 2026-09-29 both drafts of a run wrote the end of the last section as ``…"}]`` instead of
     ``…"]}]`` — the ``]`` closing its ``paragraphs`` was missing — and the whole draft, table,
-    capture directions and all, fell to the legacy parser as one 3,893-character paragraph.
+    capture directions and all, fell to the legacy parser as one 3,893-character paragraph. The
+    next run's first draft also opened its sections as ``"sections": ["heading": …`` — the ``{``
+    of the first section was missing.
 
-    The repair only inserts closers: a closer that does not match the innermost open bracket but
-    does match an outer one means the brackets in between were never closed, so their closers go
-    in front of it. Text inside strings is never touched. ``None`` — no repair — when there is
-    nothing to insert, when a closer matches no open bracket (a surplus, not a gap), or when the
-    text ends inside a string or with brackets still open. The caller still requires the result
-    to parse."""
+    Two gaps are filled, nothing else. A key (a string followed by ``:``) directly inside a list
+    means the object holding it was never opened, so ``{`` goes in front of it. A closer that
+    does not match the innermost open bracket but does match an outer one means the brackets in
+    between were never closed, so their closers go in front of it. Text inside strings is never
+    touched. ``None`` — no repair — when there is nothing to insert, when a closer matches no open
+    bracket (a surplus, not a gap), or when the text ends inside a string or with brackets still
+    open. The caller still requires the result to parse."""
     out: list[str] = []
     stack: list[str] = []
     inserted = 0
     in_string = escaped = False
-    for ch in raw:
+    for pos, ch in enumerate(raw):
         if in_string:
             if escaped:
                 escaped = False
@@ -137,6 +155,10 @@ def repair_brackets(raw: str) -> tuple[str, int] | None:
             elif ch == '"':
                 in_string = False
         elif ch == '"':
+            if stack and stack[-1] == "[" and _is_key(raw, pos):
+                out.append("{")
+                stack.append("{")
+                inserted += 1
             in_string = True
         elif ch in _CLOSER:
             stack.append(ch)

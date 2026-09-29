@@ -637,7 +637,7 @@ def test_a_repaired_draft_is_ready_for_review_and_the_package_says_it_was_repair
     assert quality["draft_format"] == "structured" and quality["quality_state"] == "ready_for_review"
     assert quality["brackets_inserted"] == 1
     validate_against_schema(sheet["package"], SCHEMA, "blog_content_package")
-    assert "빠진 닫는 괄호 1개 보정" in blog_content.render_post_md(sheet["package"])
+    assert "빠진 괄호 1개 보정" in blog_content.render_post_md(sheet["package"])
 
 
 def test_a_clean_draft_records_no_repair():
@@ -650,3 +650,35 @@ def test_the_revision_sees_the_repaired_draft_not_the_broken_text():
     assert first["draft_format"] == "structured"
     previous = blog_content.revision_request(TARGET, first, "").split("이전 초안:\n", 1)[1]
     assert "brackets_inserted" not in json.loads(previous)
+
+
+def _missing_first_section_opener(draft) -> str:
+    """The next run's shape: ``"sections": ["heading": …`` — the first section's ``{`` left out."""
+    text = json.dumps(draft, ensure_ascii=False)
+    assert text.count('"sections": [{"heading"') == 1
+    return text.replace('"sections": [{"heading"', '"sections": ["heading"')
+
+
+def test_a_dropped_object_opener_is_put_back_and_the_draft_parses():
+    draft = _draft()
+    parsed, reason = blog_draft.parse_structured(_missing_first_section_opener(draft))
+    assert reason is None and parsed["brackets_inserted"] == 1
+    assert [s["heading"] for s in parsed["sections"]] == [s["heading"] for s in draft["sections"]]
+
+
+def test_a_dropped_opener_and_a_dropped_closer_in_one_draft_are_both_put_back():
+    # bcp_5c5b3bdcfdea9d38cb47's first draft had both.
+    draft = _draft(table={"after_section": 1, "rows": [["항목", "내용"], ["기간", "1년"]]})
+    text = _missing_first_section_opener(draft).replace('"]}], "tags"', '"}], "tags"')
+    parsed, reason = blog_draft.parse_structured(text)
+    assert reason is None and parsed["brackets_inserted"] == 2
+    assert len(parsed["sections"]) == 5 and parsed["table"] is not None
+
+
+def test_a_colon_inside_a_paragraph_string_is_not_a_key():
+    draft = _draft()
+    draft["sections"][0]["paragraphs"][0] = '준비물: 사업자등록증, "통장 사본": 둘 다 필요합니다.'
+    text = json.dumps(draft, ensure_ascii=False)
+    assert blog_draft.repair_brackets(text) is None
+    parsed, reason = blog_draft.parse_structured(_missing_paragraphs_closer(draft))
+    assert reason is None and parsed["brackets_inserted"] == 1
