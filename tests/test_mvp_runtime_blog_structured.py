@@ -750,7 +750,7 @@ def test_a_short_draft_still_gets_the_plan_and_the_short_list_not_the_cut():
     first = dict(blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET),
                  failures=["body_chars"])
     request = blog_content.revision_request(TARGET, first, "")
-    assert "못 미치는 문단" in request and "짧은 문단에는 문장을 더 붙여라" in request
+    assert "못 미치는 문단" in request and "미치는 문단은 한 문장을 더하라" in request
     assert "줄여라" not in request
 
 
@@ -857,3 +857,38 @@ def test_closing_at_the_end_is_opt_in():
     text = '{"sections": [{"heading": "a", "paragraphs": ["b"]}'
     assert blog_draft.repair_brackets(text) is None
     assert blog_draft.repair_brackets(text, close_at_end=True) == (text + "]}", 2)
+
+
+# --- the prose last, and the plan said by its cap (2026-09-29) --------------------------------
+#
+# Twice the model stopped (finish_reason STOP) right after its last section and never wrote the
+# table, tags or capture directions the shape put after `sections`; and paragraph averages ran
+# 136~184 against a 120~140 plan whose last words were "120자 이상 ... 짧은 문단에는 더 붙여라".
+
+def test_the_shape_puts_the_short_fields_first_and_the_prose_last():
+    shape = json.loads(blog_content._DRAFT_SHAPE)
+    assert tuple(shape) == blog_content.DRAFT_KEY_ORDER
+    assert blog_content.DRAFT_KEY_ORDER[-2:] == ("intro", "sections")
+    for request in (blog_content.content_request(TARGET),
+                    blog_content.revision_request(
+                        TARGET, blog_content.interpret_draft(
+                            json.dumps(_draft(sections=2, per_section=1), ensure_ascii=False),
+                            TARGET), "")):
+        assert "intro와 sections를 맨 끝에" in request
+
+
+def test_the_revision_is_shown_the_previous_draft_in_the_shapes_order():
+    first = blog_content.interpret_draft(
+        json.dumps(_draft(sections=2, per_section=1), ensure_ascii=False), TARGET)
+    previous = blog_content.revision_request(TARGET, first, "").split("이전 초안:\n", 1)[1]
+    keys = list(json.loads(previous))
+    assert keys == [k for k in blog_content.DRAFT_KEY_ORDER if k in keys]
+    assert keys[-2:] == ["intro", "sections"]
+
+
+def test_the_plan_leads_with_the_cap_and_checks_both_ways():
+    low, high = blog_content.PLAN_PARAGRAPH_CHARS
+    plan = blog_content._length_plan()
+    assert f"{(low + high) // 2}자 안팎({low}~{high}자)이고 {high}자를 넘기지 마라" in plan
+    assert f"{high}자를 넘는 문단은 한 문장을 덜고 {low}자에 못 미치는 문단은 한 문장을 더하라" in plan
+    assert "이상인지 세어" not in plan and "짧은 문단에는 문장을 더 붙여라" not in plan
