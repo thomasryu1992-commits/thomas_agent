@@ -900,7 +900,10 @@ def render_post_md(package: Mapping[str, Any]) -> str:
                   + (f" · 빠진 괄호 {quality['brackets_inserted']}개 보정"
                      if quality.get("brackets_inserted") else "")]
         if quality.get("revision_detail"):
-            lines += [f"- 자동 수정이 막힌 이유: {quality['revision_detail']}"]
+            label = ("자동 수정이 막힌 이유"
+                     if str(quality.get("revision_outcome") or "").startswith("REVISION_BLOCKED")
+                     else "자동 수정 메모")
+            lines += [f"- {label}: {quality['revision_detail']}"]
         if quality.get("failures"):
             lines += [f"- ⚠ 남은 미달 항목: {', '.join(quality['failures'])} — 발행 전 직접 손볼 것"]
 
@@ -1128,12 +1131,17 @@ def _length_asks(measured: Mapping[str, Any], structured: Mapping[str, Any] | No
     low, high = PLAN_PARAGRAPH_CHARS
     ceiling = blog_draft_score.STANDARDS["para_chars"].high
     if int(measured.get("para_chars") or 0) > ceiling:
-        ask = (f"{current} 문단 평균이 상한 {ceiling}자를 넘었다. 문단 수는 그대로 두고 각 문단을 공백 "
-               f"빼고 {low}~{high}자로 줄여라 — 사실·수치·키워드는 지우지 말고 겹치는 설명과 군더더기 "
-               "문장을 덜어내라. 문장을 더 붙이지 마라.")
+        # The cut has a floor too: on 2026-09-29 (`bcp_e9717849588d1f438c66`) a draft 3 over the
+        # ceiling (average 153) came back with every paragraph halved — 71 on average, the body
+        # 1,221 against a 1,800 floor. So only the named paragraphs lose one sentence each.
+        body_floor = blog_draft_score.STANDARDS["body_chars"].low
+        ask = (f"{current} 문단 평균이 상한 {ceiling}자를 넘었다. 문단 수는 그대로 두고 {high}자를 넘는 "
+               f"문단만 공백 빼고 {low}~{high}자로 줄여라 — 그 문단마다 한 문장만 덜어내고, 사실·수치·"
+               f"키워드는 지우지 마라. 나머지 문단은 손대지 마라. 어떤 문단도 {low}자 아래로 줄이지 마라 "
+               f"— 본문 합계가 {body_floor:,}자 아래면 불합격이다. 문장을 더 붙이지 마라.")
         named = _named(_off_plan_paragraphs(structured, lambda n: n > high) if structured else [])
         if named:
-            ask += (f" {high}자를 넘는 문단(번호는 0부터): {named}. 이 문단마다 한두 문장을 덜어내 "
+            ask += (f" {high}자를 넘는 문단(번호는 0부터): {named}. 이 문단마다 한 문장만 덜어내 "
                     f"{low}~{high}자로 맞춰라.")
         return ask
     ask = f"{current} {_length_plan()}"
@@ -1236,6 +1244,21 @@ def revision_request(target: str, first: Mapping[str, Any], text: str) -> str:
         "초안의 출처는 그대로 유지된다). content_draft에는 같은 JSON 형식으로 전체 초안을 다시 "
         f"넣어라: {_DRAFT_SHAPE}\n이전 초안:\n{_revision_previous(first, text)}"
     )
+
+
+def _miss(parts: Mapping[str, Any]) -> tuple[int, float]:
+    """How far a draft is from passing, for choosing between the first draft and its revision:
+    the contract failures (titles, structure) first, then the critical standards' relative
+    distance (:func:`blog_draft_score.shortfall`). Smaller is closer."""
+    contract = [f for f in parts["failures"] if f not in blog_draft_score.STANDARDS]
+    return len(contract), blog_draft_score.shortfall(parts["measured"])
+
+
+def _miss_detail(second: Mapping[str, Any]) -> str:
+    """Why the revision was not taken, in the package: what IT failed, with its numbers."""
+    measured = second.get("measured") or {}
+    missed = ", ".join(f"{f} {measured[f]}" if f in measured else f for f in second["failures"])
+    return f"수정본이 기준에서 더 벗어나 첫 초안을 유지함 (수정본 미달: {missed})"[:300]
 
 
 def _revision_previous(first: Mapping[str, Any], text: str) -> str:
@@ -1485,6 +1508,12 @@ def run_content_ideation(
                         and first["draft_format"] == blog_draft.DRAFT_FORMAT_STRUCTURED):
                     # A revision that lost the structure is worse than the draft it revised.
                     revision_outcome = "REVISION_UNSTRUCTURED:KEPT_FIRST_DRAFT"
+                elif second["failures"] and _miss(second) > _miss(first):
+                    # One revision is all there is, so it must not leave the package worse than
+                    # the draft it revised: a draft 3 characters over the paragraph ceiling was
+                    # once replaced by one 579 characters under the body floor.
+                    revision_outcome = "REVISION_FURTHER_OFF:KEPT_FIRST_DRAFT"
+                    revision_detail = _miss_detail(second)
                 else:
                     final = _carry_first_evidence(first, second)
                     revision_outcome = "REVISED" if not second["failures"] else "REVISED_STILL_FAILING"

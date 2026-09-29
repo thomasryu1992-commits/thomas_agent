@@ -690,7 +690,7 @@
           "maxProperties": 20
         },
         "revision_detail": {
-          "description": "When the one revision was blocked: the governed run's own block message (which provider failed and how), so the reason survives past the lane's outer code.",
+          "description": "When the one revision was blocked: the governed run's own block message (which provider failed and how), so the reason survives past the lane's outer code. When the revision ran but was further from the standards than the first draft (REVISION_FURTHER_OFF:KEPT_FIRST_DRAFT): what the revision missed.",
           "type": "string",
           "minLength": 1,
           "maxLength": 300
