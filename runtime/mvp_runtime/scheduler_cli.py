@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -404,6 +405,21 @@ def main(
             except OSError as exc:
                 sys.stderr.write(f"SCHEDULER: heartbeat not written ({type(exc).__name__})\n")
 
+        def _fire_guard(schedule: Any, run_id: str) -> Any:
+            # BUSY for the kinds with a deadline (RISK_LANE_WATCHDOG_V0.1 §3.2): a long valid
+            # risk fire must not read like a dead lane, and a stuck one must read stuck before
+            # the pass-age rule would notice. Every other kind runs unmarked, as before.
+            deadline = scheduler.RISK_FIRE_DEADLINE_SECONDS.get(schedule.kind)
+            if deadline is None:
+                return nullcontext()
+            return heartbeat.busy_marker(
+                heartbeat_service, interval_seconds=args.interval_seconds, kind=schedule.kind,
+                schedule_id=schedule.schedule_id, schedule_run_id=run_id,
+                deadline_seconds=deadline, root=repo_root,
+                on_error=lambda exc: sys.stderr.write(
+                    f"SCHEDULER: busy mark not written ({type(exc).__name__})\n"),
+            )
+
         _beat()
         total_fired = 0
         total_skipped = 0
@@ -426,6 +442,7 @@ def main(
                     # P09: a workflow_plan fire submits to the store the manager owns — opened
                     # only if it exists, so this process never creates an empty one.
                     workflow_store=(WorkflowStore.default(repo_root) if WorkflowStore.exists(repo_root) else None),
+                    fire_guard=_fire_guard,
                 )
                 total_fired += summary["fired"]
                 total_skipped += summary["skipped"]
