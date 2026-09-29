@@ -51,6 +51,11 @@ MAX_TAGS = 30
 MAX_IMAGE_SHOTS = 20
 MAX_FACT_CHECKS = 30
 MAX_SOURCES = 10
+# The table is its own field (2026-09-29). Asked to write it as ' | ' rows inside `paragraphs`,
+# a model broke the JSON exactly there: it replaced a section's `"heading": …` with the key
+# `": | : | :"`, and the draft lost every key after it (tags, image shots, fact checks, sources).
+MAX_TABLE_ROWS = 15
+MAX_TABLE_CELLS = 6
 
 VERIFICATION_NEEDS_MANUAL = "needs_manual_verification"
 VERIFICATION_SOURCE_CITED = "source_cited"
@@ -58,6 +63,9 @@ VERIFICATION_SOURCE_CITED = "source_cited"
 _FENCE_RE = re.compile(r"^\s*```[a-zA-Z]*\s*\n?|\n?\s*```\s*$")
 _CAPTURE_RE = re.compile(r"\[캡처\s*[::]\s*(?P<what>[^\]]+)\]")
 _REF_RE = re.compile(r"^\[?(?P<kind>[SK])(?P<n>\d{1,3})\]?$")
+# A grouped citation — "[S1, S3]", "[S1,K2]", "[S1, 3]". Models write these; the single-ref
+# pattern above does not match them.
+_GROUP_REF_RE = re.compile(r"\[\s*[SK]\d{1,3}(?:\s*,\s*[SK]?\d{1,3})*\s*\]")
 # Markdown a SmartEditor paste would show as literal characters (proposal §4b).
 _TABLE_RULE_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$")
 
@@ -179,6 +187,7 @@ def parse_structured(text: str) -> tuple[dict[str, Any] | None, str | None]:
 
     tags = [t.lstrip("#").strip() for t in _str_list(data.get("tags"), limit=50, cap=MAX_TAGS)]
     return {
+        "table": _parse_table(data.get("table"), len(sections)),
         "title_candidates": [sanitize_paragraph(t) for t in _str_list(
             data.get("title_candidates"), limit=100, cap=MAX_TITLES) if sanitize_paragraph(t)],
         "intro": intro,
@@ -190,6 +199,33 @@ def parse_structured(text: str) -> tuple[dict[str, Any] | None, str | None]:
     }, None
 
 
+def _parse_table(value: Any, section_count: int) -> dict[str, Any] | None:
+    """``{"after_section": n, "rows": [[cell, …], …]}`` or None. At least a header and one row;
+    cells lose any '|' of their own (it is the rendered separator) and are capped; a malformed
+    table is dropped, never guessed at."""
+    if not isinstance(value, dict):
+        return None
+    rows: list[list[str]] = []
+    for row in value.get("rows") if isinstance(value.get("rows"), list) else []:
+        if not isinstance(row, list):
+            continue
+        cells = [sanitize_paragraph(str(c)).replace("|", "/").strip() for c in row[:MAX_TABLE_CELLS]
+                 if isinstance(c, (str, int, float)) and str(c).strip()]
+        if len(cells) >= 2:
+            rows.append(cells)
+    if len(rows) < 2:
+        return None
+    after = value.get("after_section")
+    after = after if isinstance(after, int) and not isinstance(after, bool) else section_count - 1
+    return {"after_section": min(max(after, 0), max(section_count - 1, 0)),
+            "rows": rows[:MAX_TABLE_ROWS]}
+
+
+def table_paragraph(table: Mapping[str, Any]) -> str:
+    """The table as one paste paragraph: a row per line, cells joined by ' | '."""
+    return "\n".join(" | ".join(row) for row in table["rows"])
+
+
 def render_blocks(draft: Mapping[str, Any]) -> dict[str, Any]:
     """The structured draft as the package's paste body and editor directions. Deterministic.
 
@@ -199,10 +235,13 @@ def render_blocks(draft: Mapping[str, Any]) -> dict[str, Any]:
     paragraphs: list[str] = list(draft.get("intro") or [])
     blocks: list[dict[str, Any]] = []
     section_end: list[int] = []
-    for section in draft.get("sections") or []:
+    table = draft.get("table")
+    for index, section in enumerate(draft.get("sections") or []):
         blocks.append({"paragraph_index": len(paragraphs), "action": "heading"})
         paragraphs.append(section["heading"])
         paragraphs.extend(section["paragraphs"])
+        if table and table["after_section"] == index:
+            paragraphs.append(table_paragraph(table))
         section_end.append(len(paragraphs) - 1)
     intro_end = max(len(draft.get("intro") or []) - 1, 0)
     shots = []
@@ -237,12 +276,34 @@ def evidence_index(records: Mapping[str, Any] | None) -> dict[str, dict[str, Any
     return index
 
 
+def _keys(ref: Any) -> list[str]:
+    """Every evidence key a reference names: "[S1]" -> ["S1"]; "[S1, S3]" -> ["S1", "S3"];
+    "[S1, 3]" -> ["S1", "S3"] (a bare number continues the previous kind)."""
+    text = str(ref or "").strip()
+    match = _REF_RE.match(text)
+    if match:
+        return [f"{match.group('kind')}{int(match.group('n'))}"]
+    if not _GROUP_REF_RE.fullmatch(text):
+        return []
+    keys: list[str] = []
+    kind = "S"
+    for part in text.strip("[] ").split(","):
+        part = part.strip()
+        if part[:1] in ("S", "K"):
+            kind, part = part[0], part[1:]
+        if part.isdigit():
+            keys.append(f"{kind}{int(part)}")
+    return keys
+
+
 def _resolve(ref: Any, index: Mapping[str, Any]) -> str | None:
-    match = _REF_RE.match(str(ref or "").strip())
-    if not match:
-        return None
-    key = f"{match.group('kind')}{int(match.group('n'))}"
-    return key if key in index else None
+    """The first key of ``ref`` this run's evidence has, or None."""
+    return next((key for key in _keys(ref) if key in index), None)
+
+
+def strip_evidence_refs(text: str) -> str:
+    """``text`` with every single or grouped ``[S#]``/``[K#]`` citation removed."""
+    return _GROUP_REF_RE.sub("", str(text or ""))
 
 
 def resolve_sources(sources: Sequence[Mapping[str, Any]], index: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -250,14 +311,14 @@ def resolve_sources(sources: Sequence[Mapping[str, Any]], index: Mapping[str, An
     A reference the run never had is an invented source, however plausible its title."""
     out: list[dict[str, Any]] = []
     for source in sources:
-        key = _resolve(source.get("source_ref"), index)
-        if key is None or any(s["source_ref"] == f"[{key}]" for s in out):
-            continue
-        entry = {"source_ref": f"[{key}]", "title": index[key].get("title") or source.get("title")}
-        if index[key].get("url"):
-            entry["url"] = index[key]["url"]
-        out.append(entry)
-    return out
+        for key in _keys(source.get("source_ref")):
+            if key not in index or any(s["source_ref"] == f"[{key}]" for s in out):
+                continue
+            entry = {"source_ref": f"[{key}]", "title": index[key].get("title") or source.get("title")}
+            if index[key].get("url"):
+                entry["url"] = index[key]["url"]
+            out.append(entry)
+    return out[:MAX_SOURCES]
 
 
 # --- claims that change without notice ----------------------------------------------------
