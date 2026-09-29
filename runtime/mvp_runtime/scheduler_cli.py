@@ -37,11 +37,11 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from contextlib import nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from pathlib import Path
 from typing import Any
 
-from . import heartbeat, operator, policy_fingerprint, scheduler, task_registry, timeutil, schedule_delegation
+from . import fire_watchdog, heartbeat, operator, policy_fingerprint, scheduler, task_registry, timeutil, schedule_delegation
 from .cli_common import EXIT_BLOCKED, EXIT_OK, force_utf8_io, gate_banners, report_block
 from .control import ControlStore
 from .errors import MvpRuntimeError, SchedulerBlocked
@@ -259,6 +259,7 @@ def main(
     sleep: Any = time.sleep,
     monotonic: Any = time.monotonic,
     alerter: OperatorAlerter | None = None,
+    watchdog_factory: Any = lambda service, root: fire_watchdog.FireWatchdog(service, root=root),
 ) -> int:
     """Run one scheduler command. Returns 0 on success, non-zero on a fail-closed block.
     Dependencies are injectable for tests; unset ones default to local state / the gate.
@@ -405,20 +406,37 @@ def main(
             except OSError as exc:
                 sys.stderr.write(f"SCHEDULER: heartbeat not written ({type(exc).__name__})\n")
 
+        # The watchdog arms on the RISK lane only (RISK_LANE_WATCHDOG_V0.1 §3.3): that process
+        # runs nothing but risk kinds, so ending it ends nothing else. `--lane all` (a manual
+        # tick) and the maintenance lane are never ended by it.
+        watchdog = (watchdog_factory(heartbeat_service, repo_root)
+                    if args.lane == scheduler.LANE_RISK else None)
+        if watchdog is not None:
+            # The previous process of this lane may have been ended by its watchdog: say so once,
+            # from this healthy one. After the abandoned-run scan, which closes that fire's run.
+            fire_watchdog.report_previous_overrun(heartbeat_service, root=repo_root,
+                                                  now=startup_stamp, alerter=alerter)
+
+        @contextmanager
         def _fire_guard(schedule: Any, run_id: str) -> Any:
             # BUSY for the kinds with a deadline (RISK_LANE_WATCHDOG_V0.1 §3.2): a long valid
             # risk fire must not read like a dead lane, and a stuck one must read stuck before
             # the pass-age rule would notice. Every other kind runs unmarked, as before.
             deadline = scheduler.RISK_FIRE_DEADLINE_SECONDS.get(schedule.kind)
             if deadline is None:
-                return nullcontext()
-            return heartbeat.busy_marker(
-                heartbeat_service, interval_seconds=args.interval_seconds, kind=schedule.kind,
-                schedule_id=schedule.schedule_id, schedule_run_id=run_id,
-                deadline_seconds=deadline, root=repo_root,
-                on_error=lambda exc: sys.stderr.write(
-                    f"SCHEDULER: busy mark not written ({type(exc).__name__})\n"),
-            )
+                yield
+                return
+            with ExitStack() as stack:
+                mark = stack.enter_context(heartbeat.busy_marker(
+                    heartbeat_service, interval_seconds=args.interval_seconds, kind=schedule.kind,
+                    schedule_id=schedule.schedule_id, schedule_run_id=run_id,
+                    deadline_seconds=deadline, root=repo_root,
+                    on_error=lambda exc: sys.stderr.write(
+                        f"SCHEDULER: busy mark not written ({type(exc).__name__})\n"),
+                ))
+                if watchdog is not None:
+                    stack.enter_context(watchdog.armed(mark, deadline_seconds=deadline))
+                yield
 
         _beat()
         total_fired = 0
