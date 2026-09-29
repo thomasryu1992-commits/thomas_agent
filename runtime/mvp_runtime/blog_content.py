@@ -1095,6 +1095,12 @@ def plan_paragraphs() -> int:
     return PLAN_INTRO_PARAGRAPHS + PLAN_SECTIONS * PLAN_PARAGRAPHS_PER_SECTION
 
 
+def plan_target() -> int:
+    """The paragraph length the plan aims at: the middle of its range."""
+    low, high = PLAN_PARAGRAPH_CHARS
+    return (low + high) // 2
+
+
 def plan_body_chars() -> tuple[int, int]:
     low, high = PLAN_PARAGRAPH_CHARS
     return plan_paragraphs() * low, plan_paragraphs() * high
@@ -1106,7 +1112,11 @@ def _length_plan() -> str:
     Until 2026-09-29 the plan's last words were "각 문단이 120자 이상인지 세어 보고, 짧은 문단에는
     문장을 더 붙여라", and the drafts read the floor as the aim: averages 169, 153, 136, 158, 174 and
     184 against 120~140, one draft noting "각 문단 120자 이상 준수" in its own findings. The
-    self-check is now both ways, and the cap is said first."""
+    self-check is now both ways.
+
+    The cap is not said louder than the floor: said first ("140자를 넘기지 마라", #1036), the next
+    two drafts averaged 82 and 81 — below the floor the other way. Target, range, and the two
+    fail lines, evenly."""
     low, high = PLAN_PARAGRAPH_CHARS
     ceiling = blog_draft_score.STANDARDS["para_chars"].high
     total_low, total_high = plan_body_chars()
@@ -1114,13 +1124,12 @@ def _length_plan() -> str:
         f"분량 계획(이대로 써라): intro 문단 {PLAN_INTRO_PARAGRAPHS}개 + sections "
         f"{PLAN_SECTIONS}개 × 섹션마다 paragraphs {PLAN_PARAGRAPHS_PER_SECTION}개 = 문단 "
         f"{plan_paragraphs()}개. 문단 하나는 {PLAN_SENTENCES_PER_PARAGRAPH}문장, 공백 빼고 "
-        f"{(low + high) // 2}자 안팎({low}~{high}자)이고 {high}자를 넘기지 마라 — 문단 평균이 "
-        f"{ceiling}자를 넘으면 불합격이다. 합계 약 {total_low:,}~{total_high:,}자이고, 1,800자에 못 "
-        "미치면 불합격이다. 한두 문장짜리 문단을 만들지 마라 — 각 문단은 방법·이유·예시·주의점 중 "
+        f"{plan_target()}자 안팎({low}~{high}자). 합계 약 {total_low:,}~{total_high:,}자이고, 문단 "
+        f"평균이 {ceiling}자를 넘거나 합계가 1,800자에 못 미치면 불합격이다. 한두 문장짜리 문단을 만들지 마라 — 각 문단은 방법·이유·예시·주의점 중 "
         f"둘 이상을 담아 풀어 써라. 문단 하나의 길이는 이 정도다(길이만 참고하고 내용은 따라 쓰지 "
         f"마라): 「{LENGTH_EXAMPLE_PARAGRAPH}」 JSON을 내기 전에 문단이 {plan_paragraphs()}개인지, 각 "
-        f"문단이 {low}~{high}자인지 세어 보고, {high}자를 넘는 문단은 한 문장을 덜고 {low}자에 못 "
-        "미치는 문단은 한 문장을 더하라."
+        f"문단이 {low}~{high}자인지 세어 보고, {high}자를 넘는 문단은 덜어내고 {low}자에 못 미치는 "
+        f"문단은 더해서 {plan_target()}자 안팎으로 맞춰라."
     )
 
 
@@ -1145,19 +1154,19 @@ def _length_asks(measured: Mapping[str, Any], structured: Mapping[str, Any] | No
         # 1,221 against a 1,800 floor. So only the named paragraphs lose one sentence each.
         body_floor = blog_draft_score.STANDARDS["body_chars"].low
         ask = (f"{current} 문단 평균이 상한 {ceiling}자를 넘었다. 문단 수는 그대로 두고 {high}자를 넘는 "
-               f"문단만 공백 빼고 {low}~{high}자로 줄여라 — 그 문단마다 한 문장만 덜어내고, 사실·수치·"
+               f"문단만 공백 빼고 {low}~{high}자로 줄여라 — 그 문단마다 적힌 만큼만(대개 한 문장) 덜어내고, 사실·수치·"
                f"키워드는 지우지 마라. 나머지 문단은 손대지 마라. 어떤 문단도 {low}자 아래로 줄이지 마라 "
                f"— 본문 합계가 {body_floor:,}자 아래면 불합격이다. 문장을 더 붙이지 마라.")
         named = _named(_off_plan_paragraphs(structured, lambda n: n > high) if structured else [])
         if named:
-            ask += (f" {high}자를 넘는 문단(번호는 0부터): {named}. 이 문단마다 한 문장만 덜어내 "
-                    f"{low}~{high}자로 맞춰라.")
+            ask += (f" {high}자를 넘는 문단(번호는 0부터, 괄호는 {plan_target()}자까지 덜어낼 양): "
+                    f"{named}. 이 문단마다 적힌 만큼 덜어내 {low}~{high}자로 맞춰라.")
         return ask
     ask = f"{current} {_length_plan()}"
     named = _named(_off_plan_paragraphs(structured, lambda n: n < low) if structured else [])
     if named:
-        ask += (f" {low}자에 못 미치는 문단(번호는 0부터): {named}. 이 문단마다 "
-                "이미 쓴 내용의 이유·예시·주의점을 한두 문장씩 더해 늘려라.")
+        ask += (f" {low}자에 못 미치는 문단(번호는 0부터, 괄호는 {plan_target()}자까지 더할 양): "
+                f"{named}. 이 문단마다 적힌 만큼 이미 쓴 내용의 이유·예시·주의점을 더해 늘려라.")
     return ask
 
 
@@ -1171,20 +1180,32 @@ def _named(paragraphs: Sequence[str]) -> str:
 
 
 def _off_plan_paragraphs(structured: Mapping[str, Any], off: Callable[[int], bool]) -> list[str]:
-    """Each prose paragraph whose visible length ``off`` flags, labelled for the revision."""
+    """Each prose paragraph whose visible length ``off`` flags, labelled for the revision with how
+    far it is from the plan's target: "섹션 1의 문단 2(현재 81자, 약 50자 더)".
+
+    The amount is the concrete version of "add a sentence or two": asked that way on 2026-09-29
+    (`bcp_dad48bf154c090f00307`), paragraphs averaging 81 grew by 23 and the body stopped 25
+    short of 1,800."""
     out: list[str] = []
     for i, paragraph in enumerate(structured.get("intro") or []):
         n = len("".join(str(paragraph).split()))
         if off(n):
-            out.append(f"도입 문단 {i}(현재 {n}자)")
+            out.append(f"도입 문단 {i}({_gap(n)})")
     for s_index, section in enumerate(structured.get("sections") or []):
         for p_index, paragraph in enumerate(section.get("paragraphs") or []):
             if " | " in paragraph:
                 continue          # a table row block is not prose to lengthen or cut
             n = len("".join(str(paragraph).split()))
             if off(n):
-                out.append(f"섹션 {s_index}의 문단 {p_index}(현재 {n}자)")
+                out.append(f"섹션 {s_index}의 문단 {p_index}({_gap(n)})")
     return out
+
+
+def _gap(n: int) -> str:
+    """``"현재 81자, 약 50자 더"`` — the distance to the plan's target, to the nearest ten."""
+    gap = abs(plan_target() - n)
+    amount = max(10, (gap + 5) // 10 * 10)
+    return f"현재 {n}자, 약 {amount}자 {'더' if n < plan_target() else '덜'}"
 
 
 _FAILURE_ASKS = {
