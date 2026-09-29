@@ -13,14 +13,23 @@ and never mutates, so a probe can run while the runtime is PAUSED or KILLED — 
 runtime is stopped, not unhealthy, and its loop still turns.
 
 State is per-machine and gitignored, like every other runtime state file.
+
+**BUSY** (`docs/proposals/RISK_LANE_WATCHDOG_V0.1.md` §3.2). A pass-per-stamp heartbeat cannot tell a
+long valid fire from a dead loop: both stop stamping. So a lane marks the fire it is running — its
+schedule, run id, kind, start and deadline — before the fire and clears the mark after it, in a
+``finally`` so a fire that raises clears it too. The probe then reads FRESH while the fire is inside
+its deadline, however old the last pass is, and STALE (overrun) once it is past it, however recent.
+Only kinds with a deadline are marked; the rest keep the plain pass-age rule.
 """
 
 from __future__ import annotations
 
 import json
 import os
+from contextlib import contextmanager
+from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterator, Mapping
 
 from . import timeutil
 from .paths import repo_root as _repo_root
@@ -58,17 +67,22 @@ def heartbeat_path(service: str, root: Path | None = None) -> Path:
 
 
 def write_heartbeat(
-    service: str, *, interval_seconds: float, now: str | None = None, root: Path | None = None
+    service: str, *, interval_seconds: float, now: str | None = None, root: Path | None = None,
+    busy: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Stamp one pass of ``service``'s loop. Best-effort by contract — see the callers.
 
-    Written whole via tmp+replace so a probe never reads a half-written record."""
-    record = {
+    With ``busy``, the stamp also names the fire now running (see the module docstring); a
+    stamp without it clears any earlier mark. Written whole via tmp+replace so a probe never
+    reads a half-written record."""
+    record: dict[str, Any] = {
         "service": service,
         "heartbeat_at": now or timeutil.utc_now_iso(),
         "interval_seconds": float(interval_seconds),
         "pid": os.getpid(),
     }
+    if busy is not None:
+        record["busy"] = dict(busy)
     path = heartbeat_path(service, root)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
@@ -102,7 +116,7 @@ def check_heartbeat(service: str, *, now: str | None = None, root: Path | None =
         return {**result, "status": UNREADABLE, "detail": f"{type(exc).__name__}: {exc}"}
 
     limit = stale_after_seconds(interval)
-    return {
+    report = {
         **result,
         "status": FRESH if age <= limit else STALE,
         "age_seconds": round(age, 3),
@@ -112,11 +126,61 @@ def check_heartbeat(service: str, *, now: str | None = None, root: Path | None =
         "pid": record.get("pid"),
         "detail": f"last pass {age:.0f}s ago (stale after {limit:.0f}s)",
     }
+    busy = record.get("busy")
+    if busy is None:
+        return report
+    # A fire is marked: its deadline decides, not the pass age. Either direction matters — a
+    # pipeline fire at 400s is alive although no pass has stamped for 400s, and a breaker fire
+    # at 130s is stuck although the stamp is only 130s old.
+    try:
+        kind = str(busy["kind"])
+        run_id = str(busy["schedule_run_id"])
+        running = (timeutil.parse_iso(stamp) - timeutil.parse_iso(busy["started_at"])).total_seconds()
+        left = (timeutil.parse_iso(busy["deadline_at"]) - timeutil.parse_iso(stamp)).total_seconds()
+    except Exception as exc:  # noqa: BLE001 — a broken mark is a finding, like a broken record
+        return {**result, "status": UNREADABLE, "detail": f"busy mark: {type(exc).__name__}: {exc}"}
+    if left > 0:
+        return {**report, "status": FRESH, "busy": dict(busy), "overrun": False,
+                "detail": f"busy: {kind} {run_id} running {running:.0f}s, deadline in {left:.0f}s"}
+    return {**report, "status": STALE, "busy": dict(busy), "overrun": True,
+            "detail": f"OVERRUN: {kind} {run_id} running {running:.0f}s, {-left:.0f}s past its deadline"}
+
+
+@contextmanager
+def busy_marker(
+    service: str, *, interval_seconds: float, kind: str, schedule_id: str, schedule_run_id: str,
+    deadline_seconds: float, root: Path | None = None,
+    on_error: Callable[[BaseException], None] | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Mark ``service`` busy with one fire for the duration of the block, clear it after.
+
+    Best-effort both ways, like every heartbeat write: a mark that cannot be written must never
+    stop the fire it only describes, so an ``OSError`` goes to ``on_error`` and the block runs.
+    The clear is in ``finally``: a fire that raises must not leave the loop reading BUSY."""
+    started = timeutil.utc_now_iso()
+    mark = {
+        "kind": kind, "schedule_id": schedule_id, "schedule_run_id": schedule_run_id,
+        "started_at": started,
+        "deadline_at": timeutil.format_iso(timeutil.parse_iso(started) + timedelta(seconds=deadline_seconds)),
+    }
+    try:
+        write_heartbeat(service, interval_seconds=interval_seconds, now=started, root=root, busy=mark)
+    except OSError as exc:
+        if on_error is not None:
+            on_error(exc)
+    try:
+        yield mark
+    finally:
+        try:
+            write_heartbeat(service, interval_seconds=interval_seconds, root=root)
+        except OSError as exc:
+            if on_error is not None:
+                on_error(exc)
 
 
 __all__ = [
     "FRESH", "MISSING", "OPERATOR_SERVICE", "SCHEDULER_MAINTENANCE_SERVICE",
     "SCHEDULER_RISK_SERVICE", "SCHEDULER_SERVICE", "STALE", "UNREADABLE",
-    "check_heartbeat", "heartbeat_path", "heartbeats_dir", "stale_after_seconds",
+    "busy_marker", "check_heartbeat", "heartbeat_path", "heartbeats_dir", "stale_after_seconds",
     "write_heartbeat",
 ]

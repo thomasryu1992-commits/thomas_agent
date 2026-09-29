@@ -38,6 +38,7 @@ import multiprocessing
 import os
 import time
 from collections import deque
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import timedelta
 from pathlib import Path
@@ -256,6 +257,18 @@ KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT
 # more: it is the only thing that reports a book the runtime cannot reconcile, and a report
 # delayed behind an archive pass is a report about a state that has already lasted longer.
 RISK_KINDS: frozenset[str] = frozenset({KIND_CRYPTO, KIND_BREAKER_WATCH, KIND_ROUTE_WATCH})
+
+# How long one risk fire may run before it counts as stuck (`docs/proposals/RISK_LANE_WATCHDOG_V0.1.md`
+# §3.1, values approved by Thomas 2026-09-29). A verdict of "stuck", not a performance target:
+# measured over the whole ledger to 2026-09-29, crypto_pipeline peaked at 122.5 s (n=851, 900 s
+# cadence), breaker_watch at 3.2 s, route_watch at 0.8 s. The pipeline's value stays under its
+# cadence so a stuck fire ends before the next one is due. Only these kinds are marked BUSY on the
+# heartbeat; maintenance kinds keep the plain pass-age rule, which already notices a hang at 300 s.
+RISK_FIRE_DEADLINE_SECONDS: Mapping[str, float] = {
+    KIND_CRYPTO: 600.0,
+    KIND_BREAKER_WATCH: 120.0,
+    KIND_ROUTE_WATCH: 120.0,
+}
 
 # The other half, named rather than inferred — and naming it is the point.
 #
@@ -2419,8 +2432,14 @@ def run_due(
     registry: Any = None,
     kinds: frozenset[str] | None = None,
     workflow_store: Any = None,
+    fire_guard: Callable[[Schedule, str], AbstractContextManager[Any]] | None = None,
 ) -> dict[str, Any]:
     """Fire every enabled schedule whose ``next_run_at`` is at or before ``now``. Kill-switch bound.
+
+    ``fire_guard(schedule, run_id)``, when given, returns a context manager entered around each
+    executed fire — the lane's BUSY mark on its heartbeat (`RISK_LANE_WATCHDOG_V0.1.md`). Its exit
+    runs whether the fire returns or raises. It must not raise itself: a guard is an observer, and
+    an exception from it would be recorded as the fire's own failure.
 
     While the runtime is PAUSED/KILLED (per ``control_store``), each due schedule is skipped and
     recorded; its ``next_run_at`` still advances so a kill drops the occurrence instead of queueing
@@ -2635,10 +2654,11 @@ def run_due(
         previous_status = claimed.last_status
         started_at = time.monotonic()
         try:
-            status = _execute(claimed, now=now, ledger=ledger, working_memory=working_memory,
-                              programization=programization, registry=registry,
-                              repo_root=repo_root, executor=executor, run_id=run_id,
-                              workflow_store=workflow_store)
+            with (fire_guard(claimed, run_id) if fire_guard is not None else nullcontext()):
+                status = _execute(claimed, now=now, ledger=ledger, working_memory=working_memory,
+                                  programization=programization, registry=registry,
+                                  repo_root=repo_root, executor=executor, run_id=run_id,
+                                  workflow_store=workflow_store)
             if claimed.kind == KIND_FACTORY and status == STATUS_FACTORY_SPAWNED:
                 # The bracket stays open on purpose: the terminal event belongs to the pass
                 # that collects the child (`_collect_factory_child`), under this same

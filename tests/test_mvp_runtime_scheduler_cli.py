@@ -380,3 +380,36 @@ def test_only_the_lane_that_fires_analysis_tasks_reconciles_them(tmp_path, capsy
 
     _tick(tmp_path, store, ledger, "maintenance", now=DUE, capsys=capsys)
     assert len(calls) == 1 and calls[0]["origins"] == task_registry.SCHEDULER_ORIGINS
+
+
+def test_a_risk_fire_runs_marked_busy_on_its_lane_heartbeat_and_a_maintenance_fire_does_not(
+        tmp_path, capsys, monkeypatch):
+    """RISK_LANE_WATCHDOG_V0.1 §3.2: the tick loop marks a risk fire BUSY on its own lane's
+    heartbeat for the fire's duration — read here from inside the fire — and clears it after.
+    A maintenance kind has no deadline and runs unmarked."""
+    store, ledger = _stores(tmp_path)
+    store.add(build_schedule(kind=scheduler.KIND_ROUTE_WATCH, request="", interval_seconds=900,
+                             created_by="op", now=T0))
+    store.add(build_schedule(kind=KIND_PRUNE, request="", interval_seconds=86400,
+                             created_by="op", now=T0))
+    seen = {}
+
+    def fake_execute(schedule, **kwargs):
+        for service in (heartbeat.SCHEDULER_RISK_SERVICE, heartbeat.SCHEDULER_MAINTENANCE_SERVICE):
+            path = heartbeat.heartbeat_path(service, tmp_path)
+            if path.is_file():
+                seen[(service, schedule.kind)] = json.loads(path.read_text(encoding="utf-8")).get("busy")
+        return "ok"
+
+    monkeypatch.setattr(scheduler, "_execute", fake_execute)
+    _tick(tmp_path, store, ledger, "risk", now=DUE, capsys=capsys)
+    _tick(tmp_path, store, ledger, "maintenance", now=DUE, capsys=capsys)
+
+    mark = seen[(heartbeat.SCHEDULER_RISK_SERVICE, scheduler.KIND_ROUTE_WATCH)]
+    assert mark["kind"] == scheduler.KIND_ROUTE_WATCH and mark["schedule_run_id"].startswith("srun_")
+    started = [e for e in ledger.read_scheduler_events() if e.get("action") == "started"
+               and e.get("kind") == scheduler.KIND_ROUTE_WATCH]
+    assert [e["schedule_run_id"] for e in started] == [mark["schedule_run_id"]]
+    assert seen[(heartbeat.SCHEDULER_MAINTENANCE_SERVICE, KIND_PRUNE)] is None
+    after = json.loads(heartbeat.heartbeat_path(heartbeat.SCHEDULER_RISK_SERVICE, tmp_path).read_text(encoding="utf-8"))
+    assert "busy" not in after

@@ -1682,3 +1682,60 @@ def test_a_draft_that_missed_the_standards_is_reported_not_hidden():
     assert "MISS" in sheet
     assert "본문 글자수" in sheet
     assert "recorded, not discarded" in sheet
+
+
+# --- fire_guard: the lane's BUSY mark wraps each executed fire (RISK_LANE_WATCHDOG_V0.1) ------
+
+class _Guard:
+    def __init__(self):
+        self.log = []
+
+    def __call__(self, schedule, run_id):
+        guard = self
+
+        class _Ctx:
+            def __enter__(self):
+                guard.log.append(("enter", schedule.request, run_id))
+
+            def __exit__(self, *exc):
+                guard.log.append(("exit", schedule.request, exc[0].__name__ if exc[0] else None))
+                return False
+        return _Ctx()
+
+
+def test_the_guard_wraps_every_executed_fire_and_exits_when_one_raises(tmp_path):
+    store = ScheduleStore(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    _task_schedule(store, now=T0, interval=60, request="boom")
+    _task_schedule(store, now=T0, interval=60, request="fine")
+    good = FakeExecutor()
+
+    def executor(request, **kwargs):
+        if request == "boom":
+            raise PersistenceError("CANDIDATES_TAMPERED", "store failed verification")
+        return good(request, **kwargs)
+
+    guard = _Guard()
+    summary = run_due(store, now=T1, ledger=ledger, executor=executor,
+                      control_store=ControlStore(tmp_path), fire_guard=guard)
+    assert summary["fired"] == 1 and summary["failed"] == 1
+    started = {e["schedule_run_id"] for e in _events(ledger) if e["action"] == "started"}
+    assert [(a, r) for a, r, _ in guard.log] == [("enter", "boom"), ("exit", "boom"),
+                                                ("enter", "fine"), ("exit", "fine")]
+    assert {x for a, _, x in guard.log if a == "enter"} == started      # the run id the ledger carries
+    assert [x for a, _, x in guard.log if a == "exit"] == ["PersistenceError", None]
+
+
+def test_the_guard_is_not_entered_for_a_fire_that_does_not_run(tmp_path):
+    store = ScheduleStore(tmp_path)
+    _task_schedule(store, now=T0, interval=60)
+    control_store = ControlStore(tmp_path)
+    control.apply_command(control_store, "pause", actor="test", now=T0)
+    guard = _Guard()
+    summary = run_due(store, now=T1, executor=FakeExecutor(), control_store=control_store, fire_guard=guard)
+    assert summary["skipped"] == 1 and guard.log == []
+
+
+def test_only_the_risk_kinds_carry_a_deadline_and_the_pipeline_ends_before_its_next_fire():
+    assert set(scheduler.RISK_FIRE_DEADLINE_SECONDS) == set(scheduler.RISK_KINDS)
+    assert scheduler.RISK_FIRE_DEADLINE_SECONDS[scheduler.KIND_CRYPTO] < 900     # the deployed cadence

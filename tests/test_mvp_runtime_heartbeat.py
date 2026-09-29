@@ -92,3 +92,90 @@ def test_the_lane_services_are_probeable_and_answer_separately(tmp_path):
                               interval_seconds=30, now=NOW, root=tmp_path)
     assert heartbeat_main(["scheduler-risk"], root=tmp_path, now=NOW) == 0
     assert heartbeat_main(["scheduler-maintenance"], root=tmp_path, now=NOW) != 0
+
+
+# --- BUSY: a marked fire is judged by its deadline, not by the pass age -----------------------
+# (`docs/proposals/RISK_LANE_WATCHDOG_V0.1.md` §3.2)
+
+def _busy(started: str, deadline: str, kind: str = "crypto_pipeline") -> dict:
+    return {"kind": kind, "schedule_id": "schedule_x", "schedule_run_id": "srun_x",
+            "started_at": started, "deadline_at": deadline}
+
+
+def test_a_long_fire_inside_its_deadline_is_fresh_although_no_pass_stamped(tmp_path):
+    # 8 minutes since the stamp would be STALE by the pass-age rule (300 s); the fire's own
+    # 10-minute deadline says it is a long valid fire, not a dead lane.
+    heartbeat.write_heartbeat("scheduler-risk", interval_seconds=30, now=NOW, root=tmp_path,
+                              busy=_busy(NOW, _at(10)))
+    report = heartbeat.check_heartbeat("scheduler-risk", now=_at(8), root=tmp_path)
+    assert report["status"] == heartbeat.FRESH and report["overrun"] is False
+    assert "busy: crypto_pipeline srun_x" in report["detail"]
+
+
+def test_a_fire_past_its_deadline_is_stale_although_the_stamp_is_recent(tmp_path):
+    # A breaker fire with a 2-minute deadline, 3 minutes in: the pass-age rule would still call
+    # this FRESH (180 s < 300 s). The deadline says it is stuck.
+    heartbeat.write_heartbeat("scheduler-risk", interval_seconds=30, now=NOW, root=tmp_path,
+                              busy=_busy(NOW, _at(2), kind="crypto_breaker_watch"))
+    report = heartbeat.check_heartbeat("scheduler-risk", now=_at(3), root=tmp_path)
+    assert report["status"] == heartbeat.STALE and report["overrun"] is True
+    assert report["detail"].startswith("OVERRUN: crypto_breaker_watch")
+
+
+def test_without_a_mark_the_pass_age_rule_is_unchanged(tmp_path):
+    heartbeat.write_heartbeat("scheduler-risk", interval_seconds=30, now=NOW, root=tmp_path)
+    report = heartbeat.check_heartbeat("scheduler-risk", now=_at(6), root=tmp_path)
+    assert report["status"] == heartbeat.STALE and "busy" not in report
+
+
+@pytest.mark.parametrize("mark", [{"kind": "crypto_pipeline"}, _busy("not-a-time", _at(10)), "busy"])
+def test_a_broken_mark_is_reported_unreadable(tmp_path, mark):
+    path = heartbeat.heartbeat_path("scheduler-risk", tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"service": "scheduler-risk", "heartbeat_at": NOW,
+                                "interval_seconds": 30, "busy": mark}), encoding="utf-8")
+    assert heartbeat.check_heartbeat("scheduler-risk", now=_at(1), root=tmp_path)["status"] == heartbeat.UNREADABLE
+
+
+def _record(tmp_path):
+    return json.loads(heartbeat.heartbeat_path("scheduler-risk", tmp_path).read_text(encoding="utf-8"))
+
+
+def test_the_marker_marks_during_the_block_and_clears_after(tmp_path):
+    with heartbeat.busy_marker("scheduler-risk", interval_seconds=30, kind="crypto_pipeline",
+                               schedule_id="schedule_x", schedule_run_id="srun_x",
+                               deadline_seconds=600, root=tmp_path) as mark:
+        inside = _record(tmp_path)
+    assert inside["busy"] == mark and inside["busy"]["schedule_run_id"] == "srun_x"
+    span = heartbeat.timeutil.parse_iso(mark["deadline_at"]) - heartbeat.timeutil.parse_iso(mark["started_at"])
+    assert span.total_seconds() == 600
+    assert "busy" not in _record(tmp_path)
+
+
+def test_a_fire_that_raises_still_clears_the_mark(tmp_path):
+    with pytest.raises(RuntimeError, match="boom"):
+        with heartbeat.busy_marker("scheduler-risk", interval_seconds=30, kind="crypto_pipeline",
+                                   schedule_id="schedule_x", schedule_run_id="srun_x",
+                                   deadline_seconds=600, root=tmp_path):
+            raise RuntimeError("boom")
+    assert "busy" not in _record(tmp_path)
+
+
+def test_a_mark_that_cannot_be_written_never_stops_the_fire(tmp_path):
+    (tmp_path / ".runtime_governance_state").mkdir()
+    (tmp_path / ".runtime_governance_state" / "heartbeats").write_text("a file, not a directory")
+    errors, ran = [], []
+    with heartbeat.busy_marker("scheduler-risk", interval_seconds=30, kind="crypto_pipeline",
+                               schedule_id="schedule_x", schedule_run_id="srun_x",
+                               deadline_seconds=600, root=tmp_path, on_error=errors.append):
+        ran.append(True)
+    assert ran == [True]
+    assert len(errors) == 2 and all(isinstance(e, OSError) for e in errors)   # the mark and the clear
+
+
+def test_cli_exits_zero_for_a_busy_lane_and_one_for_an_overrun(tmp_path, capsys):
+    heartbeat.write_heartbeat("scheduler-risk", interval_seconds=30, now=NOW, root=tmp_path,
+                              busy=_busy(NOW, _at(10)))
+    assert heartbeat_main(["scheduler-risk"], root=tmp_path, now=_at(8)) == 0
+    assert heartbeat_main(["scheduler-risk"], root=tmp_path, now=_at(11)) == 1
+    assert "OVERRUN" in capsys.readouterr().err
