@@ -1059,8 +1059,22 @@ MAX_REVISION_REQUEST_CHARS = 19_000
 PLAN_INTRO_PARAGRAPHS = 2
 PLAN_SECTIONS = 5
 PLAN_PARAGRAPHS_PER_SECTION = 3
-PLAN_PARAGRAPH_CHARS = (110, 140)          # visible characters, whitespace excluded
-PLAN_SENTENCES_PER_PARAGRAPH = "3~4"
+# 120~150 since the second measured round (2026-09-29): asked for 110~140, the drafts averaged
+# 62, 76 and 93, always below the floor they were given. A floor is where a model's paragraphs
+# start, not where they land, so the plan's floor sits above the standard's need.
+PLAN_PARAGRAPH_CHARS = (120, 150)          # visible characters, whitespace excluded
+PLAN_SENTENCES_PER_PARAGRAPH = "4"
+# One paragraph of the planned length, shown as a LENGTH reference only (its content is
+# generic on purpose and the request says not to reuse it). A total alone did not move the
+# drafts; a concrete paragraph shows what "130 characters" looks like.
+LENGTH_EXAMPLE_PARAGRAPH = (
+    "신청 화면에 들어가면 먼저 본인 인증을 요구합니다. 공동인증서와 간편인증 가운데 편한 방법을 "
+    "고르면 되고, 인증이 끝나면 신청서 작성 단계로 바로 넘어갑니다. 여기서 입력한 정보는 나중에 "
+    "고치기 번거로우니 제출 버튼을 누르기 전에 한 번 더 확인하는 편이 안전합니다. 제출이 끝나면 "
+    "접수 번호가 화면에 나타납니다."
+)
+# How many short paragraphs a revision names one by one; more than this and the list is noise.
+MAX_NAMED_SHORT_PARAGRAPHS = 12
 
 
 def plan_paragraphs() -> int:
@@ -1081,15 +1095,43 @@ def _length_plan() -> str:
         f"{plan_paragraphs()}개. 문단 하나는 {PLAN_SENTENCES_PER_PARAGRAPH}문장, 공백 빼고 "
         f"{low}~{high}자. 합계 약 {total_low:,}~{total_high:,}자이고, 1,800자에 못 미치면 불합격이다. "
         "한두 문장짜리 문단을 만들지 마라 — 각 문단은 방법·이유·예시·주의점 중 둘 이상을 담아 풀어 "
-        f"써라. JSON을 내기 전에 문단이 {plan_paragraphs()}개인지, 각 문단이 {low}자 이상인지 세어 "
-        "확인하라."
+        f"써라. 문단 하나의 길이는 이 정도다(길이만 참고하고 내용은 따라 쓰지 마라): "
+        f"「{LENGTH_EXAMPLE_PARAGRAPH}」 JSON을 내기 전에 문단이 {plan_paragraphs()}개인지, 각 문단이 "
+        f"{low}자 이상인지 세어 보고, 짧은 문단에는 문장을 더 붙여라."
     )
 
 
-def _length_asks(measured: Mapping[str, Any]) -> str:
-    """For a revision: the plan against what the draft actually measured."""
-    return (f"현재 문단 {measured.get('paragraphs', '-')}개·문단 평균 {measured.get('para_chars', '-')}자·"
-            f"합계 {measured.get('body_chars', '-')}자. {_length_plan()}")
+def _length_asks(measured: Mapping[str, Any], structured: Mapping[str, Any] | None = None) -> str:
+    """For a revision: the plan against what the draft actually measured — and, for a structured
+    draft, the short paragraphs named one by one. "Make paragraphs longer" moved the average
+    from 62 to 93 over three rounds; pointing at the exact paragraph is the concrete version."""
+    ask = (f"현재 문단 {measured.get('paragraphs', '-')}개·문단 평균 {measured.get('para_chars', '-')}자·"
+           f"합계 {measured.get('body_chars', '-')}자. {_length_plan()}")
+    short = _short_paragraphs(structured) if structured else []
+    if short:
+        named = ", ".join(short[:MAX_NAMED_SHORT_PARAGRAPHS])
+        more = f" 외 {len(short) - MAX_NAMED_SHORT_PARAGRAPHS}개" if len(short) > MAX_NAMED_SHORT_PARAGRAPHS else ""
+        ask += (f" {PLAN_PARAGRAPH_CHARS[0]}자에 못 미치는 문단(번호는 0부터): {named}{more}. 이 문단마다 "
+                "이미 쓴 내용의 이유·예시·주의점을 한두 문장씩 더해 늘려라.")
+    return ask
+
+
+def _short_paragraphs(structured: Mapping[str, Any]) -> list[str]:
+    """``["도입 문단 1(현재 64자)", "섹션 2의 문단 0(현재 71자)", …]`` below the plan's floor."""
+    floor = PLAN_PARAGRAPH_CHARS[0]
+    out: list[str] = []
+    for i, paragraph in enumerate(structured.get("intro") or []):
+        n = len("".join(str(paragraph).split()))
+        if n < floor:
+            out.append(f"도입 문단 {i}(현재 {n}자)")
+    for s_index, section in enumerate(structured.get("sections") or []):
+        for p_index, paragraph in enumerate(section.get("paragraphs") or []):
+            if " | " in paragraph:
+                continue          # a table row block is not prose to lengthen
+            n = len("".join(str(paragraph).split()))
+            if n < floor:
+                out.append(f"섹션 {s_index}의 문단 {p_index}(현재 {n}자)")
+    return out
 
 
 _FAILURE_ASKS = {
@@ -1136,7 +1178,7 @@ def revision_request(target: str, first: Mapping[str, Any], text: str) -> str:
     measured = first.get("measured") or {}
     asks = [f"- {_FAILURE_ASKS.get(f, f)} (현재 {measured.get(f, '-')})" for f in first["failures"]]
     if _LENGTH_FAILURES & set(first["failures"]):
-        asks.append(f"- {_length_asks(measured)}")
+        asks.append(f"- {_length_asks(measured, first.get('structured'))}")
     return (
         f"아래 '{target}' 네이버 블로그 초안을 고쳐라. 고칠 항목은 다음뿐이다:\n" + "\n".join(asks)
         + "\n사실·수치·가격·날짜는 바꾸지 말고 새 사실이나 새 출처를 추가하지 마라. 분량을 늘릴 때는 이미 쓴 "
