@@ -400,7 +400,7 @@ def test_the_length_plan_adds_up_to_every_standard():
 def test_the_request_states_the_plan_not_only_the_totals():
     request = blog_content.content_request(TARGET)
     assert f"문단 {blog_content.plan_paragraphs()}개" in request
-    assert "110~140자" in request and "1,800자에 못 미치면 불합격" in request
+    assert "120~140자" in request and "1,800자에 못 미치면 불합격" in request
     # The contradictory triple is gone from the first request.
     assert "문단 10~20개·문단당 70~150자" not in request
 
@@ -476,3 +476,177 @@ def test_a_reworded_claim_does_not_inherit_the_old_wordings_source():
     carried = blog_content._carry_first_evidence(first, second)
     reworded = next(c for c in carried["fact_checks"] if c["claim"].startswith("프로 요금제는 한 달에"))
     assert reworded["verification_state"] == "needs_manual_verification"
+
+
+# --- the second length round (2026-09-29): averages 62 -> 76 -> 93 against a 110 floor ------
+
+def test_the_length_example_is_itself_a_paragraph_of_the_planned_length():
+    low, high = blog_content.PLAN_PARAGRAPH_CHARS
+    n = len("".join(blog_content.LENGTH_EXAMPLE_PARAGRAPH.split()))
+    assert low <= n <= high
+    request = blog_content.content_request(TARGET)
+    assert blog_content.LENGTH_EXAMPLE_PARAGRAPH in request and "내용은 따라 쓰지 마라" in request
+
+
+def _chars(text):
+    return len("".join(text.split()))
+
+
+def test_a_length_revision_names_each_short_paragraph():
+    draft = _draft()
+    long_para = blog_content.LENGTH_EXAMPLE_PARAGRAPH          # at the plan's length: not named
+    draft["intro"] = [long_para, "짧은 도입입니다."]
+    for section in draft["sections"]:
+        section["paragraphs"] = [long_para] * 3
+    draft["sections"][2]["paragraphs"][1] = "너무 짧은 문단입니다."
+    draft["sections"][0]["paragraphs"][0] = "항목 | 무료 | 유료"          # a table is not lengthened
+    first = dict(blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET),
+                 failures=["body_chars"])
+    request = blog_content.revision_request(TARGET, first, "")
+    named = request.split("못 미치는 문단(번호는 0부터): ", 1)[1].split(". 이 문단마다", 1)[0]
+    assert named == (f"도입 문단 1(현재 {_chars('짧은 도입입니다.')}자), "
+                     f"섹션 2의 문단 1(현재 {_chars('너무 짧은 문단입니다.')}자)")
+
+
+def test_the_named_list_is_capped():
+    draft = _draft()
+    draft["intro"] = [blog_content.LENGTH_EXAMPLE_PARAGRAPH] * 2
+    for s_index, section in enumerate(draft["sections"]):            # 15 distinct short ones
+        section["paragraphs"] = [f"짧은 문단 {s_index}-{p}입니다." for p in range(3)]
+    first = dict(blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET),
+                 failures=["body_chars"])
+    request = blog_content.revision_request(TARGET, first, "")
+    named = request.split("못 미치는 문단(번호는 0부터): ", 1)[1].split(". 이 문단마다", 1)[0]
+    assert named.count("(현재 ") == blog_content.MAX_NAMED_SHORT_PARAGRAPHS
+    assert f"외 {15 - blog_content.MAX_NAMED_SHORT_PARAGRAPHS}개" in request
+
+
+# --- the third round (2026-09-29, bcp_e8571b880a95946c9103) -----------------------------------
+#
+# The body passed at 2,645 but the paragraph average overshot to 155 (cap 150). The first draft's
+# JSON broke inside a pipe-table section ('{": | : | :", "paragraphs": ...}') and lost every key
+# after it, so the revision came back with `image_shots: []`. And "[S1, S3]" slipped the
+# reference strip.
+
+def test_the_plan_leaves_the_paragraph_ceiling_headroom():
+    low, high = blog_content.PLAN_PARAGRAPH_CHARS
+    assert (low, high) == (120, 140) and high < blog_draft_score.STANDARDS["para_chars"].high
+
+
+def test_the_table_is_its_own_field_rendered_after_its_section_and_not_a_prose_paragraph():
+    draft = _draft(table={"after_section": 1,
+                          "rows": [["구분", "무료", "유료"], ["템플릿", "있음", "더 많음"], ["용량", "5GB", "1TB"]]})
+    parts = blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET)
+    paragraphs = parts["body_paste"].split("\n\n")
+    # intro 2, then section 0 (heading + 3), section 1 (heading + 3), then the table.
+    assert paragraphs[10] == "구분 | 무료 | 유료\n템플릿 | 있음 | 더 많음\n용량 | 5GB | 1TB"
+    assert parts["measured"]["tables"] == 1
+    assert parts["measured"]["paragraphs"] == 17                 # the table is not counted
+    assert [b["paragraph_index"] for b in parts["body_blocks"]] == [2, 6, 11, 15, 19]
+    request = blog_content.content_request(TARGET)
+    assert '"table": {"after_section"' in request and "paragraphs 안에 ' | ' 행을 쓰지 마라" in request
+
+
+@pytest.mark.parametrize("table", [
+    {"rows": [["only header"]]},                  # a single-cell row is not a row
+    {"rows": [["구분", "값"]]},                    # a header alone is not a table
+    "구분 | 값",                                   # not an object
+])
+def test_a_malformed_table_is_dropped_not_guessed(table):
+    parts = blog_content.interpret_draft(json.dumps(_draft(table=table), ensure_ascii=False), TARGET)
+    assert parts["structured"]["table"] is None and parts["measured"]["tables"] == 0
+
+
+def test_a_revision_that_drops_the_capture_directions_gets_the_first_drafts_back(monkeypatch):
+    first = _draft(sections=5, per_section=1,
+                   table={"after_section": 0, "rows": [["a", "b"], ["c", "d"]]})
+    revised = dict(_draft(), image_shots=[])
+    revised.pop("table", None)
+    runs = iter([_run_result(first), _run_result(revised, records=_records(hits=0))])
+    monkeypatch.setattr(blog_content, "_run", lambda *a, **k: next(runs))
+    package = blog_content.run_content_ideation(
+        {"seeds": f"target={TARGET}"}, now=NOW, published_source=_StaticSource())["package"]
+    assert len(package["image_shots"]) == 4 and package["quality"]["measured"]["images"] == 4
+    assert "a | b\nc | d" in package["body_paste"] and package["quality"]["measured"]["tables"] == 1
+    validate_against_schema(package, SCHEMA, "blog_content_package")
+
+
+def test_the_revision_request_asks_to_keep_images_and_the_table():
+    first = blog_content.interpret_draft(json.dumps(_draft(sections=5, per_section=1), ensure_ascii=False),
+                                         TARGET)
+    assert "image_shots 4~8개와 table은 첫 초안의 것을 그대로 유지하라" in blog_content.revision_request(
+        TARGET, first, "")
+
+
+@pytest.mark.parametrize("cited", ["[S1, S3]", "[S1,K2]", "[ S2 , 3 ]"])
+def test_grouped_citations_are_stripped_from_the_revision_and_resolved_in_sources(cited):
+    assert blog_draft.strip_evidence_refs(f"문장 {cited} 끝") == "문장  끝"
+    index = {"S1": {"title": "a", "url": "u1"}, "S2": {"title": "b", "url": None},
+             "S3": {"title": "c", "url": None}, "K2": {"title": "k", "url": None}}
+    resolved = [s["source_ref"] for s in blog_draft.resolve_sources([{"source_ref": cited}], index)]
+    assert resolved and all(ref.strip("[]") in index for ref in resolved)
+
+
+# --- a dropped closing bracket is put back, never guessed ----------------------------------
+
+def _missing_paragraphs_closer(draft) -> str:
+    """The 2026-09-29 run's shape: the last section ends ``…"}]`` — the ``]`` closing its
+    ``paragraphs`` left out."""
+    text = json.dumps(draft, ensure_ascii=False)
+    assert text.count('"]}], "tags"') == 1
+    return text.replace('"]}], "tags"', '"}], "tags"')
+
+
+def test_a_dropped_closing_bracket_is_put_back_and_the_draft_parses():
+    draft = _draft(table={"after_section": 1, "rows": [["항목", "내용"], ["기간", "1년"]]})
+    parsed, reason = blog_draft.parse_structured(_missing_paragraphs_closer(draft))
+    assert reason is None and parsed["brackets_inserted"] == 1
+    assert [s["paragraphs"] for s in parsed["sections"]] == [
+        s["paragraphs"] for s in draft["sections"]]
+    assert parsed["table"] is not None and parsed["tags"] == draft["tags"]
+
+
+def test_a_valid_draft_is_not_repaired():
+    text = json.dumps(_draft(), ensure_ascii=False)
+    assert blog_draft.repair_brackets(text) is None
+    assert blog_draft.parse_structured(text)[0]["brackets_inserted"] == 0
+
+
+def test_brackets_and_escaped_quotes_inside_the_text_are_left_alone():
+    odd = '표기 예시는 "[1]}" 와 {괄호} 입니다. 끝에 \\ 가 와도 됩니다.'
+    draft = _draft()
+    draft["sections"][-1]["paragraphs"][-1] = odd
+    parsed, reason = blog_draft.parse_structured(_missing_paragraphs_closer(draft))
+    assert reason is None and parsed["brackets_inserted"] == 1
+    assert parsed["sections"][-1]["paragraphs"][-1] == blog_draft.sanitize_paragraph(odd)
+
+
+@pytest.mark.parametrize("text", [
+    '{"sections": [{"heading": "a", "paragraphs": ["b"]}]]}',      # a surplus closer, not a gap
+    '{"sections": [{"heading": "a", "paragraphs": ["b}]',            # cut off inside a string
+])
+def test_damage_that_is_not_a_dropped_closer_still_falls_back(text):
+    assert blog_draft.repair_brackets(text[:text.rfind("}") + 1]) is None
+    assert blog_draft.parse_structured(text) == (None, "JSON_UNPARSEABLE")
+
+
+def test_a_repaired_draft_is_ready_for_review_and_the_package_says_it_was_repaired(monkeypatch):
+    sheet, calls = _ideate(monkeypatch, [_missing_paragraphs_closer(_draft())])
+    quality = sheet["package"]["quality"]
+    assert [k for k, *_ in calls] == ["content"]
+    assert quality["draft_format"] == "structured" and quality["quality_state"] == "ready_for_review"
+    assert quality["brackets_inserted"] == 1
+    validate_against_schema(sheet["package"], SCHEMA, "blog_content_package")
+    assert "빠진 닫는 괄호 1개 보정" in blog_content.render_post_md(sheet["package"])
+
+
+def test_a_clean_draft_records_no_repair():
+    assert "brackets_inserted" not in _package_from(_draft())["quality"]
+
+
+def test_the_revision_sees_the_repaired_draft_not_the_broken_text():
+    short = _draft(sections=2, per_section=1)
+    first = blog_content.interpret_draft(_missing_paragraphs_closer(short), TARGET, _records())
+    assert first["draft_format"] == "structured"
+    previous = blog_content.revision_request(TARGET, first, "").split("이전 초안:\n", 1)[1]
+    assert "brackets_inserted" not in json.loads(previous)

@@ -694,6 +694,12 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 300
+        },
+        "brackets_inserted": {
+          "description": "How many closing brackets the final draft's JSON was missing and had put back before it parsed (blog_draft.repair_brackets). Absent when none were needed; the draft's text is never changed.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
         }
       }
     },

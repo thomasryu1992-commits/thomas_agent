@@ -747,6 +747,8 @@ def interpret_draft(
     index = blog_draft.evidence_index(records)
     structured, parse_reason = blog_draft.parse_structured(text)
     if structured is not None:
+        # Kept out of the draft itself: the revision request re-serializes that draft.
+        brackets_inserted = int(structured.pop("brackets_inserted", 0) or 0)
         rendered = blog_draft.render_blocks(structured)
         sources = blog_draft.resolve_sources(structured["sources"], index)
         prose = list(structured["intro"]) + [
@@ -754,7 +756,8 @@ def interpret_draft(
         measured = blog_draft_score.measure_structured(
             intro=structured["intro"], sections=structured["sections"],
             image_count=len(rendered["image_shots"]), tags=structured["tags"],
-            source_count=len(sources), keyword=target_keyword)
+            source_count=len(sources), keyword=target_keyword,
+            has_table=structured.get("table") is not None)
         parts = {
             "draft_format": blog_draft.DRAFT_FORMAT_STRUCTURED,
             "title_candidates": structured["title_candidates"],
@@ -765,6 +768,7 @@ def interpret_draft(
             "sources": sources,
             "fact_checks": blog_draft.fact_checks(structured["fact_checks"], prose, index),
             "structured": structured,
+            "brackets_inserted": brackets_inserted,
         }
     else:
         parsed = _parse_draft(text)
@@ -863,6 +867,8 @@ def quality_record(
         record["revision_outcome"] = revision_outcome[:120]
     if revision_detail:
         record["revision_detail"] = revision_detail[:300]
+    if int(final.get("brackets_inserted") or 0) > 0:
+        record["brackets_inserted"] = int(final["brackets_inserted"])
     return record
 
 
@@ -890,7 +896,9 @@ def render_post_md(package: Mapping[str, Any]) -> str:
         lines += ["", f"## 품질 상태: {state}"]
         lines += [f"- 기준: {quality.get('standards_version')} · 초안 형식: {quality.get('draft_format')}"
                   f" · 자동 수정 {quality.get('revision_count')}회"
-                  + (f" ({quality['revision_outcome']})" if quality.get("revision_outcome") else "")]
+                  + (f" ({quality['revision_outcome']})" if quality.get("revision_outcome") else "")
+                  + (f" · 빠진 닫는 괄호 {quality['brackets_inserted']}개 보정"
+                     if quality.get("brackets_inserted") else "")]
         if quality.get("revision_detail"):
             lines += [f"- 자동 수정이 막힌 이유: {quality['revision_detail']}"]
         if quality.get("failures"):
@@ -1059,8 +1067,24 @@ MAX_REVISION_REQUEST_CHARS = 19_000
 PLAN_INTRO_PARAGRAPHS = 2
 PLAN_SECTIONS = 5
 PLAN_PARAGRAPHS_PER_SECTION = 3
-PLAN_PARAGRAPH_CHARS = (110, 140)          # visible characters, whitespace excluded
-PLAN_SENTENCES_PER_PARAGRAPH = "3~4"
+# 120~150 since the second measured round (2026-09-29): asked for 110~140, the drafts averaged
+# 62, 76 and 93, always below the floor they were given. A floor is where a model's paragraphs
+# start, not where they land, so the plan's floor sits above the standard's need.
+# 120~140 since the third round (2026-09-29): asked for 120~150, the draft averaged 155 and
+# broke the standard's 150 ceiling the other way. The plan leaves the ceiling headroom.
+PLAN_PARAGRAPH_CHARS = (120, 140)          # visible characters, whitespace excluded
+PLAN_SENTENCES_PER_PARAGRAPH = "4"
+# One paragraph of the planned length, shown as a LENGTH reference only (its content is
+# generic on purpose and the request says not to reuse it). A total alone did not move the
+# drafts; a concrete paragraph shows what "130 characters" looks like.
+LENGTH_EXAMPLE_PARAGRAPH = (
+    "신청 화면에 들어가면 먼저 본인 인증을 요구합니다. 공동인증서와 간편인증 가운데 편한 방법을 "
+    "고르면 되고, 인증이 끝나면 신청서 작성 단계로 바로 넘어갑니다. 여기서 입력한 정보는 나중에 "
+    "고치기 번거로우니 제출 버튼을 누르기 전에 한 번 더 확인하는 편이 안전합니다. 제출이 끝나면 "
+    "접수 번호가 화면에 나타납니다."
+)
+# How many short paragraphs a revision names one by one; more than this and the list is noise.
+MAX_NAMED_SHORT_PARAGRAPHS = 12
 
 
 def plan_paragraphs() -> int:
@@ -1081,15 +1105,43 @@ def _length_plan() -> str:
         f"{plan_paragraphs()}개. 문단 하나는 {PLAN_SENTENCES_PER_PARAGRAPH}문장, 공백 빼고 "
         f"{low}~{high}자. 합계 약 {total_low:,}~{total_high:,}자이고, 1,800자에 못 미치면 불합격이다. "
         "한두 문장짜리 문단을 만들지 마라 — 각 문단은 방법·이유·예시·주의점 중 둘 이상을 담아 풀어 "
-        f"써라. JSON을 내기 전에 문단이 {plan_paragraphs()}개인지, 각 문단이 {low}자 이상인지 세어 "
-        "확인하라."
+        f"써라. 문단 하나의 길이는 이 정도다(길이만 참고하고 내용은 따라 쓰지 마라): "
+        f"「{LENGTH_EXAMPLE_PARAGRAPH}」 JSON을 내기 전에 문단이 {plan_paragraphs()}개인지, 각 문단이 "
+        f"{low}자 이상인지 세어 보고, 짧은 문단에는 문장을 더 붙여라."
     )
 
 
-def _length_asks(measured: Mapping[str, Any]) -> str:
-    """For a revision: the plan against what the draft actually measured."""
-    return (f"현재 문단 {measured.get('paragraphs', '-')}개·문단 평균 {measured.get('para_chars', '-')}자·"
-            f"합계 {measured.get('body_chars', '-')}자. {_length_plan()}")
+def _length_asks(measured: Mapping[str, Any], structured: Mapping[str, Any] | None = None) -> str:
+    """For a revision: the plan against what the draft actually measured — and, for a structured
+    draft, the short paragraphs named one by one. "Make paragraphs longer" moved the average
+    from 62 to 93 over three rounds; pointing at the exact paragraph is the concrete version."""
+    ask = (f"현재 문단 {measured.get('paragraphs', '-')}개·문단 평균 {measured.get('para_chars', '-')}자·"
+           f"합계 {measured.get('body_chars', '-')}자. {_length_plan()}")
+    short = _short_paragraphs(structured) if structured else []
+    if short:
+        named = ", ".join(short[:MAX_NAMED_SHORT_PARAGRAPHS])
+        more = f" 외 {len(short) - MAX_NAMED_SHORT_PARAGRAPHS}개" if len(short) > MAX_NAMED_SHORT_PARAGRAPHS else ""
+        ask += (f" {PLAN_PARAGRAPH_CHARS[0]}자에 못 미치는 문단(번호는 0부터): {named}{more}. 이 문단마다 "
+                "이미 쓴 내용의 이유·예시·주의점을 한두 문장씩 더해 늘려라.")
+    return ask
+
+
+def _short_paragraphs(structured: Mapping[str, Any]) -> list[str]:
+    """``["도입 문단 1(현재 64자)", "섹션 2의 문단 0(현재 71자)", …]`` below the plan's floor."""
+    floor = PLAN_PARAGRAPH_CHARS[0]
+    out: list[str] = []
+    for i, paragraph in enumerate(structured.get("intro") or []):
+        n = len("".join(str(paragraph).split()))
+        if n < floor:
+            out.append(f"도입 문단 {i}(현재 {n}자)")
+    for s_index, section in enumerate(structured.get("sections") or []):
+        for p_index, paragraph in enumerate(section.get("paragraphs") or []):
+            if " | " in paragraph:
+                continue          # a table row block is not prose to lengthen
+            n = len("".join(str(paragraph).split()))
+            if n < floor:
+                out.append(f"섹션 {s_index}의 문단 {p_index}(현재 {n}자)")
+    return out
 
 
 _FAILURE_ASKS = {
@@ -1104,7 +1156,9 @@ _LENGTH_FAILURES = frozenset({"body_chars", "para_chars"})
 
 _DRAFT_SHAPE = (
     '{"title_candidates": ["제목 후보 3~5개"], "intro": ["도입 문단"], '
-    '"sections": [{"heading": "소제목", "paragraphs": ["문단"]}], "tags": ["태그(# 없이)"], '
+    '"sections": [{"heading": "소제목", "paragraphs": ["문단"]}], '
+    '"table": {"after_section": 1, "rows": [["구분", "항목1", "항목2"], ["행 이름", "값", "값"]]}, '
+    '"tags": ["태그(# 없이)"], '
     '"image_shots": [{"after_section": 0, "what_to_capture": "캡처할 실제 화면", "tool_name": null}], '
     '"fact_checks": [{"claim": "본문 문장", "why": "확인이 필요한 이유", "source_ref": null}], '
     '"sources": [{"source_ref": "[S1]", "title": null}]}'
@@ -1120,8 +1174,8 @@ def content_request(target: str) -> str:
         f"{_length_plan()}\n"
         f"규칙: title_candidates는 소제목과 별개인 글 제목 3~5개이고 각각 '{target}'를 앞쪽에 "
         "자연스럽게 포함한다. image_shots 4~8개(after_section은 0부터 센 섹션 번호, 생성 "
-        "이미지가 아니라 실제 화면 캡처), 표 1개(행을 ' | '로 구분한 문단 — 섹션 문단 하나로 "
-        "센다), tags 3~8개, sources 2~5개. 가격·무료 범위·사용 한도·기능 제공 여부·정책·버전·"
+        "이미지가 아니라 실제 화면 캡처), 표 1개는 table 필드에만(첫 행이 머리글, 2행 이상, "
+        "paragraphs 안에 ' | ' 행을 쓰지 마라 — 표는 문단 수에 세지 않는다), tags 3~8개, sources 2~5개. 가격·무료 범위·사용 한도·기능 제공 여부·정책·버전·"
         "날짜를 쓴 문장은 모두 fact_checks에 넣어라. 근거 블록([S#]·[K#])에 없는 수치·가격·"
         "출처를 지어내지 마라 — 근거가 없으면 source_ref를 null로 둬라. 문단 안에 #, **, > 같은 "
         "마크다운 기호를 쓰지 마라."
@@ -1136,18 +1190,16 @@ def revision_request(target: str, first: Mapping[str, Any], text: str) -> str:
     measured = first.get("measured") or {}
     asks = [f"- {_FAILURE_ASKS.get(f, f)} (현재 {measured.get(f, '-')})" for f in first["failures"]]
     if _LENGTH_FAILURES & set(first["failures"]):
-        asks.append(f"- {_length_asks(measured)}")
+        asks.append(f"- {_length_asks(measured, first.get('structured'))}")
     return (
         f"아래 '{target}' 네이버 블로그 초안을 고쳐라. 고칠 항목은 다음뿐이다:\n" + "\n".join(asks)
         + "\n사실·수치·가격·날짜는 바꾸지 말고 새 사실이나 새 출처를 추가하지 마라. 분량을 늘릴 때는 이미 쓴 "
-        "내용의 방법·이유·예시·주의점을 풀어 써라. 이 수정 실행에는 근거 블록이 없다 — [S1]·[K1] 같은 "
+        "내용의 방법·이유·예시·주의점을 풀어 써라. image_shots 4~8개와 table은 첫 초안의 것을 "
+        "그대로 유지하라(없으면 새로 채워라). 이 수정 실행에는 근거 블록이 없다 — [S1]·[K1] 같은 "
         "근거 번호를 본문·facts·fact_checks 어디에도 쓰지 말고, sources는 빈 목록 []으로 둬라(첫 "
         "초안의 출처는 그대로 유지된다). content_draft에는 같은 JSON 형식으로 전체 초안을 다시 "
         f"넣어라: {_DRAFT_SHAPE}\n이전 초안:\n{_revision_previous(first, text)}"
     )
-
-
-_EVIDENCE_REF_RE = re.compile(r"\[[SK]\d{1,3}\]")
 
 
 def _revision_previous(first: Mapping[str, Any], text: str) -> str:
@@ -1166,7 +1218,7 @@ def _revision_previous(first: Mapping[str, Any], text: str) -> str:
         previous = json.dumps(draft, ensure_ascii=False)
     else:
         previous = text
-    return _EVIDENCE_REF_RE.sub("", previous)
+    return blog_draft.strip_evidence_refs(previous)
 
 
 def _carry_first_evidence(first: Mapping[str, Any], second: dict[str, Any]) -> dict[str, Any]:
@@ -1186,8 +1238,37 @@ def _carry_first_evidence(first: Mapping[str, Any], second: dict[str, Any]) -> d
     measured = dict(second.get("measured") or {})
     if second.get("draft_format") == blog_draft.DRAFT_FORMAT_STRUCTURED:
         measured["sources"] = len(carried["sources"])
+        _carry_first_layout(first, carried, measured)
     carried["measured"] = measured
     return carried
+
+
+def _carry_first_layout(first: Mapping[str, Any], carried: dict[str, Any], measured: dict[str, Any]) -> None:
+    """Capture directions and the table a revision dropped, taken from the first draft.
+
+    Measured 2026-09-29: the revision came back with `image_shots: []`, and the package lost all
+    of its capture directions. The request now says to keep them. When a revision still drops
+    them, the first draft's own (section-addressed, so they survive re-layout) are put back and
+    the paste layout is rendered again. Only a structured first draft has them in that form."""
+    old = first.get("structured") if first.get("draft_format") == blog_draft.DRAFT_FORMAT_STRUCTURED else None
+    new = carried.get("structured")
+    if not old or not new:
+        return
+    patched = dict(new)
+    last = max(len(new.get("sections") or []) - 1, 0)
+    if not new.get("image_shots") and old.get("image_shots"):
+        patched["image_shots"] = [dict(shot, after_section=min(shot["after_section"], last))
+                                  for shot in old["image_shots"]]
+    if new.get("table") is None and old.get("table") is not None:
+        patched["table"] = dict(old["table"], after_section=min(old["table"]["after_section"], last))
+    if patched == new:
+        return
+    rendered = blog_draft.render_blocks(patched)
+    carried.update({"structured": patched, "body_paste": rendered["body_paste"],
+                    "body_blocks": rendered["body_blocks"][:MAX_BODY_BLOCKS],
+                    "image_shots": rendered["image_shots"]})
+    measured["images"] = len(rendered["image_shots"])
+    measured["tables"] = 1 if patched.get("table") is not None else measured.get("tables", 0)
 
 
 def _draft_text(result: Mapping[str, Any]) -> str:
