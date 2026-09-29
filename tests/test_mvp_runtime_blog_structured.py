@@ -400,7 +400,7 @@ def test_the_length_plan_adds_up_to_every_standard():
 def test_the_request_states_the_plan_not_only_the_totals():
     request = blog_content.content_request(TARGET)
     assert f"문단 {blog_content.plan_paragraphs()}개" in request
-    assert "110~140자" in request and "1,800자에 못 미치면 불합격" in request
+    assert "120~150자" in request and "1,800자에 못 미치면 불합격" in request
     # The contradictory triple is gone from the first request.
     assert "문단 10~20개·문단당 70~150자" not in request
 
@@ -476,3 +476,46 @@ def test_a_reworded_claim_does_not_inherit_the_old_wordings_source():
     carried = blog_content._carry_first_evidence(first, second)
     reworded = next(c for c in carried["fact_checks"] if c["claim"].startswith("프로 요금제는 한 달에"))
     assert reworded["verification_state"] == "needs_manual_verification"
+
+
+# --- the second length round (2026-09-29): averages 62 -> 76 -> 93 against a 110 floor ------
+
+def test_the_length_example_is_itself_a_paragraph_of_the_planned_length():
+    low, high = blog_content.PLAN_PARAGRAPH_CHARS
+    n = len("".join(blog_content.LENGTH_EXAMPLE_PARAGRAPH.split()))
+    assert low <= n <= high
+    request = blog_content.content_request(TARGET)
+    assert blog_content.LENGTH_EXAMPLE_PARAGRAPH in request and "내용은 따라 쓰지 마라" in request
+
+
+def _chars(text):
+    return len("".join(text.split()))
+
+
+def test_a_length_revision_names_each_short_paragraph():
+    draft = _draft()
+    long_para = blog_content.LENGTH_EXAMPLE_PARAGRAPH          # at the plan's length: not named
+    draft["intro"] = [long_para, "짧은 도입입니다."]
+    for section in draft["sections"]:
+        section["paragraphs"] = [long_para] * 3
+    draft["sections"][2]["paragraphs"][1] = "너무 짧은 문단입니다."
+    draft["sections"][0]["paragraphs"][0] = "항목 | 무료 | 유료"          # a table is not lengthened
+    first = dict(blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET),
+                 failures=["body_chars"])
+    request = blog_content.revision_request(TARGET, first, "")
+    named = request.split("못 미치는 문단(번호는 0부터): ", 1)[1].split(". 이 문단마다", 1)[0]
+    assert named == (f"도입 문단 1(현재 {_chars('짧은 도입입니다.')}자), "
+                     f"섹션 2의 문단 1(현재 {_chars('너무 짧은 문단입니다.')}자)")
+
+
+def test_the_named_list_is_capped():
+    draft = _draft()
+    draft["intro"] = [blog_content.LENGTH_EXAMPLE_PARAGRAPH] * 2
+    for s_index, section in enumerate(draft["sections"]):            # 15 distinct short ones
+        section["paragraphs"] = [f"짧은 문단 {s_index}-{p}입니다." for p in range(3)]
+    first = dict(blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET),
+                 failures=["body_chars"])
+    request = blog_content.revision_request(TARGET, first, "")
+    named = request.split("못 미치는 문단(번호는 0부터): ", 1)[1].split(". 이 문단마다", 1)[0]
+    assert named.count("(현재 ") == blog_content.MAX_NAMED_SHORT_PARAGRAPHS
+    assert f"외 {15 - blog_content.MAX_NAMED_SHORT_PARAGRAPHS}개" in request
