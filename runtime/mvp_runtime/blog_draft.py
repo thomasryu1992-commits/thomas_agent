@@ -126,7 +126,7 @@ def _is_key(raw: str, quote: int) -> bool:
     return rest.startswith(":")
 
 
-def repair_brackets(raw: str) -> tuple[str, int] | None:
+def repair_brackets(raw: str, *, close_at_end: bool = False) -> tuple[str, int] | None:
     """``raw`` with the brackets a model dropped put back, and how many were inserted.
 
     On 2026-09-29 both drafts of a run wrote the end of the last section as ``…"}]`` instead of
@@ -140,8 +140,14 @@ def repair_brackets(raw: str) -> tuple[str, int] | None:
     does not match the innermost open bracket but does match an outer one means the brackets in
     between were never closed, so their closers go in front of it. Text inside strings is never
     touched. ``None`` — no repair — when there is nothing to insert, when a closer matches no open
-    bracket (a surplus, not a gap), or when the text ends inside a string or with brackets still
-    open. The caller still requires the result to parse."""
+    bracket (a surplus, not a gap), or when the text ends inside a string.
+
+    Brackets still open at the end are closed only with ``close_at_end``: a later run's first
+    draft (`bcp_cbbabb9953f3c67ba332`) ended ``…"]}`` after its last section — the ``]`` of
+    ``sections`` and the root ``}`` never written, and nothing after them. The closers go on the
+    end; whatever the model never wrote (tags, capture directions) stays absent, never filled.
+    Without it, open brackets at the end are no repair. The caller still requires the result to
+    parse — a text cut after a ``,`` or a ``:`` does not."""
     out: list[str] = []
     stack: list[str] = []
     inserted = 0
@@ -175,7 +181,12 @@ def repair_brackets(raw: str) -> tuple[str, int] | None:
                     inserted += 1
             stack.pop()
         out.append(ch)
-    if in_string or stack or not inserted:
+    if in_string or (stack and not close_at_end):
+        return None
+    while stack:
+        out.append(_CLOSER[stack.pop()])
+        inserted += 1
+    if not inserted:
         return None
     return "".join(out), inserted
 
@@ -184,8 +195,8 @@ def parse_structured(text: str) -> tuple[dict[str, Any] | None, str | None]:
     """``(draft, None)`` for a usable structured draft, ``(None, reason)`` otherwise.
 
     Tolerates exactly two kinds of wrapping a model adds — a code fence, and prose before or
-    after the object — by taking the outermost ``{...}``, and one kind of damage: closing
-    brackets left out (:func:`repair_brackets`). Anything that is not then a JSON object with at
+    after the object — by taking the outermost ``{...}``, and one kind of damage: brackets left
+    out (:func:`repair_brackets`), including a draft that stopped with brackets still open. Anything that is not then a JSON object with at
     least one section holding prose is not a structured draft, and the caller falls back to the
     legacy parser and says so. A repaired draft says how many closers it needed in
     ``brackets_inserted``; the key is 0 otherwise."""
@@ -193,12 +204,15 @@ def parse_structured(text: str) -> tuple[dict[str, Any] | None, str | None]:
     start, end = raw.find("{"), raw.rfind("}")
     if start < 0 or end <= start:
         return None, "NO_JSON_OBJECT"
+    whole = raw[start:].rstrip()
     raw = raw[start:end + 1]
     inserted = 0
     try:
         data = json.loads(raw)
     except ValueError:
-        repaired = repair_brackets(raw)
+        # The outermost {...} first, as before; only when that cannot be repaired is the text
+        # taken to its end with the brackets it left open closed there.
+        repaired = repair_brackets(raw) or repair_brackets(whole, close_at_end=True)
         if repaired is None:
             return None, "JSON_UNPARSEABLE"
         try:
