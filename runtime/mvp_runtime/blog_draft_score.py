@@ -42,7 +42,7 @@ from dataclasses import dataclass
 STANDARDS_VERSION = "blog_draft_standards.2026-09-29"
 
 __all__ = ["STANDARDS", "STANDARDS_VERSION", "Standard", "keyword_hits", "measure",
-           "measure_structured", "scorecard"]
+           "measure_structured", "scorecard", "shortfall"]
 
 # --- the standards (Thomas, 2026-08-10) ------------------------------------------------
 #
@@ -223,6 +223,22 @@ def measure_structured(
         "keyword_hits": keyword_hits(text, keyword),
         "hashtags": len(tags),
     }
+
+
+def shortfall(measured: dict[str, int]) -> float:
+    """How far a measurement is outside the critical standards: each missed standard's distance
+    from its range, relative to the bound it missed, summed. 0.0 for a draft that passes.
+
+    Relative so that 3 characters over a 150 average (0.02) and 579 short of a 1,800 body (0.32)
+    compare the way a reader would compare them."""
+    total = 0.0
+    for key in critical_failures(measured):
+        standard, value = STANDARDS[key], measured[key]
+        if value < standard.low:
+            total += (standard.low - value) / standard.low
+        elif standard.high is not None and value > standard.high:
+            total += (value - standard.high) / standard.high
+    return total
 
 
 def critical_failures(measured: dict[str, int]) -> list[str]:

@@ -757,3 +757,60 @@ def test_a_short_draft_still_gets_the_plan_and_the_short_list_not_the_cut():
 def test_the_para_chars_ask_does_not_contradict_the_cut():
     """'긴 문단은 나누고' told the model to split while the cut says keep the paragraph count."""
     assert "나누" not in blog_content._FAILURE_ASKS["para_chars"]
+
+
+# --- the one revision never leaves the package worse ----------------------------------------
+#
+# bcp_e9717849588d1f438c66 (2026-09-29): the first draft averaged 153 (ceiling 150); asked to
+# cut, the revision halved every paragraph — average 71, body 1,221 against the 1,800 floor —
+# and replaced the draft that was far closer to passing.
+
+def test_shortfall_is_relative_distance_from_the_critical_standards():
+    ok = {"body_chars": 2000, "headings": 5, "para_chars": 130}
+    assert blog_draft_score.shortfall(ok) == 0.0
+    assert blog_draft_score.shortfall(dict(ok, para_chars=153)) == pytest.approx(3 / 150)
+    assert blog_draft_score.shortfall(dict(ok, body_chars=1221)) == pytest.approx(579 / 1800)
+    assert blog_draft_score.shortfall(dict(ok, keyword_hits=0)) == 0.0     # advisory only
+
+
+def _all_long() -> dict:
+    draft = _draft()
+    draft["intro"] = [_long(0), _long(1)]
+    for s_index, section in enumerate(draft["sections"]):
+        section["paragraphs"] = [_long(10 * (s_index + 1) + p) for p in range(3)]
+    return draft
+
+
+def test_a_revision_further_off_than_the_first_draft_is_not_taken(monkeypatch):
+    halved = _draft(sections=5, per_section=1)                    # the body falls under 1,800
+    sheet, calls = _ideate(monkeypatch, [_all_long(), halved])
+    quality = sheet["package"]["quality"]
+    assert [k for k, *_ in calls] == ["content", "content"]
+    assert quality["revision_outcome"] == "REVISION_FURTHER_OFF:KEPT_FIRST_DRAFT"
+    assert quality["failures"] == ["para_chars"] and quality["quality_state"] == "needs_edit"
+    assert quality["measured"]["body_chars"] >= 1800                 # the first draft's body
+    assert "body_chars" in quality["revision_detail"]
+    assert sheet["lineage"]["revision_trace_id"] == "trace-2"        # it ran; it is on record
+    validate_against_schema(sheet["package"], SCHEMA, "blog_content_package")
+    post = blog_content.render_post_md(sheet["package"])
+    assert "- 자동 수정 메모: 수정본이 기준에서 더 벗어나" in post and "막힌 이유" not in post
+
+
+def test_a_failing_revision_that_is_closer_is_still_taken(monkeypatch):
+    very_short = _draft(sections=5, per_section=1)
+    closer = _draft(sections=5, per_section=2)
+    sheet, _calls = _ideate(monkeypatch, [very_short, closer])
+    quality = sheet["package"]["quality"]
+    assert quality["revision_outcome"] == "REVISED_STILL_FAILING"
+    assert quality["measured"]["body_chars"] > blog_content.interpret_draft(
+        json.dumps(very_short, ensure_ascii=False), TARGET)["measured"]["body_chars"]
+
+
+def test_the_cut_touches_only_the_named_paragraphs_and_states_both_floors():
+    first = blog_content.interpret_draft(json.dumps(_all_long(), ensure_ascii=False), TARGET)
+    request = blog_content.revision_request(TARGET, first, "")
+    low, _high = blog_content.PLAN_PARAGRAPH_CHARS
+    assert "한 문장만 덜어내" in request and "나머지 문단은 손대지 마라" in request
+    assert f"어떤 문단도 {low}자 아래로 줄이지 마라" in request
+    assert "본문 합계가 1,800자 아래면 불합격이다" in request
+    assert "한두 문장" not in request
