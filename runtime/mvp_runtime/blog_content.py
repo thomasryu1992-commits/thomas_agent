@@ -48,7 +48,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity, schema_validation
 
@@ -1083,7 +1083,8 @@ LENGTH_EXAMPLE_PARAGRAPH = (
     "고치기 번거로우니 제출 버튼을 누르기 전에 한 번 더 확인하는 편이 안전합니다. 제출이 끝나면 "
     "접수 번호가 화면에 나타납니다."
 )
-# How many short paragraphs a revision names one by one; more than this and the list is noise.
+# How many off-plan paragraphs (short or long) a revision names one by one; more than this and
+# the list is noise.
 MAX_NAMED_SHORT_PARAGRAPHS = 12
 
 
@@ -1113,33 +1114,58 @@ def _length_plan() -> str:
 
 def _length_asks(measured: Mapping[str, Any], structured: Mapping[str, Any] | None = None) -> str:
     """For a revision: the plan against what the draft actually measured — and, for a structured
-    draft, the short paragraphs named one by one. "Make paragraphs longer" moved the average
-    from 62 to 93 over three rounds; pointing at the exact paragraph is the concrete version."""
-    ask = (f"현재 문단 {measured.get('paragraphs', '-')}개·문단 평균 {measured.get('para_chars', '-')}자·"
-           f"합계 {measured.get('body_chars', '-')}자. {_length_plan()}")
-    short = _short_paragraphs(structured) if structured else []
-    if short:
-        named = ", ".join(short[:MAX_NAMED_SHORT_PARAGRAPHS])
-        more = f" 외 {len(short) - MAX_NAMED_SHORT_PARAGRAPHS}개" if len(short) > MAX_NAMED_SHORT_PARAGRAPHS else ""
-        ask += (f" {PLAN_PARAGRAPH_CHARS[0]}자에 못 미치는 문단(번호는 0부터): {named}{more}. 이 문단마다 "
+    draft, the paragraphs off the plan named one by one. "Make paragraphs longer" moved the
+    average from 62 to 93 over three rounds; pointing at the exact paragraph is the concrete
+    version.
+
+    Which way depends on the average. Over the standard's ceiling, the ask is to cut: the
+    paragraphs above the plan are named and the plan's "add sentences" is left out — on
+    2026-09-29 (`bcp_5f459c95cf51fa821f6d`) every one of 17 paragraphs was over 150, the
+    revision was told only which paragraphs were SHORT (none) and to add sentences to short
+    ones, and it came back at 169 against 168."""
+    current = (f"현재 문단 {measured.get('paragraphs', '-')}개·문단 평균 "
+               f"{measured.get('para_chars', '-')}자·합계 {measured.get('body_chars', '-')}자.")
+    low, high = PLAN_PARAGRAPH_CHARS
+    ceiling = blog_draft_score.STANDARDS["para_chars"].high
+    if int(measured.get("para_chars") or 0) > ceiling:
+        ask = (f"{current} 문단 평균이 상한 {ceiling}자를 넘었다. 문단 수는 그대로 두고 각 문단을 공백 "
+               f"빼고 {low}~{high}자로 줄여라 — 사실·수치·키워드는 지우지 말고 겹치는 설명과 군더더기 "
+               "문장을 덜어내라. 문장을 더 붙이지 마라.")
+        named = _named(_off_plan_paragraphs(structured, lambda n: n > high) if structured else [])
+        if named:
+            ask += (f" {high}자를 넘는 문단(번호는 0부터): {named}. 이 문단마다 한두 문장을 덜어내 "
+                    f"{low}~{high}자로 맞춰라.")
+        return ask
+    ask = f"{current} {_length_plan()}"
+    named = _named(_off_plan_paragraphs(structured, lambda n: n < low) if structured else [])
+    if named:
+        ask += (f" {low}자에 못 미치는 문단(번호는 0부터): {named}. 이 문단마다 "
                 "이미 쓴 내용의 이유·예시·주의점을 한두 문장씩 더해 늘려라.")
     return ask
 
 
-def _short_paragraphs(structured: Mapping[str, Any]) -> list[str]:
-    """``["도입 문단 1(현재 64자)", "섹션 2의 문단 0(현재 71자)", …]`` below the plan's floor."""
-    floor = PLAN_PARAGRAPH_CHARS[0]
+def _named(paragraphs: Sequence[str]) -> str:
+    """The named list, capped at :data:`MAX_NAMED_SHORT_PARAGRAPHS` with the rest counted."""
+    if not paragraphs:
+        return ""
+    cap = MAX_NAMED_SHORT_PARAGRAPHS
+    more = f" 외 {len(paragraphs) - cap}개" if len(paragraphs) > cap else ""
+    return ", ".join(paragraphs[:cap]) + more
+
+
+def _off_plan_paragraphs(structured: Mapping[str, Any], off: Callable[[int], bool]) -> list[str]:
+    """Each prose paragraph whose visible length ``off`` flags, labelled for the revision."""
     out: list[str] = []
     for i, paragraph in enumerate(structured.get("intro") or []):
         n = len("".join(str(paragraph).split()))
-        if n < floor:
+        if off(n):
             out.append(f"도입 문단 {i}(현재 {n}자)")
     for s_index, section in enumerate(structured.get("sections") or []):
         for p_index, paragraph in enumerate(section.get("paragraphs") or []):
             if " | " in paragraph:
-                continue          # a table row block is not prose to lengthen
+                continue          # a table row block is not prose to lengthen or cut
             n = len("".join(str(paragraph).split()))
-            if n < floor:
+            if off(n):
                 out.append(f"섹션 {s_index}의 문단 {p_index}(현재 {n}자)")
     return out
 
@@ -1147,7 +1173,7 @@ def _short_paragraphs(structured: Mapping[str, Any]) -> list[str]:
 _FAILURE_ASKS = {
     "body_chars": "본문 문단(도입·섹션 문단)의 글자수 합을 공백 제외 1,800~3,500자로 맞춰라",
     "headings": "섹션(소제목)을 4~7개로 맞춰라",
-    "para_chars": "문단 평균 길이를 공백 제외 70~150자로 맞춰라(긴 문단은 나누고 짧은 문단은 합쳐라)",
+    "para_chars": "문단 평균 길이를 공백 제외 70~150자로 맞춰라(방법은 아래 분량 지시를 따른다)",
     "title_candidates": "title_candidates에 소제목과 다른 제목 후보를 3~5개 넣어라(타깃 키워드를 앞쪽에 자연스럽게)",
     "structured_output": "content_draft를 지정한 JSON 객체 하나로만 출력하라(설명·마크다운 금지)",
 }

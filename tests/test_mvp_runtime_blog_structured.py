@@ -710,3 +710,50 @@ def test_the_request_asks_for_the_keyword_in_the_body_in_the_scorers_numbers():
     standard = blog_draft_score.STANDARDS["keyword_hits"]
     assert f"'소상공인 스마트상점'를 {standard.low}~{standard.high}회" in request
     assert "intro 첫 문단" in request and "줄여 쓴 것은 세지 않는다" in request
+
+
+# --- too long: the revision is told which paragraphs to cut ---------------------------------
+#
+# bcp_5f459c95cf51fa821f6d (2026-09-29): all 17 paragraphs over 150 (average 168). The revision
+# named only SHORT paragraphs (none) and repeated "add sentences to short ones"; it came back 169.
+
+def _long(i: int) -> str:
+    """A distinct paragraph over the plan (identical paragraphs are de-duplicated)."""
+    return f"{i}번 안내입니다. {blog_content.LENGTH_EXAMPLE_PARAGRAPH} 제출 뒤 접수 번호를 적어 두세요."
+
+
+def test_an_over_long_revision_names_each_long_paragraph_and_asks_to_cut():
+    draft = _draft()
+    draft["intro"] = [_long(0), _long(1)]
+    for s_index, section in enumerate(draft["sections"]):
+        section["paragraphs"] = [_long(10 * (s_index + 1) + p) for p in range(3)]
+    draft["sections"][1]["paragraphs"][2] = blog_content.LENGTH_EXAMPLE_PARAGRAPH   # on plan
+    first = blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET)
+    assert "para_chars" in first["failures"]
+    request = blog_content.revision_request(TARGET, first, "")
+    low, high = blog_content.PLAN_PARAGRAPH_CHARS
+    named = request.split(f"{high}자를 넘는 문단(번호는 0부터): ", 1)[1].split(". 이 문단마다", 1)[0]
+    assert named.startswith(f"도입 문단 0(현재 {_chars(_long(0))}자), "
+                            f"도입 문단 1(현재 {_chars(_long(1))}자), 섹션 0의 문단 0(")
+    assert "섹션 1의 문단 2" not in named
+    assert named.count("(현재 ") == blog_content.MAX_NAMED_SHORT_PARAGRAPHS
+    assert named.endswith(f"외 {16 - blog_content.MAX_NAMED_SHORT_PARAGRAPHS}개")
+    assert f"{low}~{high}자로 줄여라" in request and "문장을 더 붙이지 마라" in request
+    # the lengthening half of the plan is not sent the other way
+    assert "짧은 문단에는 문장을 더 붙여라" not in request
+    assert "못 미치는 문단" not in request
+
+
+def test_a_short_draft_still_gets_the_plan_and_the_short_list_not_the_cut():
+    draft = _draft()
+    draft["sections"][2]["paragraphs"][1] = "너무 짧은 문단입니다."
+    first = dict(blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET),
+                 failures=["body_chars"])
+    request = blog_content.revision_request(TARGET, first, "")
+    assert "못 미치는 문단" in request and "짧은 문단에는 문장을 더 붙여라" in request
+    assert "줄여라" not in request
+
+
+def test_the_para_chars_ask_does_not_contradict_the_cut():
+    """'긴 문단은 나누고' told the model to split while the cut says keep the paragraph count."""
+    assert "나누" not in blog_content._FAILURE_ASKS["para_chars"]
