@@ -30,6 +30,9 @@ workspace/
 
 # Compose secrets/per-host overrides (docker-compose.yml reads it; never commit values)
 .env
+# …and every copy of it. Sessions back the file up in place before editing it
+# (`.env.bak-20260928-vault` sat untracked in the primary checkout, one `git add -A` from a commit).
+.env.*
 
 # Build/compose output logs (regenerated artifacts; never shared source)
 *.log

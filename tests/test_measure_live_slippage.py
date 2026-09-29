@@ -103,3 +103,71 @@ def test_one_reading_makes_median_and_worst_agree():
     line = _summary(23.47)
     assert "median 23.47 bps (7.8x modelled 3.0)" in line
     assert "worst 23.47 (7.8x)" in line
+
+
+# --- the ledger rotates; the measurement must not lose the rows it rotated out ----------
+
+
+def _opened(position_id: str, *, stop: float, intended: float, fill: float, side: str) -> dict:
+    return {"record": {"live_opened": {
+        "position": {"position_id": position_id},
+        "entry": {"symbol": "ETHUSDT", "intended_price": intended, "fill": {"avg_price": fill},
+                  "submit_response": {"side": side}, "created_at": "2026-08-10T00:00:00Z"},
+        "bracket": [{"stop_price": stop}, {"price": stop * 1.1}],
+    }}}
+
+
+def _stop_outcome(position_id: str, *, exit_price: float, side: str, strategy_id: str,
+                  stop_price: float | None = None) -> dict:
+    return {"outcome_closed": True, "position_id": position_id, "close_reason": "stop_loss",
+            "symbol": "ETHUSDT", "exit_price": exit_price, "side": side,
+            "strategy_id": strategy_id, "stop_price": stop_price,
+            "closed_at_utc": "2026-08-11T00:00:00Z"}
+
+
+def test_a_position_whose_ledger_rows_rotated_into_the_archive_is_still_measured(tmp_path):
+    """2026-09-28: every live position (opened 08-04..21) had rotated out of `records.jsonl`, so
+    the report read "no exit leg has both an intended and a realized price yet" over a sample
+    that existed. The rows sit in `runtime_ledger/archive/`, and the measurement reads them."""
+    import json
+    from measure_live_slippage import _ledger_rows, measure
+
+    ledger = tmp_path / ".runtime_governance_state" / "runtime_ledger"
+    (ledger / "archive").mkdir(parents=True)
+    row = _opened("pos_a", stop=1900.5, intended=2000.0, fill=2001.0, side="SELL")
+    (ledger / "archive" / "records.2026-08-20T000000Z.jsonl").write_text(json.dumps(row) + "\n")
+    (ledger / "records.jsonl").write_text("")
+
+    result = measure(
+        ledger_rows=_ledger_rows(tmp_path),
+        outcomes=[_stop_outcome("pos_a", exit_price=1904.96, side="BUY", strategy_id="S005-GEN-700")],
+        canaries=[],
+    )
+    stops = [r for r in result["measured"] if r["close_reason"] == "stop_loss"]
+    assert [r["adverse_bps"] for r in stops] == [pytest.approx(23.47, abs=0.01)]
+    assert [r["close_reason"] for r in result["measured"]].count("entry") == 1
+    assert result["unmeasurable"] == 0
+
+
+def test_a_probe_stop_is_measured_from_its_own_outcome_and_reported_apart():
+    """A probe's position never reaches the ledger's `live_opened`, but its outcome records the
+    stop it rested at. Where both exist the submitted bracket wins."""
+    from measure_live_slippage import measure, render
+
+    result = measure(
+        ledger_rows=[_opened("pos_s", stop=100.0, intended=101.0, fill=101.0, side="SELL")],
+        outcomes=[
+            _stop_outcome("pos_s", exit_price=100.5, side="BUY", strategy_id="S1",
+                          stop_price=999.0),
+            _stop_outcome("pos_p", exit_price=99.9, side="SELL", strategy_id="PROBE-batch",
+                          stop_price=100.0),
+        ],
+        canaries=[],
+    )
+    by_source = {r["source"]: r["adverse_bps"] for r in result["measured"]
+                 if r["close_reason"] == "stop_loss"}
+    assert by_source == {"strategy": pytest.approx(50.0), "probe": pytest.approx(10.0)}
+    text = render(result)
+    assert "  strategy stops: n=1  mean 50.00 bps" in text
+    assert "  probe stops: n=1  mean 10.00 bps" in text
+    assert "modelled 1.4" in text

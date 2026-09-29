@@ -713,7 +713,9 @@ first. Verify: `gh api repos/<owner>/<repo>/branches/main/protection --jq '.requ
 
 ## Notes
 
-- The base image is `python:3.12-slim` to match CI's Python 3.12.
+- The base image is `python:3.12-slim` to match CI's Python 3.12, **pinned by index digest** in the
+  `Dockerfile`, and every GitHub Action is pinned to a commit SHA with its version in a comment.
+  Moving either is a PR of its own; `tests/test_supply_chain_pins.py` refuses a bare tag.
 - The services run as a non-root user (uid 10001); the mounted state directory must be writable
   by that uid.
 - Production runtime dependencies are pinned in `requirements-runtime.txt` (YAML + JSON Schema

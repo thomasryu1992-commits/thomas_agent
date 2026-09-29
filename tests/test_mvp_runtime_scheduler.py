@@ -1637,8 +1637,9 @@ def test_the_sheet_names_the_decision_and_the_verdict_without_repeating_the_draf
     sheet = scheduler.format_ideation_sheet({
         "target_keyword": "미리캔버스 포스터",
         "package_id": "bcp_0123456789abcdef0123",
-        "keyword_evidence": {"metrics": [{"keyword": "a"}, {"keyword": "b"}],
-                             "as_of": "2026-08-23T08:55:00Z", "total_competing_posts": 1020},
+        "target_evidence": {"keyword": "미리캔버스 포스터", "status": "measured",
+                            "monthly_total": 9000, "blog_competing_posts": 120,
+                            "as_of": "2026-08-23T08:55:00Z", "degraded": False},
         "score": {"critical_pass": True, "standards_version": "blog_draft_standards.2026-08-10",
                   "measured": {"body_chars": 2100, "headings": 5, "images": 4}},
         "scorecard_lines": [],
@@ -1650,6 +1651,20 @@ def test_the_sheet_names_the_decision_and_the_verdict_without_repeating_the_draf
     assert "2100 chars" in sheet
     assert "PASS" in sheet
     assert "no file written" in sheet
+    # The target's own count, never a sum over the selection brief's rows.
+    assert "9000/mo" in sheet and "120 blog posts" in sheet
+
+
+def test_the_sheet_says_so_when_the_targets_own_row_is_missing():
+    sheet = scheduler.format_ideation_sheet({
+        "target_keyword": "포스터", "package_id": "bcp_0123456789abcdef0123",
+        "target_evidence": {"keyword": "포스터", "status": "missing", "degraded": True,
+                            "degraded_reason_code": "TARGET_ROW_ABSENT",
+                            "as_of": "2026-08-23T08:55:00Z"},
+        "score": {"critical_pass": True, "standards_version": "v", "measured": {}},
+        "scorecard_lines": [], "written": True,
+    })
+    assert "no row for the target itself (TARGET_ROW_ABSENT)" in sheet
 
 
 def test_a_draft_that_missed_the_standards_is_reported_not_hidden():
@@ -1657,7 +1672,8 @@ def test_a_draft_that_missed_the_standards_is_reported_not_hidden():
     fire that produced nothing. But the sheet has to say so, or the miss is invisible."""
     sheet = scheduler.format_ideation_sheet({
         "target_keyword": "포스터", "package_id": "bcp_0123456789abcdef0123",
-        "keyword_evidence": {"metrics": [], "as_of": "2026-08-23T08:55:00Z"},
+        "target_evidence": {"keyword": "포스터", "status": "missing", "degraded": True,
+                            "as_of": "2026-08-23T08:55:00Z"},
         "score": {"critical_pass": False, "standards_version": "v",
                   "measured": {"body_chars": 990, "headings": 2, "images": 0}},
         "scorecard_lines": [" * 본문 글자수   990   [1800~3500]  MISS ", "   문단  4  under"],

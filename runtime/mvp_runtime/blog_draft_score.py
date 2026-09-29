@@ -29,11 +29,16 @@ import re
 from dataclasses import dataclass
 
 # Stamped into every score record so a rendered scorecard can be read against the standards
-# that produced it. Bump when a number in STANDARDS moves — a score is only comparable to
-# another score taken under the same bar.
-STANDARDS_VERSION = "blog_draft_standards.2026-08-10"
+# that produced it. Bump when a number in STANDARDS moves, or when what a number MEASURES
+# moves — a score is only comparable to another score taken under the same bar.
+#
+# 2026-09-28: the numbers are Thomas's 2026-08-10 numbers, unchanged. What moved is
+# `body_chars`: it counted every visible character of the draft, headings, the hashtag line and
+# every `[캡처: …]` marker included, so a draft could clear 1,800 on scaffolding. It now counts
+# body prose only, in both measurements below.
+STANDARDS_VERSION = "blog_draft_standards.2026-09-28"
 
-__all__ = ["STANDARDS", "STANDARDS_VERSION", "Standard", "measure", "scorecard"]
+__all__ = ["STANDARDS", "STANDARDS_VERSION", "Standard", "measure", "measure_structured", "scorecard"]
 
 # --- the standards (Thomas, 2026-08-10) ------------------------------------------------
 #
@@ -57,7 +62,8 @@ class Standard:
 
 
 STANDARDS: dict[str, Standard] = {
-    "body_chars": Standard("본문 글자수 (공백 제외)", 1800, 3500, critical=True),
+    "body_chars": Standard("본문 글자수 (공백 제외)", 1800, 3500, critical=True,
+                           note="body prose only: no headings, tags or capture markers"),
     "headings": Standard("소제목", 4, 7, critical=True, note="heuristic: short unpunctuated line"),
     "paragraphs": Standard("문단", 10, 20),
     "para_chars": Standard("문단 평균 글자", 70, 150, critical=True),
@@ -140,8 +146,9 @@ def measure(text: str, keyword: str | None = None) -> dict[str, int]:
         if rest:
             body.append("\n".join(rest))
     body_lengths = [_visible_chars(p) for p in body] or [0]
+    prose = "\n".join(_prose_only(p) for p in body)
     return {
-        "body_chars": _visible_chars(text),
+        "body_chars": _visible_chars(prose),
         "headings": len(headings),
         "paragraphs": len(paragraphs),
         "para_chars": sum(body_lengths) // len(body_lengths),
@@ -151,6 +158,59 @@ def measure(text: str, keyword: str | None = None) -> dict[str, int]:
         "keyword_hits": text.count(keyword) if keyword else -1,
         "hashtags": len(re.findall(r"#\w+", text)),
     }
+
+
+_CAPTURE_MARKER_RE = re.compile(r"\[캡처\s*[::][^\]]*\]")
+_HASHTAG_RE = re.compile(r"#\w+")
+
+
+_MARKDOWN_HEADING_LINE_RE = re.compile(r"^\s{0,3}#{1,6}\s+.*$", re.M)
+
+
+def _prose_only(text: str) -> str:
+    """Body text with the scaffolding taken out: markdown heading lines, capture markers and
+    hashtags."""
+    text = _MARKDOWN_HEADING_LINE_RE.sub("", text)
+    return _HASHTAG_RE.sub("", _CAPTURE_MARKER_RE.sub("", text))
+
+
+def measure_structured(
+    *,
+    intro: list[str],
+    sections: list[dict],
+    image_count: int,
+    tags: list[str],
+    source_count: int,
+    keyword: str | None = None,
+) -> dict[str, int]:
+    """The same standards, measured on the structured draft's own fields. Pure.
+
+    Nothing here is a heuristic: headings are the sections, images the capture directions,
+    hashtags the tags, sources the cited references that resolved to the run's evidence (the
+    caller resolves them — an invented reference does not count). Only the table stays a
+    shape rule, because a table is a paragraph whose lines carry `' | '`."""
+    paragraphs = [p for p in intro] + [p for s in sections for p in s.get("paragraphs", [])]
+    headings = [str(s.get("heading", "")) for s in sections]
+    lengths = [_visible_chars(p) for p in paragraphs] or [0]
+    text = "\n".join(headings + paragraphs)
+    return {
+        "body_chars": sum(_visible_chars(p) for p in paragraphs),
+        "headings": len(headings),
+        "paragraphs": len(paragraphs),
+        "para_chars": sum(lengths) // len(lengths),
+        "images": int(image_count),
+        "tables": 1 if any(" | " in line for p in paragraphs for line in p.splitlines()) else 0,
+        "sources": int(source_count),
+        "keyword_hits": text.count(keyword) if keyword else -1,
+        "hashtags": len(tags),
+    }
+
+
+def critical_failures(measured: dict[str, int]) -> list[str]:
+    """The critical standards a measurement misses, by key — what a revision is asked to fix."""
+    return [key for key, standard in STANDARDS.items()
+            if standard.critical and measured.get(key, -1) >= 0
+            and not standard.within(measured[key])]
 
 
 def scorecard(measured: dict[str, int]) -> tuple[list[str], bool]:

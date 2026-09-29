@@ -6,7 +6,11 @@
 # are provided at runtime via a mounted volume and environment variables — never baked in.
 # The Safety-Flag Gate still governs every network capability: with no mounted activation the
 # real Telegram/provider paths fail closed, so a bare image cannot open a network socket.
-FROM python:3.12-slim
+# Pinned by digest (the multi-arch index): a tag moves under every rebuild, so CI (which pulls) and
+# the host (which builds on its cached copy) were building on different bases. This is the digest the
+# deployed image was built on (Python 3.12.13). Moving it is a deliberate PR: resolve the new index
+# digest with `docker buildx imagetools inspect python:3.12-slim` and deploy as usual.
+FROM python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de
 
 # Match CI (Python 3.12). Unbuffered logs, UTF-8 I/O for non-ASCII requests, no .pyc writes.
 ENV PYTHONUNBUFFERED=1 \

@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .errors import PlannerBlocked
+
 # Per-agent allocation. A task's allocation scales with the number of agents its plan
 # includes (R7 adds the independent validator), because the contract forbids an assignment
 # from exceeding the parent task's remaining budget: two assignments granted one model call
@@ -40,6 +42,54 @@ TRIAGE_TIMEOUT_SECONDS = 30
 # too (max_model_calls: 1 per turn).
 FRONTDESK_TOKEN_ALLOWANCE = 2000
 FRONTDESK_TIMEOUT_SECONDS = 30
+
+# Request-specific allowances (review B9). A blog draft is 1,800-3,500 characters of Korean prose
+# PLUS the structured JSON around it (titles, sections, tags, capture directions, fact checks,
+# sources); Korean costs roughly one token per character on these tokenizers, so the generic
+# 4,000-token output half truncates exactly the drafts the standards ask for. The fix is not a
+# bigger TOKENS_PER_AGENT — every other role would get it too — but a NAMED profile a caller
+# asks for, bound to the one request kind it exists for, and closed: an unknown name, or a
+# known name on another kind, is refused rather than defaulted.
+#
+# The profile sizes the TASK's allocation and the SPECIALIST's assignment together, so the
+# contract's "an assignment cannot exceed its parent task's remaining budget" holds by
+# construction (16,000 x planned agents >= the one 16,000 assignment). The validator and the
+# triage keep their own allowances.
+BLOG_CONTENT_BUDGET_PROFILE = "blog_content"
+# `max_runtime_seconds` too (2026-09-28): the blog draft runs on a slower non-Google model
+# (68 s measured for one real-sized draft), and the chain's 120 s left its first member 40 s.
+# 360 s gives each of three members up to 120 s (`FailoverProvider` member cap) and keeps a
+# whole fire (research + draft + one revision) inside the scheduler's 1,500 s deadline.
+BUDGET_PROFILES: dict[str, dict[str, Any]] = {
+    BLOG_CONTENT_BUDGET_PROFILE: {"tokens_per_agent": 16000, "max_runtime_seconds": 360,
+                                  "request_kinds": frozenset({"content"})},
+}
+
+
+def tokens_per_agent(profile: str | None = None) -> int:
+    """One agent's token share under ``profile`` (None = the generic share). Fails closed."""
+    if profile is None:
+        return TOKENS_PER_AGENT
+    spec = BUDGET_PROFILES.get(profile)
+    if spec is None:
+        raise PlannerBlocked("UNKNOWN_BUDGET_PROFILE",
+                             f"budget profile {profile!r} is not one of {sorted(BUDGET_PROFILES)}")
+    return int(spec["tokens_per_agent"])
+
+
+def require_budget_profile(profile: str | None, request_kind: str | None) -> None:
+    """Refuse a profile on a request kind it was not made for — a blog allowance on an
+    analysis run would be the generic budget raised by the back door."""
+    if profile is None:
+        return
+    tokens_per_agent(profile)
+    if request_kind not in BUDGET_PROFILES[profile]["request_kinds"]:
+        raise PlannerBlocked(
+            "BUDGET_PROFILE_KIND_MISMATCH",
+            f"budget profile {profile!r} applies to request kinds "
+            f"{sorted(BUDGET_PROFILES[profile]['request_kinds'])}, not {request_kind!r}",
+        )
+
 
 # `token_budget` caps input+output, and it is checked AFTER the call — so it cannot also be
 # the number handed to the provider as its output allowance. It was: both `worker` and
@@ -108,7 +158,9 @@ def clip_for_prompt(text: Any, limit: int) -> str:
     return value[:limit] + f"…[{len(value) - limit} chars omitted]"
 
 
-def default_execution_budget(*, agents: int = 1, triage_calls: int = 0) -> dict[str, Any]:
+def default_execution_budget(
+    *, agents: int = 1, triage_calls: int = 0, profile: str | None = None,
+) -> dict[str, Any]:
     """A fresh ``execution_budget.v0.1`` allocation with zeroed usage.
 
     ``agents`` is the number of agents the plan will invoke under this budget: 1 for a task
@@ -119,7 +171,12 @@ def default_execution_budget(*, agents: int = 1, triage_calls: int = 0) -> dict[
     ``triage_calls`` (R7.2) additionally allocates for the orchestrator's importance-triage
     model call under the "auto" validation policy. It is an allocation ceiling, not a
     claim: a run whose triage turns out unnecessary simply spends less than it allocated.
+
+    ``profile`` (see ``BUDGET_PROFILES``) replaces the per-agent token share; everything else
+    is unchanged, and ``None`` is the generic allocation byte for byte.
     """
+    per_agent = tokens_per_agent(profile)
+    runtime_seconds = int(BUDGET_PROFILES[profile].get("max_runtime_seconds", 120)) if profile else 120
     agents = max(1, int(agents))
     triage_calls = max(0, int(triage_calls))
     return {
@@ -138,8 +195,8 @@ def default_execution_budget(*, agents: int = 1, triage_calls: int = 0) -> dict[
             "max_validation_cycles": 1,
             "max_retry_count": 1,
             "max_parallel_workers": 1,
-            "max_runtime_seconds": 120,
-            "token_budget": TOKENS_PER_AGENT * agents + TRIAGE_TOKEN_ALLOWANCE * triage_calls,
+            "max_runtime_seconds": runtime_seconds,
+            "token_budget": per_agent * agents + TRIAGE_TOKEN_ALLOWANCE * triage_calls,
             "cost_budget": 0,
             "cost_currency": "USD",
         },

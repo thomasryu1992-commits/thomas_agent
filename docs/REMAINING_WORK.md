@@ -4,7 +4,7 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-09-25** — §I's heading and its "nothing here is built" line corrected (decided
+Last updated: **2026-09-28** — §L added (E1/E2 from the regime-episode RECORD, held until the first forward-cohort verdict). Before that, **2026-09-25** — §I's heading and its "nothing here is built" line corrected (decided
 2026-09-24, option C; PR1–PR3 built as #977–#979). No other section was re-surveyed. Before that,
 **2026-09-03** — §K added (Hermes orchestrator integration, decided 2026-09-03, documentation-first PR sequence). Before that, **2026-08-29** — the header date had sat at 08-10 while the body took 08-23 and
 08-25 updates, exactly the "a document is a claim about a moved main" pattern this file warns
@@ -49,7 +49,9 @@ Earlier the same day, re-measuring **section F** on a candidate store
 that has doubled since it was written. Its question — whether this venue's fee schedule permits a
 fast strategy at all — is answered **yes**: 1h now pays at the median (+0.0241R/trade against
 −0.0185R) and 15m's deficit has more than halved, almost all of it the `stop_atr` floor from #420
-finally reaching the generations minted after it. **What binds is no longer cost.** Zero of the 474
+finally reaching the generations minted after it. **What binds is no longer cost.** *(Superseded
+2026-09-28: on today's store 1h is back to −0.0451R at the median. Its gross edge fell, not its
+cost. See section F.)* Zero of the 474
 candidates carrying the current basis survive their own holdout, and the promotion board reports
 `0 promotable` without being able to say that. Section F carries the numbers and what is open.
 **It does not outrank section C**, which is still what to read first on arrival.
@@ -1753,6 +1755,31 @@ basis — the population has doubled, and two of this section's three claims did
   almost nothing had yet been minted at the new floor.
 - **15m still does not pay at the median.** That claim survives, and only that one.
 
+**Re-measured 2026-09-28** (`main` = `cf254bc3`) over the **1,272** lineages carrying the current
+basis. That basis now includes funding (`funding_1.0bps/8h(venue_history)`). The measure is the
+median per candidate of `backtest_evidence`; lineages are collapsed to their latest row.
+`cost_summary` keeps fees (taker + maker) and slippage but no separate funding total, so funding
+stays inside net and gross here is net + fees + slippage. The columns are separate medians and do
+not sum.
+
+| tf | n | gross | fees | slippage | **total cost** | **net** | was (2026-08-04) |
+|---|---|---|---|---|---|---|---|
+| 1h | 593 | +0.0520 | 0.0738 | 0.0355 | **0.1099** | **−0.0451** | +0.0241 |
+| 4h | 413 | +0.0885 | 0.0315 | 0.0150 | **0.0465** | **+0.0436** | +0.1083 |
+| 1d | 266 | +0.1446 | 0.0113 | 0.0055 | **0.0166** | **+0.1274** | — |
+
+(15m: no candidate carries the current basis.)
+
+- **1h no longer pays at the median.** The claim above ("1h pays") held for the store of
+  2026-08-04 and does not hold now. Only 31% of 1h lineages are net positive, against 69% at 4h and
+  83% at 1d.
+- **What moved is the edge, not the cost.** 1h friction is about what it was (0.1230 → 0.1099R).
+  1h gross fell from +0.1495 to +0.0520R, and 4h gross from +0.1661 to +0.0885R. The store grew
+  from 474 to 1,272 lineages on this basis, and the later generations carry less edge per trade.
+  The mechanism paragraph above still holds: at 1h, friction is twice the gross edge.
+- **Read these as backtest medians over mined survivors,** i.e. selection-biased upward. They rank
+  the timeframes. They are not an estimate of what any one strategy earns.
+
 **By mint date, which is where #420 actually shows up** (`stop_atr` is the 15m median; the cost
 and net columns are per trade):
 
@@ -2980,6 +3007,43 @@ their intent**. Nothing accumulates on its own: with live entries held there are
 and there are no open positions left to close. **The only path that fills this is canaries placed
 deliberately as measurement**, which is an operator action — real orders, Thomas's to place. Until
 then §F8's sensitivity stands on one stop fill, and the constant it re-prices stays INHERITED.
+
+#### Re-run 2026-09-28 (review C2): the sample exists, and it is too small to reset a constant
+
+**The instrument had gone blind, not the venue quiet.** Ledger rotation moved every live row
+(positions opened 2026-08-04..21) from `records.jsonl` into `runtime_ledger/archive/`. The script
+read the active file alone, so it found no bracket and no entry for any position. It printed "no exit
+leg has both an intended and a realized price yet" and "entries with no recorded intent: 0" over a
+sample that was on disk.
+- The script now reads the archives (`LedgerStore.iter_records_with_archive`).
+- A probe's stop is taken from its own outcome's `stop_price`: probe positions never reach
+  `live_opened`.
+- Stops are reported by source, with the mean beside the median, against `DEFAULT_STOP_SLIPPAGE_BPS`
+  (1.4) rather than the entry constant.
+
+It was read in a one-off container as the service uid (the lock file is opened, nothing is written):
+
+```
+stop fills: n=12  mean 3.06 bps  median 1.08 bps (0.8x modelled 1.4)  worst 23.47 (16.8x)
+  strategy stops: n=3  mean 8.57 bps  median 2.25 bps (1.6x modelled 1.4)  worst 23.47 (16.8x)
+  probe stops: n=9  mean 1.22 bps  median 1.03 bps (0.7x modelled 1.4)  worst 8.28 (5.9x)
+entry fills: n=3  median -4.67 bps        (-4.67, -4.99, -2.60: all BTCUSDT, all better than intended)
+entries with no recorded intent: 2   canaries with none: 4   (both predate `intended_price`)
+```
+
+- **Entry (`DEFAULT_SLIPPAGE_BPS` = 3.0, INHERITED).** Three fills, one symbol, all in the runtime's
+  favour. That is not a distribution, and it cannot move the constant in either direction.
+- **Stop (`DEFAULT_STOP_SLIPPAGE_BPS` = 1.4, from the probe).**
+  - The cost model charges every stop the same figure, so the mean is what the constant must match.
+    Over all twelve fills the mean is 3.06 bps, about 2.2× the model.
+  - One fill (ETHUSDT, 23.47 bps) carries most of that mean, and the three strategy stops sit
+    above the nine probe stops.
+  - A third strategy stop (BTCUSDT, 2.25 bps) was in the archive all along. Earlier readings of
+    this section counted two.
+- **What would settle it is unchanged, and it cannot happen at PAPER.** No new entries or stops
+  accrue at this stage. The only instruments that add rows are canaries and probe batches, both
+  real orders placed by Thomas. Until then both constants stay as they are, and review D5 (loss
+  breaker values wait on the slippage measurement) has a concrete blocker instead of an open item.
 
 ### F9. Symbol pooling is built, unused, and the data it needs is already being bought — audited 2026-08-06, **decided and shipped 2026-08-09**
 
@@ -4770,6 +4834,14 @@ I1 argues is not what is blocking.
 
 ## J. Naver blog content lane — Phase 1 built, the cadence was not
 
+**Revived 2026-09-28 (Thomas) — a new weekly row, `schedule_876d53b39de29b2af417`, enabled with
+request `source=queue`, first fire 2026-10-05T13:19:36Z.** The seeds now come from the vault
+keyword queue (#1014) and the vault's published posts are excluded (#1012, #1013). The old
+fixed-seed row below stays disabled and is kept for its history, because `scheduler_cli` has no
+edit command. The runtime still never publishes: a fire ends in a draft package for a
+human (`docs/history/2026-09-28-blog-lane-revived.md`). The held record below is kept as it was
+written.
+
 **Held 2026-09-27 (Thomas) — the weekly row is disabled, and Phase 4 is off the queue.** The row
 (`schedule_1d25e2cef74b8a48adec`) fired three times — 2026-09-06, 09-13 and 09-20 — and all three
 failed at selection with `NO_ELIGIBLE_KEYWORD`. No package was ever assembled: the ledger holds no
@@ -4792,8 +4864,38 @@ reproduces the same failure. With the row off the lane accrues no evidence, so D
 (2026-11-25, `docs/proposals/SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md`) will find none; that review
 decides between removal and revival.
 
-A four-PR plan (target evidence, structured output with one automatic revision, rank feedback, a
-content budget and KPIs) was proposed the same day and is shelved with the lane. Its premises were
+**Fixed in code 2026-09-28 (Thomas's request) — the lane is still held.** The row stays disabled,
+nothing publishes, and no schedule was added. Items 1–8 below and B9 are fixed on `origin/main`
+(`docs/history/2026-09-28-blog-lane-correctness.md`):
+
+- Selection gates on measured demand only; `compIdx` is recorded as `ad_competition` and gates
+  nothing. "Already written" is the ledger UNION the vault's post front matter
+  (`MVP_BLOG_PUBLISHED_ROOT`, matched with `kw_pipeline.covered_by`'s rule). With no published
+  source configured, rule-based selection refuses (`PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE`).
+- `blog_content_package.v0.2` splits `selection_evidence` from `target_evidence`, which comes
+  from the content run's own brief. Volume, blog post count and trend are the target's own, or
+  `status: missing`. The package also carries `lineage`.
+- The draft is a JSON contract inside the role's `content_draft` string, and the role contract is
+  unchanged. Titles are their own field. One bounded revision runs, and the result is
+  `quality_state` `ready_for_review` or `needs_edit`. Fact checks are generated and never marked
+  verified.
+- A `blog_content` token profile (16,000) applies to content runs only.
+- Phase 4 is a record only: `blog_rank_snapshot.v0.1` plus `scripts/track_blog_rank.py`, run by
+  hand. Nothing is scheduled.
+
+Still open before any revival:
+
+- ~~The seeds are still the schedule's fixed request column~~ — `source=queue` (2026-09-28) takes
+  them from the vault queue and restricts the choice to its reach-checked candidates
+  (`docs/history/2026-09-28-blog-queue-seeds.md`). The disabled row's request still names the
+  fixed seeds; switching it to `source=queue` is part of the revival, not done.
+- ~~`thomas-pipeline-worker` does not mount the vault~~ — mounted 2026-09-28 (Thomas): the two post
+  folders, read-only, from `THOMAS_BLOG_VAULT_DIR` in the host `.env`
+  (`docs/history/2026-09-28-blog-vault-mount.md`).
+- The runtime has no blog-SERP reach gate of its own. Under `source=queue` the queue's gate
+  (`kw_pipeline`) stands in; with fixed seeds, selection can still pick a head term.
+
+The four-PR plan below was proposed on 2026-09-27 and shelved with the lane. Its premises were
 checked against the code first. These are real, and deliberately not fixed while the lane is held —
 a revival starts here, after the keyword source:
 
@@ -4809,6 +4911,45 @@ a revival starts here, after the keyword source:
    `fact_checks` is always `[]`.
 6. System review B9 is still open: 8,000 tokens per agent, half of it the output allowance
    (`budgets.py`).
+
+**Re-checked 2026-09-28 against an outside status table — still held, nothing to fix now.** A
+thirteen-row table (pasted by Thomas) graded the lane: schedule off ✅, `written_keywords()` ✅,
+CI ✅, and nine rows ❌. Checked against `origin/main` at `cf254bc3`:
+
+- The nine ❌ rows are real. Six are items 1–6 above, one is Phase 4 below, and two more follow:
+  7. The draft score is recorded, not enforced (`run_content_ideation` → `blog_draft_score`).
+     The module docstring states that as the design ("advisory here, not a gate"), so turning it
+     into a gate is a decision, not a fix.
+  8. The draft is parsed from free-form markdown: `_parse_draft` and `_title_candidates` split it
+     with regexes. The content role returns no structured output.
+- One ✅ holds only inside the lane. `written_keywords()` (#980) reads `blog_content_package` rows
+  from the ledger, and there are none. Every post written so far (69 Naver, 77 Tistory by
+  2026-09-28) lives in the vault (`/root/obsidian-thomas`, one front-matter file per post), which
+  the lane never reads. Enabled as it stands, the lane would pick keywords already published. The
+  "never supplied" note further down is therefore half-closed.
+- The table leaves out the cause of all three failures: the fixed seeds (top of this section).
+  Fixing all nine rows still leaves every fire ending in `NO_ELIGIBLE_KEYWORD`.
+
+Why these stay unfixed: posts are made outside the lane (Thomas 2026-09-27), and that flow
+already covers what the nine rows are about:
+
+- Reach is measured on the live search results, not `compIdx`. `tools/kw_pipeline.py` passes a
+  keyword when the top ten's median daily visitors are ≤ 250 and ≤ 9 titles match it exactly.
+- Used keywords are excluded from the vault's front matter.
+- Facts are checked against primary sources by hand.
+- Structure is checked by `blog-preflight.py` and `blog-variety.py`.
+- Ranks are tracked weekly by `kw_pipeline.py rank`.
+
+Building the same in the lane would make two copies of each, for a lane that is off.
+
+If the lane is revived, the order matters:
+
+1. The keyword source first. Take seeds from the vault queue (`analytics/keywords/queue.md`), and
+   feed `already_written` from the vault's posts as well as the ledger.
+2. Then the target evidence, items 1–4.
+3. Then the rest: items 5–8 and Phase 4.
+
+The natural time to decide is D8's deadline, 2026-11-25. Bring this list to that review.
 
 Authority for the design is `docs/proposals/NAVER_BLOG_CONTENT_LANE_V0.1.md`. This section
 exists because until 2026-08-23 this file did not track the lane **at all** — not one checkbox,
@@ -4867,6 +5008,9 @@ is obvious from the code:
   passes only `{seeds, source_ref}`, so the exclusion list is always empty and the same seed
   set picks the same winner every week. Whoever registers this will want `target=<keyword>` in
   the request, or a remove+add each week — `scheduler_cli` has no `update`.
+  **Half-closed 2026-09-25 (#980):** `written_keywords()` now fills it from the ledger's package
+  rows. Those rows number zero, and the posts actually written live in the vault — see the
+  2026-09-28 re-check near the top of this section.
 
 **Decisions this lane is waiting on** — the code above is inert without them, deliberately: a
 schedule row is a state write, and no row means no fire.
@@ -5075,6 +5219,49 @@ delegation goes live only with its own policy bump.
       (shims with the installer, prompt and skill by hand, the fourth cron job, a hermes restart) and the backup
       scripts, the post-deploy checks, the pilot's scope and measures, and the rollback evidence. **Still
       Thomas's to decide and run:** the later `--v2-intake closed` cutover after the pilot, and policy 1.6.0. Legacy writer retirement per entry point follows the cutover runbook.
+
+## L. Held until the first forward-cohort verdict — E1 and E2 (recorded 2026-09-28)
+
+**Not buildable now, and on purpose.** Both items come from
+`docs/proposals/FORWARD_VERDICT_REGIME_EPISODES_V0.1.md` §5 (RECORD, #1003): the six forward verdicts
+of 2026-09-27 rest on three to five BTC-1d regime episodes with no TREND_DOWN day. Two rules hold them:
+- **E1 loosens a judgment rule.** `RESEARCH_EPOCH_V0.1.md` Q3 (Thomas 2026-09-26) puts that at an
+  epoch boundary.
+- **E2 is new measurement machinery.** System review D3 (Thomas 2026-09-26, `CLAUDE.md`) pauses
+  that in `crypto/` until the first cohort verdict.
+
+**The trigger:** the first forward-cohort verdict, i.e. the first FORWARD_CONFIRMED in the cohort
+(the board's `확정` count leaving 0), or an epoch boundary Thomas declares, whichever comes first.
+When it fires, raise E1 first. It is small and reversible.
+
+- [ ] **E1 — time spread before a negative forward verdict.**
+  - **Today:** `forward_confirmation.judge_forward` returns CONTRADICTED/UNDERPOWERED at the trade
+    floor, before the slice test (`forward_confirmation.py:279-287`). CONFIRMED needs ≥ 8 active
+    14-day slices (about 112 days). Under option A a CONTRADICTED drops a member from the leaders
+    with no time-spread requirement.
+  - **The ask:** require the slice test, or an episode floor on the macro proxy, before a negative
+    verdict. Until then the record reads INSUFFICIENT.
+  - **Why it is a loosening:** fewer members leave the leaders.
+  - **The alternative Thomas may prefer:** keep the early return and read CONTRADICTED only beside
+    the null arm's same-timeframe count, which the board already shows.
+  - `robustness.holdout_status` has the same shape (`robustness.py:484-495`) but a 300–600-day
+    window, so it is out of scope unless measured otherwise.
+- [ ] **E2 — regime-episode identity on candidate evidence.**
+  - **Today:** `factory` keeps `per_regime` totals per label and no trade times, so
+    `robustness.regime_breadth` counts labels, and no per-candidate episode count is possible.
+  - **The ask:** stamp each replayed trade's opening episode (or bar time) into the evidence, so
+    breadth can count episodes and the RECORD's §2 can be computed per candidate. New mints only:
+    nothing backfills.
+  - **Precondition, and it is a decision, not a build:** fix the episode definition first. That
+    means the macro proxy (BTC-1d labels, or something else), the gap tolerance and the minimum
+    length.
+  - The RECORD's sensitivity table shows the count moving several-fold with that choice (4h holdout
+    TREND_UP episodes: 3 to 19). Wiring an undecided definition into a verdict would add a tuning
+    knob, not evidence. It is a record-schema change, so the closed schema moves with it.
+
+**What is not here:** the verdict machinery itself (null arm, independence, slice test) is built.
+Nothing in this section makes a strategy confirm sooner. The forward sample needs a second market
+phase, and only time supplies that.
 
 ## Per-machine setup that does NOT travel via git
 

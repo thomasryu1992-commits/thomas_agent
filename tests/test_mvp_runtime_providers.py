@@ -1080,3 +1080,98 @@ def test_the_groq_factory_never_builds_a_provider_with_no_model(monkeypatch):
     provider = providers_module._hosted_factories()[providers_module.GROQ](authorization)
     assert provider._model == providers_module.DEFAULT_GROQ_MODEL
     assert provider.model_version == providers_module.DEFAULT_GROQ_MODEL
+
+
+# --- a bound Role's keys on the json_object path (2026-09-28, the first blog fire) ------------
+#
+# openrouter answered 429, google 503, and groq — the chain's last member — returned the four
+# `content.general` keys absent, twice: its only statement of the shape was the appended format
+# instruction, which listed the analysis keys alone. The run died at the required-sections check.
+
+_BLOG_SPEC = {"content_draft": "string", "target_audience": "string",
+              "channel_constraints": "array", "publishing_risks": "array"}
+
+
+def _bound_groq():
+    from runtime.mvp_runtime.providers import GroqProvider
+    return GroqProvider(authorization=_groq_auth()).bind_role_output_keys(_BLOG_SPEC)
+
+
+def _with_role(**over):
+    analysis = dict(_ANALYSIS, content_draft="{\"sections\": []}", target_audience="사장님",
+                    channel_constraints=["네이버 블로그"], publishing_risks=[])
+    analysis.update(over)
+    return analysis
+
+
+def test_the_format_instruction_names_a_bound_roles_keys_and_is_unchanged_unbound(monkeypatch):
+    from runtime.mvp_runtime.providers import _RESPONSE_INSTRUCTION, response_instruction
+
+    assert response_instruction(None) == _RESPONSE_INSTRUCTION           # analysis runs: same bytes
+    bound = response_instruction(_BLOG_SPEC)
+    assert bound.startswith(_RESPONSE_INSTRUCTION[:-1])
+    for key, kind in (("content_draft", "string"), ("channel_constraints", "array of strings")):
+        assert f"{key} ({kind})" in bound
+
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    bodies: list[dict] = []
+
+    def capture_urlopen(request, timeout):
+        bodies.append(json.loads(request.data.decode("utf-8")))
+        return _FakeResp(_groq_response(_with_role()))
+    monkeypatch.setattr("urllib.request.urlopen", capture_urlopen)
+    _bound_groq().generate("p", max_output_tokens=100, timeout_seconds=10)
+    content = bodies[0]["messages"][0]["content"]
+    assert content.endswith(bound) and "content_draft (string)" in content
+    assert bodies[0]["response_format"] == {"type": "json_object"}     # the body format is unchanged
+
+
+@pytest.mark.parametrize("over", [
+    {"content_draft": None},                  # the observed case: every Role key null/absent
+    {"content_draft": "   "},                 # a blank deliverable is not a deliverable
+    {"channel_constraints": None},
+])
+def test_an_answer_missing_the_roles_keys_is_malformed(monkeypatch, over):
+    from runtime.mvp_runtime.errors import ProviderError
+
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    monkeypatch.setattr("urllib.request.urlopen",
+                        lambda request, timeout: _FakeResp(_groq_response(_with_role(**over))))
+    with pytest.raises(ProviderError) as exc:
+        _bound_groq().generate("p", max_output_tokens=100, timeout_seconds=10)
+    assert exc.value.reason_code == "MALFORMED_RESPONSE"
+    assert "Role's output fields" in exc.value.reason and "사장님" not in exc.value.reason
+
+
+def test_an_empty_array_is_an_answer_and_an_unbound_run_is_unaffected(monkeypatch):
+    from runtime.mvp_runtime.providers import GroqProvider
+
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    monkeypatch.setattr("urllib.request.urlopen",
+                        lambda request, timeout: _FakeResp(_groq_response(_with_role(publishing_risks=[]))))
+    assert _bound_groq().generate("p", max_output_tokens=100, timeout_seconds=10).analysis[
+        "content_draft"]
+    monkeypatch.setattr("urllib.request.urlopen",
+                        lambda request, timeout: _FakeResp(_groq_response(_ANALYSIS)))
+    GroqProvider(authorization=_groq_auth()).generate("p", max_output_tokens=100, timeout_seconds=10)
+
+
+def test_a_member_that_drops_the_roles_keys_fails_over_to_one_that_answers(monkeypatch):
+    """The chain moves past a malformed member (D1) instead of delivering an analysis with no
+    deliverable. Here the first member drops the keys and the second answers them."""
+    from runtime.mvp_runtime.providers import FailoverProvider, GroqProvider
+
+    monkeypatch.setenv(API_ENV, "k")
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+
+    def by_host(request, timeout):
+        if "groq" in request.full_url:
+            return _FakeResp(_groq_response(_with_role(content_draft=None)))
+        return _FakeResp(_gemini_response(_with_role()))
+    monkeypatch.setattr("urllib.request.urlopen", by_host)
+
+    chain = FailoverProvider([GroqProvider(authorization=_groq_auth()),
+                              GoogleAIStudioProvider(authorization=_AUTH)]).bind_role_output_keys(_BLOG_SPEC)
+    result = chain.generate("p", max_output_tokens=100, timeout_seconds=10)
+    assert result.analysis["content_draft"]
+    assert [f["kind"] for f in result.failovers] == ["malformed"]

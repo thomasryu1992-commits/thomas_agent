@@ -192,6 +192,45 @@ def _role_key_schema(kind: str) -> dict[str, Any]:
     return {"type": "string"} if kind == "string" else _STRING_ARRAY
 
 
+def response_instruction(role_output_spec: Mapping[str, str] | None = None) -> str:
+    """The format instruction appended to every hosted prompt — plus the bound Role's keys.
+
+    For a vendor that ENFORCES a schema (Google ``responseSchema``, OpenRouter strict
+    ``json_schema``) this is belt and braces. For Groq, which runs plain ``json_object`` (see
+    ``_OpenAICompatibleProvider._RESPONSE_FORMAT``), it is the ONLY statement of the shape — and
+    until 2026-09-28 it named the analysis keys alone. A Role's own keys (`content_draft`,
+    `translated_text`, …) appeared only earlier in the prompt, and the last word was "Return ONLY
+    a JSON object with these keys: <analysis keys>". Measured on the first blog fire: groq (the
+    chain's last member, after openrouter 429 and google 503) returned all four
+    `content.general` keys absent, twice, and the run stopped at the required-sections check.
+
+    Unbound (``None``) the text is byte-identical to before: the analysis runs do not change.
+    """
+    if not role_output_spec:
+        return _RESPONSE_INSTRUCTION
+    keys = ", ".join(
+        f"{key} ({'string' if kind == 'string' else 'array of strings'})"
+        for key, kind in role_output_spec.items()
+    )
+    return (_RESPONSE_INSTRUCTION[:-1] + ". This run's Role ALSO requires these keys in the same "
+            f"object, each present and filled in — they are the deliverable: {keys}.")
+
+
+def role_output_missing(analysis: Mapping[str, Any], role_output_spec: Mapping[str, str] | None) -> list[str]:
+    """The bound Role's declared keys an answer left out: absent, null, or — for a ``string``
+    key — blank. An empty ARRAY is an answer (no publishing risks is a claim a Role may make);
+    an absent one is not."""
+    missing: list[str] = []
+    for key, kind in (role_output_spec or {}).items():
+        value = analysis.get(key)
+        if kind == "string":
+            if not (isinstance(value, str) and value.strip()):
+                missing.append(key)
+        elif not isinstance(value, list):
+            missing.append(key)
+    return missing
+
+
 def analysis_response_schema(role_output_spec: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Google ``responseSchema`` for this run — the analysis shape, plus a Role's own keys."""
     if not role_output_spec:
@@ -576,8 +615,14 @@ def _parse_hosted_response(
     retries: int,
     extract_text: Any,
     extract_usage: Any,
+    role_output_spec: Mapping[str, str] | None = None,
 ) -> ProviderResult:
     """Shared fail-closed parse for a hosted provider's response.
+
+    With a bound Role, an answer missing any of the Role's declared keys is MALFORMED too: it
+    is not an answer to THIS call's contract, and ``failover_kind`` moves the chain past a
+    malformed member (Thomas 2026-09-26, D1) instead of the run delivering an analysis with
+    no deliverable and stopping at the required-sections check.
 
     Only the vendor JSON paths differ between adapters; the fence-stripping, the
     required-analysis-field check, both MALFORMED_RESPONSE guards, and the
@@ -594,6 +639,11 @@ def _parse_hosted_response(
         raise ProviderError("MALFORMED_RESPONSE", "hosted provider returned an unparseable response") from None
     if not isinstance(analysis, dict) or any(k not in analysis for k in _REQUIRED_ANALYSIS_KEYS):
         raise ProviderError("MALFORMED_RESPONSE", "hosted provider response missing required analysis fields")
+    missing = role_output_missing(analysis, role_output_spec)
+    if missing:
+        # Key NAMES only — never the answer's content.
+        raise ProviderError("MALFORMED_RESPONSE",
+                            f"hosted provider response missing the Role's output fields: {missing}")
 
     # Usage metadata is provider-supplied too: parsing it must fail closed as
     # MALFORMED_RESPONSE like the body above, not escape as a raw TypeError that
@@ -680,7 +730,7 @@ class GoogleAIStudioProvider:
             raise ProviderError("NO_API_KEY", f"environment variable {self._api_key_env} is not set")
 
         body = json.dumps({
-            "contents": [{"parts": [{"text": prompt + _RESPONSE_INSTRUCTION}]}],
+            "contents": [{"parts": [{"text": prompt + response_instruction(self._role_output_spec)}]}],
             "generationConfig": {
                 "maxOutputTokens": int(max_output_tokens),
                 "responseMimeType": "application/json",
@@ -727,6 +777,7 @@ class GoogleAIStudioProvider:
             raw, model_id=self.model_id, model_version=self._model,
             latency_ms=latency_ms, retries=retries,
             extract_text=extract_text, extract_usage=extract_usage,
+            role_output_spec=self._role_output_spec,
         )
 
 
@@ -810,7 +861,8 @@ class _OpenAICompatibleProvider:
 
         body = json.dumps({
             "model": self._model,
-            "messages": [{"role": "user", "content": prompt + _RESPONSE_INSTRUCTION}],
+            "messages": [{"role": "user",
+                          "content": prompt + response_instruction(self._role_output_spec)}],
             "max_tokens": int(max_output_tokens),
             "response_format": self._response_format(),
         }).encode("utf-8")
@@ -843,6 +895,7 @@ class _OpenAICompatibleProvider:
             raw, model_id=self.model_id, model_version=self._model,
             latency_ms=latency_ms, retries=retries,
             extract_text=extract_text, extract_usage=extract_usage,
+            role_output_spec=self._role_output_spec,
         )
 
 
@@ -994,10 +1047,14 @@ class FailoverProvider:
 
     network_egress = True  # every member is a network provider by construction
 
-    def __init__(self, providers: list[Any]):
+    def __init__(self, providers: list[Any], *, member_timeout_cap: int = FAILOVER_MEMBER_TIMEOUT_SECONDS):
         if len(providers) < 2:
             raise ProviderError("INVALID_CHAIN", "a failover chain needs at least two providers")
         self._providers = list(providers)
+        # The per-member ceiling (see FAILOVER_MEMBER_TIMEOUT_SECONDS). A chain derived for a
+        # slower drafting model (`with_openrouter_model`) carries a larger one; the default is
+        # the analysis chain's, unchanged.
+        self._member_timeout_cap = int(member_timeout_cap)
         # Named for banners/diagnostics; the serving member's id lands in each result.
         self.model_id = "+".join(getattr(p, "model_id", "?") for p in self._providers)
         self.model_version = self.model_id
@@ -1018,12 +1075,12 @@ class FailoverProvider:
                     "output contract; the chain refuses rather than answering for one member",
                 )
             bound.append(binder(role_output_spec))
-        return FailoverProvider(bound)
+        return FailoverProvider(bound, member_timeout_cap=self._member_timeout_cap)
 
     def generate(self, prompt: str, *, max_output_tokens: int, timeout_seconds: int) -> ProviderResult:
         deadline = time.monotonic() + float(timeout_seconds)
         per_member = max(_FAILOVER_MIN_MEMBER_SECONDS,
-                         min(FAILOVER_MEMBER_TIMEOUT_SECONDS, int(timeout_seconds) // len(self._providers)))
+                         min(self._member_timeout_cap, int(timeout_seconds) // len(self._providers)))
         failovers: list[dict[str, Any]] = []
         for index, provider in enumerate(self._providers):
             member = str(getattr(provider, "model_id", "?"))
@@ -1062,3 +1119,31 @@ class FailoverProvider:
             f"every provider in the failover chain failed ({summary})",
             data={"failovers": failovers},
         ) from None
+
+
+def with_openrouter_model(provider: Any, model: str, *, member_timeout_cap: int | None = None) -> Any:
+    """A copy of ``provider`` whose OpenRouter member asks for ``model`` — everything else as is.
+
+    For a lane whose request needs a different model than the analysis chain's (Thomas
+    2026-09-28: blog drafts on a non-Google free model while Google's free tier is at capacity,
+    `docs/history/2026-09-28-blog-draft-model.md`). No new gate call and no new authority: the
+    member is rebuilt with the SAME ``Authorization`` object the env gate handed the original,
+    and OpenRouter's opt-in already covers whatever slug is configured (``OpenRouterProvider``).
+    Only the exact ``OpenRouterProvider`` is swapped — the light tier has its own gate entry and
+    its own slug. A bound Role's keys are carried over. ``member_timeout_cap`` replaces the
+    chain's per-member ceiling for a model that is slower than the analysis chain's.
+
+    A provider with no OpenRouter member (the Mocks, a chain without one) comes back unchanged.
+    """
+    def swap(member: Any) -> Any:
+        if type(member) is not OpenRouterProvider:
+            return member
+        copy = OpenRouterProvider(model=model, api_key_env=member._api_key_env,
+                                  authorization=member._authorization)
+        copy._role_output_spec = member._role_output_spec
+        return copy
+
+    if isinstance(provider, FailoverProvider):
+        cap = provider._member_timeout_cap if member_timeout_cap is None else member_timeout_cap
+        return FailoverProvider([swap(m) for m in provider._providers], member_timeout_cap=cap)
+    return swap(provider)

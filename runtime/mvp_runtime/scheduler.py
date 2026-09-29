@@ -524,7 +524,8 @@ def build_schedule(
         raise SchedulerBlocked(
             "MISSING_REQUEST",
             "a content_ideation schedule requires seed keywords in its request "
-            "(comma separated; `target=<keyword>` overrides the week's selection)",
+            "(comma separated; `source=queue` takes them from the vault keyword queue; "
+            "`target=<keyword>` overrides the week's selection)",
         )
     if not (isinstance(created_by, str) and created_by.strip()):
         raise SchedulerBlocked("MISSING_CREATOR", "a schedule requires a created_by identity")
@@ -1091,23 +1092,31 @@ def format_ideation_sheet(reply: Mapping[str, Any]) -> str:
     bar — the body itself is in the package record, and pasting three thousand characters into
     a Telegram message would bury both.
     """
-    evidence = reply.get("keyword_evidence") or {}
+    evidence = reply.get("target_evidence") or {}
     score = reply.get("score") or {}
     measured = score.get("measured") or {}
+    # The target's own numbers only (package v0.2). The line used to count the selection
+    # brief's rows and print the SUM of three different keywords' post counts beside them.
+    if evidence.get("status") == "measured":
+        target_line = (f"{evidence.get('monthly_total')}/mo, as of {evidence.get('as_of')}"
+                       + (f", {evidence['blog_competing_posts']} blog posts"
+                          if evidence.get("blog_competing_posts") is not None else ""))
+    else:
+        target_line = f"no row for the target itself ({evidence.get('degraded_reason_code')})"
     lines = [
         "=== blog package ===",
         "",
         f"keyword   : {reply.get('target_keyword')}",
         f"package   : {reply.get('package_id')}",
-        f"evidence  : {len(evidence.get('metrics') or [])} keyword(s) measured, "
-        f"as of {evidence.get('as_of')}"
-        + (f", {evidence['total_competing_posts']} competing posts"
-           if evidence.get("total_competing_posts") is not None else ""),
+        f"evidence  : {target_line}",
         f"draft     : {measured.get('body_chars', '?')} chars, "
         f"{measured.get('headings', '?')} headings, {measured.get('images', '?')} image cues",
         f"standards : {'PASS' if score.get('critical_pass') else 'MISS'} "
         f"({score.get('standards_version')})",
     ]
+    if score.get("quality_state"):
+        lines.append(f"quality   : {score['quality_state']}"
+                     " (a draft for review either way; nothing is published)")
     if not score.get("critical_pass"):
         lines += ["", "critical criteria missed — the package is recorded, not discarded:"]
         lines += [f"  {line}" for line in (reply.get("scorecard_lines") or [])
@@ -1980,7 +1989,8 @@ def _execute(
         score = reply.get("score") or {}
         return (f"content_ideation={reply.get('package_id')} "
                 f"keyword={reply.get('target_keyword')!r} "
-                f"standards={'pass' if score.get('critical_pass') else 'miss'}{delivery}")
+                f"standards={'pass' if score.get('critical_pass') else 'miss'} "
+                f"quality={score.get('quality_state') or '-'}{delivery}")
     if schedule.kind == KIND_CANDLE_ARCHIVE:
         # Read-only, and the archive feeds nothing — so this fire cannot change what the
         # runtime trades. What it can do is fail to keep a bar that will not be offered

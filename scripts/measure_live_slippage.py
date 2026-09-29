@@ -34,18 +34,22 @@ import json
 import pathlib
 import statistics
 import sys
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from runtime.mvp_runtime.crypto.cost import DEFAULT_SLIPPAGE_BPS  # noqa: E402
+from runtime.mvp_runtime.crypto.cost import DEFAULT_SLIPPAGE_BPS, DEFAULT_STOP_SLIPPAGE_BPS  # noqa: E402
+from runtime.mvp_runtime.store import LedgerStore  # noqa: E402
 
 STATE = ROOT / ".runtime_governance_state"
 OUTCOMES = STATE / "crypto" / "live_outcomes.jsonl"
 CANARIES = STATE / "crypto" / "live_canary_orders.jsonl"
-LEDGER = STATE / "runtime_ledger" / "records.jsonl"
+
+# A probe's outcome carries this strategy-id prefix (`run_slippage_probe`). Its stop is a deliberate
+# 25 bps LONG-entry stop on a major, not a strategy's, so the two are reported apart.
+PROBE_STRATEGY_PREFIX = "PROBE-"
 
 
 def _rows(path: pathlib.Path) -> Iterator[dict[str, Any]]:
@@ -63,43 +67,45 @@ def _rows(path: pathlib.Path) -> Iterator[dict[str, Any]]:
             yield row
 
 
-def _entries_by_position() -> dict[str, dict[str, Any]]:
-    """The entry leg as submitted and filled, keyed by position.
+def _ledger_rows(root: pathlib.Path = ROOT) -> Iterator[dict[str, Any]]:
+    """Every record row, ARCHIVES INCLUDED, oldest first.
 
-    Carries `intended_price` from 2026-08-06 on. Rows opened before that have only the fill and
-    are reported as unmeasurable rather than assumed to have filled at their intent.
+    Rotation (`ledger_cli rotate`) moves rows out of ``records.jsonl`` into ``archive/``. Reading
+    the active file alone found no bracket and no entry for any live position: every one was
+    opened 2026-08-04..21 and had rotated out. The report then read "no exit leg has both an
+    intended and a realized price yet" and "entries with no recorded intent: 0" over a sample
+    that exists (2026-09-28). `iter_records_with_archive` exists for exactly this kind of reader.
     """
-    out: dict[str, dict[str, Any]] = {}
-    for row in _rows(LEDGER):
+    yield from LedgerStore.default(root).iter_records_with_archive()
+
+
+def _legs_by_position(
+    rows: Iterable[dict[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    """The entry leg and the protective legs as submitted, keyed by position, in one pass.
+
+    Entries carry `intended_price` from 2026-08-06 on. Rows opened before that have only the fill
+    and are reported as unmeasurable rather than assumed to have filled at their intent. Brackets
+    are read from the ledger rather than from ``live_positions/`` because that record is removed
+    when the book goes flat, the very moment the outcome this measures becomes available.
+    """
+    entries: dict[str, dict[str, Any]] = {}
+    brackets: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
         record = row.get("record") or row
         opened = record.get("live_opened")
         if not isinstance(opened, dict):
             continue
         position_id = (opened.get("position") or {}).get("position_id")
-        entry = opened.get("entry")
-        if position_id and isinstance(entry, dict):
-            out[str(position_id)] = entry
-    return out
-
-
-def _brackets_by_position() -> dict[str, list[dict[str, Any]]]:
-    """The protective legs as submitted, keyed by the position they belong to.
-
-    Read from the ledger rather than from ``live_positions/`` because that record is removed when
-    the book goes flat — the very moment the outcome this measures becomes available.
-    """
-    out: dict[str, list[dict[str, Any]]] = {}
-    for row in _rows(LEDGER):
-        record = row.get("record") or row
-        opened = record.get("live_opened")
-        if not isinstance(opened, dict):
+        if not position_id:
             continue
-        position = opened.get("position") or {}
-        position_id = position.get("position_id")
+        entry = opened.get("entry")
+        if isinstance(entry, dict):
+            entries[str(position_id)] = entry
         bracket = opened.get("bracket")
-        if position_id and isinstance(bracket, list):
-            out[str(position_id)] = [leg for leg in bracket if isinstance(leg, dict)]
-    return out
+        if isinstance(bracket, list):
+            brackets[str(position_id)] = [leg for leg in bracket if isinstance(leg, dict)]
+    return entries, brackets
 
 
 def _adverse_bps(intended: float, realized: float, side: str, close_reason: str) -> float | None:
@@ -122,9 +128,12 @@ def _adverse_bps(intended: float, realized: float, side: str, close_reason: str)
     return delta / intended * 10_000.0
 
 
-def measure() -> dict[str, Any]:
-    brackets = _brackets_by_position()
-    entries = _entries_by_position()
+def measure(
+    ledger_rows: Iterable[dict[str, Any]] | None = None,
+    outcomes: Iterable[dict[str, Any]] | None = None,
+    canaries: Iterable[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    entries, brackets = _legs_by_position(_ledger_rows() if ledger_rows is None else ledger_rows)
     measured: list[dict[str, Any]] = []
     unmeasurable = 0
     entries_without_intent = 0
@@ -145,7 +154,7 @@ def measure() -> dict[str, Any]:
                          "intended": float(intended), "realized": float(realized),
                          "adverse_bps": round(bps, 2), "closed_at_utc": entry.get("created_at")})
     canaries_without_intent = 0
-    for canary in _rows(CANARIES):
+    for canary in (_rows(CANARIES) if canaries is None else canaries):
         intended, realized = canary.get("intended_price"), canary.get("fill_avg_price")
         if not isinstance(intended, (int, float)) or not isinstance(realized, (int, float)):
             canaries_without_intent += 1
@@ -158,12 +167,12 @@ def measure() -> dict[str, Any]:
                          "intended": float(intended), "realized": float(realized),
                          "adverse_bps": round(bps, 2),
                          "closed_at_utc": canary.get("recorded_at_utc")})
-    for outcome in _rows(OUTCOMES):
+    for outcome in (_rows(OUTCOMES) if outcomes is None else outcomes):
         if outcome.get("outcome_closed") is not True:
             continue
-        legs = brackets.get(str(outcome.get("position_id")) or "")
+        legs = brackets.get(str(outcome.get("position_id")) or "") or []
         reason = str(outcome.get("close_reason") or "")
-        if not legs or reason not in ("stop_loss", "take_profit"):
+        if reason not in ("stop_loss", "take_profit"):
             unmeasurable += 1
             continue
         # The stop is the leg carrying a trigger; the target rests at its own price.
@@ -174,6 +183,12 @@ def measure() -> dict[str, Any]:
             if isinstance(value, (int, float)) and value:
                 intended = float(value)
                 break
+        # A probe's position never reaches the ledger's `live_opened`, but its outcome records the
+        # stop it rested at. The bracket still wins where both exist: it is what was submitted.
+        own_stop = outcome.get("stop_price")
+        if (intended is None and reason == "stop_loss"
+                and isinstance(own_stop, (int, float)) and own_stop):
+            intended = float(own_stop)
         realized = outcome.get("exit_price")
         if intended is None or not isinstance(realized, (int, float)):
             unmeasurable += 1
@@ -182,15 +197,18 @@ def measure() -> dict[str, Any]:
         if bps is None:
             unmeasurable += 1
             continue
+        probe = str(outcome.get("strategy_id") or "").startswith(PROBE_STRATEGY_PREFIX)
         measured.append({
             "symbol": outcome.get("symbol"), "close_reason": reason,
             "intended": intended, "realized": float(realized), "adverse_bps": round(bps, 2),
             "closed_at_utc": outcome.get("closed_at_utc"),
+            "source": "probe" if probe else "strategy",
         })
     return {"measured": measured, "unmeasurable": unmeasurable,
             "entries_without_intent": entries_without_intent,
             "canaries_without_intent": canaries_without_intent,
-            "modelled_bps": DEFAULT_SLIPPAGE_BPS}
+            "modelled_bps": DEFAULT_SLIPPAGE_BPS,
+            "modelled_stop_bps": DEFAULT_STOP_SLIPPAGE_BPS}
 
 
 def render(result: dict[str, Any]) -> str:
@@ -200,10 +218,11 @@ def render(result: dict[str, Any]) -> str:
     if not rows:
         out.append("no exit leg has both an intended and a realized price yet.")
     else:
-        out.append(f"{'symbol':<10}{'leg':<14}{'intended':>12}{'realized':>12}{'adverse bps':>13}")
+        out.append(f"{'symbol':<10}{'leg':<14}{'source':<10}{'intended':>12}{'realized':>12}"
+                   f"{'adverse bps':>13}")
         for row in rows:
-            out.append(f"{row['symbol']:<10}{row['close_reason']:<14}{row['intended']:>12.5f}"
-                       f"{row['realized']:>12.5f}{row['adverse_bps']:>13.2f}")
+            out.append(f"{row['symbol']:<10}{row['close_reason']:<14}{row.get('source', ''):<10}"
+                       f"{row['intended']:>12.5f}{row['realized']:>12.5f}{row['adverse_bps']:>13.2f}")
         stops = [r["adverse_bps"] for r in rows if r["close_reason"] == "stop_loss"]
         if stops:
             out.append("")
@@ -217,11 +236,19 @@ def render(result: dict[str, Any]) -> str:
             # multiple of an assumption is meaningless once the sign flips — `-1.6x modelled`
             # states nothing a reader can use, and pooling it into a median of multiples would
             # be worse. The bps figure carries its own sign; a ratio does not.
-            modelled = result["modelled_bps"]
-            median = statistics.median(stops)
-            out.append(f"stop fills: n={len(stops)}  "
-                       f"median {median:.2f} bps ({median/modelled:.1f}x modelled {modelled})  "
-                       f"worst {max(stops):.2f} ({max(stops)/modelled:.1f}x)")
+            #
+            # Against the STOP constant, not the entry one: the cost model prices a stop at
+            # `DEFAULT_STOP_SLIPPAGE_BPS` (1.4 since 2026-08-21), and a multiple of 3.0 compared
+            # a stop fill with a figure no stop is charged. The mean is printed because the cost
+            # model charges every stop the same figure, so the mean is what the constant has to
+            # match (review C2), and one large fill moves it far from the median.
+            modelled = result.get("modelled_stop_bps", result["modelled_bps"])
+            out.append(_stop_line("stop fills:", stops, modelled))
+            for source in ("strategy", "probe"):
+                part = [r["adverse_bps"] for r in rows
+                        if r["close_reason"] == "stop_loss" and r.get("source") == source]
+                if part:
+                    out.append(_stop_line(f"  {source} stops:", part, modelled))
     out.append("")
     out.append(f"exits with no comparable pair: {result['unmeasurable']}")
     out.append("")
@@ -241,6 +268,13 @@ def render(result: dict[str, Any]) -> str:
     out.append("one entry this runtime can make without routing a strategy signal — the")
     out.append("instrument for this constant while live entries are held down.")
     return "\n".join(out)
+
+
+def _stop_line(label: str, stops: list[float], modelled: float) -> str:
+    median = statistics.median(stops)
+    return (f"{label} n={len(stops)}  mean {statistics.mean(stops):.2f} bps  "
+            f"median {median:.2f} bps ({median/modelled:.1f}x modelled {modelled})  "
+            f"worst {max(stops):.2f} ({max(stops)/modelled:.1f}x)")
 
 
 def main() -> int:

@@ -561,6 +561,19 @@ services:
       # relative default would scatter packages across build directories. The dir must be
       # writable by uid 10001 (chown once at adoption; state_guard's rule, same reason).
       - ${THOMAS_WORKSPACE_DIR:-./workspace}:/app/workspace
+      # The blog lane's published posts (Thomas 2026-09-28): rule-based keyword selection
+      # excludes every keyword the vault already wrote, and refuses without this source
+      # (PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE). Only the two post folders, read-only — the
+      # rest of the vault (analytics, portfolio, paste packages) has no business in a
+      # container. THOMAS_BLOG_VAULT_DIR is the host vault root, absolute in the .env like the
+      # others. Unset, the relative default is an empty folder in the deploy tree, and the
+      # adapter reads "no posts" as unavailable rather than as "nothing was ever published".
+      - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/content/naver:/app/blog_vault/content/naver:ro
+      - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/content/tistory:/app/blog_vault/content/tistory:ro
+      # The vault keyword pipeline's output (`source=queue` seeds): queue.md and its inputs,
+      # keyword data only. The folder, not the file — a bind-mounted file keeps its old inode
+      # when the writer replaces rather than rewrites it.
+      - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/analytics/keywords:/app/blog_vault/analytics/keywords:ro
     healthcheck:
       test: ["CMD", "test", "-S", "/app/.runtime_governance_state/internal/pipeline.sock"]
       interval: 60s
@@ -605,6 +618,12 @@ services:
       # their standing exclusion (test_deployment_env_passthrough's NOT_DEPLOYED carries
       # the reasoning). Unset = the dry-run writer, exactly the pre-decision lane.
       MVP_WORKSPACE_WRITER: ${MVP_WORKSPACE_WRITER:-}
+      # Where the read-only vault mount above lands. A literal, not a passthrough: it names a
+      # path inside this container, which only this file decides.
+      MVP_BLOG_PUBLISHED_ROOT: /app/blog_vault
+      # The blog draft's OpenRouter model (Thomas 2026-09-28), this service only. Unset keeps the
+      # analysis chain's model for the draft as well (`blog_content.draft_provider`).
+      MVP_BLOG_OPENROUTER_MODEL: ${MVP_BLOG_OPENROUTER_MODEL:-}
       # Read-only web search (optional), same Safety-Flag Gate.
       MVP_SEARCH_TOOL: ${MVP_SEARCH_TOOL:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}

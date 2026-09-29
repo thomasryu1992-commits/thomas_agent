@@ -40,6 +40,7 @@ def build_role_assignment(
     repo_root: Path | None = None,
     assignment_mode: str = "normal",
     trial_authorization_ref: str | None = None,
+    budget_profile: str | None = None,
 ) -> dict[str, Any]:
     """Build and schema-validate a role_assignment.v0.2. Fail-closed.
 
@@ -184,7 +185,7 @@ def build_role_assignment(
             "rejection_criteria": list(task_validation.get("rejection_criteria", [])),
             "maximum_cycles": 1,
         },
-        "execution_budget": default_execution_budget(),
+        "execution_budget": default_execution_budget(profile=budget_profile),
         "constraints": list(scope.get("constraints", [])),
         "escalation_target": "thomas_prime",
         "trial_authorization_ref": trial_authorization_ref,

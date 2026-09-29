@@ -30,7 +30,7 @@ from typing import Any, Callable, Mapping
 from runtime.read_only_kernel import integrity
 
 from . import timeutil
-from .budgets import recorded_usage_budget
+from .budgets import recorded_usage_budget, require_budget_profile
 from .events import stamped_event
 from .audit import build_blocked_audit, build_pipeline_audit
 from .errors import (
@@ -966,6 +966,7 @@ def run_task(
     write_path: str | None = None,
     writer: WorkspaceWriter | None = None,
     on_progress: Callable[[str], None] | None = None,
+    budget_profile: str | None = None,
     **intake_kwargs: Any,
 ) -> dict[str, Any]:
     """Run one task end-to-end. Returns a structured result; never raises for a
@@ -1031,7 +1032,11 @@ def run_task(
     PASSES, is create-only and confined to ``workspace/``, and is reported (audited, plus
     ``result["write"]``). ``writer`` defaults to the ``DryRunWriter``, which computes the
     write without touching disk; a real writer is chosen via the Safety-Flag Gate by the
-    caller (``workspace.select_writer``)."""
+    caller (``workspace.select_writer``).
+
+    ``budget_profile`` (opt-in, ``budgets.BUDGET_PROFILES``) replaces the per-agent token share
+    for the task allocation and the specialist's assignment — today only ``blog_content`` on a
+    ``content`` request. An unknown profile, or one on a kind it was not made for, BLOCKs."""
     provider = provider if provider is not None else MockProvider()
     search_tool = search_tool if search_tool is not None else MockSearchTool()
     if validator_provider is None:
@@ -1094,9 +1099,11 @@ def run_task(
         planned_agents, planned_triage_calls = _planned_allocation(
             auto_policy=auto_policy, independent_validation=independent_validation, revise=revise,
         )
+        require_budget_profile(budget_profile, request_kind)
         task = build_task(
             raw_request, now=now,
             planned_agents=planned_agents, planned_triage_calls=planned_triage_calls,
+            budget_profile=budget_profile,
             **intake_kwargs,
         )
         # Set BEFORE planning can fail: `_finalize_block` reads it for the block record's
@@ -1110,6 +1117,7 @@ def run_task(
             controlled_write=write_path is not None,
             keyword_research=keyword_seeds is not None,
             request_kind=request_kind,
+            budget_profile=budget_profile,
         )
         _record_plan(plan, records, wrote_path=write_path is not None,
                      briefed=keyword_seeds is not None)
