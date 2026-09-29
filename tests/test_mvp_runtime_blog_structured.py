@@ -492,6 +492,11 @@ def _chars(text):
     return len("".join(text.split()))
 
 
+def _named_after(request: str, which: str) -> str:
+    """The named list that follows ``which`` in a revision request."""
+    return request.split(which, 1)[1].split("): ", 1)[1].split(". 이 문단마다", 1)[0]
+
+
 def test_a_length_revision_names_each_short_paragraph():
     draft = _draft()
     long_para = blog_content.LENGTH_EXAMPLE_PARAGRAPH          # at the plan's length: not named
@@ -503,9 +508,9 @@ def test_a_length_revision_names_each_short_paragraph():
     first = dict(blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET),
                  failures=["body_chars"])
     request = blog_content.revision_request(TARGET, first, "")
-    named = request.split("못 미치는 문단(번호는 0부터): ", 1)[1].split(". 이 문단마다", 1)[0]
-    assert named == (f"도입 문단 1(현재 {_chars('짧은 도입입니다.')}자), "
-                     f"섹션 2의 문단 1(현재 {_chars('너무 짧은 문단입니다.')}자)")
+    named = _named_after(request, "못 미치는 문단")
+    assert named == (f"도입 문단 1({blog_content._gap(_chars('짧은 도입입니다.'))}), "
+                     f"섹션 2의 문단 1({blog_content._gap(_chars('너무 짧은 문단입니다.'))})")
 
 
 def test_the_named_list_is_capped():
@@ -516,7 +521,7 @@ def test_the_named_list_is_capped():
     first = dict(blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET),
                  failures=["body_chars"])
     request = blog_content.revision_request(TARGET, first, "")
-    named = request.split("못 미치는 문단(번호는 0부터): ", 1)[1].split(". 이 문단마다", 1)[0]
+    named = _named_after(request, "못 미치는 문단")
     assert named.count("(현재 ") == blog_content.MAX_NAMED_SHORT_PARAGRAPHS
     assert f"외 {15 - blog_content.MAX_NAMED_SHORT_PARAGRAPHS}개" in request
 
@@ -732,9 +737,9 @@ def test_an_over_long_revision_names_each_long_paragraph_and_asks_to_cut():
     assert "para_chars" in first["failures"]
     request = blog_content.revision_request(TARGET, first, "")
     low, high = blog_content.PLAN_PARAGRAPH_CHARS
-    named = request.split(f"{high}자를 넘는 문단(번호는 0부터): ", 1)[1].split(". 이 문단마다", 1)[0]
-    assert named.startswith(f"도입 문단 0(현재 {_chars(_long(0))}자), "
-                            f"도입 문단 1(현재 {_chars(_long(1))}자), 섹션 0의 문단 0(")
+    named = _named_after(request, f"{high}자를 넘는 문단")
+    assert named.startswith(f"도입 문단 0({blog_content._gap(_chars(_long(0)))}), "
+                            f"도입 문단 1({blog_content._gap(_chars(_long(1)))}), 섹션 0의 문단 0(")
     assert "섹션 1의 문단 2" not in named
     assert named.count("(현재 ") == blog_content.MAX_NAMED_SHORT_PARAGRAPHS
     assert named.endswith(f"외 {16 - blog_content.MAX_NAMED_SHORT_PARAGRAPHS}개")
@@ -750,7 +755,7 @@ def test_a_short_draft_still_gets_the_plan_and_the_short_list_not_the_cut():
     first = dict(blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET),
                  failures=["body_chars"])
     request = blog_content.revision_request(TARGET, first, "")
-    assert "못 미치는 문단" in request and "미치는 문단은 한 문장을 더하라" in request
+    assert "못 미치는 문단" in request and "미치는 문단은 더해서" in request
     assert "줄여라" not in request
 
 
@@ -810,7 +815,7 @@ def test_the_cut_touches_only_the_named_paragraphs_and_states_both_floors():
     first = blog_content.interpret_draft(json.dumps(_all_long(), ensure_ascii=False), TARGET)
     request = blog_content.revision_request(TARGET, first, "")
     low, _high = blog_content.PLAN_PARAGRAPH_CHARS
-    assert "한 문장만 덜어내" in request and "나머지 문단은 손대지 마라" in request
+    assert "적힌 만큼만(대개 한 문장) 덜어내" in request and "나머지 문단은 손대지 마라" in request
     assert f"어떤 문단도 {low}자 아래로 줄이지 마라" in request
     assert "본문 합계가 1,800자 아래면 불합격이다" in request
     assert "한두 문장" not in request
@@ -886,11 +891,15 @@ def test_the_revision_is_shown_the_previous_draft_in_the_shapes_order():
     assert keys[-2:] == ["intro", "sections"]
 
 
-def test_the_plan_leads_with_the_cap_and_checks_both_ways():
+def test_the_plan_states_target_and_range_evenly_and_checks_both_ways():
+    """Said first, the cap overshot the other way: averages 82 and 81 on the next two drafts."""
     low, high = blog_content.PLAN_PARAGRAPH_CHARS
     plan = blog_content._length_plan()
-    assert f"{(low + high) // 2}자 안팎({low}~{high}자)이고 {high}자를 넘기지 마라" in plan
-    assert f"{high}자를 넘는 문단은 한 문장을 덜고 {low}자에 못 미치는 문단은 한 문장을 더하라" in plan
+    assert f"{blog_content.plan_target()}자 안팎({low}~{high}자)" in plan
+    assert "넘기지 마라" not in plan
+    assert "평균이 150자를 넘거나 합계가 1,800자에 못 미치면 불합격이다" in plan
+    assert (f"{high}자를 넘는 문단은 덜어내고 {low}자에 못 미치는 문단은 더해서 "
+            f"{blog_content.plan_target()}자 안팎으로 맞춰라") in plan
     assert "이상인지 세어" not in plan and "짧은 문단에는 문장을 더 붙여라" not in plan
 
 
@@ -920,3 +929,26 @@ def test_a_raw_tab_and_a_missing_closer_together_still_parse():
     parsed, reason = blog_draft.parse_structured(text)
     assert reason is None and parsed["brackets_inserted"] == 1
     assert "\t" in parsed["intro"][0]
+
+
+# --- the named list says how much (2026-09-29, bcp_dad48bf154c090f00307) --------------------
+#
+# Asked to add "a sentence or two", paragraphs averaging 81 grew by 23 and the body stopped 25
+# short of 1,800.
+
+@pytest.mark.parametrize("n, label", [
+    (81, "현재 81자, 약 50자 더"), (120, "현재 120자, 약 10자 더"), (128, "현재 128자, 약 10자 더"),
+    (171, "현재 171자, 약 40자 덜"), (145, "현재 145자, 약 20자 덜"),
+])
+def test_each_named_paragraph_carries_the_distance_to_the_target(n, label):
+    assert blog_content.plan_target() == 130
+    assert blog_content._gap(n) == label
+
+
+def test_the_request_says_what_the_amount_in_brackets_means():
+    draft = _draft()
+    draft["sections"][2]["paragraphs"][1] = "너무 짧은 문단입니다."
+    first = dict(blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET),
+                 failures=["body_chars"])
+    request = blog_content.revision_request(TARGET, first, "")
+    assert "괄호는 130자까지 더할 양" in request and "적힌 만큼 이미 쓴 내용" in request
