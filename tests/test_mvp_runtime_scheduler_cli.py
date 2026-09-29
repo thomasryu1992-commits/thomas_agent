@@ -413,3 +413,67 @@ def test_a_risk_fire_runs_marked_busy_on_its_lane_heartbeat_and_a_maintenance_fi
     assert seen[(heartbeat.SCHEDULER_MAINTENANCE_SERVICE, KIND_PRUNE)] is None
     after = json.loads(heartbeat.heartbeat_path(heartbeat.SCHEDULER_RISK_SERVICE, tmp_path).read_text(encoding="utf-8"))
     assert "busy" not in after
+
+
+class _WatchdogSpy:
+    """Stands in for FireWatchdog: records what the lane arms, ends nothing."""
+
+    def __init__(self):
+        self.made, self.armed = [], []
+
+    def __call__(self, service, root):
+        self.made.append(service)
+        spy = self
+
+        class _W:
+            def armed(self, mark, *, deadline_seconds):
+                from contextlib import nullcontext
+                spy.armed.append((mark["kind"], mark["schedule_run_id"], deadline_seconds))
+                return nullcontext()
+        return _W()
+
+
+def _tick_with(tmp_path, store, ledger, lane, *, spy, alerter=None, capsys):
+    rc = main(["tick", "--max-ticks", "1", "--interval-seconds", "0", "--lane", lane],
+              store=store, ledger=ledger, control_store=ControlStore(tmp_path),
+              working_memory=WorkingMemoryStore(tmp_path / "wm"), repo_root=tmp_path, now=DUE,
+              watchdog_factory=spy, alerter=alerter)
+    assert rc == 0
+    return capsys.readouterr()
+
+
+def test_the_watchdog_arms_on_the_risk_lane_only_and_around_risk_fires_only(tmp_path, capsys, monkeypatch):
+    store, ledger = _stores(tmp_path)
+    store.add(build_schedule(kind=scheduler.KIND_ROUTE_WATCH, request="", interval_seconds=900,
+                             created_by="op", now=T0))
+    store.add(build_schedule(kind=KIND_PRUNE, request="", interval_seconds=86400, created_by="op", now=T0))
+    monkeypatch.setattr(scheduler, "_execute", lambda schedule, **kw: "ok")
+    risk, maint, both = _WatchdogSpy(), _WatchdogSpy(), _WatchdogSpy()
+    _tick_with(tmp_path, store, ledger, "risk", spy=risk, capsys=capsys)
+    _tick_with(tmp_path, store, ledger, "maintenance", spy=maint, capsys=capsys)
+    _tick_with(tmp_path, store, ledger, "all", spy=both, capsys=capsys)
+    assert risk.made == [heartbeat.SCHEDULER_RISK_SERVICE]
+    assert [(k, d) for k, _, d in risk.armed] == [(scheduler.KIND_ROUTE_WATCH, 120.0)]
+    assert risk.armed[0][1].startswith("srun_")
+    assert maint.made == [] and both.made == []       # ending those processes would end other work
+
+
+def test_the_risk_lane_start_reports_a_previous_watchdog_exit_once(tmp_path, capsys):
+    from runtime.mvp_runtime import fire_watchdog
+    store, ledger = _stores(tmp_path)
+    path = fire_watchdog.diagnostic_path(heartbeat.SCHEDULER_RISK_SERVICE, tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"kind": "crypto_pipeline", "schedule_run_id": "srun_dead",
+                                "started_at": T0, "deadline_at": T0}), encoding="utf-8")
+    alerts = []
+
+    class _Alerter:                       # the tick loop also reads its sent/failed counts
+        sent = failed = 0
+
+        def __call__(self, key, message):
+            alerts.append(key)
+    alerter = _Alerter()
+    _tick_with(tmp_path, store, ledger, "risk", spy=_WatchdogSpy(), alerter=alerter, capsys=capsys)
+    _tick_with(tmp_path, store, ledger, "risk", spy=_WatchdogSpy(), alerter=alerter, capsys=capsys)
+    assert alerts.count(fire_watchdog.OVERRUN_ALERT_KEY) == 1
+    assert not path.exists()

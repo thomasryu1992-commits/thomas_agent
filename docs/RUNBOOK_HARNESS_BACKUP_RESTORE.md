@@ -129,6 +129,28 @@ PY
 
 **Log rotation** — Hermes rotates `agent.log` / `errors.log` / `gateway.log` itself; `mcp-stderr.log` (MCP server stderr, appended by `tools/mcp_tool.py`) it does not — 10.7 MB unrotated on 2026-09-04. `rotate_hermes_mcp_log.sh` copy-truncates it above 10 MB, keeps 3, daily 07:40Z from cron (`logrotate` would need a passwd entry for uid 10000, which the host does not have). Thomas services log to stderr only; Docker's `json-file` 10m×3 is their only store and is lost on recreation — `docker logs <c> > file` before a recreate if the tail matters.
 
+### Risk-lane fire watchdog (2026-09-29)
+
+The one exception to "healthchecks only report": `thomas-scheduler` (the risk lane) ends **itself**
+when a risk fire passes its deadline — crypto_pipeline 600 s, breaker_watch 120 s, route_watch
+120 s (`scheduler.RISK_FIRE_DEADLINE_SECONDS`, Thomas 2026-09-29; `docs/proposals/RISK_LANE_WATCHDOG_V0.1.md`).
+It dumps every thread's stack to the container log, writes
+`.runtime_governance_state/heartbeats/scheduler-risk.watchdog.json`, and exits **70**;
+`restart: unless-stopped` brings it back. A faulthandler backstop 30 s later ends a hang that holds
+the GIL. On the way back up, the abandoned-run scan closes the fire (`abandoned_mid_run`) and the new
+process sends one `[리스크 레인 재시작]` alert, then renames the file to
+`scheduler-risk.watchdog.<stamp>.json`. The restart also raises `RestartCount`, so the health watch
+below reports it as a crash loop — a lane that is ended on every fire keeps saying so.
+
+While a risk fire runs, the lane heartbeat carries a `busy` mark: the healthcheck reads FRESH inside
+the deadline however long the fire has run, and STALE (`OVERRUN`) past it. The maintenance lane is
+neither marked nor ended. To read after an incident:
+
+```bash
+docker logs thomas-scheduler 2>&1 | grep -A40 'WATCHDOG'          # the stacks, if the container was not recreated since
+ls -t /root/thomas_agent/.runtime_governance_state/heartbeats/scheduler-risk.watchdog.*.json | head -3
+```
+
 ### Container health watch
 
 `health_watch.sh`, installed to `/root/backups/health-watch.sh`, every 10 minutes from cron. Until it
