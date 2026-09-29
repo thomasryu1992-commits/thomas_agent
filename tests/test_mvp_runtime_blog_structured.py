@@ -585,3 +585,68 @@ def test_grouped_citations_are_stripped_from_the_revision_and_resolved_in_source
              "S3": {"title": "c", "url": None}, "K2": {"title": "k", "url": None}}
     resolved = [s["source_ref"] for s in blog_draft.resolve_sources([{"source_ref": cited}], index)]
     assert resolved and all(ref.strip("[]") in index for ref in resolved)
+
+
+# --- a dropped closing bracket is put back, never guessed ----------------------------------
+
+def _missing_paragraphs_closer(draft) -> str:
+    """The 2026-09-29 run's shape: the last section ends ``…"}]`` — the ``]`` closing its
+    ``paragraphs`` left out."""
+    text = json.dumps(draft, ensure_ascii=False)
+    assert text.count('"]}], "tags"') == 1
+    return text.replace('"]}], "tags"', '"}], "tags"')
+
+
+def test_a_dropped_closing_bracket_is_put_back_and_the_draft_parses():
+    draft = _draft(table={"after_section": 1, "rows": [["항목", "내용"], ["기간", "1년"]]})
+    parsed, reason = blog_draft.parse_structured(_missing_paragraphs_closer(draft))
+    assert reason is None and parsed["brackets_inserted"] == 1
+    assert [s["paragraphs"] for s in parsed["sections"]] == [
+        s["paragraphs"] for s in draft["sections"]]
+    assert parsed["table"] is not None and parsed["tags"] == draft["tags"]
+
+
+def test_a_valid_draft_is_not_repaired():
+    text = json.dumps(_draft(), ensure_ascii=False)
+    assert blog_draft.repair_brackets(text) is None
+    assert blog_draft.parse_structured(text)[0]["brackets_inserted"] == 0
+
+
+def test_brackets_and_escaped_quotes_inside_the_text_are_left_alone():
+    odd = '표기 예시는 "[1]}" 와 {괄호} 입니다. 끝에 \\ 가 와도 됩니다.'
+    draft = _draft()
+    draft["sections"][-1]["paragraphs"][-1] = odd
+    parsed, reason = blog_draft.parse_structured(_missing_paragraphs_closer(draft))
+    assert reason is None and parsed["brackets_inserted"] == 1
+    assert parsed["sections"][-1]["paragraphs"][-1] == blog_draft.sanitize_paragraph(odd)
+
+
+@pytest.mark.parametrize("text", [
+    '{"sections": [{"heading": "a", "paragraphs": ["b"]}]]}',      # a surplus closer, not a gap
+    '{"sections": [{"heading": "a", "paragraphs": ["b}]',            # cut off inside a string
+])
+def test_damage_that_is_not_a_dropped_closer_still_falls_back(text):
+    assert blog_draft.repair_brackets(text[:text.rfind("}") + 1]) is None
+    assert blog_draft.parse_structured(text) == (None, "JSON_UNPARSEABLE")
+
+
+def test_a_repaired_draft_is_ready_for_review_and_the_package_says_it_was_repaired(monkeypatch):
+    sheet, calls = _ideate(monkeypatch, [_missing_paragraphs_closer(_draft())])
+    quality = sheet["package"]["quality"]
+    assert [k for k, *_ in calls] == ["content"]
+    assert quality["draft_format"] == "structured" and quality["quality_state"] == "ready_for_review"
+    assert quality["brackets_inserted"] == 1
+    validate_against_schema(sheet["package"], SCHEMA, "blog_content_package")
+    assert "빠진 닫는 괄호 1개 보정" in blog_content.render_post_md(sheet["package"])
+
+
+def test_a_clean_draft_records_no_repair():
+    assert "brackets_inserted" not in _package_from(_draft())["quality"]
+
+
+def test_the_revision_sees_the_repaired_draft_not_the_broken_text():
+    short = _draft(sections=2, per_section=1)
+    first = blog_content.interpret_draft(_missing_paragraphs_closer(short), TARGET, _records())
+    assert first["draft_format"] == "structured"
+    previous = blog_content.revision_request(TARGET, first, "").split("이전 초안:\n", 1)[1]
+    assert "brackets_inserted" not in json.loads(previous)

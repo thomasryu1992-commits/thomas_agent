@@ -108,21 +108,82 @@ def _strip_captures(text: str) -> tuple[str, list[str]]:
     return _CAPTURE_RE.sub("", text).strip(), captures
 
 
+_CLOSER = {"{": "}", "[": "]"}
+
+
+def repair_brackets(raw: str) -> tuple[str, int] | None:
+    """``raw`` with the closing brackets a model dropped put back, and how many were inserted.
+
+    On 2026-09-29 both drafts of a run wrote the end of the last section as ``…"}]`` instead of
+    ``…"]}]`` — the ``]`` closing its ``paragraphs`` was missing — and the whole draft, table,
+    capture directions and all, fell to the legacy parser as one 3,893-character paragraph.
+
+    The repair only inserts closers: a closer that does not match the innermost open bracket but
+    does match an outer one means the brackets in between were never closed, so their closers go
+    in front of it. Text inside strings is never touched. ``None`` — no repair — when there is
+    nothing to insert, when a closer matches no open bracket (a surplus, not a gap), or when the
+    text ends inside a string or with brackets still open. The caller still requires the result
+    to parse."""
+    out: list[str] = []
+    stack: list[str] = []
+    inserted = 0
+    in_string = escaped = False
+    for ch in raw:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in _CLOSER:
+            stack.append(ch)
+        elif ch in ("}", "]"):
+            if not stack:
+                return None
+            if _CLOSER[stack[-1]] != ch:
+                depth = next((i for i in range(len(stack) - 1, -1, -1)
+                              if _CLOSER[stack[i]] == ch), None)
+                if depth is None:
+                    return None
+                while len(stack) - 1 > depth:
+                    out.append(_CLOSER[stack.pop()])
+                    inserted += 1
+            stack.pop()
+        out.append(ch)
+    if in_string or stack or not inserted:
+        return None
+    return "".join(out), inserted
+
+
 def parse_structured(text: str) -> tuple[dict[str, Any] | None, str | None]:
     """``(draft, None)`` for a usable structured draft, ``(None, reason)`` otherwise.
 
     Tolerates exactly two kinds of wrapping a model adds — a code fence, and prose before or
-    after the object — by taking the outermost ``{...}``. Anything that is not then a JSON
-    object with at least one section holding prose is not a structured draft, and the caller
-    falls back to the legacy parser and says so."""
+    after the object — by taking the outermost ``{...}``, and one kind of damage: closing
+    brackets left out (:func:`repair_brackets`). Anything that is not then a JSON object with at
+    least one section holding prose is not a structured draft, and the caller falls back to the
+    legacy parser and says so. A repaired draft says how many closers it needed in
+    ``brackets_inserted``; the key is 0 otherwise."""
     raw = _FENCE_RE.sub("", str(text or "").strip())
     start, end = raw.find("{"), raw.rfind("}")
     if start < 0 or end <= start:
         return None, "NO_JSON_OBJECT"
+    raw = raw[start:end + 1]
+    inserted = 0
     try:
-        data = json.loads(raw[start:end + 1])
+        data = json.loads(raw)
     except ValueError:
-        return None, "JSON_UNPARSEABLE"
+        repaired = repair_brackets(raw)
+        if repaired is None:
+            return None, "JSON_UNPARSEABLE"
+        try:
+            data = json.loads(repaired[0])
+        except ValueError:
+            return None, "JSON_UNPARSEABLE"
+        inserted = repaired[1]
     if not isinstance(data, dict):
         return None, "JSON_NOT_OBJECT"
 
@@ -196,6 +257,7 @@ def parse_structured(text: str) -> tuple[dict[str, Any] | None, str | None]:
         "image_shots": shots[:MAX_IMAGE_SHOTS],
         "fact_checks": checks[:MAX_FACT_CHECKS],
         "sources": sources[:MAX_SOURCES],
+        "brackets_inserted": inserted,
     }, None
 
 

@@ -747,6 +747,8 @@ def interpret_draft(
     index = blog_draft.evidence_index(records)
     structured, parse_reason = blog_draft.parse_structured(text)
     if structured is not None:
+        # Kept out of the draft itself: the revision request re-serializes that draft.
+        brackets_inserted = int(structured.pop("brackets_inserted", 0) or 0)
         rendered = blog_draft.render_blocks(structured)
         sources = blog_draft.resolve_sources(structured["sources"], index)
         prose = list(structured["intro"]) + [
@@ -766,6 +768,7 @@ def interpret_draft(
             "sources": sources,
             "fact_checks": blog_draft.fact_checks(structured["fact_checks"], prose, index),
             "structured": structured,
+            "brackets_inserted": brackets_inserted,
         }
     else:
         parsed = _parse_draft(text)
@@ -864,6 +867,8 @@ def quality_record(
         record["revision_outcome"] = revision_outcome[:120]
     if revision_detail:
         record["revision_detail"] = revision_detail[:300]
+    if int(final.get("brackets_inserted") or 0) > 0:
+        record["brackets_inserted"] = int(final["brackets_inserted"])
     return record
 
 
@@ -891,7 +896,9 @@ def render_post_md(package: Mapping[str, Any]) -> str:
         lines += ["", f"## 품질 상태: {state}"]
         lines += [f"- 기준: {quality.get('standards_version')} · 초안 형식: {quality.get('draft_format')}"
                   f" · 자동 수정 {quality.get('revision_count')}회"
-                  + (f" ({quality['revision_outcome']})" if quality.get("revision_outcome") else "")]
+                  + (f" ({quality['revision_outcome']})" if quality.get("revision_outcome") else "")
+                  + (f" · 빠진 닫는 괄호 {quality['brackets_inserted']}개 보정"
+                     if quality.get("brackets_inserted") else "")]
         if quality.get("revision_detail"):
             lines += [f"- 자동 수정이 막힌 이유: {quality['revision_detail']}"]
         if quality.get("failures"):
