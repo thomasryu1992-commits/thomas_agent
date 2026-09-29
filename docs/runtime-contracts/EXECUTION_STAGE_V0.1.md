@@ -10,6 +10,10 @@ after the execution-authority audit found that no record said what stage the mac
 environment authorized the adapter, eight records could refuse an entry, and the readiness board
 re-derived an answer from all of them. Same day, Thomas: no canary rung (canaries ended 2026-07-29) and
 no expiry (renewals on the money path were retired 2026-07-28 / 2026-08-10).
+**Reaffirmed 2026-09-29 (Thomas):** an outside improvement plan proposed replacing `LIVE_AUTONOMOUS`
+with a `LIVE_CANARY` rung (`SIGNED_TESTNET -> LIVE_CANARY -> LIVE_SCALED`). Thomas kept the ladder
+as it is — no canary rung. The ladder above is the decided one, not a legacy name awaiting migration;
+a document that describes a canary rung describes a proposal that was declined.
 
 ## 1. The ladder
 
