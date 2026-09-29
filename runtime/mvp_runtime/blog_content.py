@@ -1101,17 +1101,26 @@ def plan_body_chars() -> tuple[int, int]:
 
 
 def _length_plan() -> str:
+    """The plan, centred on the paragraph's target and its cap.
+
+    Until 2026-09-29 the plan's last words were "각 문단이 120자 이상인지 세어 보고, 짧은 문단에는
+    문장을 더 붙여라", and the drafts read the floor as the aim: averages 169, 153, 136, 158, 174 and
+    184 against 120~140, one draft noting "각 문단 120자 이상 준수" in its own findings. The
+    self-check is now both ways, and the cap is said first."""
     low, high = PLAN_PARAGRAPH_CHARS
+    ceiling = blog_draft_score.STANDARDS["para_chars"].high
     total_low, total_high = plan_body_chars()
     return (
         f"분량 계획(이대로 써라): intro 문단 {PLAN_INTRO_PARAGRAPHS}개 + sections "
         f"{PLAN_SECTIONS}개 × 섹션마다 paragraphs {PLAN_PARAGRAPHS_PER_SECTION}개 = 문단 "
         f"{plan_paragraphs()}개. 문단 하나는 {PLAN_SENTENCES_PER_PARAGRAPH}문장, 공백 빼고 "
-        f"{low}~{high}자. 합계 약 {total_low:,}~{total_high:,}자이고, 1,800자에 못 미치면 불합격이다. "
-        "한두 문장짜리 문단을 만들지 마라 — 각 문단은 방법·이유·예시·주의점 중 둘 이상을 담아 풀어 "
-        f"써라. 문단 하나의 길이는 이 정도다(길이만 참고하고 내용은 따라 쓰지 마라): "
-        f"「{LENGTH_EXAMPLE_PARAGRAPH}」 JSON을 내기 전에 문단이 {plan_paragraphs()}개인지, 각 문단이 "
-        f"{low}자 이상인지 세어 보고, 짧은 문단에는 문장을 더 붙여라."
+        f"{(low + high) // 2}자 안팎({low}~{high}자)이고 {high}자를 넘기지 마라 — 문단 평균이 "
+        f"{ceiling}자를 넘으면 불합격이다. 합계 약 {total_low:,}~{total_high:,}자이고, 1,800자에 못 "
+        "미치면 불합격이다. 한두 문장짜리 문단을 만들지 마라 — 각 문단은 방법·이유·예시·주의점 중 "
+        f"둘 이상을 담아 풀어 써라. 문단 하나의 길이는 이 정도다(길이만 참고하고 내용은 따라 쓰지 "
+        f"마라): 「{LENGTH_EXAMPLE_PARAGRAPH}」 JSON을 내기 전에 문단이 {plan_paragraphs()}개인지, 각 "
+        f"문단이 {low}~{high}자인지 세어 보고, {high}자를 넘는 문단은 한 문장을 덜고 {low}자에 못 "
+        "미치는 문단은 한 문장을 더하라."
     )
 
 
@@ -1188,14 +1197,22 @@ _FAILURE_ASKS = {
 # The failures a length plan answers. When any of them is asked, the plan rides along once.
 _LENGTH_FAILURES = frozenset({"body_chars", "para_chars"})
 
+# The long prose goes LAST. Twice on 2026-09-29 (`bcp_cbbabb9953f3c67ba332`,
+# `bcp_29c26be0c982a4d30646`) the model stopped of its own accord (finish_reason STOP, ~3,000
+# output tokens) right after the last section, and everything the shape put after `sections` —
+# table, tags, capture directions, fact checks, sources — was never written. With the short
+# fields first, a draft that stops after its prose has lost nothing.
+DRAFT_KEY_ORDER = ("title_candidates", "tags", "image_shots", "table", "sources", "fact_checks",
+                   "intro", "sections")
 _DRAFT_SHAPE = (
-    '{"title_candidates": ["제목 후보 3~5개"], "intro": ["도입 문단"], '
-    '"sections": [{"heading": "소제목", "paragraphs": ["문단"]}], '
-    '"table": {"after_section": 1, "rows": [["구분", "항목1", "항목2"], ["행 이름", "값", "값"]]}, '
+    '{"title_candidates": ["제목 후보 3~5개"], '
     '"tags": ["태그(# 없이)"], '
     '"image_shots": [{"after_section": 0, "what_to_capture": "캡처할 실제 화면", "tool_name": null}], '
+    '"table": {"after_section": 1, "rows": [["구분", "항목1", "항목2"], ["행 이름", "값", "값"]]}, '
+    '"sources": [{"source_ref": "[S1]", "title": null}], '
     '"fact_checks": [{"claim": "본문 문장", "why": "확인이 필요한 이유", "source_ref": null}], '
-    '"sources": [{"source_ref": "[S1]", "title": null}]}'
+    '"intro": ["도입 문단"], '
+    '"sections": [{"heading": "소제목", "paragraphs": ["문단"]}]}'
 )
 
 
@@ -1215,6 +1232,7 @@ def content_request(target: str) -> str:
     return (
         f"'{target}' 키워드로 네이버 블로그 글 초안을 작성해라. content_draft 필드에는 아래 형식의 "
         f"JSON 객체 하나만 문자열로 넣어라(마크다운·설명 금지): {_DRAFT_SHAPE}\n"
+        "키는 위 순서대로 써라 — 짧은 항목을 먼저 모두 쓰고 intro와 sections를 맨 끝에 써라.\n"
         f"{_length_plan()}\n"
         f"규칙: title_candidates는 소제목과 별개인 글 제목 3~5개이고 각각 '{target}'를 앞쪽에 "
         f"자연스럽게 포함한다. {_keyword_ask(target)} image_shots 4~8개(after_section은 0부터 센 섹션 번호, 생성 "
@@ -1242,7 +1260,8 @@ def revision_request(target: str, first: Mapping[str, Any], text: str) -> str:
         "그대로 유지하라(없으면 새로 채워라). 이 수정 실행에는 근거 블록이 없다 — [S1]·[K1] 같은 "
         "근거 번호를 본문·facts·fact_checks 어디에도 쓰지 말고, sources는 빈 목록 []으로 둬라(첫 "
         "초안의 출처는 그대로 유지된다). content_draft에는 같은 JSON 형식으로 전체 초안을 다시 "
-        f"넣어라: {_DRAFT_SHAPE}\n이전 초안:\n{_revision_previous(first, text)}"
+        f"넣어라(키는 이 순서대로, intro와 sections를 맨 끝에): {_DRAFT_SHAPE}\n"
+        f"이전 초안:\n{_revision_previous(first, text)}"
     )
 
 
@@ -1274,6 +1293,8 @@ def _revision_previous(first: Mapping[str, Any], text: str) -> str:
         draft = dict(first["structured"])
         draft["sources"] = []
         draft["fact_checks"] = [{**c, "source_ref": None} for c in draft.get("fact_checks") or []]
+        # In the shape's order, so the revision is shown the prose last too.
+        draft = {k: draft[k] for k in DRAFT_KEY_ORDER if k in draft}
         previous = json.dumps(draft, ensure_ascii=False)
     else:
         previous = text
