@@ -4,7 +4,7 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **40**건: `DRAFT` 5 · `PARTIALLY DECIDED` 8 · `DECIDED` 2 · `IMPLEMENTED` 22 · `SUPERSEDED` 1 · `RECORD` 2
+제안서 **41**건: `DRAFT` 5 · `PARTIALLY DECIDED` 8 · `DECIDED` 3 · `IMPLEMENTED` 22 · `SUPERSEDED` 1 · `RECORD` 2
 
 ## Thomas 결정 대기 (13)
 
@@ -26,7 +26,7 @@
 | [EXECUTION_STAGE_ANTI_ROLLBACK_V0.1.md](EXECUTION_STAGE_ANTI_ROLLBACK_V0.1.md) | `DRAFT` | 2026-09-27 | §6의 D1–D4 결정 대기(앵커 위치, 장부가 파일을 대체, BOOTSTRAP으로 첫 행, 복원 뒤 재승인 비용). 구현 없음. |
 | [PROTECTION_UNKNOWN_ESCALATION_V0.1.md](PROTECTION_UNKNOWN_ESCALATION_V0.1.md) | `DRAFT` | 2026-09-27 | §6의 D1–D4 결정 대기(임계값, 런타임의 HARD 정지 권한, UNKNOWN에 청산하지 않음, 시계 저장 위치). 구현 없음. |
 
-## 결정됨 — 구현 남음 (2)
+## 결정됨 — 구현 남음 (3)
 
 결정은 끝났고 결정된 것이 아직 다 지어지지 않았다. 결정이 만든 구현 대기열이다.
 
@@ -34,6 +34,7 @@
 |---|---|---|---|
 | [EQUITY_PERP_LANE_V0.1.md](EQUITY_PERP_LANE_V0.1.md) | `DECIDED` | 2026-08-03 | ① 팩터/디스퍼전 재정의 ② 스프레드 v1 제외(2026-08-03), S0 규제 기록(2026-08-04, 잠정). S1은 2026-08-04부터 운영 중이고 S2(a)는 2026-08-09 완료(§8b). S2(b)는 데이터 깊이 때문에 아직 평가할 수 없고 S3–S5는 미착수다(`docs/REMAINING_WORK.md` §H). S3 이후 실주문은 S0의 확정 승격이라는 별도 결정 전에는 열리지 않는다. |
 | [FAMILY_EXHAUSTION_V0.1.md](FAMILY_EXHAUSTION_V0.1.md) | `DECIDED` | 2026-09-26 | Q1 B·Q2·Q3 결정, §6 확인 완료(1h는 5심볼 모두가 의도). 남은 구현: Q1 B의 퍼널 family 소진 절(30일 CONFIRMED·마지막 CONFIRMED). 1h 5심볼 민팅은 이미 돌고 있었다(§6 정정, 2026-09-26). |
+| [RISK_LANE_WATCHDOG_V0.1.md](RISK_LANE_WATCHDOG_V0.1.md) | `DECIDED` | 2026-09-29 | 타임아웃 시 프로세스 재시작, 마감값 600/120/120 s(Thomas). 구현 PR 두 개(§7) 진행 중. |
 
 ## 구현됨 (22)
 
