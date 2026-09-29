@@ -892,3 +892,31 @@ def test_the_plan_leads_with_the_cap_and_checks_both_ways():
     assert f"{(low + high) // 2}자 안팎({low}~{high}자)이고 {high}자를 넘기지 마라" in plan
     assert f"{high}자를 넘는 문단은 한 문장을 덜고 {low}자에 못 미치는 문단은 한 문장을 더하라" in plan
     assert "이상인지 세어" not in plan and "짧은 문단에는 문장을 더 붙여라" not in plan
+
+
+# --- a raw control character inside a string -------------------------------------------------
+#
+# bcp_5e855e2073b66b805cfd (2026-09-29): a complete draft, every key in order, failed with
+# "Invalid control character" over one raw newline at the end of one paragraph.
+
+def test_a_raw_newline_inside_a_paragraph_does_not_send_the_draft_to_legacy():
+    draft = _draft()
+    text = json.dumps(draft, ensure_ascii=False)
+    last = draft["sections"][-1]["paragraphs"][-1]
+    text = text.replace(json.dumps(last, ensure_ascii=False)[:-1] + '"',
+                        json.dumps(last, ensure_ascii=False)[:-1] + '\n"', 1)
+    assert "\n" in text
+    with pytest.raises(ValueError):
+        json.loads(text)                                     # strict JSON refuses it
+    parsed, reason = blog_draft.parse_structured(text)
+    assert reason is None and parsed["brackets_inserted"] == 0
+    assert parsed["sections"][-1]["paragraphs"][-1] == blog_draft.sanitize_paragraph(last)
+
+
+def test_a_raw_tab_and_a_missing_closer_together_still_parse():
+    draft = _draft()
+    draft["intro"][0] = "첫 문단\t안의 탭입니다. " + draft["intro"][0]
+    text = _missing_paragraphs_closer(draft).replace("\\t", "\t")
+    parsed, reason = blog_draft.parse_structured(text)
+    assert reason is None and parsed["brackets_inserted"] == 1
+    assert "\t" in parsed["intro"][0]

@@ -191,12 +191,23 @@ def repair_brackets(raw: str, *, close_at_end: bool = False) -> tuple[str, int] 
     return "".join(out), inserted
 
 
+def _loads(text: str) -> Any:
+    """``json.loads`` that accepts a raw control character (a newline, a tab) inside a string.
+
+    Strict JSON refuses them, and on 2026-09-29 (`bcp_5e855e2073b66b805cfd`) one raw newline at
+    the end of one paragraph sent an otherwise complete draft — every key, in order — to the
+    legacy parser. The character is kept as written; `sanitize_paragraph` already treats a
+    newline inside a paragraph as a line break and drops a trailing one."""
+    return json.loads(text, strict=False)
+
+
 def parse_structured(text: str) -> tuple[dict[str, Any] | None, str | None]:
     """``(draft, None)`` for a usable structured draft, ``(None, reason)`` otherwise.
 
     Tolerates exactly two kinds of wrapping a model adds — a code fence, and prose before or
-    after the object — by taking the outermost ``{...}``, and one kind of damage: brackets left
-    out (:func:`repair_brackets`), including a draft that stopped with brackets still open. Anything that is not then a JSON object with at
+    after the object — by taking the outermost ``{...}``, and two kinds of damage: brackets left
+    out (:func:`repair_brackets`), including a draft that stopped with brackets still open, and
+    raw control characters inside strings (:func:`_loads`). Anything that is not then a JSON object with at
     least one section holding prose is not a structured draft, and the caller falls back to the
     legacy parser and says so. A repaired draft says how many closers it needed in
     ``brackets_inserted``; the key is 0 otherwise."""
@@ -208,7 +219,7 @@ def parse_structured(text: str) -> tuple[dict[str, Any] | None, str | None]:
     raw = raw[start:end + 1]
     inserted = 0
     try:
-        data = json.loads(raw)
+        data = _loads(raw)
     except ValueError:
         # The outermost {...} first, as before; only when that cannot be repaired is the text
         # taken to its end with the brackets it left open closed there.
@@ -216,7 +227,7 @@ def parse_structured(text: str) -> tuple[dict[str, Any] | None, str | None]:
         if repaired is None:
             return None, "JSON_UNPARSEABLE"
         try:
-            data = json.loads(repaired[0])
+            data = _loads(repaired[0])
         except ValueError:
             return None, "JSON_UNPARSEABLE"
         inserted = repaired[1]
