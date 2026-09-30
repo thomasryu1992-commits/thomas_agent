@@ -54,6 +54,7 @@ from . import (
     feedback,
     forward_book,
     forward_confirmation,
+    generator,
     guards,
     independence,
     live_allowance,
@@ -433,11 +434,11 @@ TUNABLES: tuple[Tunable, ...] = (
     Tunable("HOLDOUT_FRACTION", backtest.HOLDOUT_FRACTION, "crypto/backtest.py", INHERITED,
             "the most recent 30% is withheld from scoring entirely",
             "evidence that the split size is what limits holdout depth rather than signal rate"),
-    Tunable("ELITE_EVIDENCE_MIN_TRADES", factory.ELITE_EVIDENCE_MIN_TRADES, "crypto/factory.py",
+    Tunable("ELITE_EVIDENCE_MIN_TRADES", generator.ELITE_EVIDENCE_MIN_TRADES, "crypto/generator.py",
             OPERATOR, "a search centre moved on three trades is not a lesson",
             "a measured relationship between centre-evidence depth and child quality"),
-    Tunable("PROBE_LIQUIDATION_ADMIT_FRACTION", factory.PROBE_LIQUIDATION_ADMIT_FRACTION,
-            "crypto/factory.py", MEASURED,
+    Tunable("PROBE_LIQUIDATION_ADMIT_FRACTION", generator.PROBE_LIQUIDATION_ADMIT_FRACTION,
+            "crypto/generator.py", MEASURED,
             "the probe's width is capped at what the median bar can carry past "
             "`trade_plan.stop_is_beyond_liquidation`: calibrated on the first harvest "
             "(2026-08-31), where 4h probes at 2.62/2.96 closed 119/139 trades despite heavy "
@@ -446,7 +447,7 @@ TUNABLES: tuple[Tunable, ...] = (
             "the 1d tier becoming judgeable at all, which needs `trade_plan.ASSUMED_LEVERAGE` "
             "revisited (at 20x the 1d admissible width is 0.46-0.94, under the generation "
             "space's own floor) — a money-path decision, not a search one"),
-    Tunable("_EXIT_PROBE_SLOTS", factory._EXIT_PROBE_SLOTS, "crypto/factory.py", MEASURED,
+    Tunable("_EXIT_PROBE_SLOTS", generator._EXIT_PROBE_SLOTS, "crypto/generator.py", MEASURED,
             "2 of 8 draws centre stop_atr on the family's own ceiling: 15 generations after "
             "#782 opened (1.2, 3.0), zero draws sat above 2.1 — a centred draw cannot reach "
             "the band the 2026-08-25 cost sweep pointed at, and `champion_score` never walks "

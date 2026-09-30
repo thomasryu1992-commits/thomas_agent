@@ -238,20 +238,21 @@ def _centre_log(monkeypatch, templates):
     Keying off the objects the batch is actually holding restores the exactness rather than
     trading it for a content comparison, and it no longer depends on that sharing at all.
     """
-    from runtime.mvp_runtime.crypto import factory
+    # Both patches go on `generator`, where `generate_batch` is defined and reads these two names.
+    from runtime.mvp_runtime.crypto import generator
 
     by_space: dict[int, object] = {}
-    real_templates = factory.templates_for_timeframe
+    real_templates = generator.templates_for_timeframe
 
     def capturing(*args, **kwargs):
         retimed = real_templates(*args, **kwargs)
         by_space.update({id(t.param_space): t for t in retimed})
         return retimed
 
-    monkeypatch.setattr(factory, "templates_for_timeframe", capturing)
+    monkeypatch.setattr(generator, "templates_for_timeframe", capturing)
     by_space.update({id(t.param_space): t for t in templates})
 
-    real = factory.mutate_params
+    real = generator.mutate_params
     log: list[tuple[str, str]] = []
 
     def recording(base_params, param_space, rng, **kw):
@@ -260,7 +261,7 @@ def _centre_log(monkeypatch, templates):
                     "base" if base_params is template.base_params else "elite"))
         return real(base_params, param_space, rng, **kw)
 
-    monkeypatch.setattr(factory, "mutate_params", recording)
+    monkeypatch.setattr(generator, "mutate_params", recording)
     return log
 
 

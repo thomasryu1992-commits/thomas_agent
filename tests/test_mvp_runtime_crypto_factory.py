@@ -19,7 +19,8 @@ import pytest
 from runtime.mvp_runtime import control, timeutil
 from runtime.mvp_runtime.control import ControlState, ControlStore
 from runtime.mvp_runtime.crypto import (
-    backtest, factory, features, indicators, market_data, pool, robustness, template_space,
+    backtest, factory, features, generator, indicators, market_data, pool, robustness,
+    template_space,
 )
 from runtime.mvp_runtime.crypto.factory import (
     generate_batch,
@@ -633,7 +634,8 @@ def _refuse_family(monkeypatch, family):
                     "block_reasons": ["BLOCK_TEST_REFUSAL"]}
         return real(spec)
 
-    monkeypatch.setattr(factory, "validate_strategy", refusing)
+    # On `generator`, where `generate_batch` is defined and reads it.
+    monkeypatch.setattr(generator, "validate_strategy", refusing)
 
 
 def _first_family(*, symbol="BTCUSDT", timeframe="1h", rotation_index=0, count=4):
@@ -669,7 +671,7 @@ def test_a_stuck_family_no_longer_takes_the_whole_fire_with_it(monkeypatch):
 
 def test_every_family_stuck_still_terminates(monkeypatch):
     """The global budget is still the backstop: nothing here can loop forever."""
-    monkeypatch.setattr(factory, "validate_strategy", lambda spec: {
+    monkeypatch.setattr(generator, "validate_strategy", lambda spec: {
         "strategy_id": spec.strategy_id, "strategy_rule_hash": spec.strategy_rule_hash,
         "approved_for_backtest": False, "block_reasons": ["BLOCK_TEST_REFUSAL"],
     })
