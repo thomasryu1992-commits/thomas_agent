@@ -42,6 +42,7 @@ from typing import Any
 from . import (
     account,
     backtest,
+    candidate_ranking,
     candle_archive,
     cost,
     dashboard,
@@ -132,6 +133,13 @@ TUNABLES: tuple[Tunable, ...] = (
     Tunable("MAX_ENTRY_COST_R", cost.MAX_ENTRY_COST_R, "crypto/cost.py", MEASURED,
             "friction at a quarter of an R needs a top-quartile edge merely to break even (n=102)",
             "the store's positive-expectancy distribution moving; re-measure before touching"),
+    Tunable("STRESS_SLIPPAGE_BPS", candidate_ranking.STRESS_SLIPPAGE_BPS,
+            "crypto/candidate_ranking.py", OPERATOR,
+            "review C2's three columns (gap analysis Q2, Thomas 2026-09-30): the modelled entry "
+            "rate, a round 10, and the worst strategy stop fill measured (23.5, 2026-08-06). "
+            "Display only: a LIVE ask shows net R at each and no gate reads them",
+            "a measured slippage distribution (twenty fills a leg in measure_live_slippage), at "
+            "which point observed percentiles replace the fixed figures"),
 
     # --- the four numbers that stop the money, and the two nobody has re-decided --------------
     Tunable("DAILY_MAX_LOSS_R", guards.DAILY_MAX_LOSS_R, "crypto/guards.py", INHERITED,
