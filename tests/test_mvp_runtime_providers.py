@@ -1175,3 +1175,43 @@ def test_a_member_that_drops_the_roles_keys_fails_over_to_one_that_answers(monke
     result = chain.generate("p", max_output_tokens=100, timeout_seconds=10)
     assert result.analysis["content_draft"]
     assert [f["kind"] for f in result.failovers] == ["malformed"]
+
+
+# --- a response whose text is null ---------------------------------------------------------
+#
+# 2026-09-30: an OpenAI-shaped member answered `"content": null` and `_strip_code_fences(None)`
+# raised AttributeError, which the body guard did not catch. The blog run's revision died as
+# BRIDGE_ERROR instead of the chain moving on to the next member.
+
+def test_an_openai_shaped_answer_with_null_content_is_malformed(monkeypatch):
+    from runtime.mvp_runtime.providers import OpenRouterProvider
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    null = json.dumps({"choices": [{"message": {"content": None}, "finish_reason": "length"}],
+                       "usage": {"prompt_tokens": 5, "completion_tokens": 900}})
+    _patch_urlopen_sequence(monkeypatch, [null, null])
+    with pytest.raises(ProviderError) as exc:
+        OpenRouterProvider(authorization=_openrouter_auth()).generate(
+            "p", max_output_tokens=100, timeout_seconds=10)
+    assert exc.value.reason_code == "MALFORMED_RESPONSE"
+
+
+def test_a_google_answer_with_null_text_is_malformed(monkeypatch):
+    monkeypatch.setenv(API_ENV, "k")
+    _patch_urlopen(monkeypatch, json.dumps(
+        {"candidates": [{"content": {"parts": [{"text": None}]}, "finishReason": "STOP"}]}))
+    with pytest.raises(ProviderError) as exc:
+        GoogleAIStudioProvider(authorization=_AUTH).generate("x", max_output_tokens=100, timeout_seconds=5)
+    assert exc.value.reason_code == "MALFORMED_RESPONSE"
+
+
+def test_a_null_content_member_is_failed_over_not_fatal(monkeypatch):
+    from runtime.mvp_runtime.providers import FailoverProvider, OpenRouterProvider
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    null = json.dumps({"choices": [{"message": {"content": None}, "finish_reason": "stop"}]})
+    _patch_urlopen_sequence(monkeypatch, [null, null])
+    fallback = _StubProvider("google_ai_studio", _result("google_ai_studio"))
+    result = FailoverProvider([OpenRouterProvider(authorization=_openrouter_auth()), fallback]).generate(
+        "p", max_output_tokens=100, timeout_seconds=30)
+    assert result.model_id == "google_ai_studio" and fallback.calls == 1
