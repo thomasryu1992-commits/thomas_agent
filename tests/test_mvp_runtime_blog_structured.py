@@ -1155,7 +1155,14 @@ def test_the_request_forbids_business_names_but_not_tool_names():
     """Three posts named and priced real printers (2026-09-30); Thomas: no business names."""
     request = blog_content.content_request(TARGET)
     assert blog_content.VENDOR_NAME_ASK in request
-    assert "'온라인 인쇄 업체 A'" in request and "앱·소프트웨어·AI 도구의 이름" in request
+    assert "'온라인 인쇄 업체 A'" in request and "앱·소프트웨어·AI 도구는 업체가 아니다" in request
+
+
+def test_a_tool_in_the_evidence_must_be_named_not_blurred():
+    """'스티커만들기' cited Canva and Adobe Firefly and called them "온라인 서비스"·"특정 앱"."""
+    request = blog_content.content_request(TARGET)
+    assert "근거에 나온 도구의 이름" in request and "반드시 그대로 밝혀라" in request
+    assert "'온라인 서비스'·'특정 앱'·'편집 도구'처럼 흐리게 부르지 마라" in request
 
 
 # --- advice, announcements and hedges are not claims (2026-09-30) ------------------------------

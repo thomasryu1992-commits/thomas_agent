@@ -1349,13 +1349,17 @@ def _keyword_places(structured: Mapping[str, Any], target: str) -> list[str]:
 # A carrier's partnership is the exception (Thomas 2026-09-30): '퍼플렉시티 무료'
 # (bcp_3ffcacf2c0ff175ef7a0) turned an SKT customers' offer into "특정 통신사 이용자라면", which no
 # reader can act on.
+# A tool is not a business either, and has to be SAID to be one: with "도구 이름은 써도 된다" (may),
+# '스티커만들기' (bcp_b8dcea9bca60d9a7a883, candidate-1074) cited Canva's and Adobe Firefly's pages
+# and called them "온라인 서비스" and "특정 앱" throughout. The tool's name is now a must.
 # A public site is not a business at all (Thomas 2026-09-30): '2026소상공인지원금신청'
 # (bcp_756592c6972ca6129a32) sent the reader to "지정된 지원금 전용 포털" for a voucher applied for
 # on 소상공인24 — a government portal the reader has to find by name.
 VENDOR_NAME_ASK = (
     "업체·가게·인쇄소·쇼핑몰·판매 사이트·중개 플랫폼의 이름은 본문·제목·표·캡처 지시 어디에도 쓰지 "
     "마라 — '온라인 인쇄 업체 A'·'업체 B'처럼 익명으로 쓰거나 업종으로만 불러라. 앱·소프트웨어·AI "
-    "도구의 이름(키워드가 다루는 도구 포함)은 써도 된다. 단, 통신사 제휴 혜택(특정 통신사 고객만 받는 "
+    "도구는 업체가 아니다 — 근거에 나온 도구의 이름(캔바·어도비 파이어플라이·ChatGPT처럼, 키워드가 다루는 "
+    "도구 포함)은 반드시 그대로 밝혀라. '온라인 서비스'·'특정 앱'·'편집 도구'처럼 흐리게 부르지 마라. 단, 통신사 제휴 혜택(특정 통신사 고객만 받는 "
     "요금제·구독 혜택 등)은 그 통신사 이름을 밝혀라 — 독자가 자기가 대상인지 알아야 한다. 정부·공공기관의 "
     "사이트와 서비스(정부24·홈택스·위택스·소상공인24·고용노동부 등)는 업체가 아니다 — 독자가 직접 찾아가야 "
     "하는 곳이니 이름을 그대로 밝혀라."
