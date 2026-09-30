@@ -140,7 +140,8 @@ from .strategy import StrategySpec
 # `admission_evidence` is re-exported: the promotion door, the signal probe and every replay read it
 # as `pool.admission_evidence`. It moved to the artifact's leaf, which hashes the projection (PR3a).
 # `ARTIFACT_SHA256_FIELD` is kept for its readers too: since the live tier moved out (PR7e-8) nothing
-# here uses it, but `live_route` and two tests read it as `pool.ARTIFACT_SHA256_FIELD`.
+# here uses it, and since `verify_live_arm` moved to `promotion` (refactor plan PR-04) no runtime module
+# reads it through this one. Two tests still read it as `pool.ARTIFACT_SHA256_FIELD`.
 from .strategy_artifact import ARTIFACT_SHA256_FIELD, admission_evidence  # noqa: F401
 
 

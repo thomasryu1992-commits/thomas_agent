@@ -409,6 +409,8 @@ def test_no_result_layer_import_of_a_sender_is_excepted():
 
 
 def test_every_named_egress_exception_still_exists_name_by_name():
+    """With ``EGRESS_EXCEPTIONS`` empty (since PR-04) there is nothing here to go stale, and the test
+    above is the one that holds the line. This one is kept for the day an exception is named again."""
     stale = _egress_problems(_edges())["stale"]
     assert stale == {}, f"no longer imported: remove them from EGRESS_EXCEPTIONS (it only shrinks): {stale}"
 
