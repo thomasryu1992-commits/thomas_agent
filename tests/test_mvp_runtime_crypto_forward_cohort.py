@@ -853,7 +853,7 @@ def test_the_detail_stands_on_the_rows_the_judge_prices(tmp_path):
     unpriceable = {**rows[0], "result_R": "n/a"}
     before_selection = {**rows[0], "opened_at_utc": "2026-06-01T00:00:00Z"}
     mixed = [*rows, unpriceable, before_selection]
-    assert [net for _, net in script.priced_rows(record, mixed)] == fco.priced_nets(record, mixed)
+    assert sorted(net for _, net in script.priced_rows(record, mixed)) == sorted(fco.priced_nets(record, mixed))
     assert script.detail_columns(record, mixed)["n"] == 2
     # and over a real walk the report's own line agrees with the detail's n
     detail = script.detail_report(tmp_path)

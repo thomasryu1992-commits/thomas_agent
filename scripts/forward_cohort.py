@@ -189,7 +189,9 @@ def detail_columns(record: Mapping[str, Any], outcomes: Iterable[Mapping[str, An
 def detail_report(root: Path) -> dict[tuple[Any, str], dict[str, Any]]:
     """:func:`detail_columns` for every member of every frozen cohort, keyed by cohort id and
     candidate id. A member is judged from its frozen selection time, as ``cohort_report`` judges
-    it; one whose candidate row is gone has no entry."""
+    it; one whose candidate row is gone has no entry. The stores are read here and again by
+    ``cohort_report``, so a walk that lands between the two reads can leave one line's ``n`` a row
+    apart from the table above it."""
     latest = {candidate_id(record): record for record in read_candidates(root)}
     rows = forward_cohort.read_cohort_outcomes(root)
     detail: dict[tuple[Any, str], dict[str, Any]] = {}
