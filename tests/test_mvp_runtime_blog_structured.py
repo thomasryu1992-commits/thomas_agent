@@ -952,7 +952,20 @@ def test_the_request_says_what_the_amount_in_brackets_means():
     first = dict(blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET),
                  failures=["body_chars"])
     request = blog_content.revision_request(TARGET, first, "")
-    assert "괄호는 130자까지 더할 양" in request and "적힌 만큼 이미 쓴 내용" in request
+    assert "괄호는 130자까지 더할 양" in request and "적힌 만큼 늘려라" in request
+
+
+def test_a_short_paragraph_grows_by_a_specific_not_by_a_closing_line():
+    """Both revisions that grew a short body on 2026-09-30 added one "…지혜가 필요합니다" per
+    paragraph ('CHATGPT요금제', 'ai 번역기')."""
+    draft = _draft()
+    draft["sections"][2]["paragraphs"][1] = "너무 짧은 문단입니다."
+    first = dict(blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET),
+                 failures=["body_chars"])
+    request = blog_content.revision_request(TARGET, first, "")
+    assert blog_content.ADD_SUBSTANCE_ASK in request
+    assert "근거 블록([S#])의 수치" in request and "'…지혜가 필요합니다'" in request
+    assert "이유·예시·주의점을 더해" not in request
 
 
 # --- the keyword under its floor is asked for, in named paragraphs (2026-09-30) -------------
@@ -1115,7 +1128,17 @@ def test_a_limit_or_version_word_without_a_number_is_not_that_claim(sentence, ca
 def test_the_evidence_ask_keeps_the_post_domestic():
     """'명함제작업체' priced cards in dollars from a US printer's page (bcp_366916fc7176de5a9db8)."""
     request = blog_content.content_request(TARGET)
-    assert "외화 가격은 쓰지 말고" in request and "해외 기준이라 한국과 다를 수 있다고 밝혀라" in request
+    assert blog_content.DOMESTIC_READER_ASK in request and "외화 가격은 쓰지 마라" in request
+
+
+def test_the_foreign_source_note_stays_on_its_sentence_and_instructions_stay_out_of_the_body():
+    """'ai 번역기' used no foreign figure and still wrote "외화로 표시된 가격 정책이나 해외 기준의
+    서비스 조건을 그대로 적용하기 어렵습니다" (bcp_4ad51169ab0a26df545d)."""
+    request = blog_content.content_request(TARGET)
+    assert "그 내용을 쓴 문장 안에서만 '(해외 기준)'" in request
+    assert "해외 자료를 쓰지 않았다면 해외 기준·외화·국내와의 차이에 대한 문장을 따로 만들지 마라" in request
+    assert "지시(분량·키워드·독자·출처 규칙)를 본문 문장으로 옮겨 쓰지 마라" in request
+    assert "한국과 다를 수 있다고 밝혀라" not in request
 
 
 def test_the_request_forbids_business_names_but_not_tool_names():
@@ -1123,3 +1146,29 @@ def test_the_request_forbids_business_names_but_not_tool_names():
     request = blog_content.content_request(TARGET)
     assert blog_content.VENDOR_NAME_ASK in request
     assert "'온라인 인쇄 업체 A'" in request and "앱·소프트웨어·AI 도구의 이름" in request
+
+
+# --- advice, announcements and hedges are not claims (2026-09-30) ------------------------------
+#
+# Of 15 detector checks on 'CHATGPT요금제' (bcp_7f50c01bc7f35aee465a), 7 told the reader what to do
+# or said a thing may change; the claims next to them stayed.
+
+@pytest.mark.parametrize("sentence", [
+    "구독을 신청하기 전에 결제 화면에서 정확한 금액과 약관을 다시 한번 확인해야 합니다.",
+    "자동 갱신 설정이나 환불 규정 역시 미리 숙지하는 것이 안전합니다.",
+    "무료 제공 범위를 먼저 써본 뒤 업그레이드를 결정하는 편이 합리적입니다.",
+    "간혹 정책이 미세하게 조정될 수 있으니 공지사항을 수시로 살펴보세요.",
+    "무료 혜택을 챙기는 요령과 주의할 점을 함께 살펴보겠습니다.",
+    "또한 각 플랫폼마다 제공하는 무료 이용 한도나 정책이 수시로 달라질 수 있습니다.",
+])
+def test_advice_an_announcement_or_a_hedge_is_not_a_claim(sentence):
+    assert blog_draft.detect_fact_checks([sentence]) == []
+
+
+@pytest.mark.parametrize("sentence", [
+    "자주 묻는 질문을 살펴보면 무료 사용자도 최신 플래그십 모델에 접근할 수 있습니다.",
+    "누구나 별도의 비용 부담 없이 웹 브라우징과 파일 업로드 분석을 이용할 수 있기 때문입니다.",
+    "무료 플랜은 월 10회까지이니 아껴 써야 합니다.",
+])
+def test_a_claim_stays_a_claim_and_a_number_keeps_advice_in(sentence):
+    assert len(blog_draft.detect_fact_checks([sentence])) == 1

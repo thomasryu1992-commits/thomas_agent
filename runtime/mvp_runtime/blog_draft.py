@@ -457,6 +457,24 @@ _CLAIM_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
 _SENTENCE_RE = re.compile(r"(?:[^.!?。\n]|(?<=\d)\.(?=\d))+[.!?。]?")
 
 
+# A sentence that tells the reader what to do, announces the post, or only says a thing may
+# change states nothing to check: of 16 checks on 'CHATGPT요금제' (2026-09-30) most were
+# "약관을 다시 한번 확인해야 합니다" and "정책이나 가격은 향후 변경될 수 있음을 염두에 두어야
+# 합니다". A digit keeps the sentence in ("월 10회까지이니 아껴 써야 합니다" still carries a limit).
+_NOT_A_CLAIM_RE = re.compile(
+    r"(?:야\s*(?:합니다|한다|해요)"
+    r"|(?:것이|편이)\s*(?:좋|안전|중요|현명|유리|합리적|바람직|낫)\S*"
+    r"|필요(?:합니다|하다|해요)"
+    r"|(?:세요|십시오|바랍니다)"
+    r"|(?:살펴|알아)\s*보겠습니다"
+    r"|(?:달라질|바뀔|변경될|조정될|다를)\s*수\s*있(?:습니다|다|어요))[.!?。]?$"
+)
+
+
+def _states_nothing(sentence: str) -> bool:
+    return not re.search(r"\d", sentence) and bool(_NOT_A_CLAIM_RE.search(sentence))
+
+
 def _claim_key(claim: str) -> str:
     """A claim with spacing, punctuation and its sentence ending taken off, for telling that the
     model's "…제공한다." and the detector's "…제공합니다." are the same sentence."""
@@ -476,8 +494,8 @@ def detect_fact_checks(paragraphs: Sequence[str]) -> list[dict[str, Any]]:
     for paragraph in paragraphs:
         for sentence in _SENTENCE_RE.findall(paragraph):
             sentence = sentence.strip()
-            if len(sentence) < 8 or sentence in seen or " | " in sentence:
-                continue          # a table row is not a sentence claiming anything
+            if len(sentence) < 8 or sentence in seen or " | " in sentence or _states_nothing(sentence):
+                continue          # a table row, advice or a hedge is not a sentence claiming anything
             for category, pattern, why in _CLAIM_PATTERNS:
                 if pattern.search(sentence):
                     seen.add(sentence)
