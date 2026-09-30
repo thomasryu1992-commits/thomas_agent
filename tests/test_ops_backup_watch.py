@@ -144,3 +144,33 @@ def test_a_failed_workflow_snapshot_is_reported_even_when_the_archive_was_writte
 def test_a_core_line_without_the_marker_means_an_old_backup_script(tmp_path):
     result = _run(tmp_path, _dest(tmp_path, log=PRE_P10_LINE), _health_log(tmp_path))
     assert result.returncode == 1 and "workflow-snapshot 표기가 없습니다" in result.stdout
+
+
+@posix_only
+def test_an_archive_that_carries_the_execution_stage_anchor_is_reported(tmp_path):
+    """EXECUTION_STAGE_ANTI_ROLLBACK D1 a: the anchor vouches for the stage ledger, and restored with
+    it would vouch for an older stage. The backup excludes it; the watch catches a backup that did not."""
+    import tarfile
+
+    dest = _dest(tmp_path, core=False)
+    src = tmp_path / "src" / "thomas_agent" / ".runtime_governance_state" / "crypto"
+    src.mkdir(parents=True)
+    (src / "execution_stage_anchor.json").write_text("{}", encoding="utf-8")
+    with tarfile.open(dest / "govstate-20260907-0815.tar.gz", "w:gz") as archive:
+        archive.add(tmp_path / "src" / "thomas_agent", arcname="root/thomas_agent")
+    result = _run(tmp_path, dest, _health_log(tmp_path))
+    assert "실행 단계 앵커" in result.stdout + result.stderr
+
+
+@posix_only
+def test_an_archive_without_the_anchor_says_nothing(tmp_path):
+    import tarfile
+
+    dest = _dest(tmp_path, core=False)
+    src = tmp_path / "src" / "thomas_agent" / ".runtime_governance_state" / "crypto"
+    src.mkdir(parents=True)
+    (src / "execution_stage_ledger.jsonl").write_text("{}\n", encoding="utf-8")
+    with tarfile.open(dest / "govstate-20260907-0815.tar.gz", "w:gz") as archive:
+        archive.add(tmp_path / "src" / "thomas_agent", arcname="root/thomas_agent")
+    result = _run(tmp_path, dest, _health_log(tmp_path))
+    assert "실행 단계 앵커" not in result.stdout + result.stderr

@@ -233,10 +233,10 @@ def test_a_record_write_that_fails_after_the_spend_says_the_grant_is_gone(tmp_pa
                              attestation="paper ledger")
     _approve(tmp_path, asked["approval_id"])
 
-    def refuse(record, root=None):
+    def refuse(record, root=None, **kw):
         raise PermissionError("read-only state dir")
 
-    monkeypatch.setattr(es, "write_stage_record", refuse)
+    monkeypatch.setattr(es, "append_stage_record", refuse)
     with pytest.raises(MvpRuntimeError) as exc:
         door.run_confirm(root=tmp_path, now=NOW, approval_id=asked["approval_id"])
     assert exc.value.reason_code == es.STAGE_WRITE_FAILED_AFTER_SPEND
@@ -336,3 +336,33 @@ def test_a_cycle_tampered_between_the_ask_and_the_spend_installs_nothing(tmp_pat
     assert exc.value.reason_code == testnet_evidence.EVIDENCE_TAMPERED
     assert ApprovalStore.default(tmp_path).get(asked["approval_id"])["status"] == "APPROVED"
     assert es.read_registered_stage(tmp_path)["stage"] == "SIGNED_TESTNET"
+
+
+@requires_local_core
+def test_a_grant_whose_record_cannot_land_is_refused_before_it_is_spent(tmp_path):
+    """EXECUTION_STAGE_ANTI_ROLLBACK: a climb extends a verified, anchored ledger. With the anchor gone
+    (what a restore leaves) the door refuses BEFORE the spend, so the grant stays APPROVED. The re-plan
+    refuses first, because the machine now reads READ_ONLY; `assert_appendable` stands behind it."""
+    _bootstrap_paper(tmp_path)
+    asked = door.run_request(root=tmp_path, now=NOW, target="SIGNED_TESTNET", registered_by="thomas",
+                             reason="climb", attestation=None)
+    _approve(tmp_path, asked["approval_id"])
+    es.anchor_path(tmp_path).unlink()
+    with pytest.raises(MvpRuntimeError) as exc:
+        door.run_confirm(root=tmp_path, now=NOW, approval_id=asked["approval_id"])
+    assert exc.value.reason_code in (es.STAGE_BOOTSTRAP_ONLY_SHADOW_OR_PAPER, es.STAGE_LEDGER_NEEDS_BINDING,
+                                     es.STAGE_CHANGED)
+    assert ApprovalStore.default(tmp_path).get(asked["approval_id"])["status"] == "APPROVED"
+
+
+@requires_local_core
+def test_sync_anchor_re_anchors_a_tip_one_row_ahead_and_says_so_when_in_sync(tmp_path, monkeypatch):
+    _bootstrap_paper(tmp_path)
+    assert door.run_sync_anchor(root=tmp_path, now=NOW)["changed"] is False
+    monkeypatch.setattr(es, "write_anchor", lambda *a, **k: (_ for _ in ()).throw(OSError("full")))
+    out = door.run_demote(root=tmp_path, now=NOW, target="SHADOW", registered_by="thomas", reason="step")
+    monkeypatch.undo()
+    assert any(es.STAGE_ANCHOR_WRITE_FAILED in w for w in out["warnings"])
+    synced = door.run_sync_anchor(root=tmp_path, now=NOW)
+    assert (synced["changed"], synced["from_seq"], synced["seq"]) == (True, 0, 1)
+    assert synced["status"]["stage"] == "SHADOW"

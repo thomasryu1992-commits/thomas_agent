@@ -4,10 +4,10 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **644** distinct codes across **1246** raise sites
+- **650** distinct codes across **1267** raise sites
 - **23** exception classes carry them
 - **75** codes are raised from more than one module (see below)
-- **136** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
+- **137** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
 - **29** raise sites carry a human-readable **message** where a code would go, so there is nothing to look up — a different gap from the line above, and counted apart from it
 
 ## Codes raised from more than one module
@@ -352,12 +352,33 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `EVENT_INVALID` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow.py` | `event_record` | `—` |
 | `EVENT_STRUCTURE_INVALID` | `AuditError` | `runtime/mvp_runtime/audit.py` | `rechain_events` | `not (isinstance(integrity_block, MutableMapping) and isinstance(payload, MutableMapping) and is…` |
 | `EXECUTION_STAGE_ALREADY_BINDS` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `plan_transition` | `target == recorded` |
+| `EXECUTION_STAGE_ANCHOR_SYNC_REFUSED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `sync_anchor` | `—` |
+| `EXECUTION_STAGE_ANCHOR_SYNC_REFUSED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `sync_anchor` | `_anchor_problem(rows, anchor) == STAGE_ROLLED_BACK` |
+| `EXECUTION_STAGE_ANCHOR_SYNC_REFUSED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `sync_anchor` | `anchor is None` |
+| `EXECUTION_STAGE_ANCHOR_SYNC_REFUSED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `sync_anchor` | `not rows` |
+| `EXECUTION_STAGE_ANCHOR_SYNC_REQUIRED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `plan_transition` | `status.anchor_behind` |
+| `EXECUTION_STAGE_ANCHOR_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `read_anchor` | `—` |
+| `EXECUTION_STAGE_ANCHOR_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `read_anchor` | `—` |
+| `EXECUTION_STAGE_ANCHOR_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `read_anchor` | `data['venue'] != SUPPORTED_VENUE` |
+| `EXECUTION_STAGE_ANCHOR_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `read_anchor` | `not isinstance(data, dict)` |
+| `EXECUTION_STAGE_ANCHOR_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `read_anchor` | `not isinstance(stored, str) or stored != _hash_or_none(body)` |
 | `EXECUTION_STAGE_ATTESTATION_REQUIRED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `plan_transition` | `not (isinstance(attestation, str) and attestation.strip())` |
 | `EXECUTION_STAGE_BOOTSTRAP_ONLY_SHADOW_OR_PAPER` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `plan_transition` | `rebindable` |
 | `EXECUTION_STAGE_CHANGED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `record_from_approved` | `content.get('stage_ref') != stage_ref(status_now)` |
 | `EXECUTION_STAGE_CHANGED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `record_from_approved` | `replanned != dict(content)` |
 | `EXECUTION_STAGE_DEMOTE_FROM_UNBOUND_RECORD` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `demote_record` | `not status.binding` |
 | `EXECUTION_STAGE_EVIDENCE_NOT_APPLICABLE` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `plan_transition` | `testnet_cycle_id is not None` |
+| `EXECUTION_STAGE_LEDGER_BROKEN` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `read_ledger` | `—` |
+| `EXECUTION_STAGE_LEDGER_BROKEN` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `read_ledger` | `—` |
+| `EXECUTION_STAGE_LEDGER_BROKEN` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `read_ledger` | `approval_id in approvals` |
+| `EXECUTION_STAGE_LEDGER_BROKEN` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `read_ledger` | `index > 0 and record.get('transition') != T_BOOTSTRAP and (record.get('previous_stage') != rows…` |
+| `EXECUTION_STAGE_LEDGER_BROKEN` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `read_ledger` | `not isinstance(stored, str) or stored != _hash_or_none(body)` |
+| `EXECUTION_STAGE_LEDGER_BROKEN` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `read_ledger` | `row['seq'] != index or row['prev_row_sha256'] != previous_hash` |
+| `EXECUTION_STAGE_LEDGER_NEEDS_BINDING` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `assert_appendable` | `_chain_to_extend(root, repo_root=repo_root) is None and (not _may_start_chain(record))` |
+| `EXECUTION_STAGE_LEDGER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `read_ledger` | `—` |
+| `EXECUTION_STAGE_LEDGER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `read_ledger` | `—` |
+| `EXECUTION_STAGE_LEDGER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `read_ledger` | `not isinstance(row, dict)` |
+| `EXECUTION_STAGE_LEDGER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `read_ledger` | `not rows` |
 | `EXECUTION_STAGE_NOTHING_TO_DEMOTE` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `demote_record` | `not status.record_present` |
 | `EXECUTION_STAGE_NOT_DEFINED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `demote_record` | `target not in LADDER` |
 | `EXECUTION_STAGE_NOT_DEFINED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `plan_transition` | `target == ExecutionStage.LIVE_SCALED.value` |
@@ -368,13 +389,13 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `EXECUTION_STAGE_POLICY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `plan_transition` | `identity is None` |
 | `EXECUTION_STAGE_REBIND_FIRST` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `plan_transition` | `rebindable` |
 | `EXECUTION_STAGE_RECORD_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `_finish` | `—` |
+| `EXECUTION_STAGE_RECORD_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `_verified_record` | `—` |
+| `EXECUTION_STAGE_RECORD_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `append_stage_record` | `—` |
 | `EXECUTION_STAGE_RECORD_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `demote_record` | `not (isinstance(registered_by, str) and registered_by.strip() and isinstance(reason, str) and r…` |
 | `EXECUTION_STAGE_RECORD_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `plan_transition` | `not (isinstance(registered_by, str) and registered_by.strip() and isinstance(reason, str) and r…` |
-| `EXECUTION_STAGE_RECORD_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `read_registered_stage` | `—` |
-| `EXECUTION_STAGE_RECORD_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `read_registered_stage` | `not isinstance(stored, str) or recomputed != stored` |
-| `EXECUTION_STAGE_RECORD_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `read_registered_stage` | `—` |
-| `EXECUTION_STAGE_RECORD_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `read_registered_stage` | `—` |
-| `EXECUTION_STAGE_RECORD_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `read_registered_stage` | `not isinstance(data, dict)` |
+| `EXECUTION_STAGE_RECORD_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `_verified_record` | `not isinstance(stored, str) or recomputed != stored` |
+| `EXECUTION_STAGE_RECORD_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `_verified_record` | `—` |
+| `EXECUTION_STAGE_RECORD_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `_verified_record` | `not isinstance(data, dict)` |
 | `EXECUTION_STAGE_SIGNED_TESTNET_EVIDENCE_REQUIRED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `_live_entry_evidence` | `not (isinstance(cycle_id, str) and cycle_id.strip())` |
 | `EXECUTION_STAGE_SKIP_REFUSED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | `plan_transition` | `rank(target) != rank(recorded) + 1` |
 | `EXECUTION_STAGE_TOO_LOW_TO_ARM` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | `_gate_execution_stage` | `—` |

@@ -80,14 +80,32 @@ def _testnet(tmp_path, approvals):
     return _register(tmp_path, approvals, _paper(tmp_path, approvals), "SIGNED_TESTNET", approval_id="approval_tn")
 
 
+def _ledger_rows(tmp_path):
+    return [json.loads(line) for line in es.ledger_path(tmp_path).read_text(encoding="utf-8").splitlines()]
+
+
+def _forge_tip(tmp_path, record):
+    """Put ``record`` in the ledger's tip as written, and recompute the row's hash and the anchor —
+    what anyone who can write the state directory can do (audit FO-12). The record's own self-hash is
+    left as given, so a caller that edits a field without re-hashing gets a TAMPERED record."""
+    rows = _ledger_rows(tmp_path)
+    tip = {k: v for k, v in rows[-1].items() if k != "row_sha256"}
+    tip["record"] = record
+    tip["row_sha256"] = integrity.sha256_record(tip)
+    rows[-1] = tip
+    es.ledger_path(tmp_path).write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    es.write_anchor(tmp_path, tip, now=NOW)
+    return tip
+
+
 def _rewrite(tmp_path, **fields):
-    """Edit the record on disk and recompute its self-hash — what anyone who can write the state
-    directory can do (audit FO-12)."""
-    path = es.stage_path(tmp_path)
-    body = {k: v for k, v in json.loads(path.read_text(encoding="utf-8")).items() if k != "record_sha256"}
+    """Edit the tip record and recompute EVERY hash — the record's, the row's and the anchor's — what
+    anyone who can write the state directory can do (audit FO-12). The record-level checks below it
+    (transition shape, witness, policy) are what refuse such a forgery."""
+    body = {k: v for k, v in _ledger_rows(tmp_path)[-1]["record"].items() if k != "record_sha256"}
     body.update(fields)
     body["record_sha256"] = integrity.sha256_record(body)
-    path.write_text(json.dumps(body), encoding="utf-8")
+    _forge_tip(tmp_path, body)
     return body
 
 
@@ -253,12 +271,23 @@ def test_a_hand_written_transition_that_breaks_the_ladder_reads_read_only(tmp_pa
 def test_a_tampered_record_reads_read_only(tmp_path):
     approvals = _Approvals()
     _paper(tmp_path, approvals)
-    path = es.stage_path(tmp_path)
-    data = json.loads(path.read_text(encoding="utf-8"))
-    data["stage"] = "LIVE_AUTONOMOUS"
-    path.write_text(json.dumps(data), encoding="utf-8")
+    data = dict(_ledger_rows(tmp_path)[-1]["record"])
+    data["stage"] = "LIVE_AUTONOMOUS"   # edited, the self-hash left as it was
+    _forge_tip(tmp_path, data)
     status = _resolve(tmp_path, approvals)
     assert (status.reason_code, status.record_present) == (es.STAGE_RECORD_TAMPERED, True)
+
+
+def test_editing_the_mirror_changes_nothing(tmp_path):
+    """The ledger's tip is the stage; `execution_stage.json` is a mirror no decision reads."""
+    approvals = _Approvals()
+    _paper(tmp_path, approvals)
+    body = {k: v for k, v in json.loads(es.stage_path(tmp_path).read_text(encoding="utf-8")).items()
+            if k != "record_sha256"}
+    body.update(stage="LIVE_AUTONOMOUS")
+    body["record_sha256"] = integrity.sha256_record(body)
+    es.stage_path(tmp_path).write_text(json.dumps(body), encoding="utf-8")
+    assert (_resolve(tmp_path, approvals).stage, _resolve(tmp_path, approvals).valid) == ("PAPER", True)
 
 
 @pytest.mark.parametrize("payload", [
@@ -269,12 +298,13 @@ def test_a_tampered_record_reads_read_only(tmp_path):
 ])
 def test_a_malformed_record_reads_read_only_and_never_raises(tmp_path, payload):
     """Review of #872: a NaN, a secret-shaped key or deep nesting raised out of the read, and the live
-    leg — which reads the stage before it settles and protects — halted as an INCIDENT."""
-    es.stage_path(tmp_path).parent.mkdir(parents=True)
-    es.stage_path(tmp_path).write_text(payload, encoding="utf-8")
+    leg — which reads the stage before it settles and protects — halted as an INCIDENT. The same
+    payloads, as the ledger the read now starts from."""
+    es.ledger_path(tmp_path).parent.mkdir(parents=True)
+    es.ledger_path(tmp_path).write_text(payload, encoding="utf-8")
     status = _resolve(tmp_path, _Approvals())
     assert (status.stage, status.valid) == ("READ_ONLY", False)
-    assert status.reason_code in (es.STAGE_RECORD_UNREADABLE, es.STAGE_RECORD_TAMPERED)
+    assert status.reason_code in (es.STAGE_LEDGER_UNREADABLE, es.STAGE_LEDGER_BROKEN)
 
 
 def test_resolve_never_raises_whatever_goes_wrong_inside(tmp_path, monkeypatch):
@@ -344,13 +374,15 @@ def test_demotion_to_read_only_needs_no_approval_and_binds_at_once(tmp_path):
 
 
 def test_demotion_to_read_only_works_from_a_record_that_cannot_be_read(tmp_path):
-    es.stage_path(tmp_path).parent.mkdir(parents=True)
-    es.stage_path(tmp_path).write_text("{not json", encoding="utf-8")
+    es.ledger_path(tmp_path).parent.mkdir(parents=True)
+    es.ledger_path(tmp_path).write_text("{not json", encoding="utf-8")
     broken = _resolve(tmp_path, _Approvals())
     record = es.demote_record(broken, target="READ_ONLY", registered_by="t", reason="clear", now=NOW)
     es.write_stage_record(record, tmp_path)
-    assert (record["previous_stage"], record["evidence"]) == (None, {"replaced_reason_code": es.STAGE_RECORD_UNREADABLE})
+    assert (record["previous_stage"], record["evidence"]) == (None, {"replaced_reason_code": es.STAGE_LEDGER_UNREADABLE})
     assert _resolve(tmp_path, _Approvals()).valid is True
+    # The unreadable chain was replaced, never edited: it is kept beside the new one.
+    assert len(list(es.ledger_path(tmp_path).parent.glob("execution_stage_ledger.replaced-*.jsonl"))) == 1
 
 
 def test_a_demotion_to_a_live_or_paper_rung_carries_its_witness_forward(tmp_path, monkeypatch):
@@ -680,10 +712,10 @@ def test_a_malformed_stage_file_changes_nothing_the_leg_does(tmp_path, monkeypat
     """Observation only: the leg with a malformed record behaves exactly as with no record — same
     status, no halt — and only the stamp differs."""
     baseline = _gated_leg(tmp_path / "none", monkeypatch)
-    es.stage_path(tmp_path / "bad").parent.mkdir(parents=True)
-    es.stage_path(tmp_path / "bad").write_text(payload, encoding="utf-8")
+    es.ledger_path(tmp_path / "bad").parent.mkdir(parents=True)
+    es.ledger_path(tmp_path / "bad").write_text(payload, encoding="utf-8")
     broken = _gated_leg(tmp_path / "bad", monkeypatch)
-    assert broken["execution_stage"]["reason_code"] in (es.STAGE_RECORD_UNREADABLE, es.STAGE_RECORD_TAMPERED)
+    assert broken["execution_stage"]["reason_code"] in (es.STAGE_LEDGER_UNREADABLE, es.STAGE_LEDGER_BROKEN)
     for key in ("live_route_status", "halt", "live_opened"):
         assert broken.get(key) == baseline.get(key), key
 
@@ -847,7 +879,8 @@ def test_a_live_record_that_names_no_cycle_reads_read_only(tmp_path, transition,
     _register(tmp_path, approvals, testnet, "LIVE_AUTONOMOUS", approval_id="approval_live",
               testnet_cycle_id="cyc_ok", evidence_root=tmp_path)
     _rewrite(tmp_path, evidence={}, transition=transition, previous_stage=previous)
-    assert _resolve(tmp_path, approvals).reason_code == es.STAGE_TRANSITION_INVALID
+    # A REBIND whose previous rung is not the row before it breaks the chain's continuity first.
+    assert _resolve(tmp_path, approvals).reason_code in (es.STAGE_TRANSITION_INVALID, es.STAGE_LEDGER_BROKEN)
 
 
 def test_the_read_path_never_touches_the_registry(tmp_path, monkeypatch):

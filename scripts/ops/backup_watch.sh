@@ -100,6 +100,14 @@ else
   fi
 fi
 
+# 6. the core archive must NOT carry the execution stage anchor (EXECUTION_STAGE_ANTI_ROLLBACK D1 a):
+# restored with the ledger it would vouch for an older stage, which is the rollback the anchor exists
+# to catch. Only an archive that lists it is a problem; one that cannot be listed is left to 1 and 2.
+if [ -n "$core" ] && tar -tzf "$core" 2>/dev/null | grep -q 'crypto/execution_stage_anchor\.json$'; then
+  PROBLEMS+=("core 아카이브에 실행 단계 앵커가 들어 있습니다 — 복원하면 옛 단계를 보증하게 됩니다: $(basename "$core") (harness_backup.sh 의 --exclude 확인)")
+  BACKUP_PROBLEM=1
+fi
+
 # 4. the other watch. Each of these two scripts is the only thing on this host that would notice
 # the other going quiet: cron drops a line, a script is edited into a syntax error, a host is
 # restored from an image with a shorter crontab, and the watch that would have told you is the
@@ -116,7 +124,7 @@ fi
 
 if [ "${#PROBLEMS[@]}" -eq 0 ]; then
   [ "$DRY_RUN" -eq 1 ] && echo "OK — 백업 최신 (core $(basename "${core:-none}"), candles $(basename "${candle:-none}"))"
-  log "OK checks=5"
+  log "OK checks=6"
   exit 0
 fi
 

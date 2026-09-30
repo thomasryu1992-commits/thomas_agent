@@ -1,6 +1,6 @@
 # The execution stage gets an anti-rollback ledger
 
-**Status:** DECIDED 2026-09-30 — D1 a·D2·D3 a·D4 권고대로(Thomas). 남은 구현: 해시 체인 장부·앵커(백업 제외)·쓰기 순서·`--sync-anchor`, 배포 뒤 BOOTSTRAP(PAPER) 승인 1회, 백업 스크립트 제외 설정(호스트).
+**Status:** IMPLEMENTED 2026-09-30 — D1 a·D2·D3 a·D4 권고대로(Thomas) 구현. 배포 뒤 운영 단계 두 가지가 남는다: BOOTSTRAP(PAPER) 승인 1회로 장부 시작, 호스트 백업 스크립트에 앵커 제외 설치(§Implementation).
 
 The stage record (`crypto/execution_stage.json`) can be put back. The module says so itself
 (`execution_stage.py:42`): "one who kept a copy of an earlier witnessed record can put it back,
@@ -269,3 +269,28 @@ one is decided.
 
 Remaining: the build (§5 step 1), the deploy, the genesis BOOTSTRAP, and the backup exclude (§5 step 4,
 a host change).
+
+## Implementation (2026-09-30)
+
+Built as decided:
+- **Read path.** `execution_stage.read_ledger` verifies the whole chain on every read, and
+  `read_anchor` and `_anchor_problem` vouch for it. `resolve_execution_stage` reads the tip.
+- **Write path.** `append_stage_record` writes row → anchor → mirror and replaces an unextendable
+  chain only for a BOOTSTRAP or a demotion to READ_ONLY. `assert_appendable` runs before the door
+  spends an approval.
+- **Sync.** `sync_anchor` backs `--sync-anchor`, and `StageStatus.anchor_behind` refuses an approved
+  transition until it runs.
+- **Schemas.** `execution_stage_ledger.v0.1` and `execution_stage_anchor.v0.1`.
+- **Backup.** The anchor is excluded in `scripts/ops/harness_backup.sh`, and `backup_watch.sh`
+  reports an archive that carries it.
+
+A machine that has only the old `execution_stage.json` reads `EXECUTION_STAGE_LEDGER_MISSING`, naming the
+old stage, and the genesis is the existing BOOTSTRAP (D3 a).
+
+**Operator steps after the deploy, in order:**
+1. Install the updated backup script on the host (it is the repo's `scripts/ops/harness_backup.sh`), so
+   the next archive already leaves the anchor out.
+2. `--request --to PAPER --attest ...` (as uid 10001, in `thomas-scheduler`). Then Thomas `/approve`, then
+   `--confirm`. That writes row 0 and the anchor. Until then the machine reads READ_ONLY. At PAPER that
+   changes only what the readiness board prints, because every door that reads the stage needs a higher
+   rung.

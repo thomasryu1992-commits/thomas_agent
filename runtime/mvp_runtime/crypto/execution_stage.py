@@ -39,9 +39,23 @@ cannot prove the door wrote it, because anyone who can write the state directory
 lifecycle: CONSUMED, decided by Thomas on the verified channel, a snapshot that still fingerprints
 to the bound value, and content that equals the record. The ledger lives in the same state
 directory and carries no secret, so a writer able to forge that whole lifecycle can still forge a
-stage — and one who kept a copy of an earlier witnessed record can put it back, undoing a demotion.
-What the witness removes is the one-hash forgery. The state directory is writable only by the
+stage. What the witness removes is the one-hash forgery. The state directory is writable only by the
 service uid, which could already place orders directly.
+
+**Time order: the ledger and its anchor** (Thomas 2026-09-30, EXECUTION_STAGE_ANTI_ROLLBACK_V0.1). A
+witness says a record was approved. It cannot say the record is still the latest, so an older copy
+put back, or the whole directory restored from the daily backup, undid a demotion and passed every
+check.
+- The stage is now the tip of an append-only, hash-chained ledger (``execution_stage_ledger.jsonl``).
+- An anchor (``execution_stage_anchor.json``), kept OUT of the governance-state backup, names the
+  row the machine last reached.
+- A chain the anchor does not vouch for reads READ_ONLY: a restored ledger with the newer anchor is
+  ROLLED_BACK, and a wiped-and-restored one is ANCHOR_MISSING.
+- ``execution_stage.json`` is a mirror no decision reads.
+- Writes go row → anchor → mirror (:func:`append_stage_record`), so a crash never reads above what
+  was witnessed.
+- The only way back up after a rollback is a BOOTSTRAP. What this still cannot stop is the anchor
+  being restored WITH the ledger, which is why the backup must never carry it.
 
 **What the stage gates (PR1b):** new exposure only. The entry guard
 (``live_order.evaluate_live_order_guard``, one chokepoint for the autonomous leg and the slippage
@@ -56,7 +70,7 @@ from __future__ import annotations
 import json
 import os
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any, Iterator, Mapping
@@ -75,6 +89,16 @@ EXECUTION_STAGE_SCHEMA_VERSION = "execution_stage.v0.1"
 EXECUTION_STAGE_SCHEMA_FILE = "execution_stage.v0.1.schema.json"
 EXECUTION_STAGE_FILENAME = "execution_stage.json"
 EXECUTION_STAGE_LOCK_FILENAME = "execution_stage.lock"
+# The anti-rollback ledger (Thomas 2026-09-30, EXECUTION_STAGE_ANTI_ROLLBACK_V0.1 D1 a / D2 / D3 a / D4).
+# The ledger's tip IS the stage; `execution_stage.json` stays as a mirror no decision reads. The
+# anchor names the row the machine last reached and is kept out of the governance-state backup, so a
+# restore cannot bring it back with the rows it would vouch for.
+LEDGER_SCHEMA_VERSION = "execution_stage_ledger.v0.1"
+LEDGER_SCHEMA_FILE = "execution_stage_ledger.v0.1.schema.json"
+LEDGER_FILENAME = "execution_stage_ledger.jsonl"
+ANCHOR_SCHEMA_VERSION = "execution_stage_anchor.v0.1"
+ANCHOR_SCHEMA_FILE = "execution_stage_anchor.v0.1.schema.json"
+ANCHOR_FILENAME = "execution_stage_anchor.json"
 TRANSITION_EVENT_TYPE = "execution_stage_transition.v0"
 SUPPORTED_VENUE = "binance_futures"
 # Whether the entry doors read the stage. False in PR1a, when the record was kept and reported
@@ -135,6 +159,15 @@ STAGE_POLICY_SAFETY_CHANGED = "EXECUTION_STAGE_POLICY_SAFETY_CHANGED"
 STAGE_APPROVAL_NOT_CONSUMED = "EXECUTION_STAGE_APPROVAL_NOT_CONSUMED"
 STAGE_APPROVAL_UNREADABLE = "EXECUTION_STAGE_APPROVAL_UNREADABLE"
 STAGE_WITNESS_MISMATCH = "EXECUTION_STAGE_WITNESS_MISMATCH"
+# The ledger and its anchor. Every one reads READ_ONLY and none is REBINDable: the only way back up
+# is a Thomas-approved BOOTSTRAP at SHADOW or PAPER.
+STAGE_LEDGER_MISSING = "EXECUTION_STAGE_LEDGER_MISSING"
+STAGE_LEDGER_UNREADABLE = "EXECUTION_STAGE_LEDGER_UNREADABLE"
+STAGE_LEDGER_BROKEN = "EXECUTION_STAGE_LEDGER_BROKEN"
+STAGE_ROLLED_BACK = "EXECUTION_STAGE_ROLLED_BACK"
+STAGE_ANCHOR_MISSING = "EXECUTION_STAGE_ANCHOR_MISSING"
+STAGE_ANCHOR_TAMPERED = "EXECUTION_STAGE_ANCHOR_TAMPERED"
+STAGE_ANCHOR_BEHIND = "EXECUTION_STAGE_ANCHOR_BEHIND"
 # The only defects a REBIND may cure: the record was witnessed, and the policy moved under it.
 REBINDABLE_REASONS = frozenset({STAGE_POLICY_VERSION_CHANGED, STAGE_POLICY_SAFETY_CHANGED})
 
@@ -155,6 +188,10 @@ STAGE_CHANGED = "EXECUTION_STAGE_CHANGED"
 STAGE_POLICY_CHANGED_SINCE_ASK = "EXECUTION_STAGE_POLICY_CHANGED_SINCE_ASK"
 STAGE_LOCK_FAILED = "EXECUTION_STAGE_LOCK_FAILED"
 STAGE_WRITE_FAILED_AFTER_SPEND = "EXECUTION_STAGE_WRITE_FAILED_AFTER_SPEND"
+STAGE_ANCHOR_WRITE_FAILED = "EXECUTION_STAGE_ANCHOR_WRITE_FAILED"
+STAGE_ANCHOR_SYNC_REQUIRED = "EXECUTION_STAGE_ANCHOR_SYNC_REQUIRED"
+STAGE_ANCHOR_SYNC_REFUSED = "EXECUTION_STAGE_ANCHOR_SYNC_REFUSED"
+STAGE_LEDGER_NEEDS_BINDING = "EXECUTION_STAGE_LEDGER_NEEDS_BINDING"
 
 
 def rank(stage: str) -> int:
@@ -202,6 +239,9 @@ class StageStatus:
     action_fingerprint: str | None = None
     witness_stage_id: str | None = None
     policy_safety_sha256: str | None = None
+    # The tip is one row past the anchor: a crash (or a failed anchor write) between the row and the
+    # anchor. The stage still binds; an approved transition waits for `--sync-anchor` (§2.3).
+    anchor_behind: bool = False
 
     def allows(self, purpose: str) -> bool:
         return self.valid and rank(self.stage) >= rank(required_stage(purpose))
@@ -216,7 +256,7 @@ class StageStatus:
             "stage": self.stage, "valid": self.valid, "reason_code": self.reason_code,
             "recorded_stage": self.recorded_stage, "stage_id": self.stage_id,
             "record_sha256": self.record_sha256, "policy_version": self.policy_version,
-            "approval_id": self.approval_id,
+            "approval_id": self.approval_id, "anchor_behind": self.anchor_behind,
         }
 
 
@@ -245,8 +285,8 @@ def _read_only(reason: str, record: Mapping[str, Any] | None = None, *, present:
     return _from_record(record, valid=False, reason=reason)
 
 
-def _schema_path(repo_root: Path | None = None) -> Path:
-    return (repo_root if repo_root is not None else _repo_root()) / "schemas" / EXECUTION_STAGE_SCHEMA_FILE
+def _schema_path(repo_root: Path | None = None, schema_file: str = EXECUTION_STAGE_SCHEMA_FILE) -> Path:
+    return (repo_root if repo_root is not None else _repo_root()) / "schemas" / schema_file
 
 
 def _transition_consistent(record: Mapping[str, Any]) -> bool:
@@ -283,15 +323,16 @@ def _transition_consistent(record: Mapping[str, Any]) -> bool:
     return False
 
 
-def read_registered_stage(root: Path | None = None, *, repo_root: Path | None = None) -> dict[str, Any] | None:
-    """The stage record, VERIFIED (self-hash + schema) — or None when none is registered."""
-    path = stage_path(root)
-    if not path.is_file():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, RecursionError) as exc:
-        raise ToolError(STAGE_RECORD_UNREADABLE, f"execution stage record is unreadable: {exc}") from None
+def ledger_path(root: Path | None = None) -> Path:
+    return state_dir(root) / LEDGER_FILENAME
+
+
+def anchor_path(root: Path | None = None) -> Path:
+    return state_dir(root) / ANCHOR_FILENAME
+
+
+def _verified_record(data: Any, *, repo_root: Path | None) -> dict[str, Any]:
+    """One stage record, VERIFIED (self-hash + schema), or the record's own refusal."""
     if not isinstance(data, dict):
         raise ToolError(STAGE_RECORD_UNREADABLE, "execution stage record is not a JSON object")
     stored = data.get("record_sha256")
@@ -308,6 +349,131 @@ def read_registered_stage(root: Path | None = None, *, repo_root: Path | None = 
     except RuntimeSchemaError as exc:
         raise ToolError(STAGE_RECORD_INVALID, f"execution stage record is not schema-valid: {exc}") from None
     return data
+
+
+def _hash_or_none(body: Mapping[str, Any]) -> str | None:
+    try:
+        return integrity.sha256_record(dict(body))
+    except (ValueError, TypeError, RecursionError):
+        return None
+
+
+def read_ledger(root: Path | None = None, *, repo_root: Path | None = None) -> list[dict[str, Any]]:
+    """Every row of the stage ledger, verified as ONE chain. ``[]`` when no ledger exists.
+
+    Every row is checked on every read: its own hash, its schema, ``seq`` running 0..n, its link to the
+    row before, the stage continuity (each non-BOOTSTRAP record's ``previous_stage`` is the prior row's
+    ``stage``), and that no two approved rows name the same approval. A tip check alone could not tell a
+    truncated chain from a whole one. A defect anywhere raises ``EXECUTION_STAGE_LEDGER_BROKEN``, except
+    in the TIP's record, which raises that record's own code (TAMPERED, INVALID, UNREADABLE), so a forged
+    tip reads exactly as a forged record always did. Rows are few (transitions only), so this is cheap."""
+    path = ledger_path(root)
+    if not path.is_file():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, ValueError) as exc:
+        raise ToolError(STAGE_LEDGER_UNREADABLE, f"execution stage ledger is unreadable: {exc}") from None
+    rows: list[dict[str, Any]] = []
+    for number, line in enumerate(lines, start=1):
+        try:
+            row = json.loads(line)
+        except (ValueError, RecursionError):
+            raise ToolError(STAGE_LEDGER_UNREADABLE, f"execution stage ledger line {number} is not JSON") from None
+        if not isinstance(row, dict):
+            raise ToolError(STAGE_LEDGER_UNREADABLE, f"execution stage ledger line {number} is not an object")
+        rows.append(row)
+    if not rows:
+        raise ToolError(STAGE_LEDGER_UNREADABLE, "execution stage ledger is empty")
+    previous_hash: str | None = None
+    approvals: set[str] = set()
+    for index, row in enumerate(rows):
+        body = {k: v for k, v in row.items() if k != "row_sha256"}
+        stored = row.get("row_sha256")
+        if not isinstance(stored, str) or stored != _hash_or_none(body):
+            raise ToolError(STAGE_LEDGER_BROKEN, f"stage ledger row {index} fails its own hash")
+        try:
+            validate_against_schema(dict(row), _schema_path(repo_root, LEDGER_SCHEMA_FILE), "execution stage ledger row")
+        except RuntimeSchemaError as exc:
+            raise ToolError(STAGE_LEDGER_BROKEN, f"stage ledger row {index} is not schema-valid: {exc}") from None
+        if row["seq"] != index or row["prev_row_sha256"] != previous_hash:
+            raise ToolError(STAGE_LEDGER_BROKEN, f"stage ledger row {index} is out of sequence or unlinked")
+        try:
+            record = _verified_record(row["record"], repo_root=repo_root)
+        except ToolError:
+            if index == len(rows) - 1:
+                raise
+            raise ToolError(STAGE_LEDGER_BROKEN, f"stage ledger row {index} holds a record that does not verify") from None
+        if (index > 0 and record.get("transition") != T_BOOTSTRAP
+                and record.get("previous_stage") != rows[index - 1]["record"].get("stage")):
+            raise ToolError(STAGE_LEDGER_BROKEN, f"stage ledger row {index} does not continue from the row before")
+        approval_id = record.get("approval_id")
+        if record.get("transition") != T_DEMOTE and isinstance(approval_id, str):
+            if approval_id in approvals:
+                raise ToolError(STAGE_LEDGER_BROKEN, f"stage ledger row {index} reuses approval {approval_id}")
+            approvals.add(approval_id)
+        previous_hash = row["row_sha256"]
+    return rows
+
+
+def read_anchor(root: Path | None = None, *, repo_root: Path | None = None) -> dict[str, Any] | None:
+    """The anchor, VERIFIED (self-hash + schema + venue), or None when there is none."""
+    path = anchor_path(root)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        raise ToolError(STAGE_ANCHOR_TAMPERED, "execution stage anchor is unreadable") from None
+    if not isinstance(data, dict):
+        raise ToolError(STAGE_ANCHOR_TAMPERED, "execution stage anchor is not an object")
+    body = {k: v for k, v in data.items() if k != "anchor_sha256"}
+    stored = data.get("anchor_sha256")
+    if not isinstance(stored, str) or stored != _hash_or_none(body):
+        raise ToolError(STAGE_ANCHOR_TAMPERED, "execution stage anchor fails its self-hash")
+    try:
+        validate_against_schema(dict(data), _schema_path(repo_root, ANCHOR_SCHEMA_FILE), "execution stage anchor")
+    except RuntimeSchemaError as exc:
+        raise ToolError(STAGE_ANCHOR_TAMPERED, f"execution stage anchor is not schema-valid: {exc}") from None
+    if data["venue"] != SUPPORTED_VENUE:
+        raise ToolError(STAGE_ANCHOR_TAMPERED, "execution stage anchor names another venue")
+    return data
+
+
+def _anchor_problem(rows: list[Mapping[str, Any]], anchor: Mapping[str, Any] | None) -> str | None:
+    """Why the anchor does not vouch for this chain, or None. The row it names must be ON the chain
+    (a restored, shorter or different chain fails that) and at most one row behind the tip (one crash
+    between the row and the anchor)."""
+    if anchor is None:
+        return STAGE_ANCHOR_MISSING
+    tip_seq = rows[-1]["seq"]
+    seq = anchor["seq"]
+    if seq > tip_seq or rows[seq]["row_sha256"] != anchor["row_sha256"]:
+        return STAGE_ROLLED_BACK
+    if tip_seq - seq > 1:
+        return STAGE_ANCHOR_BEHIND
+    return None
+
+
+def read_registered_stage(root: Path | None = None, *, repo_root: Path | None = None) -> dict[str, Any] | None:
+    """The stage record — the verified ledger's TIP, vouched for by the anchor — or None when no
+    ledger exists. Raises the ledger's or the anchor's refusal otherwise."""
+    rows = read_ledger(root, repo_root=repo_root)
+    if not rows:
+        return None
+    problem = _anchor_problem(rows, read_anchor(root, repo_root=repo_root))
+    if problem is not None:
+        raise ToolError(problem, f"execution stage ledger is not vouched for by its anchor ({problem})")
+    return rows[-1]["record"]
+
+
+def _mirror_record(root: Path | None) -> dict[str, Any] | None:
+    """What the mirror file says, for display only. Never a decision's input."""
+    try:
+        data = json.loads(stage_path(root).read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 # The record fields an approved transition copies from the content Thomas approved.
@@ -403,11 +569,24 @@ def resolve_execution_stage(
 
 def _resolve(root: Path | None, *, now: str, approval_store: Any | None, repo_root: Path | None) -> StageStatus:
     try:
-        record = read_registered_stage(root, repo_root=repo_root)
+        rows = read_ledger(root, repo_root=repo_root)
     except ToolError as exc:
         return _read_only(exc.reason_code)
-    if record is None:
+    if not rows:
+        # No ledger. A mirror left behind (every machine before the ledger existed) is named, so the
+        # BOOTSTRAP that starts the chain says what it replaces; nothing at all is a fresh machine.
+        if stage_path(root).is_file():
+            return _read_only(STAGE_LEDGER_MISSING, _mirror_record(root))
         return _read_only(STAGE_RECORD_MISSING, present=False)
+    record = rows[-1]["record"]
+    try:
+        anchor = read_anchor(root, repo_root=repo_root)
+    except ToolError as exc:
+        return _read_only(exc.reason_code, record)
+    problem = _anchor_problem(rows, anchor)
+    if problem is not None:
+        return _read_only(problem, record)
+    anchor_behind = rows[-1]["seq"] != anchor["seq"]
     if record.get("venue") != SUPPORTED_VENUE:
         return _read_only(STAGE_VENUE_MISMATCH, record)
     if not _transition_consistent(record):
@@ -431,7 +610,7 @@ def _resolve(root: Path | None, *, now: str, approval_store: Any | None, repo_ro
             return _read_only(STAGE_POLICY_VERSION_CHANGED, record)
         if identity["policy_safety_sha256"] != record["policy_safety_sha256"]:
             return _read_only(STAGE_POLICY_SAFETY_CHANGED, record)
-    return _from_record(record, valid=True, reason=None)
+    return replace(_from_record(record, valid=True, reason=None), anchor_behind=anchor_behind)
 
 
 def stage_ref(status: StageStatus) -> str:
@@ -465,6 +644,10 @@ def plan_transition(
     time and refuses unless it returns the same content, so every rule here holds at both moments."""
     if target not in LADDER:
         raise ToolError(STAGE_NOT_DEFINED, f"{target!r} is not a stage; the ladder is {', '.join(LADDER)}")
+    if status.anchor_behind:
+        raise ToolError(STAGE_ANCHOR_SYNC_REQUIRED,
+                        "the stage ledger's anchor is one row behind its tip (a write between them failed); "
+                        "run --sync-anchor, which re-anchors the verified tip and changes no stage")
     if not (isinstance(registered_by, str) and registered_by.strip() and isinstance(reason, str) and reason.strip()):
         raise ToolError(STAGE_RECORD_INVALID, "a transition names who registers it and why")
     recorded = status.recorded_stage
@@ -698,15 +881,141 @@ def demote_record(
     return _finish(body, repo_root=repo_root)
 
 
-def write_stage_record(record: Mapping[str, Any], root: Path | None = None) -> Path:
-    """Atomically replace the record (temp file + replace). The previous record lives on in the
-    control ledger's transition event, which the door writes beside this."""
-    path = stage_path(root)
+def _atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(dict(record), ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
+    tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
+
+
+def _may_start_chain(record: Mapping[str, Any]) -> bool:
+    """The two transitions that may begin a new chain when the old one cannot be trusted: a BOOTSTRAP
+    (approved, at SHADOW or PAPER) and a demotion to READ_ONLY, which grants nothing and must work from
+    any state. Everything else extends a chain it can verify."""
+    transition = record.get("transition")
+    return transition == T_BOOTSTRAP or (
+        transition == T_DEMOTE and record.get("stage") == ExecutionStage.READ_ONLY.value
+    )
+
+
+def _chain_to_extend(root: Path | None, *, repo_root: Path | None) -> list[dict[str, Any]] | None:
+    """The verified chain a new row may extend, or None when a new chain must start: no ledger, one
+    that does not verify, or one its anchor does not vouch for. An anchor BEHIND the tip still vouches
+    (the row it names is on the chain), and the write re-anchors it."""
+    try:
+        rows = read_ledger(root, repo_root=repo_root)
+        if not rows:
+            return None
+        anchor = read_anchor(root, repo_root=repo_root)
+    except ToolError:
+        return None
+    if anchor is None:
+        return None
+    if _anchor_problem(rows, anchor) == STAGE_ROLLED_BACK:
+        return None
+    return rows
+
+
+def assert_appendable(record: Mapping[str, Any], root: Path | None = None, *, repo_root: Path | None = None) -> None:
+    """Refuse, BEFORE anything is spent or written, a record that could not land: one that would have
+    to start a new chain and may not. The door calls this before it spends an approval."""
+    if _chain_to_extend(root, repo_root=repo_root) is None and not _may_start_chain(record):
+        raise ToolError(STAGE_LEDGER_NEEDS_BINDING,
+                        f"a {record.get('transition')} to {record.get('stage')} extends a verified, anchored "
+                        "stage ledger, and this machine has none; the way up is a BOOTSTRAP at SHADOW or PAPER")
+
+
+def write_anchor(root: Path | None, row: Mapping[str, Any], *, now: str, repo_root: Path | None = None) -> Path:
+    body: dict[str, Any] = {
+        "schema_version": ANCHOR_SCHEMA_VERSION, "venue": SUPPORTED_VENUE,
+        "seq": int(row["seq"]), "row_sha256": str(row["row_sha256"]), "written_at": now,
+    }
+    body["anchor_sha256"] = integrity.sha256_record(body)
+    validate_against_schema(dict(body), _schema_path(repo_root, ANCHOR_SCHEMA_FILE), "execution stage anchor")
+    path = anchor_path(root)
+    _atomic_write(path, json.dumps(body, ensure_ascii=False, sort_keys=True, indent=2))
     return path
+
+
+def append_stage_record(record: Mapping[str, Any], root: Path | None = None, *, repo_root: Path | None = None) -> list[str]:
+    """Write one transition: the ledger row, then the anchor, then the mirror (§2.3). The caller holds
+    `stage_lock`.
+
+    Raises only before the row lands. After it, a failed anchor or mirror write is a WARNING: the row is
+    the stage, so the transition happened. An anchor left one row behind still vouches (the read allows
+    one) and asks for `--sync-anchor` before the next approved transition. A crash at any point
+    therefore reads the old stage (nothing landed) or the new one (the row landed); never a stage no
+    row holds.
+
+    A chain that cannot be extended (none, unverifiable, rolled back, unanchored) is REPLACED, never
+    edited, and only by a BOOTSTRAP or a demotion to READ_ONLY. The old file is kept beside the new one
+    as ``execution_stage_ledger.replaced-<stamp>.jsonl``."""
+    rows = _chain_to_extend(root, repo_root=repo_root)
+    if rows is None and not _may_start_chain(record):
+        assert_appendable(record, root, repo_root=repo_root)
+    path = ledger_path(root)
+    if rows is None:
+        if path.is_file():
+            stamp = str(record.get("registered_at") or "unstamped").replace(":", "")
+            path.replace(path.with_name(f"execution_stage_ledger.replaced-{stamp}.jsonl"))
+        rows = []
+    row: dict[str, Any] = {
+        "schema_version": LEDGER_SCHEMA_VERSION,
+        "seq": len(rows),
+        "prev_row_sha256": rows[-1]["row_sha256"] if rows else None,
+        "record": dict(record),
+        "appended_at": record.get("registered_at"),
+    }
+    row["row_sha256"] = integrity.sha256_record(row)
+    try:
+        validate_against_schema(dict(row), _schema_path(repo_root, LEDGER_SCHEMA_FILE), "execution stage ledger row")
+    except RuntimeSchemaError as exc:
+        raise ToolError(STAGE_RECORD_INVALID, f"stage ledger row would not be schema-valid: {exc}") from None
+    _atomic_write(path, "".join(json.dumps(r, ensure_ascii=False, sort_keys=True) + "\n" for r in [*rows, row]))
+    warnings: list[str] = []
+    try:
+        write_anchor(root, row, now=str(record.get("registered_at")), repo_root=repo_root)
+    except (OSError, RuntimeSchemaError, ValueError, TypeError) as exc:
+        warnings.append(f"{STAGE_ANCHOR_WRITE_FAILED}: the stage changed but its anchor was not written ({exc}); "
+                        "it is not yet restore-proof — run --sync-anchor")
+    try:
+        _atomic_write(stage_path(root), json.dumps(dict(record), ensure_ascii=False, sort_keys=True, indent=2))
+    except (OSError, ValueError, TypeError) as exc:
+        warnings.append(f"the stage changed but its mirror ({EXECUTION_STAGE_FILENAME}) was not written ({exc}); "
+                        "no decision reads it")
+    return warnings
+
+
+def write_stage_record(record: Mapping[str, Any], root: Path | None = None) -> Path:
+    """:func:`append_stage_record`, for callers that do not read its warnings. Returns the ledger path."""
+    append_stage_record(record, root)
+    return ledger_path(root)
+
+
+def sync_anchor(root: Path | None = None, *, now: str, repo_root: Path | None = None) -> dict[str, Any]:
+    """Re-anchor the VERIFIED tip, when the anchor is behind it. Needs no approval because it cannot
+    change the stage: it moves no row, and it refuses unless the anchor it replaces names a row on the
+    chain. A missing, tampered or off-chain anchor is what a restore looks like, and re-creating it
+    here would vouch for the restored rows, so those refuse: the way back is a BOOTSTRAP."""
+    rows = read_ledger(root, repo_root=repo_root)
+    if not rows:
+        raise ToolError(STAGE_ANCHOR_SYNC_REFUSED, "there is no stage ledger to anchor")
+    try:
+        anchor = read_anchor(root, repo_root=repo_root)
+    except ToolError as exc:
+        raise ToolError(STAGE_ANCHOR_SYNC_REFUSED,
+                        f"the anchor does not verify ({exc.reason_code}); only a BOOTSTRAP re-anchors") from None
+    if anchor is None:
+        raise ToolError(STAGE_ANCHOR_SYNC_REFUSED,
+                        "the anchor is missing, which is what a restore looks like; only a BOOTSTRAP re-anchors")
+    if _anchor_problem(rows, anchor) == STAGE_ROLLED_BACK:
+        raise ToolError(STAGE_ANCHOR_SYNC_REFUSED,
+                        "the anchor names a row this chain does not hold (a rollback); only a BOOTSTRAP re-anchors")
+    tip = rows[-1]
+    if anchor["seq"] == tip["seq"]:
+        return {"changed": False, "seq": tip["seq"]}
+    write_anchor(root, tip, now=now, repo_root=repo_root)
+    return {"changed": True, "seq": tip["seq"], "from_seq": anchor["seq"]}
 
 
 def transition_event(record: Mapping[str, Any], *, previous: StageStatus, now: str) -> dict[str, Any]:

@@ -24,6 +24,16 @@
     # even a record that cannot be read; another rung needs a record that binds.
     python -m scripts.register_execution_stage --demote --to READ_ONLY --registered-by thomas --reason "..."
 
+    # Re-anchor the verified ledger tip after an anchor write failed (EXECUTION_STAGE_ANCHOR_WRITE_FAILED).
+    # No approval: it moves no row and cannot change the stage, and it refuses a missing, tampered or
+    # off-chain anchor, which is what a restore looks like (the way back from that is a BOOTSTRAP).
+    python -m scripts.register_execution_stage --sync-anchor
+
+**The stage is the tip of a hash-chained ledger** (Thomas 2026-09-30, EXECUTION_STAGE_ANTI_ROLLBACK):
+``crypto/execution_stage_ledger.jsonl``, vouched for by ``crypto/execution_stage_anchor.json``, which the
+governance-state backup must not carry. ``execution_stage.json`` is a mirror no decision reads. A copy
+put back, or a whole-directory restore, reads READ_ONLY until a BOOTSTRAP.
+
 Run it in the scheduler container as the service user (it writes governed state):
 ``docker exec -u 10001 thomas-scheduler python -m scripts.register_execution_stage ...``.
 
@@ -72,6 +82,18 @@ def run_show(*, root: Path | None, now: str, as_json: bool) -> int:
         record = es.read_registered_stage(base)
     except MvpRuntimeError:
         record = None
+    try:
+        rows = es.read_ledger(base)
+    except MvpRuntimeError as exc:
+        rows, ledger_note = [], f"does not verify ({exc.reason_code})"
+    else:
+        ledger_note = f"{len(rows)} row(s), tip seq {rows[-1]['seq']}" if rows else "none"
+    try:
+        anchor = es.read_anchor(base)
+    except MvpRuntimeError as exc:
+        anchor_note = f"does not verify ({exc.reason_code})"
+    else:
+        anchor_note = f"seq {anchor['seq']}" if anchor else "none"
     if as_json:
         sys.stdout.write(json.dumps({"status": status.as_dict(), "record": record, "policy": identity},
                                     ensure_ascii=False, indent=2) + "\n")
@@ -83,6 +105,8 @@ def run_show(*, root: Path | None, now: str, as_json: bool) -> int:
         f"witness         : {status.approval_id or '-'}",
         f"testnet cycle   : {((record or {}).get('evidence') or {}).get('testnet_cycle_id') or '-'}",
         f"bound to policy : {status.policy_version or '-'}",
+        f"stage ledger    : {ledger_note}",
+        f"anchor          : {anchor_note}" + ("  (behind the tip: run --sync-anchor)" if status.anchor_behind else ""),
         f"running policy  : {(identity or {}).get('policy_version')} {(identity or {}).get('policy_safety_sha256')}",
         "enforcement     : the entry guard refuses a new live entry below "
         f"{es.required_stage(es.PURPOSE_AUTONOMOUS)} (closing is never gated)"
@@ -153,6 +177,9 @@ def run_confirm(*, root: Path | None, now: str, approval_id: str) -> dict:
         record = es.record_from_approved(content, status_now=status_now, approval_id=approval_id,
                                          action_fingerprint=str(approval["action_fingerprint"]),
                                          now=now, evidence_root=base)
+        # And that the ledger would take it, also before the spend: a grant whose record cannot land
+        # stays APPROVED rather than being spent on nothing.
+        es.assert_appendable(record, base)
         with approval_mod.spend_lock(approvals, approval_id):
             fresh = approvals.get(approval_id)
             consumed = approval_mod.build_consumed_record(
@@ -160,14 +187,14 @@ def run_confirm(*, root: Path | None, now: str, approval_id: str) -> dict:
             )
             approvals.append([consumed])
         try:
-            es.write_stage_record(record, base)
-        except OSError as exc:
+            write_warnings = es.append_stage_record(record, base)
+        except (OSError, ToolError) as exc:
             raise ToolError(
                 es.STAGE_WRITE_FAILED_AFTER_SPEND,
                 f"approval {approval_id} was spent but the stage record could not be written ({exc}); "
                 f"the stage is unchanged and this approval cannot be used again - ask Thomas again",
             ) from None
-    warnings = _ledger_event(ledger, es.transition_event(record, previous=status_now, now=now))
+    warnings = write_warnings + _ledger_event(ledger, es.transition_event(record, previous=status_now, now=now))
     after = es.resolve_execution_stage(base, now=now, approval_store=approvals)
     return {"record": record, "status": after.as_dict(), "warnings": warnings}
 
@@ -189,10 +216,18 @@ def run_demote(*, root: Path | None, now: str, target: str, registered_by: str, 
     with es.stage_lock(base):
         status = es.resolve_execution_stage(base, now=now, approval_store=approvals)
         record = es.demote_record(status, target=target, registered_by=registered_by, reason=reason, now=now)
-        es.write_stage_record(record, base)
-    warnings = _ledger_event(ledger, es.transition_event(record, previous=status, now=now))
+        write_warnings = es.append_stage_record(record, base)
+    warnings = write_warnings + _ledger_event(ledger, es.transition_event(record, previous=status, now=now))
     return {"record": record, "warnings": warnings,
             "status": es.resolve_execution_stage(base, now=now, approval_store=approvals).as_dict()}
+
+
+def run_sync_anchor(*, root: Path | None, now: str) -> dict:
+    base, approvals, _ = _stores(root)
+    assert_not_foreign_root_run(root)
+    with es.stage_lock(base):
+        result = es.sync_anchor(base, now=now)
+    return {**result, "status": es.resolve_execution_stage(base, now=now, approval_store=approvals).as_dict()}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -203,6 +238,7 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--request", action="store_true")
     mode.add_argument("--confirm", action="store_true")
     mode.add_argument("--demote", action="store_true")
+    mode.add_argument("--sync-anchor", action="store_true")
     parser.add_argument("--to", choices=es.LADDER)
     parser.add_argument("--registered-by")
     parser.add_argument("--reason")
@@ -218,6 +254,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.show:
             return run_show(root=args.root, now=now, as_json=args.json)
+        if args.sync_anchor:
+            out = run_sync_anchor(root=args.root, now=now)
+            sys.stdout.write(
+                (f"RE-ANCHORED: seq {out['from_seq']} -> {out['seq']}" if out["changed"]
+                 else f"IN SYNC: the anchor already names the tip (seq {out['seq']}); nothing written")
+                + f"; the machine reads {out['status']['stage']}\n")
+            return EXIT_OK
         if args.request or args.demote:
             if not (args.to and args.registered_by and args.reason):
                 sys.stderr.write("USAGE: --request/--demote need --to, --registered-by and --reason\n")
