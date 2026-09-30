@@ -614,21 +614,48 @@ def test_no_paper_row_reaches_the_loss_breaker_own_or_imported(tmp_path):
     # The breaker judged nothing, and says so rather than reporting a comfortable clear.
     assert record["risk_limits"] is not None
 
-def test_lifecycle_still_sees_the_full_history(tmp_path):
+def test_lifecycle_still_sees_the_full_history(tmp_path, monkeypatch):
     """Deliberately NOT filtered: imported outcomes carry strategy lineage, and
     promotion/demotion is a performance judgement about a strategy, not a safety brake on this
-    runtime. Scoping the guard must not silently change what lifecycle reads."""
-    import inspect
+    runtime. Scoping the guard must not silently change what lifecycle reads.
 
+    Asserted on what each of the two is handed in a cycle, not on how the cycle spells the
+    calls: the guard gets the live history and none of the paper store, the lifecycle gets the
+    paper store whole, own rows and imported."""
     from runtime.mvp_runtime.crypto import cycle as cycle_mod
+    from tests.test_mvp_runtime_crypto_cycle import FakeExchangeCollector, _install_pool
 
-    source = inspect.getsource(cycle_mod.run_crypto_cycle)
-    # Whitespace-insensitive: the guard call wrapped onto three lines when it grew the
-    # drawdown baseline's routable set, and a test that pins formatting rather than the
-    # invariant fails on the next reflow while a real inversion of the two would slip past it.
-    flat = " ".join(source.split())
-    assert "run_risk_guard( live_readable" in flat                  # guard: LIVE only
-    assert "run_lifecycle(active_pool, outcomes" in flat            # lifecycle: full history
+    _install_pool(tmp_path, _always_spec())
+    state = paper.state_dir(tmp_path)
+    state.mkdir(parents=True, exist_ok=True)
+    rows = [_own_outcome(-1.2, f"2026-07-22T0{i}:00:00Z", outcome_id=f"own{i}") for i in range(2)]
+    rows += [{"result_R": 200.0, "outcome_closed": True, "outcome_id": "imported-1",
+              "created_at_utc": "2026-07-22T05:00:00Z",
+              "provenance": paper.IMPORTED_PROVENANCE}]
+    with open(state / "paper_outcomes.jsonl", "w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row) + "\n")
+
+    handed: dict[str, list] = {}
+    real_guard, real_lifecycle = cycle_mod.run_risk_guard, cycle_mod.run_lifecycle
+
+    def guard(history, **kwargs):
+        handed["guard"] = list(history)
+        return real_guard(history, **kwargs)
+
+    def lifecycle(active_pool, outcomes, **kwargs):
+        handed["lifecycle"] = list(outcomes)
+        return real_lifecycle(active_pool, outcomes, **kwargs)
+
+    monkeypatch.setattr(cycle_mod, "run_risk_guard", guard)
+    monkeypatch.setattr(cycle_mod, "run_lifecycle", lifecycle)
+    run_crypto_cycle(
+        collector=FakeExchangeCollector(), store=RealPaperStore(root=tmp_path, authorization=_AUTH),
+        now=NOW, root=tmp_path, control_store=ControlStore(tmp_path),
+    )
+
+    assert handed["guard"] == []                                     # guard: LIVE only, and none exists
+    assert [r["outcome_id"] for r in handed["lifecycle"]] == ["own0", "own1", "imported-1"]   # full history
 
 
 # --- dashboard readability (the operator could not judge from the old dump) ---------
