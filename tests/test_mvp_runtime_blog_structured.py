@@ -1416,3 +1416,14 @@ def test_post_md_points_at_an_echo_without_failing_the_draft():
 
 def test_the_grow_ask_forbids_an_echo():
     assert "바로 앞 문장을 다른 말로 다시 말하는 문장" in blog_content.ADD_SUBSTANCE_ASK
+
+
+
+def test_the_name_rule_tells_a_business_from_a_tool_by_what_the_reader_does_there():
+    """'스티커소량제작' wrote "마플 같은 플랫폼" once tools had to be named (bcp_05eb135d21e34a31429a)."""
+    ask = blog_content.VENDOR_NAME_ASK
+    assert "업체인지 도구인지는 독자가 그곳에서 하는 일로 가른다" in ask
+    assert "예: 마플·레드프린팅·비즈하우스, 편집기가 딸린 인쇄 주문 사이트도 여기" in ask
+    assert "캔바·어도비 파이어플라이·ChatGPT·당근·카카오톡" in ask
+    for label in ("업체:", "도구:", "통신사:", "공공:", "상품명:"):
+        assert label in ask

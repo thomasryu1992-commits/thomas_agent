@@ -1377,19 +1377,28 @@ def _keyword_places(structured: Mapping[str, Any], target: str) -> list[str]:
 # A shop's product title is the shop's search-engine copy, not a name: '배너입간판'
 # (bcp_6625fde02d5be7682185) carried "매장광고판 카페입간판 용도로", "패트지 현수막제작 인쇄" and
 # "플랜카드제작" over from the listings into its sentences.
+# Where a tool ends and a business begins, by what the reader does there: "must name tools" had
+# '스티커소량제작' (bcp_05eb135d21e34a31429a, candidate-1076) write "마플 같은 플랫폼" — a print
+# shop with an editor. A place the reader pays to have something made or sold is a business,
+# editor or not; software the reader operates is a tool.
 # A public site is not a business at all (Thomas 2026-09-30): '2026소상공인지원금신청'
 # (bcp_756592c6972ca6129a32) sent the reader to "지정된 지원금 전용 포털" for a voucher applied for
 # on 소상공인24 — a government portal the reader has to find by name.
 VENDOR_NAME_ASK = (
-    "업체·가게·인쇄소·쇼핑몰·판매 사이트·중개 플랫폼의 이름은 본문·제목·표·캡처 지시 어디에도 쓰지 "
-    "마라 — '온라인 인쇄 업체 A'·'업체 B'처럼 익명으로 쓰거나 업종으로만 불러라. 앱·소프트웨어·AI "
-    "도구는 업체가 아니다 — 근거에 나온 도구의 이름(캔바·어도비 파이어플라이·ChatGPT처럼, 키워드가 다루는 "
-    "도구 포함)은 반드시 그대로 밝혀라. '온라인 서비스'·'특정 앱'·'편집 도구'처럼 흐리게 부르지 마라. 단, 통신사 제휴 혜택(특정 통신사 고객만 받는 "
-    "요금제·구독 혜택 등)은 그 통신사 이름을 밝혀라 — 독자가 자기가 대상인지 알아야 한다. 정부·공공기관의 "
-    "사이트와 서비스(정부24·홈택스·위택스·소상공인24·고용노동부 등)는 업체가 아니다 — 독자가 직접 찾아가야 "
-    "하는 곳이니 이름을 그대로 밝혀라. 쇼핑몰 상품명(검색용 단어를 이어 붙인 긴 이름, 예: '철제 배너거치대 "
-    "A형 선반 입간판 매장광고판 카페입간판')은 그대로 옮기지 말고 'A형 철제 입간판'처럼 제품의 종류로 짧게 "
-    "불러라."
+    "[이름 규칙] 업체인지 도구인지는 독자가 그곳에서 하는 일로 가른다. "
+    "업체: 독자가 돈을 내고 물건을 만들어 받거나 사는 곳(인쇄·제작·주문·판매·배송 — 예: 마플·레드프린팅·"
+    "비즈하우스, 편집기가 딸린 인쇄 주문 사이트도 여기)이다. 업체·가게·인쇄소·쇼핑몰·판매 사이트·중개 "
+    "플랫폼의 이름은 본문·제목·표·캡처 지시 어디에도 쓰지 마라 — '온라인 인쇄 업체 A'·'업체 B'처럼 "
+    "익명으로 쓰거나 업종으로만 불러라. "
+    "도구: 독자가 직접 조작하는 소프트웨어(앱·편집 도구·메신저·AI — 예: 캔바·어도비 파이어플라이·"
+    "ChatGPT·당근·카카오톡)다. 앱·소프트웨어·AI 도구는 업체가 아니다 — 근거에 나온 도구의 이름(키워드가 "
+    "다루는 도구 포함)은 반드시 그대로 밝혀라. '온라인 서비스'·'특정 앱'·'편집 도구'처럼 흐리게 부르지 마라. "
+    "통신사: 통신사 제휴 혜택(특정 통신사 고객만 받는 요금제·구독 혜택 등)은 그 통신사 이름을 밝혀라 — "
+    "독자가 자기가 대상인지 알아야 한다. "
+    "공공: 정부·공공기관의 사이트와 서비스(정부24·홈택스·위택스·소상공인24·고용노동부 등)는 업체가 "
+    "아니다 — 독자가 직접 찾아가야 하는 곳이니 이름을 그대로 밝혀라. "
+    "상품명: 쇼핑몰 상품명(검색용 단어를 이어 붙인 긴 이름, 예: '철제 배너거치대 A형 선반 입간판 "
+    "매장광고판 카페입간판')은 그대로 옮기지 말고 'A형 철제 입간판'처럼 제품의 종류로 짧게 불러라."
 )
 # The reader lives in Korea. Asked as "해외 자료를 꼭 써야 하면 해외 기준이라 한국과 다를 수 있다고
 # 밝혀라", 'ai 번역기' (bcp_4ad51169ab0a26df545d, 2026-09-30) used no foreign figure at all and still
