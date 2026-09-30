@@ -18,6 +18,10 @@ reported as findings. None of them is an endorsement:
   on purpose.
 - **the stage ladder is read only by the live doors.** A cycle with live trading off never reads the
   execution stage, so READ_ONLY, SHADOW and PAPER run the paper plane identically (§B-3).
+- **the cycle's reason codes come out in stage order.** A cycle record lists what went wrong in the
+  order the stages ran: collection, the pool, the limits, the histories, the live leg. The status line
+  and the ledger read that list as written, so a stage extracted into its own function (PR-11) has to
+  append where it did.
 """
 
 from __future__ import annotations
@@ -198,3 +202,56 @@ def test_a_cycle_with_live_trading_off_never_reads_the_execution_stage(tmp_path,
 
     assert summary["fired"] == 1
     assert reads == []
+
+
+# --- the cycle's reason codes come out in stage order ---------------------------------------------------
+
+def _dry_cycle(root, collector):
+    from runtime.mvp_runtime.crypto.paper import DryRunPaperStore
+
+    return cycle.run_crypto_cycle(collector=collector, store=DryRunPaperStore(), now=FIRE, root=root,
+                                  control_store=ControlStore(root))
+
+
+def test_a_cycle_where_every_read_fails_lists_the_failures_in_stage_order(tmp_path, dry):
+    """The venue is down, the pool is not a pool, the limits and the paper history do not parse. The
+    report would name the paper history a second time and does not. The live history is never read,
+    because there are no limits to judge it against."""
+    from runtime.mvp_runtime.crypto import paper, risk_limits
+    from tests.test_mvp_runtime_crypto_cycle import BrokenCollector
+
+    pool_file = pool_store.pool_path(tmp_path)
+    pool_file.parent.mkdir(parents=True, exist_ok=True)
+    pool_file.write_text(json.dumps({"active_strategies": [{"strategy_spec": {"strategy_id": "x"}}]}),
+                         encoding="utf-8")
+    risk_limits.limits_path(tmp_path).write_text("{broken", encoding="utf-8")
+    (paper.state_dir(tmp_path) / "paper_outcomes.jsonl").write_text("{broken\n", encoding="utf-8")
+
+    record = _dry_cycle(tmp_path, BrokenCollector())
+
+    assert record["reason_codes"] == [
+        "MARKET_DATA_DEGRADED", "CROSS_SECTION_DEGRADED", "STRATEGY_POOL_INVALID",
+        "CRYPTO_RISK_LIMITS_UNREADABLE", "OUTCOME_HISTORY_UNREADABLE", "LIVE_ROUTING_DISABLED",
+    ]
+
+
+def test_an_unreadable_paper_history_is_listed_before_an_unreadable_live_one(tmp_path, dry):
+    """Both histories are read in the guard's stage, the paper one first. The paper leg still routes:
+    its verdict is data health alone."""
+    from runtime.mvp_runtime.crypto import paper
+    from runtime.mvp_runtime.crypto.live_pnl import state_dir as live_state_dir
+    from tests.test_mvp_runtime_crypto_cycle import FakeExchangeCollector
+
+    _write_pool(tmp_path, {"strategy_id": "S1", "status": "PAPER_ACTIVE", "champion_score": 0.5,
+                           "strategy_spec": _spec()})
+    live_state_dir(tmp_path).mkdir(parents=True, exist_ok=True)
+    (live_state_dir(tmp_path) / "live_outcomes.jsonl").write_text('{"not":"hashed"}\n', encoding="utf-8")
+    paper.state_dir(tmp_path).mkdir(parents=True, exist_ok=True)
+    (paper.state_dir(tmp_path) / "paper_outcomes.jsonl").write_text("{broken\n", encoding="utf-8")
+
+    record = _dry_cycle(tmp_path, FakeExchangeCollector())
+
+    assert record["reason_codes"] == ["OUTCOME_HISTORY_UNREADABLE", "LIVE_HISTORY_TAMPERED",
+                                      "LIVE_ROUTING_DISABLED"]
+    assert (record["verdict_status"], record["paper_verdict_status"]) == ("NO_NEW_POSITION", "ALLOW")
+
