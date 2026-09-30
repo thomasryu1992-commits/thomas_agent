@@ -1365,3 +1365,65 @@ def test_a_garbled_snippet_is_left_out_of_the_revisions_notes():
         {"title": _GARBLED, "url": "https://www.gov.kr/x", "snippet": "ݱ Home ο ## ǰ û 방문, 우편", "source": "tavily"},
         {"title": "자료", "url": "https://example.org/b", "snippet": "위생교육 수료증이 필요하다", "source": "tavily"}]}}
     assert blog_content._evidence_notes({"sources": []}, records) == "- 자료: 위생교육 수료증이 필요하다"
+
+
+# --- the sentence count in the shape (2026-09-30) ------------------------------------------------
+#
+# 21 first drafts from one model: 17 paragraphs every time (the count the shape carries), but
+# "4문장" in prose only split them — about 3 sentences a paragraph fell under 1,800 (10 of 21).
+
+def test_the_shape_shows_every_planned_paragraph_with_its_sentence_count():
+    shape = json.loads(blog_content._DRAFT_SHAPE)
+    n = blog_content.PLAN_SENTENCES_PER_PARAGRAPH
+    assert shape["intro"] == [f"도입 문단 {i}({n}문장)" for i in (1, 2)]
+    assert shape["sections"][0]["paragraphs"] == [f"문단 {i}({n}문장)" for i in (1, 2, 3)]
+    assert len(shape["intro"]) == blog_content.PLAN_INTRO_PARAGRAPHS
+    assert len(shape["sections"][0]["paragraphs"]) == blog_content.PLAN_PARAGRAPHS_PER_SECTION
+
+
+def test_the_request_says_the_placeholders_are_not_prose():
+    request = blog_content.content_request(TARGET)
+    assert "'문단 1(4문장)' 같은 자리표시는 글에 옮기지 말고, 문단마다 그 수만큼 실제 문장을 채워라" in request
+
+
+
+# --- a sentence that says the one before it again (2026-09-30) ------------------------------------
+#
+# '카카오톡 채널추가' closed paragraphs with echoes; a pointer for the editor, not a gate.
+
+_ECHO_PARAGRAPH = ("다운로드한 쿠폰은 채팅방으로 곧바로 전송되어 더욱 간편하게 쓸 수 있습니다. "
+                   "채팅방으로 전송된 쿠폰은 언제든 편하게 열어볼 수 있습니다.")
+
+
+def test_an_echo_of_the_sentence_before_is_found_and_a_new_fact_is_not():
+    assert blog_draft.echo_sentences([_ECHO_PARAGRAPH]) == ["채팅방으로 전송된 쿠폰은 언제든 편하게 열어볼 수 있습니다."]
+    fresh = ("다운로드한 쿠폰은 채팅방으로 곧바로 전송되어 더욱 간편하게 쓸 수 있습니다. "
+             "매장 결제 때는 바코드를 보여 주고 온라인에서는 쿠폰 번호를 입력합니다.")
+    assert blog_draft.echo_sentences([fresh]) == []
+    assert blog_draft.echo_sentences([_para(i) for i in range(20)]) == []   # the fixtures are clean
+
+
+def test_post_md_points_at_an_echo_without_failing_the_draft():
+    draft = _draft()
+    draft["sections"][1]["paragraphs"][0] = _ECHO_PARAGRAPH + " 셋째 문장은 전혀 다른 이야기로 길게 이어집니다."
+    parts = blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET)
+    assert not [f for f in parts["failures"] if "echo" in f]
+    package = {"quality": {"quality_state": "ready_for_review", "failures": []},
+               "body_paste": parts["body_paste"], "body_blocks": parts["body_blocks"]}
+    post = blog_content.render_post_md(package)
+    assert "앞 문장을 다른 말로 되풀이한 듯한 문장 1개" in post and "「채팅방으로 전송된 쿠폰은" in post
+
+
+def test_the_grow_ask_forbids_an_echo():
+    assert "바로 앞 문장을 다른 말로 다시 말하는 문장" in blog_content.ADD_SUBSTANCE_ASK
+
+
+
+def test_the_name_rule_tells_a_business_from_a_tool_by_what_the_reader_does_there():
+    """'스티커소량제작' wrote "마플 같은 플랫폼" once tools had to be named (bcp_05eb135d21e34a31429a)."""
+    ask = blog_content.VENDOR_NAME_ASK
+    assert "업체인지 도구인지는 독자가 그곳에서 하는 일로 가른다" in ask
+    assert "예: 마플·레드프린팅·비즈하우스, 편집기가 딸린 인쇄 주문 사이트도 여기" in ask
+    assert "캔바·어도비 파이어플라이·ChatGPT·당근·카카오톡" in ask
+    for label in ("업체:", "도구:", "통신사:", "공공:", "상품명:"):
+        assert label in ask
