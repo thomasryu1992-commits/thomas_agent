@@ -33,13 +33,16 @@ _SENTENCE = ("미리캔버스 포스터를 만들 때는 템플릿을 고르고 
 
 
 def _para(i: int) -> str:
-    return f"{i}단계 설명입니다. {_SENTENCE}"
+    # Each paragraph's sentences carry its number: a sentence seen twice in one post is a
+    # failure of its own (`repeated_sentences`), and every paragraph used to repeat _SENTENCE.
+    first, second = _SENTENCE.split(". ", 1)
+    return f"{i}단계 설명입니다. {i}단계에서 {first}. {i}단계의 {second}"
 
 
 def _draft(*, sections=5, per_section=3, titles=3, **over) -> dict:
     data = {
         "title_candidates": [f"{TARGET} 만드는 법 {i}가지 순서" for i in range(1, titles + 1)],
-        "intro": [_para(0), _para(1)],
+        "intro": [_para(90), _para(91)],
         "sections": [{"heading": f"템플릿 고르기 {s}",
                       "paragraphs": [_para(10 * s + p) for p in range(per_section)]}
                      for s in range(sections)],
@@ -722,9 +725,16 @@ def test_the_request_asks_for_the_keyword_in_the_body_in_the_scorers_numbers():
 # bcp_5f459c95cf51fa821f6d (2026-09-29): all 17 paragraphs over 150 (average 168). The revision
 # named only SHORT paragraphs (none) and repeated "add sentences to short ones"; it came back 169.
 
+def _vary(text: str, tag: int) -> str:
+    """``text`` with ``tag`` at the head of each sentence: the same example paragraph used in
+    many places would otherwise be one sentence repeated (`repeated_sentences`)."""
+    return " ".join(f"{tag}{sentence.strip()}" for sentence in blog_draft._SENTENCE_RE.findall(text)
+                    if sentence.strip())
+
+
 def _long(i: int) -> str:
     """A distinct paragraph over the plan (identical paragraphs are de-duplicated)."""
-    return f"{i}번 안내입니다. {blog_content.LENGTH_EXAMPLE_PARAGRAPH} 제출 뒤 접수 번호를 적어 두세요."
+    return f"{i}번 안내입니다. {_vary(blog_content.LENGTH_EXAMPLE_PARAGRAPH, i)} {i}번 제출 뒤 접수 번호를 적어 두세요."
 
 
 def test_an_over_long_revision_names_each_long_paragraph_and_asks_to_cut():
@@ -975,10 +985,10 @@ def test_a_short_paragraph_grows_by_a_specific_not_by_a_closing_line():
 def _few_keywords() -> dict:
     draft = _draft(sections=5, per_section=3)
     body = blog_content.LENGTH_EXAMPLE_PARAGRAPH
-    draft["intro"] = [f"{TARGET}를 처음 만드는 분을 위한 글입니다. {body}", f"도입 둘째. {body}"]
+    draft["intro"] = [f"{TARGET}를 처음 만드는 분을 위한 글입니다. {_vary(body, 90)}", f"도입 둘째. {_vary(body, 91)}"]
     for s_index, section in enumerate(draft["sections"]):
         section["heading"] = f"준비 {s_index}단계"
-        section["paragraphs"] = [f"{s_index}-{p}. {body}" for p in range(3)]
+        section["paragraphs"] = [f"{s_index}-{p}. {_vary(body, 3 * s_index + p)}" for p in range(3)]
     return draft
 
 
@@ -1255,3 +1265,52 @@ def test_the_evidence_notes_ride_only_an_ask_to_grow(failures, para_chars, carri
     assert ("- 자료: 허용치 기본값 32" in request) is carries
     assert ("새 사실은 아래 근거 메모에 있는 것만" in request) is carries
     assert ("새 사실이나 새 출처를 추가하지 마라" in request) is not carries
+
+
+# --- a sentence pasted twice, and a public site named (2026-09-30) ------------------------------
+#
+# '통신판매업 신고증' (bcp_371db05812bb56548597): the revision padded by copying — 17 of 69
+# sentences were repeats. '2026소상공인지원금신청' hid 소상공인24 as "지정된 지원금 전용 포털".
+
+_COPIED = "결제대행사나 은행을 통해 계약을 완료하면 관련 확인서를 쉽게 내려받을 수 있습니다."
+
+
+def test_a_repeated_sentence_is_found_once_and_counted_per_extra_copy():
+    paragraphs = [f"첫 문단의 고유한 문장입니다. {_COPIED}", f"{_COPIED} 둘째 문단의 고유한 문장입니다.",
+                  f"셋째 문단은 이렇게 끝납니다. {_COPIED.replace(' ', '')}", "짧은 말. 짧은 말."]
+    assert blog_draft.repeated_sentences(paragraphs) == [_COPIED]
+    assert blog_draft.repeat_count(paragraphs) == 2
+    assert blog_draft.repeated_sentences(["표 | 값 | 값 이것은 표의 행입니다", "표 | 값 | 값 이것은 표의 행입니다"]) == []
+
+
+def test_a_draft_with_a_repeated_sentence_fails_and_the_revision_names_it():
+    draft = _draft()
+    draft["sections"][0]["paragraphs"][0] += " " + _COPIED
+    draft["sections"][2]["paragraphs"][1] += " " + _COPIED
+    first = blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET)
+    assert "repeated_sentences" in first["failures"]
+    assert first["measured"]["repeated_sentences"] == 1
+    request = blog_content.revision_request(TARGET, first, "")
+    assert "같은 문장을 두 번 이상 쓰지 마라" in request and f"「{_COPIED[:60]}」" in request
+    clean = blog_content.interpret_draft(json.dumps(_draft(), ensure_ascii=False), TARGET)
+    assert "repeated_sentences" not in clean["failures"] and clean["measured"]["repeated_sentences"] == 0
+
+
+def test_a_revision_that_pads_by_copying_loses_to_the_draft_it_copied_from(monkeypatch):
+    short = _draft(sections=5, per_section=1)                     # body too short
+    padded = _draft()
+    for section in padded["sections"]:
+        section["paragraphs"][-1] += " " + _COPIED               # long enough, but copied
+    sheet, _calls = _ideate(monkeypatch, [short, padded])
+    quality = sheet["package"]["quality"] if "package" in sheet else sheet["quality"]
+    assert quality["revision_outcome"] == "REVISION_FURTHER_OFF:KEPT_FIRST_DRAFT"
+    assert "repeated_sentences" not in quality["failures"]
+
+
+def test_the_grow_ask_forbids_padding_by_copying():
+    assert "다른 문단에 이미 있는 문장을 옮겨 오거나 되풀이해서 늘리지도 마라" in blog_content.ADD_SUBSTANCE_ASK
+
+
+def test_a_public_site_is_named_not_anonymized():
+    request = blog_content.content_request(TARGET)
+    assert "정부·공공기관의 사이트와 서비스(정부24·홈택스·위택스·소상공인24·고용노동부 등)는 업체가 아니다" in request

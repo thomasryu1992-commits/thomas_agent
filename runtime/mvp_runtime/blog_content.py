@@ -798,7 +798,13 @@ def interpret_draft(
     # it once (2026-09-30). Over the ceiling stays advisory.
     if 0 <= measured["keyword_hits"] < blog_draft_score.STANDARDS["keyword_hits"].low:
         failures.append("keyword_hits")
-    parts.update({"measured": measured, "failures": failures})
+    # A sentence pasted twice is a failure of the contract, not a standard's distance: counted
+    # in `_miss` as one, so a revision that pads by copying loses to the draft it copied from.
+    repeated = blog_draft.repeated_sentences(prose)
+    measured = dict(measured, repeated_sentences=blog_draft.repeat_count(prose))
+    if repeated:
+        failures.append("repeated_sentences")
+    parts.update({"measured": measured, "failures": failures, "repeated": repeated})
     return parts
 
 
@@ -1187,7 +1193,8 @@ def _length_asks(measured: Mapping[str, Any], structured: Mapping[str, Any] | No
 ADD_SUBSTANCE_ASK = (
     "더하는 문장에는 그 섹션 소제목에 대한 구체적인 내용 — 아래 근거 메모에 있는 수치·메뉴나 버튼 이름·"
     "절차 단계·설정값, 또는 독자가 겪는 구체적인 상황 하나 — 을 담아라. '…이 중요합니다'·'…지혜가 "
-    "필요합니다'·'…도움이 됩니다'·'…주의가 필요합니다'처럼 어느 글에나 붙는 맺음 문장으로 늘리지 마라."
+    "필요합니다'·'…도움이 됩니다'·'…주의가 필요합니다'처럼 어느 글에나 붙는 맺음 문장으로 늘리지 마라. "
+    "다른 문단에 이미 있는 문장을 옮겨 오거나 되풀이해서 늘리지도 마라 — 반복된 문장이 있으면 불합격이다."
 )
 
 
@@ -1235,7 +1242,10 @@ _FAILURE_ASKS = {
     "para_chars": "문단 평균 길이를 공백 제외 70~150자로 맞춰라(방법은 아래 분량 지시를 따른다)",
     "title_candidates": "title_candidates에 소제목과 다른 제목 후보를 3~5개 넣어라(타깃 키워드를 앞쪽에 자연스럽게)",
     "structured_output": "content_draft를 지정한 JSON 객체 하나로만 출력하라(설명·마크다운 금지)",
+    "repeated_sentences": ("같은 문장을 두 번 이상 쓰지 마라 — 반복된 문장은 한 곳에만 남기고, 나머지 자리는 "
+                           "그 문단 소제목에 맞는 다른 내용으로 바꿔라"),
 }
+MAX_NAMED_REPEATS = 5
 # The failures a length plan answers. When any of them is asked, the plan rides along once.
 _LENGTH_FAILURES = frozenset({"body_chars", "para_chars"})
 
@@ -1339,11 +1349,16 @@ def _keyword_places(structured: Mapping[str, Any], target: str) -> list[str]:
 # A carrier's partnership is the exception (Thomas 2026-09-30): '퍼플렉시티 무료'
 # (bcp_3ffcacf2c0ff175ef7a0) turned an SKT customers' offer into "특정 통신사 이용자라면", which no
 # reader can act on.
+# A public site is not a business at all (Thomas 2026-09-30): '2026소상공인지원금신청'
+# (bcp_756592c6972ca6129a32) sent the reader to "지정된 지원금 전용 포털" for a voucher applied for
+# on 소상공인24 — a government portal the reader has to find by name.
 VENDOR_NAME_ASK = (
     "업체·가게·인쇄소·쇼핑몰·판매 사이트·중개 플랫폼의 이름은 본문·제목·표·캡처 지시 어디에도 쓰지 "
     "마라 — '온라인 인쇄 업체 A'·'업체 B'처럼 익명으로 쓰거나 업종으로만 불러라. 앱·소프트웨어·AI "
     "도구의 이름(키워드가 다루는 도구 포함)은 써도 된다. 단, 통신사 제휴 혜택(특정 통신사 고객만 받는 "
-    "요금제·구독 혜택 등)은 그 통신사 이름을 밝혀라 — 독자가 자기가 대상인지 알아야 한다."
+    "요금제·구독 혜택 등)은 그 통신사 이름을 밝혀라 — 독자가 자기가 대상인지 알아야 한다. 정부·공공기관의 "
+    "사이트와 서비스(정부24·홈택스·위택스·소상공인24·고용노동부 등)는 업체가 아니다 — 독자가 직접 찾아가야 "
+    "하는 곳이니 이름을 그대로 밝혀라."
 )
 # The reader lives in Korea. Asked as "해외 자료를 꼭 써야 하면 해외 기준이라 한국과 다를 수 있다고
 # 밝혀라", 'ai 번역기' (bcp_4ad51169ab0a26df545d, 2026-09-30) used no foreign figure at all and still
@@ -1412,6 +1427,10 @@ def revision_request(
         asks.append(f"- {_length_asks(measured, first.get('structured'))}")
     if "keyword_hits" in first["failures"]:
         asks.append(f"- {_keyword_revision_ask(target, measured, first.get('structured'))}")
+    if first.get("repeated"):
+        named = ", ".join(f"「{r[:60]}」" for r in first["repeated"][:MAX_NAMED_REPEATS])
+        more = f" 외 {len(first['repeated']) - MAX_NAMED_REPEATS}개" if len(first["repeated"]) > MAX_NAMED_REPEATS else ""
+        asks.append(f"- 두 번 이상 나온 문장: {named}{more}")
     if _grows(first):
         facts = ("첫 초안의 사실·수치·가격·날짜는 바꾸지 말고 새 출처를 추가하지 마라. 새 사실은 아래 근거 메모에 "
                  "있는 것만 쓸 수 있다 — 메모에 없는 이름·수치를 지어내지 마라. 분량을 늘릴 때는 근거 메모의 구체적인 "
