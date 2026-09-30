@@ -39,7 +39,11 @@ from dataclasses import dataclass
 #
 # 2026-09-29: `keyword_hits` ignores spacing (:func:`keyword_hits`) — '소상공인스마트상점' and
 # '소상공인 스마트 상점' are the keyword '소상공인 스마트상점' as a Naver reader types it.
-STANDARDS_VERSION = "blog_draft_standards.2026-09-29"
+#
+# 2026-09-30: `keyword_hits` ignores letter case too — 'ChatGPT 사용법' is the keyword
+# 'CHATGPT사용법', and the request now lets a draft write it that way instead of the
+# all-caps, space-less form that read as a noun glued to the next one.
+STANDARDS_VERSION = "blog_draft_standards.2026-09-30"
 
 __all__ = ["STANDARDS", "STANDARDS_VERSION", "Standard", "keyword_hits", "measure",
            "measure_structured", "scorecard", "shortfall"]
@@ -106,11 +110,12 @@ def keyword_hits(text: str, keyword: str | None) -> int:
     Exact matching undercounted a multi-word keyword: a draft that used '소상공인 스마트상점'
     once and shortened it to '스마트상점' six times, and one that wrote it without the space,
     both read the same. The spacing is what is ignored — a part of the keyword on its own
-    ('스마트상점') is still not the keyword."""
+    ('스마트상점') is still not the keyword. Letter case is ignored too: the queue spells
+    'CHATGPT사용법', a reader writes 'ChatGPT 사용법'."""
     key = re.sub(r"\s", "", keyword or "")
     if not key:
         return -1
-    return len(re.findall(r"\s*".join(re.escape(ch) for ch in key), text))
+    return len(re.findall(r"\s*".join(re.escape(ch) for ch in key), text, flags=re.IGNORECASE))
 
 
 def _paragraphs(text: str) -> list[str]:

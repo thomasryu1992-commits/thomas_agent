@@ -325,7 +325,7 @@ def test_body_chars_is_prose_only_in_the_text_measurement_too():
     """Headings, the tag line and capture markers used to count toward the 1,800 floor."""
     text = "## 소제목\n\n본문 열 글자입니다.\n\n[캡처: 아주 긴 캡처 설명 문구]\n\n#태그하나 #태그둘"
     assert blog_draft_score.measure(text)["body_chars"] == len("본문열글자입니다.")
-    assert blog_draft_score.STANDARDS_VERSION == "blog_draft_standards.2026-09-29"
+    assert blog_draft_score.STANDARDS_VERSION == "blog_draft_standards.2026-09-30"
 
 
 # --- what the first real package showed (2026-09-28) ----------------------------------------
@@ -1031,3 +1031,24 @@ def test_the_revision_keeps_added_or_cut_text_inside_its_section():
         json.dumps(_draft(sections=2, per_section=1), ensure_ascii=False), TARGET)
     request = blog_content.revision_request(TARGET, first, "")
     assert "그 섹션 소제목의 내용 안에서만" in request
+
+
+# --- the keyword in a natural form (2026-09-30) -----------------------------------------------
+#
+# Asked to insert the keyword "띄어쓰기와 표기 그대로", three drafts glued it to the next noun:
+# "CHATGPT사용법 계정 생성 절차", "명함만들기 위한 전체보기 메뉴", "원하는 방수스티커제작 크기".
+
+def test_keyword_hits_ignore_letter_case_as_well_as_spacing():
+    text = "ChatGPT 사용법을 정리합니다. chatgpt사용법은 쉽습니다. CHATGPT 사 용 법에서 시작합니다."
+    assert blog_draft_score.keyword_hits(text, "CHATGPT사용법") == 3
+    assert blog_draft_score.keyword_hits("ChatGPT를 씁니다", "CHATGPT사용법") == 0
+
+
+def test_both_requests_allow_the_natural_form_and_forbid_the_glued_noun():
+    first = blog_content.interpret_draft(json.dumps(_few_keywords(), ensure_ascii=False), TARGET)
+    for request in (blog_content.content_request(TARGET),
+                    blog_content.revision_request(TARGET, first, "")):
+        assert blog_content.KEYWORD_FORM_ASK in request
+    revision = blog_content.revision_request(TARGET, first, "")
+    assert "띄어쓰기와 표기 그대로" not in revision and "그대로 넣어라" not in revision
+    assert "주어·목적어로 들어간 문장" in revision
