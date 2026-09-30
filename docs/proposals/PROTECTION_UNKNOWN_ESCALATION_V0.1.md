@@ -1,6 +1,6 @@
 # PROTECTION_UNKNOWN gets a clock: notify, halt the fan-out, then a HARD halt
 
-**Status:** DRAFT 2026-09-27 — §6의 D1–D4 결정 대기(임계값, 런타임의 HARD 정지 권한, UNKNOWN에 청산하지 않음, 시계 저장 위치). 구현 없음.
+**Status:** DECIDED 2026-09-30 — D1–D4 권고대로(Thomas): 30분 알림+사이클 정지(ID 누락은 즉시), 60분 런타임 HARD 조임, UNKNOWN만으로 청산하지 않음, 별도 watch 저장소. 남은 구현: 한 PR(§5).
 
 The machine is at stage PAPER, so the live leg opens no new positions.
 
@@ -167,3 +167,15 @@ the point: the policy exists before it is needed.
   close after T3, which acts on a guess.
 - **D4 — where the clock lives:** a separate watch store (recommended, §2.1) or a field on the live
   position book (which bumps the book's kernel version and touches PR2b-2's write rules).
+
+## Decision (Thomas 2026-09-30, as recommended)
+
+- **D1 — yes.** T1 = 30 minutes (U1: one message + the pass halts its fan-out), T2 = 60 minutes (U2);
+  `LIVE_BRACKET_IDS_MISSING` goes to U1 on the first pass.
+- **D2 — granted.** The runtime may tighten the control state to HARD on its own (actor
+  `system:protection_watch`), raise-only, under decision 47; only the authenticated operator loosens it.
+- **D3 — yes.** Never close on UNKNOWN; no re-placed bracket on a guess.
+- **D4 — a separate store.** The clock lives in `crypto/live_protection_watch.json`, not on the live
+  position book.
+
+Remaining: the build (§5).
