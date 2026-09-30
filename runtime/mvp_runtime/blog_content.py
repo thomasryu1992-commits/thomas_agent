@@ -1310,10 +1310,17 @@ def _keyword_places(structured: Mapping[str, Any], target: str) -> list[str]:
 # post (bcp_c82a3c17ded878ca24ea, 2026-09-30) said "load, cut, add captions, save" with the
 # app named once and none of the menu names its own [S1]/[S3]/[S4] carried. Use what the
 # evidence says — by name — is the other half of "invent nothing".
+#
+# Named, the specifics can also be over-followed: '명함만들기' (bcp_d3be61f8a0fa8b85c920,
+# 2026-09-30) walked one blog's menu path (전체보기 → 명함제작 → 이지템플릿) without saying
+# whose site it was, and lifted its broken phrase "제작가이드도 참조도 하구요" into the post.
 EVIDENCE_SPECIFICS_ASK = (
     "근거 블록([S#])에 나온 구체적인 내용 — 메뉴·버튼·기능 이름, 절차 단계, 설정값 — 을 섹션마다 "
     "최소 1개 본문에 그 이름 그대로 쓰고, 그 근거를 sources에 넣어라. 어떤 도구·주제에도 똑같이 "
-    "들어맞는 일반론 문장만으로 문단을 채우지 마라. 근거에 없는 이름이나 설정값을 지어내지는 마라."
+    "들어맞는 일반론 문장만으로 문단을 채우지 마라. 근거에 없는 이름이나 설정값을 지어내지는 마라. "
+    "근거 글의 문장이나 어구는 옮기지 말고 네 말로 풀어 써라. 특정 사이트·앱에서만 통하는 메뉴 "
+    "경로를 쓸 때는 어느 사이트·앱의 메뉴인지 밝히고, 한 근거 글의 순서를 그대로 따라가지 말고 "
+    "여러 근거를 섞어라."
 )
 
 
@@ -1337,7 +1344,7 @@ def content_request(target: str) -> str:
         f"{_length_plan()}\n"
         f"규칙: title_candidates는 소제목과 별개인 글 제목 3~5개이고 각각 '{target}'를 앞쪽에 "
         f"자연스럽게 포함한다. {_keyword_ask(target)} image_shots 4~8개(after_section은 0부터 센 섹션 번호, 생성 "
-        "이미지가 아니라 실제 화면 캡처), 표 1개는 table 필드에만(첫 행이 머리글, 2행 이상, "
+        "이미지가 아니라 실제 화면 캡처), 표 1개는 table 필드에만(첫 행이 머리글이고 데이터 행은 3개 이상, 머리글 칸에는 '항목1'·'값' 같은 자리표시 말고 비교하는 대상의 실제 이름을 써라, "
         "paragraphs 안에 ' | ' 행을 쓰지 마라 — 표는 문단 수에 세지 않는다), tags 3~8개, sources 2~5개. 가격·무료 범위·사용 한도·기능 제공 여부·정책·버전·"
         "날짜를 쓴 문장은 모두 fact_checks에 넣어라. 근거 블록([S#]·[K#])에 없는 수치·가격·"
         "출처를 지어내지 마라 — 근거가 없으면 source_ref를 null로 둬라. 문단 안에 #, **, > 같은 "

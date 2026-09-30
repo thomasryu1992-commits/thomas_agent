@@ -1052,3 +1052,17 @@ def test_both_requests_allow_the_natural_form_and_forbid_the_glued_noun():
     revision = blog_content.revision_request(TARGET, first, "")
     assert "띄어쓰기와 표기 그대로" not in revision and "그대로 넣어라" not in revision
     assert "주어·목적어로 들어간 문장" in revision
+
+
+def test_the_evidence_ask_forbids_lifting_phrases_and_unnamed_site_menus():
+    """'명함만들기' walked one blog's menu path without naming the site and lifted its phrase
+    "제작가이드도 참조도 하구요" (bcp_d3be61f8a0fa8b85c920)."""
+    request = blog_content.content_request(TARGET)
+    assert "문장이나 어구는 옮기지 말고 네 말로 풀어 써라" in request
+    assert "어느 사이트·앱의 메뉴인지 밝히고" in request and "여러 근거를 섞어라" in request
+
+
+def test_the_table_ask_wants_real_headers_and_three_data_rows():
+    """Two tables copied the shape's "구분 | 항목1 | 항목2", two had one or two rows (2026-09-30)."""
+    request = blog_content.content_request(TARGET)
+    assert "데이터 행은 3개 이상" in request and "자리표시 말고 비교하는 대상의 실제 이름" in request
