@@ -121,6 +121,26 @@ s.sendall(b'{"command": "runtime_status"}\n'); print(json.loads(s.recv(65536).sp
 PY
 ```
 
+**The execution stage reads READ_ONLY after a restore, by design** (Thomas 2026-09-30,
+`docs/proposals/EXECUTION_STAGE_ANTI_ROLLBACK_V0.1.md` D4). The backup never carries the stage's anchor,
+`crypto/execution_stage_anchor.json`, so a restored state directory reads one of two things:
+- `EXECUTION_STAGE_ROLLED_BACK`: restored over the live directory, where the newer anchor survived.
+- `EXECUTION_STAGE_ANCHOR_MISSING`: wiped and restored.
+
+This is not a failed restore, and restoring again will not clear it. The way back is a BOOTSTRAP at
+SHADOW or PAPER, approved by Thomas, then one approved rung at a time:
+
+```bash
+docker exec -u 10001 thomas-scheduler python -m scripts.register_execution_stage --show
+docker exec -u 10001 thomas-scheduler python -m scripts.register_execution_stage --request --to PAPER \
+    --registered-by thomas --reason "after the restore" --attest "<what the paper record rests on>"
+# Thomas: /approve <id>
+docker exec -u 10001 thomas-scheduler python -m scripts.register_execution_stage --confirm --approval-id <id>
+```
+
+Do not use `--sync-anchor` here: it refuses a missing or off-chain anchor for exactly this reason. A
+restore could never bring back a stage that had been demoted.
+
 ## 3. Health and restart budgets (Q15)
 
 **Hermes healthcheck** — the container's CMD is `sleep infinity` (an s6 slot), so a dead gateway leaves the container `running`; `gateway_state.json` changes only on transitions and is not a liveness signal. The compose healthcheck reads the age of `/opt/data/state/gateway.heartbeat`, which the gateway rewrites every 30 s: unhealthy when older than 120 s (interval 60 s, 3 retries, 180 s start period). Like every Thomas healthcheck, it **reports** — nothing on this host restarts a container on `unhealthy`; that is a separate decision. Since 2026-09-07 something at least *reads* it: see *Container health watch* below.

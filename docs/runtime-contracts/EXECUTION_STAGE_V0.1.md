@@ -35,12 +35,30 @@ never will.
 
 ## 2. The record
 
-One file, `.runtime_governance_state/crypto/execution_stage.json` (never under `bridge/`), self-hashed,
-schema `execution_stage.v0.1`, written only by `scripts/register_execution_stage.py` as uid 10001, one
-writer at a time (`execution_stage.lock`). Every transition also leaves an
+A self-hashed record, schema `execution_stage.v0.1`, written only by `scripts/register_execution_stage.py`
+as uid 10001, one writer at a time (`execution_stage.lock`). Every transition also leaves an
 `execution_stage_transition.v0` event on the control ledger.
 
-It reads **READ_ONLY** (decision 9), with the reason, when it is: missing · unreadable (including content
+**Where it lives (since 2026-09-30, `docs/proposals/EXECUTION_STAGE_ANTI_ROLLBACK_V0.1.md`):**
+- **The ledger** is `crypto/execution_stage_ledger.jsonl`: append-only, hash-chained, schema
+  `execution_stage_ledger.v0.1`. Its tip record is the stage. Every read verifies the whole chain:
+  row hashes, `seq`, links, stage continuity, and no approval witnessing two rows.
+- **The anchor** is `crypto/execution_stage_anchor.json` (schema `execution_stage_anchor.v0.1`). It
+  names the row the machine last reached and is **excluded from the governance-state backup**
+  (`scripts/ops/harness_backup.sh`; `backup_watch.sh` reports an archive that carries it).
+- **The mirror** is `crypto/execution_stage.json`, written after the row, for humans. No decision
+  reads it.
+
+Writes go row → anchor → mirror. A failed anchor write is a warning (`EXECUTION_STAGE_ANCHOR_WRITE_FAILED`).
+An anchor one row behind still vouches, and an approved transition waits for `--sync-anchor`. A chain
+that cannot be extended is replaced, never edited, and only by a BOOTSTRAP or a demotion to READ_ONLY.
+The old file is kept as `execution_stage_ledger.replaced-<stamp>.jsonl`.
+
+It reads **READ_ONLY** (decision 9), with the reason, when **the ledger** is missing
+(`EXECUTION_STAGE_LEDGER_MISSING` while only the old mirror exists), unreadable or broken, or when
+**the anchor** is missing, tampered, names a row the chain does not hold (`EXECUTION_STAGE_ROLLED_BACK`),
+or is more than one row behind. None of these is REBINDable; the way up is a BOOTSTRAP. It also reads
+READ_ONLY when **the tip record** is: missing · unreadable (including content
 that cannot be canonicalised) · tampered · schema-invalid · for another venue · internally inconsistent
 (its transition does not match its stages or its witness fields) · not yet effective · **not witnessed**
 (below) · bound to a different policy version · bound to a different **safety semantic fingerprint**
@@ -62,9 +80,9 @@ content hashes to `witness_stage_id`.
 - DEMOTE to READ_ONLY: no witness. It grants nothing.
 
 **Limit, on the record:** the approval ledger lives in the same state directory and carries no secret. A
-writer able to forge a whole coherent approval lifecycle can still forge a stage, and one who kept a copy of
-an earlier witnessed record can restore it and undo a demotion; the witness removes the one-hash forgery.
-That writer is the service uid, which could already place orders directly.
+writer able to forge a whole coherent approval lifecycle, and the ledger and anchor with it, can still forge
+a stage; the witness removes the one-hash forgery, and the ledger and anchor remove the copy put back and the
+restored directory. That writer is the service uid, which could already place orders directly.
 
 ## 3. Transitions
 
@@ -113,6 +131,16 @@ docker exec -u 10001 thomas-scheduler python -m scripts.register_execution_stage
 ```
 
 After a policy bump (e.g. 1.5.1) the record reads READ_ONLY until a REBIND is approved — by design.
+
+```bash
+# After an anchor write failed (the door prints EXECUTION_STAGE_ANCHOR_WRITE_FAILED). No approval: it
+# cannot change the stage, and it refuses a missing, tampered or off-chain anchor.
+docker exec -u 10001 thomas-scheduler python -m scripts.register_execution_stage --sync-anchor
+```
+
+After a restore of the state directory, the stage reads ROLLED_BACK or ANCHOR_MISSING, and the way back is a
+BOOTSTRAP at SHADOW or PAPER, then one approved rung at a time. That is the cost Thomas accepted (D4) so that
+a restore can never bring a demoted stage back.
 
 ## 5. Where it is read
 

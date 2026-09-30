@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "execution_stage_anchor.v0.1.schema.json",
+  "title": "Execution Stage Anchor v0.1",
+  "description": "The execution stage ledger's anchor (Thomas 2026-09-30, docs/proposals/EXECUTION_STAGE_ANTI_ROLLBACK_V0.1.md D1 a): the row the machine last reached, kept out of the governance-state backup so a restore cannot bring it back together with the rows it would vouch for. The row it names must be on the chain and at most one row behind the tip; otherwise the stage reads READ_ONLY (ROLLED_BACK, ANCHOR_MISSING, ANCHOR_TAMPERED, ANCHOR_BEHIND).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "venue", "seq", "row_sha256", "written_at", "anchor_sha256"],
+  "properties": {
+    "schema_version": {"const": "execution_stage_anchor.v0.1"},
+    "venue": {"enum": ["binance_futures"]},
+    "seq": {"type": "integer", "minimum": 0},
+    "row_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "written_at": {"type": "string", "minLength": 1},
+    "anchor_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

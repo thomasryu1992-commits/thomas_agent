@@ -28,7 +28,11 @@
 # into .runtime_governance_state/workflow/snapshots/<stamp>/ as uid 10001, that directory is tarred,
 # the live workflow.db* is excluded, and the log line says `workflow-snapshot=ok|absent|FAILED`
 # (absent = the manager never created the store on this host; not a failure). Only the newest
-# snapshot directory is kept. Recreatable caches, installed packages and logs are excluded — they
+# snapshot directory is kept. The execution stage ANCHOR is excluded on purpose (Thomas 2026-09-30,
+# EXECUTION_STAGE_ANTI_ROLLBACK D1 a): it vouches for the stage ledger, and restored together with the
+# ledger it would vouch for an older stage. Without it a restore reads READ_ONLY until a BOOTSTRAP,
+# which is the point. backup_watch.sh reports an archive that carries it.
+# Recreatable caches, installed packages and logs are excluded — they
 # are not state.
 set -u
 
@@ -94,6 +98,7 @@ case "$MODE" in
     fi
     tar czf "$OUT" --warning=no-file-changed -C "$HOST_ROOT" \
         --exclude="$THOMAS/.runtime_governance_state/crypto/candle_archive" \
+        --exclude="$THOMAS/.runtime_governance_state/crypto/execution_stage_anchor.json" \
         --exclude="$WF_DIR/workflow.db" --exclude="$WF_DIR/workflow.db-*" \
         --exclude="$HERMES/data/state.db" --exclude="$HERMES/data/state.db-*" \
         --exclude="$HERMES/data/kanban.db" --exclude="$HERMES/data/kanban.db-*" \

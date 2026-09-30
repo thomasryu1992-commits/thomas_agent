@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "execution_stage_ledger.v0.1.schema.json",
+  "title": "Execution Stage Ledger Row v0.1",
+  "description": "One row of the append-only, hash-chained execution stage ledger (Thomas 2026-09-30, docs/proposals/EXECUTION_STAGE_ANTI_ROLLBACK_V0.1.md). The ledger's tip record IS the machine's stage; execution_stage.json is a mirror no decision reads. Each row carries one stage record (validated separately against execution_stage.v0.1), its position in the chain and the hash of the row before it. A chain that does not verify, or that its anchor does not vouch for, reads as READ_ONLY.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "seq", "prev_row_sha256", "record", "appended_at", "row_sha256"],
+  "properties": {
+    "schema_version": {"const": "execution_stage_ledger.v0.1"},
+    "seq": {"type": "integer", "minimum": 0},
+    "prev_row_sha256": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+    "record": {"type": "object"},
+    "appended_at": {"type": "string", "minLength": 1},
+    "row_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}
