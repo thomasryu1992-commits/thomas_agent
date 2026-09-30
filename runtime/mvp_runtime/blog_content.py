@@ -1294,6 +1294,17 @@ def _keyword_places(structured: Mapping[str, Any], target: str) -> list[str]:
     return places
 
 
+# The rule against invention alone pushed the drafts to prose true of any tool: a '캡컷 사용법'
+# post (bcp_c82a3c17ded878ca24ea, 2026-09-30) said "load, cut, add captions, save" with the
+# app named once and none of the menu names its own [S1]/[S3]/[S4] carried. Use what the
+# evidence says — by name — is the other half of "invent nothing".
+EVIDENCE_SPECIFICS_ASK = (
+    "근거 블록([S#])에 나온 구체적인 내용 — 메뉴·버튼·기능 이름, 절차 단계, 설정값 — 을 섹션마다 "
+    "최소 1개 본문에 그 이름 그대로 쓰고, 그 근거를 sources에 넣어라. 어떤 도구·주제에도 똑같이 "
+    "들어맞는 일반론 문장만으로 문단을 채우지 마라. 근거에 없는 이름이나 설정값을 지어내지는 마라."
+)
+
+
 def content_request(target: str) -> str:
     """The blog request: the structured contract, the length plan, the standards, and the
     no-invention rule."""
@@ -1308,7 +1319,7 @@ def content_request(target: str) -> str:
         "paragraphs 안에 ' | ' 행을 쓰지 마라 — 표는 문단 수에 세지 않는다), tags 3~8개, sources 2~5개. 가격·무료 범위·사용 한도·기능 제공 여부·정책·버전·"
         "날짜를 쓴 문장은 모두 fact_checks에 넣어라. 근거 블록([S#]·[K#])에 없는 수치·가격·"
         "출처를 지어내지 마라 — 근거가 없으면 source_ref를 null로 둬라. 문단 안에 #, **, > 같은 "
-        "마크다운 기호를 쓰지 마라."
+        f"마크다운 기호를 쓰지 마라. {EVIDENCE_SPECIFICS_ASK}"
     )
 
 
