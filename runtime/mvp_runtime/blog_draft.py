@@ -435,12 +435,15 @@ def resolve_sources(sources: Sequence[Mapping[str, Any]], index: Mapping[str, An
 # Each category names what makes a sentence worth checking before publishing. Order matters
 # only for the label: a sentence is flagged once, under the first category that matches.
 _CLAIM_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
-    ("price", re.compile(r"\d[\d,.]*\s*(원|만\s?원|달러|엔)|[$₩]\s?\d|USD|KRW|가격|요금|구독료"),
+    # A price word alone is advice ("가격만 보고 고르지 마라"), not a price: it needs a number in
+    # the same sentence. 9 of 11 checks on '명함제작업체' (2026-09-30) were that advice.
+    ("price", re.compile(r"\d[\d,.]*\s*(원|만\s?원|달러|엔)|[$₩]\s?\d|USD|KRW|^(?=.*\d).*(가격|요금|구독료)"),
      "가격·요금은 공지 없이 바뀐다"),
     ("free_tier", re.compile(r"무료"), "무료 제공 범위는 자주 바뀐다"),
-    ("usage_limit", re.compile(r"\d[\d,]*\s*(회|건|개|분|시간|GB|MB|크레딧|토큰|자|장)\s*(까지|이하|이내|제한|한도)|한도|제한"),
+    ("usage_limit", re.compile(r"\d[\d,]*\s*(회|건|개|분|시간|GB|MB|크레딧|토큰|자|장)\s*(까지|이하|이내|제한|한도)|^(?=.*\d).*(한도|제한)"),
      "사용량 한도는 요금제·시점마다 다르다"),
-    ("version", re.compile(r"(?i)\bv\d+(\.\d+)*\b|버전|GPT-?\d|\d+\.\d+\s*(모델|버전)"),
+    # "구버전 쿠폰은 폐기하라" is not a version claim; a version needs a number or a model name.
+    ("version", re.compile(r"(?i)\bv\d+(\.\d+)*\b|^(?=.*\d).*버전|GPT-?\d|\d+\.\d+\s*(모델|버전)"),
      "버전·모델명은 교체된다"),
     ("date", re.compile(r"20\d\d\s*년|20\d\d[-./]\d{1,2}|\d{1,2}\s*월\s*\d{1,2}\s*일"),
      "날짜·기한이 지났을 수 있다"),
@@ -449,7 +452,16 @@ _CLAIM_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ("availability", re.compile(r"출시|지원(?:합니다|한다|돼|됩니다|하지)|제공(?:합니다|한다|됩니다|하지)|사용할 수 있|이용할 수 있|베타|종료"),
      "기능 제공 여부는 지역·요금제·시점마다 다르다"),
 )
-_SENTENCE_RE = re.compile(r"[^.!?。\n]+[.!?。]?")
+# A period between two digits is a decimal point, not a sentence end: "31.25달러부터" was cut
+# into "…31." and "25달러부터 시작하는 등…" (2026-09-30).
+_SENTENCE_RE = re.compile(r"(?:[^.!?。\n]|(?<=\d)\.(?=\d))+[.!?。]?")
+
+
+def _claim_key(claim: str) -> str:
+    """A claim with spacing, punctuation and its sentence ending taken off, for telling that the
+    model's "…제공한다." and the detector's "…제공합니다." are the same sentence."""
+    text = re.sub(r"[\s.!?。,'\"]", "", claim)
+    return re.sub(r"(합니다|습니다|입니다|한다|된다|이다|다|요)$", "", text)
 
 
 def detect_fact_checks(paragraphs: Sequence[str]) -> list[dict[str, Any]]:
@@ -464,8 +476,8 @@ def detect_fact_checks(paragraphs: Sequence[str]) -> list[dict[str, Any]]:
     for paragraph in paragraphs:
         for sentence in _SENTENCE_RE.findall(paragraph):
             sentence = sentence.strip()
-            if len(sentence) < 8 or sentence in seen:
-                continue
+            if len(sentence) < 8 or sentence in seen or " | " in sentence:
+                continue          # a table row is not a sentence claiming anything
             for category, pattern, why in _CLAIM_PATTERNS:
                 if pattern.search(sentence):
                     seen.add(sentence)
@@ -490,10 +502,10 @@ def fact_checks(
     claims: set[str] = set()
     for check in model_checks:
         claim = str(check.get("claim") or "").strip()[:500]
-        if not claim or claim in claims:
+        if not claim or _claim_key(claim) in claims:
             continue
         key = _resolve(check.get("source_ref"), index)
-        claims.add(claim)
+        claims.add(_claim_key(claim))
         out.append({
             "claim": claim,
             "why": str(check.get("why") or "")[:300] or "모델이 확인 필요로 표시한 문장",
@@ -503,9 +515,10 @@ def fact_checks(
             "verified_at": None,
         })
     for check in detect_fact_checks(paragraphs):
-        if check["claim"] in claims or any(check["claim"] in c or c in check["claim"] for c in claims):
+        found = _claim_key(check["claim"])
+        if found in claims or any(found in c or c in found for c in claims):
             continue
-        claims.add(check["claim"])
+        claims.add(found)
         out.append({**check, "verification_state": VERIFICATION_NEEDS_MANUAL,
                     "source_ref": None, "verified_at": None})
     return out[:MAX_FACT_CHECKS]

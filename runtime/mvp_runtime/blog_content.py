@@ -1314,13 +1314,25 @@ def _keyword_places(structured: Mapping[str, Any], target: str) -> list[str]:
 # Named, the specifics can also be over-followed: '명함만들기' (bcp_d3be61f8a0fa8b85c920,
 # 2026-09-30) walked one blog's menu path (전체보기 → 명함제작 → 이지템플릿) without saying
 # whose site it was, and lifted its broken phrase "제작가이드도 참조도 하구요" into the post.
+# And for a Korean reader: '명함제작업체' (bcp_366916fc7176de5a9db8) priced business cards in
+# dollars from a US printer's page ("100장 기준 31.25달러").
+# No business names (Thomas 2026-09-30, applying the blog's 2026-09-03 "상호명 금지" to the lane):
+# three posts named and priced real printers (누리애드·비즈하우스·오프린트미·네모디·한미프린트) and
+# a freelance marketplace, which reads as a recommendation. Software, apps and AI tools stay
+# nameable — they are what the blog writes about ('캡컷 사용법', 'ChatGPT 사용법').
+VENDOR_NAME_ASK = (
+    "업체·가게·인쇄소·쇼핑몰·판매 사이트·중개 플랫폼의 이름은 본문·제목·표·캡처 지시 어디에도 쓰지 "
+    "마라 — '온라인 인쇄 업체 A'·'업체 B'처럼 익명으로 쓰거나 업종으로만 불러라. 앱·소프트웨어·AI "
+    "도구의 이름(키워드가 다루는 도구 포함)은 써도 된다."
+)
 EVIDENCE_SPECIFICS_ASK = (
     "근거 블록([S#])에 나온 구체적인 내용 — 메뉴·버튼·기능 이름, 절차 단계, 설정값 — 을 섹션마다 "
     "최소 1개 본문에 그 이름 그대로 쓰고, 그 근거를 sources에 넣어라. 어떤 도구·주제에도 똑같이 "
     "들어맞는 일반론 문장만으로 문단을 채우지 마라. 근거에 없는 이름이나 설정값을 지어내지는 마라. "
-    "근거 글의 문장이나 어구는 옮기지 말고 네 말로 풀어 써라. 특정 사이트·앱에서만 통하는 메뉴 "
-    "경로를 쓸 때는 어느 사이트·앱의 메뉴인지 밝히고, 한 근거 글의 순서를 그대로 따라가지 말고 "
-    "여러 근거를 섞어라."
+    "근거 글의 문장이나 어구는 옮기지 말고 네 말로 풀어 써라. 특정 앱에서만 통하는 메뉴 경로를 "
+    "쓸 때는 어느 앱의 메뉴인지 밝히고(업체 사이트라면 아래처럼 익명으로), 한 근거 글의 순서를 그대로 "
+    "따라가지 말고 여러 근거를 섞어라. " + VENDOR_NAME_ASK + " 독자는 한국에서 사는 사람이다 — 해외 업체·해외 서비스의 조건이나 달러·엔 "
+    "같은 외화 가격은 쓰지 말고, 해외 자료를 꼭 써야 하면 해외 기준이라 한국과 다를 수 있다고 밝혀라."
 )
 
 
