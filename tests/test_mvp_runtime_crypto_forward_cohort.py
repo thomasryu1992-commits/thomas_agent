@@ -787,3 +787,94 @@ def test_only_confirmed_and_contradicted_are_stamped():
              (None, "FORWARD_CONFIRMED"), ("d", "FORWARD_CONFIRMED")], now="t")
     assert history == {"d": {"first_confirmed_at_utc": "t"}}
     assert newly == {"first_confirmed_at_utc": 1, "first_contradicted_at_utc": 0}
+
+
+# --- the report's detail table (2026-09-30, gap analysis Q1): display only -----------------------
+
+def _detail_rows(tmp_path, nets, *, fields=None):
+    """One walked cohort row copied once per net R, settling a day apart, with no carry owed
+    (zero holding bars), so each row's net R is exactly the figure given."""
+    record = _record("cand_a")
+    _install_cohort(tmp_path, record)
+    _walk(tmp_path, _frame(range(1, 8), stop_on={5}))
+    (base,) = fco.read_cohort_outcomes(tmp_path)
+    rows = [{**base, "result_R": net, "holding_candles": 0, "created_at_utc": _day(10 + i),
+             "fee_cost_r": 0.02, "slippage_cost_r": 0.01, **(fields or {})}
+            for i, net in enumerate(nets)]
+    return record, rows
+
+
+def test_the_detail_columns_are_the_trade_figures_over_the_priced_rows(tmp_path):
+    from scripts import forward_cohort as script
+
+    record, rows = _detail_rows(tmp_path, [1.0, -0.5, 2.0, -1.0, -0.5])
+    record["backtest_evidence"]["holdout"]["expectancy"] = 0.05
+    detail = script.detail_columns(record, rows)
+    assert detail["n"] == 5 and detail["win_rate"] == pytest.approx(0.4)
+    assert detail["profit_factor"] == pytest.approx(3.0 / 2.0)
+    # cumulative 1.0, 0.5, 2.5, 1.5, 1.0: the fall from 2.5 to 1.0
+    assert detail["max_drawdown_r"] == pytest.approx(1.5)
+    assert detail["avg_win_r"] == pytest.approx(1.5)
+    assert detail["avg_loss_r"] == pytest.approx(2.0 / 3.0)
+    assert detail["fee_cost_r"] == pytest.approx(0.02) and detail["slippage_cost_r"] == pytest.approx(0.01)
+    # forward mean 0.2 against a recorded backtest of 12R / 60 = 0.2 and a holdout of 0.05
+    assert detail["vs_backtest_r"] == pytest.approx(0.0, abs=1e-9)
+    assert detail["vs_holdout_r"] == pytest.approx(0.15)
+
+
+def test_the_drawdown_follows_settlement_order_not_store_order(tmp_path):
+    from scripts import forward_cohort as script
+
+    record, rows = _detail_rows(tmp_path, [1.0, -0.5, 2.0, -1.0, -0.5])
+    assert script.detail_columns(record, list(reversed(rows)))["max_drawdown_r"] == pytest.approx(1.5)
+
+
+def test_a_detail_figure_that_cannot_be_computed_is_none_not_zero(tmp_path):
+    from scripts import forward_cohort as script
+
+    record, rows = _detail_rows(tmp_path, [1.0, 2.0])
+    none = script.detail_columns(record, [])
+    assert none["n"] == 0
+    assert all(value is None for key, value in none.items() if key != "n")
+    # two wins: no losing trade, so no profit factor and no average loss; no holdout expectancy
+    wins = script.detail_columns(record, rows)
+    assert wins["profit_factor"] is None and wins["avg_loss_r"] is None and wins["vs_holdout_r"] is None
+    assert wins["max_drawdown_r"] == 0.0 and wins["win_rate"] == 1.0
+    # one row without the field: the mean would describe fewer trades than n
+    partial = [rows[0], {k: v for k, v in rows[1].items() if k != "slippage_cost_r"}]
+    assert script.detail_columns(record, partial)["slippage_cost_r"] is None
+    assert script.detail_columns(record, partial)["fee_cost_r"] == pytest.approx(0.02)
+
+
+def test_the_detail_stands_on_the_rows_the_judge_prices(tmp_path):
+    from scripts import forward_cohort as script
+
+    record, rows = _detail_rows(tmp_path, [1.0, -0.5])
+    unpriceable = {**rows[0], "result_R": "n/a"}
+    before_selection = {**rows[0], "opened_at_utc": "2026-06-01T00:00:00Z"}
+    mixed = [*rows, unpriceable, before_selection]
+    assert [net for _, net in script.priced_rows(record, mixed)] == fco.priced_nets(record, mixed)
+    assert script.detail_columns(record, mixed)["n"] == 2
+    # and over a real walk the report's own line agrees with the detail's n
+    detail = script.detail_report(tmp_path)
+    (cohort,) = fco.cohort_report(tmp_path)
+    (line,) = cohort["members"]
+    assert detail[(cohort["cohort_id"], "cand_a")]["n"] == line["priceable_count"] == 1
+
+
+def test_detail_adds_a_table_and_changes_no_line_of_the_report(tmp_path, monkeypatch, capsys):
+    from scripts import forward_cohort as script
+
+    _install_cohort(tmp_path, _record("cand_a"), _record("cand_b", adx=30.0, family="trend_pullback"))
+    _walk(tmp_path, _frame(range(1, 8), stop_on={5}))
+    monkeypatch.setattr(script, "ROOT", tmp_path)
+    monkeypatch.setattr(script, "assert_not_foreign_root_run", lambda _: None)
+    report_before = fco.cohort_report(tmp_path)
+    assert script.main(["report"]) == 0
+    plain = capsys.readouterr().out.splitlines()
+    assert script.main(["report", "--detail"]) == 0
+    detailed = capsys.readouterr().out.splitlines()
+    assert detailed[:len(plain)] == plain and len(detailed) > len(plain)
+    assert not any("display only; no verdict" in line for line in plain)
+    assert any("display only; no verdict" in line for line in detailed)
+    assert fco.cohort_report(tmp_path) == report_before
