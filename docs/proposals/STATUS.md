@@ -4,7 +4,7 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **43**건: `DRAFT` 4 · `PARTIALLY DECIDED` 8 · `DECIDED` 4 · `IMPLEMENTED` 24 · `SUPERSEDED` 1 · `RECORD` 2
+제안서 **44**건: `DRAFT` 4 · `PARTIALLY DECIDED` 8 · `DECIDED` 5 · `IMPLEMENTED` 24 · `SUPERSEDED` 1 · `RECORD` 2
 
 ## Thomas 결정 대기 (12)
 
@@ -25,7 +25,7 @@
 | [SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md](SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | §5의 D1·D2·D3·D4·D7·D8 채택, D6 보류(현상 유지). D5는 슬리피지 실측 뒤에 결정한다(§5 뒤 "결정" 절). 단계 0은 #980, 단계 1의 선행 조건 없는 항목은 #982–#989로 구현됐다. |
 | [CRYPTO_SYSTEM_IMPROVEMENT_GAP_ANALYSIS_V0.1.md](CRYPTO_SYSTEM_IMPROVEMENT_GAP_ANALYSIS_V0.1.md) | `DRAFT` | 2026-09-30 | 외부 개선안의 16개 절을 main `70328a10`과 대조했다. 이미 구현 5, 부분 구현 5, 결정에 따라 보류 6, 권하지 않음 0이다. 선행 조건 없는 PR 셋(PR-A #1050, PR-B #1051, PR-C #1052)은 같은 날 머지됐다(§7). 권한을 새로 만드는 항목은 없다. §4의 Q1–Q3는 Thomas가 정한다. |
 
-## 결정됨 — 구현 남음 (4)
+## 결정됨 — 구현 남음 (5)
 
 결정은 끝났고 결정된 것이 아직 다 지어지지 않았다. 결정이 만든 구현 대기열이다.
 
@@ -34,6 +34,7 @@
 | [EQUITY_PERP_LANE_V0.1.md](EQUITY_PERP_LANE_V0.1.md) | `DECIDED` | 2026-08-03 | ① 팩터/디스퍼전 재정의 ② 스프레드 v1 제외(2026-08-03), S0 규제 기록(2026-08-04, 잠정). S1은 2026-08-04부터 운영 중이고 S2(a)는 2026-08-09 완료(§8b). S2(b)는 데이터 깊이 때문에 아직 평가할 수 없고 S3–S5는 미착수다(`docs/REMAINING_WORK.md` §H). S3 이후 실주문은 S0의 확정 승격이라는 별도 결정 전에는 열리지 않는다. |
 | [FAMILY_EXHAUSTION_V0.1.md](FAMILY_EXHAUSTION_V0.1.md) | `DECIDED` | 2026-09-26 | Q1 B·Q2·Q3 결정, §6 확인 완료(1h는 5심볼 모두가 의도). 남은 구현: Q1 B의 퍼널 family 소진 절(30일 CONFIRMED·마지막 CONFIRMED). 1h 5심볼 민팅은 이미 돌고 있었다(§6 정정, 2026-09-26). |
 | [RISK_LANE_WATCHDOG_V0.1.md](RISK_LANE_WATCHDOG_V0.1.md) | `DECIDED` | 2026-09-29 | 타임아웃 시 프로세스 재시작, 마감값 600/120/120 s(Thomas). 구현 PR 두 개(§7) 진행 중. |
+| [CRYPTO_REFACTOR_AND_MODULARIZATION_PLAN_V0.1.md](CRYPTO_REFACTOR_AND_MODULARIZATION_PLAN_V0.1.md) | `DECIDED` | 2026-09-30 | D-1~D-5 권고대로(Thomas). 진행: PR-02·03 머지(#1049), PR-05 머지(#1060), PR-04(#1059) 열림, PR-06 실측은 §K-1에 기록. 남은 구현: §S의 PR-07 이후와 PR-S3(승격 문 CAS). |
 | [SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md](SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md) | `DECIDED` | 2026-09-30 | D1 C·D2·D3 B→A·D4 예(Thomas): LIVE는 FORWARD_CONFIRMED 필수, forward 기준을 `observed_lineages`로 보정, 재사용 홀드아웃 표시는 버그 수정으로 지금 구현, 검증 슬라이스는 에포크 경계. 남은 구현: ① 문 변경, ② B 표시. ② A는 `REMAINING_WORK.md` §L. |
 
 ## 구현됨 (24)
