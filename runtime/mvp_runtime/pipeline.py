@@ -967,6 +967,7 @@ def run_task(
     writer: WorkspaceWriter | None = None,
     on_progress: Callable[[str], None] | None = None,
     budget_profile: str | None = None,
+    search_query: str | None = None,
     **intake_kwargs: Any,
 ) -> dict[str, Any]:
     """Run one task end-to-end. Returns a structured result; never raises for a
@@ -984,6 +985,10 @@ def run_task(
     ``search_tool`` runs a read-only web search whose hits become source-attributed
     evidence on the output (default ``MockSearchTool`` — deterministic, no network; a real
     network tool is chosen via the Safety-Flag Gate by the caller).
+
+    ``search_query`` (opt-in) replaces the request text as the web search's query, for a caller
+    whose request is an instruction rather than a question (the blog lane searches its target
+    keyword). Absent or blank, the query is the normalized goal, as before.
 
     ``keyword_seeds`` (opt-in) runs one Naver keyword brief — measured monthly demand,
     competition counts, and a trend series for the given comma-separated seeds — whose rows
@@ -1141,7 +1146,11 @@ def run_task(
         # transport, malformed response) DEGRADES the run to no live evidence — recorded
         # and audited (SEARCH_DEGRADED), never a blocked analysis. The R7.2
         # triage-degradation precedent, decided with the Tavily rollout.
-        query = plan["task"].get("request", {}).get("normalized_goal") or raw_request
+        # `search_query` (opt-in) is what the web search looks for when the request text is not a
+        # search: the blog lane's 1,800-character drafting brief, sent whole, found posts about
+        # "문단" and GPT prompts for '스티커제작업체' (bcp_b02b7c5579faabd23420, 2026-09-30).
+        query = ((search_query or "").strip()
+                 or plan["task"].get("request", {}).get("normalized_goal") or raw_request)
         _progress(on_progress, STEP_SEARCH)
         try:
             search_hits, tool_use = run_search(query, tool=search_tool, now=now)

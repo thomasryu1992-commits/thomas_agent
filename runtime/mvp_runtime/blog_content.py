@@ -1584,6 +1584,9 @@ def run_content_ideation(
         "content", content_request(target),
         blocked_code=IDEATION_CONTENT_BLOCKED,
         keyword_seeds=target,   # `run_task` has no `naver_keywords`; the brief keyword is `keyword_seeds`
+        # The web search looks for the target, not for the drafting brief: sent whole, the brief
+        # (mostly about paragraphs and JSON) found posts about "문단" and GPT prompts.
+        search_query=target,
         # The draft and its JSON frame need more than the generic 4,000-token output half
         # (review B9); the profile is bound to `content` runs and refused anywhere else.
         budget_profile=budgets.BLOG_CONTENT_BUDGET_PROFILE,
