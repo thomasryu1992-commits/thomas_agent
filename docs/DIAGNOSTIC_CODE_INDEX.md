@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **650** distinct codes across **1267** raise sites
+- **650** distinct codes across **1268** raise sites
 - **23** exception classes carry them
 - **75** codes are raised from more than one module (see below)
 - **137** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -1065,6 +1065,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `PROVIDER_TRANSPORT` | `ProviderError` | `runtime/mvp_runtime/providers.py` | `_post_json_with_retry` | `—` |
 | `PROVIDER_TRANSPORT` | `ProviderError` | `runtime/mvp_runtime/providers.py` | `_post_json_with_retry` | `—` |
 | `PROVIDER_TRANSPORT` | `ProviderError` | `runtime/mvp_runtime/providers.py` | `_post_json_with_retry` | `—` |
+| `PROVIDER_TRANSPORT` | `ProviderError` | `runtime/mvp_runtime/providers.py` | `_read_within` | `worker.is_alive()` |
 | `PROVIDER_UNAVAILABLE` | `ProviderError` | `runtime/mvp_runtime/providers.py` | `_post_json_with_retry` | `exc.code in _RETRYABLE_HTTP` |
 | `PROVIDER_UNAVAILABLE` | `ProviderError` | `runtime/mvp_runtime/providers.py` | `generate` | `all((f['kind'] == FAILOVER_UNAVAILABLE for f in failovers))` |
 | `PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE` | `ToolError` | `runtime/mvp_runtime/blog_content.py` | `load` | `not self.root.is_dir()` |
