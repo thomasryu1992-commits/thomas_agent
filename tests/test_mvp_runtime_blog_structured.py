@@ -223,7 +223,7 @@ def test_the_revision_request_names_only_what_failed_and_freezes_the_facts(monke
     request = calls[1][1]
     assert "1,800~3,500자" in request                    # body_chars
     assert "섹션(소제목)을 4~7개" not in request            # headings passed — not asked
-    assert "새 사실이나 새 출처를 추가하지 마라" in request
+    assert "새 출처를 추가하지 마라" in request and "새 사실은 아래 근거 메모에 있는 것만" in request
     assert "keyword_seeds" not in calls[1][2]            # the Naver brief is not re-run
     assert calls[0][2]["keyword_seeds"] == TARGET
 
@@ -964,7 +964,7 @@ def test_a_short_paragraph_grows_by_a_specific_not_by_a_closing_line():
                  failures=["body_chars"])
     request = blog_content.revision_request(TARGET, first, "")
     assert blog_content.ADD_SUBSTANCE_ASK in request
-    assert "근거 블록([S#])의 수치" in request and "'…지혜가 필요합니다'" in request
+    assert "근거 메모에 있는 수치" in request and "'…지혜가 필요합니다'" in request
     assert "이유·예시·주의점을 더해" not in request
 
 
@@ -1172,3 +1172,59 @@ def test_advice_an_announcement_or_a_hedge_is_not_a_claim(sentence):
 ])
 def test_a_claim_stays_a_claim_and_a_number_keeps_advice_in(sentence):
     assert len(blog_draft.detect_fact_checks([sentence])) == 1
+
+
+# --- the revision's evidence notes, and a carrier's offer named (2026-09-30) ---------------------
+#
+# The revision has no evidence blocks; told to grow paragraphs "with the evidence's numbers"
+# (#1066) it had none, and '포토샵 누끼따기' grew two intro paragraphs by one closer each.
+
+def _snippet_records(snippets, *, mock_first=False):
+    return {"tool_use": {"hits": [
+        {"title": f"자료 {i}", "url": f"https://example.org/{i}", "snippet": text,
+         "source": "mock.search" if (mock_first and i == 1) else "tavily"}
+        for i, text in enumerate(snippets, start=1)]}}
+
+
+def test_the_revision_carries_the_cited_evidence_as_unnumbered_notes():
+    first = {"sources": [{"source_ref": "[S2]", "title": "자료 2"}]}
+    records = _snippet_records(["첫 자료 [S1] 내용", "마술봉 허용치 32, [S2] 반전은 Shift+Ctrl+I", "셋째"])
+    notes = blog_content._evidence_notes(first, records)
+    assert notes == "- 자료 2: 마술봉 허용치 32, 반전은 Shift+Ctrl+I"
+    assert "https://" not in notes
+
+
+def test_with_no_cited_source_the_notes_are_every_real_hit_and_capped():
+    records = _snippet_records(["모의 자료"] + ["가" * 900] * 8, mock_first=True)
+    notes = blog_content._evidence_notes({"sources": []}, records)
+    lines = notes.split("\n")
+    assert "모의 자료" not in notes
+    assert all(len(line) <= blog_content.MAX_EVIDENCE_NOTE_CHARS + len("- 자료 9: ") for line in lines)
+    assert len(notes) <= blog_content.MAX_EVIDENCE_NOTES_CHARS + len(lines)
+    assert blog_content._evidence_notes({}, None) == "- (없음 — 이미 쓴 내용만으로 고쳐라)"
+
+
+def test_the_revision_request_the_lane_sends_carries_the_content_runs_notes(monkeypatch):
+    short = _draft(sections=5, per_section=1)
+    records = dict(_records(), tool_use={"hits": [
+        {"title": "hit 1", "url": "https://example.org/1", "snippet": "허용치 기본값은 32", "source": "tavily"},
+        {"title": "hit 2", "url": "https://example.org/2", "snippet": "PNG로 저장", "source": "tavily"}]})
+    calls: list = []
+    queue = [(short, records), (_draft(), None)]
+
+    def fake_run(kind, request, *, blocked_code, **kwargs):
+        calls.append(request)
+        draft, recs = queue.pop(0)
+        return _run_result(draft, trace=f"trace-{len(calls)}", records=recs)
+
+    monkeypatch.setattr(blog_content, "_run", fake_run)
+    blog_content.run_content_ideation({"seeds": f"target={TARGET}"}, now=NOW, published_source=_StaticSource())
+    revision = calls[1]
+    assert "근거 메모" in revision and "- hit 1: 허용치 기본값은 32" in revision
+    assert "아래 근거 메모에 있는 수치" in revision          # ADD_SUBSTANCE_ASK points at them
+
+
+def test_a_carriers_offer_names_the_carrier():
+    """'퍼플렉시티 무료' turned an SKT customers' offer into "특정 통신사 이용자라면"."""
+    request = blog_content.content_request(TARGET)
+    assert "통신사 제휴 혜택(특정 통신사 고객만 받는 요금제·구독 혜택 등)은 그 통신사 이름을 밝혀라" in request
