@@ -1456,3 +1456,26 @@ def test_post_md_points_at_a_cited_sites_name_in_the_body_without_failing():
                "target_keyword": "현수막당일제작", "body_paste": prose[0], "body_blocks": []}
     post = blog_content.render_post_md(package)
     assert "본문에 출처 사이트 이름이 나옴: 「네모디」" in post and "자동 판정 아님" in post
+
+
+
+# --- the keyword's places in the first request's shape (2026-09-30) ----------------------------------
+#
+# '캔바 사용법' came in with the keyword once, and the revision that would have fixed it was blocked.
+
+def test_the_first_requests_shape_marks_where_the_keyword_goes():
+    shape = json.loads(blog_content._draft_shape(TARGET))
+    assert shape["intro"] == [f"도입 문단 1(4문장, '{TARGET}' 1회)", "도입 문단 2(4문장)"]
+    assert shape["sections"][0]["paragraphs"] == [f"문단 1(4문장, '{TARGET}' 1회)", "문단 2(4문장)", "문단 3(4문장)"]
+    assert tuple(shape) == blog_content.DRAFT_KEY_ORDER
+    request = blog_content.content_request(TARGET)
+    assert blog_content._draft_shape(TARGET) in request
+    assert f"'{TARGET}' 1회라고 표시된 문단(도입 첫 문단과 섹션마다 첫 문단)에는 그 키워드를 한 번 자연스럽게 넣어라" in request
+    assert blog_content.KEYWORD_FORM_ASK in request
+
+
+def test_the_revision_keeps_the_target_free_shape():
+    first = blog_content.interpret_draft(json.dumps(_draft(), ensure_ascii=False), TARGET)
+    first = dict(first, failures=["headings"])
+    request = blog_content.revision_request(TARGET, first, "")
+    assert blog_content._DRAFT_SHAPE in request and "1회)" not in request.split("이전 초안:")[0]

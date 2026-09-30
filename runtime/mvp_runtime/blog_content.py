@@ -1286,6 +1286,23 @@ _DRAFT_SHAPE = (
     + json.dumps([f"문단 {i}({PLAN_SENTENCES_PER_PARAGRAPH}문장)"
                   for i in range(1, PLAN_PARAGRAPHS_PER_SECTION + 1)], ensure_ascii=False) + '}]}'
 )
+
+
+def _draft_shape(target: str) -> str:
+    """The first request's shape: :data:`_DRAFT_SHAPE` with the keyword's places marked — the
+    intro's first paragraph and each section's first, 1 + 5 = 6 at most, the standard's ceiling.
+
+    The same lever as the sentence count: the shape is what the model follows. Said in prose
+    ("3~6회, intro 첫 문단에 1회"), first drafts still came in at one ('캔바 사용법',
+    bcp_00e628a8e70a59473c6e, candidate-1079), and the revision that would have fixed it was
+    blocked — so the keyword rode on a revision that may not run."""
+    shape = json.loads(_DRAFT_SHAPE)
+    n = PLAN_SENTENCES_PER_PARAGRAPH
+    shape["intro"][0] = f"도입 문단 1({n}문장, '{target}' 1회)"
+    shape["sections"][0]["paragraphs"][0] = f"문단 1({n}문장, '{target}' 1회)"
+    return json.dumps(shape, ensure_ascii=False)
+
+
 # The sentence count is in the SHAPE, not only in the plan's prose. Over 21 first drafts from the
 # same model (gemini-flash-lite, 2026-09-30) the paragraph count — which the shape and the plan
 # both carry — was 17 every time, while "문단 하나는 4문장", said in prose only, split the drafts in
@@ -1441,10 +1458,11 @@ def content_request(target: str) -> str:
     no-invention rule."""
     return (
         f"'{target}' 키워드로 네이버 블로그 글 초안을 작성해라. content_draft 필드에는 아래 형식의 "
-        f"JSON 객체 하나만 문자열로 넣어라(마크다운·설명 금지): {_DRAFT_SHAPE}\n"
+        f"JSON 객체 하나만 문자열로 넣어라(마크다운·설명 금지): {_draft_shape(target)}\n"
         "키는 위 순서대로 써라 — 짧은 항목을 먼저 모두 쓰고 intro와 sections를 맨 끝에 써라. 형식의 "
         f"'문단 1({PLAN_SENTENCES_PER_PARAGRAPH}문장)' 같은 자리표시는 글에 옮기지 말고, 문단마다 그 수만큼 "
-        "실제 문장을 채워라.\n"
+        f"실제 문장을 채워라. '{target}' 1회라고 표시된 문단(도입 첫 문단과 섹션마다 첫 문단)에는 그 키워드를 "
+        "한 번 자연스럽게 넣어라.\n"
         f"{_length_plan()}\n"
         f"규칙: title_candidates는 소제목과 별개인 글 제목 3~5개이고 각각 '{target}'를 앞쪽에 "
         f"자연스럽게 포함한다. {_keyword_ask(target)} image_shots 4~8개(after_section은 0부터 센 섹션 번호, 생성 "
