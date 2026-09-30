@@ -612,15 +612,15 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `LIMIT_FILL_UNPRICEABLE` | `ToolError` | `runtime/mvp_runtime/crypto/limit_entry.py` | `limit_entry_fill` | `isinstance(tick_size, bool) or not isinstance(tick_size, (int, float)) or (not tick_size > 0)` |
 | `LIMIT_FILL_UNPRICEABLE` | `ToolError` | `runtime/mvp_runtime/crypto/limit_entry.py` | `limit_entry_fill` | `isinstance(timeout_bars, bool) or not isinstance(timeout_bars, int) or timeout_bars < 1` |
 | `LIMIT_FILL_UNPRICEABLE` | `ToolError` | `runtime/mvp_runtime/crypto/limit_entry.py` | `limit_entry_fill` | `not isinstance(bar, Mapping)` |
-| `LIVE_API_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `read_api_errors` | `—` |
-| `LIVE_API_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `read_api_errors` | `count is None or count < 0` |
-| `LIVE_API_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `read_api_errors` | `not isinstance(data, dict)` |
-| `LIVE_API_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `read_api_errors` | `not isinstance(held, dict)` |
-| `LIVE_API_CALL_CLASS_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `_known_class` | `call_class not in API_CALL_CLASSES` |
+| `LIVE_API_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `read_api_errors` | `—` |
+| `LIVE_API_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `read_api_errors` | `count is None or count < 0` |
+| `LIVE_API_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `read_api_errors` | `not isinstance(data, dict)` |
+| `LIVE_API_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `read_api_errors` | `not isinstance(held, dict)` |
+| `LIVE_API_CALL_CLASS_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `_known_class` | `call_class not in API_CALL_CLASSES` |
 | `LIVE_ARM_ESCAPE_RETIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | `run_promotion_gates` | `live_tier == pool_store.LIVE_TIER_LIVE and escapes.get('allow_unconfirmed_holdout', False)` |
-| `LIVE_BRACKET_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `read_bracket_failures` | `—` |
-| `LIVE_BRACKET_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `read_bracket_failures` | `—` |
-| `LIVE_BRACKET_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `read_bracket_failures` | `not isinstance(data, dict)` |
+| `LIVE_BRACKET_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `read_bracket_failures` | `—` |
+| `LIVE_BRACKET_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `read_bracket_failures` | `—` |
+| `LIVE_BRACKET_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `read_bracket_failures` | `not isinstance(data, dict)` |
 | `LIVE_BUDGET_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/live_budget.py` | `_validate` | `—` |
 | `LIVE_BUDGET_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/live_budget.py` | `build_live_trading_budget_record` | `—` |
 | `LIVE_BUDGET_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/live_budget.py` | `build_live_trading_budget_record` | `float(daily_count) != int(daily_count)` |
@@ -653,29 +653,29 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `LIVE_CORRECTION_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | `read_corrections` | `correction_id in seen_ids` |
 | `LIVE_CORRECTION_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | `read_corrections` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
 | `LIVE_CORRECTION_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | `read_corrections` | `record['previous_record_sha256'] != previous` |
-| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `_increment` | `not isinstance(loaded, dict)` |
-| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `_increment` | `path.is_file()` |
-| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `_stored_count` | `isinstance(value, bool) or not isinstance(value, int) or value < 0` |
-| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `count_today` | `—` |
-| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `count_today` | `not isinstance(data, dict)` |
-| `LIVE_DAILY_ORDER_CAP_REACHED` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `_increment` | `limit is not None and current >= limit` |
-| `LIVE_ENTRY_BAR_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `record_stop_cooldown` | `key is None or not _is_bar_time(until)` |
-| `LIVE_ENTRY_CAPACITY_TAKEN` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `mutate` | `problem is not None and problem[0] == LIVE_ENTRY_CAPACITY_TAKEN` |
-| `LIVE_ENTRY_CLAIM_LOST` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `mutate` | `not (isinstance(claim, Mapping) and claim.get('client_order_id') == client_order_id)` |
-| `LIVE_ENTRY_CLAIM_MALFORMED` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `claim_symbol` | `not (isinstance(symbol, str) and symbol.strip() and isinstance(door, str) and door.strip() and …` |
-| `LIVE_ENTRY_COOLDOWN_UNCOMPUTABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `stop_cooldown_until` | `isinstance(timeframe_minutes, bool) or not isinstance(timeframe_minutes, int) or timeframe_minu…` |
-| `LIVE_ENTRY_COOLDOWN_UNCOMPUTABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `stop_cooldown_until` | `not _is_bar_time(closed_at)` |
-| `LIVE_ENTRY_EXPOSURE_TAKEN` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `mutate` | `problem is not None` |
-| `LIVE_ENTRY_MARKS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `read_live_entry_marks` | `—` |
-| `LIVE_ENTRY_MARKS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `read_live_entry_marks` | `not isinstance(data, dict) or data.get('version') != ENTRY_MARKS_VERSION` |
-| `LIVE_ENTRY_MARKS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `read_live_entry_marks` | `not isinstance(in_flight, dict) or not all((_is_claim(k, v) for k, v in in_flight.items()))` |
-| `LIVE_ENTRY_MARKS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `read_live_entry_marks` | `not isinstance(notionals, dict) or not all((_is_claim_notional(k, v) for k, v in notionals.item…` |
-| `LIVE_ENTRY_MARKS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `read_live_entry_marks` | `not isinstance(table, dict) or not all((isinstance(key, str) and _is_bar_time(value) for key, v…` |
+| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `_increment` | `not isinstance(loaded, dict)` |
+| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `_increment` | `path.is_file()` |
+| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `_stored_count` | `isinstance(value, bool) or not isinstance(value, int) or value < 0` |
+| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `count_today` | `—` |
+| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `count_today` | `not isinstance(data, dict)` |
+| `LIVE_DAILY_ORDER_CAP_REACHED` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `_increment` | `limit is not None and current >= limit` |
+| `LIVE_ENTRY_BAR_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `record_stop_cooldown` | `key is None or not _is_bar_time(until)` |
+| `LIVE_ENTRY_CAPACITY_TAKEN` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `mutate` | `problem is not None and problem[0] == LIVE_ENTRY_CAPACITY_TAKEN` |
+| `LIVE_ENTRY_CLAIM_LOST` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `mutate` | `not (isinstance(claim, Mapping) and claim.get('client_order_id') == client_order_id)` |
+| `LIVE_ENTRY_CLAIM_MALFORMED` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `claim_symbol` | `not (isinstance(symbol, str) and symbol.strip() and isinstance(door, str) and door.strip() and …` |
+| `LIVE_ENTRY_COOLDOWN_UNCOMPUTABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `stop_cooldown_until` | `isinstance(timeframe_minutes, bool) or not isinstance(timeframe_minutes, int) or timeframe_minu…` |
+| `LIVE_ENTRY_COOLDOWN_UNCOMPUTABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `stop_cooldown_until` | `not _is_bar_time(closed_at)` |
+| `LIVE_ENTRY_EXPOSURE_TAKEN` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `mutate` | `problem is not None` |
+| `LIVE_ENTRY_MARKS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `read_live_entry_marks` | `—` |
+| `LIVE_ENTRY_MARKS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `read_live_entry_marks` | `not isinstance(data, dict) or data.get('version') != ENTRY_MARKS_VERSION` |
+| `LIVE_ENTRY_MARKS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `read_live_entry_marks` | `not isinstance(in_flight, dict) or not all((_is_claim(k, v) for k, v in in_flight.items()))` |
+| `LIVE_ENTRY_MARKS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `read_live_entry_marks` | `not isinstance(notionals, dict) or not all((_is_claim_notional(k, v) for k, v in notionals.item…` |
+| `LIVE_ENTRY_MARKS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `read_live_entry_marks` | `not isinstance(table, dict) or not all((isinstance(key, str) and _is_bar_time(value) for key, v…` |
 | `LIVE_ENTRY_RESTING_ORDERS` | `ToolError` | `runtime/mvp_runtime/crypto/live_leg.py` | `execute_live_entry` | `left` |
 | `LIVE_ENTRY_RESTING_ORDERS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_leg.py` | `resting_orders` | `—` |
 | `LIVE_ENTRY_RESTING_ORDERS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_leg.py` | `resting_orders` | `not (isinstance(plain, list) and isinstance(conditional, list))` |
-| `LIVE_ENTRY_SYMBOL_IN_FLIGHT` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `mutate` | `held is not None` |
-| `LIVE_ENTRY_SYMBOL_OCCUPIED` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | `mutate` | `any((str(p.get('symbol') or '') == symbol for p in booked))` |
+| `LIVE_ENTRY_SYMBOL_IN_FLIGHT` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `mutate` | `held is not None` |
+| `LIVE_ENTRY_SYMBOL_OCCUPIED` | `ToolError` | `runtime/mvp_runtime/crypto/live_order_stores.py` | `mutate` | `any((str(p.get('symbol') or '') == symbol for p in booked))` |
 | `LIVE_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/live_ledger.py` | `read_live_outcomes_raw` | `outcome_id in seen_outcome_ids` |
 | `LIVE_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/live_ledger.py` | `read_live_outcomes_raw` | `settlement_id in seen_settlement_ids` |
 | `LIVE_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_ledger.py` | `read_live_outcomes_raw` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |

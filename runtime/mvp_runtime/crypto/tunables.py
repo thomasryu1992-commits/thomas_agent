@@ -60,6 +60,7 @@ from . import (
     live_allowance,
     live_entry,
     live_order,
+    live_order_stores,
     live_position,
     live_budget,
     live_sizing,
@@ -210,8 +211,8 @@ TUNABLES: tuple[Tunable, ...] = (
             "crypto/live_sizing.py", INHERITED,
             "fraction of usable equity per trade; can only ever make an order smaller than the caps",
             "the same evidence that would move `guards.RISK_PER_TRADE`"),
-    Tunable("MAX_CONSECUTIVE_BRACKET_FAILURES", live_order.MAX_CONSECUTIVE_BRACKET_FAILURES,
-            "crypto/live_order.py", OPERATOR,
+    Tunable("MAX_CONSECUTIVE_BRACKET_FAILURES", live_order_stores.MAX_CONSECUTIVE_BRACKET_FAILURES,
+            "crypto/live_order_stores.py", OPERATOR,
             "2 was the first incident's own number; Thomas raised it to 5 on 2026-08-19 after the "
             "-1111 tick-residue mode, which is deterministic and which a limit of 2 latched on "
             "before its own error_detail could be read",
@@ -228,15 +229,15 @@ TUNABLES: tuple[Tunable, ...] = (
             "runtime tightens the control state to HARD; well inside any strategy's max-hold",
             "an operator lifting a watch-placed HARD halt that was not needed, or a strategy whose "
             "max-hold is shorter than this window"),
-    Tunable("MAX_CONSECUTIVE_API_ERRORS", live_order.MAX_CONSECUTIVE_API_ERRORS,
-            "crypto/live_order.py", OPERATOR,
+    Tunable("MAX_CONSECUTIVE_API_ERRORS", live_order_stores.MAX_CONSECUTIVE_API_ERRORS,
+            "crypto/live_order_stores.py", OPERATOR,
             "Thomas decisions 18 and 27 (2026-09-16/17): the bracket breaker's count and shape, per "
             "class of signed call; in the seven weeks before it shipped no class ever failed twice "
             "in a row, so the replayed history never trips it",
             "a venue failure mode that trips it on an outage too short to matter, or one that "
             "outlasts it without tripping"),
-    Tunable("LIVE_ENTRY_CLAIM_TTL_MINUTES", live_order.LIVE_ENTRY_CLAIM_TTL_MINUTES,
-            "crypto/live_order.py", OPERATOR,
+    Tunable("LIVE_ENTRY_CLAIM_TTL_MINUTES", live_order_stores.LIVE_ENTRY_CLAIM_TTL_MINUTES,
+            "crypto/live_order_stores.py", OPERATOR,
             "Thomas decision 21 (2026-09-17): an entry's claim on its symbol expires after 30 "
             "minutes, about ten times the slowest entry (send, confirm, two legs, a naked close)",
             "an entry path whose worst case approaches the bound — a longer confirm backoff or a "

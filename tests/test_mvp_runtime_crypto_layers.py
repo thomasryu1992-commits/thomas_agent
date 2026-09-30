@@ -148,7 +148,8 @@ LAYER: dict[str, str] = {
     "protection_watch": "risk",
     # execution: what is sent, the front half that prepares it, the book the sends keep, and the row a
     # close settles
-    "live_order": "execution", "live_execution": "execution", "live_leg": "execution",
+    "live_order": "execution", "live_order_stores": "execution", "live_execution": "execution",
+    "live_leg": "execution",
     "live_entry": "execution", "venue_contract": "execution", "testnet_execution": "execution",
     "live_position": "execution", "live_settlement": "execution", "order_request": "execution",
     "probe": "execution",
