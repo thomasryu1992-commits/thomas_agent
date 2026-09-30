@@ -58,7 +58,8 @@ from typing import Any
 
 from .. import timeutil
 from ..cli_common import force_utf8_io
-from ..control import ACTIVE, HALT_SOFT, KILLED, PAUSED, ControlStore
+# `halt_advice`: one wording for the board and the incident notice.
+from ..control import ACTIVE, HALT_SOFT, KILLED, PAUSED, ControlStore, halt_advice
 from ..errors import MvpRuntimeError
 from ..paths import repo_root as _repo_root
 from . import account_store, breaker_watch, pool, pre_order_gate
@@ -69,13 +70,15 @@ from .account import (
 from .cycle import LIVE_ALLOWANCE_SPENT, OPTIONAL_DATA_DEGRADED_CODES
 from .dashboard import _read_cycle_records
 from .live_position import compute_open_notional_usdt, list_open_live_positions
-from .live_route import (
+# The live route's status and reason codes, and the gate's arming check, are read from where they are
+# defined (refactor plan PR-04): this board imports nothing that sends.
+from .promotion import verify_live_arm
+from .vocabulary import (
     ACCOUNT_UNREADABLE as ROUTING_ACCOUNT_UNREADABLE,
     ROUTE_BLOCKED,
     ROUTE_DISABLED,
     ROUTE_INCIDENT,
     ROUTING_PRECONDITION,
-    verify_live_arm,
 )
 from .live_order import (
     API_CALL_CLASSES,
@@ -292,7 +295,7 @@ def _arm_refusal(root: Path, strategy_id: str, entries: Mapping[str, Any],
     In the gate's order: an arm `pool.live_arm_unsound` names, whatever approval it carries (it
     predates the artifact, trades another rule, or was put back in the tier by hand) — said in the
     words this row has always used; an arm naming no approval, or one whose approval the gate's own
-    check cannot verify (`live_route.verify_live_arm`, review of #906); and one the live allowance held
+    check cannot verify (`promotion.verify_live_arm`, review of #906); and one the live allowance held
     back from the leg at the last fire (`LIVE_ALLOWANCE_SPENT`), which the next fire holds back again
     until the disarm it asks for lands."""
     entry = entries.get(strategy_id)
@@ -1216,7 +1219,7 @@ NOT_REPORTED = "NOT_REPORTED"
 
 # The reasons the stall rule decides (`_majority`). A component refused on one is False for most of the
 # last fire's contexts, and a minority may still enter (`minority_may_enter`, review of #907).
-# Private: `live_route.ACCOUNT_UNREADABLE` is the leg's own code, with another value.
+# Private: `vocabulary.ACCOUNT_UNREADABLE` is the leg's own code, with another value.
 _MAJORITY = "MAJORITY_"
 _LEG_BLOCKED = "LEG_BLOCKED"
 _ACCOUNT_UNREADABLE = "ACCOUNT_UNREADABLE"
@@ -2063,7 +2066,6 @@ def render_readiness_text(status: dict[str, Any]) -> str:
             # and clearing MVP_LIVE_TRADING needs a restart AND strands open positions, because
             # the close guard still requires the opt-in. Named in that order, because this line
             # is read in a hurry.
-            from .live_route import halt_advice  # one wording for the board and the incident notice
             lines.append("NOTE  : " + halt_advice())
             lines.append("        Do NOT clear MVP_LIVE_TRADING to halt - it needs a restart and it")
             lines.append("        shuts the close path too")

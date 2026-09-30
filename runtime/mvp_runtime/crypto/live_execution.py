@@ -26,8 +26,11 @@ What stands between this code and an order:
   the order key, the confirmation phrase and a registered budget — none of which this code can
   create.
 
-Design: ``docs/runtime-contracts/LP4_ORDER_ADAPTER_DESIGN_V0.1.md``. LP4 is the narrow, and only,
-code that can send an order — it takes one **guard-approved** MARKET intent (LP3), submits it,
+Design: ``docs/runtime-contracts/LP4_ORDER_ADAPTER_DESIGN_V0.1.md``. LP4 is the narrow code that sends
+a mainnet order. It is not the only code that sends one: the live leg places protective legs through
+the same adapter directly (``live_leg.place_bracket_leg``, reduceOnly/closePosition only), and the
+testnet adapter (``testnet_execution``) sends to the testnet host. Every caller is named in
+``tests/test_mvp_runtime_crypto_egress_roster.py``. LP4 takes one **guard-approved** MARKET intent (LP3), submits it,
 reconciles the result against the venue, and returns the ``exchange_order_id`` +
 ``reconcile_status`` + mismatches that the live leg and the probe confirm an entry on (only
 ``RECONCILED`` opens a position) and the LP2 P&L ledger. It does not size, decide, or manage
