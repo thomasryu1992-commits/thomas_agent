@@ -30,6 +30,7 @@ import it back. `pool` re-exports every public name here as the same object, and
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Mapping
@@ -176,12 +177,25 @@ def assert_pool_identity_unique(pool: Mapping[str, Any]) -> None:
                 )
 
 
-def _read_active_pool(root: Path | None, *, artifacts: bool) -> dict[str, Any]:
+# The digest of a pool file that does not exist. No file's digest: those start with ``sha256:``.
+POOL_ABSENT = "absent"
+# An install named the pool it was built from, and the file is no longer that pool (refactor plan
+# PR-S3). Nothing was written. The door reads again and repeats.
+STRATEGY_POOL_CHANGED = "STRATEGY_POOL_CHANGED"
+
+
+def _pool_digest(text: str | None) -> str:
+    """What names one state of the pool file: the hash of its text, or ``POOL_ABSENT`` for no file."""
+    return POOL_ABSENT if text is None else "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _read_active_pool_and_digest(root: Path | None, *, artifacts: bool) -> tuple[dict[str, Any], str]:
     path = pool_path(root)
     if not path.is_file():
-        return {"active_strategies": []}
+        return {"active_strategies": []}, POOL_ABSENT
     try:
-        pool = json.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+        pool = json.loads(text)
     except (OSError, ValueError) as exc:
         raise ToolError("STRATEGY_POOL_UNREADABLE", f"active strategy pool unreadable: {type(exc).__name__}") from exc
     try:
@@ -191,13 +205,28 @@ def _read_active_pool(root: Path | None, *, artifacts: bool) -> dict[str, Any]:
     assert_pool_identity_unique(pool)
     if artifacts:
         assert_pool_artifacts(pool)
-    return pool
+    return pool, _pool_digest(text)
+
+
+def _read_active_pool(root: Path | None, *, artifacts: bool) -> dict[str, Any]:
+    return _read_active_pool_and_digest(root, artifacts=artifacts)[0]
 
 
 def load_active_pool(root: Path | None = None) -> dict[str, Any]:
     """The active pool, validated spec-by-spec, identity-unique, and every stamped entry still its
     artifact (PR3a, decision 34). Missing = empty."""
     return _read_active_pool(root, artifacts=True)
+
+
+def load_active_pool_with_digest(root: Path | None = None) -> tuple[dict[str, Any], str]:
+    """:func:`load_active_pool`, and the digest of the file that read came from (PR-S3).
+
+    For a door that builds a new pool out of the one on disk. It reads without the lock, works for
+    as long as its checks take, and then replaces the whole file, so a write that lands in between
+    (the cycle disarming a LIVE entry, a lifecycle move) would be written over. The door hands this
+    digest to :func:`install_active_pool`, which refuses if the file is no longer the one read here.
+    The text is read once and both the pool and the digest come from it."""
+    return _read_active_pool_and_digest(root, artifacts=True)
 
 
 def read_pool_to_disarm(root: Path | None = None) -> dict[str, Any]:
@@ -211,19 +240,39 @@ def read_pool_to_disarm(root: Path | None = None) -> dict[str, Any]:
     return _read_active_pool(root, artifacts=False)
 
 
-def install_active_pool(pool: dict[str, Any], *, root: Path | None = None) -> int:
+def install_active_pool(
+    pool: dict[str, Any], *, root: Path | None = None, expected_digest: str | None = None,
+) -> int:
     """Install (replace) the active pool — the OPERATOR door, not a runtime call.
 
     Validates every spec, the identity invariant and every artifact stamp first (fail-closed),
     then writes atomically: a pool the read door would refuse is never written. Returns the number
     of strategies installed. Callers are operator scripts acting on an explicit confirmation (the
-    pre-R10 promotion posture); the runtime cycle never calls this."""
+    pre-R10 promotion posture); the runtime cycle never calls this.
+
+    ``expected_digest`` is what :func:`load_active_pool_with_digest` returned when the caller read
+    the pool this one was built from (PR-S3). Under the lock every other writer takes, the file is
+    hashed again; if it is not that pool any more the install raises ``STRATEGY_POOL_CHANGED`` and
+    writes nothing, so a disarm or a lifecycle move made in between stays. ``None`` is a wholesale
+    replace with no base to compare: the history import, which installs a pool from another file."""
     specs = load_strategy_pool(pool)
     assert_pool_identity_unique(pool)
     assert_pool_artifacts(pool)
     path = pool_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     with locked(path.with_suffix(".lock"), code="STRATEGY_POOL_LOCKED", label="active strategy pool"):
+        if expected_digest is not None:
+            try:
+                on_disk = _pool_digest(path.read_text(encoding="utf-8") if path.is_file() else None)
+            except (OSError, ValueError) as exc:
+                raise ToolError("STRATEGY_POOL_UNREADABLE",
+                                f"active strategy pool unreadable: {type(exc).__name__}") from exc
+            if on_disk != expected_digest:
+                raise ToolError(
+                    STRATEGY_POOL_CHANGED,
+                    "the active pool changed after it was read for this install; nothing was written. "
+                    "Run the same command again: it reads the pool as it is now",
+                )
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(pool, ensure_ascii=False, indent=1), encoding="utf-8")
         tmp.replace(path)

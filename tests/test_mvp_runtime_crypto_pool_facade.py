@@ -96,7 +96,7 @@ BASELINE: dict[str, tuple[str, ...]] = {
         "PROMOTABLE_COST_BASIS_RANKS", "PROMOTABLE_DERIVATION_TYPES", "PROMOTABLE_EVIDENCE_DEPTH_RANKS",
         "admission_evidence", "assert_rule_not_routed", "attempt_context_key", "attempts_by_context",
         "candidate_id", "candidate_quality", "cost_basis_of", "current_evidence_depth", "evidence_depth_of",
-        "install_active_pool", "load_active_pool", "near_duplicate_groups", "pooled_context_keys",
+        "install_active_pool", "near_duplicate_groups", "pooled_context_keys",
         "rank_candidates", "read_candidates", "replaced_entries", "resolve_candidates",
         "routable_directional_capacity", "semantic_duplicate_groups", "silent_reactivations",
     ),

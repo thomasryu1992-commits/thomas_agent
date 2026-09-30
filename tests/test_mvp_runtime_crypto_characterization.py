@@ -8,9 +8,10 @@ reported as findings. None of them is an endorsement:
   trading fire, so the live leg, where settle/protect/time-exit/reconcile live, does not run. A HARD
   halt keeps the fire and the leg running. If this changes, it is a decision, and this test is where
   it shows.
-- **S-3** (D-3 2026-09-30: fixed by a separate behaviour-change PR, PR-S3). The promotion door reads
-  the pool without its lock and installs the whole file, so a LIVE-tier disarm that lands in between
-  is undone. PR-S3 flips this test.
+- **S-3** (D-3 2026-09-30, fixed by PR-S3). The promotion door reads the pool without its lock and
+  installs the whole file, so a LIVE-tier disarm that landed in between was undone. The install now
+  names the read it was built from and is refused when the file has changed. This test pinned the old
+  behaviour and was flipped with the fix.
 - **the two streak counters** (§K). ``guards`` and ``live_allowance`` say they share a rule but read
   different fields and treat probes differently. Any consolidation must start from these differences.
 - **the cycle's stage order.** Paper, the observers, the report, the live allowance, the live leg,
@@ -37,6 +38,7 @@ from runtime.mvp_runtime.crypto import pool as pool_store
 from runtime.mvp_runtime.crypto.market_data import MARKET_DATA_ENV
 from runtime.mvp_runtime.crypto.paper import PAPER_ENV
 from runtime.mvp_runtime.crypto.vocabulary import LIVE_TRADING_ENV
+from runtime.mvp_runtime.errors import ToolError
 from runtime.mvp_runtime.scheduler import KIND_CRYPTO, ScheduleStore, build_schedule, run_due
 from runtime.mvp_runtime.store import LedgerStore
 
@@ -126,25 +128,31 @@ def test_a_hard_halt_keeps_the_trading_fire_and_the_live_leg_running(tmp_path, m
     assert calls == ["run_live_leg"]
 
 
-# --- S-3: the promotion door's install undoes a disarm that lands between its read and its write -----
+# --- S-3, fixed by PR-S3: the door's install is refused after a disarm lands between its read and its write
 
-def test_an_install_built_from_an_earlier_read_undoes_a_disarm_in_between(tmp_path):
+def test_an_install_built_from_an_earlier_read_is_refused_after_a_disarm_in_between(tmp_path):
     """The door's own sequence: `scripts/promote_strategy_candidates.py` reads the pool without the lock,
     builds the new pool from that read, and `pool_state.install_active_pool` replaces the file under the
-    lock. The cycle's disarm writes in between."""
+    lock. The cycle's disarm writes in between.
+
+    Until PR-S3 the install wrote over it and the entry was LIVE again. Now the install names the read
+    it was built from, finds the file is no longer that one, and writes nothing."""
     _write_pool(tmp_path, _live_entry())
-    read_by_the_door = pool_store.load_active_pool(tmp_path)["active_strategies"]
+    read_by_the_door, digest = pool_store.load_active_pool_with_digest(tmp_path)
 
     assert pool_store.disarm_live_tier(["S1"], root=tmp_path, now=NOW, reasons=["allowance"]) == 1
     disarmed = pool_store.load_active_pool(tmp_path)["active_strategies"][0]
     assert pool_store.entry_live_tier(disarmed) == pool_store.LIVE_TIER_OBSERVATION
 
-    pool_store.install_active_pool({"pool_version": "active_strategy_pool.v1", "stage": "paper",
-                                    "active_strategies": read_by_the_door, "updated_by": "op",
-                                    "updated_at": NOW}, root=tmp_path)
+    with pytest.raises(ToolError) as refused:
+        pool_store.install_active_pool({"pool_version": "active_strategy_pool.v1", "stage": "paper",
+                                        "active_strategies": read_by_the_door["active_strategies"],
+                                        "updated_by": "op", "updated_at": NOW},
+                                       root=tmp_path, expected_digest=digest)
 
+    assert refused.value.reason_code == pool_store.STRATEGY_POOL_CHANGED
     after = pool_store.load_active_pool(tmp_path)["active_strategies"][0]
-    assert pool_store.entry_live_tier(after) == pool_store.LIVE_TIER_LIVE   # the disarm is gone (S-3)
+    assert pool_store.entry_live_tier(after) == pool_store.LIVE_TIER_OBSERVATION   # the disarm stands
 
 
 # --- the two streak counters (§K) --------------------------------------------------------------------

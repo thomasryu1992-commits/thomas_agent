@@ -202,6 +202,8 @@ def run_import(
         installed["import_batch_id"] = batch_id
         installed["activated_by"] = "operator_import"
         installed["activated_at"] = now
+        # No `expected_digest`: this door builds nothing from the pool on disk. It installs the pool
+        # another file carries, whole, and that is the operator's stated intent.
         summary["pool_activated"] = bool(pool_store.install_active_pool(installed, root=root))
 
     ledger = LedgerStore((root if root is not None else ROOT) / LEDGER_REL)
