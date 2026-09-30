@@ -1110,3 +1110,9 @@ def test_the_models_check_and_the_detectors_same_sentence_are_one_check():
 def test_a_limit_or_version_word_without_a_number_is_not_that_claim(sentence, category, flagged):
     found = [c["category"] for c in blog_draft.detect_fact_checks([sentence])]
     assert (category in found) is flagged
+
+
+def test_the_evidence_ask_keeps_the_post_domestic():
+    """'명함제작업체' priced cards in dollars from a US printer's page (bcp_366916fc7176de5a9db8)."""
+    request = blog_content.content_request(TARGET)
+    assert "외화 가격은 쓰지 말고" in request and "해외 기준이라 한국과 다를 수 있다고 밝혀라" in request
