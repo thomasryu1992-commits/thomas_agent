@@ -420,6 +420,65 @@ def test_every_caller_of_the_venue_also_counts_the_order():
             )
 
 
+# The modules that sign a request, and why each does (docs/proposals/CRYPTO_SYSTEM_IMPROVEMENT_GAP_ANALYSIS_V0.1.md
+# §1). A venue refuses an unsigned order, so a module that can place, amend or cancel one must sign.
+SIGNING_MODULES = {
+    "runtime/mvp_runtime/crypto/live_execution.py": "the mainnet order adapter",
+    "runtime/mvp_runtime/crypto/testnet_execution.py": "the signed testnet adapter",
+    "runtime/mvp_runtime/crypto/account.py": "the account feed, GET only (test_account_feed_has_no_order_capability)",
+    "runtime/mvp_runtime/naver_research.py": "the Naver search API, not a venue",
+}
+# Of those, the ones that send a write. Every other signer sends only GETs.
+VENUE_WRITERS = {
+    "runtime/mvp_runtime/crypto/live_execution.py",
+    "runtime/mvp_runtime/crypto/testnet_execution.py",
+}
+_WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _names_a_write_method(path) -> bool:
+    """Whether any call in ``path`` passes a write method, as an argument or as ``method=``."""
+    import ast
+
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Call):
+            values = [*node.args, *(kw.value for kw in node.keywords)]
+            if any(isinstance(v, ast.Constant) and v.value in _WRITE_METHODS for v in values):
+                return True
+    return False
+
+
+def test_only_the_two_order_adapters_can_sign_a_write():
+    """The chokepoint tests above pin who may call the adapter. This pins the adapters themselves: a
+    third module that signs a POST or DELETE is a new way to reach a venue's write endpoints, whatever
+    imports it. It covers ``runtime/`` and ``scripts/``, because a script can sign as well as a module
+    can."""
+    from pathlib import Path
+
+    from runtime.mvp_runtime.paths import repo_root
+
+    root = Path(repo_root())
+    files = [p for base in ("runtime", "scripts") for p in (root / base).rglob("*.py")]
+    signers = {str(p.relative_to(root)).replace("\\", "/"): p for p in files if "hmac" in _imported_modules(p)}
+    assert set(signers) == set(SIGNING_MODULES), (
+        "the modules that sign a request changed. A new signer is a new way to reach a venue with "
+        f"credentials, and is named here with its reason: {sorted(signers)}"
+    )
+    writers = {rel for rel, path in signers.items() if _names_a_write_method(path)}
+    assert writers == VENUE_WRITERS, f"signed writes now come from {sorted(writers)}"
+
+
+def test_the_write_check_sees_a_method_passed_either_way(tmp_path):
+    positional = tmp_path / "a.py"
+    positional.write_text("def f(s):\n    return s._signed_request('DELETE', '/x', {})\n", encoding="utf-8")
+    keyword = tmp_path / "b.py"
+    keyword.write_text("import urllib.request\nr = urllib.request.Request('u', method='POST')\n", encoding="utf-8")
+    reading = tmp_path / "c.py"
+    reading.write_text("import urllib.request\nr = urllib.request.Request('u', method='GET')\n", encoding="utf-8")
+    assert _names_a_write_method(positional) and _names_a_write_method(keyword)
+    assert not _names_a_write_method(reading)
+
+
 def test_real_adapter_refuses_without_credentials(monkeypatch):
     """Authorized by the gate but no order key configured => refuses by NAME, never a value,
     and never opens a socket."""
