@@ -1,6 +1,6 @@
 # The execution stage gets an anti-rollback ledger
 
-**Status:** DRAFT 2026-09-27 — §6의 D1–D4 결정 대기(앵커 위치, 장부가 파일을 대체, BOOTSTRAP으로 첫 행, 복원 뒤 재승인 비용). 구현 없음.
+**Status:** DECIDED 2026-09-30 — D1 a·D2·D3 a·D4 권고대로(Thomas). 남은 구현: 해시 체인 장부·앵커(백업 제외)·쓰기 순서·`--sync-anchor`, 배포 뒤 BOOTSTRAP(PAPER) 승인 1회, 백업 스크립트 제외 설정(호스트).
 
 The stage record (`crypto/execution_stage.json`) can be put back. The module says so itself
 (`execution_stage.py:42`): "one who kept a copy of an earlier witnessed record can put it back,
@@ -257,3 +257,15 @@ one is decided.
     approval. That copies a record which is itself the thing R1/R2 can forge.
 - **D4 — accept the recovery cost:** after any restore, the stage comes back only through BOOTSTRAP
   (§2.4).
+
+## Decision (Thomas 2026-09-30, as recommended)
+
+- **D1 — a.** The anchor lives inside the state directory (`crypto/execution_stage_anchor.json`) and
+  is excluded from the governance-state backup.
+- **D2 — yes.** The chained ledger replaces `execution_stage.json` as the authority; the file stays as a
+  mirror no decision reads.
+- **D3 — a.** Genesis is the existing BOOTSTRAP at PAPER (one approval), not a migration command.
+- **D4 — accepted.** After any restore the stage comes back only through BOOTSTRAP.
+
+Remaining: the build (§5 step 1), the deploy, the genesis BOOTSTRAP, and the backup exclude (§5 step 4,
+a host change).
