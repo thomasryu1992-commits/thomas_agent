@@ -1305,6 +1305,16 @@ EVIDENCE_SPECIFICS_ASK = (
 )
 
 
+# Each section on its own heading's subject. The same '캡컷 사용법' draft put cutting under
+# "기본 설치 및 시작하기" and the final audio check under "자르기와 구간 편집하기" — a subject
+# the last section then covered again — and mentioned saving in four places.
+SECTION_FOCUS_ASK = (
+    "각 섹션의 paragraphs는 그 heading이 말하는 내용만 다뤄라 — 다른 섹션의 주제를 앞당겨 쓰거나 "
+    "되풀이하지 마라. 한 섹션의 문단들은 서로 다른 하위 내용(예: 방법 → 예시 → 주의점)을 다루고, "
+    "같은 말을 문장만 바꿔 반복하지 마라. intro는 글 전체를 소개만 하고 본문의 절차를 미리 쓰지 마라."
+)
+
+
 def content_request(target: str) -> str:
     """The blog request: the structured contract, the length plan, the standards, and the
     no-invention rule."""
@@ -1319,7 +1329,7 @@ def content_request(target: str) -> str:
         "paragraphs 안에 ' | ' 행을 쓰지 마라 — 표는 문단 수에 세지 않는다), tags 3~8개, sources 2~5개. 가격·무료 범위·사용 한도·기능 제공 여부·정책·버전·"
         "날짜를 쓴 문장은 모두 fact_checks에 넣어라. 근거 블록([S#]·[K#])에 없는 수치·가격·"
         "출처를 지어내지 마라 — 근거가 없으면 source_ref를 null로 둬라. 문단 안에 #, **, > 같은 "
-        f"마크다운 기호를 쓰지 마라. {EVIDENCE_SPECIFICS_ASK}"
+        f"마크다운 기호를 쓰지 마라. {EVIDENCE_SPECIFICS_ASK} {SECTION_FOCUS_ASK}"
     )
 
 
@@ -1338,7 +1348,8 @@ def revision_request(target: str, first: Mapping[str, Any], text: str) -> str:
     return (
         f"아래 '{target}' 네이버 블로그 초안을 고쳐라. 고칠 항목은 다음뿐이다:\n" + "\n".join(asks)
         + "\n사실·수치·가격·날짜는 바꾸지 말고 새 사실이나 새 출처를 추가하지 마라. 분량을 늘릴 때는 이미 쓴 "
-        "내용의 방법·이유·예시·주의점을 풀어 써라. image_shots 4~8개와 table은 첫 초안의 것을 "
+        "내용의 방법·이유·예시·주의점을 풀어 써라. 문단을 늘리거나 줄일 때도 그 섹션 소제목의 내용 "
+        "안에서만 하고, 다른 섹션의 주제를 끌어오지 마라. image_shots 4~8개와 table은 첫 초안의 것을 "
         "그대로 유지하라(없으면 새로 채워라). 이 수정 실행에는 근거 블록이 없다 — [S1]·[K1] 같은 "
         "근거 번호를 본문·facts·fact_checks 어디에도 쓰지 말고, sources는 빈 목록 []으로 둬라(첫 "
         "초안의 출처는 그대로 유지된다). content_draft에는 같은 JSON 형식으로 전체 초안을 다시 "
