@@ -1016,3 +1016,18 @@ def test_the_request_asks_for_the_evidences_specifics_by_name_per_section():
     assert blog_content.EVIDENCE_SPECIFICS_ASK in request
     assert "섹션마다 최소 1개" in request and "그 이름 그대로" in request
     assert "지어내지는 마라" in request                     # the no-invention rule still stands
+
+
+# --- each section on its own heading's subject (2026-09-30, bcp_c82a3c17ded878ca24ea) --------
+
+def test_the_request_keeps_each_section_on_its_heading():
+    request = blog_content.content_request(TARGET)
+    assert blog_content.SECTION_FOCUS_ASK in request
+    assert "그 heading이 말하는 내용만" in request and "intro는 글 전체를 소개만" in request
+
+
+def test_the_revision_keeps_added_or_cut_text_inside_its_section():
+    first = blog_content.interpret_draft(
+        json.dumps(_draft(sections=2, per_section=1), ensure_ascii=False), TARGET)
+    request = blog_content.revision_request(TARGET, first, "")
+    assert "그 섹션 소제목의 내용 안에서만" in request
