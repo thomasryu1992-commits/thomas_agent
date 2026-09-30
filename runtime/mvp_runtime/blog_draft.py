@@ -482,6 +482,40 @@ def _claim_key(claim: str) -> str:
     return re.sub(r"(합니다|습니다|입니다|한다|된다|이다|다|요)$", "", text)
 
 
+# A sentence this long, seen twice in one post, is a copy — not a common phrase. On candidate-1073
+# '통신판매업 신고증' (bcp_371db05812bb56548597) the revision grew a 1,601-character body to 2,260
+# by pasting sentences from neighbouring paragraphs: 17 of 69 sentences were repeats, and the two
+# intro paragraphs were the same four sentences reordered. Drafts before it had none.
+MIN_REPEATED_SENTENCE_CHARS = 15
+
+
+def repeated_sentences(paragraphs: Sequence[str]) -> list[str]:
+    """Each sentence that appears more than once across ``paragraphs``, once, in order of its
+    second appearance. Spacing and punctuation are ignored for the comparison; a table row and
+    a sentence shorter than :data:`MIN_REPEATED_SENTENCE_CHARS` visible characters are not
+    counted."""
+    seen: set[str] = set()
+    repeated: dict[str, str] = {}
+    for paragraph in paragraphs:
+        for sentence in _SENTENCE_RE.findall(str(paragraph)):
+            sentence = sentence.strip()
+            key = re.sub(r"[\s.!?。,'\"]", "", sentence)
+            if len(key) < MIN_REPEATED_SENTENCE_CHARS or " | " in sentence:
+                continue
+            if key in seen:
+                repeated.setdefault(key, sentence)
+            seen.add(key)
+    return list(repeated.values())
+
+
+def repeat_count(paragraphs: Sequence[str]) -> int:
+    """How many sentences are extra copies: 2 appearances of one sentence count 1."""
+    keys = [re.sub(r"[\s.!?。,'\"]", "", s.strip()) for p in paragraphs
+            for s in _SENTENCE_RE.findall(str(p)) if " | " not in s]
+    keys = [k for k in keys if len(k) >= MIN_REPEATED_SENTENCE_CHARS]
+    return len(keys) - len(set(keys))
+
+
 def detect_fact_checks(paragraphs: Sequence[str]) -> list[dict[str, Any]]:
     """Sentences stating something that changes without notice — price, free-tier scope, usage
     limits, versions, dates, API availability, policy, feature availability.
