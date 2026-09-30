@@ -4,7 +4,7 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-09-28** — §L added (E1/E2 from the regime-episode RECORD, held until the first forward-cohort verdict). Before that, **2026-09-25** — §I's heading and its "nothing here is built" line corrected (decided
+Last updated: **2026-09-30** — §L gains E3 (the fusion-parenting validation slice, decided 2026-09-30). Before that, **2026-09-28** — §L added (E1/E2 from the regime-episode RECORD, held until the first forward-cohort verdict). Before that, **2026-09-25** — §I's heading and its "nothing here is built" line corrected (decided
 2026-09-24, option C; PR1–PR3 built as #977–#979). No other section was re-surveyed. Before that,
 **2026-09-03** — §K added (Hermes orchestrator integration, decided 2026-09-03, documentation-first PR sequence). Before that, **2026-08-29** — the header date had sat at 08-10 while the body took 08-23 and
 08-25 updates, exactly the "a document is a claim about a moved main" pattern this file warns
@@ -5258,6 +5258,20 @@ When it fires, raise E1 first. It is small and reversible.
   - The RECORD's sensitivity table shows the count moving several-fold with that choice (4h holdout
     TREND_UP episodes: 3 to 19). Wiring an undecided definition into a verdict would add a tuning
     knob, not evidence. It is a record-schema change, so the closed schema moves with it.
+
+- [ ] **E3 — a validation slice for fusion parenting** (decided 2026-09-30,
+  `SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md` D3 A).
+  - **Today:** `factory.holdout_permits_parenting` reads the holdout, so a crossover child is
+    re-measured on the bars its parent was selected on. The advantage decays with Δ from the parent:
+    < 7d 94% positive, 30–90d 33%.
+  - **Interim, decided and buildable now:** D3 B. Such a child carries `holdout_reused`, and no door
+    reads that holdout as CONFIRMED.
+  - **The ask at the boundary:** carve the last 15% of the scored window as validation
+    (train 55 / validation 15 / holdout 30). Parenting reads validation, never the holdout.
+  - **Cost:** training shrinks by about 21% (4h 4,200 → 3,300 bars, 1d 1,400 → 1,100), so more
+    `trades_per_parameter` vetoes.
+  - Centring keeps its holdout check: it shows no leak, and the 2026-08-05 hazard it fixed is
+    measured.
 
 **What is not here:** the verdict machinery itself (null arm, independence, slice test) is built.
 Nothing in this section makes a strategy confirm sooner. The forward sample needs a second market

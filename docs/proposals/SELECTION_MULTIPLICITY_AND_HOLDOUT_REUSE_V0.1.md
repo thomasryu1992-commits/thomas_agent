@@ -1,6 +1,6 @@
 # Two structural weaknesses in strategy selection: an uncorrected holdout path to LIVE, and a holdout that leaks into breeding
 
-**Status:** DRAFT 2026-09-30 — §5의 D1–D4 결정 대기. ① LIVE 문의 홀드아웃 경로가 약 1,756회 시도에 대해 보정되지 않았다(보정하면 확정 8건 중 0건 통과). ② 퓨전 부모 선정이 홀드아웃을 읽어 자식의 홀드아웃이 오염된다(부모와의 간격이 짧을수록 우위가 커짐, 94%→33%). 구현 없음.
+**Status:** DECIDED 2026-09-30 — D1 C·D2·D3 B→A·D4 예(Thomas): LIVE는 FORWARD_CONFIRMED 필수, forward 기준을 `observed_lineages`로 보정, 재사용 홀드아웃 표시는 버그 수정으로 지금 구현, 검증 슬라이스는 에포크 경계. 남은 구현: ① 문 변경, ② B 표시. ② A는 `REMAINING_WORK.md` §L.
 
 **What this is:** two findings from a read-only review of the selection chain (factory → robustness →
 pool admission → LIVE door), with the measurements behind them and the options for each. Nothing is
@@ -195,3 +195,17 @@ shows.
   boundary, leaving the contaminated holdout readable until then.
 - **D4 — classification.** Is ② B a bug fix under review D3 (buildable now), or held for the first
   cohort verdict?
+
+## Decision (Thomas 2026-09-30, as recommended)
+
+- **D1 — C.** The LIVE door requires FORWARD_CONFIRMED. A holdout CONFIRMED no longer arms LIVE on its
+  own; it stays what it already is at pool admission.
+- **D2 — yes.** The forward bar is corrected for multiplicity: `selection_adjusted_z(observed_lineages)`
+  in place of 1.96 where the judge serves the LIVE door.
+- **D3 — B now, A at the next research-epoch boundary.** A child whose parents were holdout-selected
+  carries `holdout_reused`, and no door reads a reused holdout as CONFIRMED. The validation slice waits
+  for the boundary and is queued with E1/E2.
+- **D4 — yes.** ② B is a bug fix under review D3 (evidence validity, not new machinery) and is buildable
+  now.
+
+Remaining: ① the LIVE-door change with D2, ② B. ② A goes to `REMAINING_WORK.md` §L.

@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **42**건: `DRAFT` 6 · `PARTIALLY DECIDED` 8 · `DECIDED` 3 · `IMPLEMENTED` 22 · `SUPERSEDED` 1 · `RECORD` 2
+제안서 **42**건: `DRAFT` 3 · `PARTIALLY DECIDED` 8 · `DECIDED` 6 · `IMPLEMENTED` 22 · `SUPERSEDED` 1 · `RECORD` 2
 
-## Thomas 결정 대기 (14)
+## Thomas 결정 대기 (11)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -23,11 +23,8 @@
 | [RESEARCH_EPOCH_V0.1.md](RESEARCH_EPOCH_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | Q1·Q2(판정 규칙 지문과 그 표시)는 #972·#976으로 구현. Q3는 B로 결정(Thomas 2026-09-26, 경계 주기는 미정). Q4(다음 cohort에 판정 지문)는 다음 cohort를 동결할 때 정한다. |
 | [RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md](RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | (c) 순서 결정: 슬리피지 실측이 먼저다. (a)(b)(d)는 실측 뒤에 정하고, 그때까지 현재 값을 유지하며 LIVE_AUTONOMOUS로 올리지 않는다(Thomas 2026-09-26, 시스템 점검 D5). **값은 하나도 바뀌지 않았다**. |
 | [SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md](SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | §5의 D1·D2·D3·D4·D7·D8 채택, D6 보류(현상 유지). D5는 슬리피지 실측 뒤에 결정한다(§5 뒤 "결정" 절). 단계 0은 #980, 단계 1의 선행 조건 없는 항목은 #982–#989로 구현됐다. |
-| [EXECUTION_STAGE_ANTI_ROLLBACK_V0.1.md](EXECUTION_STAGE_ANTI_ROLLBACK_V0.1.md) | `DRAFT` | 2026-09-27 | §6의 D1–D4 결정 대기(앵커 위치, 장부가 파일을 대체, BOOTSTRAP으로 첫 행, 복원 뒤 재승인 비용). 구현 없음. |
-| [PROTECTION_UNKNOWN_ESCALATION_V0.1.md](PROTECTION_UNKNOWN_ESCALATION_V0.1.md) | `DRAFT` | 2026-09-27 | §6의 D1–D4 결정 대기(임계값, 런타임의 HARD 정지 권한, UNKNOWN에 청산하지 않음, 시계 저장 위치). 구현 없음. |
-| [SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md](SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md) | `DRAFT` | 2026-09-30 | §5의 D1–D4 결정 대기. ① LIVE 문의 홀드아웃 경로가 약 1,756회 시도에 대해 보정되지 않았다(보정하면 확정 8건 중 0건 통과). ② 퓨전 부모 선정이 홀드아웃을 읽어 자식의 홀드아웃이 오염된다(부모와의 간격이 짧을수록 우위가 커짐, 94%→33%). 구현 없음. |
 
-## 결정됨 — 구현 남음 (3)
+## 결정됨 — 구현 남음 (6)
 
 결정은 끝났고 결정된 것이 아직 다 지어지지 않았다. 결정이 만든 구현 대기열이다.
 
@@ -36,6 +33,9 @@
 | [EQUITY_PERP_LANE_V0.1.md](EQUITY_PERP_LANE_V0.1.md) | `DECIDED` | 2026-08-03 | ① 팩터/디스퍼전 재정의 ② 스프레드 v1 제외(2026-08-03), S0 규제 기록(2026-08-04, 잠정). S1은 2026-08-04부터 운영 중이고 S2(a)는 2026-08-09 완료(§8b). S2(b)는 데이터 깊이 때문에 아직 평가할 수 없고 S3–S5는 미착수다(`docs/REMAINING_WORK.md` §H). S3 이후 실주문은 S0의 확정 승격이라는 별도 결정 전에는 열리지 않는다. |
 | [FAMILY_EXHAUSTION_V0.1.md](FAMILY_EXHAUSTION_V0.1.md) | `DECIDED` | 2026-09-26 | Q1 B·Q2·Q3 결정, §6 확인 완료(1h는 5심볼 모두가 의도). 남은 구현: Q1 B의 퍼널 family 소진 절(30일 CONFIRMED·마지막 CONFIRMED). 1h 5심볼 민팅은 이미 돌고 있었다(§6 정정, 2026-09-26). |
 | [RISK_LANE_WATCHDOG_V0.1.md](RISK_LANE_WATCHDOG_V0.1.md) | `DECIDED` | 2026-09-29 | 타임아웃 시 프로세스 재시작, 마감값 600/120/120 s(Thomas). 구현 PR 두 개(§7) 진행 중. |
+| [EXECUTION_STAGE_ANTI_ROLLBACK_V0.1.md](EXECUTION_STAGE_ANTI_ROLLBACK_V0.1.md) | `DECIDED` | 2026-09-30 | D1 a·D2·D3 a·D4 권고대로(Thomas). 남은 구현: 해시 체인 장부·앵커(백업 제외)·쓰기 순서·`--sync-anchor`, 배포 뒤 BOOTSTRAP(PAPER) 승인 1회, 백업 스크립트 제외 설정(호스트). |
+| [PROTECTION_UNKNOWN_ESCALATION_V0.1.md](PROTECTION_UNKNOWN_ESCALATION_V0.1.md) | `DECIDED` | 2026-09-30 | D1–D4 권고대로(Thomas): 30분 알림+사이클 정지(ID 누락은 즉시), 60분 런타임 HARD 조임, UNKNOWN만으로 청산하지 않음, 별도 watch 저장소. 남은 구현: 한 PR(§5). |
+| [SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md](SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md) | `DECIDED` | 2026-09-30 | D1 C·D2·D3 B→A·D4 예(Thomas): LIVE는 FORWARD_CONFIRMED 필수, forward 기준을 `observed_lineages`로 보정, 재사용 홀드아웃 표시는 버그 수정으로 지금 구현, 검증 슬라이스는 에포크 경계. 남은 구현: ① 문 변경, ② B 표시. ② A는 `REMAINING_WORK.md` §L. |
 
 ## 구현됨 (22)
 
