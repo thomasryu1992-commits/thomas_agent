@@ -180,7 +180,8 @@ def assert_pool_identity_unique(pool: Mapping[str, Any]) -> None:
 # The digest of a pool file that does not exist. No file's digest: those start with ``sha256:``.
 POOL_ABSENT = "absent"
 # An install named the pool it was built from, and the file is no longer that pool (refactor plan
-# PR-S3). Nothing was written. The door reads again and repeats.
+# PR-S3). Nothing was written. The operator looks at what the other writer changed before running the
+# door again: repeating a promotion that re-arms an entry the cycle just disarmed arms it again.
 STRATEGY_POOL_CHANGED = "STRATEGY_POOL_CHANGED"
 
 
@@ -271,7 +272,9 @@ def install_active_pool(
                 raise ToolError(
                     STRATEGY_POOL_CHANGED,
                     "the active pool changed after it was read for this install; nothing was written. "
-                    "Run the same command again: it reads the pool as it is now",
+                    "Look at what changed first: another writer left the pool as it is now (the cycle "
+                    "may have disarmed a LIVE entry whose allowance was spent). Then run the same "
+                    "command again if it still applies; it reads the pool as it is now",
                 )
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(pool, ensure_ascii=False, indent=1), encoding="utf-8")
