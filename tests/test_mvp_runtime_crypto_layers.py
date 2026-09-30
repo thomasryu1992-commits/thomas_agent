@@ -143,6 +143,7 @@ LAYER: dict[str, str] = {
     # risk: what may be risked
     "guards": "risk", "risk_limits": "risk", "live_budget": "risk", "live_allowance": "risk",
     "pre_order_gate": "risk", "breaker_watch": "risk", "live_sizing": "risk",
+    "protection_watch": "risk",
     # execution: what is sent, the front half that prepares it, the book the sends keep, and the row a
     # close settles
     "live_order": "execution", "live_execution": "execution", "live_leg": "execution",

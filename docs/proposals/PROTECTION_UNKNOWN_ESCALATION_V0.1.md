@@ -1,6 +1,6 @@
 # PROTECTION_UNKNOWN gets a clock: notify, halt the fan-out, then a HARD halt
 
-**Status:** DECIDED 2026-09-30 — D1–D4 권고대로(Thomas): 30분 알림+사이클 정지(ID 누락은 즉시), 60분 런타임 HARD 조임, UNKNOWN만으로 청산하지 않음, 별도 watch 저장소. 남은 구현: 한 PR(§5).
+**Status:** IMPLEMENTED 2026-09-30 — D1–D4 권고대로(Thomas) 구현(`crypto/protection_watch.py`). 한 가지를 바꿨다: U1은 사이클 정지(`record["halt"]`)가 아니라 신규 진입 보류다. 사이클 정지는 다른 심볼 포지션의 관리까지 건너뛰기 때문이다(§Implementation). 보드 한 줄(§2.5)은 D3 표시 동결로 미구현.
 
 The machine is at stage PAPER, so the live leg opens no new positions.
 
@@ -179,3 +179,39 @@ the point: the policy exists before it is needed.
   position book.
 
 Remaining: the build (§5).
+
+## Implementation (2026-09-30)
+
+Built as decided, in `runtime/mvp_runtime/crypto/protection_watch.py` and three hooks in
+`live_route`:
+- the protection read advances or clears the clock;
+- each pass prunes positions that left the book;
+- the entry decision is preceded by the hold.
+
+**One departure, and why.** §2.2 had U1 set `record["halt"] = True` on every pass. That flag is the
+cycle's fan-out halt: `cycle.run_pool_cycle` skips every remaining context once a context reports
+it. Those contexts include the settlement, the protection re-check, the time exit and the
+UNPROTECTED close of positions on *other* symbols. Held for the length of an UNKNOWN episode (hours,
+possibly), that would trap exactly the positions §2.2 says nothing here may trap. So U1 holds
+**new entries** instead: `protection_watch.entries_blocking`, read by the route just before its
+entry decision, refuses with `LIVE_PROTECTION_UNKNOWN_PERSISTING` while any watched position is at
+U1 or above. The intent, no new exposure while one position's protection is unverified, is kept,
+and every open position keeps being managed.
+
+**Scope of the hold, stated so nobody is surprised by it:**
+- The U1 hold covers the autonomous leg, which is what `live_route` runs. The operator's slippage
+  probe goes through `live_order.evaluate_live_order_guard`, not the route, so U1 does not stop it.
+  U2's HARD halt does, at the adapter.
+- A watch store that cannot be read holds every live entry until it is fixed. That is fail-closed,
+  as §2.5 decided, but it announces itself only as `LIVE_PROTECTION_WATCH_UNREADABLE` on the cycle
+  record, with no message. Look there first if entries stop for no visible reason.
+- The hold's level is recomputed at the pass's clock rather than read back. A context that runs
+  before the watched symbol's own context therefore holds from minute 30 exactly.
+
+**To restore the document's literal mechanism** (the fan-out halt at U1), set `record["halt"] = True`
+in `live_route._escalate_unknown_protection` when the level is U1 or above. It is one line, and it is
+Thomas's call.
+
+**Not built:** the readiness board line of §2.5 is display machinery, paused under review D3. The
+watch state is on every cycle record (`live_protection_watch`, `live_protection_watch_hold`) and in
+`crypto/live_protection_watch.json`.

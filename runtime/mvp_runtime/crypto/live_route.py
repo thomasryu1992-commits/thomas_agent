@@ -73,11 +73,11 @@ from .. import timeutil
 from ..approval_store import ApprovalStore
 from ..audit import AuditError
 from ..coerce import as_optional_float as _f
-from ..control import ACTIVE, HALT_HARD, ControlStore
+from ..control import ACTIVE, CMD_HALT_TRADING, HALT_HARD, ControlStore, apply_command
 from ..errors import MvpRuntimeError, ToolError
 from ..state_guard import assert_not_foreign_root_run
 from ..store import LedgerStore
-from . import live_execution, live_governance, live_leg, pool, pre_order_gate
+from . import live_execution, live_governance, live_leg, pool, pre_order_gate, protection_watch
 from .account import read_account, select_account_feed
 from .execution_stage import PURPOSE_AUTONOMOUS
 from .live_entry import (
@@ -464,6 +464,10 @@ def _run_gated_live_leg(
                            reason_code=account_use.get("error_reason_code"))
 
     local_positions = list_open_live_positions(root)
+    # A watched position that left the book (settled, closed) ends its PROTECTION_UNKNOWN episode.
+    protection_watch.prune(
+        {k for k in (protection_watch.position_key(p) for p in local_positions) if k}, root=root,
+    )
     reconciliation = reconcile_positions(local_positions, snapshot, now=now)
     record["live_reconcile_status"] = reconciliation["status"]
 
@@ -548,6 +552,17 @@ def _run_gated_live_leg(
         # settled outcome the operator has to act on.
         if record.get("live_legs_left"):
             _notify_operator(record, now=now, root=root)
+        return record
+
+    # PROTECTION_UNKNOWN at U1 or above anywhere on the book holds every new entry (Thomas
+    # 2026-09-30, PROTECTION_UNKNOWN_ESCALATION D1). As an entry refusal and not a fan-out halt:
+    # the halt would skip the remaining contexts, and with them the settlement, protection and time
+    # exit of every position on another symbol, for as long as the read keeps failing.
+    watch_hold = protection_watch.entries_blocking(root=root, now=now)
+    if watch_hold is not None:
+        record["live_reason_codes"].append(watch_hold["reason_code"])
+        record["live_protection_watch_hold"] = watch_hold
+        record["live_route_status"] = ROUTE_BLOCKED
         return record
 
     plan = build_entry_plan(route, feature_row, now=now) if isinstance(route, Mapping) else None
@@ -871,6 +886,11 @@ def _settle_or_protect(
 
     legs = live_leg.read_bracket_legs(position, adapter=adapter, timeout_seconds=timeout_seconds)
     record["live_protection"] = legs
+    if legs["status"] == live_leg.PROTECTION_UNKNOWN:
+        _escalate_unknown_protection(record, position, legs, now=now, root=root)
+    else:
+        # A definite answer, either way, ends the episode. UNPROTECTED is closed just below.
+        protection_watch.clear(position, root=root)
     if legs["status"] != live_leg.UNPROTECTED:
         # PROTECTED holds; PROTECTION_UNKNOWN reports and holds — closing on a failed read
         # would be acting on a guess, and the bracket is probably still doing its job.
@@ -925,6 +945,91 @@ def _settle_or_protect(
         # An unprotected position this runtime could not close is exactly the portfolio-level
         # incident: real exposure, no stop, and no way to remove it from here.
         record["halt"] = True
+
+
+def _escalate_unknown_protection(
+    record: dict[str, Any], position: Mapping[str, Any], legs: Mapping[str, Any], *,
+    now: str, root: Path | None,
+) -> None:
+    """Advance the position's PROTECTION_UNKNOWN clock and act on the level it reached
+    (`protection_watch`). Never raises: the position is still held and timed by the caller, as
+    before, whatever happens here."""
+    try:
+        watch = protection_watch.observe_unknown(
+            position, legs, now=now, root=root, ids_missing_code=live_leg.BRACKET_IDS_MISSING,
+        )
+    except Exception as exc:  # noqa: BLE001 — a watch failure must not stop the hold or the time exit
+        watch = {"level": protection_watch.LEVEL_NOTIFY, "notify": False, "hard": False, "entry": None,
+                 "reason_codes": [protection_watch.WATCH_UNRECORDED, f"UNEXPECTED_{type(exc).__name__}",
+                                  protection_watch.PERSISTING]}
+    entry = watch.get("entry") or {}
+    record["live_protection_watch"] = {
+        "level": watch["level"], "unknown_since": entry.get("unknown_since"),
+        "kind": entry.get("kind"), "passes": entry.get("passes"),
+    }
+    _note_codes(record, *watch["reason_codes"])
+    if watch["hard"]:
+        _tighten_to_hard_halt(record, position, entry, now=now, root=root)
+    if watch["notify"]:
+        _send_operator_text(record, _protection_watch_lines(record, position, entry, watch["level"], now),
+                            root=root, now=now)
+
+
+def _tighten_to_hard_halt(
+    record: dict[str, Any], position: Mapping[str, Any], entry: Mapping[str, Any], *,
+    now: str, root: Path | None,
+) -> None:
+    """U2: the runtime places a HARD halt itself (Thomas 2026-09-30, D2), through the one control
+    door so the ledger records it. Tightening needs no grant beyond the policy's own (decision 47),
+    and a halt already at HARD changes nothing. Reported, never raised; an unapplied halt is tried
+    again on the next pass, because the episode is not marked until it lands."""
+    reason = (f"PROTECTION_UNKNOWN on {position_symbol(position)} position "
+              f"{protection_watch.position_key(position)} since {entry.get('unknown_since')} "
+              f"({entry.get('kind')}); placed by the protection watch")
+    try:
+        outcome = apply_command(
+            ControlStore.default(root), CMD_HALT_TRADING, actor=protection_watch.ACTOR, now=now,
+            reason=reason, ledger=LedgerStore.default(root), halt_level=HALT_HARD,
+        )
+    except Exception as exc:  # noqa: BLE001 — the position is still managed; report, never raise
+        _note_codes(record, protection_watch.HARD_HALT_UNAPPLIED,
+                    getattr(exc, "reason_code", None) or f"UNEXPECTED_{type(exc).__name__}")
+        return
+    record["live_protection_hard_halt"] = {
+        "changed": bool(outcome.get("changed")), "mode": outcome.get("mode"),
+    }
+    try:
+        protection_watch.mark_hard_applied(position, now=now, root=root)
+    except Exception as exc:  # noqa: BLE001 — the halt stands; a re-apply next pass is a no-op
+        _note_codes(record, protection_watch.WATCH_UNRECORDED,
+                    getattr(exc, "reason_code", None) or f"UNEXPECTED_{type(exc).__name__}")
+
+
+def _protection_watch_lines(
+    record: Mapping[str, Any], position: Mapping[str, Any], entry: Mapping[str, Any], level: str, now: str,
+) -> list[str]:
+    hard = level == protection_watch.LEVEL_HARD
+    head = ("[LIVE] protective legs unreadable - HARD halt placed" if hard
+            else "[LIVE] protective legs unreadable - new live entries held")
+    lines = [
+        head,
+        f"symbol   : {position_symbol(position)}",
+        f"position : {protection_watch.position_key(position)}",
+        f"since    : {entry.get('unknown_since')}",
+        f"kind     : {entry.get('kind')}",
+        f"reasons  : {','.join(str(r) for r in entry.get('last_reasons') or ()) or 'none recorded'}",
+        f"at       : {now}",
+        "",
+        "The position is held, not closed: its bracket is probably still resting. Its time exit still",
+        "runs, and an UNPROTECTED answer is still closed. Check the venue:",
+        f"  docker exec thomas-scheduler python -m scripts.list_resting_orders --symbol {position_symbol(position)}",
+    ]
+    if hard:
+        halt = record.get("live_protection_hard_halt") or {}
+        lines.append("")
+        lines.append(f"HARD halt: {'placed' if halt.get('changed') else 'already in effect or not applied - see reasons'}."
+                     " Only the authenticated operator loosens it.")
+    return lines
 
 
 def _time_exit_or_hold(
