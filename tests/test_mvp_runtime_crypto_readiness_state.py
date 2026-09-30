@@ -1459,3 +1459,39 @@ def test_what_the_board_says_about_the_answer_fits_80_columns(tmp_path, clean_en
     verdict = next(i for i, line in enumerate(lines) if line.startswith("THIS PROCESS:"))
     said += [lines[verdict]] + [line for line in lines[verdict + 1:verdict + 3] if line.startswith(" " * 11)]
     assert all(len(line) <= 80 for line in said), [line for line in said if len(line) > 80]
+
+
+# --- the model lives in its own module (crypto refactor plan PR-07) ------------------------------------
+
+def test_the_board_re_exports_the_model_as_the_same_objects():
+    """``live_readiness`` collects and renders; ``readiness_model`` judges. The board's importers keep
+    reading the board, so each public name there must be the model's own object, never a copy."""
+    from runtime.mvp_runtime.crypto import readiness_model
+
+    for name in ("READINESS_MODEL", "READINESS_COMPONENTS", "SOURCE_THIS_PROCESS", "SOURCE_RECORDED",
+                 "NOT_REPORTED", "readiness_state", "readiness_data", "minority_may_enter",
+                 "contradicts_recorded_gate", "env_out_of_scope"):
+        assert getattr(live_readiness, name) is getattr(readiness_model, name), name
+
+
+def test_the_model_judges_a_report_without_the_board_the_environment_or_the_disk(tmp_path, monkeypatch):
+    """The split's claim is that the model is pure over the report. So a report built once must be
+    judged the same after the environment is cleared and the state directory is gone, and the model
+    must not be able to reach a reader: every function the board uses to read is made to fail."""
+    import shutil
+
+    from runtime.mvp_runtime.crypto import readiness_model
+
+    status = live_readiness.build_readiness(tmp_path, now="2026-09-30T07:30:00Z")
+    before = (readiness_model.readiness_state(status), readiness_model.readiness_data(status))
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("the model read something")
+
+    for name in ("build_readiness", "read_account", "resolve_execution_stage", "_read_cycle_records",
+                 "resolve_live_order_limits", "list_open_live_positions"):
+        monkeypatch.setattr(live_readiness, name, refuse)
+    monkeypatch.setattr("os.environ", {})
+    shutil.rmtree(tmp_path)
+
+    assert (readiness_model.readiness_state(status), readiness_model.readiness_data(status)) == before
