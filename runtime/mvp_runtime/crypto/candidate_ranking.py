@@ -140,6 +140,94 @@ def expectancy_at(
     return round(adjusted / closed, 8)
 
 
+# The slippage rates a LIVE ask re-prices a candidate at (review C2, gap analysis Q2): the modelled
+# entry rate, a round figure three times it, and the worst stop fill measured on a strategy stop
+# (ETHUSDT, 2026-08-06). Fixed figures rather than observed percentiles: the live sample is twelve
+# stops and three entries, and `scripts/measure_live_slippage.py` reports no percentile below twenty.
+STRESS_SLIPPAGE_BPS = (3.0, 10.0, 23.5)
+
+
+def _slippage_exposure(record: Mapping[str, Any]) -> tuple[float, float, float, float] | None:
+    """``(total_net_r, total_slippage_cost_r, lowest, highest)``, the last two being how many R the
+    whole backtest pays per 1 bps of slippage on every market leg. None when the record cannot say.
+
+    `cost.apply_cost_model` charges slippage on the entry fill and on a market exit, and a target
+    exit (a resting maker limit) pays none. Its cost in R is ``price * bps / 10000 / risk`` per leg,
+    which is linear in the rate, so the recorded total divided by the rate is the exposure.
+
+    **One rate, one answer.** A record scored before the stop split (2026-08-11) has no
+    ``stop_slippage_bps``: every leg paid ``slippage_bps`` and the exposure is ``total / rate``.
+    The same holds where the two rates are equal.
+
+    **Two rates, a range.** Since the split the total is ``entry_rate * a + stop_rate * b``, where
+    ``a`` is the exposure of the entries and the time exits and ``b`` that of the stop exits, and
+    only the total is recorded (fees have ``total_maker_fee_cost_r`` for their second leg; slippage
+    has no counterpart). ``b`` is somewhere between no stop exit at all and every trade ending on
+    its stop. A stop fills one risk unit from its entry, so its leg is the entry leg give or take
+    ``1 / 10000`` R per bps; that bounds ``b`` by ``a + closed_count / 10000``. The two ends of the
+    range are those two books. Which end is the costly one depends on which rate is higher.
+
+    Present but unreadable is not absent: a ``stop_slippage_bps`` that is not a number refuses, as
+    the maker share does in :func:`expectancy_at`. So is evidence of the wrong shape: this is read
+    while a LIVE ask is built, and a malformed record must cost the figure, never the ask."""
+    evidence = record.get("backtest_evidence")
+    summary = evidence.get("cost_summary") if isinstance(evidence, Mapping) else None
+    model = summary.get("cost_model") if isinstance(summary, Mapping) else None
+    if not isinstance(model, Mapping):
+        return None
+    net, slippage = summary.get("total_net_r"), summary.get("total_slippage_cost_r")
+    rate, closed = model.get("slippage_bps"), evidence.get("closed_count")
+    if not all(_is_number(v) for v in (net, slippage, rate, closed)):
+        return None
+    if rate <= 0 or closed <= 0 or slippage <= 0:
+        return None
+    stop_rate = model.get("stop_slippage_bps", rate)
+    if not _is_number(stop_rate) or stop_rate < 0:
+        return None
+    no_stops = slippage / rate
+    if stop_rate == rate:
+        return float(net), float(slippage), no_stops, no_stops
+    most_stop_exposure = (slippage + rate * closed / 10000.0) / (rate + stop_rate)
+    all_stops = no_stops + most_stop_exposure * (1.0 - stop_rate / rate)
+    return float(net), float(slippage), min(no_stops, all_stops), max(no_stops, all_stops)
+
+
+def net_at_slippage(record: Mapping[str, Any], *, slippage_bps: float) -> tuple[float, float] | None:
+    """This candidate's per-trade net R with every market leg re-priced at ``slippage_bps``, as
+    ``(lowest, highest)``. The two are equal where the record was scored at one slippage rate, and
+    a range where the stop leg paid its own (:func:`_slippage_exposure` says why). None when the
+    record has no slippage total, no closed trade, or a cost model that does not name its rate.
+
+    **The same trades, re-priced.** No replay: a backtest re-run at a higher rate would also refuse
+    some entries at the entry-cost door, so this is what the trades already taken would have
+    netted, which is the figure a slippage surprise on a live position produces.
+
+    First order in the rate. Fees and carry are charged on the fills, which move with slippage, so
+    each shifts by the rate change times itself: at 23.5 bps about 0.2% of the fee cost. A test
+    checks the figure against the same trades re-charged through `cost.apply_cost_model`."""
+    exposure = _slippage_exposure(record)
+    if exposure is None or not _is_number(slippage_bps) or slippage_bps < 0:
+        return None
+    net, slippage, lowest, highest = exposure
+    closed = record["backtest_evidence"]["closed_count"]
+    before_slippage = net + slippage
+    return (round((before_slippage - slippage_bps * highest) / closed, 8),
+            round((before_slippage - slippage_bps * lowest) / closed, 8))
+
+
+def slippage_breakeven_bps(record: Mapping[str, Any]) -> tuple[float, float] | None:
+    """The slippage rate, on every market leg, at which this candidate's backtest nets zero, as
+    ``(lowest, highest)`` — a range for the reason :func:`net_at_slippage` gives one. A value at
+    or below zero means the record loses before any slippage is charged. None where
+    :func:`net_at_slippage` is None."""
+    exposure = _slippage_exposure(record)
+    if exposure is None:
+        return None
+    net, slippage, lowest, highest = exposure
+    ends = sorted(((net + slippage) / highest, (net + slippage) / lowest))
+    return round(ends[0], 4), round(ends[1], 4)
+
+
 def cost_basis_of(record: Mapping[str, Any]) -> str:
     """The cost model one candidate was actually scored under, from its own evidence.
 

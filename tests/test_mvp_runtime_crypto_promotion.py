@@ -1898,7 +1898,7 @@ def test_with_nothing_armed_the_ask_says_so_and_names_what_is_too_short_to_measu
     monkeypatch.setattr(promotion_mod.forward_book, "read_forward_outcomes",
                         lambda root=None: [_forward_row("cand_new", 1, 1.0)])
     monkeypatch.setattr(promotion_mod.pool_store, "load_active_pool", lambda root=None: {"active_strategies": []})
-    (_, _, line) = promotion_mod._live_context_notes([{"candidate_id": "cand_new"}], root=None, store_root=None)
+    (_, _, line, _) = promotion_mod._live_context_notes([{"candidate_id": "cand_new"}], root=None, store_root=None)
     assert line.startswith("No lineage is armed LIVE yet") and "not measured: cand_new" in line
 
 
@@ -1911,4 +1911,33 @@ def test_a_forward_store_it_cannot_read_costs_the_note_never_the_ask(monkeypatch
     monkeypatch.setattr(promotion_mod.forward_book, "read_forward_outcomes", refuse)
     monkeypatch.setattr(promotion_mod.pool_store, "load_active_pool", lambda root=None: {"active_strategies": []})
     notes = promotion_mod._live_context_notes([{"candidate_id": "cand_new"}], root=None, store_root=None)
-    assert notes[-1] == "Forward correlation with the armed lineages is unavailable (FORWARD_BOOK_UNVERIFIABLE)."
+    assert notes[2] == "Forward correlation with the armed lineages is unavailable (FORWARD_BOOK_UNVERIFIABLE)."
+    assert len(notes) == 4  # the slippage note reads no store and is still there
+
+
+def _priced_candidate(cid, *, net, slippage, closed=100, stop_rate=None):
+    model = {"slippage_bps": 3.0}
+    if stop_rate is not None:
+        model["stop_slippage_bps"] = stop_rate
+    return {"candidate_id": cid, "backtest_evidence": {"closed_count": closed, "cost_summary": {
+        "total_net_r": net, "total_slippage_cost_r": slippage, "cost_model": model}}}
+
+
+def test_the_live_ask_says_what_each_candidate_nets_at_other_slippage_rates(monkeypatch):
+    monkeypatch.setattr(promotion_mod.forward_book, "read_forward_outcomes", lambda root=None: [])
+    monkeypatch.setattr(promotion_mod.pool_store, "load_active_pool", lambda root=None: {"active_strategies": []})
+    candidates = [
+        # one rate: 6R of slippage at 3.0 bps is 2R per bps, so +0.10 / -0.04 / -0.31 and zero at 8 bps
+        _priced_candidate("cand_one_rate", net=10.0, slippage=6.0),
+        _priced_candidate("cand_two_rates", net=10.0, slippage=6.0, stop_rate=1.4),
+        _priced_candidate("cand_losing", net=-8.0, slippage=6.0),
+        {"candidate_id": "cand_bare"},
+    ]
+    note = promotion_mod._live_context_notes(candidates, root=None, store_root=None)[-1]
+    assert "re-priced at 3/10/23.5 bps slippage" in note
+    assert "cand_one_rate +0.100 / -0.040 / -0.310 R, breaks even at 8.0 bps" in note
+    # the stop leg paid 1.4: the ends are no stop exit (the figures above) and every trade a stop
+    # (all stops: (6 + 3 * 100 / 10000) / 4.4 = 1.3705 R per bps on the stop leg, 2.7309 in all)
+    assert "cand_two_rates +0.078..+0.100 / -0.113..-0.040 / -0.482..-0.310 R, breaks even at 5.9..8.0 bps" in note
+    assert "cand_losing -0.080 / -0.220 / -0.490 R, loses before any slippage" in note
+    assert "cand_bare not recorded" in note
