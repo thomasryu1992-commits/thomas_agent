@@ -1136,3 +1136,29 @@ def test_the_request_forbids_business_names_but_not_tool_names():
     request = blog_content.content_request(TARGET)
     assert blog_content.VENDOR_NAME_ASK in request
     assert "'온라인 인쇄 업체 A'" in request and "앱·소프트웨어·AI 도구의 이름" in request
+
+
+# --- advice, announcements and hedges are not claims (2026-09-30) ------------------------------
+#
+# Of 15 detector checks on 'CHATGPT요금제' (bcp_7f50c01bc7f35aee465a), 7 told the reader what to do
+# or said a thing may change; the claims next to them stayed.
+
+@pytest.mark.parametrize("sentence", [
+    "구독을 신청하기 전에 결제 화면에서 정확한 금액과 약관을 다시 한번 확인해야 합니다.",
+    "자동 갱신 설정이나 환불 규정 역시 미리 숙지하는 것이 안전합니다.",
+    "무료 제공 범위를 먼저 써본 뒤 업그레이드를 결정하는 편이 합리적입니다.",
+    "간혹 정책이 미세하게 조정될 수 있으니 공지사항을 수시로 살펴보세요.",
+    "무료 혜택을 챙기는 요령과 주의할 점을 함께 살펴보겠습니다.",
+    "또한 각 플랫폼마다 제공하는 무료 이용 한도나 정책이 수시로 달라질 수 있습니다.",
+])
+def test_advice_an_announcement_or_a_hedge_is_not_a_claim(sentence):
+    assert blog_draft.detect_fact_checks([sentence]) == []
+
+
+@pytest.mark.parametrize("sentence", [
+    "자주 묻는 질문을 살펴보면 무료 사용자도 최신 플래그십 모델에 접근할 수 있습니다.",
+    "누구나 별도의 비용 부담 없이 웹 브라우징과 파일 업로드 분석을 이용할 수 있기 때문입니다.",
+    "무료 플랜은 월 10회까지이니 아껴 써야 합니다.",
+])
+def test_a_claim_stays_a_claim_and_a_number_keeps_advice_in(sentence):
+    assert len(blog_draft.detect_fact_checks([sentence])) == 1
