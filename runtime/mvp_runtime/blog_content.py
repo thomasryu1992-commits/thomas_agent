@@ -1263,9 +1263,19 @@ _DRAFT_SHAPE = (
     '"table": {"after_section": 1, "rows": [["구분", "항목1", "항목2"], ["행 이름", "값", "값"]]}, '
     '"sources": [{"source_ref": "[S1]", "title": null}], '
     '"fact_checks": [{"claim": "본문 문장", "why": "확인이 필요한 이유", "source_ref": null}], '
-    '"intro": ["도입 문단"], '
-    '"sections": [{"heading": "소제목", "paragraphs": ["문단"]}]}'
+    '"intro": ' + json.dumps([f"도입 문단 {i}({PLAN_SENTENCES_PER_PARAGRAPH}문장)"
+                              for i in range(1, PLAN_INTRO_PARAGRAPHS + 1)], ensure_ascii=False) + ', '
+    '"sections": [{"heading": "소제목", "paragraphs": '
+    + json.dumps([f"문단 {i}({PLAN_SENTENCES_PER_PARAGRAPH}문장)"
+                  for i in range(1, PLAN_PARAGRAPHS_PER_SECTION + 1)], ensure_ascii=False) + '}]}'
 )
+# The sentence count is in the SHAPE, not only in the plan's prose. Over 21 first drafts from the
+# same model (gemini-flash-lite, 2026-09-30) the paragraph count — which the shape and the plan
+# both carry — was 17 every time, while "문단 하나는 4문장", said in prose only, split the drafts in
+# two: about 4 sentences a paragraph gave 2,100~2,900 characters and passed; about 3 gave
+# 1,530~1,810 and fell under the 1,800 floor, which then cost a revision that padded (10 of 21).
+# More paragraphs is not the lever: the 4-sentence drafts already run 160~180 a paragraph, and 22
+# of them would pass the 3,500 ceiling.
 
 
 # How the keyword may be written. Asked for "띄어쓰기와 표기 그대로" in named paragraphs (#1042),
@@ -1406,7 +1416,9 @@ def content_request(target: str) -> str:
     return (
         f"'{target}' 키워드로 네이버 블로그 글 초안을 작성해라. content_draft 필드에는 아래 형식의 "
         f"JSON 객체 하나만 문자열로 넣어라(마크다운·설명 금지): {_DRAFT_SHAPE}\n"
-        "키는 위 순서대로 써라 — 짧은 항목을 먼저 모두 쓰고 intro와 sections를 맨 끝에 써라.\n"
+        "키는 위 순서대로 써라 — 짧은 항목을 먼저 모두 쓰고 intro와 sections를 맨 끝에 써라. 형식의 "
+        f"'문단 1({PLAN_SENTENCES_PER_PARAGRAPH}문장)' 같은 자리표시는 글에 옮기지 말고, 문단마다 그 수만큼 "
+        "실제 문장을 채워라.\n"
         f"{_length_plan()}\n"
         f"규칙: title_candidates는 소제목과 별개인 글 제목 3~5개이고 각각 '{target}'를 앞쪽에 "
         f"자연스럽게 포함한다. {_keyword_ask(target)} image_shots 4~8개(after_section은 0부터 센 섹션 번호, 생성 "

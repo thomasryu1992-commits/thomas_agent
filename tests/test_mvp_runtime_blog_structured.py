@@ -1365,3 +1365,22 @@ def test_a_garbled_snippet_is_left_out_of_the_revisions_notes():
         {"title": _GARBLED, "url": "https://www.gov.kr/x", "snippet": "ݱ Home ο ## ǰ û 방문, 우편", "source": "tavily"},
         {"title": "자료", "url": "https://example.org/b", "snippet": "위생교육 수료증이 필요하다", "source": "tavily"}]}}
     assert blog_content._evidence_notes({"sources": []}, records) == "- 자료: 위생교육 수료증이 필요하다"
+
+
+# --- the sentence count in the shape (2026-09-30) ------------------------------------------------
+#
+# 21 first drafts from one model: 17 paragraphs every time (the count the shape carries), but
+# "4문장" in prose only split them — about 3 sentences a paragraph fell under 1,800 (10 of 21).
+
+def test_the_shape_shows_every_planned_paragraph_with_its_sentence_count():
+    shape = json.loads(blog_content._DRAFT_SHAPE)
+    n = blog_content.PLAN_SENTENCES_PER_PARAGRAPH
+    assert shape["intro"] == [f"도입 문단 {i}({n}문장)" for i in (1, 2)]
+    assert shape["sections"][0]["paragraphs"] == [f"문단 {i}({n}문장)" for i in (1, 2, 3)]
+    assert len(shape["intro"]) == blog_content.PLAN_INTRO_PARAGRAPHS
+    assert len(shape["sections"][0]["paragraphs"]) == blog_content.PLAN_PARAGRAPHS_PER_SECTION
+
+
+def test_the_request_says_the_placeholders_are_not_prose():
+    request = blog_content.content_request(TARGET)
+    assert "'문단 1(4문장)' 같은 자리표시는 글에 옮기지 말고, 문단마다 그 수만큼 실제 문장을 채워라" in request
