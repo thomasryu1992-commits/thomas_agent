@@ -19,9 +19,9 @@
   re-read and `verify_live_arm`, the gate and `live_leg.execute_live_entry` stay in
   `_run_gated_live_leg`, so the egress roster's key for the autonomous entry is unchanged. No module
   was added, so the layer map, the egress rosters and the chokepoint pins are as they were.
-- **Found while doing it, not changed:** `control.py`, `test_mvp_runtime_assistant_resume_scope.py`
-  and `ASSISTANT_RESUME_SCOPE_SPLIT_DESIGN_V0.1.md` say the leg settles and protects "before it reads
-  control state at all". The control state is read in step 1, before settlement; only its use waits
+- **Found while doing it, not changed:** `ASSISTANT_RESUME_SCOPE_SPLIT_DESIGN_V0.1.md`,
+  `test_mvp_runtime_assistant_resume_scope.py` and `REMAINING_WORK.md` say the leg settles and
+  protects "before it reads control state at all" (`control.py` words it correctly). The control state is read in step 1, before settlement; only its use waits
   for the entry decision. The safety claim (a disarmed runtime still closes what it holds) holds.
   The wording does not, and is left for its own change.
 - **Tests added:** `test_mvp_runtime_crypto_live_route_facts.py` pins four hand-offs nothing pinned,
@@ -43,7 +43,8 @@
   - 25 mutants of the new hand-offs (a fact dropped, swapped or replaced on its way to the step
     that reads it). The route's 27 test files killed 19. The other 6 survived the whole crypto lane
     as well (5,531 tests), on lines that were there before this PR. Four tests in
-    `test_mvp_runtime_crypto_live_route_facts.py` now kill all 6 and pass on the base commit too;
+    `test_mvp_runtime_crypto_live_route_facts.py` now kill all 6 and pass on the base commit too. A
+    26th from the review, a second reconciliation read in step 3, is killed by the same file;
   - an independent review, and the full suite.
 - **Not done:** the plan's evidence for this row includes one signed testnet cycle. It has not run,
   for PR-13 or for this PR: the stage is PAPER and the testnet opt-in is off, so the guard refuses it

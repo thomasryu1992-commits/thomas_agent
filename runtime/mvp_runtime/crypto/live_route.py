@@ -611,7 +611,7 @@ def _run_gated_live_leg(
             **live_arm,
         },
     )
-    # Not `snapshot`: that name is the account snapshot this leg read above.
+    # Not `snapshot`: that name is the account snapshot step 1 read (`facts.snapshot`).
     risk_snapshot = gate_live_entry(decision["intent"], bracket=decision.get("bracket"),
                                     decision_kwargs=gate_kwargs, profile=profile, now=now)
     record["live_pre_order_gate"] = {
@@ -711,7 +711,9 @@ def _read_leg_facts(
 
     Not pure, and its order is part of the behaviour: it counts the account read on the API breaker
     (``adapter.record_account``) and ends the protection watch of every position that left the book.
-    An unreadable budget raises, and ``run_live_leg`` reports it BLOCKED before anything settles. The
+    The budget read never raises: a missing or invalid budget yields caps that refuse every entry,
+    and the leg still settles and protects. A read here that does raise (a store that cannot be
+    selected) ends the pass before anything settles, and ``run_live_leg`` reports it BLOCKED. The
     control state is read here, but only the entry decision consumes it, after settlement and
     protection."""
     limits, budget = resolve_live_order_limits(root, now=now)
@@ -786,8 +788,8 @@ def _read_entry_facts(
     timeout_seconds: int,
     optional_data: Mapping[str, Any] | None,
 ) -> tuple[Mapping[str, Any] | None, float | None, dict[str, Any]]:
-    """Step 3's facts: read only on a pass that settled nothing and was not halted or held, after
-    settlement and protection.
+    """Step 3's facts: read after settlement and protection, and only on a pass that settled
+    nothing, was not halted, and was not held by the protection watch.
 
     The entry plan, the symbol's filters, the order book, the reference quote, the venue's realized
     loss today, the risk snapshot, both breakers, the venue contract and the entry marks. A read that

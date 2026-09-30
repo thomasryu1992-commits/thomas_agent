@@ -30,12 +30,18 @@ from tests.test_mvp_runtime_crypto_live_route import (
 
 def _to_the_decision(tmp_path, monkeypatch, *, positions):
     """Run the leg with the given book up to a stubbed entry decision; hand back what the decision
-    was given, the record, and the reconciliation the leg was handed."""
+    was given, the record, the reconciliation the leg was handed, and when it was asked for one."""
     monkeypatch.setenv("MVP_LIVE_TRADING", "real")
     monkeypatch.setattr(live_route, "read_account", lambda **kw: (_snapshot(), {}))
     monkeypatch.setattr(live_route, "list_open_live_positions", lambda root: list(positions))
     reconciliation = {"status": "RECONCILED", "books": {}, "marker": "the leg's own read"}
-    monkeypatch.setattr(live_route, "reconcile_positions", lambda local, snapshot, now: reconciliation)
+    reads: list[str] = []
+
+    def _reconcile(local, snapshot, now):
+        reads.append(now)
+        return reconciliation
+
+    monkeypatch.setattr(live_route, "reconcile_positions", _reconcile)
     monkeypatch.setattr(live_route, "_settle_or_protect", lambda record, position, **kw: None)
     seen: dict[str, Any] = {}
 
@@ -49,17 +55,18 @@ def _to_the_decision(tmp_path, monkeypatch, *, positions):
         verdict={"allow_new_position": True}, symbol=SYMBOL, collector=object(), now=NOW,
         root=tmp_path,
     )
-    return seen, record, reconciliation
+    return seen, record, reconciliation, reads
 
 
 def test_the_decision_is_judged_on_the_book_and_the_reconciliation_step_one_read(tmp_path, monkeypatch):
     """A position on another symbol is exposure the decision must count, and the reconciliation is
     the leg's own read, not a second one."""
     elsewhere = {"symbol": "ETHUSDT", "position_id": "p-eth", "status": "OPEN"}
-    seen, record, reconciliation = _to_the_decision(tmp_path, monkeypatch, positions=[elsewhere])
+    seen, record, reconciliation, reads = _to_the_decision(tmp_path, monkeypatch, positions=[elsewhere])
 
     assert seen["local_positions"] == [elsewhere]
     assert seen["reconciliation"] is reconciliation
+    assert reads == [NOW]
     assert record["live_reconcile_status"] == "RECONCILED"
 
 
