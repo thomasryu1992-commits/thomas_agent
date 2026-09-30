@@ -27,7 +27,8 @@
     wipe-and-restore, BOOTSTRAP as the only way up, a crash at each step, sync, the sync refusing
     what a restore leaves, chain breaks, a replayed approval, and genesis from the old file.
   - The tamper tests now forge the ledger's tip and anchor instead of the file.
-  - Two watch tests.
+  - Two watch tests. Both are POSIX-only (the watch is a bash script run on the host), so the
+    Windows skip ceiling in `tests/skip_ceiling.json` moves from 94 to 96 in the same change.
 - **After the deploy (operator):**
   - Install the backup script on the host.
   - Then BOOTSTRAP at PAPER: one Thomas approval writes row 0 and the anchor.
