@@ -263,9 +263,11 @@ def _gate_execution_stage(g: _GateInput) -> None:
 
 
 def _gate_live_confirmation(g: _GateInput) -> None:
-    # The 5-1 rule (Thomas 2026-08-11, forward source revised 2026-08-29): arming LIVE
-    # needs a confirmation earned on unseen data — a CONFIRMED holdout or a
-    # FORWARD_CONFIRMED record from the lineage's OWN forward stream. The stream moved
+    # The 5-1 rule (Thomas 2026-08-11, forward source revised 2026-08-29, holdout path removed
+    # 2026-09-30): arming LIVE needs a FORWARD_CONFIRMED record from the lineage's OWN forward
+    # stream, judged at the bar its observation cohort sets (see
+    # `forward_confirmation.assert_live_tier_confirmed`). A CONFIRMED holdout no longer suffices:
+    # it was a single-test bar over ~1,756 attempts, partly spent by the search. The stream moved
     # from the routed paper book to the per-strategy forward book because the routed book
     # holds one position per context: N strategies sharing a context split a fixed
     # evidence flow N ways, which made the forward requirement a queue rather than a test

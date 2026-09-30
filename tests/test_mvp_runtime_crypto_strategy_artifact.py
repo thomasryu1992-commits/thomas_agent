@@ -24,7 +24,7 @@ from runtime.mvp_runtime.crypto.strategy import StrategySpec
 from runtime.mvp_runtime.errors import ApprovalBlocked, ToolError
 from scripts.promote_strategy_candidates import run_promotion
 from tests.test_mvp_runtime_crypto_promotion import (
-    _current_bars_replayed, _current_cost_summary, _spec_dict,
+    _SEEDED_AT, _confirm_forward, _current_bars_replayed, _current_cost_summary, _spec_dict,
 )
 
 NOW = timeutil.utc_now_iso()
@@ -579,7 +579,9 @@ def test_an_approval_asked_before_v5_verifies_nothing(tmp_path):
 
 
 def test_a_live_install_is_armed_as_the_artifact_its_approval_pairs(tmp_path):
-    [row] = _seed(tmp_path, _row())
+    # LIVE reads the forward stream only since 2026-09-30, so the row carries a forward record.
+    [row] = _seed(tmp_path, _row(created_at_utc=_SEEDED_AT))
+    _confirm_forward(tmp_path, [row])
     candidates = pool.resolve_candidates(["S1"], tmp_path)
     approval_id = _approval(tmp_path, candidates, live_tier="LIVE")
     _install(tmp_path, without_approval=False, approval_id=approval_id, live_tier="LIVE")

@@ -113,8 +113,9 @@ def _seed_candidates(tmp_path, *specs, generation_id="GEN-001", cost_summary=_MI
         # 60 closes and a THIN holdout block, so the fixture clears the 5-3 observation
         # entry bar the same way it clears the cost and depth gates: these tests are about
         # OTHER axes, and a fixture the door refuses on sight is noise in every one of them.
-        # Stored CONFIRMED, so the fixture clears both the 5-3 entry bar and the 5-1 LIVE
-        # confirmation gate: these tests are about OTHER axes.
+        # Stored CONFIRMED clears the 5-3 entry bar. Since 2026-09-30 the 5-1 LIVE gate reads the
+        # forward stream only, so `_confirm_forward` below writes each seeded lineage a forward
+        # record that clears it: these tests are about OTHER axes.
         evidence = {"closed_count": 60, "expectancy": 0.5,
                     "robustness": {"verdict": "PROVISIONAL", "holdout_status": "CONFIRMED"}}
         bars = _current_bars_replayed(spec) if bars_replayed is _MISSING else bars_replayed
@@ -133,9 +134,39 @@ def _seed_candidates(tmp_path, *specs, generation_id="GEN-001", cost_summary=_MI
             "backtest_evidence": evidence,
             "evidence_input_sha256": "sha256:test",
             "provenance": "mvp_factory",
+            "created_at_utc": _SEEDED_AT,
         })
     pool.append_candidates(records, root=tmp_path)
+    _confirm_forward(tmp_path, records)
     return records
+
+
+# Before every forward row `_confirm_forward` writes, so each row sits after the selection cutoff.
+_SEEDED_AT = "2026-01-01T00:00:00Z"
+
+
+def _confirm_forward(tmp_path, records):
+    """A FORWARD_CONFIRMED record per lineage in the forward book: 40 closes, five days apart (14
+    active slices of 14 days), every one near +1R. That clears the trade floor of any timeframe and
+    the cohort-corrected bar for any cohort a test builds."""
+    from datetime import datetime, timedelta, timezone
+
+    from runtime.mvp_runtime.crypto import forward_book
+    from runtime.mvp_runtime.crypto.candidate_identity import candidate_id
+
+    start = datetime(2026, 1, 2, tzinfo=timezone.utc)
+    rows = []
+    for record in records:
+        cid = candidate_id(record)
+        for i in range(40):
+            at = (start + timedelta(days=5 * i)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            rows.append(forward_book._finalize_row({
+                "outcome_closed": True, "candidate_id": cid,
+                "result_R": 1.0 + 0.01 * (i % 3), "r_basis": "intent_net_of_costs",
+                "created_at_utc": at, "opened_at_utc": at,
+                "outcome_id": f"out_{cid}_{i:03d}", "settlement_id": f"settle_{cid}_{i:03d}",
+            }, seeded=True))
+    forward_book._append_outcomes(rows, root=tmp_path)
 
 
 # --- content hash -------------------------------------------------------------
@@ -467,12 +498,13 @@ def test_an_approved_promotion_can_still_use_the_quarantined_derivation_escape(t
                               "bars_replayed": _current_bars_replayed(spec),
                               "cost_summary": _current_cost_summary()},
         "evidence_input_sha256": "sha256:test", "provenance": "mvp_factory",
-        "derivation_type": "trial_family",
+        "derivation_type": "trial_family", "created_at_utc": _SEEDED_AT,
     }
     # Stamped as the append door would, so this reaches the derivation gate rather than stopping
     # at the record-stamp gate (which reads the stamp's presence; the reader checks its value).
     row["record_sha256"] = integrity.sha256_record(row)
     monkeypatch.setattr(pool, "read_candidates", lambda root=None: [row])
+    _confirm_forward(tmp_path, [row])
     approval_id = _store_approval(tmp_path, _fake_approval(tmp_path))
     summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
                             keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW,
@@ -494,6 +526,7 @@ def _unstamped_row():
                               "bars_replayed": _current_bars_replayed(spec),
                               "cost_summary": _current_cost_summary()},
         "evidence_input_sha256": "sha256:test", "provenance": "crypto_ai_system_import",
+        "created_at_utc": _SEEDED_AT,
     }
 
 
@@ -503,6 +536,7 @@ def test_an_approved_promotion_refuses_an_unstamped_row(tmp_path, monkeypatch):
     row it writes."""
     row = _unstamped_row()
     monkeypatch.setattr(pool, "read_candidates", lambda root=None: [row])
+    _confirm_forward(tmp_path, [row])
     approval_id = _store_approval(tmp_path, _fake_approval(tmp_path))
     with pytest.raises(SystemExit) as exc:
         run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False,
@@ -514,6 +548,7 @@ def test_an_approved_promotion_refuses_an_unstamped_row(tmp_path, monkeypatch):
 def test_an_approved_promotion_can_use_the_unstamped_record_escape(tmp_path, monkeypatch):
     row = _unstamped_row()
     monkeypatch.setattr(pool, "read_candidates", lambda root=None: [row])
+    _confirm_forward(tmp_path, [row])
     approval_id = _store_approval(tmp_path, _fake_approval(tmp_path))
     summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
                             keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW,
