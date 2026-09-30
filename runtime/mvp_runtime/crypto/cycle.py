@@ -20,6 +20,11 @@ opens no socket, and this cycle behaves exactly as it did before the wiring exis
 - The kill switch binds inside ``run_paper_update`` (C5); a PAUSED/KILLED runtime
   refuses the paper step and the cycle surfaces that refusal in its record.
 - Feedback runs every cycle (the source rule) — a no-trade cycle still learns.
+
+``run_crypto_cycle`` names its stages. The market context, the pool read, the risk verdict, the
+ranking evidence, the shadow plan and the lifecycle step are functions above it. The paper step, the
+two observers, the report, the live permission and the live leg are called from ``run_crypto_cycle``
+itself, in that order.
 """
 
 from __future__ import annotations
@@ -122,31 +127,31 @@ LIVE_OUTCOMES_EXCLUDED = "LIVE_OUTCOMES_EXCLUDED_FROM_RISK_GUARD"
 # an unproven lineage is gone, and it keeps papering.
 LIVE_ALLOWANCE_SPENT = "LIVE_ALLOWANCE_SPENT"
 
+# --- the cycle's stages that `run_crypto_cycle` calls by name -------------------------------------------
+#
+# `run_crypto_cycle` below calls these in order. Each takes what it reads and returns what the later
+# stages need, and appends its reason codes to the cycle's one list as it goes, so the record lists
+# them in the order the stages ran. They were the body of `run_crypto_cycle` until refactor plan PR-11
+# and their text is unchanged. The paper step, the two observers, the report, the live permission and
+# the live leg are still called from `run_crypto_cycle` itself.
 
-def run_crypto_cycle(
+def _collect_context(
     *,
     collector: MarketDataCollector,
-    store: PaperStore,
     now: str,
-    symbol: str = "BTCUSDT",
-    timeframe: str = "1d",
-    limit: int = 120,
-    root: Path | None = None,
-    control_store: ControlStore | None = None,
-    liquidation_feed: Any | None = None,
-    routing_marks: Any | None = None,
-    cooldown_marks: Any | None = None,
-    candle_cache: Any | None = None,
-    positioning_rows: list[dict[str, Any]] | None = None,
-    paper_outcomes: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """Run one full crypto cycle. Returns the cycle record (sub-records included).
+    symbol: str,
+    timeframe: str,
+    limit: int,
+    root: Path | None,
+    liquidation_feed: Any | None,
+    candle_cache: Any | None,
+    positioning_rows: list[dict[str, Any]] | None,
+    reason_codes: list[str],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], Any, dict[str, Any]]:
+    """Stages 1 and 2: the snapshot with every leg attached, and the feature row built from it.
 
-    Raises only on configuration errors (invalid symbol/timeframe) and on the
-    kill-switch refusal from the paper step — both are caller decisions, not
-    market conditions."""
-    reason_codes: list[str] = []
-
+    Returns ``(snapshot, collection_record, feed_status, feature_row, optional_data)``. A backend
+    failure degrades and is appended to ``reason_codes``; a configuration error raises."""
     # 1) data (C2) — degrade on backend failure, never block the cycle.
     try:
         snapshot, collection_record = collect_market_data(
@@ -219,11 +224,15 @@ def run_crypto_cycle(
         bar_time=feature_row.get("timestamp") if isinstance(feature_row, Mapping) else None,
         row=feature_row,
     )
+    return snapshot, collection_record, feed_status, feature_row, optional_data
 
-    # 3) validation guards (C4) — stricter-wins; unreadable history fails closed.
-    health = run_data_health_check(snapshot, now=now, timeframe_minutes=TIMEFRAMES[timeframe])
-    outcomes: list[dict[str, Any]] | None = None
 
+def _read_pool(
+    root: Path | None, reason_codes: list[str],
+) -> tuple[dict[str, Any], set[str] | None, set[str] | None, set[str] | None, dict[str, str | None] | None]:
+    """The active pool and the four sets read off it, or the degraded pool and four ``None``s.
+
+    Returns ``(active_pool, routable_ids, routable_lineages, live_routable_ids, live_arm_approvals)``."""
     # Strategy pool: tampered/unreadable = do not route (trade nothing), still cycle.
     #
     # Read HERE, above the guard, rather than after the verdict where it used to sit. The
@@ -246,10 +255,6 @@ def run_crypto_cycle(
     live_routable_ids: set[str] | None
     # Which approval armed each of them (PR2b) — None beside a None set, for the same reason.
     live_arm_approvals: dict[str, str | None] | None
-    # #615 §5. Read alongside the breaker's own read below; `readable` stays False on any path
-    # that did not produce a trustworthy history, and the allowance treats that as a breach.
-    live_readable: list[dict[str, Any]] = []
-    live_history_readable = False
     try:
         active_pool = pool.load_active_pool(root)
         routable_ids = pool.routable_strategy_ids(active_pool)
@@ -263,7 +268,28 @@ def run_crypto_cycle(
         live_routable_ids = None
         live_arm_approvals = None
         reason_codes.append(exc.reason_code)
+    return active_pool, routable_ids, routable_lineages, live_routable_ids, live_arm_approvals
 
+
+def _judge_risk(
+    *,
+    root: Path | None,
+    now: str,
+    paper_outcomes: list[dict[str, Any]] | None,
+    routable_ids: set[str] | None,
+    routable_lineages: set[str] | None,
+    reason_codes: list[str],
+) -> tuple[dict[str, Any], list[dict[str, Any]] | None, list[dict[str, Any]], bool, dict[str, Any] | None]:
+    """The rest of stage 3: the limits, the two histories, and the loss breakers' verdict on the live one.
+
+    Returns ``(risk, outcomes, live_readable, live_history_readable, live_excluded_digest)``.
+    ``outcomes`` is the paper history, ``None`` when it could not be read. The live history is read
+    only when there are usable limits to judge it against."""
+    outcomes: list[dict[str, Any]] | None = None
+    # #615 §5. Read alongside the breaker's own read below; `readable` stays False on any path
+    # that did not produce a trustworthy history, and the allowance treats that as a breach.
+    live_readable: list[dict[str, Any]] = []
+    live_history_readable = False
     # The breaker limits themselves: the registered per-machine record when one is registered
     # and usable, the `guards` defaults otherwise. A record that cannot be used — tampered,
     # unparseable, outside the code bounds, or a legacy record past the window it carries — fails
@@ -344,23 +370,13 @@ def run_crypto_cycle(
         except ToolError as exc:
             risk = risk_guard_unreadable(f"{exc.reason_code}: {exc}", now=now)
             reason_codes.append(exc.reason_code)
-    # TWO verdicts, because the two legs are metering different things. `live_verdict` is the
-    # merge that has always gated real money — unchanged, so a ledger row from before this split
-    # means what a live-gating row means now. `paper_verdict` is data health alone: paper loses
-    # no money, and the loss breakers it used to answer to were suppressing the very sample the
-    # lifecycle ladder needs to demote the strategies that tripped them (see
-    # `guards.paper_trade_verdict` for the measurement).
-    #
-    # Both are computed every cycle even when only one is consulted, so the record can say what
-    # the other one would have decided. That is what keeps an unbraked paper book still able to
-    # describe a braked live one.
-    live_verdict = merge_trade_verdict(health, risk)
-    paper_verdict = paper_trade_verdict(health)
+    return risk, outcomes, live_readable, live_history_readable, live_excluded_digest
 
-    # 4) paper update (C5) — kill-switch bound inside; refusals propagate.
-    # The same gated collector resolves an ambiguous exit at 1m — a refinement, so a
-    # failure degrades the settlement to its pessimistic assumption, never blocks it.
-    #
+
+def _realized_stats(
+    *, timeframe: str, outcomes: list[dict[str, Any]] | None, root: Path | None, reason_codes: list[str],
+) -> Any:
+    """What the paper step ranks same-bar candidates by, or ``None`` for the champion-score ranking."""
     # Same-bar routing priority (the fast-context cap, Thomas 2026-08-24): realized
     # per-lineage evidence — this runtime's OWN paper rows plus the supporting-shadow
     # settlements, summarized with the same math as the report's `by_strategy` but keyed by
@@ -384,30 +400,20 @@ def run_crypto_cycle(
         except ToolError as exc:
             reason_codes.append(exc.reason_code)
             realized_stats = None
-    paper_summary, paper_records = run_paper_update(
-        snapshot, feature_row, active_pool, paper_verdict,
-        store=store, now=now, root=root, control_store=control_store,
-        intrabar_collector=collector, routing_marks=routing_marks,
-        cooldown_marks=cooldown_marks, realized_stats=realized_stats,
-    )
-    if paper_summary.get("settle_refused"):
-        reason_codes.append(paper_summary["settle_refused"]["reason_code"])
-    if paper_summary.get("settle_recovered"):
-        reason_codes.append(paper_summary["settle_recovered"]["reason_code"])
-    if paper_summary.get("intrabar_degraded"):
-        reason_codes.append(paper_summary["intrabar_degraded"]["reason_code"])
+    return realized_stats
 
-    # 4b) counterfactuals (C11) — purely observational: settle every open shadow
-    # with the same exit math, and when the guards refused an actionable signal
-    # THIS cycle, shadow the plan the router would have taken (tagged with the
-    # refusing reasons). Persisted only through the real gated store.
-    # The route is the paper step's own evaluation, reused. It used to be computed a second
-    # time here with identical arguments — two evaluations of the same strategies against the
-    # same feature row, and therefore two chances to disagree about what the pool said this
-    # cycle. LP5.3 adds a third consumer (the live leg), which is what made sharing worth doing
-    # rather than merely tidy. `None` when the paper step returned before routing (a settlement
-    # race), and the fallback is the honest one: no shadow rather than a re-derived route.
-    shared_route = paper_summary.get("route")
+
+def _blocked_plan(
+    *,
+    paper_summary: Mapping[str, Any],
+    paper_verdict: Mapping[str, Any],
+    shared_route: Any,
+    feature_row: Any,
+    now: str,
+) -> tuple[Any, list[str]]:
+    """The plan the paper step had and did not take this cycle, and why: what the counterfactual
+    book shadows. Returns ``(blocked_plan, block_reasons)``; the plan is ``None`` when nothing was
+    refused or a trade opened."""
     # The economics gate refuses inside the paper step, where the guard verdict allowed the
     # entry — so the condition below has to name it, or the one refusal whose calibration is
     # genuinely unknown would be the one refusal nothing shadows. It is the only `open_refused`
@@ -455,6 +461,149 @@ def run_crypto_cycle(
             if refusal:
                 blocked_plan = build_entry_plan(shared_route, feature_row, now=now)
                 block_reasons = [str(refusal["reason_code"])]
+    return blocked_plan, block_reasons
+
+
+def _lifecycle_step(
+    *,
+    active_pool: Mapping[str, Any],
+    outcomes: list[dict[str, Any]] | None,
+    store: PaperStore,
+    root: Path | None,
+    now: str,
+    report_text: str,
+    reason_codes: list[str],
+) -> tuple[list[dict[str, Any]], int, list[dict[str, Any]], str]:
+    """Stage 5b: judge every pool entry on the paper history and apply the status moves.
+
+    Returns ``(lifecycle_decisions, lifecycle_applied, lifecycle_stale, report_text)``, the report
+    text with one line added per transition."""
+    # 5b) lifecycle (C10) — auto-demote decaying strategies, never auto-promote.
+    # Evaluated every cycle (pure); APPLIED only through the real gated store, the
+    # same effect discipline as every other paper mutation. An unreadable outcome
+    # history skips evaluation (no honest windows to judge on).
+    lifecycle_decisions: list[dict[str, Any]] = []
+    lifecycle_applied = 0
+    # Decisions the pool write skipped: judged on a lineage the display id no longer names by the
+    # time of the locked write (PR3b-2, Thomas decision 36). The next cycle judges the entry again.
+    lifecycle_stale: list[dict[str, Any]] = []
+    if outcomes is not None:
+        lifecycle_decisions = run_lifecycle(active_pool, outcomes, now=now)
+        changed = [d for d in lifecycle_decisions if d.get("status_changed")]
+        if changed:
+            reason_codes.append("LIFECYCLE_TRANSITION")
+        write_refused: str | None = None
+        if getattr(store, "filesystem_write", False) and lifecycle_decisions:
+            try:
+                applied = pool.apply_status_decisions(lifecycle_decisions, root=root)
+                lifecycle_applied, lifecycle_stale = applied["changed"], applied["stale"]
+            except ToolError as exc:
+                reason_codes.append(exc.reason_code)
+                write_refused = exc.reason_code
+        if lifecycle_stale:
+            reason_codes.append(pool.LIFECYCLE_DECISION_STALE)
+        skipped = {str(d.get("strategy_id")) for d in lifecycle_stale}
+        for decision in changed:
+            not_applied = (write_refused if write_refused is not None
+                           else "the pool changed since it was judged"
+                           if str(decision["strategy_id"]) in skipped else None)
+            report_text += (
+                f"\nlifecycle: {decision['strategy_id']} "
+                f"{decision['previous_status']} -> {decision['new_status']}"
+                + (" (manual reactivation required)" if decision["requires_manual_reactivation"] else "")
+                + (f" (not applied: {not_applied})" if not_applied else "")
+            )
+    return lifecycle_decisions, lifecycle_applied, lifecycle_stale, report_text
+
+
+def run_crypto_cycle(
+    *,
+    collector: MarketDataCollector,
+    store: PaperStore,
+    now: str,
+    symbol: str = "BTCUSDT",
+    timeframe: str = "1d",
+    limit: int = 120,
+    root: Path | None = None,
+    control_store: ControlStore | None = None,
+    liquidation_feed: Any | None = None,
+    routing_marks: Any | None = None,
+    cooldown_marks: Any | None = None,
+    candle_cache: Any | None = None,
+    positioning_rows: list[dict[str, Any]] | None = None,
+    paper_outcomes: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Run one full crypto cycle. Returns the cycle record (sub-records included).
+
+    Raises only on configuration errors (invalid symbol/timeframe) and on the
+    kill-switch refusal from the paper step — both are caller decisions, not
+    market conditions."""
+    reason_codes: list[str] = []
+
+    # 1-2) data (C2), the derivative, higher-timeframe, reference, cross-section and positioning legs,
+    # and the research features (C3).
+    snapshot, collection_record, feed_status, feature_row, optional_data = _collect_context(
+        collector=collector, now=now, symbol=symbol, timeframe=timeframe, limit=limit, root=root,
+        liquidation_feed=liquidation_feed, candle_cache=candle_cache,
+        positioning_rows=positioning_rows, reason_codes=reason_codes,
+    )
+
+    # 3) validation guards (C4) — stricter-wins; unreadable history fails closed.
+    health = run_data_health_check(snapshot, now=now, timeframe_minutes=TIMEFRAMES[timeframe])
+    # The pool is read above the guard, and the guard judges the LIVE history only: `_read_pool` and
+    # `_judge_risk` carry the reasons.
+    active_pool, routable_ids, routable_lineages, live_routable_ids, live_arm_approvals = _read_pool(
+        root, reason_codes)
+    risk, outcomes, live_readable, live_history_readable, live_excluded_digest = _judge_risk(
+        root=root, now=now, paper_outcomes=paper_outcomes, routable_ids=routable_ids,
+        routable_lineages=routable_lineages, reason_codes=reason_codes,
+    )
+    # TWO verdicts, because the two legs are metering different things. `live_verdict` is the
+    # merge that has always gated real money — unchanged, so a ledger row from before this split
+    # means what a live-gating row means now. `paper_verdict` is data health alone: paper loses
+    # no money, and the loss breakers it used to answer to were suppressing the very sample the
+    # lifecycle ladder needs to demote the strategies that tripped them (see
+    # `guards.paper_trade_verdict` for the measurement).
+    #
+    # Both are computed every cycle even when only one is consulted, so the record can say what
+    # the other one would have decided. That is what keeps an unbraked paper book still able to
+    # describe a braked live one.
+    live_verdict = merge_trade_verdict(health, risk)
+    paper_verdict = paper_trade_verdict(health)
+
+    # 4) paper update (C5) — kill-switch bound inside; refusals propagate.
+    # The same gated collector resolves an ambiguous exit at 1m — a refinement, so a
+    # failure degrades the settlement to its pessimistic assumption, never blocks it.
+    realized_stats = _realized_stats(
+        timeframe=timeframe, outcomes=outcomes, root=root, reason_codes=reason_codes)
+    paper_summary, paper_records = run_paper_update(
+        snapshot, feature_row, active_pool, paper_verdict,
+        store=store, now=now, root=root, control_store=control_store,
+        intrabar_collector=collector, routing_marks=routing_marks,
+        cooldown_marks=cooldown_marks, realized_stats=realized_stats,
+    )
+    if paper_summary.get("settle_refused"):
+        reason_codes.append(paper_summary["settle_refused"]["reason_code"])
+    if paper_summary.get("settle_recovered"):
+        reason_codes.append(paper_summary["settle_recovered"]["reason_code"])
+    if paper_summary.get("intrabar_degraded"):
+        reason_codes.append(paper_summary["intrabar_degraded"]["reason_code"])
+
+    # 4b) counterfactuals (C11) — purely observational: settle every open shadow
+    # with the same exit math, and when the guards refused an actionable signal
+    # THIS cycle, shadow the plan the router would have taken (tagged with the
+    # refusing reasons). Persisted only through the real gated store.
+    # The route is the paper step's own evaluation, reused. It used to be computed a second
+    # time here with identical arguments — two evaluations of the same strategies against the
+    # same feature row, and therefore two chances to disagree about what the pool said this
+    # cycle. LP5.3 adds a third consumer (the live leg), which is what made sharing worth doing
+    # rather than merely tidy. `None` when the paper step returned before routing (a settlement
+    # race), and the fallback is the honest one: no shadow rather than a re-derived route.
+    shared_route = paper_summary.get("route")
+    blocked_plan, block_reasons = _blocked_plan(
+        paper_summary=paper_summary, paper_verdict=paper_verdict, shared_route=shared_route,
+        feature_row=feature_row, now=now,
+    )
     candles_for_cf = snapshot.get("candles") or []
     counterfactual_summary = run_counterfactual_update(
         blocked_plan=blocked_plan,
@@ -640,41 +789,11 @@ def run_crypto_cycle(
     )
     reason_codes.extend(live["live_reason_codes"])
 
-    # 5b) lifecycle (C10) — auto-demote decaying strategies, never auto-promote.
-    # Evaluated every cycle (pure); APPLIED only through the real gated store, the
-    # same effect discipline as every other paper mutation. An unreadable outcome
-    # history skips evaluation (no honest windows to judge on).
-    lifecycle_decisions: list[dict[str, Any]] = []
-    lifecycle_applied = 0
-    # Decisions the pool write skipped: judged on a lineage the display id no longer names by the
-    # time of the locked write (PR3b-2, Thomas decision 36). The next cycle judges the entry again.
-    lifecycle_stale: list[dict[str, Any]] = []
-    if outcomes is not None:
-        lifecycle_decisions = run_lifecycle(active_pool, outcomes, now=now)
-        changed = [d for d in lifecycle_decisions if d.get("status_changed")]
-        if changed:
-            reason_codes.append("LIFECYCLE_TRANSITION")
-        write_refused: str | None = None
-        if getattr(store, "filesystem_write", False) and lifecycle_decisions:
-            try:
-                applied = pool.apply_status_decisions(lifecycle_decisions, root=root)
-                lifecycle_applied, lifecycle_stale = applied["changed"], applied["stale"]
-            except ToolError as exc:
-                reason_codes.append(exc.reason_code)
-                write_refused = exc.reason_code
-        if lifecycle_stale:
-            reason_codes.append(pool.LIFECYCLE_DECISION_STALE)
-        skipped = {str(d.get("strategy_id")) for d in lifecycle_stale}
-        for decision in changed:
-            not_applied = (write_refused if write_refused is not None
-                           else "the pool changed since it was judged"
-                           if str(decision["strategy_id"]) in skipped else None)
-            report_text += (
-                f"\nlifecycle: {decision['strategy_id']} "
-                f"{decision['previous_status']} -> {decision['new_status']}"
-                + (" (manual reactivation required)" if decision["requires_manual_reactivation"] else "")
-                + (f" (not applied: {not_applied})" if not_applied else "")
-            )
+    # 5b) lifecycle (C10), after the live leg: `_lifecycle_step`.
+    lifecycle_decisions, lifecycle_applied, lifecycle_stale, report_text = _lifecycle_step(
+        active_pool=active_pool, outcomes=outcomes, store=store, root=root, now=now,
+        report_text=report_text, reason_codes=reason_codes,
+    )
 
     # The full list stays in play for the runtime (the status write above already used it);
     # this governs only what the ledger keeps.
