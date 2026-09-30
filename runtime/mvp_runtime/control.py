@@ -217,6 +217,23 @@ def halt_description(level: str | None) -> str:
     return "none"
 
 
+def halt_advice() -> str:
+    """The halt to name in a message read in a hurry — the one that will act on THIS policy.
+
+    The soft halt is policy-gated (`control.POLICY_GATED_COMMANDS`): naming it before the policy
+    grants it sends an operator in an incident to a refusal first (review of H2). So the grant is
+    read when the message is built, and the text says what each verb does to open positions.
+
+    The crypto live route's until refactor plan PR-04, which put it beside the verbs and grants it
+    reads: the incident notice and the readiness board both read it from here."""
+    if CMD_HALT_TRADING in granted_emergency_controls():
+        return ("To stop new entries and keep managing positions: console_cli halt_trading --reason ... "
+                "(console_cli kill stops position management too).")
+    return ("To stop new entries: console_cli kill --reason ... - it also stops position management "
+            "(settle, protect, time exit) until resume. The entries-only halt, halt_trading, acts once "
+            "policy 1.5.1 grants it.")
+
+
 def status_lines(state: ControlState, *, ledger: Any | None = None) -> str:
     """A short human-readable status report (the read-only `status` command output).
 

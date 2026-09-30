@@ -12,8 +12,8 @@ cannot prove itself would vouch for it. The rows are read as they sit on disk â€
 by the evidence board below and by ``scripts/record_unreported_live_order.py``.
 
 Nothing here writes any more. The registry's only writer was the canary door, and it went with the
-door. ``RECONCILED`` is the reconcile vocabulary's, defined in ``order_request`` and imported here
-through ``live_execution``, which re-exports it.
+door. ``RECONCILED`` is the reconcile vocabulary's, defined in ``order_request`` and imported from there
+(through ``live_execution``, which sends, until refactor plan PR-04).
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from runtime.read_only_kernel import integrity
 
 from .. import jsonl
 from ..errors import ToolError
-from .live_execution import RECONCILED  # noqa: F401  (re-exported: scripts/run_slippage_probe.py reads it here)
+from .order_request import RECONCILED  # noqa: F401  (re-exported: scripts/run_slippage_probe.py reads it here)
 from .live_pnl import state_dir
 
 # The shape of the rows already on disk: their file and the provenance they carry. Kept after the

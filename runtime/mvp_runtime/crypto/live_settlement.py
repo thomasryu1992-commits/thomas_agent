@@ -94,7 +94,10 @@ def build_live_outcome_record(
     and the C6 feedback report blind to live results: they key on ``result_R``,
     ``created_at_utc``, and strategy LINEAGE, none of which existed here. The four additive
     arguments close that gap at the source, so a settled live position is legible to the
-    same machinery a paper one is:
+    same machinery a paper one is. Legible is not read: what the cycle hands live rows to is the
+    risk guard (``cycle``'s ``live_outcomes_for_analysis``) and the per-lineage allowance
+    (``live_allowance``). The lifecycle demoter and the C6 report read the paper ledger only
+    (refactor plan §J-2, measured on 2026-09-30). The four arguments:
 
     - ``risk_usdt`` — the position's entry↔stop distance in quote terms (LP5.1 records it
       as ``risk``). ``result_R`` is computed from it, and **only** from it: with no recorded

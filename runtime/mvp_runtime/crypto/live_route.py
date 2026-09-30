@@ -9,9 +9,10 @@ record (``live_governance``). What did not exist was a caller — so an autonomo
 not reach any of it, and that absence was the safety story. **This module is that caller**,
 and wiring it is the decision the design record sequenced last and separately.
 
-**It is deliberately the only one.** ``crypto/cycle.py`` imports this module and nothing else
-from the live stack; a test pins that, so "which code can start a live order" stays a question
-with one answer. Adding a second caller is the same size of decision as adding the first.
+**It is deliberately the only one.** From the live stack ``crypto/cycle.py`` imports this module and,
+to let the risk guard see live losses, the outcome ledger (``live_pnl``), which sends nothing; a test
+pins that, so "which code can start a live order" stays a question with one answer. Adding a
+second caller is the same size of decision as adding the first.
 
 What did **not** change, and is worth stating because a reader who knows this stack will look
 for it: no switch is thrown, no flag is flipped, no phrase is set, no role is activated, and no
@@ -70,10 +71,10 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from .. import timeutil
-from ..approval_store import ApprovalStore
 from ..audit import AuditError
 from ..coerce import as_optional_float as _f
-from ..control import ACTIVE, CMD_HALT_TRADING, HALT_HARD, ControlStore, apply_command
+# `halt_advice` names the halt in an incident notice. It is `control`'s since refactor plan PR-04.
+from ..control import ACTIVE, CMD_HALT_TRADING, HALT_HARD, ControlStore, apply_command, halt_advice
 from ..errors import MvpRuntimeError, ToolError
 from ..state_guard import assert_not_foreign_root_run
 from ..store import LedgerStore
@@ -123,19 +124,21 @@ from .live_reconcile import (
 )
 from . import paper
 from .paper import build_entry_plan
-from .promotion import live_arm_problem
+from .promotion import (  # noqa: F401
+    LIVE_ARM_APPROVAL_UNREADABLE, LIVE_ARM_ENTRY_CHANGED, LIVE_ARM_ENTRY_UNBOUND,
+    LIVE_ARM_REARMED_OUTSIDE_THE_DOOR, LIVE_ARM_SPEC_NOT_ITS_RULE, live_arm_problem, verify_live_arm,
+)
 from .risk_limits import resolve_risk_limits
 from .venue_contract import entry_fact as read_venue_contract
+# The live route's status and the two reason codes the readiness board reads live in `vocabulary` since
+# refactor plan PR-04, so the result layers read them without importing this module. Re-exported as the
+# same objects.
+from .vocabulary import (  # noqa: F401
+    ACCOUNT_UNREADABLE, ROUTE_BLOCKED, ROUTE_DISABLED, ROUTE_HELD, ROUTE_INCIDENT, ROUTE_OPENED,
+    ROUTE_SETTLED, ROUTING_PRECONDITION,
+)
 
 LIVE_ROUTE_VERSION = "live_route.v0.1"
-
-# What this cycle's live leg did. One value, reported on the cycle record.
-ROUTE_DISABLED = "DISABLED"    # live trading is off here; nothing was read and nothing sent
-ROUTE_BLOCKED = "BLOCKED"      # gated open, but a precondition refused before any venue action
-ROUTE_HELD = "HELD"            # ran end to end; no entry and no exit was due
-ROUTE_SETTLED = "SETTLED"      # a position closed and its outcome was recorded
-ROUTE_OPENED = "OPENED"        # a position was opened and bracketed
-ROUTE_INCIDENT = "INCIDENT"    # real money is in a state this runtime cannot account for
 
 # Reason codes.
 # The owner of a LEGACY position's clock — one opened before the record carried a timeframe.
@@ -144,8 +147,6 @@ ROUTE_INCIDENT = "INCIDENT"    # real money is in a state this runtime cannot ac
 DEFAULT_TIMING_CONTEXT = "1d"
 
 ROUTING_DISABLED = "LIVE_ROUTING_DISABLED"
-ROUTING_PRECONDITION = "LIVE_ROUTING_PRECONDITION_FAILED"
-ACCOUNT_UNREADABLE = "LIVE_ROUTING_ACCOUNT_UNREADABLE"
 BOOK_DRIFT = "LIVE_ROUTING_BOOK_DRIFT"
 AUDIT_NOT_RECORDED = "LIVE_ORDER_AUDIT_NOT_RECORDED"
 # `LIVE_ROUTING_CANARY_HISTORY` is retired (2026-09-15, PR1r): it said the canary registry behind
@@ -1198,22 +1199,6 @@ def _report(
 NOTIFY_FAILED = "LIVE_NOTIFY_FAILED"
 
 
-def halt_advice() -> str:
-    """The halt to name in a message read in a hurry — the one that will act on THIS policy.
-
-    The soft halt is policy-gated (`control.POLICY_GATED_COMMANDS`): naming it before the policy
-    grants it sends an operator in an incident to a refusal first (review of H2). So the grant is
-    read when the message is built, and the text says what each verb does to open positions."""
-    from ..control import CMD_HALT_TRADING, granted_emergency_controls
-
-    if CMD_HALT_TRADING in granted_emergency_controls():
-        return ("To stop new entries and keep managing positions: console_cli halt_trading --reason ... "
-                "(console_cli kill stops position management too).")
-    return ("To stop new entries: console_cli kill --reason ... - it also stops position management "
-            "(settle, protect, time exit) until resume. The entries-only halt, halt_trading, acts once "
-            "policy 1.5.1 grants it.")
-
-
 def _notify_operator(record: dict[str, Any], *, now: str, root: Path | None) -> None:
     """Tell Thomas that real money moved, or that it is somewhere this runtime cannot account for.
 
@@ -1515,76 +1500,10 @@ def _contract_summary(fact: Any) -> dict[str, Any] | None:
     return {key: fact.get(key) for key in ("recorded", "error", "status", "verified_at", "contract_version")}
 
 
-# Why the gate cannot verify the arming approval an entry names (PR2c-2b), beside the reasons
-# `promotion.live_arm_problem` gives for the record itself.
-LIVE_ARM_ENTRY_CHANGED = "LIVE_ARM_ENTRY_CHANGED"
-LIVE_ARM_APPROVAL_UNREADABLE = "LIVE_ARM_APPROVAL_UNREADABLE"
-# The entry arms nothing whatever it names (`pool.live_arm_unsound`, review of #887).
-LIVE_ARM_SPEC_NOT_ITS_RULE = "LIVE_ARM_SPEC_NOT_ITS_RULE"
-# The entry carries no artifact stamp: it predates the artifact, and only a stamped entry may spend
-# money (PR3a, decision 33).
-LIVE_ARM_ENTRY_UNBOUND = "LIVE_ARM_ENTRY_UNBOUND"
-LIVE_ARM_REARMED_OUTSIDE_THE_DOOR = "LIVE_ARM_REARMED_OUTSIDE_THE_DOOR"
-_UNSOUND_ARM = {"spec": LIVE_ARM_SPEC_NOT_ITS_RULE, "unbound": LIVE_ARM_ENTRY_UNBOUND,
-                "disarmed": LIVE_ARM_REARMED_OUTSIDE_THE_DOOR}
-
-
-def verify_live_arm(
-    *, root: Path | None, strategy_id: str, plan: Any, approval_id: str | None,
-    armed: Mapping[str, Any] | None,
-) -> dict[str, Any]:
-    """The arming approval behind an autonomous entry, verified at the gate (PR2c-2b), as the
-    approved profile's ``live_arm`` authority carries it.
-
-    ``approval_id`` is the id both pool reads name, or None. ``armed`` is the fresh read's
-    `pool.live_arm_entries`:
-
-    - the entry must be sound (`pool.live_arm_unsound`: the spec it trades is its labelled rule, it
-      was installed as an artifact (PR3a), and it was not put back in the tier by hand). Named even
-      when no id was agreed, because an unsound entry is why `pool.live_arm_approvals` names none;
-    - it must arm the lineage the plan was made from: its candidate, its rule and, since PR3a-2,
-      its artifact (`LIVE_ARM_ENTRY_CHANGED`). The door cannot produce an artifact mismatch here:
-      it installs a new artifact only under a new approval, which the two reads then disagree on
-      (the route reports that with the same code). The comparison guards a pool edited outside
-      the door between the two reads;
-    - the approval store must hold the record Thomas answered to arm it, pairing the entry's
-      artifact with its candidate (`promotion.live_arm_problem`).
-
-    Reported, never raised for a problem: the gate refuses an unverified arm
-    (`approved_profile_complete`) and the fan-out goes on."""
-    arm: dict[str, Any] = {"approval_id": approval_id, "approval_fingerprint": None,
-                           "approval_verified": False, "approval_problem": None}
-    entry = armed.get(strategy_id) if isinstance(armed, Mapping) else None
-    unsound = pool.live_arm_unsound(entry) if isinstance(entry, Mapping) else None
-    if unsound is not None:
-        arm["approval_problem"] = _UNSOUND_ARM[unsound]
-        return arm
-    if approval_id is None:
-        return arm
-    lineage = plan if isinstance(plan, Mapping) else {}
-    if not (isinstance(entry, Mapping) and entry.get("approval_id") == approval_id
-            and entry.get("candidate_id") == lineage.get("candidate_id")
-            and entry.get("strategy_rule_hash") == lineage.get("strategy_rule_hash")
-            and entry.get(pool.ARTIFACT_SHA256_FIELD) == lineage.get(pool.ARTIFACT_SHA256_FIELD)):
-        arm["approval_problem"] = LIVE_ARM_ENTRY_CHANGED
-        return arm
-    try:
-        approval = ApprovalStore.default(root).get(approval_id)
-    except Exception:  # noqa: BLE001 — a store that cannot be read verifies nothing
-        arm["approval_problem"] = LIVE_ARM_APPROVAL_UNREADABLE
-        return arm
-    problem = live_arm_problem(
-        approval, approval_id=approval_id, candidate_id=entry.get("candidate_id"),
-        strategy_rule_hash=entry.get("strategy_rule_hash"),
-        strategy_artifact_sha256=entry.get(pool.ARTIFACT_SHA256_FIELD),
-        promoted_at=entry.get("promoted_at"),
-    )
-    if problem is not None:
-        arm["approval_problem"] = problem
-        return arm
-    arm["approval_fingerprint"] = approval.get("action_fingerprint")
-    arm["approval_verified"] = True
-    return arm
+# The arming approval behind an entry, verified at the gate (PR2c-2b), with the reasons it cannot be:
+# `promotion`'s since refactor plan PR-04, beside `live_arm_problem`, so the readiness board reads it
+# without importing this module. Imported above and re-exported as the same objects; the route calls
+# its own binding, so a patch on `live_route.verify_live_arm` still reaches the route.
 
 
 def _entry_clock() -> str:

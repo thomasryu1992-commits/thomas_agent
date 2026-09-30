@@ -38,6 +38,12 @@ from ..errors import ToolError
 from ..jsonl import iter_numbered
 from .state import VENUE_TESTNET, venue_state_dir
 
+# The bound the testnet path carries in code, because no registered budget declares one for a venue
+# that trades no money: `testnet_execution`'s guard reads it. It was `testnet_execution`'s until
+# refactor plan PR-04, which re-exports it.
+TESTNET_MAX_ORDER_NOTIONAL_USDT = 200.0
+TESTNET_MAX_DAILY_ORDERS = 20
+
 EVIDENCE_FILENAME = "signed_testnet_cycles.jsonl"
 EVIDENCE_SCHEMA_VERSION = "signed_testnet_cycle.v0.1"
 EVIDENCE_PROVENANCE = "mvp_testnet_kernel"

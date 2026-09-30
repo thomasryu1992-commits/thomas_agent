@@ -365,23 +365,12 @@ def test_the_store_reads_nothing_above_foundation():
 EGRESS_MODULES = frozenset({"live_execution", "testnet_execution", "live_leg", "live_route"})
 NO_EGRESS_LAYERS = frozenset({"outcome", "report"})
 
-# (importer, sending module) -> (the step that removes it, the names it may take). Only shrinks, like
-# EXCEPTIONS: a new pair fails, and so do a new name on a named pair and a name that is gone.
-EGRESS_EXCEPTIONS: dict[tuple[str, str], tuple[str, frozenset[str]]] = {
-    ("live_promotion", "live_execution"): (
-        "PR-04: import RECONCILED from order_request, where it is defined",
-        frozenset({"RECONCILED"})),
-    ("live_readiness", "live_route"): (
-        "PR-04: the status vocabulary to vocabulary, verify_live_arm and halt_advice below the route",
-        frozenset({"ACCOUNT_UNREADABLE", "ROUTE_BLOCKED", "ROUTE_DISABLED", "ROUTE_INCIDENT",
-                   "ROUTING_PRECONDITION", "halt_advice", "verify_live_arm"})),
-    ("route_watch", "live_route"): (
-        "PR-04: ROUTE_INCIDENT to vocabulary",
-        frozenset({"ROUTE_INCIDENT"})),
-    ("tunables", "testnet_execution"): (
-        "PR-04: the two testnet caps to a leaf that sends nothing, their tunables owner with them",
-        frozenset({"TESTNET_MAX_DAILY_ORDERS", "TESTNET_MAX_ORDER_NOTIONAL_USDT"})),
-}
+# (importer, sending module) -> (the step that removes it, the names it may take). Empty since refactor
+# plan PR-04, which moved the four pairs' names to where they belong (the route's status and codes to
+# `vocabulary`, the arming check to `promotion`, the halt wording to `control`, the testnet caps to
+# `testnet_evidence`, RECONCILED from `order_request`). Like EXCEPTIONS it only shrinks, and a test pins
+# it empty: an entry is a decision, made in the PR that adds it.
+EGRESS_EXCEPTIONS: dict[tuple[str, str], tuple[str, frozenset[str]]] = {}
 
 
 def _egress_problems(edges, layer=None, exceptions=None) -> dict:
@@ -407,6 +396,10 @@ def test_no_result_layer_imports_a_sending_module_beyond_the_named_ones():
         + "; ".join(f"{s} -> {d}: {sorted(n)}" for (s, d), n in
                     sorted({**problems["unexpected"], **problems["widened"]}.items()))
     )
+
+
+def test_no_result_layer_import_of_a_sender_is_excepted():
+    assert EGRESS_EXCEPTIONS == {}
 
 
 def test_every_named_egress_exception_still_exists_name_by_name():
@@ -543,3 +536,24 @@ def test_reach_follows_a_chain_through_a_function_local_import(tmp_path):
     reached = _reach(_edges(tmp_path))
     assert reached["act"] == {"mid", "deep", "res"}
     assert "other" not in reached
+
+
+def test_the_names_pr04_moved_are_the_same_objects_where_they_were():
+    """Refactor plan PR-04 moved names out of the sending modules and left them re-exported there, so
+    every importer and every patch on the old module keeps working. A copy instead of a re-export would
+    let the two drift, which is what this pins."""
+    from runtime.mvp_runtime import control
+    from runtime.mvp_runtime.crypto import (
+        live_promotion, live_route, order_request, promotion, testnet_evidence, testnet_execution, vocabulary,
+    )
+
+    for name in ("ROUTE_DISABLED", "ROUTE_BLOCKED", "ROUTE_HELD", "ROUTE_SETTLED", "ROUTE_OPENED",
+                 "ROUTE_INCIDENT", "ROUTING_PRECONDITION", "ACCOUNT_UNREADABLE"):
+        assert getattr(live_route, name) is getattr(vocabulary, name), name
+    for name in ("verify_live_arm", "LIVE_ARM_ENTRY_CHANGED", "LIVE_ARM_APPROVAL_UNREADABLE",
+                 "LIVE_ARM_SPEC_NOT_ITS_RULE", "LIVE_ARM_ENTRY_UNBOUND", "LIVE_ARM_REARMED_OUTSIDE_THE_DOOR"):
+        assert getattr(live_route, name) is getattr(promotion, name), name
+    assert live_route.halt_advice is control.halt_advice
+    for name in ("TESTNET_MAX_ORDER_NOTIONAL_USDT", "TESTNET_MAX_DAILY_ORDERS"):
+        assert getattr(testnet_execution, name) is getattr(testnet_evidence, name), name
+    assert live_promotion.RECONCILED is order_request.RECONCILED
