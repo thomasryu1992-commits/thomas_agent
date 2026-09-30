@@ -134,7 +134,13 @@ def compute_strategy_performance(
     """The S9 report: rolling + lifetime metrics over chronological outcomes.
 
     A rolling-N window is only ``window_full`` once the strategy has N outcomes;
-    the lifecycle requires a full window before escalating."""
+    the lifecycle requires a full window before escalating.
+
+    **"live" in ``live_vs_backtest_win_rate_drop`` means the outcomes passed in, and those are
+    paper.** The one caller, ``cycle.run_crypto_cycle``, hands :func:`run_lifecycle` the paper
+    book's outcomes (``paper.read_outcomes``), so the field compares the paper win rate with the
+    backtest one, and ``live_win_rate_dropped_below_backtest`` is a paper-vs-backtest demotion.
+    The key and the reason code keep their names because both are written into records."""
     ordered = list(outcomes)
     lifetime = compute_metrics(ordered)
     report: dict[str, Any] = {
