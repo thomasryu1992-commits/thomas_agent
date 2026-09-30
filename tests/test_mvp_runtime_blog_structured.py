@@ -1228,3 +1228,30 @@ def test_a_carriers_offer_names_the_carrier():
     """'퍼플렉시티 무료' turned an SKT customers' offer into "특정 통신사 이용자라면"."""
     request = blog_content.content_request(TARGET)
     assert "통신사 제휴 혜택(특정 통신사 고객만 받는 요금제·구독 혜택 등)은 그 통신사 이름을 밝혀라" in request
+
+
+# --- the notes go only with an ask to grow (2026-09-30) ----------------------------------------
+#
+# Sent with a cut-and-keyword revision, the notes took '챗gpt 무료체험' to 16,553 tokens against 16,000.
+
+def _first_with(failures, para_chars):
+    first = blog_content.interpret_draft(json.dumps(_draft(), ensure_ascii=False), TARGET)
+    return dict(first, failures=failures, measured=dict(first["measured"], para_chars=para_chars))
+
+
+_NOTE_RECORDS = {"tool_use": {"hits": [{"title": "자료", "snippet": "허용치 기본값 32", "source": "tavily"}]}}
+
+
+@pytest.mark.parametrize("failures, para_chars, carries", [
+    (["body_chars"], 100, True),                 # grow
+    (["para_chars"], 60, True),                  # grow
+    (["para_chars"], 160, False),                # cut
+    (["para_chars", "keyword_hits"], 160, False),
+    (["keyword_hits"], 130, False),
+    (["title_candidates"], 130, False),
+])
+def test_the_evidence_notes_ride_only_an_ask_to_grow(failures, para_chars, carries):
+    request = blog_content.revision_request(TARGET, _first_with(failures, para_chars), "", _NOTE_RECORDS)
+    assert ("- 자료: 허용치 기본값 32" in request) is carries
+    assert ("새 사실은 아래 근거 메모에 있는 것만" in request) is carries
+    assert ("새 사실이나 새 출처를 추가하지 마라" in request) is not carries

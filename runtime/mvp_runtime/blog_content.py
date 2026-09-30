@@ -1412,20 +1412,39 @@ def revision_request(
         asks.append(f"- {_length_asks(measured, first.get('structured'))}")
     if "keyword_hits" in first["failures"]:
         asks.append(f"- {_keyword_revision_ask(target, measured, first.get('structured'))}")
+    if _grows(first):
+        facts = ("첫 초안의 사실·수치·가격·날짜는 바꾸지 말고 새 출처를 추가하지 마라. 새 사실은 아래 근거 메모에 "
+                 "있는 것만 쓸 수 있다 — 메모에 없는 이름·수치를 지어내지 마라. 분량을 늘릴 때는 근거 메모의 구체적인 "
+                 "내용이나 이미 쓴 내용의 방법·예시를 풀어 써라. ")
+        notes = (f"근거 메모(첫 초안을 쓸 때 본 자료에서 발췌, 번호를 붙여 인용하지 말 것):\n"
+                 f"{_evidence_notes(first, records)}\n")
+    else:
+        facts = "사실·수치·가격·날짜는 바꾸지 말고 새 사실이나 새 출처를 추가하지 마라. "
+        notes = ""
     return (
         f"아래 '{target}' 네이버 블로그 초안을 고쳐라. 고칠 항목은 다음뿐이다:\n" + "\n".join(asks)
-        + "\n첫 초안의 사실·수치·가격·날짜는 바꾸지 말고 새 출처를 추가하지 마라. 새 사실은 아래 근거 메모에 "
-        "있는 것만 쓸 수 있다 — 메모에 없는 이름·수치를 지어내지 마라. 분량을 늘릴 때는 근거 메모의 구체적인 "
-        "내용이나 이미 쓴 내용의 방법·예시를 풀어 써라. 문단을 늘리거나 줄일 때도 그 섹션 소제목의 내용 "
+        + "\n" + facts + "문단을 늘리거나 줄일 때도 그 섹션 소제목의 내용 "
         "안에서만 하고, 다른 섹션의 주제를 끌어오지 마라. image_shots 4~8개와 table은 첫 초안의 것을 "
         "그대로 유지하라(없으면 새로 채워라). 이 수정 실행에는 근거 블록이 없다 — [S1]·[K1] 같은 "
         "근거 번호를 본문·facts·fact_checks 어디에도 쓰지 말고, sources는 빈 목록 []으로 둬라(첫 "
         "초안의 출처는 그대로 유지된다). content_draft에는 같은 JSON 형식으로 전체 초안을 다시 "
         f"넣어라(키는 이 순서대로, intro와 sections를 맨 끝에): {_DRAFT_SHAPE}\n"
-        f"근거 메모(첫 초안을 쓸 때 본 자료에서 발췌, 번호를 붙여 인용하지 말 것):\n"
-        f"{_evidence_notes(first, records)}\n"
-        f"이전 초안:\n{_revision_previous(first, text)}"
+        f"{notes}이전 초안:\n{_revision_previous(first, text)}"
     )
+
+
+def _grows(first: Mapping[str, Any]) -> bool:
+    """Whether the revision is asked to ADD length — the only ask the evidence notes serve.
+
+    Sent with every revision (#1070), the notes pushed a cut-and-keyword revision on
+    '챗gpt 무료체험' (bcp_ea9ee56c8053fe3810ea, first draft 2,732 characters at 160 a paragraph)
+    to 16,553 tokens against the 16,000 budget, and it was blocked; revisions had run 10k~14.8k
+    without them. Over the paragraph ceiling the length ask cuts (:func:`_length_asks`), and a
+    keyword or structure fix adds no facts."""
+    if not _LENGTH_FAILURES & set(first.get("failures") or []):
+        return False
+    ceiling = blog_draft_score.STANDARDS["para_chars"].high
+    return int((first.get("measured") or {}).get("para_chars") or 0) <= ceiling
 
 
 # Per note and in all: the Tavily snippets run 70~1,300 characters, and the revision request
