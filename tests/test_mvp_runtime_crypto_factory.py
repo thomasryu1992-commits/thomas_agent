@@ -18,7 +18,7 @@ import pytest
 
 from runtime.mvp_runtime import control, timeutil
 from runtime.mvp_runtime.control import ControlState, ControlStore
-from runtime.mvp_runtime.crypto import factory, features, indicators, market_data, pool, robustness
+from runtime.mvp_runtime.crypto import backtest, factory, features, indicators, market_data, pool, robustness
 from runtime.mvp_runtime.crypto.factory import (
     generate_batch,
     backtest_spec,
@@ -2523,23 +2523,24 @@ def test_a_shared_frame_scores_a_spec_identically_to_a_rebuilt_one():
 
 
 def test_the_factory_builds_the_frame_once_however_many_specs_it_scores():
-    from runtime.mvp_runtime.crypto import factory as factory_mod
+    # Patched on `backtest`, where `build_replay_frame` is defined and reads it.
+    from runtime.mvp_runtime.crypto import backtest as replay_mod
     from runtime.mvp_runtime.crypto.factory import run_factory
 
     built = []
-    real = factory_mod.build_feature_rows
+    real = replay_mod.build_feature_rows
 
     def counting(snapshot):
         built.append(1)
         return real(snapshot)
 
-    original = factory_mod.build_feature_rows
-    factory_mod.build_feature_rows = counting
+    original = replay_mod.build_feature_rows
+    replay_mod.build_feature_rows = counting
     try:
         result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
                              existing_candidates=[], now=NOW, count=4)
     finally:
-        factory_mod.build_feature_rows = original
+        replay_mod.build_feature_rows = original
 
     assert result["accepted_count"] >= 2, "the run has to actually score several specs"
     assert len(built) == 1, f"the feature frame was rebuilt {len(built)} times"
@@ -2766,7 +2767,7 @@ def test_the_backtest_refuses_the_entries_the_runtime_would_refuse(monkeypatch):
                     "max_holding_bars": 10}))
 
     with_door = backtest_spec(tight, snapshot)
-    monkeypatch.setattr(factory, "MAX_ENTRY_COST_R", 1e9)
+    monkeypatch.setattr(backtest, "MAX_ENTRY_COST_R", 1e9)
     without = backtest_spec(tight, snapshot)
 
     assert with_door["entry_cost_door"]["applied"] is True
@@ -2797,7 +2798,7 @@ def test_the_holdout_runs_the_same_door_as_the_scored_window(monkeypatch):
         exit_rules={"stop_model": "atr", "stop_atr": 0.3, "target_atr": 3.0,
                     "max_holding_bars": 10}))
     with_door = backtest_spec(tight, snapshot)["holdout"]
-    monkeypatch.setattr(factory, "MAX_ENTRY_COST_R", 1e9)
+    monkeypatch.setattr(backtest, "MAX_ENTRY_COST_R", 1e9)
     without = backtest_spec(tight, snapshot)["holdout"]
 
     assert with_door["refused_entries"] > 0

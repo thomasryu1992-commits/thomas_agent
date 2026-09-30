@@ -41,6 +41,7 @@ from typing import Any
 
 from . import (
     account,
+    backtest,
     candle_archive,
     cost,
     dashboard,
@@ -420,7 +421,7 @@ TUNABLES: tuple[Tunable, ...] = (
             "existing path",
             "a cadence reallocation pricing the k=4 lattice's 15 members — §3-1 names it as "
             "the decision that would move this"),
-    Tunable("HOLDOUT_FRACTION", factory.HOLDOUT_FRACTION, "crypto/factory.py", INHERITED,
+    Tunable("HOLDOUT_FRACTION", backtest.HOLDOUT_FRACTION, "crypto/backtest.py", INHERITED,
             "the most recent 30% is withheld from scoring entirely",
             "evidence that the split size is what limits holdout depth rather than signal rate"),
     Tunable("ELITE_EVIDENCE_MIN_TRADES", factory.ELITE_EVIDENCE_MIN_TRADES, "crypto/factory.py",
@@ -492,18 +493,18 @@ TUNABLES: tuple[Tunable, ...] = (
     Tunable("MIN_FACTORY_BARS", market_data.MIN_FACTORY_BARS, "crypto/market_data.py", VENUE,
             "what the venue can answer: ~2.1k daily bars on the shortest routed history (SOLUSDT)",
             "a venue with deeper daily history, or a routed universe that drops the shortest one"),
-    Tunable("MIN_BARS_FOR_HOLDOUT", factory.MIN_BARS_FOR_HOLDOUT, "crypto/factory.py", INHERITED,
+    Tunable("MIN_BARS_FOR_HOLDOUT", backtest.MIN_BARS_FOR_HOLDOUT, "crypto/backtest.py", INHERITED,
             "the bar floor under `HOLDOUT_FRACTION`; below it there is no tail worth withholding",
             "F4's replay-window work, which is what decides how much tail there is to split"),
-    Tunable("MIN_TRADES_PER_WINDOW", factory.MIN_TRADES_PER_WINDOW, "crypto/factory.py", INHERITED,
+    Tunable("MIN_TRADES_PER_WINDOW", backtest.MIN_TRADES_PER_WINDOW, "crypto/backtest.py", INHERITED,
             "a walk-forward slice needs this many closed trades before its sign counts",
             "the same evidence that moved `MIN_HOLDOUT_TRADES` off 3 — this one is still 3"),
-    Tunable("WALK_FORWARD_PERIODS", factory.WALK_FORWARD_PERIODS, "crypto/factory.py", DERIVED,
+    Tunable("WALK_FORWARD_PERIODS", backtest.WALK_FORWARD_PERIODS, "crypto/backtest.py", DERIVED,
             "the train span subtotalled at the tail's slice WIDTH (~35 days), not its count — "
             "the autocorrelation table above `HOLDOUT_PERIODS` is the argument",
             "`HOLDOUT_PERIODS` or the replay window moving, or the store's occupancy "
             "measurement (walk_forward_stability_report) disagreeing with the width match"),
-    Tunable("WALK_FORWARD_MIN_PERIODS", factory.WALK_FORWARD_MIN_PERIODS, "crypto/factory.py",
+    Tunable("WALK_FORWARD_MIN_PERIODS", backtest.WALK_FORWARD_MIN_PERIODS, "crypto/backtest.py",
             DERIVED,
             "the resolution argument `MIN_HOLDOUT_PERIODS` made, applied to the train span; "
             "records only — nothing judges on it until PR-2's decision",
