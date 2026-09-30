@@ -160,6 +160,9 @@ LAYER: dict[str, str] = {
     # report: reads everything, imported by nothing inside the lane
     "dashboard": "report", "live_readiness": "report", "route_watch": "report", "tunables": "report",
     "strategy_funnel": "report",
+    # the readiness board's judgement, pure over the report `live_readiness` assembles (refactor plan
+    # PR-07); `live_readiness` imports it, and it reads nothing of `live_readiness`
+    "readiness_model": "report",
 }
 
 _MODULE = "<module>"      # the module object itself is bound, and nothing is read from it
