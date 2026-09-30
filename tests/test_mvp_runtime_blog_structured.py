@@ -1481,3 +1481,19 @@ def test_the_revision_keeps_the_target_free_shape():
     first = dict(first, failures=["headings"])
     request = blog_content.revision_request(TARGET, first, "")
     assert blog_content._DRAFT_SHAPE in request and "1회)" not in request.split("이전 초안:")[0]
+
+
+
+# --- thin evidence pointed at (2026-09-30) ------------------------------------------------------------
+#
+# Every scored draft citing fewer than two web sources scored 58 or under; '망고보드 ai' had one.
+
+@pytest.mark.parametrize("refs, warned", [
+    ([], True), (["[S1]"], True), (["[S1]", "[K1]"], True), (["[S1]", "[S3]"], False),
+])
+def test_post_md_warns_when_fewer_than_two_web_sources_are_cited(refs, warned):
+    package = {"quality": {"quality_state": "ready_for_review", "failures": []},
+               "sources": [{"source_ref": r, "title": "t"} for r in refs],
+               "body_paste": "본문 문단입니다.", "body_blocks": []}
+    post = blog_content.render_post_md(package)
+    assert ("근거가 적음: 인용된 웹 출처" in post) is warned

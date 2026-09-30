@@ -922,6 +922,13 @@ def render_post_md(package: Mapping[str, Any]) -> str:
                          if b.get("action") == "heading"}
         prose = [p for i, p in enumerate(str(package.get("body_paste") or "").split("\n\n"))
                  if i not in body_headings]
+        # Thin evidence, pointed at: over 28 scored drafts on 2026-09-30, every one citing fewer
+        # than two web sources scored 58 or under ('망고보드 ai', one official home page, read as
+        # generalities). Two or more ranged 45~72, so the count is a warning, never a gate.
+        web = [s for s in package.get("sources") or [] if str(s.get("source_ref") or "").startswith("[S")]
+        if len(web) < MIN_WEB_SOURCES:
+            lines += [f"- ⚠ 근거가 적음: 인용된 웹 출처 {len(web)}개 — 메뉴 이름·수치 같은 구체 내용이 "
+                      "부족할 수 있으니 공식 도움말·안내 페이지로 보강할 것(자동 판정 아님)"]
         sites = blog_draft.site_names_in_body(package.get("sources") or [], prose,
                                               str(package.get("target_keyword") or ""))
         if sites:
@@ -1263,6 +1270,7 @@ _FAILURE_ASKS = {
                            "그 문단 소제목에 맞는 다른 내용으로 바꿔라"),
 }
 MAX_NAMED_REPEATS = 5
+MIN_WEB_SOURCES = 2
 # The failures a length plan answers. When any of them is asked, the plan rides along once.
 _LENGTH_FAILURES = frozenset({"body_chars", "para_chars"})
 
