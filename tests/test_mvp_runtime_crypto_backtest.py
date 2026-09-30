@@ -27,6 +27,8 @@ def _defined(tree: ast.Module) -> list[str]:
             names.append(node.name)
         elif isinstance(node, ast.Assign):
             names.extend(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.append(node.target.id)
     return names
 
 
