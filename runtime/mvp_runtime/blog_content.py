@@ -1336,14 +1336,24 @@ VENDOR_NAME_ASK = (
     "마라 — '온라인 인쇄 업체 A'·'업체 B'처럼 익명으로 쓰거나 업종으로만 불러라. 앱·소프트웨어·AI "
     "도구의 이름(키워드가 다루는 도구 포함)은 써도 된다."
 )
+# The reader lives in Korea. Asked as "해외 자료를 꼭 써야 하면 해외 기준이라 한국과 다를 수 있다고
+# 밝혀라", 'ai 번역기' (bcp_4ad51169ab0a26df545d, 2026-09-30) used no foreign figure at all and still
+# wrote a paragraph of it — "외화로 표시된 가격 정책이나 해외 기준의 서비스 조건을 그대로 적용하기
+# 어렵습니다": the instruction, restated as prose. The note belongs to the sentence that uses the
+# foreign source, and the request's own instructions do not become body sentences.
+DOMESTIC_READER_ASK = (
+    "독자는 한국에서 사는 사람이다 — 해외 업체·해외 서비스의 조건이나 달러·엔 같은 외화 가격은 쓰지 "
+    "마라. 해외 자료의 내용을 꼭 써야 하면 그 내용을 쓴 문장 안에서만 '(해외 기준)'이라고 붙이고, 해외 "
+    "자료를 쓰지 않았다면 해외 기준·외화·국내와의 차이에 대한 문장을 따로 만들지 마라. 이 요청에 적힌 "
+    "지시(분량·키워드·독자·출처 규칙)를 본문 문장으로 옮겨 쓰지 마라."
+)
 EVIDENCE_SPECIFICS_ASK = (
     "근거 블록([S#])에 나온 구체적인 내용 — 메뉴·버튼·기능 이름, 절차 단계, 설정값 — 을 섹션마다 "
     "최소 1개 본문에 그 이름 그대로 쓰고, 그 근거를 sources에 넣어라. 어떤 도구·주제에도 똑같이 "
     "들어맞는 일반론 문장만으로 문단을 채우지 마라. 근거에 없는 이름이나 설정값을 지어내지는 마라. "
     "근거 글의 문장이나 어구는 옮기지 말고 네 말로 풀어 써라. 특정 앱에서만 통하는 메뉴 경로를 "
     "쓸 때는 어느 앱의 메뉴인지 밝히고(업체 사이트라면 아래처럼 익명으로), 한 근거 글의 순서를 그대로 "
-    "따라가지 말고 여러 근거를 섞어라. " + VENDOR_NAME_ASK + " 독자는 한국에서 사는 사람이다 — 해외 업체·해외 서비스의 조건이나 달러·엔 "
-    "같은 외화 가격은 쓰지 말고, 해외 자료를 꼭 써야 하면 해외 기준이라 한국과 다를 수 있다고 밝혀라."
+    "따라가지 말고 여러 근거를 섞어라. " + VENDOR_NAME_ASK + " " + DOMESTIC_READER_ASK
 )
 
 

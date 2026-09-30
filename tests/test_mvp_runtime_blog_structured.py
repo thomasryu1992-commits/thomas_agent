@@ -1128,7 +1128,17 @@ def test_a_limit_or_version_word_without_a_number_is_not_that_claim(sentence, ca
 def test_the_evidence_ask_keeps_the_post_domestic():
     """'명함제작업체' priced cards in dollars from a US printer's page (bcp_366916fc7176de5a9db8)."""
     request = blog_content.content_request(TARGET)
-    assert "외화 가격은 쓰지 말고" in request and "해외 기준이라 한국과 다를 수 있다고 밝혀라" in request
+    assert blog_content.DOMESTIC_READER_ASK in request and "외화 가격은 쓰지 마라" in request
+
+
+def test_the_foreign_source_note_stays_on_its_sentence_and_instructions_stay_out_of_the_body():
+    """'ai 번역기' used no foreign figure and still wrote "외화로 표시된 가격 정책이나 해외 기준의
+    서비스 조건을 그대로 적용하기 어렵습니다" (bcp_4ad51169ab0a26df545d)."""
+    request = blog_content.content_request(TARGET)
+    assert "그 내용을 쓴 문장 안에서만 '(해외 기준)'" in request
+    assert "해외 자료를 쓰지 않았다면 해외 기준·외화·국내와의 차이에 대한 문장을 따로 만들지 마라" in request
+    assert "지시(분량·키워드·독자·출처 규칙)를 본문 문장으로 옮겨 쓰지 마라" in request
+    assert "한국과 다를 수 있다고 밝혀라" not in request
 
 
 def test_the_request_forbids_business_names_but_not_tool_names():
