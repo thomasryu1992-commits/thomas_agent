@@ -71,7 +71,7 @@ from . import (
     protection_watch,
     robustness,
     strategy,
-    testnet_execution,
+    testnet_evidence,
     trade_plan,
 )
 
@@ -582,14 +582,14 @@ TUNABLES: tuple[Tunable, ...] = (
     # a ceiling and a pace misses the two shapes an operator most often reaches for.
 
     # --- the signed testnet path (crypto PR1d-1, 2026-09-16) -----------------------------------
-    Tunable("TESTNET_MAX_ORDER_NOTIONAL_USDT", testnet_execution.TESTNET_MAX_ORDER_NOTIONAL_USDT,
-            "crypto/testnet_execution.py", OPERATOR,
+    Tunable("TESTNET_MAX_ORDER_NOTIONAL_USDT", testnet_evidence.TESTNET_MAX_ORDER_NOTIONAL_USDT,
+            "crypto/testnet_evidence.py", OPERATOR,
             "the bound the testnet path carries in code, because no registered budget declares one "
             "for a venue that trades no money; 200 mirrors the live hard ceiling's bring-up value",
             "a cycle that needs a larger order to be realistic — the number bounds a rehearsal, "
             "not an exposure"),
-    Tunable("TESTNET_MAX_DAILY_ORDERS", testnet_execution.TESTNET_MAX_DAILY_ORDERS,
-            "crypto/testnet_execution.py", OPERATOR,
+    Tunable("TESTNET_MAX_DAILY_ORDERS", testnet_evidence.TESTNET_MAX_DAILY_ORDERS,
+            "crypto/testnet_evidence.py", OPERATOR,
             "how many testnet orders a day this path counts; one evidence cycle counts two (the "
             "entry and the exit — protective legs reach the venue but are not counted, the live "
             "path's own convention), so 20 is room to retry a failing cycle without an unbounded loop",

@@ -44,8 +44,8 @@ from typing import Any, Mapping
 from ..filelock import locked
 from ..paths import repo_root as _repo_root
 from .dashboard import _read_cycle_records
-from .live_route import ROUTE_INCIDENT
 from .paper import state_dir
+from .vocabulary import ROUTE_INCIDENT
 
 WATCH_VERSION = "crypto_route_watch.v0.1"
 MARK_FILENAME = "route_watch_mark.json"

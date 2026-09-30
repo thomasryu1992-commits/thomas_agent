@@ -90,3 +90,21 @@ DEFAULT_VENUE = "binance_futures"
 STATUS_ENTRY_CANDIDATE = "ENTRY_CANDIDATE"
 
 OCCUPYING_STATUSES = frozenset({"PAPER_ACTIVE", "WARNING", "PROBATION"})
+
+
+# --- the live route's status, and the two reason codes the readiness board reads (refactor plan PR-04) --
+# `live_route` reports them on the cycle record, and the result layers read them back: the readiness
+# board and the route watch. They lived in `live_route` until then, which made both readers import the
+# module that runs the live leg (`tests/test_mvp_runtime_crypto_layers.py`, EGRESS_EXCEPTIONS).
+# `live_route` re-exports every one.
+
+# What this cycle's live leg did. One value, reported on the cycle record.
+ROUTE_DISABLED = "DISABLED"    # live trading is off here; nothing was read and nothing sent
+ROUTE_BLOCKED = "BLOCKED"      # gated open, but a precondition refused before any venue action
+ROUTE_HELD = "HELD"            # ran end to end; no entry and no exit was due
+ROUTE_SETTLED = "SETTLED"      # a position closed and its outcome was recorded
+ROUTE_OPENED = "OPENED"        # a position was opened and bracketed
+ROUTE_INCIDENT = "INCIDENT"    # real money is in a state this runtime cannot account for
+
+ROUTING_PRECONDITION = "LIVE_ROUTING_PRECONDITION_FAILED"
+ACCOUNT_UNREADABLE = "LIVE_ROUTING_ACCOUNT_UNREADABLE"

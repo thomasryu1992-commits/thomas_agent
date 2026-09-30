@@ -48,8 +48,7 @@ BASELINE: dict[str, tuple[str, ...]] = {
         "load_active_pool", "routable_strategy_ids",
     ),
     "runtime/mvp_runtime/crypto/live_route.py": (
-        "ARTIFACT_SHA256_FIELD", "live_arm_approvals", "live_arm_entries", "live_arm_unsound",
-        "live_routable_strategy_ids", "load_active_pool",
+        "live_arm_approvals", "live_arm_entries", "live_routable_strategy_ids", "load_active_pool",
     ),
     "runtime/mvp_runtime/crypto/promotion.py": (
         "LIVE_TIERS", "LIVE_TIER_FIELD", "LIVE_TIER_LIVE", "OCCUPYING_STATUSES", "assert_family_cap",

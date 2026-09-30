@@ -65,6 +65,7 @@ from .live_execution import (
 )
 from .live_order import LiveOrderCounter as _LiveOrderCounter
 from .state import VENUE_TESTNET
+from .testnet_evidence import TESTNET_MAX_DAILY_ORDERS, TESTNET_MAX_ORDER_NOTIONAL_USDT
 
 TESTNET_ADAPTER_TOOL_ID = "crypto.testnet.order_adapter"
 TESTNET_ADAPTER_TOOL_VERSION = "0.1.0"
@@ -336,8 +337,8 @@ def select_testnet_order_adapter(*, now: str | None = None, root: Any = None):
 # the stage, both halts, and the intent's own shape. What it adds is the bound the testnet path
 # carries in code, because there is no record to declare one.
 
-TESTNET_MAX_ORDER_NOTIONAL_USDT = 200.0
-TESTNET_MAX_DAILY_ORDERS = 20
+# The bound itself (TESTNET_MAX_ORDER_NOTIONAL_USDT, TESTNET_MAX_DAILY_ORDERS) lives in `testnet_evidence`
+# since refactor plan PR-04, so the tunables index reads it without importing a module that sends.
 
 TESTNET_STATUS_BLOCKED = "BLOCKED"
 TESTNET_STATUS_REPAIR_REQUIRED = "REPAIR_REQUIRED"

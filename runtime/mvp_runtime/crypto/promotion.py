@@ -24,6 +24,7 @@ from runtime.read_only_kernel import integrity
 
 from .. import approval as approval_mod
 from .. import timeutil
+from ..approval_store import ApprovalStore
 from ..binding import bind_task_to_core
 from ..errors import ApprovalBlocked, MvpRuntimeError, ToolError
 from ..intake import build_task
@@ -34,7 +35,7 @@ from ..permission import (
     build_strategy_promotion_permission_decision,
 )
 from . import execution_stage as execution_stage_mod
-from . import forward_book, forward_confirmation
+from . import forward_book, forward_confirmation, live_tier
 from . import paper as paper_store
 from .execution_stage import StageStatus, resolve_execution_stage
 from . import pool as pool_store
@@ -847,3 +848,77 @@ def live_arm_problem(
     if answered is None or expires is None or installed is None or not answered <= installed < expires:
         return LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL
     return None
+
+
+# `live_route`'s until refactor plan PR-04: the gate calls it through the route, which re-exports it,
+# and the readiness board reads it from here.
+# Why the gate cannot verify the arming approval an entry names (PR2c-2b), beside the reasons
+# `promotion.live_arm_problem` gives for the record itself.
+LIVE_ARM_ENTRY_CHANGED = "LIVE_ARM_ENTRY_CHANGED"
+LIVE_ARM_APPROVAL_UNREADABLE = "LIVE_ARM_APPROVAL_UNREADABLE"
+# The entry arms nothing whatever it names (`live_tier.live_arm_unsound`, review of #887).
+LIVE_ARM_SPEC_NOT_ITS_RULE = "LIVE_ARM_SPEC_NOT_ITS_RULE"
+# The entry carries no artifact stamp: it predates the artifact, and only a stamped entry may spend
+# money (PR3a, decision 33).
+LIVE_ARM_ENTRY_UNBOUND = "LIVE_ARM_ENTRY_UNBOUND"
+LIVE_ARM_REARMED_OUTSIDE_THE_DOOR = "LIVE_ARM_REARMED_OUTSIDE_THE_DOOR"
+_UNSOUND_ARM = {"spec": LIVE_ARM_SPEC_NOT_ITS_RULE, "unbound": LIVE_ARM_ENTRY_UNBOUND,
+                "disarmed": LIVE_ARM_REARMED_OUTSIDE_THE_DOOR}
+
+
+def verify_live_arm(
+    *, root: Path | None, strategy_id: str, plan: Any, approval_id: str | None,
+    armed: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """The arming approval behind an autonomous entry, verified at the gate (PR2c-2b), as the
+    approved profile's ``live_arm`` authority carries it.
+
+    ``approval_id`` is the id both pool reads name, or None. ``armed`` is the fresh read's
+    `pool.live_arm_entries`:
+
+    - the entry must be sound (`live_tier.live_arm_unsound`: the spec it trades is its labelled rule, it
+      was installed as an artifact (PR3a), and it was not put back in the tier by hand). Named even
+      when no id was agreed, because an unsound entry is why `pool.live_arm_approvals` names none;
+    - it must arm the lineage the plan was made from: its candidate, its rule and, since PR3a-2,
+      its artifact (`LIVE_ARM_ENTRY_CHANGED`). The door cannot produce an artifact mismatch here:
+      it installs a new artifact only under a new approval, which the two reads then disagree on
+      (the route reports that with the same code). The comparison guards a pool edited outside
+      the door between the two reads;
+    - the approval store must hold the record Thomas answered to arm it, pairing the entry's
+      artifact with its candidate (`promotion.live_arm_problem`).
+
+    Reported, never raised for a problem: the gate refuses an unverified arm
+    (`approved_profile_complete`) and the fan-out goes on."""
+    arm: dict[str, Any] = {"approval_id": approval_id, "approval_fingerprint": None,
+                           "approval_verified": False, "approval_problem": None}
+    entry = armed.get(strategy_id) if isinstance(armed, Mapping) else None
+    unsound = live_tier.live_arm_unsound(entry) if isinstance(entry, Mapping) else None
+    if unsound is not None:
+        arm["approval_problem"] = _UNSOUND_ARM[unsound]
+        return arm
+    if approval_id is None:
+        return arm
+    lineage = plan if isinstance(plan, Mapping) else {}
+    if not (isinstance(entry, Mapping) and entry.get("approval_id") == approval_id
+            and entry.get("candidate_id") == lineage.get("candidate_id")
+            and entry.get("strategy_rule_hash") == lineage.get("strategy_rule_hash")
+            and entry.get(artifact_mod.ARTIFACT_SHA256_FIELD) == lineage.get(artifact_mod.ARTIFACT_SHA256_FIELD)):
+        arm["approval_problem"] = LIVE_ARM_ENTRY_CHANGED
+        return arm
+    try:
+        approval = ApprovalStore.default(root).get(approval_id)
+    except Exception:  # noqa: BLE001 — a store that cannot be read verifies nothing
+        arm["approval_problem"] = LIVE_ARM_APPROVAL_UNREADABLE
+        return arm
+    problem = live_arm_problem(
+        approval, approval_id=approval_id, candidate_id=entry.get("candidate_id"),
+        strategy_rule_hash=entry.get("strategy_rule_hash"),
+        strategy_artifact_sha256=entry.get(artifact_mod.ARTIFACT_SHA256_FIELD),
+        promoted_at=entry.get("promoted_at"),
+    )
+    if problem is not None:
+        arm["approval_problem"] = problem
+        return arm
+    arm["approval_fingerprint"] = approval.get("action_fingerprint")
+    arm["approval_verified"] = True
+    return arm
