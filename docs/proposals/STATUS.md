@@ -4,7 +4,7 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **44**건: `DRAFT` 3 · `PARTIALLY DECIDED` 8 · `DECIDED` 6 · `IMPLEMENTED` 24 · `SUPERSEDED` 1 · `RECORD` 2
+제안서 **44**건: `DRAFT` 3 · `PARTIALLY DECIDED` 8 · `DECIDED` 5 · `IMPLEMENTED` 25 · `SUPERSEDED` 1 · `RECORD` 2
 
 ## Thomas 결정 대기 (11)
 
@@ -24,7 +24,7 @@
 | [RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md](RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | (c) 순서 결정: 슬리피지 실측이 먼저다. (a)(b)(d)는 실측 뒤에 정하고, 그때까지 현재 값을 유지하며 LIVE_AUTONOMOUS로 올리지 않는다(Thomas 2026-09-26, 시스템 점검 D5). **값은 하나도 바뀌지 않았다**. |
 | [SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md](SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | §5의 D1·D2·D3·D4·D7·D8 채택, D6 보류(현상 유지). D5는 슬리피지 실측 뒤에 결정한다(§5 뒤 "결정" 절). 단계 0은 #980, 단계 1의 선행 조건 없는 항목은 #982–#989로 구현됐다. |
 
-## 결정됨 — 구현 남음 (6)
+## 결정됨 — 구현 남음 (5)
 
 결정은 끝났고 결정된 것이 아직 다 지어지지 않았다. 결정이 만든 구현 대기열이다.
 
@@ -34,10 +34,9 @@
 | [FAMILY_EXHAUSTION_V0.1.md](FAMILY_EXHAUSTION_V0.1.md) | `DECIDED` | 2026-09-26 | Q1 B·Q2·Q3 결정, §6 확인 완료(1h는 5심볼 모두가 의도). 남은 구현: Q1 B의 퍼널 family 소진 절(30일 CONFIRMED·마지막 CONFIRMED). 1h 5심볼 민팅은 이미 돌고 있었다(§6 정정, 2026-09-26). |
 | [RISK_LANE_WATCHDOG_V0.1.md](RISK_LANE_WATCHDOG_V0.1.md) | `DECIDED` | 2026-09-29 | 타임아웃 시 프로세스 재시작, 마감값 600/120/120 s(Thomas). 구현 PR 두 개(§7) 진행 중. |
 | [CRYPTO_REFACTOR_AND_MODULARIZATION_PLAN_V0.1.md](CRYPTO_REFACTOR_AND_MODULARIZATION_PLAN_V0.1.md) | `DECIDED` | 2026-09-30 | D-1~D-5 권고대로(Thomas). 진행: PR-02·03(#1049), PR-04(#1059), PR-05(#1060), PR-07(#1064), PR-08(리플레이 백테스트 분리) 머지. PR-06 실측은 §K-1에 기록. 남은 구현: §S의 PR-09 이후와 PR-S3(승격 문 CAS). |
-| [CRYPTO_SYSTEM_IMPROVEMENT_GAP_ANALYSIS_V0.1.md](CRYPTO_SYSTEM_IMPROVEMENT_GAP_ANALYSIS_V0.1.md) | `DECIDED` | 2026-09-30 | Q1·Q2·Q3 권고대로(Thomas): forward cohort 읽기 열은 D3 밖, 슬리피지 재가격 열은 C2 예외, pause/kill 의미는 유지. PR-D는 머지됐다(#1067). 남은 구현: PR-E(슬리피지 재가격과 LIVE 요청문 한 줄, #1069 열림). PR-A·B·C는 머지됐다(#1050·#1051·#1052). 외부 개선안 16개 절 중 이미 구현 5, 부분 구현 5, 결정에 따라 보류 6이고, 권한을 새로 만드는 항목은 없다. |
 | [SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md](SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md) | `DECIDED` | 2026-09-30 | D1 C·D2·D3 B→A·D4 예(Thomas): LIVE는 FORWARD_CONFIRMED 필수, forward 기준을 `observed_lineages`로 보정, 재사용 홀드아웃 표시는 버그 수정으로 지금 구현, 검증 슬라이스는 에포크 경계. 남은 구현: ① 문 변경, ② B 표시. ② A는 `REMAINING_WORK.md` §L. |
 
-## 구현됨 (24)
+## 구현됨 (25)
 
 결정되고 지어졌다. 문서는 결정의 근거 기록으로 남는다.
 
@@ -65,6 +64,7 @@
 | [PORTFOLIO_INDEPENDENCE_V0.1.md](PORTFOLIO_INDEPENDENCE_V0.1.md) | `IMPLEMENTED` | 2026-09-24 | Q1 A(퍼널의 독립 베팅 절) #974, Q2 B(LIVE 요청문의 forward 상관·N_eff) #976 구현. Q3(상관 게이트)는 조건이 차면 재질문. |
 | [SEQUENTIAL_FORWARD_TEST_V0.1.md](SEQUENTIAL_FORWARD_TEST_V0.1.md) | `IMPLEMENTED` | 2026-09-24 | Q1(조기 판정 전제) 기각, Q2 A 구현(#971 첫 판정 시각·보드 누적, #976 LIVE 요청 문구). Q3·Q4는 조건부 보류. |
 | [NAVER_BLOG_CONTENT_LANE_V0.1.md](NAVER_BLOG_CONTENT_LANE_V0.1.md) | `IMPLEMENTED` | 2026-09-27 | 결정된 것은 지어졌고(A안·network env 2026-08-09; 파일 쓰기, 주간 `content_ideation` 스케줄, MVP 용례 확장, 키워드 규칙, URL 기록 2026-08-30), 2026-09-27 Thomas가 레인을 보류했다. 주간 행은 비활성(삭제 아님)이고 Phase 4 순위 추적은 구현 대기열에서 빠졌다. 발화 3회(09-06·13·20)가 모두 선정 단계에서 `NO_ELIGIBLE_KEYWORD`로 끝나 패키지가 한 번도 만들어지지 않았고, 원인은 고정 시드라는 키워드 원천이다. 글은 필요할 때 요청으로 만든다. 경위·재개 조건·확인된 결함은 `docs/REMAINING_WORK.md` §J. |
+| [CRYPTO_SYSTEM_IMPROVEMENT_GAP_ANALYSIS_V0.1.md](CRYPTO_SYSTEM_IMPROVEMENT_GAP_ANALYSIS_V0.1.md) | `IMPLEMENTED` | 2026-09-30 | Q1·Q2·Q3 권고대로(Thomas) 결정·구현: forward cohort 읽기 열은 D3 밖(PR-D #1067), 슬리피지 재가격 열은 C2 예외(PR-E #1069), pause/kill 의미는 유지(변경 없음). PR-A·B·C는 #1050·#1051·#1052. 외부 개선안 16개 절 중 이미 구현 5, 부분 구현 5, 결정에 따라 보류 6이고, 권한을 새로 만드는 항목은 없다. 보류 6건은 각 항목의 조건(첫 cohort 판정, 슬리피지 실측, 에포크 경계)이 차면 이 문서를 근거로 다시 연다. |
 | [EXECUTION_STAGE_ANTI_ROLLBACK_V0.1.md](EXECUTION_STAGE_ANTI_ROLLBACK_V0.1.md) | `IMPLEMENTED` | 2026-09-30 | D1 a·D2·D3 a·D4 권고대로(Thomas) 구현. 배포 뒤 운영 단계 두 가지가 남는다: BOOTSTRAP(PAPER) 승인 1회로 장부 시작, 호스트 백업 스크립트에 앵커 제외 설치(§Implementation). |
 | [PROTECTION_UNKNOWN_ESCALATION_V0.1.md](PROTECTION_UNKNOWN_ESCALATION_V0.1.md) | `IMPLEMENTED` | 2026-09-30 | D1–D4 권고대로(Thomas) 구현(`crypto/protection_watch.py`). 한 가지를 바꿨다: U1은 사이클 정지(`record["halt"]`)가 아니라 신규 진입 보류다. 사이클 정지는 다른 심볼 포지션의 관리까지 건너뛰기 때문이다(§Implementation). 보드 한 줄(§2.5)은 D3 표시 동결로 미구현. |
 
