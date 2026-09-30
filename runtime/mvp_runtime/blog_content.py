@@ -1497,9 +1497,9 @@ def _evidence_notes(first: Mapping[str, Any], records: Mapping[str, Any] | None)
     total = 0
     for hit in chosen:
         snippet = " ".join(blog_draft.strip_evidence_refs(str(hit.get("snippet") or "")).split())
-        if not snippet:
-            continue
-        title = " ".join(str(hit.get("title") or "").split())
+        if not snippet or blog_draft.looks_garbled(snippet):
+            continue          # a mis-decoded page has nothing the revision could use
+        title = " ".join(str(blog_draft.readable_title(hit.get("title"), hit.get("url")) or "").split())
         note = f"- {title}: {snippet[:MAX_EVIDENCE_NOTE_CHARS]}" if title else f"- {snippet[:MAX_EVIDENCE_NOTE_CHARS]}"
         if total + len(note) > MAX_EVIDENCE_NOTES_CHARS:
             break

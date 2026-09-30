@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, Mapping, Sequence
+from urllib.parse import urlparse
 
 __all__ = [
     "DRAFT_FORMAT_LEGACY",
@@ -367,6 +368,29 @@ def render_blocks(draft: Mapping[str, Any]) -> dict[str, Any]:
 
 # --- evidence a draft may cite ----------------------------------------------------------
 
+# A page served in EUC-KR and read as something else arrives from the search tool with its
+# Hangul already gone: gov.kr's "식품영업신고 | 민원안내 및 신청 | 정부24" came back as
+# "ǰ û | οȳ  û | 24" ('영업신고증 발급', bcp_5e11bdec987364f7116c) and was printed as a source
+# title. The bytes are lost, so nothing can be decoded back; what can be done is to recognise it.
+# Korean and English text never reach these blocks (Latin Extended-A/B, IPA, Greek, Armenian
+# through Thaana), and two of them in one short title is not a foreign word.
+_GARBLED_RE = re.compile(r"[\u0100-\u03ff\u0530-\u07bf]")
+MIN_GARBLED_CHARS = 2
+
+
+def looks_garbled(text: Any) -> bool:
+    """Whether ``text`` carries the marks of a mis-decoded Korean page."""
+    return len(_GARBLED_RE.findall(str(text or ""))) >= MIN_GARBLED_CHARS
+
+
+def readable_title(title: Any, url: Any = None) -> str | None:
+    """``title`` unless it is garbled; then the URL's host, which is at least true."""
+    if title and not looks_garbled(title):
+        return str(title)
+    host = urlparse(str(url or "")).netloc
+    return host or None
+
+
 def evidence_index(records: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
     """``{"S1": {...}, "K2": {...}}`` — what a ``[S#]``/``[K#]`` in THIS run's draft points to.
 
@@ -377,7 +401,7 @@ def evidence_index(records: Mapping[str, Any] | None) -> dict[str, dict[str, Any
     index: dict[str, dict[str, Any]] = {}
     for n, hit in enumerate((records.get("tool_use") or {}).get("hits") or [], start=1):
         if isinstance(hit, Mapping) and not str(hit.get("source") or "").startswith("mock"):
-            index[f"S{n}"] = {"title": hit.get("title"), "url": hit.get("url")}
+            index[f"S{n}"] = {"title": readable_title(hit.get("title"), hit.get("url")), "url": hit.get("url")}
     for n, row in enumerate((records.get("keyword_research") or {}).get("metrics") or [], start=1):
         if isinstance(row, Mapping) and not str(row.get("source") or "").startswith("mock"):
             index[f"K{n}"] = {"title": f"Naver 검색광고 키워드 도구: {row.get('keyword')}",
@@ -423,7 +447,8 @@ def resolve_sources(sources: Sequence[Mapping[str, Any]], index: Mapping[str, An
         for key in _keys(source.get("source_ref")):
             if key not in index or any(s["source_ref"] == f"[{key}]" for s in out):
                 continue
-            entry = {"source_ref": f"[{key}]", "title": index[key].get("title") or source.get("title")}
+            entry = {"source_ref": f"[{key}]",
+                     "title": index[key].get("title") or readable_title(source.get("title"))}
             if index[key].get("url"):
                 entry["url"] = index[key]["url"]
             out.append(entry)
