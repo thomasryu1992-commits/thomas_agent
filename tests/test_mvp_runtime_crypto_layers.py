@@ -350,6 +350,89 @@ def test_the_store_reads_nothing_above_foundation():
     assert store <= lane
 
 
+# --- the result layers import nothing that sends (refactor plan §M-2b, PR-03, Thomas D-2 2026-09-30) ---
+#
+# Outcome and report sit above execution, so the layer order lets them import it, and they do. The
+# directive (§22: analytics cannot import exchange-write modules) is stricter than the order: a module
+# that reads results has no reason to load one that sends, and one that does is a call away from
+# sending. Holding an import is not a send (``test_mvp_runtime_crypto_egress_roster.py`` pins who
+# calls). But this rule keeps the modules that only read from even holding one.
+#
+# The sending modules are the ones that send an order or run the leg that does: the two adapters'
+# modules, the leg and the route. ``live_position`` (the book) and ``live_order`` (the final guard,
+# the counters) are not among them. The readiness board and the emergency close read the book, and
+# nothing in them sends.
+EGRESS_MODULES = frozenset({"live_execution", "testnet_execution", "live_leg", "live_route"})
+NO_EGRESS_LAYERS = frozenset({"outcome", "report"})
+
+# (importer, sending module) -> (the step that removes it, the names it may take). Only shrinks, like
+# EXCEPTIONS: a new pair fails, and so do a new name on a named pair and a name that is gone.
+EGRESS_EXCEPTIONS: dict[tuple[str, str], tuple[str, frozenset[str]]] = {
+    ("live_promotion", "live_execution"): (
+        "PR-04: import RECONCILED from order_request, where it is defined",
+        frozenset({"RECONCILED"})),
+    ("live_readiness", "live_route"): (
+        "PR-04: the status vocabulary to vocabulary, verify_live_arm and halt_advice below the route",
+        frozenset({"ACCOUNT_UNREADABLE", "ROUTE_BLOCKED", "ROUTE_DISABLED", "ROUTE_INCIDENT",
+                   "ROUTING_PRECONDITION", "halt_advice", "verify_live_arm"})),
+    ("route_watch", "live_route"): (
+        "PR-04: ROUTE_INCIDENT to vocabulary",
+        frozenset({"ROUTE_INCIDENT"})),
+    ("tunables", "testnet_execution"): (
+        "PR-04: the two testnet caps to a leaf that sends nothing, their tunables owner with them",
+        frozenset({"TESTNET_MAX_DAILY_ORDERS", "TESTNET_MAX_ORDER_NOTIONAL_USDT"})),
+}
+
+
+def _egress_problems(edges, layer=None, exceptions=None) -> dict:
+    """The result layers' imports of a sending module, against the named exceptions."""
+    layer = LAYER if layer is None else layer
+    exceptions = EGRESS_EXCEPTIONS if exceptions is None else exceptions
+    found = {(s, d): taken for (s, d), taken in edges.items()
+             if layer.get(s) in NO_EGRESS_LAYERS and d in EGRESS_MODULES}
+    return {
+        "unexpected": {edge: taken for edge, taken in found.items() if edge not in exceptions},
+        "widened": {edge: taken - exceptions[edge][1] for edge, taken in found.items()
+                    if edge in exceptions and taken - exceptions[edge][1]},
+        "stale": {edge: sorted(names - found.get(edge, set())) for edge, (_step, names) in exceptions.items()
+                  if names - found.get(edge, set())},
+    }
+
+
+def test_no_result_layer_imports_a_sending_module_beyond_the_named_ones():
+    problems = _egress_problems(_edges())
+    assert problems["unexpected"] == {} and problems["widened"] == {}, (
+        "an outcome or report module imports a module that sends. Take the name from where it is "
+        "defined, or move it below the sender; EGRESS_EXCEPTIONS only shrinks. "
+        + "; ".join(f"{s} -> {d}: {sorted(n)}" for (s, d), n in
+                    sorted({**problems["unexpected"], **problems["widened"]}.items()))
+    )
+
+
+def test_every_named_egress_exception_still_exists_name_by_name():
+    stale = _egress_problems(_edges())["stale"]
+    assert stale == {}, f"no longer imported: remove them from EGRESS_EXCEPTIONS (it only shrinks): {stale}"
+
+
+def test_the_egress_rule_names_modules_that_exist_in_the_layers_it_says():
+    assert EGRESS_MODULES <= set(LAYER) and {LAYER[m] for m in EGRESS_MODULES} <= {"execution", "orchestration"}
+    assert all(LAYER[s] in NO_EGRESS_LAYERS and d in EGRESS_MODULES for s, d in EGRESS_EXCEPTIONS)
+
+
+def test_the_egress_rule_sees_every_breach():
+    """A new pair, a new name on a named pair and a stale name, on edges built by hand. Lower layers
+    and non-sending targets are not its business: the layer order already rules on those."""
+    layer = {"board": "report", "ledger": "outcome", "risky": "risk", "live_route": "orchestration",
+             "live_leg": "execution", "live_order": "execution"}
+    edges = {("board", "live_route"): {"A", "B"}, ("ledger", "live_leg"): {"C"},
+             ("risky", "live_leg"): {"D"}, ("board", "live_order"): {"E"}}
+    exceptions = {("board", "live_route"): ("x", frozenset({"A", "Z"}))}
+    problems = _egress_problems(edges, layer, exceptions)
+    assert problems["unexpected"] == {("ledger", "live_leg"): {"C"}}
+    assert problems["widened"] == {("board", "live_route"): {"B"}}
+    assert problems["stale"] == {("board", "live_route"): ["Z"]}
+
+
 def test_the_scanner_sees_every_import_form_and_every_breach(tmp_path):
     """The checks above pass on a lane with nothing to find, which proves nothing about them. Here a
     synthetic lane holds one of each: the import spellings, a sub-package, a name beyond its
