@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **44**건: `DRAFT` 4 · `PARTIALLY DECIDED` 8 · `DECIDED` 5 · `IMPLEMENTED` 24 · `SUPERSEDED` 1 · `RECORD` 2
+제안서 **44**건: `DRAFT` 3 · `PARTIALLY DECIDED` 8 · `DECIDED` 6 · `IMPLEMENTED` 24 · `SUPERSEDED` 1 · `RECORD` 2
 
-## Thomas 결정 대기 (12)
+## Thomas 결정 대기 (11)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -23,9 +23,8 @@
 | [RESEARCH_EPOCH_V0.1.md](RESEARCH_EPOCH_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | Q1·Q2(판정 규칙 지문과 그 표시)는 #972·#976으로 구현. Q3는 B로 결정(Thomas 2026-09-26, 경계 주기는 미정). Q4(다음 cohort에 판정 지문)는 다음 cohort를 동결할 때 정한다. |
 | [RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md](RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | (c) 순서 결정: 슬리피지 실측이 먼저다. (a)(b)(d)는 실측 뒤에 정하고, 그때까지 현재 값을 유지하며 LIVE_AUTONOMOUS로 올리지 않는다(Thomas 2026-09-26, 시스템 점검 D5). **값은 하나도 바뀌지 않았다**. |
 | [SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md](SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | §5의 D1·D2·D3·D4·D7·D8 채택, D6 보류(현상 유지). D5는 슬리피지 실측 뒤에 결정한다(§5 뒤 "결정" 절). 단계 0은 #980, 단계 1의 선행 조건 없는 항목은 #982–#989로 구현됐다. |
-| [CRYPTO_SYSTEM_IMPROVEMENT_GAP_ANALYSIS_V0.1.md](CRYPTO_SYSTEM_IMPROVEMENT_GAP_ANALYSIS_V0.1.md) | `DRAFT` | 2026-09-30 | 외부 개선안의 16개 절을 main `70328a10`과 대조했다. 이미 구현 5, 부분 구현 5, 결정에 따라 보류 6, 권하지 않음 0이다. 선행 조건 없는 PR 셋(PR-A #1050, PR-B #1051, PR-C #1052)은 같은 날 머지됐다(§7). 권한을 새로 만드는 항목은 없다. §4의 Q1–Q3는 Thomas가 정한다. |
 
-## 결정됨 — 구현 남음 (5)
+## 결정됨 — 구현 남음 (6)
 
 결정은 끝났고 결정된 것이 아직 다 지어지지 않았다. 결정이 만든 구현 대기열이다.
 
@@ -35,6 +34,7 @@
 | [FAMILY_EXHAUSTION_V0.1.md](FAMILY_EXHAUSTION_V0.1.md) | `DECIDED` | 2026-09-26 | Q1 B·Q2·Q3 결정, §6 확인 완료(1h는 5심볼 모두가 의도). 남은 구현: Q1 B의 퍼널 family 소진 절(30일 CONFIRMED·마지막 CONFIRMED). 1h 5심볼 민팅은 이미 돌고 있었다(§6 정정, 2026-09-26). |
 | [RISK_LANE_WATCHDOG_V0.1.md](RISK_LANE_WATCHDOG_V0.1.md) | `DECIDED` | 2026-09-29 | 타임아웃 시 프로세스 재시작, 마감값 600/120/120 s(Thomas). 구현 PR 두 개(§7) 진행 중. |
 | [CRYPTO_REFACTOR_AND_MODULARIZATION_PLAN_V0.1.md](CRYPTO_REFACTOR_AND_MODULARIZATION_PLAN_V0.1.md) | `DECIDED` | 2026-09-30 | D-1~D-5 권고대로(Thomas). 진행: PR-02·03(#1049), PR-04(#1059), PR-05(#1060), PR-07(#1064), PR-08(리플레이 백테스트 분리) 머지. PR-06 실측은 §K-1에 기록. 남은 구현: §S의 PR-09 이후와 PR-S3(승격 문 CAS). |
+| [CRYPTO_SYSTEM_IMPROVEMENT_GAP_ANALYSIS_V0.1.md](CRYPTO_SYSTEM_IMPROVEMENT_GAP_ANALYSIS_V0.1.md) | `DECIDED` | 2026-09-30 | Q1·Q2·Q3 권고대로(Thomas): forward cohort 읽기 열은 D3 밖, 슬리피지 재가격 열은 C2 예외, pause/kill 의미는 유지. PR-D는 머지됐다(#1067). 남은 구현: PR-E(슬리피지 재가격과 LIVE 요청문 한 줄, #1069 열림). PR-A·B·C는 머지됐다(#1050·#1051·#1052). 외부 개선안 16개 절 중 이미 구현 5, 부분 구현 5, 결정에 따라 보류 6이고, 권한을 새로 만드는 항목은 없다. |
 | [SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md](SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md) | `DECIDED` | 2026-09-30 | D1 C·D2·D3 B→A·D4 예(Thomas): LIVE는 FORWARD_CONFIRMED 필수, forward 기준을 `observed_lineages`로 보정, 재사용 홀드아웃 표시는 버그 수정으로 지금 구현, 검증 슬라이스는 에포크 경계. 남은 구현: ① 문 변경, ② B 표시. ② A는 `REMAINING_WORK.md` §L. |
 
 ## 구현됨 (24)
