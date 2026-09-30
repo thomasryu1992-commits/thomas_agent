@@ -224,8 +224,8 @@ def halt_advice() -> str:
     grants it sends an operator in an incident to a refusal first (review of H2). So the grant is
     read when the message is built, and the text says what each verb does to open positions.
 
-    The crypto live route's until refactor plan PR-04, which put it beside the verbs and grants it
-    reads: the incident notice and the readiness board both read it from here."""
+    It was the crypto live route's until refactor plan PR-04, which put it beside the verbs and
+    grants it reads: the incident notice and the readiness board both read it from here."""
     if CMD_HALT_TRADING in granted_emergency_controls():
         return ("To stop new entries and keep managing positions: console_cli halt_trading --reason ... "
                 "(console_cli kill stops position management too).")

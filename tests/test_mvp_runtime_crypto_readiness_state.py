@@ -789,9 +789,10 @@ def test_a_tripped_c4_breaker_refuses(tmp_path, clean_env, monkeypatch):
 
 def test_an_armed_entry_the_gate_refuses_is_not_counted(tmp_path, clean_env, monkeypatch):
     _ready_console_machine(tmp_path, monkeypatch)
-    # The verdict has two readers: the board reads it as `pool.live_arm_unsound`, and
-    # `live_arm_approvals` reads its own module's name (`live_tier`, since crypto PR7e-8). One fake
-    # in both names, so both readers see what one patch on `pool` gave them before the move.
+    # The verdict is read under two names: the board reads it as `pool.live_arm_unsound`, and
+    # `live_arm_approvals` and `promotion.verify_live_arm` read `live_tier`'s (since crypto PR7e-8 and
+    # refactor plan PR-04). One fake in both names, so every reader sees what one patch on `pool` gave
+    # them before the moves.
     def unsound(entry):
         return "spec"
 
