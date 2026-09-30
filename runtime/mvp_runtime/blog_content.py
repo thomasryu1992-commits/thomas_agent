@@ -793,6 +793,11 @@ def interpret_draft(
         failures.append("title_candidates")
     if parts["draft_format"] != blog_draft.DRAFT_FORMAT_STRUCTURED:
         failures.append("structured_output")
+    # The keyword under its floor is a failure the revision is asked to fix, though not a
+    # critical standard. Asked for 3~6 in the request alone (#1032), three drafts in a row used
+    # it once (2026-09-30). Over the ceiling stays advisory.
+    if 0 <= measured["keyword_hits"] < blog_draft_score.STANDARDS["keyword_hits"].low:
+        failures.append("keyword_hits")
     parts.update({"measured": measured, "failures": failures})
     return parts
 
@@ -851,7 +856,7 @@ def quality_record(
     """What the package's reviewer needs to know about the draft's quality, in one place.
 
     `ready_for_review` only when the final draft cleared every critical standard AND the
-    structural contract (three titles, structured output); otherwise `needs_edit`. Neither
+    structural contract (three titles, structured output) and the keyword's floor; otherwise `needs_edit`. Neither
     state publishes anything — both are a draft waiting for a human."""
     record: dict[str, Any] = {
         "standards_version": blog_draft_score.STANDARDS_VERSION,
@@ -1247,6 +1252,48 @@ def _keyword_ask(target: str) -> str:
             "intro 첫 문단에 넣는다. 키워드 일부만 떼어 줄여 쓴 것은 세지 않는다.")
 
 
+def _keyword_revision_ask(target: str, measured: Mapping[str, Any],
+                          structured: Mapping[str, Any] | None) -> str:
+    """The keyword under its floor, with the paragraphs to put it in named.
+
+    Saying "3~6회" in the request did not move it; the named paragraphs are the concrete
+    version, as they were for length. The places are paragraphs that do not have the keyword
+    yet — the first intro paragraph first, then the first paragraph of each section — as many
+    as it takes to reach the middle of the range."""
+    standard = blog_draft_score.STANDARDS["keyword_hits"]
+    hits = int(measured.get("keyword_hits") or 0)
+    ask = (f"'{target}'를 소제목과 문단을 합쳐 {standard.low}~{standard.high}회, 띄어쓰기와 표기 그대로 "
+           f"써라(현재 {hits}회). 키워드 일부만 떼어 줄여 쓴 것은 세지 않는다.")
+    places = _keyword_places(structured, target) if structured else []
+    need = max(1, (standard.low + standard.high) // 2 - hits)
+    if places:
+        ask += (f" 키워드를 넣을 문단(번호는 0부터): {', '.join(places[:need])}. 이 문단마다 "
+                f"'{target}'를 한 번씩 그대로 넣어라 — 한 문장만 고쳐 자연스럽게 넣고, 그 문단의 "
+                "다른 내용과 길이는 그대로 둬라.")
+    return ask
+
+
+def _keyword_places(structured: Mapping[str, Any], target: str) -> list[str]:
+    """Paragraphs without the keyword, spread over the post: the first intro paragraph, then
+    each section's first paragraph, then each section's later ones."""
+    def lacks(paragraph: Any) -> bool:
+        return blog_draft_score.keyword_hits(str(paragraph), target) == 0
+
+    places: list[str] = []
+    intro = structured.get("intro") or []
+    if intro and lacks(intro[0]):
+        places.append("도입 문단 0")
+    sections = structured.get("sections") or []
+    depth = max((len(s.get("paragraphs") or []) for s in sections), default=0)
+    for p_index in range(depth):
+        for s_index, section in enumerate(sections):
+            paragraphs = section.get("paragraphs") or []
+            if p_index < len(paragraphs) and " | " not in paragraphs[p_index] \
+                    and lacks(paragraphs[p_index]):
+                places.append(f"섹션 {s_index}의 문단 {p_index}")
+    return places
+
+
 def content_request(target: str) -> str:
     """The blog request: the structured contract, the length plan, the standards, and the
     no-invention rule."""
@@ -1271,9 +1318,12 @@ def revision_request(target: str, first: Mapping[str, Any], text: str) -> str:
     A length failure also carries the plan against the draft's own measurement: "longer" is what
     the first request already said, and the first package showed that saying it was not enough."""
     measured = first.get("measured") or {}
-    asks = [f"- {_FAILURE_ASKS.get(f, f)} (현재 {measured.get(f, '-')})" for f in first["failures"]]
+    asks = [f"- {_FAILURE_ASKS.get(f, f)} (현재 {measured.get(f, '-')})" for f in first["failures"]
+            if f != "keyword_hits"]
     if _LENGTH_FAILURES & set(first["failures"]):
         asks.append(f"- {_length_asks(measured, first.get('structured'))}")
+    if "keyword_hits" in first["failures"]:
+        asks.append(f"- {_keyword_revision_ask(target, measured, first.get('structured'))}")
     return (
         f"아래 '{target}' 네이버 블로그 초안을 고쳐라. 고칠 항목은 다음뿐이다:\n" + "\n".join(asks)
         + "\n사실·수치·가격·날짜는 바꾸지 말고 새 사실이나 새 출처를 추가하지 마라. 분량을 늘릴 때는 이미 쓴 "
