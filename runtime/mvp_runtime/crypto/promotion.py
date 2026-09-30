@@ -452,8 +452,9 @@ def _live_context_notes(
     """What a LIVE ask says beside its gates, for Thomas to read before arming (Thomas 2026-09-24/25:
     SEQUENTIAL_FORWARD_TEST_V0.1 Q2, RESEARCH_EPOCH_V0.1 A, PORTFOLIO_INDEPENDENCE_V0.1 Q2). Display
     only — never signed, never a refusal: which judgement rules produced the confirmation, that a
-    forward confirmation is a fixed test re-read every day, and how the candidates' forward record
-    moves with the lineages already armed. A store it cannot read costs the note, never the ask."""
+    forward confirmation is a fixed test re-read every day, how the candidates' forward record
+    moves with the lineages already armed, and what each candidate's backtest nets at other slippage
+    rates (:func:`_slippage_note`). A store it cannot read costs the note, never the ask."""
     from . import independence
     from .candidate_identity import outcome_attribution_key
     from .judgement_fingerprint import judgement_fingerprint
@@ -504,7 +505,36 @@ def _live_context_notes(
         notes.append(line + " (PORTFOLIO_INDEPENDENCE_V0.1).")
     except MvpRuntimeError as exc:
         notes.append(f"Forward correlation with the armed lineages is unavailable ({exc.reason_code}).")
+    notes.append(_slippage_note(candidates))
     return notes
+
+
+def _slippage_note(candidates: Sequence[Mapping[str, Any]]) -> str:
+    """How much of each candidate's backtest edge rests on the modelled slippage rate (review C2;
+    gap analysis Q2, Thomas 2026-09-30): its per-trade net R with every market leg re-priced at the
+    fixed rates, and the rate at which it nets zero. Display only, like the notes beside it: no gate
+    reads it. A candidate whose evidence cannot say reads ``not recorded``, never a figure."""
+    from .candidate_ranking import STRESS_SLIPPAGE_BPS, net_at_slippage, slippage_breakeven_bps
+
+    def span(ends: tuple[float, float], fmt: str) -> str:
+        low, high = fmt % ends[0], fmt % ends[1]
+        return low if low == high else f"{low}..{high}"
+
+    parts = []
+    for record in candidates:
+        nets = [net_at_slippage(record, slippage_bps=rate) for rate in STRESS_SLIPPAGE_BPS]
+        breakeven = slippage_breakeven_bps(record)
+        if breakeven is None or any(net is None for net in nets):
+            parts.append(f"{record.get('candidate_id')} not recorded")
+            continue
+        zero = ("loses before any slippage" if breakeven[1] <= 0
+                else f"breaks even at {span(breakeven, '%.1f')} bps")
+        parts.append(f"{record.get('candidate_id')} "
+                     + " / ".join(span(net, "%+.3f") for net in nets) + f" R, {zero}")
+    rates = "/".join(f"{rate:g}" for rate in STRESS_SLIPPAGE_BPS)
+    return (f"Backtest net R per trade with every market leg re-priced at {rates} bps slippage, same "
+            f"trades: {'; '.join(parts)}. A range means the record does not say how much of its "
+            "slippage its stop exits paid (SYSTEM_REVIEW_IMPROVEMENT_PLAN C2).")
 
 
 def _reactivation_notes(found: Sequence[Mapping[str, Any]]) -> list[str]:
