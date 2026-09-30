@@ -129,6 +129,7 @@ LAYER: dict[str, str] = {
     # strategy: what a strategy is, and how one is generated and judged
     "strategy": "strategy", "strategy_artifact": "strategy", "cost": "strategy", "robustness": "strategy",
     "null_control": "strategy", "factory": "strategy", "backtest": "strategy", "template_space": "strategy",
+    "generator": "strategy",
     "proposer": "strategy", "proposer_cli": "strategy",
     "data_review": "strategy", "forward_book": "strategy", "forward_confirmation": "strategy",
     "lifecycle": "strategy", "distribution_gate": "strategy", "limit_entry": "strategy",
@@ -469,12 +470,12 @@ def test_the_scanner_sees_every_import_form_and_every_breach(tmp_path):
 
 # --- the research plane, seen from the acting planes -------------------------------------------------
 
-# What generates and judges candidates: the factory, its template space, its replay backtest and its
-# scoring, the proposer, the null control and the data review. The layer rule places them in strategy,
-# below every acting layer, so it pins that they cannot reach an order. It allows the other direction,
-# and this section pins how far that goes.
-RESEARCH = frozenset({"factory", "template_space", "backtest", "robustness", "proposer", "proposer_cli",
-                      "null_control", "data_review"})
+# What generates and judges candidates: the factory, its template space, its generator, its replay
+# backtest and its scoring, the proposer, the null control and the data review. The layer rule places
+# them in strategy, below every acting layer, so it pins that they cannot reach an order. It allows the
+# other direction, and this section pins how far that goes.
+RESEARCH = frozenset({"factory", "template_space", "generator", "backtest", "robustness", "proposer",
+                      "proposer_cli", "null_control", "data_review"})
 
 # The modules that act on money or refuse it: every risk, execution and reconciliation module, and the
 # live plane's orchestrator.
@@ -489,12 +490,13 @@ ACTING_EXTRA = frozenset({"live_route"})
 # Moving ``live_arm_problem`` off ``promotion`` is a live-path change (PR7 discipline). This pin only
 # shrinks: a module that stops reaching research must leave it in the same PR, and a new one fails.
 #
-# ``backtest`` and ``template_space`` are named since the replay and the template space moved out of
-# ``factory`` (refactor plan PR-08, PR-09). They are the same code both modules already reached inside
-# ``factory``, under their own names, and no new edge: they reach them through ``factory``'s imports.
+# ``backtest``, ``template_space`` and ``generator`` are named since the replay, the template space and
+# the generator moved out of ``factory`` (refactor plan PR-08 to PR-10). They are the same code both
+# modules already reached inside ``factory``, under their own names, and no new edge: they reach them
+# through ``factory``'s imports.
 ACTING_MODULES_THAT_REACH_RESEARCH: dict[str, frozenset[str]] = {
-    "breaker_watch": frozenset({"factory", "template_space", "backtest", "robustness"}),
-    "live_route": frozenset({"factory", "template_space", "backtest", "robustness"}),
+    "breaker_watch": frozenset({"factory", "template_space", "generator", "backtest", "robustness"}),
+    "live_route": frozenset({"factory", "template_space", "generator", "backtest", "robustness"}),
 }
 
 
