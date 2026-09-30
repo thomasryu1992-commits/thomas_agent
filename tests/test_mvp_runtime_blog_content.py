@@ -502,3 +502,20 @@ def test_the_weekly_run_reaches_the_pipeline_as_the_scheduler_and_hands_it_strin
     assert sheet["target_evidence"]["keyword"] == "미리캔버스 포스터"
     assert set(sheet["trace_ids"]) == {lineage["selection_research_trace_id"],
                                        lineage["content_trace_id"], lineage["revision_trace_id"]}
+
+
+def test_the_content_run_searches_the_target_not_the_drafting_brief(monkeypatch):
+    """The drafting brief sent whole as the web query found posts about "문단" and GPT prompts
+    for '스티커제작업체' (bcp_b02b7c5579faabd23420, 2026-09-30)."""
+    calls: list[tuple[str, dict]] = []
+
+    def fake_run(kind, request, **kwargs):
+        calls.append((kind, kwargs))
+        raise blog_content.ToolError(blog_content.IDEATION_CONTENT_BLOCKED, "stop after the call")
+
+    monkeypatch.setattr(blog_content, "_run", fake_run)
+    with pytest.raises(blog_content.ToolError):
+        blog_content.run_content_ideation(
+            {"seeds": "target=미리캔버스 포스터"}, now=NOW, published_source=_StaticSource())
+    (kind, kwargs), = calls
+    assert kind == "content" and kwargs["search_query"] == "미리캔버스 포스터"
