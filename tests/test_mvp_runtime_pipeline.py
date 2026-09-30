@@ -678,3 +678,37 @@ def test_a_failover_is_recorded_on_the_invocation_and_named_in_the_reply():
     plain = run_task(REQUEST, provider=MockProvider(), now=NOW)
     assert "failovers" not in plain["records"]["invocation"]
     assert "_Failover" not in plain["final_response"]
+
+
+# --- the search query can be given apart from the request (2026-09-30) ------------------------
+#
+# The blog lane's drafting brief — 1,800 characters about paragraphs and JSON — was the web
+# search's query, and '스티커제작업체' came back with posts about "문단" and GPT prompts.
+
+from runtime.mvp_runtime.tools import MockSearchTool  # noqa: E402
+
+
+class _SpySearchTool(MockSearchTool):
+    def __init__(self):
+        super().__init__()
+        self.queries: list[str] = []
+
+    def search(self, query, *, max_results, timeout_seconds):
+        self.queries.append(query)
+        return super().search(query, max_results=max_results, timeout_seconds=timeout_seconds)
+
+
+def test_search_query_replaces_the_request_as_the_web_query():
+    spy = _SpySearchTool()
+    r = run_task(REQUEST, provider=MockProvider(), search_tool=spy, now=NOW,
+                 search_query="  스티커제작업체 ")
+    assert r["status"] == "COMPLETED"
+    assert spy.queries == ["스티커제작업체"]
+    assert r["records"]["tool_use"]["query"] == "스티커제작업체"
+
+
+def test_without_search_query_the_request_is_the_query_as_before():
+    plain, blank = _SpySearchTool(), _SpySearchTool()
+    run_task(REQUEST, provider=MockProvider(), search_tool=plain, now=NOW)
+    run_task(REQUEST, provider=MockProvider(), search_tool=blank, now=NOW, search_query="  ")
+    assert plain.queries == blank.queries and plain.queries[0].strip()

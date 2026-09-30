@@ -1242,6 +1242,18 @@ _DRAFT_SHAPE = (
 )
 
 
+# How the keyword may be written. Asked for "띄어쓰기와 표기 그대로" in named paragraphs (#1042),
+# three drafts in a row glued it to the next noun as if it were an adjective: "CHATGPT사용법
+# 계정 생성 절차", "명함만들기 위한 전체보기 메뉴", "원하는 방수스티커제작 크기" (2026-09-30).
+# The count ignores spacing and letter case, so the natural form costs nothing.
+KEYWORD_FORM_ASK = (
+    "키워드는 띄어쓰기와 대소문자를 읽기 자연스럽게 바꿔 써도 같은 키워드로 센다(예: '명함만들기' → "
+    "'명함 만들기', 'CHATGPT사용법' → 'ChatGPT 사용법'). 키워드 뒤에는 조사(을/를, 은/는, 에서, "
+    "으로 등)를 붙여 문장의 주어·목적어로 넣고, 다른 명사 앞에 꾸밈말처럼 붙이지 마라(틀린 예: "
+    "'명함만들기 위한 메뉴', 'ChatGPT 사용법 계정 생성 절차')."
+)
+
+
 def _keyword_ask(target: str) -> str:
     """The body's keyword use, in the scorer's own numbers.
 
@@ -1249,7 +1261,7 @@ def _keyword_ask(target: str) -> str:
     keyword was shortened in the body ('소상공인 스마트상점' once, '스마트상점' six times)."""
     standard = blog_draft_score.STANDARDS["keyword_hits"]
     return (f"소제목과 문단을 합쳐 '{target}'를 {standard.low}~{standard.high}회 쓰고 그중 1회는 "
-            "intro 첫 문단에 넣는다. 키워드 일부만 떼어 줄여 쓴 것은 세지 않는다.")
+            f"intro 첫 문단에 넣는다. 키워드 일부만 떼어 줄여 쓴 것은 세지 않는다. {KEYWORD_FORM_ASK}")
 
 
 def _keyword_revision_ask(target: str, measured: Mapping[str, Any],
@@ -1262,14 +1274,14 @@ def _keyword_revision_ask(target: str, measured: Mapping[str, Any],
     as it takes to reach the middle of the range."""
     standard = blog_draft_score.STANDARDS["keyword_hits"]
     hits = int(measured.get("keyword_hits") or 0)
-    ask = (f"'{target}'를 소제목과 문단을 합쳐 {standard.low}~{standard.high}회, 띄어쓰기와 표기 그대로 "
-           f"써라(현재 {hits}회). 키워드 일부만 떼어 줄여 쓴 것은 세지 않는다.")
+    ask = (f"'{target}'를 소제목과 문단을 합쳐 {standard.low}~{standard.high}회 써라(현재 {hits}회). "
+           f"키워드 일부만 떼어 줄여 쓴 것은 세지 않는다. {KEYWORD_FORM_ASK}")
     places = _keyword_places(structured, target) if structured else []
     need = max(1, (standard.low + standard.high) // 2 - hits)
     if places:
         ask += (f" 키워드를 넣을 문단(번호는 0부터): {', '.join(places[:need])}. 이 문단마다 "
-                f"'{target}'를 한 번씩 그대로 넣어라 — 한 문장만 고쳐 자연스럽게 넣고, 그 문단의 "
-                "다른 내용과 길이는 그대로 둬라.")
+                "키워드를 한 번씩 넣어라 — 한 문장을 고치거나 키워드가 주어·목적어로 들어간 문장 "
+                "하나를 더해 자연스럽게 넣고, 그 문단의 다른 내용은 그대로 둬라.")
     return ask
 
 
@@ -1298,10 +1310,17 @@ def _keyword_places(structured: Mapping[str, Any], target: str) -> list[str]:
 # post (bcp_c82a3c17ded878ca24ea, 2026-09-30) said "load, cut, add captions, save" with the
 # app named once and none of the menu names its own [S1]/[S3]/[S4] carried. Use what the
 # evidence says — by name — is the other half of "invent nothing".
+#
+# Named, the specifics can also be over-followed: '명함만들기' (bcp_d3be61f8a0fa8b85c920,
+# 2026-09-30) walked one blog's menu path (전체보기 → 명함제작 → 이지템플릿) without saying
+# whose site it was, and lifted its broken phrase "제작가이드도 참조도 하구요" into the post.
 EVIDENCE_SPECIFICS_ASK = (
     "근거 블록([S#])에 나온 구체적인 내용 — 메뉴·버튼·기능 이름, 절차 단계, 설정값 — 을 섹션마다 "
     "최소 1개 본문에 그 이름 그대로 쓰고, 그 근거를 sources에 넣어라. 어떤 도구·주제에도 똑같이 "
-    "들어맞는 일반론 문장만으로 문단을 채우지 마라. 근거에 없는 이름이나 설정값을 지어내지는 마라."
+    "들어맞는 일반론 문장만으로 문단을 채우지 마라. 근거에 없는 이름이나 설정값을 지어내지는 마라. "
+    "근거 글의 문장이나 어구는 옮기지 말고 네 말로 풀어 써라. 특정 사이트·앱에서만 통하는 메뉴 "
+    "경로를 쓸 때는 어느 사이트·앱의 메뉴인지 밝히고, 한 근거 글의 순서를 그대로 따라가지 말고 "
+    "여러 근거를 섞어라."
 )
 
 
@@ -1325,7 +1344,7 @@ def content_request(target: str) -> str:
         f"{_length_plan()}\n"
         f"규칙: title_candidates는 소제목과 별개인 글 제목 3~5개이고 각각 '{target}'를 앞쪽에 "
         f"자연스럽게 포함한다. {_keyword_ask(target)} image_shots 4~8개(after_section은 0부터 센 섹션 번호, 생성 "
-        "이미지가 아니라 실제 화면 캡처), 표 1개는 table 필드에만(첫 행이 머리글, 2행 이상, "
+        "이미지가 아니라 실제 화면 캡처), 표 1개는 table 필드에만(첫 행이 머리글이고 데이터 행은 3개 이상, 머리글 칸에는 '항목1'·'값' 같은 자리표시 말고 비교하는 대상의 실제 이름을 써라, "
         "paragraphs 안에 ' | ' 행을 쓰지 마라 — 표는 문단 수에 세지 않는다), tags 3~8개, sources 2~5개. 가격·무료 범위·사용 한도·기능 제공 여부·정책·버전·"
         "날짜를 쓴 문장은 모두 fact_checks에 넣어라. 근거 블록([S#]·[K#])에 없는 수치·가격·"
         "출처를 지어내지 마라 — 근거가 없으면 source_ref를 null로 둬라. 문단 안에 #, **, > 같은 "
@@ -1584,6 +1603,9 @@ def run_content_ideation(
         "content", content_request(target),
         blocked_code=IDEATION_CONTENT_BLOCKED,
         keyword_seeds=target,   # `run_task` has no `naver_keywords`; the brief keyword is `keyword_seeds`
+        # The web search looks for the target, not for the drafting brief: sent whole, the brief
+        # (mostly about paragraphs and JSON) found posts about "문단" and GPT prompts.
+        search_query=target,
         # The draft and its JSON frame need more than the generic 4,000-token output half
         # (review B9); the profile is bound to `content` runs and refused anywhere else.
         budget_profile=budgets.BLOG_CONTENT_BUDGET_PROFILE,
