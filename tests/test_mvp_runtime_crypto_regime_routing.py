@@ -262,7 +262,7 @@ def test_promotion_copies_the_regime_evidence_onto_the_entry(monkeypatch, tmp_pa
 
     installed: dict = {}
     monkeypatch.setattr(prom.pool_store, "install_active_pool",
-                        lambda pool, *, root=None: installed.update(pool) or 1)
+                        lambda pool, *, root=None, expected_digest=None: installed.update(pool) or 1)
     monkeypatch.setattr(prom, "_audit_promotion", lambda *a, **k: None, raising=False)
 
     prom.run_promotion(
@@ -299,7 +299,7 @@ def test_a_candidate_without_the_block_promotes_with_no_evidence(monkeypatch, tm
     monkeypatch.setattr(prom.pool_store, "assert_promotable_evidence_depth", lambda records: None)
     installed: dict = {}
     monkeypatch.setattr(prom.pool_store, "install_active_pool",
-                        lambda pool, *, root=None: installed.update(pool) or 1)
+                        lambda pool, *, root=None, expected_digest=None: installed.update(pool) or 1)
     monkeypatch.setattr(prom, "_audit_promotion", lambda *a, **k: None, raising=False)
 
     prom.run_promotion(

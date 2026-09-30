@@ -225,20 +225,23 @@ def run_promotion(
                 "promotion the approval binds"
             )
 
-    entries = []
-    if keep_active:
-        try:
-            entries.extend(pool_store.load_active_pool(root).get("active_strategies") or [])
-        except MvpRuntimeError as exc:
-            # A pool the read door refuses (an artifact that no longer holds, a spec that does not
-            # parse) is not one to add to: refused as the other doors refuse, not as a traceback.
-            raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
+    # The pool this door builds on, read once, with the digest of the file it came from (PR-S3).
+    # The read takes no lock and the install below replaces the whole file, so a write that lands
+    # while this door works (the cycle disarming a LIVE entry, a lifecycle move) would be written
+    # over. The install is handed the digest and refuses if the file is no longer this one.
+    try:
+        on_disk_pool, pool_digest = pool_state.load_active_pool_with_digest(root)
+    except MvpRuntimeError as exc:
+        # A pool the read door refuses (an artifact that no longer holds, a spec that does not
+        # parse) is not one to add to: refused as the other doors refuse, not as a traceback.
+        raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
+    on_disk = on_disk_pool.get("active_strategies") or []
+    entries = list(on_disk) if keep_active else []
     # One rule, one entry (PR3c-2, Thomas decision 40). Refused here, before display ids are
     # assigned, so a routed rule reads as what it is and not as the display-id collision that
     # happened to stop one on 2026-09-10; the roster below runs the same check at both doors.
     try:
         pool_store.assert_rule_not_routed(candidates, root=root)
-        on_disk = entries if keep_active else (pool_store.load_active_pool(root).get("active_strategies") or [])
     except MvpRuntimeError as exc:
         raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
     # The retired entries each candidate's rule returns from. They leave the pool — their display
@@ -399,7 +402,8 @@ def run_promotion(
         "updated_at": now,
     }
     try:
-        installed = pool_store.install_active_pool(new_pool, root=root)  # validates fail-closed
+        # Validates fail-closed, and refuses if the pool is not the one read above (PR-S3).
+        installed = pool_store.install_active_pool(new_pool, root=root, expected_digest=pool_digest)
     except MvpRuntimeError as exc:
         # Refused as the other doors refuse, not as a traceback (review of PR3c-2).
         raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")

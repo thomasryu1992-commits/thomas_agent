@@ -38,11 +38,12 @@ def _definitions() -> list[str]:
 
 def test_pool_re_exports_every_public_name_as_the_same_object():
     public = [name for name in _definitions() if not name.startswith("_")]
-    assert len(public) == 12
+    assert len(public) == 15
     assert [name for name in public if getattr(pool, name, None) is not getattr(pool_state, name)] == []
 
 
 def test_the_private_names_are_not_on_pool():
     private = [name for name in _definitions() if name.startswith("_")]
-    assert sorted(private) == ["_PARENT_COUNT_RULES", "_read_active_pool"]
+    assert sorted(private) == ["_PARENT_COUNT_RULES", "_pool_digest", "_read_active_pool",
+                               "_read_active_pool_and_digest"]
     assert [name for name in private if hasattr(pool, name)] == []

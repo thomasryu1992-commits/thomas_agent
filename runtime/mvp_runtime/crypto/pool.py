@@ -118,9 +118,10 @@ from .pool_admission import (  # noqa: F401
 # imported: a patch on `pool` for either would miss the code in `pool_state` that reads it, and
 # without the name here it fails loudly.
 from .pool_state import (  # noqa: F401
-    CANDIDATES_FILENAME, DERIVATION_TYPES, POOL_FILENAME, append_candidates, assert_pool_identity_unique,
-    candidates_path, install_active_pool, load_active_pool, pool_path, read_candidates,
-    read_pool_to_disarm, validate_candidate_lineage,
+    CANDIDATES_FILENAME, DERIVATION_TYPES, POOL_ABSENT, POOL_FILENAME, STRATEGY_POOL_CHANGED,
+    append_candidates, assert_pool_identity_unique, candidates_path, install_active_pool,
+    load_active_pool, load_active_pool_with_digest, pool_path, read_candidates, read_pool_to_disarm,
+    validate_candidate_lineage,
 )
 # The status transitions (the lifecycle's decisions written onto the stored pool, and the stale-decision
 # rule they apply) moved to `pool_transitions` (decision) in crypto PR7e-9. The three public names are

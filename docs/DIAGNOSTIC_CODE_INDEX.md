@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **650** distinct codes across **1268** raise sites
+- **651** distinct codes across **1270** raise sites
 - **23** exception classes carry them
 - **75** codes are raised from more than one module (see below)
 - **137** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -1215,13 +1215,15 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `STRATEGY_ARTIFACT_UNHASHABLE` | `ToolError` | `runtime/mvp_runtime/crypto/strategy_artifact.py` | `from_pool_entry` | `carried.get('version') != STRATEGY_ARTIFACT_VERSION` |
 | `STRATEGY_ARTIFACT_UNHASHABLE` | `ToolError` | `runtime/mvp_runtime/crypto/strategy_artifact.py` | `from_pool_entry` | `not isinstance(carried, Mapping)` |
 | `STRATEGY_POOL_ARTIFACT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/strategy_artifact.py` | `assert_pool_artifacts` | `problem is not None` |
+| `STRATEGY_POOL_CHANGED` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | `install_active_pool` | `on_disk != expected_digest` |
 | `STRATEGY_POOL_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | `assert_pool_identity_unique` | `candidate_id in seen_candidate` |
 | `STRATEGY_POOL_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | `assert_pool_identity_unique` | `inherited_by.setdefault(key, index) != index` |
 | `STRATEGY_POOL_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | `assert_pool_identity_unique` | `others` |
 | `STRATEGY_POOL_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | `assert_pool_identity_unique` | `strategy_id in seen_strategy` |
-| `STRATEGY_POOL_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | `_read_active_pool` | `—` |
+| `STRATEGY_POOL_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | `_read_active_pool_and_digest` | `—` |
 | `STRATEGY_POOL_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | `assert_pool_identity_unique` | `not isinstance(keys, list) or not all((is_lineage_key(key) for key in keys))` |
-| `STRATEGY_POOL_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | `_read_active_pool` | `—` |
+| `STRATEGY_POOL_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | `_read_active_pool_and_digest` | `—` |
+| `STRATEGY_POOL_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | `install_active_pool` | `expected_digest is not None` |
 | `SUBJECT_FINGERPRINT_FAILED` | `AuditError` | `runtime/mvp_runtime/audit.py` | `_fingerprint` | `—` |
 | `TARGET_EXISTS` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | `run_write` | `target.exists()` |
 | `TARGET_EXISTS` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | `write` | `—` |

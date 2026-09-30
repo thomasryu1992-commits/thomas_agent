@@ -259,7 +259,7 @@ def _promote(monkeypatch, tmp_path, candidate):
     monkeypatch.setattr(prom.pool_store, "assert_promotable_evidence_depth", lambda records: None)
     installed: dict = {}
     monkeypatch.setattr(prom.pool_store, "install_active_pool",
-                        lambda pool, *, root=None: installed.update(pool) or 1)
+                        lambda pool, *, root=None, expected_digest=None: installed.update(pool) or 1)
     monkeypatch.setattr(prom, "_audit_promotion", lambda *a, **k: None, raising=False)
     prom.run_promotion(
         selectors=[candidate["candidate_id"]], promoted_by="thomas", reason="test",
