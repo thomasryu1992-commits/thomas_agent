@@ -439,6 +439,43 @@ def strip_evidence_refs(text: str) -> str:
     return _GROUP_REF_RE.sub("", str(text or ""))
 
 
+# A shop's page title ends in the shop's name: "현수막 제작 | 플랜카드·플래카드 당일제작 | 네모디".
+# The request forbids business names, yet '현수막당일제작' (bcp_d624e52360df22c9b825) wrote "네모디
+# 같은 곳" beside two shops it had made anonymous. Whether a name is a shop or a tool is not
+# something this can tell ('워드바이스 AI' ends a title the same way), so the name is pointed at
+# for the editor, never failed. Over 27 packages the names found in a body were 비즈하우스, 마플,
+# 네모디 (shops) and 워드바이스 AI, 페이퍼팔 (tools).
+_TITLE_SPLIT_RE = re.compile(r"\s[|｜\-–—:]\s|\s?[|｜]\s?")
+_SITE_NAME_CHARS = (2, 10)
+
+
+def source_site_name(title: Any) -> str | None:
+    """The site name a page title ends with, when the last segment is a short Korean name."""
+    parts = [p.strip() for p in _TITLE_SPLIT_RE.split(str(title or "")) if p.strip()]
+    if len(parts) < 2:
+        return None
+    last = re.sub(r"\s*\(.*?\)\s*", "", parts[-1]).strip()
+    low, high = _SITE_NAME_CHARS
+    if not re.search(r"[가-힣]", last) or not low <= len(last.replace(" ", "")) <= high:
+        return None
+    return last
+
+
+def site_names_in_body(sources: Sequence[Mapping[str, Any]], paragraphs: Sequence[str],
+                       target_keyword: str = "") -> list[str]:
+    """Each cited source's site name that the body uses (spacing ignored), unless the name is
+    part of the target keyword itself ('카카오' in '카카오톡 채널추가')."""
+    body = re.sub(r"\s", "", "".join(str(p) for p in paragraphs))
+    target = re.sub(r"\s", "", str(target_keyword or ""))
+    found: list[str] = []
+    for source in sources:
+        name = source_site_name(source.get("title"))
+        key = re.sub(r"\s", "", name or "")
+        if key and key in body and key not in target and name not in found:
+            found.append(name)
+    return found
+
+
 def resolve_sources(sources: Sequence[Mapping[str, Any]], index: Mapping[str, Any]) -> list[dict[str, Any]]:
     """The draft's cited sources that resolve to this run's evidence — the rest are dropped.
     A reference the run never had is an invented source, however plausible its title."""

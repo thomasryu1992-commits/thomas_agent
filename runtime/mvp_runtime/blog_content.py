@@ -922,6 +922,11 @@ def render_post_md(package: Mapping[str, Any]) -> str:
                          if b.get("action") == "heading"}
         prose = [p for i, p in enumerate(str(package.get("body_paste") or "").split("\n\n"))
                  if i not in body_headings]
+        sites = blog_draft.site_names_in_body(package.get("sources") or [], prose,
+                                              str(package.get("target_keyword") or ""))
+        if sites:
+            lines += [f"- 본문에 출처 사이트 이름이 나옴: {', '.join(f'「{n}」' for n in sites)} — 제작·판매 "
+                      "업체라면 '업체 A'처럼 익명으로 바꾸고, 앱·도구라면 그대로 둘 것(자동 판정 아님)"]
         echoes = blog_draft.echo_sentences(prose)
         if echoes:
             named = ", ".join(f"「{e[:50]}」" for e in echoes[:5])

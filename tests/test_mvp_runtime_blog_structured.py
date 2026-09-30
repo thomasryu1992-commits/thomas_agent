@@ -1427,3 +1427,32 @@ def test_the_name_rule_tells_a_business_from_a_tool_by_what_the_reader_does_ther
     assert "캔바·어도비 파이어플라이·ChatGPT·당근·카카오톡" in ask
     for label in ("업체:", "도구:", "통신사:", "공공:", "상품명:"):
         assert label in ask
+
+
+
+# --- a cited site's name in the body (2026-09-30) ---------------------------------------------------
+#
+# '현수막당일제작' wrote "네모디 같은 곳" beside two shops it had made anonymous.
+
+@pytest.mark.parametrize("title, name", [
+    ("현수막 제작 | 플랜카드·플래카드 당일제작·셀프디자인 | 네모디", "네모디"),
+    ("자유형 스티커 제작 | 마플", "마플"),
+    ("입간판 banner - 디피마켓", "디피마켓"),
+    ("레드프린팅 앤 프레스 (Red Printing & Press)", None),      # one segment: no site suffix
+    ("무료 AI 스티커 생성기 | Adobe Firefly", None),              # not a Korean name
+    ("영업신고증 발급 절차부터 준비물까지 총정리", None),
+])
+def test_the_site_name_a_title_ends_with(title, name):
+    assert blog_draft.source_site_name(title) == name
+
+
+def test_post_md_points_at_a_cited_sites_name_in_the_body_without_failing():
+    sources = [{"source_ref": "[S1]", "title": "현수막 제작 | 당일제작 | 네모디", "url": "https://nemodi.com"},
+               {"source_ref": "[S2]", "title": "스티커 | 마플", "url": "https://marpple.com"}]
+    prose = ["네모디 같은 곳에서는 다양한 시안을 고를 수 있습니다."]
+    assert blog_draft.site_names_in_body(sources, prose, "현수막당일제작") == ["네모디"]
+    assert blog_draft.site_names_in_body(sources, prose, "네모디 사용법") == []    # the keyword's own
+    package = {"quality": {"quality_state": "ready_for_review", "failures": []}, "sources": sources,
+               "target_keyword": "현수막당일제작", "body_paste": prose[0], "body_blocks": []}
+    post = blog_content.render_post_md(package)
+    assert "본문에 출처 사이트 이름이 나옴: 「네모디」" in post and "자동 판정 아님" in post
