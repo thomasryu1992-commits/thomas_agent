@@ -35,7 +35,7 @@ from ..permission import (
     build_strategy_promotion_permission_decision,
 )
 from . import execution_stage as execution_stage_mod
-from . import forward_book, forward_confirmation
+from . import forward_book, forward_confirmation, live_tier
 from . import paper as paper_store
 from .execution_stage import StageStatus, resolve_execution_stage
 from . import pool as pool_store
@@ -856,7 +856,7 @@ def live_arm_problem(
 # `promotion.live_arm_problem` gives for the record itself.
 LIVE_ARM_ENTRY_CHANGED = "LIVE_ARM_ENTRY_CHANGED"
 LIVE_ARM_APPROVAL_UNREADABLE = "LIVE_ARM_APPROVAL_UNREADABLE"
-# The entry arms nothing whatever it names (`pool.live_arm_unsound`, review of #887).
+# The entry arms nothing whatever it names (`live_tier.live_arm_unsound`, review of #887).
 LIVE_ARM_SPEC_NOT_ITS_RULE = "LIVE_ARM_SPEC_NOT_ITS_RULE"
 # The entry carries no artifact stamp: it predates the artifact, and only a stamped entry may spend
 # money (PR3a, decision 33).
@@ -876,7 +876,7 @@ def verify_live_arm(
     ``approval_id`` is the id both pool reads name, or None. ``armed`` is the fresh read's
     `pool.live_arm_entries`:
 
-    - the entry must be sound (`pool.live_arm_unsound`: the spec it trades is its labelled rule, it
+    - the entry must be sound (`live_tier.live_arm_unsound`: the spec it trades is its labelled rule, it
       was installed as an artifact (PR3a), and it was not put back in the tier by hand). Named even
       when no id was agreed, because an unsound entry is why `pool.live_arm_approvals` names none;
     - it must arm the lineage the plan was made from: its candidate, its rule and, since PR3a-2,
@@ -892,7 +892,7 @@ def verify_live_arm(
     arm: dict[str, Any] = {"approval_id": approval_id, "approval_fingerprint": None,
                            "approval_verified": False, "approval_problem": None}
     entry = armed.get(strategy_id) if isinstance(armed, Mapping) else None
-    unsound = pool_store.live_arm_unsound(entry) if isinstance(entry, Mapping) else None
+    unsound = live_tier.live_arm_unsound(entry) if isinstance(entry, Mapping) else None
     if unsound is not None:
         arm["approval_problem"] = _UNSOUND_ARM[unsound]
         return arm
@@ -902,7 +902,7 @@ def verify_live_arm(
     if not (isinstance(entry, Mapping) and entry.get("approval_id") == approval_id
             and entry.get("candidate_id") == lineage.get("candidate_id")
             and entry.get("strategy_rule_hash") == lineage.get("strategy_rule_hash")
-            and entry.get(pool_store.ARTIFACT_SHA256_FIELD) == lineage.get(pool_store.ARTIFACT_SHA256_FIELD)):
+            and entry.get(artifact_mod.ARTIFACT_SHA256_FIELD) == lineage.get(artifact_mod.ARTIFACT_SHA256_FIELD)):
         arm["approval_problem"] = LIVE_ARM_ENTRY_CHANGED
         return arm
     try:
@@ -913,7 +913,7 @@ def verify_live_arm(
     problem = live_arm_problem(
         approval, approval_id=approval_id, candidate_id=entry.get("candidate_id"),
         strategy_rule_hash=entry.get("strategy_rule_hash"),
-        strategy_artifact_sha256=entry.get(pool_store.ARTIFACT_SHA256_FIELD),
+        strategy_artifact_sha256=entry.get(artifact_mod.ARTIFACT_SHA256_FIELD),
         promoted_at=entry.get("promoted_at"),
     )
     if problem is not None:

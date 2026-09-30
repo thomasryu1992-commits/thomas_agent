@@ -16,6 +16,10 @@
   - the testnet caps → `testnet_evidence`, their tunables owner with them;
   - `RECONCILED` now comes from `order_request` directly.
   `EGRESS_EXCEPTIONS` is empty and pinned empty.
+- **The pool-facade ratchet** (`tests/test_mvp_runtime_crypto_pool_facade.py`, #944): the moved
+  `verify_live_arm` reads `live_arm_unsound` from `live_tier` and the artifact field from
+  `strategy_artifact`, their owners, not through `pool`. `live_route`'s two reads through `pool`
+  are gone from the baseline, which only shrinks.
 - **Docstrings corrected** (they had gone out of date, per the plan's §B-3 and §J-2):
   - `live_execution` was "the only code that sends", but brackets and the testnet adapter send too;
   - `live_route` said the cycle imports nothing else from the live stack, but it also imports
