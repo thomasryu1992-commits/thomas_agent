@@ -1059,7 +1059,7 @@ def test_the_evidence_ask_forbids_lifting_phrases_and_unnamed_site_menus():
     "제작가이드도 참조도 하구요" (bcp_d3be61f8a0fa8b85c920)."""
     request = blog_content.content_request(TARGET)
     assert "문장이나 어구는 옮기지 말고 네 말로 풀어 써라" in request
-    assert "어느 사이트·앱의 메뉴인지 밝히고" in request and "여러 근거를 섞어라" in request
+    assert "어느 앱의 메뉴인지 밝히고" in request and "여러 근거를 섞어라" in request
 
 
 def test_the_table_ask_wants_real_headers_and_three_data_rows():
@@ -1116,3 +1116,10 @@ def test_the_evidence_ask_keeps_the_post_domestic():
     """'명함제작업체' priced cards in dollars from a US printer's page (bcp_366916fc7176de5a9db8)."""
     request = blog_content.content_request(TARGET)
     assert "외화 가격은 쓰지 말고" in request and "해외 기준이라 한국과 다를 수 있다고 밝혀라" in request
+
+
+def test_the_request_forbids_business_names_but_not_tool_names():
+    """Three posts named and priced real printers (2026-09-30); Thomas: no business names."""
+    request = blog_content.content_request(TARGET)
+    assert blog_content.VENDOR_NAME_ASK in request
+    assert "'온라인 인쇄 업체 A'" in request and "앱·소프트웨어·AI 도구의 이름" in request
