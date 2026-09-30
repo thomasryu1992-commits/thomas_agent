@@ -1352,6 +1352,9 @@ def _keyword_places(structured: Mapping[str, Any], target: str) -> list[str]:
 # A tool is not a business either, and has to be SAID to be one: with "도구 이름은 써도 된다" (may),
 # '스티커만들기' (bcp_b8dcea9bca60d9a7a883, candidate-1074) cited Canva's and Adobe Firefly's pages
 # and called them "온라인 서비스" and "특정 앱" throughout. The tool's name is now a must.
+# A shop's product title is the shop's search-engine copy, not a name: '배너입간판'
+# (bcp_6625fde02d5be7682185) carried "매장광고판 카페입간판 용도로", "패트지 현수막제작 인쇄" and
+# "플랜카드제작" over from the listings into its sentences.
 # A public site is not a business at all (Thomas 2026-09-30): '2026소상공인지원금신청'
 # (bcp_756592c6972ca6129a32) sent the reader to "지정된 지원금 전용 포털" for a voucher applied for
 # on 소상공인24 — a government portal the reader has to find by name.
@@ -1362,7 +1365,9 @@ VENDOR_NAME_ASK = (
     "도구 포함)은 반드시 그대로 밝혀라. '온라인 서비스'·'특정 앱'·'편집 도구'처럼 흐리게 부르지 마라. 단, 통신사 제휴 혜택(특정 통신사 고객만 받는 "
     "요금제·구독 혜택 등)은 그 통신사 이름을 밝혀라 — 독자가 자기가 대상인지 알아야 한다. 정부·공공기관의 "
     "사이트와 서비스(정부24·홈택스·위택스·소상공인24·고용노동부 등)는 업체가 아니다 — 독자가 직접 찾아가야 "
-    "하는 곳이니 이름을 그대로 밝혀라."
+    "하는 곳이니 이름을 그대로 밝혀라. 쇼핑몰 상품명(검색용 단어를 이어 붙인 긴 이름, 예: '철제 배너거치대 "
+    "A형 선반 입간판 매장광고판 카페입간판')은 그대로 옮기지 말고 'A형 철제 입간판'처럼 제품의 종류로 짧게 "
+    "불러라."
 )
 # The reader lives in Korea. Asked as "해외 자료를 꼭 써야 하면 해외 기준이라 한국과 다를 수 있다고
 # 밝혀라", 'ai 번역기' (bcp_4ad51169ab0a26df545d, 2026-09-30) used no foreign figure at all and still

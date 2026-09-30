@@ -1321,3 +1321,10 @@ def test_the_grow_ask_forbids_padding_by_copying():
 def test_a_public_site_is_named_not_anonymized():
     request = blog_content.content_request(TARGET)
     assert "정부·공공기관의 사이트와 서비스(정부24·홈택스·위택스·소상공인24·고용노동부 등)는 업체가 아니다" in request
+
+
+def test_a_shops_product_title_is_not_copied_into_the_post():
+    """'배너입간판' carried the listings' "매장광고판 카페입간판" into its sentences."""
+    request = blog_content.content_request(TARGET)
+    assert "쇼핑몰 상품명(검색용 단어를 이어 붙인 긴 이름" in request
+    assert "'A형 철제 입간판'처럼 제품의 종류로 짧게 불러라" in request
