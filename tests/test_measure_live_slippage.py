@@ -171,3 +171,67 @@ def test_a_probe_stop_is_measured_from_its_own_outcome_and_reported_apart():
     assert "  strategy stops: n=1  mean 50.00 bps" in text
     assert "  probe stops: n=1  mean 10.00 bps" in text
     assert "modelled 1.4" in text
+
+
+# --- the distribution: tail percentiles only once there are enough fills ---------------------------
+
+
+def test_below_the_floor_no_percentile_is_reported():
+    """At n=12, the 2026-09-28 sample, a P95 would be the worst fill under another name."""
+    from measure_live_slippage import MIN_PERCENTILE_N, distribution
+
+    d = distribution([float(i) for i in range(MIN_PERCENTILE_N - 1)])
+    assert d["n"] == MIN_PERCENTILE_N - 1
+    assert d["p75"] is None and d["p90"] is None and d["p95"] is None
+    assert d["worst"] == MIN_PERCENTILE_N - 2
+
+
+def test_at_the_floor_the_percentiles_are_the_inclusive_ones():
+    from measure_live_slippage import distribution
+
+    d = distribution([float(i) for i in range(1, 21)])       # 1..20 bps
+    assert d["p75"] == pytest.approx(15.25)
+    assert d["p90"] == pytest.approx(18.1)
+    assert d["p95"] == pytest.approx(19.05)
+    assert d["p75"] <= d["p90"] <= d["p95"] <= d["worst"] == 20.0
+
+
+def test_no_fills_is_a_count_of_zero_not_a_zero_figure():
+    from measure_live_slippage import distribution
+
+    assert distribution([]) == {"n": 0}
+
+
+def _stops_result(readings):
+    return {
+        "measured": [{"symbol": sym, "close_reason": "stop_loss", "source": "strategy",
+                      "intended": 100.0, "realized": 100.0, "adverse_bps": bps}
+                     for sym, bps in readings],
+        "unmeasurable": 0, "entries_without_intent": 0, "canaries_without_intent": 0,
+        "modelled_bps": 3.0, "modelled_stop_bps": 1.4,
+    }
+
+
+def test_the_rendering_says_why_a_small_sample_has_no_tail():
+    from measure_live_slippage import render
+
+    text = render(_stops_result([("BTCUSDT", 1.0), ("ETHUSDT", 23.47)]))
+    assert "P75/P90/P95: not reported, n=2 < 20" in text
+    assert "P90 " not in text.replace("P75/P90/P95", "")
+
+
+def test_the_rendering_prints_the_tail_once_the_sample_allows():
+    from measure_live_slippage import render
+
+    text = render(_stops_result([("BTCUSDT", float(i)) for i in range(1, 21)]))
+    assert "P75 15.25  P90 18.10  P95 19.05 bps" in text
+
+
+def test_each_symbol_is_read_beside_the_pool():
+    from measure_live_slippage import render
+
+    text = render(_stops_result([("BTCUSDT", 1.0), ("BTCUSDT", 3.0), ("ETHUSDT", 23.47)]))
+    lines = text.splitlines()
+    start = lines.index("stop fills by symbol:")
+    assert lines[start + 1].split() == ["BTCUSDT", "n=2", "mean", "2.00", "median", "2.00", "worst", "3.00", "bps"]
+    assert lines[start + 2].split()[:2] == ["ETHUSDT", "n=1"]
