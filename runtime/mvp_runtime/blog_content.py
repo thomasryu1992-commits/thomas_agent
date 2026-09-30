@@ -1242,6 +1242,18 @@ _DRAFT_SHAPE = (
 )
 
 
+# How the keyword may be written. Asked for "띄어쓰기와 표기 그대로" in named paragraphs (#1042),
+# three drafts in a row glued it to the next noun as if it were an adjective: "CHATGPT사용법
+# 계정 생성 절차", "명함만들기 위한 전체보기 메뉴", "원하는 방수스티커제작 크기" (2026-09-30).
+# The count ignores spacing and letter case, so the natural form costs nothing.
+KEYWORD_FORM_ASK = (
+    "키워드는 띄어쓰기와 대소문자를 읽기 자연스럽게 바꿔 써도 같은 키워드로 센다(예: '명함만들기' → "
+    "'명함 만들기', 'CHATGPT사용법' → 'ChatGPT 사용법'). 키워드 뒤에는 조사(을/를, 은/는, 에서, "
+    "으로 등)를 붙여 문장의 주어·목적어로 넣고, 다른 명사 앞에 꾸밈말처럼 붙이지 마라(틀린 예: "
+    "'명함만들기 위한 메뉴', 'ChatGPT 사용법 계정 생성 절차')."
+)
+
+
 def _keyword_ask(target: str) -> str:
     """The body's keyword use, in the scorer's own numbers.
 
@@ -1249,7 +1261,7 @@ def _keyword_ask(target: str) -> str:
     keyword was shortened in the body ('소상공인 스마트상점' once, '스마트상점' six times)."""
     standard = blog_draft_score.STANDARDS["keyword_hits"]
     return (f"소제목과 문단을 합쳐 '{target}'를 {standard.low}~{standard.high}회 쓰고 그중 1회는 "
-            "intro 첫 문단에 넣는다. 키워드 일부만 떼어 줄여 쓴 것은 세지 않는다.")
+            f"intro 첫 문단에 넣는다. 키워드 일부만 떼어 줄여 쓴 것은 세지 않는다. {KEYWORD_FORM_ASK}")
 
 
 def _keyword_revision_ask(target: str, measured: Mapping[str, Any],
@@ -1262,14 +1274,14 @@ def _keyword_revision_ask(target: str, measured: Mapping[str, Any],
     as it takes to reach the middle of the range."""
     standard = blog_draft_score.STANDARDS["keyword_hits"]
     hits = int(measured.get("keyword_hits") or 0)
-    ask = (f"'{target}'를 소제목과 문단을 합쳐 {standard.low}~{standard.high}회, 띄어쓰기와 표기 그대로 "
-           f"써라(현재 {hits}회). 키워드 일부만 떼어 줄여 쓴 것은 세지 않는다.")
+    ask = (f"'{target}'를 소제목과 문단을 합쳐 {standard.low}~{standard.high}회 써라(현재 {hits}회). "
+           f"키워드 일부만 떼어 줄여 쓴 것은 세지 않는다. {KEYWORD_FORM_ASK}")
     places = _keyword_places(structured, target) if structured else []
     need = max(1, (standard.low + standard.high) // 2 - hits)
     if places:
         ask += (f" 키워드를 넣을 문단(번호는 0부터): {', '.join(places[:need])}. 이 문단마다 "
-                f"'{target}'를 한 번씩 그대로 넣어라 — 한 문장만 고쳐 자연스럽게 넣고, 그 문단의 "
-                "다른 내용과 길이는 그대로 둬라.")
+                "키워드를 한 번씩 넣어라 — 한 문장을 고치거나 키워드가 주어·목적어로 들어간 문장 "
+                "하나를 더해 자연스럽게 넣고, 그 문단의 다른 내용은 그대로 둬라.")
     return ask
 
 
