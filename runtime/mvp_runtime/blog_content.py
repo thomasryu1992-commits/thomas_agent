@@ -1314,13 +1314,16 @@ def _keyword_places(structured: Mapping[str, Any], target: str) -> list[str]:
 # Named, the specifics can also be over-followed: '명함만들기' (bcp_d3be61f8a0fa8b85c920,
 # 2026-09-30) walked one blog's menu path (전체보기 → 명함제작 → 이지템플릿) without saying
 # whose site it was, and lifted its broken phrase "제작가이드도 참조도 하구요" into the post.
+# And for a Korean reader: '명함제작업체' (bcp_366916fc7176de5a9db8) priced business cards in
+# dollars from a US printer's page ("100장 기준 31.25달러").
 EVIDENCE_SPECIFICS_ASK = (
     "근거 블록([S#])에 나온 구체적인 내용 — 메뉴·버튼·기능 이름, 절차 단계, 설정값 — 을 섹션마다 "
     "최소 1개 본문에 그 이름 그대로 쓰고, 그 근거를 sources에 넣어라. 어떤 도구·주제에도 똑같이 "
     "들어맞는 일반론 문장만으로 문단을 채우지 마라. 근거에 없는 이름이나 설정값을 지어내지는 마라. "
     "근거 글의 문장이나 어구는 옮기지 말고 네 말로 풀어 써라. 특정 사이트·앱에서만 통하는 메뉴 "
     "경로를 쓸 때는 어느 사이트·앱의 메뉴인지 밝히고, 한 근거 글의 순서를 그대로 따라가지 말고 "
-    "여러 근거를 섞어라."
+    "여러 근거를 섞어라. 독자는 한국에서 사는 사람이다 — 해외 업체·해외 서비스의 조건이나 달러·엔 "
+    "같은 외화 가격은 쓰지 말고, 해외 자료를 꼭 써야 하면 해외 기준이라 한국과 다를 수 있다고 밝혀라."
 )
 
 
