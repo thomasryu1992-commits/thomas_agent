@@ -1066,3 +1066,47 @@ def test_the_table_ask_wants_real_headers_and_three_data_rows():
     """Two tables copied the shape's "구분 | 항목1 | 항목2", two had one or two rows (2026-09-30)."""
     request = blog_content.content_request(TARGET)
     assert "데이터 행은 3개 이상" in request and "자리표시 말고 비교하는 대상의 실제 이름" in request
+
+
+# --- the pre-publication checklist, precise (2026-09-30) ---------------------------------------
+#
+# '명함제작업체' listed 11 checks, 9 of them advice that merely said "가격"; one was cut at a
+# decimal point ("25달러부터 시작하는 등…" out of "31.25달러"); a table header row was a
+# "price claim"; and the model's "…제공한다." sat next to the detector's "…제공합니다.".
+
+def test_a_decimal_point_does_not_end_a_sentence():
+    found = blog_draft.detect_fact_checks(["일반 명함은 100장 기준 31.25달러부터 시작합니다. 다음 문장."])
+    assert [c["claim"] for c in found] == ["일반 명함은 100장 기준 31.25달러부터 시작합니다."]
+
+
+@pytest.mark.parametrize("sentence, flagged", [
+    ("주문 전 가격 안내 페이지를 꼭 확인하는 습관이 필요합니다.", False),
+    ("저렴한 가격에만 치우치지 말고 내구성까지 함께 고려해야 합니다.", False),
+    ("일반 현수막은 1장부터 9,900원에 판매합니다.", True),
+    ("요금제 가격은 월 3만 원대로 형성되어 있습니다.", True),
+])
+def test_a_price_word_without_a_number_is_advice_not_a_price(sentence, flagged):
+    assert bool([c for c in blog_draft.detect_fact_checks([sentence]) if c["category"] == "price"]) is flagged
+
+
+def test_a_table_row_is_not_a_claim():
+    assert blog_draft.detect_fact_checks(["제작 플랫폼 | 기본 가격 및 수량 | 주요 특징"]) == []
+
+
+def test_the_models_check_and_the_detectors_same_sentence_are_one_check():
+    model = [{"claim": "누리애드 공식몰은 일반 현수막을 1장부터 9,900원에 판매한다.", "why": "가격",
+              "source_ref": "[S1]"}]
+    prose = ["누리애드 공식몰은 일반 현수막을 1장부터 9,900원에 판매합니다."]
+    checks = blog_draft.fact_checks(model, prose, {"S1": {"title": "t", "url": "u"}})
+    assert len(checks) == 1 and checks[0]["verification_state"] == "source_cited"
+
+
+@pytest.mark.parametrize("sentence, category, flagged", [
+    ("무분별한 코드 생성은 관리를 어렵게 하므로 개수를 제한해야 합니다.", "usage_limit", False),
+    ("파일 업로드는 하루 10회까지 가능합니다.", "usage_limit", True),
+    ("이벤트가 끝난 구버전 쿠폰은 즉시 폐기해야 합니다.", "version", False),
+    ("ChatGPT 4.1 버전부터 파일 업로드가 됩니다.", "version", True),
+])
+def test_a_limit_or_version_word_without_a_number_is_not_that_claim(sentence, category, flagged):
+    found = [c["category"] for c in blog_draft.detect_fact_checks([sentence])]
+    assert (category in found) is flagged
