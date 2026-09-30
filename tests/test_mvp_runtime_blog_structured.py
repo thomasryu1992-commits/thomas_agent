@@ -782,6 +782,7 @@ def _all_long() -> dict:
     draft = _draft()
     draft["intro"] = [_long(0), _long(1)]
     for s_index, section in enumerate(draft["sections"]):
+        section["heading"] = f"{TARGET} {s_index}단계"          # the keyword stays in range
         section["paragraphs"] = [_long(10 * (s_index + 1) + p) for p in range(3)]
     return draft
 
@@ -952,3 +953,54 @@ def test_the_request_says_what_the_amount_in_brackets_means():
                  failures=["body_chars"])
     request = blog_content.revision_request(TARGET, first, "")
     assert "괄호는 130자까지 더할 양" in request and "적힌 만큼 이미 쓴 내용" in request
+
+
+# --- the keyword under its floor is asked for, in named paragraphs (2026-09-30) -------------
+#
+# Three drafts in a row used the keyword once; "3~6회" in the request alone did not move it.
+
+def _few_keywords() -> dict:
+    draft = _draft(sections=5, per_section=3)
+    body = blog_content.LENGTH_EXAMPLE_PARAGRAPH
+    draft["intro"] = [f"{TARGET}를 처음 만드는 분을 위한 글입니다. {body}", f"도입 둘째. {body}"]
+    for s_index, section in enumerate(draft["sections"]):
+        section["heading"] = f"준비 {s_index}단계"
+        section["paragraphs"] = [f"{s_index}-{p}. {body}" for p in range(3)]
+    return draft
+
+
+def test_a_keyword_under_its_floor_is_a_failure_and_over_its_ceiling_is_not():
+    few = blog_content.interpret_draft(json.dumps(_few_keywords(), ensure_ascii=False), TARGET)
+    assert few["measured"]["keyword_hits"] == 1 and "keyword_hits" in few["failures"]
+    many = blog_content.interpret_draft(json.dumps(_draft(), ensure_ascii=False), TARGET)
+    assert many["measured"]["keyword_hits"] > 6 and "keyword_hits" not in many["failures"]
+
+
+def test_the_revision_names_paragraphs_without_the_keyword_spread_over_the_post():
+    first = blog_content.interpret_draft(json.dumps(_few_keywords(), ensure_ascii=False), TARGET)
+    request = blog_content.revision_request(TARGET, first, "")
+    assert f"'{TARGET}'를 소제목과 문단을 합쳐 3~6회" in request and "(현재 1회)" in request
+    named = request.split("키워드를 넣을 문단(번호는 0부터): ", 1)[1].split(". 이 문단마다", 1)[0]
+    # intro 0 already has it; 4 - 1 = 3 places, each section's first paragraph in order
+    assert named == "섹션 0의 문단 0, 섹션 1의 문단 0, 섹션 2의 문단 0"
+    assert "keyword_hits (현재" not in request                    # not the raw key
+
+
+def test_a_revision_that_brings_the_keyword_in_is_ready(monkeypatch):
+    fixed = _few_keywords()
+    for section in fixed["sections"][:3]:
+        section["paragraphs"][0] = f"{TARGET} " + section["paragraphs"][0]
+    sheet, calls = _ideate(monkeypatch, [_few_keywords(), fixed])
+    quality = sheet["package"]["quality"]
+    assert [k for k, *_ in calls] == ["content", "content"]
+    assert quality["first_draft_failures"] == ["keyword_hits"]
+    assert quality["quality_state"] == "ready_for_review" and quality["revision_outcome"] == "REVISED"
+    validate_against_schema(sheet["package"], SCHEMA, "blog_content_package")
+
+
+def test_a_revision_that_breaks_the_body_for_the_keyword_is_not_taken(monkeypatch):
+    broken = _draft(sections=5, per_section=1)                    # keyword in, body under 1,800
+    sheet, _calls = _ideate(monkeypatch, [_few_keywords(), broken])
+    quality = sheet["package"]["quality"]
+    assert quality["revision_outcome"] == "REVISION_FURTHER_OFF:KEPT_FIRST_DRAFT"
+    assert quality["failures"] == ["keyword_hits"] and quality["quality_state"] == "needs_edit"
