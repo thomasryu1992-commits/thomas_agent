@@ -16,18 +16,15 @@ This file pins what the move itself has to keep true:
 
 from __future__ import annotations
 
-import ast
-from pathlib import Path
-
 from runtime.mvp_runtime.crypto import live_order, live_order_stores
-from tests.test_mvp_runtime_crypto_backtest import _defined
+from tests._helpers import defined_names
 
 SELECTORS = ("select_live_order_counter", "select_live_bracket_breaker", "select_live_api_breaker",
              "select_live_entry_marks")
 
 
 def test_live_order_offers_every_name_the_stores_define_as_the_same_object():
-    names = _defined(ast.parse(Path(live_order_stores.__file__).read_text(encoding="utf-8")))
+    names = defined_names(live_order_stores)
     assert {"LiveOrderCounter", "count_today", "LiveBracketFailureBreaker", "bracket_breaker_status",
             "LiveApiErrorBreaker", "api_breaker_status", "ApiErrorRecordingAdapter", "LiveEntryMarks",
             "read_live_entry_marks", "LIVE_DAILY_ORDER_CAP_REACHED", "MAX_CONSECUTIVE_API_ERRORS"} <= set(names), (

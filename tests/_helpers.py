@@ -7,6 +7,7 @@ seventeen edits (or, worse, sixteen). Import from here instead.
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -276,3 +277,17 @@ def approved_snapshot(intent, *, purpose=None, venue=None, now="2026-07-25T12:00
     )
     assert snapshot["approved"], snapshot["failed_checks"]
     return g.bind_intent(intent, snapshot), snapshot
+
+
+def defined_names(module) -> list[str]:
+    """The names a module binds at top level itself (its functions, classes and constants), read off
+    its source. What a split's identity pin compares between the old module and the new one."""
+    names: list[str] = []
+    for node in ast.parse(Path(module.__file__).read_text(encoding="utf-8")).body:
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            names.append(node.name)
+        elif isinstance(node, ast.Assign):
+            names.extend(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.append(node.target.id)
+    return names
