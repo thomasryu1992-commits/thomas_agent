@@ -1155,7 +1155,14 @@ def test_the_request_forbids_business_names_but_not_tool_names():
     """Three posts named and priced real printers (2026-09-30); Thomas: no business names."""
     request = blog_content.content_request(TARGET)
     assert blog_content.VENDOR_NAME_ASK in request
-    assert "'온라인 인쇄 업체 A'" in request and "앱·소프트웨어·AI 도구의 이름" in request
+    assert "'온라인 인쇄 업체 A'" in request and "앱·소프트웨어·AI 도구는 업체가 아니다" in request
+
+
+def test_a_tool_in_the_evidence_must_be_named_not_blurred():
+    """'스티커만들기' cited Canva and Adobe Firefly and called them "온라인 서비스"·"특정 앱"."""
+    request = blog_content.content_request(TARGET)
+    assert "근거에 나온 도구의 이름" in request and "반드시 그대로 밝혀라" in request
+    assert "'온라인 서비스'·'특정 앱'·'편집 도구'처럼 흐리게 부르지 마라" in request
 
 
 # --- advice, announcements and hedges are not claims (2026-09-30) ------------------------------
@@ -1314,3 +1321,47 @@ def test_the_grow_ask_forbids_padding_by_copying():
 def test_a_public_site_is_named_not_anonymized():
     request = blog_content.content_request(TARGET)
     assert "정부·공공기관의 사이트와 서비스(정부24·홈택스·위택스·소상공인24·고용노동부 등)는 업체가 아니다" in request
+
+
+def test_a_shops_product_title_is_not_copied_into_the_post():
+    """'배너입간판' carried the listings' "매장광고판 카페입간판" into its sentences."""
+    request = blog_content.content_request(TARGET)
+    assert "쇼핑몰 상품명(검색용 단어를 이어 붙인 긴 이름" in request
+    assert "'A형 철제 입간판'처럼 제품의 종류로 짧게 불러라" in request
+
+
+
+# --- a mis-decoded page's title (2026-09-30) ------------------------------------------------------
+#
+# '영업신고증 발급' printed gov.kr's source title as "ǰ û | οȳ  û | 24": the search tool read an
+# EUC-KR page wrongly and the Hangul was gone before the lane saw it.
+
+_GARBLED = "ǰ û | οȳ  û | 24"
+
+
+@pytest.mark.parametrize("text, garbled", [
+    (_GARBLED, True),
+    ("ǰÿŰ | οȳ  û | 24", True),
+    ("영업신고증 발급 절차부터 준비물까지 총정리", False),
+    ("무료 AI 스티커 생성기 | Adobe Firefly", False),
+    ("Pokémon café 굿즈 만들기", False),          # Latin-1 letters are words, not damage
+])
+def test_a_mis_decoded_title_is_recognised(text, garbled):
+    assert blog_draft.looks_garbled(text) is garbled
+
+
+def test_a_garbled_source_title_becomes_the_sites_host():
+    records = {"tool_use": {"hits": [
+        {"title": _GARBLED, "url": "https://www.gov.kr/mw/AA020InfoCappView.do?x=1", "source": "tavily"},
+        {"title": "영업신고증 발급 총정리", "url": "https://example.org/a", "source": "tavily"}]}}
+    index = blog_draft.evidence_index(records)
+    assert index["S1"]["title"] == "www.gov.kr" and index["S2"]["title"] == "영업신고증 발급 총정리"
+    sources = blog_draft.resolve_sources([{"source_ref": "[S1]", "title": _GARBLED}], index)
+    assert sources[0]["title"] == "www.gov.kr"
+
+
+def test_a_garbled_snippet_is_left_out_of_the_revisions_notes():
+    records = {"tool_use": {"hits": [
+        {"title": _GARBLED, "url": "https://www.gov.kr/x", "snippet": "ݱ Home ο ## ǰ û 방문, 우편", "source": "tavily"},
+        {"title": "자료", "url": "https://example.org/b", "snippet": "위생교육 수료증이 필요하다", "source": "tavily"}]}}
+    assert blog_content._evidence_notes({"sources": []}, records) == "- 자료: 위생교육 수료증이 필요하다"
