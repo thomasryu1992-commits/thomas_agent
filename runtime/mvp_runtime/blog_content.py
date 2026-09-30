@@ -917,6 +917,16 @@ def render_post_md(package: Mapping[str, Any]) -> str:
             lines += [f"- {label}: {quality['revision_detail']}"]
         if quality.get("failures"):
             lines += [f"- ⚠ 남은 미달 항목: {', '.join(quality['failures'])} — 발행 전 직접 손볼 것"]
+        # Advisory only (see `blog_draft.ECHO_OVERLAP`): read from the body itself, never gating.
+        body_headings = {b.get("paragraph_index") for b in package.get("body_blocks") or []
+                         if b.get("action") == "heading"}
+        prose = [p for i, p in enumerate(str(package.get("body_paste") or "").split("\n\n"))
+                 if i not in body_headings]
+        echoes = blog_draft.echo_sentences(prose)
+        if echoes:
+            named = ", ".join(f"「{e[:50]}」" for e in echoes[:5])
+            lines += [f"- 앞 문장을 다른 말로 되풀이한 듯한 문장 {len(echoes)}개(자동 판정 아님 — 읽고 "
+                      f"지우거나 새 정보로 바꿀 것): {named}"]
 
     lines += ["", "## 제목 후보 (소제목과 별개)"]
     lines += [f"{i}. {t}" for i, t in enumerate(package.get("title_candidates") or [], start=1)]
@@ -1194,7 +1204,9 @@ ADD_SUBSTANCE_ASK = (
     "더하는 문장에는 그 섹션 소제목에 대한 구체적인 내용 — 아래 근거 메모에 있는 수치·메뉴나 버튼 이름·"
     "절차 단계·설정값, 또는 독자가 겪는 구체적인 상황 하나 — 을 담아라. '…이 중요합니다'·'…지혜가 "
     "필요합니다'·'…도움이 됩니다'·'…주의가 필요합니다'처럼 어느 글에나 붙는 맺음 문장으로 늘리지 마라. "
-    "다른 문단에 이미 있는 문장을 옮겨 오거나 되풀이해서 늘리지도 마라 — 반복된 문장이 있으면 불합격이다."
+    "다른 문단에 이미 있는 문장을 옮겨 오거나 되풀이해서 늘리지도 마라 — 반복된 문장이 있으면 불합격이다. "
+    "바로 앞 문장을 다른 말로 다시 말하는 문장(예: '…버튼을 누르면 등록이 완료됩니다.' 뒤의 '버튼을 누르는 "
+    "순간 바로 등록이 끝납니다.')도 늘린 것이 아니다 — 더하는 문장은 그 문단에 아직 없는 정보여야 한다."
 )
 
 

@@ -541,6 +541,37 @@ def repeat_count(paragraphs: Sequence[str]) -> int:
     return len(keys) - len(set(keys))
 
 
+# A sentence that says the one before it again in other words. On candidate-1076 '카카오톡
+# 채널추가' (bcp_728c1a0f771268689758) the padding revision closed paragraph after paragraph with
+# one ("…채널추가 버튼을 누르면 즉시 친구 등록이 완료됩니다. 버튼을 누르는 순간 바로 등록이
+# 끝납니다."). Measured over 21 drafts as the share of a sentence's character pairs already used
+# earlier in its paragraph, 0.45 flags three of that draft's sentences and none in the other 20.
+# Reworded echoes mostly score lower than that, so this is a pointer for the editor, not a gate:
+# at any cut that catches more, sound sentences in good drafts start to show.
+ECHO_OVERLAP = 0.45
+
+
+def _pairs(text: str) -> set[str]:
+    return {text[i:i + 2] for i in range(len(text) - 1)}
+
+
+def echo_sentences(paragraphs: Sequence[str]) -> list[str]:
+    """Each sentence at least :data:`ECHO_OVERLAP` of whose character pairs already appear in one
+    earlier sentence of the same paragraph. Spacing and punctuation are ignored; table rows and
+    sentences under :data:`MIN_REPEATED_SENTENCE_CHARS` are skipped."""
+    found: list[str] = []
+    for paragraph in paragraphs:
+        sentences = [x.strip() for x in _SENTENCE_RE.findall(str(paragraph)) if x.strip()]
+        keys = [re.sub(r"[\s.!?。,'\"]", "", x) for x in sentences]
+        for i in range(1, len(sentences)):
+            if len(keys[i]) < MIN_REPEATED_SENTENCE_CHARS or " | " in sentences[i]:
+                continue
+            pairs = _pairs(keys[i])
+            if any(len(pairs & _pairs(keys[j])) / len(pairs) >= ECHO_OVERLAP for j in range(i)):
+                found.append(sentences[i])
+    return found
+
+
 def detect_fact_checks(paragraphs: Sequence[str]) -> list[dict[str, Any]]:
     """Sentences stating something that changes without notice — price, free-tier scope, usage
     limits, versions, dates, API availability, policy, feature availability.

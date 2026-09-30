@@ -1384,3 +1384,35 @@ def test_the_shape_shows_every_planned_paragraph_with_its_sentence_count():
 def test_the_request_says_the_placeholders_are_not_prose():
     request = blog_content.content_request(TARGET)
     assert "'문단 1(4문장)' 같은 자리표시는 글에 옮기지 말고, 문단마다 그 수만큼 실제 문장을 채워라" in request
+
+
+
+# --- a sentence that says the one before it again (2026-09-30) ------------------------------------
+#
+# '카카오톡 채널추가' closed paragraphs with echoes; a pointer for the editor, not a gate.
+
+_ECHO_PARAGRAPH = ("다운로드한 쿠폰은 채팅방으로 곧바로 전송되어 더욱 간편하게 쓸 수 있습니다. "
+                   "채팅방으로 전송된 쿠폰은 언제든 편하게 열어볼 수 있습니다.")
+
+
+def test_an_echo_of_the_sentence_before_is_found_and_a_new_fact_is_not():
+    assert blog_draft.echo_sentences([_ECHO_PARAGRAPH]) == ["채팅방으로 전송된 쿠폰은 언제든 편하게 열어볼 수 있습니다."]
+    fresh = ("다운로드한 쿠폰은 채팅방으로 곧바로 전송되어 더욱 간편하게 쓸 수 있습니다. "
+             "매장 결제 때는 바코드를 보여 주고 온라인에서는 쿠폰 번호를 입력합니다.")
+    assert blog_draft.echo_sentences([fresh]) == []
+    assert blog_draft.echo_sentences([_para(i) for i in range(20)]) == []   # the fixtures are clean
+
+
+def test_post_md_points_at_an_echo_without_failing_the_draft():
+    draft = _draft()
+    draft["sections"][1]["paragraphs"][0] = _ECHO_PARAGRAPH + " 셋째 문장은 전혀 다른 이야기로 길게 이어집니다."
+    parts = blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET)
+    assert not [f for f in parts["failures"] if "echo" in f]
+    package = {"quality": {"quality_state": "ready_for_review", "failures": []},
+               "body_paste": parts["body_paste"], "body_blocks": parts["body_blocks"]}
+    post = blog_content.render_post_md(package)
+    assert "앞 문장을 다른 말로 되풀이한 듯한 문장 1개" in post and "「채팅방으로 전송된 쿠폰은" in post
+
+
+def test_the_grow_ask_forbids_an_echo():
+    assert "바로 앞 문장을 다른 말로 다시 말하는 문장" in blog_content.ADD_SUBSTANCE_ASK
