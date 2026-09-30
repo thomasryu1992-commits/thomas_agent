@@ -385,3 +385,78 @@ def test_the_scanner_sees_every_import_form_and_every_breach(tmp_path):
     assert problems["widened"] == {("low", "high"): {"F"}}
     assert problems["stale"] == {("sub.deep", "low"): ["g"]}
     assert problems["cycles"] == {frozenset({"low", "high"})}
+
+
+# --- the research plane, seen from the acting planes -------------------------------------------------
+
+# What generates and judges candidates: the factory and its scoring, the proposer, the null control and
+# the data review. The layer rule places them in strategy, below every acting layer, so it pins that they
+# cannot reach an order. It allows the other direction, and this section pins how far that goes.
+RESEARCH = frozenset({"factory", "robustness", "proposer", "proposer_cli", "null_control", "data_review"})
+
+# The modules that act on money or refuse it: every risk, execution and reconciliation module, and the
+# live plane's orchestrator.
+ACTING_LAYERS = frozenset({"risk", "execution", "reconciliation"})
+ACTING_EXTRA = frozenset({"live_route"})
+
+# The acting modules that reach research today, transitively, and what they reach
+# (docs/proposals/CRYPTO_SYSTEM_IMPROVEMENT_GAP_ANALYSIS_V0.1.md §16). Neither edge is direct:
+# - live_route -> promotion (``live_arm_problem``) -> forward_confirmation / judgement_fingerprint ->
+#   robustness / factory;
+# - breaker_watch -> pool -> candidate_ranking -> robustness / factory.
+# Moving ``live_arm_problem`` off ``promotion`` is a live-path change (PR7 discipline). This pin only
+# shrinks: a module that stops reaching research must leave it in the same PR, and a new one fails.
+ACTING_MODULES_THAT_REACH_RESEARCH: dict[str, frozenset[str]] = {
+    "breaker_watch": frozenset({"factory", "robustness"}),
+    "live_route": frozenset({"factory", "robustness"}),
+}
+
+
+def _reach(edges) -> dict[str, set[str]]:
+    """Every module each lane module imports, directly or through others."""
+    graph: dict[str, set[str]] = {}
+    for src, dst in edges:
+        graph.setdefault(src, set()).add(dst)
+    reached: dict[str, set[str]] = {}
+    for start in graph:
+        seen: set[str] = set()
+        stack = [start]
+        while stack:
+            for nxt in graph.get(stack.pop(), ()):
+                if nxt not in seen:
+                    seen.add(nxt)
+                    stack.append(nxt)
+        reached[start] = seen
+    return reached
+
+
+def test_the_acting_planes_reach_research_code_only_where_named():
+    """The risk, execution and reconciliation modules, and ``live_route``, import no research module,
+    directly or transitively, except the two named reaches. A research edit can then change what an
+    acting module does only through those two, and a third would have to be named here."""
+    acting = {m for m, layer in LAYER.items() if layer in ACTING_LAYERS} | ACTING_EXTRA
+    assert RESEARCH <= set(LAYER) and ACTING_EXTRA <= set(LAYER), "a named module left the lane"
+    reached = _reach(_edges())
+    now = {m: frozenset(reached.get(m, set()) & RESEARCH) for m in sorted(acting)}
+    now = {m: hit for m, hit in now.items() if hit}
+    assert now == ACTING_MODULES_THAT_REACH_RESEARCH, (
+        "which acting modules reach research code changed. A new reach is a new way for research to "
+        "change live behaviour; a removed one shrinks the pin. Now: "
+        + "; ".join(f"{m} -> {sorted(hit)}" for m, hit in sorted(now.items()))
+    )
+
+
+def test_reach_follows_a_chain_through_a_function_local_import(tmp_path):
+    """The reach is transitive and sees a function-local import, which is how a dependency hides."""
+    files = {
+        "act.py": "from .mid import x\n",
+        "mid.py": "def f():\n    from .deep import y\n",
+        "deep.py": "from .res import z\n",
+        "res.py": "",
+        "other.py": "",
+    }
+    for rel, text in files.items():
+        (tmp_path / rel).write_text(text, encoding="utf-8")
+    reached = _reach(_edges(tmp_path))
+    assert reached["act"] == {"mid", "deep", "res"}
+    assert "other" not in reached
