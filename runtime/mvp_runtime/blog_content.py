@@ -1179,8 +1179,13 @@ def _length_asks(measured: Mapping[str, Any], structured: Mapping[str, Any] | No
 # a short body ('CHATGPT요금제' bcp_7f50c01bc7f35aee465a, 'ai 번역기' bcp_4ad51169ab0a26df545d)
 # gave every paragraph one more closing line that fits any post — "…지혜가 필요합니다",
 # "꼼꼼한 확인이 실수를 미연에 방지합니다" — and the length passed on filler.
+#
+# The revision runs with no evidence blocks, so "근거 블록([S#])의 수치" (#1066) pointed at nothing:
+# on candidate-1066 '포토샵 누끼따기' (bcp_746f52917537a5764286) the revision grew only its two
+# intro paragraphs, each by one more closer. The specifics now come from the evidence notes the
+# revision request carries (:func:`_evidence_notes`).
 ADD_SUBSTANCE_ASK = (
-    "더하는 문장에는 그 섹션 소제목에 대한 구체적인 내용 — 근거 블록([S#])의 수치·메뉴나 버튼 이름·"
+    "더하는 문장에는 그 섹션 소제목에 대한 구체적인 내용 — 아래 근거 메모에 있는 수치·메뉴나 버튼 이름·"
     "절차 단계·설정값, 또는 독자가 겪는 구체적인 상황 하나 — 을 담아라. '…이 중요합니다'·'…지혜가 "
     "필요합니다'·'…도움이 됩니다'·'…주의가 필요합니다'처럼 어느 글에나 붙는 맺음 문장으로 늘리지 마라."
 )
@@ -1331,10 +1336,14 @@ def _keyword_places(structured: Mapping[str, Any], target: str) -> list[str]:
 # three posts named and priced real printers (누리애드·비즈하우스·오프린트미·네모디·한미프린트) and
 # a freelance marketplace, which reads as a recommendation. Software, apps and AI tools stay
 # nameable — they are what the blog writes about ('캡컷 사용법', 'ChatGPT 사용법').
+# A carrier's partnership is the exception (Thomas 2026-09-30): '퍼플렉시티 무료'
+# (bcp_3ffcacf2c0ff175ef7a0) turned an SKT customers' offer into "특정 통신사 이용자라면", which no
+# reader can act on.
 VENDOR_NAME_ASK = (
     "업체·가게·인쇄소·쇼핑몰·판매 사이트·중개 플랫폼의 이름은 본문·제목·표·캡처 지시 어디에도 쓰지 "
     "마라 — '온라인 인쇄 업체 A'·'업체 B'처럼 익명으로 쓰거나 업종으로만 불러라. 앱·소프트웨어·AI "
-    "도구의 이름(키워드가 다루는 도구 포함)은 써도 된다."
+    "도구의 이름(키워드가 다루는 도구 포함)은 써도 된다. 단, 통신사 제휴 혜택(특정 통신사 고객만 받는 "
+    "요금제·구독 혜택 등)은 그 통신사 이름을 밝혀라 — 독자가 자기가 대상인지 알아야 한다."
 )
 # The reader lives in Korea. Asked as "해외 자료를 꼭 써야 하면 해외 기준이라 한국과 다를 수 있다고
 # 밝혀라", 'ai 번역기' (bcp_4ad51169ab0a26df545d, 2026-09-30) used no foreign figure at all and still
@@ -1385,11 +1394,17 @@ def content_request(target: str) -> str:
     )
 
 
-def revision_request(target: str, first: Mapping[str, Any], text: str) -> str:
+def revision_request(
+    target: str, first: Mapping[str, Any], text: str, records: Mapping[str, Any] | None = None,
+) -> str:
     """The one revision's request: only the failed items, the facts frozen, the draft attached.
 
     A length failure also carries the plan against the draft's own measurement: "longer" is what
-    the first request already said, and the first package showed that saying it was not enough."""
+    the first request already said, and the first package showed that saying it was not enough.
+
+    ``records`` is the CONTENT run's record set. Its evidence goes along as unnumbered notes
+    (:func:`_evidence_notes`): the revision has no evidence blocks of its own, and told to grow a
+    paragraph with nothing new to say, it grew it with closers."""
     measured = first.get("measured") or {}
     asks = [f"- {_FAILURE_ASKS.get(f, f)} (현재 {measured.get(f, '-')})" for f in first["failures"]
             if f != "keyword_hits"]
@@ -1399,15 +1414,51 @@ def revision_request(target: str, first: Mapping[str, Any], text: str) -> str:
         asks.append(f"- {_keyword_revision_ask(target, measured, first.get('structured'))}")
     return (
         f"아래 '{target}' 네이버 블로그 초안을 고쳐라. 고칠 항목은 다음뿐이다:\n" + "\n".join(asks)
-        + "\n사실·수치·가격·날짜는 바꾸지 말고 새 사실이나 새 출처를 추가하지 마라. 분량을 늘릴 때는 이미 쓴 "
-        "내용의 방법·이유·예시·주의점을 풀어 써라. 문단을 늘리거나 줄일 때도 그 섹션 소제목의 내용 "
+        + "\n첫 초안의 사실·수치·가격·날짜는 바꾸지 말고 새 출처를 추가하지 마라. 새 사실은 아래 근거 메모에 "
+        "있는 것만 쓸 수 있다 — 메모에 없는 이름·수치를 지어내지 마라. 분량을 늘릴 때는 근거 메모의 구체적인 "
+        "내용이나 이미 쓴 내용의 방법·예시를 풀어 써라. 문단을 늘리거나 줄일 때도 그 섹션 소제목의 내용 "
         "안에서만 하고, 다른 섹션의 주제를 끌어오지 마라. image_shots 4~8개와 table은 첫 초안의 것을 "
         "그대로 유지하라(없으면 새로 채워라). 이 수정 실행에는 근거 블록이 없다 — [S1]·[K1] 같은 "
         "근거 번호를 본문·facts·fact_checks 어디에도 쓰지 말고, sources는 빈 목록 []으로 둬라(첫 "
         "초안의 출처는 그대로 유지된다). content_draft에는 같은 JSON 형식으로 전체 초안을 다시 "
         f"넣어라(키는 이 순서대로, intro와 sections를 맨 끝에): {_DRAFT_SHAPE}\n"
+        f"근거 메모(첫 초안을 쓸 때 본 자료에서 발췌, 번호를 붙여 인용하지 말 것):\n"
+        f"{_evidence_notes(first, records)}\n"
         f"이전 초안:\n{_revision_previous(first, text)}"
     )
+
+
+# Per note and in all: the Tavily snippets run 70~1,300 characters, and the revision request
+# already carries the whole first draft under intake's 20,000-character cap.
+MAX_EVIDENCE_NOTE_CHARS = 400
+MAX_EVIDENCE_NOTES_CHARS = 2_000
+
+
+def _evidence_notes(first: Mapping[str, Any], records: Mapping[str, Any] | None) -> str:
+    """The content run's web evidence as plain notes for the revision: title and snippet, no
+    `[S#]` and no URL.
+
+    The sources the first draft cited, when it cited any — the package carries exactly those
+    (:func:`_carry_first_evidence`), so what the revision adds from them stays covered.
+    Otherwise every hit the run had. Mock rows are not evidence (:func:`blog_draft.evidence_index`)."""
+    hits = [(f"S{n}", hit) for n, hit in
+            enumerate(((records or {}).get("tool_use") or {}).get("hits") or [], start=1)
+            if isinstance(hit, Mapping) and not str(hit.get("source") or "").startswith("mock")]
+    cited = {str(s.get("source_ref") or "").strip("[]") for s in first.get("sources") or []}
+    chosen = [hit for key, hit in hits if key in cited] or [hit for _key, hit in hits]
+    notes: list[str] = []
+    total = 0
+    for hit in chosen:
+        snippet = " ".join(blog_draft.strip_evidence_refs(str(hit.get("snippet") or "")).split())
+        if not snippet:
+            continue
+        title = " ".join(str(hit.get("title") or "").split())
+        note = f"- {title}: {snippet[:MAX_EVIDENCE_NOTE_CHARS]}" if title else f"- {snippet[:MAX_EVIDENCE_NOTE_CHARS]}"
+        if total + len(note) > MAX_EVIDENCE_NOTES_CHARS:
+            break
+        notes.append(note)
+        total += len(note)
+    return "\n".join(notes) or "- (없음 — 이미 쓴 내용만으로 고쳐라)"
 
 
 def _miss(parts: Mapping[str, Any]) -> tuple[int, float]:
@@ -1656,7 +1707,7 @@ def run_content_ideation(
     revision_outcome: str | None = None
     revision_detail: str | None = None
     if first["failures"]:
-        request = revision_request(target, first, _draft_text(content))
+        request = revision_request(target, first, _draft_text(content), content_records)
         if len(request) > MAX_REVISION_REQUEST_CHARS:
             revision_outcome = "REVISION_SKIPPED:REQUEST_TOO_LONG"
         else:
