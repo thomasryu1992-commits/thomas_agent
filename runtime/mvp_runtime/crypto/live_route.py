@@ -66,6 +66,7 @@ keeps the two populations labelled, so do not read the residual gap as drift.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -417,7 +418,12 @@ def _run_gated_live_leg(
     optional_data: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The leg proper, once the gate is open. Split out so every exit path above is one
-    ``except`` rather than a ``try`` wrapped around two hundred lines."""
+    ``except`` rather than a ``try`` wrapped around two hundred lines.
+
+    Its facts are read by :func:`_read_leg_facts` (step 1) and :func:`_read_entry_facts` (step 3), at
+    the same points and in the same order as when they were inline (refactor plan PR-14). Settlement,
+    the halts, the decision, the re-read, the gate and the send stay here: this is still the one
+    function that sends an autonomous entry."""
     # 0. A host-side root run would leave this cycle's book, ledger and audit rows owned by a
     #    uid the services cannot write again. Before the venue, because afterwards the only
     #    options are a book the services cannot rewrite or a real position with no record.
@@ -426,54 +432,8 @@ def _run_gated_live_leg(
     # 1. The facts, each read once and shared by every door of the decision — so the guard, the
     #    sizing and the record cannot disagree about what was true this cycle. The gate reads the
     #    ones another writer can move again (step 3a, PR2c-2a), only to narrow.
-    limits, budget = resolve_live_order_limits(root, now=now)
-    # The confirmation phrase and the manual kill switch, from the same `limits` the guard judges
-    # (PR5a). Both are this process's environment, which the console and the assistant's read door
-    # are built without; stamped so the readiness board there reads the trading process's own
-    # switches instead of guessing from rows computed in a container that cannot see them.
-    record["live_gate"] = {
-        "confirmation_present": limits.confirmation_present(),
-        "manual_kill_switch": bool(limits.manual_kill_switch),
-    }
-    # The execution stage, read once beside the budget (PR1a) and enforced at the entry guard
-    # since PR1b. Stamped on the record so the ledger shows the rung the trading process itself
-    # saw, and passed to `plan_live_entry` below so the stamp and the judgement are one read.
-    # Settlement, protection and the close path below never consult it.
-    stage = resolve_execution_stage(root, now=now)
-    record["execution_stage"] = stage.as_dict()
-    # `.default(root)` rather than `ControlStore(root)`: the constructor takes a Path, so the
-    # bare form crashes on the `root=None` every ordinary run passes.
-    control = control_store if control_store is not None else ControlStore.default(root)
-    # `trading_allowed`, not `execution_allowed`: BOTH must hold for an entry. The runtime can
-    # now be ACTIVE with live entries held down — that is what an assistant `enable scope=runtime`
-    # leaves behind, and it is the one state where the two answers differ. Reading the weaker
-    # flag here would make the arm decorative on the exact path it exists to gate.
-    #
-    # This gates ENTRIES only, and deliberately: the value is consumed by the entry decision in
-    # step 3, after step 2 has settled and protected, so a disarmed runtime that is still ACTIVE
-    # closes what it holds. (A PAUSED or KILLED runtime never gets here — the scheduler drops the
-    # fire — which is why the soft halt, `control.CMD_HALT_TRADING`, exists.)
-    runtime_active = control.load().trading_allowed
-
-    snapshot, account_use = read_account(timeout_seconds=timeout_seconds, root=root)
-    if snapshot is None:
-        record["live_reason_codes"].append(ACCOUNT_UNREADABLE)
-        record["account_degraded_reason_code"] = account_use.get("degraded_reason_code")
-    # The account is a signed read; the breaker counts it with the adapter's own (PR2d-1). By
-    # the feed's own code: `degraded_reason_code` is one word for every way the read can fail.
-    adapter.record_account(readable=snapshot is not None,
-                           reason_code=account_use.get("error_reason_code"))
-
-    local_positions = list_open_live_positions(root)
-    # A watched position that left the book (settled, closed) ends its PROTECTION_UNKNOWN episode.
-    protection_watch.prune(
-        {k for k in (protection_watch.position_key(p) for p in local_positions) if k}, root=root,
-    )
-    reconciliation = reconcile_positions(local_positions, snapshot, now=now)
-    record["live_reconcile_status"] = reconciliation["status"]
-
-    position_store = select_live_position_store(now=now, root=root)
-    ledger = select_live_ledger(now=now, root=root)
+    facts = _read_leg_facts(record, adapter=adapter, now=now, root=root, control_store=control_store,
+                            timeout_seconds=timeout_seconds)
 
     # 2. Settle and protect BEFORE anything else. Closing is risk-reducing and is never gated
     #    on reconciliation, the verdict, or the kill switch — a halt that traps an open
@@ -483,12 +443,12 @@ def _run_gated_live_leg(
     # counter dedups on its own key, and one key per bar is all the time exit needs. It is also
     # the bar an entry below is claimed on (PR2a).
     candle_ts = feature_row.get("timestamp") if isinstance(feature_row, Mapping) else None
-    open_here = [p for p in local_positions if position_symbol(p) == symbol]
+    open_here = [p for p in facts.local_positions if position_symbol(p) == symbol]
     for position in open_here:
         _settle_or_protect(
             record, position,
-            adapter=adapter, position_store=position_store, ledger=ledger,
-            reconciliation=reconciliation, limits=limits, candle_ts=candle_ts,
+            adapter=adapter, position_store=facts.position_store, ledger=facts.ledger,
+            reconciliation=facts.reconciliation, limits=facts.limits, candle_ts=candle_ts,
             context_timeframe=timeframe,
             now=now, root=root, timeout_seconds=timeout_seconds,
         )
@@ -508,16 +468,16 @@ def _run_gated_live_leg(
     # authority and must not touch the position's clock (`_time_exit_or_hold` already
     # times nothing for a caller that names no context) — unreachable on the MISSING
     # branch, load-bearing if these reasons ever widen.
-    books = reconciliation.get("books") or {}
-    for position in local_positions:
+    books = facts.reconciliation.get("books") or {}
+    for position in facts.local_positions:
         other = position_symbol(position)
         if other == symbol:
             continue  # settled above, with the context's full leg semantics
         if DRIFT_MISSING_AT_VENUE in ((books.get(other) or {}).get("reasons") or ()):
             _settle_or_protect(
                 record, position,
-                adapter=adapter, position_store=position_store, ledger=ledger,
-                reconciliation=reconciliation, limits=limits, candle_ts=None,
+                adapter=adapter, position_store=facts.position_store, ledger=facts.ledger,
+                reconciliation=facts.reconciliation, limits=facts.limits, candle_ts=None,
                 context_timeframe="",
                 now=now, root=root, timeout_seconds=timeout_seconds,
             )
@@ -532,7 +492,7 @@ def _run_gated_live_leg(
         reason != DRIFT_MISSING_AT_VENUE
         for book in books.values() for reason in ((book or {}).get("reasons") or ())
     )
-    if reconciliation["status"] == DRIFT and (record["live_settled"] is None or unresolvable):
+    if facts.reconciliation["status"] == DRIFT and (record["live_settled"] is None or unresolvable):
         record["live_reason_codes"].append(BOOK_DRIFT)
         record["halt"] = True
 
@@ -566,131 +526,11 @@ def _run_gated_live_leg(
         record["live_route_status"] = ROUTE_BLOCKED
         return record
 
-    plan = build_entry_plan(route, feature_row, now=now) if isinstance(route, Mapping) else None
-
-    filters, filters_reason = read_symbol_filters(collector, symbol, timeout_seconds=timeout_seconds)
-
-    # The book the spread and the market impact are judged on (PR2d-3), handed down whole: the
-    # decision derives the spread from it and walks it for the order's size once that is known.
-    order_book: Mapping[str, Any] | None = None
-    try:
-        raw_book = collector.order_book(symbol, limit=ORDER_BOOK_LEVELS, timeout_seconds=timeout_seconds)
-        order_book = raw_book if isinstance(raw_book, Mapping) else None
-    except Exception:  # noqa: BLE001 — degrade here, refuse at the entry decision: the route
-        # itself must not raise (settle/protect already ran above); the None it hands down is
-        # what plan_live_entry refuses fail-closed (Thomas 2026-08-30).
-        record["live_reason_codes"].append("LIVE_ENTRY_ORDERBOOK_UNREADABLE")
-
-    # The market's price now (PR2c-1, decision 24): the plan is priced on its bar's close, and the
-    # decision checks that close against this. Read only when there is a plan to check — a context
-    # with no route asks the venue nothing more — and degraded like the book: the None-priced quote
-    # it hands down is what the decision refuses.
-    reference_quote = (
-        _read_reference_quote(collector, symbol, now=now, timeout_seconds=timeout_seconds)
-        if plan is not None else None
-    )
-    if isinstance(reference_quote, Mapping) and reference_quote.get("reason"):
-        # Why, beside the decision's own refusal — as the book's read failure is recorded above.
-        record["live_reason_codes"].append(str(reference_quote["reason"]))
-
-    # The breaker reads the VENUE's realized figure, not the local ledger: on a machine whose
-    # live positions close at the venue the local ledger lags a cycle, and a loss breaker that
-    # measures late is a breaker that does not bound today (#247).
-    venue_realized = (
-        venue_daily_realized_net(snapshot.realized_windows) if snapshot is not None else None
-    )
-    risk = live_risk_snapshot(
-        limit_usdt=limits.daily_loss_limit_usdt, root=root, now=now,
-        venue_realized_pnl_usdt=venue_realized,
-        # This leg opens positions: a snapshot with no venue figure is a tripped breaker, not the
-        # local ledger. No snapshot at all is already ACCOUNT_UNREADABLE and refuses on its own.
-        venue_required=snapshot is not None,
-    )
-    if risk.get("history_error"):
-        # Say WHY the breaker reads tripped. The guard's own refusal only knows a bool and would
-        # call this "limit reached", which is the wrong fix for an operator to go looking for.
-        record["live_reason_codes"].append(risk["history_error"])
-
-    # How many entries in a row filled and could not be protected. Read here with every other
-    # runtime fact, and read even when it is zero, so the decision below is judged against the
-    # same state the readiness board shows rather than a second opinion of it.
-    breaker = bracket_breaker_status(root)
-    record["live_bracket_breaker"] = {
-        "consecutive": breaker["consecutive"],
-        "limit": breaker["limit"],
-        "tripped": breaker["tripped"],
-    }
-    # And how many signed calls in a row the venue would not answer (PR2d-1), read beside it for
-    # the same reason: one state, read once, judged by the decision and shown on the board. A
-    # breaker that cannot count this pass (its record cannot be written) is not clear either: an
-    # entry sent then would leave with nothing to count its failure.
-    api_breaker_before = api_breaker_status(root)
-    api_unwritable = _api_breaker_unwritable(adapter)
-    record["live_api_breaker"] = {
-        "consecutive": api_breaker_before["consecutive"],
-        "limit": api_breaker_before["limit"],
-        "tripped": api_breaker_before["tripped"],
-        "tripped_class": api_breaker_before["tripped_class"],
-        "unwritable": api_unwritable,
-    }
-    # And what the venue contract sentinel last decided (PR4b, Thomas decision 46), read here with the
-    # breakers for their reason. The reader never raises: a record that cannot prove itself is a
-    # refusal the decision names, not an exception on the path that has just settled and protected.
-    venue_contract = read_venue_contract(root)
-    record["live_venue_contract"] = _contract_summary(venue_contract)
-
-    # Which bars this venue has already sent an entry on, and which contexts a stop-out still
-    # holds (PR2a). Read here, after settle/protect, so a corrupt file can only hold entries: the
-    # decision refuses on the None, and the record says why.
-    try:
-        entry_marks = read_live_entry_marks(root)
-    except MvpRuntimeError as exc:
-        entry_marks = None
-        record["live_reason_codes"].append(exc.reason_code)
-
-    # Every fact the decision is judged on, in one mapping: the decision reads it now, and the
-    # pre-order gate re-derives the decision from this mapping, narrowed by its re-read (PR2b,
-    # PR2c-2a), before anything is sent.
-    decision_kwargs = dict(
-        plan=plan,
-        symbol=symbol,
-        live_routable_strategy_ids=live_routable_strategy_ids,
-        reconciliation=reconciliation,
-        # The book as read at the top of this leg, not a second read. Every path that could
-        # have changed it returned above (anything that settled, or failed to), so a re-read
-        # would return the same rows — and this module's whole posture is that one fact is
-        # read once and shared, because two reads are two chances to disagree.
-        local_positions=local_positions,
-        snapshot=snapshot,
-        filters=filters,
-        filters_reason=filters_reason,
-        limits=limits,
-        execution_stage=stage,
-        entry_bar_time=candle_ts,
-        entry_marks=entry_marks,
-        budget_registered=bool(budget.get("valid")),
-        # The scope half of the same budget the caps come from. Read here rather than inside
-        # the guard for the reason every other runtime fact is: one read, one set of numbers,
-        # no second door able to disagree about which budget is in force.
-        allowed_symbols=budget.get("symbol_allowlist") or (),
-        gate_open=True,  # the adapter above IS the grant; nothing else selects a capable one
-        runtime_active=runtime_active,
-        daily_loss_breached=bool(risk["daily_loss_limit_breached"]),
-        bracket_failures_consecutive=breaker["consecutive"],
-        api_breaker_tripped=bool(api_breaker_before["tripped"]) or api_unwritable,
-        venue_contract=venue_contract,
-        optional_data=optional_data,
-        submitted_today=count_today(root),
-        # Unknown equity sizes nothing: `size_live_order` refuses rather than defaulting, so an
-        # unreadable account cannot produce a position.
-        equity_usdt=_f(getattr(snapshot, "available_balance", None)) or 0.0,
-        verdict=verdict,
-        now=now,
-        order_book=order_book,
-        reference_quote=reference_quote,
-        # Last, after every read above: the moment the decision (and the gate, on this same
-        # mapping) judges these facts at (PR2c-1).
-        clock=_entry_clock(),
+    plan, venue_realized, decision_kwargs = _read_entry_facts(
+        record, facts,
+        route=route, live_routable_strategy_ids=live_routable_strategy_ids, feature_row=feature_row,
+        verdict=verdict, symbol=symbol, collector=collector, candle_ts=candle_ts, now=now, root=root,
+        timeout_seconds=timeout_seconds, optional_data=optional_data, adapter=adapter,
     )
     decision = plan_live_entry(**decision_kwargs)
     record["live_decision"] = {
@@ -719,9 +559,9 @@ def _run_gated_live_leg(
                      if isinstance(verdict, Mapping) else None)
     try:
         fresh = reread_entry_facts(root=root, now=now, clock=decision_kwargs["clock"],
-                                   control=control, judged_limits=judged_limits,
+                                   control=facts.control, judged_limits=judged_limits,
                                    venue_realized_pnl_usdt=venue_realized,
-                                   venue_required=snapshot is not None)
+                                   venue_required=facts.snapshot is not None)
         # The arming approval as both reads name it: a strategy re-armed in between is not the one
         # the decision was made for.
         first_approval = (live_arm_approvals or {}).get(strategy_id)
@@ -802,7 +642,7 @@ def _run_gated_live_leg(
     entry = live_leg.execute_live_entry(
         decision,
         adapter=adapter,
-        position_store=position_store,
+        position_store=facts.position_store,
         counter=select_live_order_counter(now=now, root=root),
         entry_marks=select_live_entry_marks(now=now, root=root),
         snapshot_store=live_execution.select_pre_order_snapshot_store(now=now, root=root),
@@ -820,7 +660,7 @@ def _run_gated_live_leg(
     # is the state that stops the next cycle re-entering, and it is the one thing here that must
     # be durable even if everything after it goes wrong.
     _record_bracket_outcome(record, entry, symbol=symbol, now=now, root=root)
-    _record_entry_outcome(record, entry, ledger=ledger)
+    _record_entry_outcome(record, entry, ledger=facts.ledger)
     if entry.get("entry") is not None:
         _report(record, governance, entry["entry"], guard=decision["guard"], now=now, root=root)
 
@@ -835,6 +675,257 @@ def _run_gated_live_leg(
     # failure recorded above, which is exactly the kind of thing the operator must hear about.
     _notify_operator(record, now=now, root=root)
     return record
+
+
+@dataclass(frozen=True)
+class _LegFacts:
+    """What step 1 of the leg read, for the steps after it (refactor plan PR-14)."""
+
+    limits: Any
+    budget: Mapping[str, Any]
+    stage: Any
+    control: Any
+    runtime_active: bool
+    snapshot: Any
+    local_positions: list[dict[str, Any]]
+    reconciliation: Mapping[str, Any]
+    position_store: Any
+    ledger: Any
+
+
+def _read_leg_facts(
+    record: dict[str, Any],
+    *,
+    adapter: Any,
+    now: str,
+    root: Path | None,
+    control_store: ControlStore | None,
+    timeout_seconds: int,
+) -> _LegFacts:
+    """Step 1 of the leg: the facts every later step shares, read before anything settles.
+
+    The budget and its limits, the execution stage, the control state, the account, the book and its
+    reconciliation against the venue, then the book's and the ledger's stores. It stamps ``live_gate``,
+    ``execution_stage`` and ``live_reconcile_status`` on ``record``, and ``ACCOUNT_UNREADABLE`` with the
+    account's degraded reason when the account cannot be read.
+
+    Not pure, and its order is part of the behaviour: it counts the account read on the API breaker
+    (``adapter.record_account``) and ends the protection watch of every position that left the book.
+    An unreadable budget raises, and ``run_live_leg`` reports it BLOCKED before anything settles. The
+    control state is read here, but only the entry decision consumes it, after settlement and
+    protection."""
+    limits, budget = resolve_live_order_limits(root, now=now)
+    # The confirmation phrase and the manual kill switch, from the same `limits` the guard judges
+    # (PR5a). Both are this process's environment, which the console and the assistant's read door
+    # are built without; stamped so the readiness board there reads the trading process's own
+    # switches instead of guessing from rows computed in a container that cannot see them.
+    record["live_gate"] = {
+        "confirmation_present": limits.confirmation_present(),
+        "manual_kill_switch": bool(limits.manual_kill_switch),
+    }
+    # The execution stage, read once beside the budget (PR1a) and enforced at the entry guard
+    # since PR1b. Stamped on the record so the ledger shows the rung the trading process itself
+    # saw, and passed to `plan_live_entry` in step 3 so the stamp and the judgement are one read.
+    # Settlement, protection and the close path (step 2) never consult it.
+    stage = resolve_execution_stage(root, now=now)
+    record["execution_stage"] = stage.as_dict()
+    # `.default(root)` rather than `ControlStore(root)`: the constructor takes a Path, so the
+    # bare form crashes on the `root=None` every ordinary run passes.
+    control = control_store if control_store is not None else ControlStore.default(root)
+    # `trading_allowed`, not `execution_allowed`: BOTH must hold for an entry. The runtime can
+    # now be ACTIVE with live entries held down — that is what an assistant `enable scope=runtime`
+    # leaves behind, and it is the one state where the two answers differ. Reading the weaker
+    # flag here would make the arm decorative on the exact path it exists to gate.
+    #
+    # This gates ENTRIES only, and deliberately: the value is consumed by the entry decision in
+    # step 3, after step 2 has settled and protected, so a disarmed runtime that is still ACTIVE
+    # closes what it holds. (A PAUSED or KILLED runtime never gets here — the scheduler drops the
+    # fire — which is why the soft halt, `control.CMD_HALT_TRADING`, exists.)
+    runtime_active = control.load().trading_allowed
+
+    snapshot, account_use = read_account(timeout_seconds=timeout_seconds, root=root)
+    if snapshot is None:
+        record["live_reason_codes"].append(ACCOUNT_UNREADABLE)
+        record["account_degraded_reason_code"] = account_use.get("degraded_reason_code")
+    # The account is a signed read; the breaker counts it with the adapter's own (PR2d-1). By
+    # the feed's own code: `degraded_reason_code` is one word for every way the read can fail.
+    adapter.record_account(readable=snapshot is not None,
+                           reason_code=account_use.get("error_reason_code"))
+
+    local_positions = list_open_live_positions(root)
+    # A watched position that left the book (settled, closed) ends its PROTECTION_UNKNOWN episode.
+    protection_watch.prune(
+        {k for k in (protection_watch.position_key(p) for p in local_positions) if k}, root=root,
+    )
+    reconciliation = reconcile_positions(local_positions, snapshot, now=now)
+    record["live_reconcile_status"] = reconciliation["status"]
+
+    position_store = select_live_position_store(now=now, root=root)
+    ledger = select_live_ledger(now=now, root=root)
+    return _LegFacts(
+        limits=limits, budget=budget, stage=stage, control=control, runtime_active=runtime_active,
+        snapshot=snapshot, local_positions=local_positions, reconciliation=reconciliation,
+        position_store=position_store, ledger=ledger,
+    )
+
+
+def _read_entry_facts(
+    record: dict[str, Any],
+    facts: _LegFacts,
+    *,
+    adapter: Any,
+    route: Mapping[str, Any] | None,
+    live_routable_strategy_ids: set[str] | None,
+    feature_row: Mapping[str, Any],
+    verdict: Mapping[str, Any],
+    symbol: str,
+    collector: Any,
+    candle_ts: Any,
+    now: str,
+    root: Path | None,
+    timeout_seconds: int,
+    optional_data: Mapping[str, Any] | None,
+) -> tuple[Mapping[str, Any] | None, float | None, dict[str, Any]]:
+    """Step 3's facts: read only on a pass that settled nothing and was not halted or held, after
+    settlement and protection.
+
+    The entry plan, the symbol's filters, the order book, the reference quote, the venue's realized
+    loss today, the risk snapshot, both breakers, the venue contract and the entry marks. A read that
+    degrades leaves its reason code in ``record["live_reason_codes"]``, and the breakers and the venue
+    contract are stamped on ``record``. Returns ``(plan, venue_realized, decision_kwargs)``:
+    ``decision_kwargs`` is every fact the decision is judged on, the clock read last of all, and
+    ``venue_realized`` is the figure the re-read (step 3a) judges today's loss on again."""
+    limits, budget, stage = facts.limits, facts.budget, facts.stage
+    snapshot, local_positions, reconciliation = facts.snapshot, facts.local_positions, facts.reconciliation
+    runtime_active = facts.runtime_active
+
+    plan = build_entry_plan(route, feature_row, now=now) if isinstance(route, Mapping) else None
+
+    filters, filters_reason = read_symbol_filters(collector, symbol, timeout_seconds=timeout_seconds)
+
+    # The book the spread and the market impact are judged on (PR2d-3), handed down whole: the
+    # decision derives the spread from it and walks it for the order's size once that is known.
+    order_book: Mapping[str, Any] | None = None
+    try:
+        raw_book = collector.order_book(symbol, limit=ORDER_BOOK_LEVELS, timeout_seconds=timeout_seconds)
+        order_book = raw_book if isinstance(raw_book, Mapping) else None
+    except Exception:  # noqa: BLE001 — degrade here, refuse at the entry decision: the route
+        # itself must not raise (settle/protect already ran, in step 2); the None it hands down is
+        # what plan_live_entry refuses fail-closed (Thomas 2026-08-30).
+        record["live_reason_codes"].append("LIVE_ENTRY_ORDERBOOK_UNREADABLE")
+
+    # The market's price now (PR2c-1, decision 24): the plan is priced on its bar's close, and the
+    # decision checks that close against this. Read only when there is a plan to check — a context
+    # with no route asks the venue nothing more — and degraded like the book: the None-priced quote
+    # it hands down is what the decision refuses.
+    reference_quote = (
+        _read_reference_quote(collector, symbol, now=now, timeout_seconds=timeout_seconds)
+        if plan is not None else None
+    )
+    if isinstance(reference_quote, Mapping) and reference_quote.get("reason"):
+        # Why, beside the decision's own refusal — as the book's read failure is recorded above.
+        record["live_reason_codes"].append(str(reference_quote["reason"]))
+
+    # The breaker reads the VENUE's realized figure, not the local ledger: on a machine whose
+    # live positions close at the venue the local ledger lags a cycle, and a loss breaker that
+    # measures late is a breaker that does not bound today (#247).
+    venue_realized = (
+        venue_daily_realized_net(snapshot.realized_windows) if snapshot is not None else None
+    )
+    risk = live_risk_snapshot(
+        limit_usdt=limits.daily_loss_limit_usdt, root=root, now=now,
+        venue_realized_pnl_usdt=venue_realized,
+        # This leg opens positions: a snapshot with no venue figure is a tripped breaker, not the
+        # local ledger. No snapshot at all is already ACCOUNT_UNREADABLE and refuses on its own.
+        venue_required=snapshot is not None,
+    )
+    if risk.get("history_error"):
+        # Say WHY the breaker reads tripped. The guard's own refusal only knows a bool and would
+        # call this "limit reached", which is the wrong fix for an operator to go looking for.
+        record["live_reason_codes"].append(risk["history_error"])
+
+    # How many entries in a row filled and could not be protected. Read here with every other
+    # runtime fact, and read even when it is zero, so the decision is judged against the
+    # same state the readiness board shows rather than a second opinion of it.
+    breaker = bracket_breaker_status(root)
+    record["live_bracket_breaker"] = {
+        "consecutive": breaker["consecutive"],
+        "limit": breaker["limit"],
+        "tripped": breaker["tripped"],
+    }
+    # And how many signed calls in a row the venue would not answer (PR2d-1), read beside it for
+    # the same reason: one state, read once, judged by the decision and shown on the board. A
+    # breaker that cannot count this pass (its record cannot be written) is not clear either: an
+    # entry sent then would leave with nothing to count its failure.
+    api_breaker_before = api_breaker_status(root)
+    api_unwritable = _api_breaker_unwritable(adapter)
+    record["live_api_breaker"] = {
+        "consecutive": api_breaker_before["consecutive"],
+        "limit": api_breaker_before["limit"],
+        "tripped": api_breaker_before["tripped"],
+        "tripped_class": api_breaker_before["tripped_class"],
+        "unwritable": api_unwritable,
+    }
+    # And what the venue contract sentinel last decided (PR4b, Thomas decision 46), read here with the
+    # breakers for their reason. The reader never raises: a record that cannot prove itself is a
+    # refusal the decision names, not an exception on the path that has just settled and protected.
+    venue_contract = read_venue_contract(root)
+    record["live_venue_contract"] = _contract_summary(venue_contract)
+
+    # Which bars this venue has already sent an entry on, and which contexts a stop-out still
+    # holds (PR2a). Read here, after settle/protect, so a corrupt file can only hold entries: the
+    # decision refuses on the None, and the record says why.
+    try:
+        entry_marks = read_live_entry_marks(root)
+    except MvpRuntimeError as exc:
+        entry_marks = None
+        record["live_reason_codes"].append(exc.reason_code)
+
+    # Every fact the decision is judged on, in one mapping: the decision reads it now, and the
+    # pre-order gate re-derives the decision from this mapping, narrowed by its re-read (PR2b,
+    # PR2c-2a), before anything is sent.
+    decision_kwargs = dict(
+        plan=plan,
+        symbol=symbol,
+        live_routable_strategy_ids=live_routable_strategy_ids,
+        reconciliation=reconciliation,
+        # The book as read in step 1, not a second read. Every path that could have changed
+        # it returned before step 3 (anything that settled, or failed to), so a re-read
+        # would return the same rows — and this module's whole posture is that one fact is
+        # read once and shared, because two reads are two chances to disagree.
+        local_positions=local_positions,
+        snapshot=snapshot,
+        filters=filters,
+        filters_reason=filters_reason,
+        limits=limits,
+        execution_stage=stage,
+        entry_bar_time=candle_ts,
+        entry_marks=entry_marks,
+        budget_registered=bool(budget.get("valid")),
+        # The scope half of the same budget the caps come from. Read here rather than inside
+        # the guard for the reason every other runtime fact is: one read, one set of numbers,
+        # no second door able to disagree about which budget is in force.
+        allowed_symbols=budget.get("symbol_allowlist") or (),
+        gate_open=True,  # the adapter this leg holds IS the grant; nothing else selects a capable one
+        runtime_active=runtime_active,
+        daily_loss_breached=bool(risk["daily_loss_limit_breached"]),
+        bracket_failures_consecutive=breaker["consecutive"],
+        api_breaker_tripped=bool(api_breaker_before["tripped"]) or api_unwritable,
+        venue_contract=venue_contract,
+        optional_data=optional_data,
+        submitted_today=count_today(root),
+        # Unknown equity sizes nothing: `size_live_order` refuses rather than defaulting, so an
+        # unreadable account cannot produce a position.
+        equity_usdt=_f(getattr(snapshot, "available_balance", None)) or 0.0,
+        verdict=verdict,
+        now=now,
+        order_book=order_book,
+        reference_quote=reference_quote,
+        # Last, after every read above: the moment the decision (and the gate, on this same
+        # mapping) judges these facts at (PR2c-1).
+        clock=_entry_clock(),
+    )
+    return plan, venue_realized, decision_kwargs
 
 
 def _settle_or_protect(
