@@ -1171,8 +1171,19 @@ def _length_asks(measured: Mapping[str, Any], structured: Mapping[str, Any] | No
     named = _named(_off_plan_paragraphs(structured, lambda n: n < low) if structured else [])
     if named:
         ask += (f" {low}자에 못 미치는 문단(번호는 0부터, 괄호는 {plan_target()}자까지 더할 양): "
-                f"{named}. 이 문단마다 적힌 만큼 이미 쓴 내용의 이유·예시·주의점을 더해 늘려라.")
-    return ask
+                f"{named}. 이 문단마다 적힌 만큼 늘려라.")
+    return f"{ask} {ADD_SUBSTANCE_ASK}"
+
+
+# What a paragraph grows by. Told to add "이유·예시·주의점", both revisions on 2026-09-30 that grew
+# a short body ('CHATGPT요금제' bcp_7f50c01bc7f35aee465a, 'ai 번역기' bcp_4ad51169ab0a26df545d)
+# gave every paragraph one more closing line that fits any post — "…지혜가 필요합니다",
+# "꼼꼼한 확인이 실수를 미연에 방지합니다" — and the length passed on filler.
+ADD_SUBSTANCE_ASK = (
+    "더하는 문장에는 그 섹션 소제목에 대한 구체적인 내용 — 근거 블록([S#])의 수치·메뉴나 버튼 이름·"
+    "절차 단계·설정값, 또는 독자가 겪는 구체적인 상황 하나 — 을 담아라. '…이 중요합니다'·'…지혜가 "
+    "필요합니다'·'…도움이 됩니다'·'…주의가 필요합니다'처럼 어느 글에나 붙는 맺음 문장으로 늘리지 마라."
+)
 
 
 def _named(paragraphs: Sequence[str]) -> str:

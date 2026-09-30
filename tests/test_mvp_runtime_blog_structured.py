@@ -952,7 +952,20 @@ def test_the_request_says_what_the_amount_in_brackets_means():
     first = dict(blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET),
                  failures=["body_chars"])
     request = blog_content.revision_request(TARGET, first, "")
-    assert "괄호는 130자까지 더할 양" in request and "적힌 만큼 이미 쓴 내용" in request
+    assert "괄호는 130자까지 더할 양" in request and "적힌 만큼 늘려라" in request
+
+
+def test_a_short_paragraph_grows_by_a_specific_not_by_a_closing_line():
+    """Both revisions that grew a short body on 2026-09-30 added one "…지혜가 필요합니다" per
+    paragraph ('CHATGPT요금제', 'ai 번역기')."""
+    draft = _draft()
+    draft["sections"][2]["paragraphs"][1] = "너무 짧은 문단입니다."
+    first = dict(blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET),
+                 failures=["body_chars"])
+    request = blog_content.revision_request(TARGET, first, "")
+    assert blog_content.ADD_SUBSTANCE_ASK in request
+    assert "근거 블록([S#])의 수치" in request and "'…지혜가 필요합니다'" in request
+    assert "이유·예시·주의점을 더해" not in request
 
 
 # --- the keyword under its floor is asked for, in named paragraphs (2026-09-30) -------------
