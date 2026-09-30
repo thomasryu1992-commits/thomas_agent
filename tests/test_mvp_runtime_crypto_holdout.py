@@ -367,8 +367,9 @@ def test_the_cap_only_ever_withholds_a_confirmation(holdout, expected):
     assert candidate_quality(_scored_record(holdout, parents=["cand_a"]))["holdout_status"] == expected
 
 
-def test_the_live_door_refuses_a_reused_confirmation():
-    """Every door reads `candidate_quality`'s status; the LIVE door is the one that spends money."""
+def test_the_live_door_names_a_reused_holdout_as_underpowered():
+    """Since D1 C no holdout arms LIVE; the refusal still reads the capped status, so the ask
+    Thomas reads does not call a reused tail a confirmation."""
     from runtime.mvp_runtime.crypto.forward_confirmation import assert_live_tier_confirmed
     from runtime.mvp_runtime.errors import ToolError
 
@@ -376,5 +377,4 @@ def test_the_live_door_refuses_a_reused_confirmation():
     with pytest.raises(ToolError) as refused:
         assert_live_tier_confirmed([child], outcomes=[], observed_lineages=1)
     assert refused.value.reason_code == "CANDIDATE_UNCONFIRMED_FOR_LIVE"
-    assert_live_tier_confirmed([_scored_record(_tail(expectancy=_CLEARS))], outcomes=[],
-                               observed_lineages=1)
+    assert f"holdout={HOLDOUT_UNDERPOWERED}" in str(refused.value)
