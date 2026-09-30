@@ -314,3 +314,67 @@ def test_the_holdout_block_carries_the_spread_its_gate_needs():
     assert isinstance(holdout["stdev_r"], float)
     if holdout["closed_count"] >= 2:
         assert holdout["stdev_r"] >= 0.0
+
+
+# --- a reused holdout confirms nothing (Thomas 2026-09-30, D3 B) -----------------------------
+
+
+def _scored_record(holdout, *, parents=()):
+    """A candidate row carrying a scored verdict and its holdout, as the store keeps it."""
+    spec, metrics, walk_forward, regimes = _strong_inputs()
+    return {
+        "candidate_id": "cand_reuse_probe",
+        "strategy_spec": _spec_dict(),
+        "parent_candidate_ids": list(parents),
+        "backtest_evidence": {
+            "robustness": score_robustness(spec, metrics, walk_forward, regimes, holdout=holdout),
+            "holdout": holdout,
+            "closed_count": 400, "win_count": 200, "expectancy": 0.25,
+        },
+    }
+
+
+def test_a_bred_rows_confirming_holdout_reads_underpowered_and_cannot_make_robust():
+    """A crossover child is judged on nearly the bars its parent was chosen for passing, so its
+    holdout cannot be the unseen evidence ROBUST and the LIVE door ask for."""
+    from runtime.mvp_runtime.crypto.candidate_ranking import candidate_quality
+
+    child = candidate_quality(_scored_record(_tail(expectancy=_CLEARS), parents=["cand_a", "cand_b"]))
+    assert child["holdout_reused"] is True
+    assert child["holdout_status"] == HOLDOUT_UNDERPOWERED
+    assert child["verdict"] == PROVISIONAL
+
+
+def test_the_same_holdout_without_parents_still_confirms():
+    """The cap is about where the evidence was spent, not about the evidence."""
+    from runtime.mvp_runtime.crypto.candidate_ranking import candidate_quality
+
+    seeded = candidate_quality(_scored_record(_tail(expectancy=_CLEARS)))
+    assert seeded["holdout_reused"] is False
+    assert seeded["holdout_status"] == HOLDOUT_CONFIRMED
+    assert seeded["verdict"] == ROBUST
+
+
+@pytest.mark.parametrize("holdout,expected", [
+    (_tail(expectancy=-_CLEARS), HOLDOUT_CONTRADICTED),
+    (_tail(expectancy=_MARGINAL), HOLDOUT_UNDERPOWERED),
+    (_tail(closed=MIN_HOLDOUT_TRADES - 1, expectancy=9.0), HOLDOUT_INSUFFICIENT),
+])
+def test_the_cap_only_ever_withholds_a_confirmation(holdout, expected):
+    """A reused tail that says nothing, or says the edge is wrong, reads exactly as it did."""
+    from runtime.mvp_runtime.crypto.candidate_ranking import candidate_quality
+
+    assert candidate_quality(_scored_record(holdout, parents=["cand_a"]))["holdout_status"] == expected
+
+
+def test_the_live_door_refuses_a_reused_confirmation():
+    """Every door reads `candidate_quality`'s status; the LIVE door is the one that spends money."""
+    from runtime.mvp_runtime.crypto.forward_confirmation import assert_live_tier_confirmed
+    from runtime.mvp_runtime.errors import ToolError
+
+    child = _scored_record(_tail(expectancy=_CLEARS), parents=["cand_a"])
+    with pytest.raises(ToolError) as refused:
+        assert_live_tier_confirmed([child], outcomes=[], observed_lineages=1)
+    assert refused.value.reason_code == "CANDIDATE_UNCONFIRMED_FOR_LIVE"
+    assert_live_tier_confirmed([_scored_record(_tail(expectancy=_CLEARS))], outcomes=[],
+                               observed_lineages=1)

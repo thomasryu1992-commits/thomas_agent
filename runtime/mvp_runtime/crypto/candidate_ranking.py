@@ -35,6 +35,7 @@ from .cost import (
     FUNDING_SOURCE_VENUE,
 )
 from .robustness import (
+    HOLDOUT_CONFIRMED, HOLDOUT_UNDERPOWERED,
     classify_verdict, expectancy_t, holdout_status, selection_adjusted_z, selection_rank, verdict_rank,
 )
 
@@ -588,6 +589,23 @@ def attempts_by_context(records: Sequence[Mapping[str, Any]]) -> dict[tuple[Any,
     return counts
 
 
+def holdout_reused(record: Mapping[str, Any]) -> bool:
+    """Was this row's holdout already spent choosing its parents?
+
+    A bred row cites its parents, and a parent may breed only after its holdout passed
+    `factory.holdout_permits_parenting`. The holdout is the tail of a window that rolls one day a
+    day, so the child is judged on nearly the bars its parent was selected on. Measured 2026-09-30
+    over 47 current-basis crossover children: 94% had a positive holdout when minted within a week
+    of the parent, 71% at 7-30 days and 33% at 30-90 days. Heritable quality would not decay with
+    the overlap, and in forward rows the same children match coin flips of their direction.
+
+    Keyed on the citation, not the derivation name, so a future bred type that cites parents is
+    covered without an edit here. A child whose parents predate the holdout check is counted too:
+    the cap only ever withholds a confirmation, never grants one."""
+    parents = record.get("parent_candidate_ids")
+    return isinstance(parents, (list, tuple)) and any(isinstance(p, str) and p for p in parents)
+
+
 def candidate_quality(
     record: Mapping[str, Any], *, attempts: int | None = None
 ) -> dict[str, Any]:
@@ -632,6 +650,11 @@ def candidate_quality(
         holdout_status(holdout_block) if isinstance(holdout_block, Mapping) and holdout_block
         else stored_holdout_state
     )
+    # A reused holdout confirms nothing (Thomas 2026-09-30, SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE
+    # D3 B). Every door that reads a holdout reads this status, so the cap sits here and nowhere else.
+    reused = holdout_reused(record)
+    if reused and holdout_state == HOLDOUT_CONFIRMED:
+        holdout_state = HOLDOUT_UNDERPOWERED
     # The verdict is RECOMPUTED from the stored components, never read back as a label.
     #
     # It used to be read: `robustness.get("verdict")`. Verdicts are written once, at mint
@@ -683,6 +706,7 @@ def candidate_quality(
         "verdict": verdict,
         "verdict_rank": verdict_rank(verdict),
         "holdout_status": holdout_state,
+        "holdout_reused": reused,
         "expectancy_t": round(t_stat, 6) if t_stat is not None else None,
         "attempts_in_context": attempts,
         # The bar this t had to clear given how many candidates it was drawn from. Reported
