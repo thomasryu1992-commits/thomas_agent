@@ -1299,7 +1299,13 @@ def _draft_shape(target: str) -> str:
     shape = json.loads(_DRAFT_SHAPE)
     n = PLAN_SENTENCES_PER_PARAGRAPH
     shape["intro"][0] = f"도입 문단 1({n}문장, '{target}' 1회)"
-    shape["sections"][0]["paragraphs"][0] = f"문단 1({n}문장, '{target}' 1회)"
+    # Marked on each section's FIRST paragraph (#1081), all three drafts on candidate-1081 put the
+    # keyword at the head of every section's first sentence — "미리캔버스 공동작업 환경을…",
+    # "…효율을 극대화하려면", "망고보드 ai 시스템은…" — six times, a pattern a reader sees. The
+    # mark is now on the second paragraph and on three sections of five: 1 + 3 = 4, the middle of
+    # the standard's 3~6.
+    shape["sections"][0]["paragraphs"][1] = (
+        f"문단 2({n}문장, 섹션 5개 중 3개에서만 '{target}' 1회 — 문장 중간에)")
     return json.dumps(shape, ensure_ascii=False)
 
 
@@ -1461,8 +1467,9 @@ def content_request(target: str) -> str:
         f"JSON 객체 하나만 문자열로 넣어라(마크다운·설명 금지): {_draft_shape(target)}\n"
         "키는 위 순서대로 써라 — 짧은 항목을 먼저 모두 쓰고 intro와 sections를 맨 끝에 써라. 형식의 "
         f"'문단 1({PLAN_SENTENCES_PER_PARAGRAPH}문장)' 같은 자리표시는 글에 옮기지 말고, 문단마다 그 수만큼 "
-        f"실제 문장을 채워라. '{target}' 1회라고 표시된 문단(도입 첫 문단과 섹션마다 첫 문단)에는 그 키워드를 "
-        "한 번 자연스럽게 넣어라.\n"
+        f"실제 문장을 채워라. '{target}' 1회라고 표시된 문단(도입 첫 문단, 그리고 섹션 5개 중 3개의 둘째 "
+        "문단)에는 그 키워드를 한 번 자연스럽게 넣어라 — 키워드로 문장이나 섹션을 시작하지 말고 문장 "
+        "중간에 넣어라.\n"
         f"{_length_plan()}\n"
         f"규칙: title_candidates는 소제목과 별개인 글 제목 3~5개이고 각각 '{target}'를 앞쪽에 "
         f"자연스럽게 포함한다. {_keyword_ask(target)} image_shots 4~8개(after_section은 0부터 센 섹션 번호, 생성 "
