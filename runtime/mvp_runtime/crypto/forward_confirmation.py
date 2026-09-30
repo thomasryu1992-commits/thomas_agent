@@ -240,13 +240,18 @@ def forward_outcomes_for(
 
 
 def judge_forward(
-    record: Mapping[str, Any], outcomes: Iterable[Mapping[str, Any]],
+    record: Mapping[str, Any], outcomes: Iterable[Mapping[str, Any]], *, z: float = CONFIDENCE_Z,
 ) -> dict[str, Any]:
     """One lineage's forward verdict, with the numbers that justify it.
 
     Mirrors ``robustness.holdout_status`` branch for branch: the trade floor, then the
     spread, then the simple interval (whose failure is the CONTRADICTED side), then the
     slice test — and every branch that cannot be computed reads INSUFFICIENT, never a pass.
+
+    ``z`` is the trade-level interval's bar. The default is the single-test 1.96 every reader
+    used before 2026-09-30. The LIVE door passes the bar its observation cohort sets
+    (:func:`assert_live_tier_confirmed`). A higher bar can only move a record from CONFIRMED
+    toward UNDERPOWERED, never the other way.
     """
     rows = forward_outcomes_for(record, outcomes)
     priced: list[tuple[float, float]] = []  # (days since epoch, net R)
@@ -277,7 +282,7 @@ def judge_forward(
     if spread <= 0:
         return verdict(FORWARD_INSUFFICIENT)
     mean = statistics.mean(nets)
-    if mean - CONFIDENCE_Z * spread / math.sqrt(len(nets)) <= 0:
+    if mean - z * spread / math.sqrt(len(nets)) <= 0:
         # The holdout's split (`robustness.holdout_status`), on the sign of a number the verdict
         # already carries — no new threshold. Measured the day it landed (2026-09-24): a 1d lineage
         # at +0.198R over its 10-trade floor, interval [-0.62, +1.01]R, read CONTRADICTED beside four
@@ -319,28 +324,34 @@ def assert_live_tier_confirmed(
     outcomes: Iterable[Mapping[str, Any]],
     observed_lineages: int,
 ) -> None:
-    """Every lineage armed LIVE is confirmed somewhere unseen — holdout or forward.
+    """Every lineage armed LIVE is FORWARD_CONFIRMED, at the bar its observation cohort sets.
 
-    The condition #648 disarmed the pool for, as a door instead of a migration: a backtest
-    holdout CONFIRMED (recomputed, `candidate_ranking.candidate_quality`) passes, a
-    FORWARD_CONFIRMED record passes, and everything else refuses with both statuses named.
-    ``observed_lineages`` — how many lines were under observation when this judgment ran — is
-    stamped into the refusal text so the ask Thomas reads carries the attempt count a first
-    confirmation must be read against.
+    The condition #648 disarmed the pool for, as a door instead of a migration. Until 2026-09-30 a
+    backtest holdout CONFIRMED also passed. That path is gone (Thomas 2026-09-30,
+    `SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md` D1 C). It was a single-test bar in a context
+    of about 1,756 attempts (4h pooled); at the corrected bar none of the store's 8 CONFIRMED
+    holdouts cleared. The holdout was also partly spent by the search that bred from it (D3). The
+    lineage's own forward stream is the only evidence neither the search nor the breeding touched.
+
+    ``observed_lineages`` is how many lines were under observation when this judgment ran, and
+    since D2 it is the bar as well as the note. The trade-level interval is judged at
+    ``robustness.selection_adjusted_z(observed_lineages)`` in place of 1.96 (15 lineages → 2.94).
+    The first of several forward records to clear is the best of that many tries. The holdout
+    status is still named in the refusal, as context.
 
     Raises ``CANDIDATE_UNCONFIRMED_FOR_LIVE``.
     """
     from . import candidate_ranking  # local, as the `pool` import it replaced: the gate's import graph is unchanged
 
-    from .robustness import HOLDOUT_CONFIRMED
+    from .robustness import selection_adjusted_z
 
+    lineages = max(1, int(observed_lineages))
+    bar = selection_adjusted_z(lineages)
     outcome_rows = list(outcomes)
     unconfirmed: list[str] = []
     for record in records:
         quality = candidate_ranking.candidate_quality(record)
-        if quality["holdout_status"] == HOLDOUT_CONFIRMED:
-            continue
-        forward = judge_forward(record, outcome_rows)
+        forward = judge_forward(record, outcome_rows, z=bar)
         if forward["status"] == FORWARD_CONFIRMED:
             continue
         unconfirmed.append(
@@ -352,9 +363,9 @@ def assert_live_tier_confirmed(
         return
     raise ToolError(
         "CANDIDATE_UNCONFIRMED_FOR_LIVE",
-        "arming LIVE needs a confirmation earned on unseen data — a CONFIRMED holdout or a "
-        f"FORWARD_CONFIRMED record — and these lineages have neither: {'; '.join(unconfirmed)}. "
-        f"Judged over a cohort of {observed_lineages} observed lineage(s). Wait for the forward "
-        "record, re-mint at the current window, or pass the explicit "
-        "--allow-unconfirmed-holdout escape (the waiver rides into the approval reason).",
+        "arming LIVE needs a FORWARD_CONFIRMED record from the lineage's own forward stream, "
+        f"judged at z {bar:.2f} over a cohort of {observed_lineages} observed lineage(s); a "
+        "CONFIRMED holdout no longer arms LIVE on its own (Thomas 2026-09-30). These lineages are "
+        f"not confirmed: {'; '.join(unconfirmed)}. Wait for the forward record. The LIVE tier has "
+        "no escape.",
     )

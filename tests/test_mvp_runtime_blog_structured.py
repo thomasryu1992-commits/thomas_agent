@@ -1004,3 +1004,15 @@ def test_a_revision_that_breaks_the_body_for_the_keyword_is_not_taken(monkeypatc
     quality = sheet["package"]["quality"]
     assert quality["revision_outcome"] == "REVISION_FURTHER_OFF:KEPT_FIRST_DRAFT"
     assert quality["failures"] == ["keyword_hits"] and quality["quality_state"] == "needs_edit"
+
+
+# --- the evidence's specifics, by name (2026-09-30, bcp_c82a3c17ded878ca24ea) ---------------
+#
+# The rule against invention alone pushed the draft to prose true of any editing app: the app
+# named once, none of the menu names its own sources carried.
+
+def test_the_request_asks_for_the_evidences_specifics_by_name_per_section():
+    request = blog_content.content_request(TARGET)
+    assert blog_content.EVIDENCE_SPECIFICS_ASK in request
+    assert "섹션마다 최소 1개" in request and "그 이름 그대로" in request
+    assert "지어내지는 마라" in request                     # the no-invention rule still stands

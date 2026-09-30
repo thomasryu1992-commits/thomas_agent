@@ -307,10 +307,46 @@ def test_a_forward_confirmed_lineage_passes_the_gate():
     )
 
 
-def test_a_confirmed_holdout_still_passes_without_any_forward_record():
+def test_a_confirmed_holdout_no_longer_arms_live_on_its_own():
+    """Thomas 2026-09-30 (SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE D1 C): the holdout was a
+    single-test bar over ~1,756 attempts and partly spent by the search; LIVE reads forward only.
+    It stays in the refusal as context."""
     record = _record()
     record["backtest_evidence"]["robustness"]["holdout_status"] = "CONFIRMED"
-    fc.assert_live_tier_confirmed([record], outcomes=[], observed_lineages=11)
+    with pytest.raises(ToolError) as exc:
+        fc.assert_live_tier_confirmed([record], outcomes=[], observed_lineages=11)
+    assert exc.value.reason_code == "CANDIDATE_UNCONFIRMED_FOR_LIVE"
+    assert "holdout=CONFIRMED" in str(exc.value)
+    assert "forward=FORWARD_INSUFFICIENT" in str(exc.value)
+
+
+# Ten wins of +2R and six losses of -1R, one per 15-day slice: trade-level t ~2.33. That clears the
+# single-test 1.96 and not the bar a cohort of 15 sets (selection_adjusted_z(15) ~2.94).
+_BETWEEN_THE_BARS = [True, False, True, True, False, True, True, False,
+                     True, False, True, True, False, True, True, False]
+
+
+def test_the_live_door_judges_forward_at_the_bar_its_cohort_sets():
+    """D2: the first of N forward records to clear is the best of N tries, so the door charges N."""
+    rows = _leaning_rows(_BETWEEN_THE_BARS)
+    assert fc.judge_forward(_record(timeframe="1d"), rows)["status"] == fc.FORWARD_CONFIRMED
+    with pytest.raises(ToolError) as exc:
+        fc.assert_live_tier_confirmed([_record(timeframe="1d")], outcomes=rows, observed_lineages=15)
+    assert "forward=FORWARD_UNDERPOWERED" in str(exc.value)
+    assert "z 2.94" in str(exc.value)
+    fc.assert_live_tier_confirmed([_record(timeframe="1d")], outcomes=rows, observed_lineages=1)
+
+
+def test_a_higher_bar_only_moves_a_record_toward_underpowered():
+    """The corrected bar withholds; it never turns a losing record into anything but CONTRADICTED."""
+    record = _record(timeframe="1d")
+    for rows in (_leaning_rows(_BETWEEN_THE_BARS), _spread_outcomes(), _spread_outcomes(base=-0.3)):
+        plain = fc.judge_forward(record, rows)["status"]
+        strict = fc.judge_forward(record, rows, z=4.0)["status"]
+        if plain == fc.FORWARD_CONFIRMED:
+            assert strict in (fc.FORWARD_CONFIRMED, fc.FORWARD_UNDERPOWERED)
+        else:
+            assert strict == plain
 
 
 def test_a_contradicted_forward_record_does_not_pass_as_merely_unconfirmed():
