@@ -1466,11 +1466,13 @@ def test_post_md_points_at_a_cited_sites_name_in_the_body_without_failing():
 def test_the_first_requests_shape_marks_where_the_keyword_goes():
     shape = json.loads(blog_content._draft_shape(TARGET))
     assert shape["intro"] == [f"도입 문단 1(4문장, '{TARGET}' 1회)", "도입 문단 2(4문장)"]
-    assert shape["sections"][0]["paragraphs"] == [f"문단 1(4문장, '{TARGET}' 1회)", "문단 2(4문장)", "문단 3(4문장)"]
+    assert shape["sections"][0]["paragraphs"] == [
+        "문단 1(4문장)", f"문단 2(4문장, 섹션 5개 중 3개에서만 '{TARGET}' 1회 — 문장 중간에)", "문단 3(4문장)"]
     assert tuple(shape) == blog_content.DRAFT_KEY_ORDER
     request = blog_content.content_request(TARGET)
     assert blog_content._draft_shape(TARGET) in request
-    assert f"'{TARGET}' 1회라고 표시된 문단(도입 첫 문단과 섹션마다 첫 문단)에는 그 키워드를 한 번 자연스럽게 넣어라" in request
+    assert "섹션 5개 중 3개의 둘째 문단)에는 그 키워드를 한 번 자연스럽게 넣어라" in request
+    assert "키워드로 문장이나 섹션을 시작하지 말고 문장 중간에 넣어라" in request
     assert blog_content.KEYWORD_FORM_ASK in request
 
 
@@ -1479,3 +1481,19 @@ def test_the_revision_keeps_the_target_free_shape():
     first = dict(first, failures=["headings"])
     request = blog_content.revision_request(TARGET, first, "")
     assert blog_content._DRAFT_SHAPE in request and "1회)" not in request.split("이전 초안:")[0]
+
+
+
+# --- thin evidence pointed at (2026-09-30) ------------------------------------------------------------
+#
+# Every scored draft citing fewer than two web sources scored 58 or under; '망고보드 ai' had one.
+
+@pytest.mark.parametrize("refs, warned", [
+    ([], True), (["[S1]"], True), (["[S1]", "[K1]"], True), (["[S1]", "[S3]"], False),
+])
+def test_post_md_warns_when_fewer_than_two_web_sources_are_cited(refs, warned):
+    package = {"quality": {"quality_state": "ready_for_review", "failures": []},
+               "sources": [{"source_ref": r, "title": "t"} for r in refs],
+               "body_paste": "본문 문단입니다.", "body_blocks": []}
+    post = blog_content.render_post_md(package)
+    assert ("근거가 적음: 인용된 웹 출처" in post) is warned
