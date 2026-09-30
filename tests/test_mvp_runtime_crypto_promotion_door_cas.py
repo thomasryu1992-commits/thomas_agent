@@ -232,6 +232,8 @@ def test_the_door_is_refused_when_a_disarm_lands_between_its_read_and_its_instal
         promote(selector, **mode)
 
     assert str(refused.value).startswith(f"BLOCKED {pool_state.STRATEGY_POOL_CHANGED}: ")
+    # It says to look before repeating: a restate repeated blindly re-arms the entry the cycle disarmed.
+    assert "look at what changed first" in str(refused.value).lower()
     assert _tiers(tmp_path) == {"S1": "OBSERVATION"}          # the disarm stands, and nothing else was written
     assert _promotions_ledgered(tmp_path) == ledgered         # and nothing was ledgered as installed
 
