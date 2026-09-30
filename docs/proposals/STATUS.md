@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **41**건: `DRAFT` 5 · `PARTIALLY DECIDED` 8 · `DECIDED` 3 · `IMPLEMENTED` 22 · `SUPERSEDED` 1 · `RECORD` 2
+제안서 **42**건: `DRAFT` 6 · `PARTIALLY DECIDED` 8 · `DECIDED` 3 · `IMPLEMENTED` 22 · `SUPERSEDED` 1 · `RECORD` 2
 
-## Thomas 결정 대기 (13)
+## Thomas 결정 대기 (14)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -25,6 +25,7 @@
 | [SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md](SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | §5의 D1·D2·D3·D4·D7·D8 채택, D6 보류(현상 유지). D5는 슬리피지 실측 뒤에 결정한다(§5 뒤 "결정" 절). 단계 0은 #980, 단계 1의 선행 조건 없는 항목은 #982–#989로 구현됐다. |
 | [EXECUTION_STAGE_ANTI_ROLLBACK_V0.1.md](EXECUTION_STAGE_ANTI_ROLLBACK_V0.1.md) | `DRAFT` | 2026-09-27 | §6의 D1–D4 결정 대기(앵커 위치, 장부가 파일을 대체, BOOTSTRAP으로 첫 행, 복원 뒤 재승인 비용). 구현 없음. |
 | [PROTECTION_UNKNOWN_ESCALATION_V0.1.md](PROTECTION_UNKNOWN_ESCALATION_V0.1.md) | `DRAFT` | 2026-09-27 | §6의 D1–D4 결정 대기(임계값, 런타임의 HARD 정지 권한, UNKNOWN에 청산하지 않음, 시계 저장 위치). 구현 없음. |
+| [SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md](SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md) | `DRAFT` | 2026-09-30 | §5의 D1–D4 결정 대기. ① LIVE 문의 홀드아웃 경로가 약 1,756회 시도에 대해 보정되지 않았다(보정하면 확정 8건 중 0건 통과). ② 퓨전 부모 선정이 홀드아웃을 읽어 자식의 홀드아웃이 오염된다(부모와의 간격이 짧을수록 우위가 커짐, 94%→33%). 구현 없음. |
 
 ## 결정됨 — 구현 남음 (3)
 
