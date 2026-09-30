@@ -1215,3 +1215,113 @@ def test_a_null_content_member_is_failed_over_not_fatal(monkeypatch):
     result = FailoverProvider([OpenRouterProvider(authorization=_openrouter_auth()), fallback]).generate(
         "p", max_output_tokens=100, timeout_seconds=30)
     assert result.model_id == "google_ai_studio" and fallback.calls == 1
+
+
+# --- a call's time is wall clock, not per socket operation (2026-09-30) ---------------------------
+#
+# urlopen's timeout bounds each blocking read, so a server sending a byte now and then held a call
+# for as long as it liked — timeout=2 against one byte a second took 6 s — and a slow first member
+# could leave the next one "not_tried" (the blog revision blocked on candidate-1079).
+
+import http.server as _http_server
+import socketserver as _socketserver
+import threading as _threading
+import time as _time
+
+
+class _TrickleHandler(_http_server.BaseHTTPRequestHandler):
+    seconds = 6
+    status = 200
+    hits: list = []
+
+    def do_POST(self):
+        type(self).hits.append(1)
+        if type(self).status != 200:
+            self.send_response(type(self).status)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        try:
+            for _ in range(type(self).seconds):
+                self.wfile.write(b" ")
+                self.wfile.flush()
+                _time.sleep(1)
+            self.wfile.write(b'{"ok": true}')
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture
+def trickle_server():
+    _TrickleHandler.seconds, _TrickleHandler.status, _TrickleHandler.hits = 6, 200, []
+    server = _socketserver.ThreadingTCPServer(("127.0.0.1", 0), _TrickleHandler)
+    server.daemon_threads = True
+    _threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_address[1]}/", _TrickleHandler
+    server.shutdown()
+    server.server_close()
+
+
+def _post(url):
+    import urllib.request
+    return urllib.request.Request(url, data=b"{}", method="POST")
+
+
+def test_a_trickling_response_is_cut_at_the_calls_time(trickle_server):
+    from runtime.mvp_runtime import providers
+    url, _handler = trickle_server
+    started = _time.monotonic()
+    with pytest.raises(ProviderError) as exc:
+        providers._post_json_with_retry(_post(url), timeout_seconds=2)
+    assert _time.monotonic() - started < 3.5
+    assert exc.value.reason_code == "PROVIDER_TRANSPORT"
+    assert "exceeded the call's time budget" in exc.value.reason
+    assert providers.failover_kind(exc.value) == "transport"
+
+
+def test_a_response_inside_the_calls_time_is_unchanged(trickle_server):
+    from runtime.mvp_runtime import providers
+    url, handler = trickle_server
+    handler.seconds = 1
+    raw, _latency, retries = providers._post_json_with_retry(_post(url), timeout_seconds=5)
+    assert raw.strip() == '{"ok": true}' and retries == 0
+
+
+def test_a_throttle_retry_that_cannot_fit_in_the_call_is_not_made(trickle_server, monkeypatch):
+    from runtime.mvp_runtime import providers
+    url, handler = trickle_server
+    handler.status = 429
+    monkeypatch.setattr(providers.time, "sleep", lambda s: None)
+    with pytest.raises(ProviderError) as exc:
+        providers._post_json_with_retry(_post(url), timeout_seconds=8)   # 8 - 5 backoff < 5
+    assert exc.value.reason_code == "PROVIDER_UNAVAILABLE" and len(handler.hits) == 1
+    handler.hits.clear()
+    with pytest.raises(ProviderError):
+        providers._post_json_with_retry(_post(url), timeout_seconds=30)
+    assert len(handler.hits) == 2                                        # room left: one retry
+
+
+def test_a_slow_first_member_fails_over_in_its_share_and_the_next_member_answers(trickle_server):
+    from runtime.mvp_runtime import providers
+    from runtime.mvp_runtime.providers import FailoverProvider
+    url, handler = trickle_server
+    handler.seconds = 30                       # far longer than the member's share
+
+    class _Trickling(_StubProvider):
+        def generate(self, prompt, *, max_output_tokens, timeout_seconds):
+            self.calls += 1
+            providers._post_json_with_retry(_post(url), timeout_seconds=timeout_seconds)
+            raise AssertionError("the trickling member must not answer")
+
+    first, second = _Trickling("openrouter", None), _StubProvider("google_ai_studio", _result("google_ai_studio"))
+    started = _time.monotonic()
+    result = FailoverProvider([first, second], member_timeout_cap=5).generate(
+        "p", max_output_tokens=100, timeout_seconds=20)
+    assert _time.monotonic() - started < 7                   # the first member's 5 s share, not 30
+    assert result.model_id == "google_ai_studio" and second.calls == 1
+    assert [f["kind"] for f in result.failovers] == ["transport"]   # tried and cut, not "not_tried"
