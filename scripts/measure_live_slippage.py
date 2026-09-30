@@ -51,6 +51,12 @@ CANARIES = STATE / "crypto" / "live_canary_orders.jsonl"
 # 25 bps LONG-entry stop on a major, not a strategy's, so the two are reported apart.
 PROBE_STRATEGY_PREFIX = "PROBE-"
 
+# Below this many fills a tail percentile is not reported. At n=12 (the 2026-09-28 sample) a P95 is the
+# largest fill and a P90 is one fill away from it, so the figure would restate `worst` under a name
+# that reads as a distribution (docs/proposals/CRYPTO_SYSTEM_IMPROVEMENT_GAP_ANALYSIS_V0.1.md §4).
+MIN_PERCENTILE_N = 20
+PERCENTILES = (75, 90, 95)
+
 
 def _rows(path: pathlib.Path) -> Iterator[dict[str, Any]]:
     if not path.is_file():
@@ -244,11 +250,13 @@ def render(result: dict[str, Any]) -> str:
             # match (review C2), and one large fill moves it far from the median.
             modelled = result.get("modelled_stop_bps", result["modelled_bps"])
             out.append(_stop_line("stop fills:", stops, modelled))
+            out.append(_percentile_line(stops))
             for source in ("strategy", "probe"):
                 part = [r["adverse_bps"] for r in rows
                         if r["close_reason"] == "stop_loss" and r.get("source") == source]
                 if part:
                     out.append(_stop_line(f"  {source} stops:", part, modelled))
+                    out.append(_percentile_line(part))
     out.append("")
     out.append(f"exits with no comparable pair: {result['unmeasurable']}")
     out.append("")
@@ -256,10 +264,18 @@ def render(result: dict[str, Any]) -> str:
     if entries:
         out.append(f"entry fills: n={len(entries)}  median "
                    f"{statistics.median(r['adverse_bps'] for r in entries):.2f} bps")
+        out.append(_percentile_line([r["adverse_bps"] for r in entries]))
     canaries = [r for r in rows if r["close_reason"] == "canary"]
     if canaries:
         out.append(f"canary fills: n={len(canaries)}  median "
                    f"{statistics.median(r['adverse_bps'] for r in canaries):.2f} bps")
+        out.append(_percentile_line([r["adverse_bps"] for r in canaries]))
+    for leg, label in (("stop_loss", "stop fills by symbol:"), ("entry", "entry fills by symbol:")):
+        part = [r for r in rows if r["close_reason"] == leg]
+        if part:
+            out.append("")
+            out.extend(_by_symbol(label, part))
+    out.append("")
     out.append(f"entries with no recorded intent: {result['entries_without_intent']}"
                "   canaries with none: " + str(result["canaries_without_intent"])
                + "   (both predate `intended_price`, 2026-08-06)")
@@ -268,6 +284,43 @@ def render(result: dict[str, Any]) -> str:
     out.append("one entry this runtime can make without routing a strategy signal — the")
     out.append("instrument for this constant while live entries are held down.")
     return "\n".join(out)
+
+
+def distribution(values: list[float]) -> dict[str, Any]:
+    """n, mean, median and worst of adverse bps, and the tail percentiles once there are
+    ``MIN_PERCENTILE_N`` fills. Below that each percentile is None, never an estimate."""
+    values = list(values)
+    if not values:
+        return {"n": 0}
+    result: dict[str, Any] = {"n": len(values), "mean": statistics.mean(values),
+                              "median": statistics.median(values), "worst": max(values)}
+    cuts = (statistics.quantiles(values, n=100, method="inclusive")
+            if len(values) >= MIN_PERCENTILE_N else None)
+    for p in PERCENTILES:
+        result[f"p{p}"] = None if cuts is None else cuts[p - 1]
+    return result
+
+
+def _percentile_line(values: list[float]) -> str:
+    d = distribution(values)
+    if d["n"] < MIN_PERCENTILE_N:
+        return (f"    P75/P90/P95: not reported, n={d['n']} < {MIN_PERCENTILE_N} "
+                "(a tail percentile of this few fills is the worst fill)")
+    return "    " + "  ".join(f"P{p} {d[f'p{p}']:.2f}" for p in PERCENTILES) + " bps"
+
+
+def _by_symbol(label: str, rows: list[dict[str, Any]]) -> list[str]:
+    """One line per symbol: the sample is small and one symbol can carry it (entries n=3 were all
+    BTCUSDT on 2026-09-28), so a pooled figure is read beside what it pools."""
+    by: dict[str, list[float]] = {}
+    for row in rows:
+        by.setdefault(str(row.get("symbol") or "?"), []).append(row["adverse_bps"])
+    lines = [label]
+    for symbol, values in sorted(by.items()):
+        d = distribution(values)
+        lines.append(f"  {symbol:<10} n={d['n']}  mean {d['mean']:.2f}  median {d['median']:.2f}  "
+                     f"worst {d['worst']:.2f} bps")
+    return lines
 
 
 def _stop_line(label: str, stops: list[float], modelled: float) -> str:
