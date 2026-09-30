@@ -635,7 +635,10 @@ def _parse_hosted_response(
         data: dict[str, Any] = json.loads(raw)
         text = extract_text(data)
         analysis = json.loads(_strip_code_fences(text))
-    except (KeyError, IndexError, ValueError, TypeError):
+    # AttributeError: a well-formed response whose text is null (`"content": null` — a reasoning
+    # model that spent its tokens thinking, 2026-09-30) reached `_strip_code_fences(None)` and
+    # escaped raw, ending a blog run as BRIDGE_ERROR instead of failing over.
+    except (AttributeError, KeyError, IndexError, ValueError, TypeError):
         raise ProviderError("MALFORMED_RESPONSE", "hosted provider returned an unparseable response") from None
     if not isinstance(analysis, dict) or any(k not in analysis for k in _REQUIRED_ANALYSIS_KEYS):
         raise ProviderError("MALFORMED_RESPONSE", "hosted provider response missing required analysis fields")
