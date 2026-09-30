@@ -410,7 +410,7 @@ _LIMITS = LiveOrderLimits(
 
 
 def _settle(position, *, adapter=None, candle_ts="2026-07-28T00:00:00Z", store=None, ledger=None,
-            context_timeframe=None):
+            context_timeframe=None, root=None):
     """One context's pass over one open position.
 
     ``context_timeframe`` defaults to the position's OWN timeframe — i.e. the context that owns
@@ -427,7 +427,7 @@ def _settle(position, *, adapter=None, candle_ts="2026-07-28T00:00:00Z", store=N
         position_store=store or _Store(), ledger=ledger or _Ledger(),
         reconciliation={"status": "RECONCILED", "books": {}},
         limits=_LIMITS, candle_ts=candle_ts, context_timeframe=context_timeframe,
-        now=NOW, root=None, timeout_seconds=10,
+        now=NOW, root=root, timeout_seconds=10,
     )
     return record
 
@@ -484,24 +484,26 @@ def test_a_legacy_position_falls_back_and_says_so():
     assert live_route.LIVE_MAX_HOLD_FALLBACK in record["live_reason_codes"]
 
 
-def test_a_time_exit_that_will_not_close_is_reported_and_not_a_halt():
+def test_a_time_exit_that_will_not_close_is_reported_and_not_a_halt(tmp_path):
     """The one survivable failed close in this module. An UNPROTECTED position that will not
     close is an incident — no stop on real exposure. A time-exit position still has its bracket
     resting, so it is protected, just held too long: report, retry next cycle, do not escalate."""
     adapter = _ClosingAdapter(orders={"sl-1": {"status": "NEW"}, "tp-1": {"status": "NEW"}},
                               fetch_raises="TOOL_TRANSPORT")
-    record = _settle(_timed(holding_candles=9), adapter=adapter)
+    # The failed bracket read is PROTECTION_UNKNOWN, which the protection watch records (its first
+    # pass is U0: hold, no escalation) — into this test's own state root.
+    record = _settle(_timed(holding_candles=9), adapter=adapter, root=tmp_path)
     assert record["halt"] is False
     assert live_route.LIVE_TIME_EXIT_DEFERRED in record["live_reason_codes"]
 
 
-def test_the_counter_survives_a_close_that_did_not_confirm():
+def test_the_counter_survives_a_close_that_did_not_confirm(tmp_path):
     """The bar that passed still passed. A counter that advanced only on a successful exit would
     reset the clock every time the venue was unreachable, and the position would never time out."""
     adapter = _ClosingAdapter(orders={"sl-1": {"status": "NEW"}, "tp-1": {"status": "NEW"}},
                               fetch_raises="TOOL_TRANSPORT")
     store = _Store()
-    _settle(_timed(holding_candles=9), adapter=adapter, store=store)
+    _settle(_timed(holding_candles=9), adapter=adapter, store=store, root=tmp_path)
     assert store.saved[0]["holding_candles"] == 10
 
 

@@ -68,6 +68,7 @@ from . import (
     probe,
     promotion_backlog,
     proposer,
+    protection_watch,
     robustness,
     strategy,
     testnet_execution,
@@ -204,6 +205,18 @@ TUNABLES: tuple[Tunable, ...] = (
             "-1111 tick-residue mode, which is deterministic and which a limit of 2 latched on "
             "before its own error_detail could be read",
             "naked round trips ceasing to be cheap, or a bracket failure this runtime has not seen"),
+    Tunable("PROTECTION_UNKNOWN_NOTIFY_MINUTES", protection_watch.PROTECTION_UNKNOWN_NOTIFY_MINUTES,
+            "crypto/protection_watch.py", OPERATOR,
+            "Thomas 2026-09-30 (PROTECTION_UNKNOWN_ESCALATION D1): two 15-minute passes, so a single "
+            "transport blip says nothing; U1 messages the operator and holds new live entries",
+            "UNKNOWN episodes long enough to measure: many that clear inside the window, or a real "
+            "unprotected fill the window let through"),
+    Tunable("PROTECTION_UNKNOWN_HARD_HALT_MINUTES", protection_watch.PROTECTION_UNKNOWN_HARD_HALT_MINUTES,
+            "crypto/protection_watch.py", OPERATOR,
+            "Thomas 2026-09-30 (PROTECTION_UNKNOWN_ESCALATION D1/D2): four passes to U2, where the "
+            "runtime tightens the control state to HARD; well inside any strategy's max-hold",
+            "an operator lifting a watch-placed HARD halt that was not needed, or a strategy whose "
+            "max-hold is shorter than this window"),
     Tunable("MAX_CONSECUTIVE_API_ERRORS", live_order.MAX_CONSECUTIVE_API_ERRORS,
             "crypto/live_order.py", OPERATOR,
             "Thomas decisions 18 and 27 (2026-09-16/17): the bracket breaker's count and shape, per "

@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **643** distinct codes across **1244** raise sites
+- **644** distinct codes across **1246** raise sites
 - **23** exception classes carry them
 - **75** codes are raised from more than one module (see below)
 - **136** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -667,6 +667,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `LIVE_POSITION_SYMBOL_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | `live_position_path` | `not symbol or not symbol.replace('_', '').replace('-', '').isalnum()` |
 | `LIVE_POSITION_SYMBOL_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | `live_position_path` | `path.parent != resolved_base` |
 | `LIVE_POSITION_UNATTRIBUTABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | `position_symbol` | `not symbol` |
+| `LIVE_PROTECTION_WATCH_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/protection_watch.py` | `read_watch` | `—` |
+| `LIVE_PROTECTION_WATCH_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/protection_watch.py` | `read_watch` | `not isinstance(entries, Mapping) or data.get('version') != PROTECTION_WATCH_VERSION` |
 | `MALFORMED_ANALYSIS` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | `_require_analysis` | `missing` |
 | `MALFORMED_ANALYSIS` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | `_require_analysis` | `not isinstance(analysis, Mapping)` |
 | `MALFORMED_ANALYSIS` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | `_require_analysis` | `not isinstance(facts, list)` |
