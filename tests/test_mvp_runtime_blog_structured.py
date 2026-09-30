@@ -1427,3 +1427,55 @@ def test_the_name_rule_tells_a_business_from_a_tool_by_what_the_reader_does_ther
     assert "캔바·어도비 파이어플라이·ChatGPT·당근·카카오톡" in ask
     for label in ("업체:", "도구:", "통신사:", "공공:", "상품명:"):
         assert label in ask
+
+
+
+# --- a cited site's name in the body (2026-09-30) ---------------------------------------------------
+#
+# '현수막당일제작' wrote "네모디 같은 곳" beside two shops it had made anonymous.
+
+@pytest.mark.parametrize("title, name", [
+    ("현수막 제작 | 플랜카드·플래카드 당일제작·셀프디자인 | 네모디", "네모디"),
+    ("자유형 스티커 제작 | 마플", "마플"),
+    ("입간판 banner - 디피마켓", "디피마켓"),
+    ("레드프린팅 앤 프레스 (Red Printing & Press)", None),      # one segment: no site suffix
+    ("무료 AI 스티커 생성기 | Adobe Firefly", None),              # not a Korean name
+    ("영업신고증 발급 절차부터 준비물까지 총정리", None),
+])
+def test_the_site_name_a_title_ends_with(title, name):
+    assert blog_draft.source_site_name(title) == name
+
+
+def test_post_md_points_at_a_cited_sites_name_in_the_body_without_failing():
+    sources = [{"source_ref": "[S1]", "title": "현수막 제작 | 당일제작 | 네모디", "url": "https://nemodi.com"},
+               {"source_ref": "[S2]", "title": "스티커 | 마플", "url": "https://marpple.com"}]
+    prose = ["네모디 같은 곳에서는 다양한 시안을 고를 수 있습니다."]
+    assert blog_draft.site_names_in_body(sources, prose, "현수막당일제작") == ["네모디"]
+    assert blog_draft.site_names_in_body(sources, prose, "네모디 사용법") == []    # the keyword's own
+    package = {"quality": {"quality_state": "ready_for_review", "failures": []}, "sources": sources,
+               "target_keyword": "현수막당일제작", "body_paste": prose[0], "body_blocks": []}
+    post = blog_content.render_post_md(package)
+    assert "본문에 출처 사이트 이름이 나옴: 「네모디」" in post and "자동 판정 아님" in post
+
+
+
+# --- the keyword's places in the first request's shape (2026-09-30) ----------------------------------
+#
+# '캔바 사용법' came in with the keyword once, and the revision that would have fixed it was blocked.
+
+def test_the_first_requests_shape_marks_where_the_keyword_goes():
+    shape = json.loads(blog_content._draft_shape(TARGET))
+    assert shape["intro"] == [f"도입 문단 1(4문장, '{TARGET}' 1회)", "도입 문단 2(4문장)"]
+    assert shape["sections"][0]["paragraphs"] == [f"문단 1(4문장, '{TARGET}' 1회)", "문단 2(4문장)", "문단 3(4문장)"]
+    assert tuple(shape) == blog_content.DRAFT_KEY_ORDER
+    request = blog_content.content_request(TARGET)
+    assert blog_content._draft_shape(TARGET) in request
+    assert f"'{TARGET}' 1회라고 표시된 문단(도입 첫 문단과 섹션마다 첫 문단)에는 그 키워드를 한 번 자연스럽게 넣어라" in request
+    assert blog_content.KEYWORD_FORM_ASK in request
+
+
+def test_the_revision_keeps_the_target_free_shape():
+    first = blog_content.interpret_draft(json.dumps(_draft(), ensure_ascii=False), TARGET)
+    first = dict(first, failures=["headings"])
+    request = blog_content.revision_request(TARGET, first, "")
+    assert blog_content._DRAFT_SHAPE in request and "1회)" not in request.split("이전 초안:")[0]

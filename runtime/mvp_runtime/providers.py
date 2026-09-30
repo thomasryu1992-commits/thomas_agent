@@ -18,6 +18,7 @@ import http.client
 import json
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -384,6 +385,47 @@ def _error_code(exc: urllib.error.HTTPError) -> str | None:
 _USER_AGENT = "thomas-agent-mvp/0.1"
 
 
+# `urlopen(timeout=...)` bounds each blocking socket operation, not the call: a server that keeps
+# sending a byte now and then holds the call open for as long as it likes. Reproduced locally
+# (2026-09-30): timeout=2 against a server writing one byte a second took 6 s. `FailoverProvider`
+# splits its budget between members on the assumption that a member's `timeout_seconds` is wall
+# clock; without this, one slow member could take the whole budget and leave the next member
+# "not_tried" — the shape of the blog revision blocked on candidate-1079
+# (`PROVIDER_CHAIN_EXHAUSTED`: openrouter unparseable, google_ai_studio "the call's time budget ran
+# out before this member", the fire 856 s). The ledger keeps no timing for that blocked call, so
+# whether openrouter trickled there is inference; the gap closed here is the mechanism.
+# Tightening only: a call that finishes inside its time is unchanged.
+_DEADLINE_READ = "hosted provider exceeded the call's time budget"
+# A retry needs at least this much of the call's time left after its backoff.
+_RETRY_MIN_SECONDS = 5
+
+
+def _read_within(request: urllib.request.Request, *, timeout_seconds: float) -> bytes:
+    """``urlopen(request).read()`` bounded by ``timeout_seconds`` of wall clock.
+
+    The read runs on a daemon thread joined for the time allowed; a call still running then is
+    abandoned (its socket closes when its own per-operation timeout fires) and reported as a
+    transport failure. Whatever the call raised is re-raised here unchanged, so the caller's
+    typed handling is the same as before."""
+    box: dict[str, Any] = {}
+
+    def call() -> None:
+        try:
+            with urllib.request.urlopen(request, timeout=max(1, int(timeout_seconds))) as response:
+                box["raw"] = response.read()
+        except BaseException as exc:  # noqa: BLE001 — handed to the caller as it was raised
+            box["error"] = exc
+
+    worker = threading.Thread(target=call, name="hosted-provider-call", daemon=True)
+    worker.start()
+    worker.join(max(0.0, float(timeout_seconds)))
+    if worker.is_alive():
+        raise ProviderError("PROVIDER_TRANSPORT", _DEADLINE_READ, data={"transport": "deadline"})
+    if "error" in box:
+        raise box["error"]
+    return box["raw"]
+
+
 def _post_json_with_retry(request: urllib.request.Request, *, timeout_seconds: int) -> tuple[str, int, int]:
     """POST and return ``(raw_body, latency_ms, retries)`` — the one HTTP path every
     hosted adapter shares, so the retry rule and the two typed failure classes cannot
@@ -398,22 +440,31 @@ def _post_json_with_retry(request: urllib.request.Request, *, timeout_seconds: i
     server's answer, safe) — never the URL or the key.
     """
     started = time.monotonic()
+    deadline = started + float(timeout_seconds)
+    allowed = float(timeout_seconds)       # the first attempt has the whole call
     retries = 0
     while True:
         try:
-            with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
-                raw = response.read().decode("utf-8")
+            raw = _read_within(request, timeout_seconds=allowed).decode("utf-8")
             break
         except urllib.error.HTTPError as exc:
             # Order matters: HTTPError IS a URLError; catch it first to read the status.
+            # A retry must fit in what is left of THIS call: the old rule gave the second
+            # attempt a fresh full timeout after the backoff, up to twice the call plus 5 s.
             if exc.code in _RETRYABLE_HTTP and retries < _MAX_RETRIES:
-                retries += 1
-                time.sleep(_RETRY_BACKOFF_SECONDS)
-                continue
+                left = deadline - time.monotonic() - _RETRY_BACKOFF_SECONDS
+                if left >= _RETRY_MIN_SECONDS:
+                    retries += 1
+                    time.sleep(_RETRY_BACKOFF_SECONDS)
+                    allowed = left
+                    continue
             code = None if exc.code in _RETRYABLE_HTTP else _error_code(exc)
             if code in _RETRYABLE_ERROR_CODES and retries < _MAX_RETRIES:
-                retries += 1
-                continue
+                left = deadline - time.monotonic()
+                if left >= _RETRY_MIN_SECONDS:
+                    retries += 1
+                    allowed = left
+                    continue
             suffix = f" after {retries} retry" if retries else ""
             # The vendor's error code rides the reason: "HTTP 400" alone made a malformed-JSON
             # sample, a decommissioned model (#790) and an empty model slug (#801) one string.
