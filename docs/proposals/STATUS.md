@@ -33,7 +33,7 @@
 | [EQUITY_PERP_LANE_V0.1.md](EQUITY_PERP_LANE_V0.1.md) | `DECIDED` | 2026-08-03 | ① 팩터/디스퍼전 재정의 ② 스프레드 v1 제외(2026-08-03), S0 규제 기록(2026-08-04, 잠정). S1은 2026-08-04부터 운영 중이고 S2(a)는 2026-08-09 완료(§8b). S2(b)는 데이터 깊이 때문에 아직 평가할 수 없고 S3–S5는 미착수다(`docs/REMAINING_WORK.md` §H). S3 이후 실주문은 S0의 확정 승격이라는 별도 결정 전에는 열리지 않는다. |
 | [FAMILY_EXHAUSTION_V0.1.md](FAMILY_EXHAUSTION_V0.1.md) | `DECIDED` | 2026-09-26 | Q1 B·Q2·Q3 결정, §6 확인 완료(1h는 5심볼 모두가 의도). 남은 구현: Q1 B의 퍼널 family 소진 절(30일 CONFIRMED·마지막 CONFIRMED). 1h 5심볼 민팅은 이미 돌고 있었다(§6 정정, 2026-09-26). |
 | [RISK_LANE_WATCHDOG_V0.1.md](RISK_LANE_WATCHDOG_V0.1.md) | `DECIDED` | 2026-09-29 | 타임아웃 시 프로세스 재시작, 마감값 600/120/120 s(Thomas). 구현 PR 두 개(§7) 진행 중. |
-| [CRYPTO_REFACTOR_AND_MODULARIZATION_PLAN_V0.1.md](CRYPTO_REFACTOR_AND_MODULARIZATION_PLAN_V0.1.md) | `DECIDED` | 2026-09-30 | D-1~D-5 권고대로(Thomas). 진행: PR-02·03(#1049), PR-04(#1059), PR-05(#1060), PR-07(#1064), PR-08(리플레이 백테스트 분리) 머지. PR-06 실측은 §K-1에 기록. 남은 구현: §S의 PR-09 이후와 PR-S3(승격 문 CAS). |
+| [CRYPTO_REFACTOR_AND_MODULARIZATION_PLAN_V0.1.md](CRYPTO_REFACTOR_AND_MODULARIZATION_PLAN_V0.1.md) | `DECIDED` | 2026-09-30 | D-1~D-5 권고대로(Thomas). 진행: PR-02·03(#1049), PR-04(#1059), PR-05(#1060), PR-07(#1064), PR-08(#1068, 리플레이 백테스트 분리), PR-09(템플릿 공간 분리) 머지. PR-06 실측은 §K-1에 기록. 남은 구현: §S의 PR-10 이후와 PR-S3(승격 문 CAS). |
 | [SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md](SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md) | `DECIDED` | 2026-09-30 | D1 C·D2·D3 B→A·D4 예(Thomas): LIVE는 FORWARD_CONFIRMED 필수, forward 기준을 `observed_lineages`로 보정, 재사용 홀드아웃 표시는 버그 수정으로 지금 구현, 검증 슬라이스는 에포크 경계. 남은 구현: ① 문 변경, ② B 표시. ② A는 `REMAINING_WORK.md` §L. |
 
 ## 구현됨 (25)

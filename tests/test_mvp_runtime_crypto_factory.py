@@ -18,7 +18,9 @@ import pytest
 
 from runtime.mvp_runtime import control, timeutil
 from runtime.mvp_runtime.control import ControlState, ControlStore
-from runtime.mvp_runtime.crypto import backtest, factory, features, indicators, market_data, pool, robustness
+from runtime.mvp_runtime.crypto import (
+    backtest, factory, features, indicators, market_data, pool, robustness, template_space,
+)
 from runtime.mvp_runtime.crypto.factory import (
     generate_batch,
     backtest_spec,
@@ -2821,8 +2823,10 @@ def test_every_mintable_feature_is_classified():
     is that the mistake is reported where it was made, instead of surfacing later as specs
     blocking on a feature the author believed they had added.
     """
-    vocabulary = set(factory.NUMERIC_FEATURES) | set(factory.CATEGORICAL_FEATURES)
-    classified = set(factory._FEATURE_FEED)
+    # Read where `known_features` reads them, so the test below that widens the vocabulary sees
+    # the same binding the runtime half does.
+    vocabulary = set(template_space.NUMERIC_FEATURES) | set(template_space.CATEGORICAL_FEATURES)
+    classified = set(template_space._FEATURE_FEED)
 
     unclassified = vocabulary - classified
     assert not unclassified, (
@@ -2846,7 +2850,7 @@ def test_an_unclassified_feature_is_mintable_nowhere(monkeypatch):
     it takes BLOCK_UNKNOWN_FEATURE.
     """
     monkeypatch.setattr(
-        factory, "NUMERIC_FEATURES", factory.NUMERIC_FEATURES | {"liquidation_burst_ratio"}
+        template_space, "NUMERIC_FEATURES", factory.NUMERIC_FEATURES | {"liquidation_burst_ratio"}
     )
     for venue in market_data.VENUE_FEEDS:
         numeric, _ = factory.known_features(venue)
