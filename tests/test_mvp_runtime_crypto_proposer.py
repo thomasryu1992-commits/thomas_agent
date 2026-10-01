@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from runtime.mvp_runtime.crypto import factory, features, market_data, proposer
+from runtime.mvp_runtime.crypto import factory, features, market_data, proposer, template_space
 from runtime.mvp_runtime.crypto.features import latest_feature_row
 from runtime.mvp_runtime.crypto.market_data import MockMarketDataCollector, collect_market_data
 from runtime.mvp_runtime.errors import ProviderError
@@ -84,7 +84,7 @@ class _Provider:
 
 def test_known_features_is_the_validators_vocabulary_not_the_rows(row):
     known = proposer.known_features()
-    assert known == frozenset(factory.NUMERIC_FEATURES) | frozenset(factory.CATEGORICAL_FEATURES)
+    assert known == frozenset(template_space.NUMERIC_FEATURES) | frozenset(template_space.CATEGORICAL_FEATURES)
     # Strictly narrower than the computed row: the validator is the authority on what a
     # spec may name, and it does not admit every column features.py computes.
     assert known < frozenset(str(k) for k in row)

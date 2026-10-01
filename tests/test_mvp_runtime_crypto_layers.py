@@ -565,8 +565,8 @@ def test_the_names_pr04_moved_are_the_same_objects_where_they_were():
     for name in ("ROUTE_DISABLED", "ROUTE_BLOCKED", "ROUTE_HELD", "ROUTE_SETTLED", "ROUTE_OPENED",
                  "ROUTE_INCIDENT", "ROUTING_PRECONDITION", "ACCOUNT_UNREADABLE"):
         assert getattr(live_route, name) is getattr(vocabulary, name), name
-    # PR-16 removed the three arming codes nobody read through `live_route`.
-    for name in ("verify_live_arm", "LIVE_ARM_ENTRY_CHANGED", "LIVE_ARM_APPROVAL_UNREADABLE"):
+    # PR-16 removed the arming codes nobody reads through `live_route`.
+    for name in ("verify_live_arm", "LIVE_ARM_ENTRY_CHANGED"):
         assert getattr(live_route, name) is getattr(promotion, name), name
     assert live_route.halt_advice is control.halt_advice
     for name in ("TESTNET_MAX_ORDER_NOTIONAL_USDT", "TESTNET_MAX_DAILY_ORDERS"):

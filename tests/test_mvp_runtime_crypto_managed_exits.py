@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import pytest
 
-from runtime.mvp_runtime.crypto.paper import advance_managed_stop, settle_trade_plan
+from runtime.mvp_runtime.crypto.paper import settle_trade_plan
+from runtime.mvp_runtime.crypto.trade_plan import advance_managed_stop
 from runtime.mvp_runtime.crypto.strategy import SpecParseError, StrategySpec
 
 

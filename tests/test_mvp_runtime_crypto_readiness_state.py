@@ -22,7 +22,7 @@ import json
 import pytest
 
 from runtime.mvp_runtime.control import ACTIVE, KILLED, PAUSED, ControlState, ControlStore
-from runtime.mvp_runtime.crypto import account_store, live_readiness, live_tier
+from runtime.mvp_runtime.crypto import account_store, live_readiness, live_tier, readiness_model
 from runtime.mvp_runtime.crypto import pool as pool_store
 from runtime.mvp_runtime.crypto.live_order import CONFIRMATION_ENV, LIVE_CONFIRMATION_PHRASE
 from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_ENV
@@ -133,7 +133,7 @@ def test_every_component_admitting_is_the_only_true(opted):
     possible, state = _state(_status(opted=opted))
     assert possible is True
     assert state["blocking"] == [] and state["unknown"] == []
-    assert list(state["components"]) == list(live_readiness.READINESS_COMPONENTS)
+    assert list(state["components"]) == list(readiness_model.READINESS_COMPONENTS)
     assert all(c["ok"] is True for c in state["components"].values())
 
 
@@ -151,7 +151,7 @@ def test_ready_true_with_nothing_armed_is_not_live_entry_possible():
 def test_the_components_are_the_ones_the_directive_names_the_runtime_control_and_the_cycle():
     """The directive's facts, the runtime control every entry reads (FO-10), and whether the trading
     process is still firing (review of #906) — the one fact the last fire's other readings rest on."""
-    assert set(live_readiness.READINESS_COMPONENTS) == {
+    assert set(readiness_model.READINESS_COMPONENTS) == {
         "execution_stage", "live_capability_installed", "live_gate_open", "runtime_control",
         "armed_strategy_count", "market_data_ready", "account_ready", "venue_ready", "risk_ready",
         "reconciliation_ready", "trading_cycle_recent",
@@ -487,7 +487,7 @@ def test_the_view_keeps_the_fields_an_installed_shim_names():
     for field in ("infrastructure_ready", "live_armed_strategies", "recorded_gate", "live_entry_possible",
                   "execution_stage", "venue_contract", "checks", "env_scope", "env_out_of_scope"):
         assert field in data, field
-    assert data["live_entry_possible"] is True and data["readiness"]["model"] == live_readiness.READINESS_MODEL
+    assert data["live_entry_possible"] is True and data["readiness"]["model"] == readiness_model.READINESS_MODEL
 
 
 def test_the_data_line_fits_the_assistant_door_on_a_heavy_board():
@@ -1246,7 +1246,7 @@ def test_every_component_appears_once_in_the_head(tmp_path, clean_env, monkeypat
     _write_snapshot(tmp_path, as_of=THREE_HOURS_AGO, net=0.0)
     _, text = _text(tmp_path)
     head = text[:text.index("  The rows below are THIS process's own checks")]
-    for name in live_readiness.READINESS_COMPONENTS:
+    for name in readiness_model.READINESS_COMPONENTS:
         assert head.count(name) == 1, name
     assert "  blocked by : runtime_control (TRADING_DISARMED)" in head
     assert "account_ready (SNAPSHOT_STALE)" in head and "risk_ready (DAILY_LOSS_UNMEASURED)" in head
@@ -1357,7 +1357,7 @@ def test_the_head_lists_wrap_between_items_and_never_inside_one(tmp_path, clean_
     assert len(admitting) > 1, head
     assert all(len(line) <= 80 for line in head), [len(line) for line in head]
     assert ", ".join(line[15:].rstrip(",") for line in admitting).split(", ") == [
-        name for name in live_readiness.READINESS_COMPONENTS]
+        name for name in readiness_model.READINESS_COMPONENTS]
     wide = "reconciliation_ready (LEG_BLOCKED_LIVE_POSITION_STATE_UNREADABLE+AND_A_LONG_TAIL_OF_REASONS)"
     assert live_readiness._wrap("  blocked by : ", ["risk_ready (C4_BREAKER)", wide]) == [
         "  blocked by : risk_ready (C4_BREAKER),", " " * 15 + wide]
@@ -1469,10 +1469,9 @@ def test_the_board_re_exports_the_model_as_the_same_objects():
     reading the board, so each public name there must be the model's own object, never a copy."""
     from runtime.mvp_runtime.crypto import readiness_model
 
-    # PR-16 removed `NOT_REPORTED`, which nothing read through the board.
-    for name in ("READINESS_MODEL", "READINESS_COMPONENTS", "SOURCE_THIS_PROCESS", "SOURCE_RECORDED",
-                 "readiness_state", "readiness_data", "minority_may_enter",
-                 "contradicts_recorded_gate", "env_out_of_scope"):
+    # PR-16 removed the names nothing reads through the board.
+    for name in ("SOURCE_THIS_PROCESS", "SOURCE_RECORDED", "readiness_state", "readiness_data",
+                 "minority_may_enter", "contradicts_recorded_gate", "env_out_of_scope"):
         assert getattr(live_readiness, name) is getattr(readiness_model, name), name
 
 

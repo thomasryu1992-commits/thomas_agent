@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from runtime.mvp_runtime.crypto import factory
+from runtime.mvp_runtime.crypto import factory, template_space
 from runtime.mvp_runtime.crypto.features import (
     HTF_COLUMNS,
     build_feature_rows,
@@ -139,7 +139,7 @@ def test_htf_families_are_minted_where_a_higher_timeframe_exists(timeframe):
     `RETIRED_FAMILIES`. Asserting the raw membership would make retiring any htf family fail
     this test, which would read as a broken gate rather than as an intended retirement."""
     families = {t.family for t in factory.templates_for_timeframe(timeframe)}
-    mintable = factory.HTF_FAMILIES - factory.RETIRED_FAMILIES
+    mintable = template_space.HTF_FAMILIES - factory.RETIRED_FAMILIES
     assert mintable, "every htf family is retired — this test is measuring nothing"
     assert mintable <= families
     assert not (factory.RETIRED_FAMILIES & families)
@@ -150,7 +150,7 @@ def test_htf_families_are_withheld_at_the_top_of_the_ladder():
     filter is permanently indeterminate — no-entry forever, not merely selective."""
     assert "1d" not in HIGHER_TIMEFRAME
     families = {t.family for t in factory.templates_for_timeframe("1d")}
-    assert not (factory.HTF_FAMILIES & families)
+    assert not (template_space.HTF_FAMILIES & families)
     assert families, "the non-HTF rotation must survive at 1d"
 
 

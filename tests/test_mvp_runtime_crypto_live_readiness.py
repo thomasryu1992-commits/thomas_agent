@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from runtime.mvp_runtime.crypto import execution_stage as es
+from runtime.mvp_runtime.crypto import execution_stage as es, readiness_model
 from runtime.mvp_runtime.crypto import live_promotion, live_readiness, live_route
 from runtime.mvp_runtime.crypto import pool as pool_store
 from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_ENV, state_dir
@@ -118,7 +118,8 @@ def test_the_entry_marks_row_names_the_entries_in_flight_and_the_ones_left_behin
     import json
 
     from runtime.mvp_runtime import timeutil
-    from runtime.mvp_runtime.crypto.live_order import ENTRY_MARKS_FILENAME, ENTRY_MARKS_VERSION
+    from runtime.mvp_runtime.crypto.live_order import ENTRY_MARKS_FILENAME
+    from runtime.mvp_runtime.crypto.live_order_stores import ENTRY_MARKS_VERSION
     from runtime.mvp_runtime.crypto.state import venue_state_dir
 
     path = venue_state_dir(tmp_path) / ENTRY_MARKS_FILENAME
@@ -1177,7 +1178,7 @@ def test_live_entry_possible_is_what_the_read_shim_says_it_is(tmp_path, clean_en
                    live_readiness.build_readiness(root=tmp_path, now=NOW)):
         data = live_readiness.readiness_data(status)
         components = data["readiness"]["components"]
-        assert list(components) == list(live_readiness.READINESS_COMPONENTS)
+        assert list(components) == list(readiness_model.READINESS_COMPONENTS)
         values = [component["ok"] for component in components.values()]
         expected = False if False in values else (None if None in values else True)
         assert data["live_entry_possible"] is expected
@@ -1292,7 +1293,8 @@ def _api_row(root):
 
 def test_the_api_breaker_row_counts_each_class_and_turns_red_once_tripped(tmp_path, clean_env):
     from tests._helpers import make_gate_authorization
-    from runtime.mvp_runtime.crypto.live_order import LiveApiErrorBreaker, MAX_CONSECUTIVE_API_ERRORS
+    from runtime.mvp_runtime.crypto.live_order import LiveApiErrorBreaker
+    from runtime.mvp_runtime.crypto.live_order_stores import MAX_CONSECUTIVE_API_ERRORS
     from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_FLAGS, LIVE_TRADING_PROVIDER_ID
 
     limit = MAX_CONSECUTIVE_API_ERRORS
@@ -1322,7 +1324,7 @@ def test_the_api_breaker_row_counts_each_class_and_turns_red_once_tripped(tmp_pa
 
 def test_a_streak_at_the_limit_with_no_stamp_names_its_class(tmp_path, clean_env):
     import json as _json
-    from runtime.mvp_runtime.crypto.live_order import API_BREAKER_FILENAME, MAX_CONSECUTIVE_API_ERRORS
+    from runtime.mvp_runtime.crypto.live_order_stores import API_BREAKER_FILENAME, MAX_CONSECUTIVE_API_ERRORS
     from runtime.mvp_runtime.crypto.state import venue_state_dir
 
     path = venue_state_dir(tmp_path) / API_BREAKER_FILENAME
@@ -1335,7 +1337,7 @@ def test_a_streak_at_the_limit_with_no_stamp_names_its_class(tmp_path, clean_env
 
 
 def test_an_unreadable_api_breaker_turns_the_board_red(tmp_path, clean_env):
-    from runtime.mvp_runtime.crypto.live_order import API_BREAKER_FILENAME
+    from runtime.mvp_runtime.crypto.live_order_stores import API_BREAKER_FILENAME
     from runtime.mvp_runtime.crypto.state import venue_state_dir
 
     path = venue_state_dir(tmp_path) / API_BREAKER_FILENAME

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from runtime.mvp_runtime.crypto import factory, features
+from runtime.mvp_runtime.crypto import factory, features, template_space
 from runtime.mvp_runtime.crypto.features import build_feature_rows, latest_feature_row
 from runtime.mvp_runtime.crypto.market_data import (
     BinanceFuturesCollector,
@@ -199,15 +199,15 @@ def test_only_normalized_flow_columns_are_mintable():
     They ride the row as evidence and stay out of the minting vocabulary."""
     for name in ("taker_buy_ratio", "taker_flow_imbalance", "taker_flow_zscore",
                  "taker_flow_ma", "avg_trade_size_zscore", "trade_count_zscore"):
-        assert name in factory.NUMERIC_FEATURES
+        assert name in template_space.NUMERIC_FEATURES
     for name in ("quote_volume", "trade_count", "taker_buy_base", "taker_buy_quote",
                  "avg_trade_size"):
-        assert name not in factory.NUMERIC_FEATURES, f"{name} is venue-scale and must not be mintable"
+        assert name not in template_space.NUMERIC_FEATURES, f"{name} is venue-scale and must not be mintable"
 
 
 def test_session_is_categorical_so_no_threshold_can_be_mined_across_it():
-    assert "session" in factory.CATEGORICAL_FEATURES
-    assert "session" not in factory.NUMERIC_FEATURES
+    assert "session" in template_space.CATEGORICAL_FEATURES
+    assert "session" not in template_space.NUMERIC_FEATURES
     spec = {
         "schema_version": "strategy_spec.v1", "strategy_id": "S001", "strategy_version": "1.0",
         "strategy_family": "x", "direction": "long", "timeframe": "1h", "symbol_scope": ["BTCUSDT"],
@@ -241,8 +241,8 @@ def test_session_families_are_not_minted_at_daily():
     never minted rather than minted and silently inert."""
     hourly = {t.family for t in factory.templates_for_timeframe("1h")}
     daily = {t.family for t in factory.templates_for_timeframe("1d")}
-    assert factory.SESSION_FAMILIES <= hourly
-    assert not (factory.SESSION_FAMILIES & daily)
+    assert template_space.SESSION_FAMILIES <= hourly
+    assert not (template_space.SESSION_FAMILIES & daily)
     # The flow families need no such gate — their legs ride the klines call at every
     # timeframe, so they must survive the top of the ladder.
     assert {"taker_flow_long", "taker_absorption_long"} <= daily
@@ -259,7 +259,7 @@ def test_the_new_families_mint_and_backtest():
         for spec in factory.generate_batch(f"GEN-{n:03d}", seed=n, timeframe="1h")["specs"]:
             minted.setdefault(spec["strategy_family"], spec)
 
-    wanted = factory.SESSION_FAMILIES | {"taker_flow_long", "taker_flow_short",
+    wanted = template_space.SESSION_FAMILIES | {"taker_flow_long", "taker_flow_short",
                                          "taker_absorption_long", "taker_absorption_short"}
     assert wanted <= set(minted), f"never minted: {sorted(wanted - set(minted))}"
 

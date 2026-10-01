@@ -28,7 +28,7 @@ from typing import Any
 import pytest
 
 from runtime.mvp_runtime import timeutil
-from runtime.mvp_runtime.crypto import live_leg, live_route, pre_order_gate
+from runtime.mvp_runtime.crypto import live_leg, live_route, pre_order_gate, promotion
 from runtime.mvp_runtime.crypto.account import AccountPosition, AccountSnapshot
 from runtime.mvp_runtime.crypto.live_order import LIVE_CONFIRMATION_PHRASE, LiveOrderLimits
 from runtime.mvp_runtime.errors import ToolError
@@ -1490,7 +1490,8 @@ def test_the_leg_hands_the_decision_the_bar_it_evaluated_and_the_marks_it_read(t
 def test_unreadable_marks_hold_entries_and_still_manage_positions(tmp_path, monkeypatch):
     """The opposite of paper's marks on purpose: a corrupt live file refuses entries. It is read
     after settle/protect, so it can never hold a position open."""
-    from runtime.mvp_runtime.crypto.live_order import ENTRY_MARKS_FILENAME, LIVE_ENTRY_MARKS_UNREADABLE
+    from runtime.mvp_runtime.crypto.live_order import ENTRY_MARKS_FILENAME
+    from runtime.mvp_runtime.crypto.live_order_stores import LIVE_ENTRY_MARKS_UNREADABLE
     from runtime.mvp_runtime.crypto.state import venue_state_dir
 
     path = venue_state_dir(tmp_path) / ENTRY_MARKS_FILENAME
@@ -2387,7 +2388,7 @@ def test_an_approval_store_that_cannot_be_read_holds_the_entry_and_never_the_fan
     ApprovalStore.default(tmp_path).path.write_text("{not json\n", encoding="utf-8")
     held = run("2026-07-28T04:05:00Z", BAR_00)
     assert held["live_route_status"] == live_route.ROUTE_HELD and held["halt"] is False
-    assert held["live_pre_order_reread"]["live_arm"]["approval_problem"] == live_route.LIVE_ARM_APPROVAL_UNREADABLE
+    assert held["live_pre_order_reread"]["live_arm"]["approval_problem"] == promotion.LIVE_ARM_APPROVAL_UNREADABLE
     assert held["live_pre_order_gate"]["failed_checks"] == ["approved_profile_complete"]
     assert _nothing_spent(venue, tmp_path)
 
@@ -2476,7 +2477,8 @@ def _another_door_in_flight(tmp_path, *, notional):
 
 def test_an_entry_another_door_leaves_no_exposure_for_is_held_before_the_bar(tmp_path, monkeypatch):
     """Decision 26: the probe on SOL took 100 of the 120 cap after this leg read the account."""
-    from runtime.mvp_runtime.crypto.live_order import LIVE_ENTRY_EXPOSURE_TAKEN, read_live_entry_marks
+    from runtime.mvp_runtime.crypto.live_order import read_live_entry_marks
+    from runtime.mvp_runtime.crypto.live_order_stores import LIVE_ENTRY_EXPOSURE_TAKEN
 
     venue = _Venue()
     run = _wire_whole_leg(tmp_path, monkeypatch, venue)
@@ -2555,7 +2557,7 @@ def _told(tmp_path):
 
 def test_a_tripped_api_breaker_holds_the_entry_and_spends_nothing(tmp_path, monkeypatch):
     from runtime.mvp_runtime.crypto.live_entry import API_BREAKER_REFUSED
-    from runtime.mvp_runtime.crypto.live_order import MAX_CONSECUTIVE_API_ERRORS
+    from runtime.mvp_runtime.crypto.live_order_stores import MAX_CONSECUTIVE_API_ERRORS
 
     venue = _Venue()
     run = _wire_whole_leg(tmp_path, monkeypatch, venue)
@@ -2574,7 +2576,8 @@ def test_a_tripped_api_breaker_holds_the_entry_and_spends_nothing(tmp_path, monk
 
 
 def test_a_latch_nobody_was_told_of_is_told_by_the_next_pass(tmp_path, monkeypatch):
-    from runtime.mvp_runtime.crypto.live_order import MAX_CONSECUTIVE_API_ERRORS, api_breaker_status
+    from runtime.mvp_runtime.crypto.live_order import api_breaker_status
+    from runtime.mvp_runtime.crypto.live_order_stores import MAX_CONSECUTIVE_API_ERRORS
 
     run = _wire_whole_leg(tmp_path, monkeypatch, _Venue())
     _api_failures(tmp_path, MAX_CONSECUTIVE_API_ERRORS)
@@ -2595,7 +2598,8 @@ class _SendFails(_Venue):
 
 def test_the_pass_whose_send_latches_the_breaker_tells_the_operator_once(tmp_path, monkeypatch):
     from runtime.mvp_runtime.crypto.live_entry import API_BREAKER_REFUSED
-    from runtime.mvp_runtime.crypto.live_order import MAX_CONSECUTIVE_API_ERRORS, api_breaker_status
+    from runtime.mvp_runtime.crypto.live_order import api_breaker_status
+    from runtime.mvp_runtime.crypto.live_order_stores import MAX_CONSECUTIVE_API_ERRORS
 
     venue = _SendFails()
     run = _wire_whole_leg(tmp_path, monkeypatch, venue)
@@ -2628,7 +2632,7 @@ def test_a_latch_reaches_the_operator_however_the_pass_ends(tmp_path, monkeypatc
     """The latch can come from any signed call of the pass — a protect check, a settle, the
     entry — and the pass can end any way after it. The operator hears it once either way: the
     next pass reads the breaker as already tripped and would never say so."""
-    from runtime.mvp_runtime.crypto.live_order import MAX_CONSECUTIVE_API_ERRORS
+    from runtime.mvp_runtime.crypto.live_order_stores import MAX_CONSECUTIVE_API_ERRORS
 
     monkeypatch.setenv("MVP_LIVE_TRADING", "real")
     monkeypatch.setattr(live_route, "select_live_gate", lambda **kw: (_ReadsFail(), None))
@@ -2656,7 +2660,7 @@ def test_a_latch_reaches_the_operator_however_the_pass_ends(tmp_path, monkeypatc
 def test_an_unreadable_api_breaker_holds_entries_and_still_manages_positions(tmp_path, monkeypatch):
     """Fail-closed like the bracket breaker's record: it is read after settle/protect, so it can
     only hold entries — and the signed calls it could not count are named on the record."""
-    from runtime.mvp_runtime.crypto.live_order import API_BREAKER_FILENAME, LIVE_API_BREAKER_UNREADABLE
+    from runtime.mvp_runtime.crypto.live_order_stores import API_BREAKER_FILENAME, LIVE_API_BREAKER_UNREADABLE
     from runtime.mvp_runtime.crypto.state import venue_state_dir
 
     path = venue_state_dir(tmp_path) / API_BREAKER_FILENAME
@@ -2766,10 +2770,10 @@ def test_a_notice_that_did_not_get_through_is_tried_again_on_a_later_pass(tmp_pa
     again — on a pass the retry interval later, not on every context of the same fan-out, since
     each attempt can hold a pass for the channel's timeout (review of #889)."""
     from runtime.mvp_runtime import timeutil as tu
-    from runtime.mvp_runtime.crypto.live_order import (
+    from runtime.mvp_runtime.crypto.live_order import api_breaker_status
+    from runtime.mvp_runtime.crypto.live_order_stores import (
         API_BREAKER_NOTICE_RETRY_SECONDS,
         MAX_CONSECUTIVE_API_ERRORS,
-        api_breaker_status,
     )
 
     monkeypatch.setenv("MVP_LIVE_TRADING", "real")
@@ -2802,7 +2806,7 @@ def test_an_unwritable_api_breaker_holds_every_entry_and_says_why(tmp_path, monk
     """The record stays readable but cannot be replaced. An entry sent then would fail with
     nothing to count it — so the breaker is not clear, on this pass and the next (review of #889)."""
     from runtime.mvp_runtime.crypto.live_entry import API_BREAKER_REFUSED
-    from runtime.mvp_runtime.crypto.live_order import API_BREAKER_FILENAME
+    from runtime.mvp_runtime.crypto.live_order_stores import API_BREAKER_FILENAME
     from runtime.mvp_runtime.crypto.state import venue_state_dir
 
     venue = _SendFails()
@@ -2832,7 +2836,8 @@ class _SendDropped(_Venue):
 
 def test_a_dropped_send_counts_even_when_it_escapes_untyped(tmp_path, monkeypatch):
     from runtime.mvp_runtime.crypto.live_entry import API_BREAKER_REFUSED
-    from runtime.mvp_runtime.crypto.live_order import MAX_CONSECUTIVE_API_ERRORS, api_breaker_status
+    from runtime.mvp_runtime.crypto.live_order import api_breaker_status
+    from runtime.mvp_runtime.crypto.live_order_stores import MAX_CONSECUTIVE_API_ERRORS
 
     venue = _SendDropped()
     run = _wire_whole_leg(tmp_path, monkeypatch, venue)
@@ -2850,7 +2855,8 @@ def test_only_a_channel_that_reaches_someone_counts_as_told(tmp_path, monkeypatc
     """The inert channel takes every message and tells nobody: sending through it is no notice, so
     the latch stays untold and the next cycle tries again."""
     from runtime.mvp_runtime import operator as operator_mod
-    from runtime.mvp_runtime.crypto.live_order import MAX_CONSECUTIVE_API_ERRORS, api_breaker_status
+    from runtime.mvp_runtime.crypto.live_order import api_breaker_status
+    from runtime.mvp_runtime.crypto.live_order_stores import MAX_CONSECUTIVE_API_ERRORS
 
     class _Channel:
         network_egress = egress

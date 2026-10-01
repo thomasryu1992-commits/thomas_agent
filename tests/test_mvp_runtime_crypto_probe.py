@@ -32,7 +32,7 @@ from runtime.mvp_runtime.crypto.live_order import (
     LIVE_CONFIRMATION_PHRASE,
     LiveOrderLimits,
 )
-from runtime.mvp_runtime.crypto.live_pnl import build_live_outcome_record
+from runtime.mvp_runtime.crypto.live_settlement import build_live_outcome_record
 from runtime.mvp_runtime.crypto.live_sizing import SymbolFilters
 from runtime.mvp_runtime.errors import ApprovalBlocked, MvpRuntimeError, ToolError
 from tests._helpers import FakeSnapshotStore, deep_order_book, requires_local_core, usable_venue_contract
@@ -2624,7 +2624,8 @@ def test_a_fire_whose_call_latches_the_breaker_says_so_at_once_and_tells_the_cha
         tmp_path, monkeypatch, capsys):
     """The probe is the other door with signed calls. Inside the call it only prints; the chat is
     told after the fire, once (review of #889: a send inside a signed call held the call up)."""
-    from runtime.mvp_runtime.crypto.live_order import MAX_CONSECUTIVE_API_ERRORS, api_breaker_status
+    from runtime.mvp_runtime.crypto.live_order import api_breaker_status
+    from runtime.mvp_runtime.crypto.live_order_stores import MAX_CONSECUTIVE_API_ERRORS
 
     _wire_fire_to_the_guard(tmp_path, monkeypatch, _VenueMustNotBeTouched())
     breaker = _durable_api_breaker(tmp_path)
@@ -2656,7 +2657,8 @@ def test_a_fire_whose_call_latches_the_breaker_says_so_at_once_and_tells_the_cha
     (_Chat(egress=False), None),
 ], ids=["send-fails", "inert-channel"])
 def test_a_chat_that_did_not_hear_leaves_the_notice_to_be_sent(tmp_path, monkeypatch, capsys, chat, said):
-    from runtime.mvp_runtime.crypto.live_order import MAX_CONSECUTIVE_API_ERRORS, api_breaker_status
+    from runtime.mvp_runtime.crypto.live_order import api_breaker_status
+    from runtime.mvp_runtime.crypto.live_order_stores import MAX_CONSECUTIVE_API_ERRORS
 
     breaker = _durable_api_breaker(tmp_path)
     for _ in range(MAX_CONSECUTIVE_API_ERRORS):
@@ -2680,7 +2682,7 @@ def test_nothing_is_told_while_the_breaker_is_clear(tmp_path, monkeypatch):
 
 def test_a_fire_the_breaker_cannot_count_is_refused(tmp_path, monkeypatch):
     """Review of #889: a failure this fire caused would go uncounted, so nothing is sent."""
-    from runtime.mvp_runtime.crypto.live_order import API_BREAKER_FILENAME
+    from runtime.mvp_runtime.crypto.live_order_stores import API_BREAKER_FILENAME
     from runtime.mvp_runtime.crypto.state import venue_state_dir
 
     _wire_fire_to_the_guard(tmp_path, monkeypatch, _VenueMustNotBeTouched())

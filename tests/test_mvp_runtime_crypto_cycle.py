@@ -15,7 +15,7 @@ from tests._helpers import make_gate_authorization
 
 from runtime.mvp_runtime import control, timeutil
 from runtime.mvp_runtime.control import ControlState, ControlStore
-from runtime.mvp_runtime.crypto import paper, pool
+from runtime.mvp_runtime.crypto import feed_assembly, market_data, paper, pool
 from runtime.mvp_runtime.crypto.cycle import (
     cycle_status_line,
     pool_cycle_contexts,
@@ -784,7 +784,8 @@ def test_imported_history_drives_risk_guard(tmp_path):
 
 def _write_live_outcomes(root, rows):
     """Append live outcome records the way the gated ledger does, self-hash included."""
-    from runtime.mvp_runtime.crypto.live_pnl import build_live_outcome_record, state_dir
+    from runtime.mvp_runtime.crypto.live_pnl import state_dir
+    from runtime.mvp_runtime.crypto.live_settlement import build_live_outcome_record
 
     target = state_dir(root)
     target.mkdir(parents=True, exist_ok=True)
@@ -1273,7 +1274,7 @@ def _seed_live_losses(root, *, candidate_id="cand-1", count=2, risk=10.0):
     Written through `build_live_outcome_record` so each row is self-hashed and shaped exactly as
     the exit path writes it: a hand-made row fails the verified read, which is also a refusal but
     never the one these tests mean."""
-    from runtime.mvp_runtime.crypto.live_pnl import build_live_outcome_record
+    from runtime.mvp_runtime.crypto.live_settlement import build_live_outcome_record
     from runtime.mvp_runtime.crypto.live_pnl import state_dir as live_state_dir
 
     target = live_state_dir(root)
@@ -1869,20 +1870,21 @@ def test_only_the_optional_legs_degrade_codes_count():
     from runtime.mvp_runtime.crypto import cycle as c
 
     health = c.optional_data_health(
-        {}, codes=[c.FUNDING_DEGRADED, None, c.MARKET_DATA_DEGRADED, c.HTF_DEGRADED, c.FUNDING_DEGRADED],
+        {}, codes=[market_data.FUNDING_DEGRADED, None, c.MARKET_DATA_DEGRADED, feed_assembly.HTF_DEGRADED, market_data.FUNDING_DEGRADED],
         bar_time=BAR)
-    assert health["degraded"] == sorted([c.FUNDING_DEGRADED, c.HTF_DEGRADED])
+    assert health["degraded"] == sorted([market_data.FUNDING_DEGRADED, feed_assembly.HTF_DEGRADED])
     assert c.OPTIONAL_DATA_DEGRADED_CODES == {
-        c.FUNDING_DEGRADED, c.MARK_PRICE_DEGRADED, c.INDEX_PRICE_DEGRADED, c.PREMIUM_INDEX_DEGRADED,
-        c.LIQUIDATION_DEGRADED, c.OPEN_INTEREST_DEGRADED, c.HTF_DEGRADED, c.REFERENCE_DEGRADED,
-        c.CROSS_SECTION_DEGRADED}
+        market_data.FUNDING_DEGRADED, market_data.MARK_PRICE_DEGRADED, market_data.INDEX_PRICE_DEGRADED, market_data.PREMIUM_INDEX_DEGRADED,
+        market_data.LIQUIDATION_DEGRADED, market_data.OPEN_INTEREST_DEGRADED, feed_assembly.HTF_DEGRADED, market_data.REFERENCE_DEGRADED,
+        market_data.CROSS_SECTION_DEGRADED}
 
 
 @pytest.mark.parametrize("feed,bound", [
     ("funding", 16.0), ("liquidations", 48.0), ("open_interest", 48.0), ("positioning", 3.0),
 ])
 def test_each_feed_is_fresh_at_its_bound_and_stale_past_it(feed, bound):
-    from runtime.mvp_runtime.crypto.cycle import OPTIONAL_FEED_MAX_AGE_HOURS, optional_data_health
+    from runtime.mvp_runtime.crypto.cycle import optional_data_health
+    from runtime.mvp_runtime.crypto.feed_assembly import OPTIONAL_FEED_MAX_AGE_HOURS
 
     assert OPTIONAL_FEED_MAX_AGE_HOURS[feed] == bound
     events = (lambda stamp: _positioning(stamp)) if feed == "positioning" else (lambda stamp: [{"timestamp": stamp}])
@@ -1919,7 +1921,8 @@ def test_a_feed_not_carried_is_not_judged_and_an_empty_answer_is_missing():
 def test_a_carried_leg_with_no_reading_on_the_bar_is_missing(leg):
     """An empty answer, or a same-grid series that stops a bar short (a cached peer read from
     before a bar boundary): the bar carries nothing from the leg."""
-    from runtime.mvp_runtime.crypto.cycle import OPTIONAL_LEG_COLUMNS, optional_data_health
+    from runtime.mvp_runtime.crypto.cycle import optional_data_health
+    from runtime.mvp_runtime.crypto.feed_assembly import OPTIONAL_LEG_COLUMNS
 
     snapshot = {leg: [{"timestamp": _at(1)}]}
     blank = {**_FULL_ROW, **{column: None for column in OPTIONAL_LEG_COLUMNS[leg]}}

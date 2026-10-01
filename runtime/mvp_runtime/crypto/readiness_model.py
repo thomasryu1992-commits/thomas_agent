@@ -7,7 +7,7 @@ and renders the board; this module says what those facts add up to.
 
 It was the middle of ``live_readiness`` until crypto refactor plan PR-07, moved whole and unchanged.
 ``live_readiness`` re-exports, as the same objects, the names its importers still read there (refactor
-plan PR-16 removed ``NOT_REPORTED``), so the board's output is what it was.
+plan PR-16 removed the rest), so the board's output is what it was.
 """
 
 from __future__ import annotations

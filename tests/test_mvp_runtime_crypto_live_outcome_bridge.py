@@ -18,10 +18,10 @@ from runtime.mvp_runtime.crypto import guards, lifecycle
 from runtime.mvp_runtime.crypto.feedback import summarize_outcomes
 from runtime.mvp_runtime.crypto.live_pnl import (
     UNKNOWN_R,
-    build_live_outcome_record,
     live_analysis_summary,
     live_outcomes_for_analysis,
 )
+from runtime.mvp_runtime.crypto.live_settlement import build_live_outcome_record
 
 NOW = "2026-07-25T12:00:00Z"
 

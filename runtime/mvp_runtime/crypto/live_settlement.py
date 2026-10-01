@@ -4,8 +4,8 @@
 on actual fills, and the stop slippage measured against the trigger on stop exits. The executing leg
 (`live_leg`) calls it when it closes a position. It lived in `live_pnl`, beside the ledger that stores
 the row, which put the leg's import of it upward. It is the execution layer's settlement arithmetic:
-pure, with no I/O. `live_pnl` re-exports it as the same object (refactor plan PR-16 removed its re-export of
-`LIVE_PROVENANCE`).
+pure, with no I/O. `live_pnl` no longer re-exports anything from here: refactor plan PR-16 removed the
+last re-exports once their readers imported this module.
 """
 
 from __future__ import annotations

@@ -19,7 +19,7 @@ from runtime.mvp_runtime.approval_store import STORE_REL as APPROVAL_STORE_REL
 from runtime.mvp_runtime.approval_store import ApprovalStore
 from runtime.mvp_runtime.crypto import pool
 from runtime.mvp_runtime.crypto import strategy_artifact as artifact_mod
-from runtime.mvp_runtime.crypto.factory import NUMERIC_FEATURES
+from runtime.mvp_runtime.crypto.template_space import NUMERIC_FEATURES
 from runtime.mvp_runtime.crypto.strategy import StrategySpec
 from runtime.mvp_runtime.errors import ApprovalBlocked, ToolError
 from scripts.promote_strategy_candidates import run_promotion

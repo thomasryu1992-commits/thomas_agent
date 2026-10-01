@@ -25,11 +25,11 @@ from __future__ import annotations
 
 import pytest
 
-from runtime.mvp_runtime.crypto.factory import (
+from runtime.mvp_runtime.crypto.factory import holdout_permits_parenting
+from runtime.mvp_runtime.crypto.generator import (
     ELITE_EVIDENCE_MIN_TRADES,
     elite_base_params,
     holdout_permits_centring,
-    holdout_permits_parenting,
 )
 from runtime.mvp_runtime.crypto.robustness import MIN_HOLDOUT_TRADES
 
@@ -319,7 +319,8 @@ def test_the_split_still_halves_every_batch(monkeypatch):
 def test_the_split_is_derived_not_drawn():
     """Deterministic, so a replay reproduces the same batch — and taken from the generation id,
     which rides on every candidate, so a stored fire's split can be reconstructed from it."""
-    from runtime.mvp_runtime.crypto.factory import _elite_flip, generate_batch
+    from runtime.mvp_runtime.crypto.factory import generate_batch
+    from runtime.mvp_runtime.crypto.generator import _elite_flip
 
     kwargs = {"seed": 7, "count": 4, "symbol": "ETHUSDT", "timeframe": "1h"}
     assert generate_batch("GEN-042", **kwargs) == generate_batch("GEN-042", **kwargs)

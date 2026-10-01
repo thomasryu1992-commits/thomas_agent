@@ -6,8 +6,8 @@ the lane did, not observations of the market, and several layers read them back:
 judge the day's and the week's losses on them, the slippage probe (execution) calibrates on the stop
 fills, and the outcome and report layers summarise them. This module holds only the reading: the raw
 rows, the rows with approved corrections applied, the split into what analysis may use, and the stop
-slippage observations. The writer (`RealLiveLedger`) stays in `live_pnl`, which re-exports every name
-here as the same object.
+slippage observations. The writer (`RealLiveLedger`) stays in `live_pnl`, which re-exports, as the same
+objects, the names its importers still read there (refactor plan PR-16 removed the rest).
 
 It sits in the store layer, below every reader. The feedback loop from outcomes back into risk closes
 through this store, not through the outcome module that writes it.

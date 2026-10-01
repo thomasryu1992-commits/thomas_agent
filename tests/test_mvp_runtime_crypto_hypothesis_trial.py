@@ -15,7 +15,7 @@ import pytest
 
 from runtime.mvp_runtime import scheduler as scheduler_mod
 from runtime.mvp_runtime.control import ControlStore
-from runtime.mvp_runtime.crypto import factory, pool, proposer
+from runtime.mvp_runtime.crypto import factory, generator, pool, proposer
 from runtime.mvp_runtime.crypto.factory import run_factory
 from runtime.mvp_runtime.crypto.strategy import StrategySpec
 from runtime.mvp_runtime.scheduler import KIND_FACTORY, ScheduleStore, build_schedule, run_due
@@ -83,7 +83,7 @@ def test_a_trial_row_carries_no_mint_params_so_it_never_centres_a_search():
     result = _run(snapshot, cohort, trials=[_queued(_proposal_spec())])
     row = next(c for c in result["candidates"] if factory.is_trial(c))
     assert "mint_params" not in row
-    assert factory._best_mint_params([row], symbol="BTCUSDT", timeframe="1d",
+    assert generator._best_mint_params([row], symbol="BTCUSDT", timeframe="1d",
                                      scope=["BTCUSDT", "ETHUSDT"]) == {}
 
 

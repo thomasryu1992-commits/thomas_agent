@@ -23,11 +23,11 @@ from __future__ import annotations
 
 import pytest
 
-from runtime.mvp_runtime.crypto import features
+from runtime.mvp_runtime.crypto import features, template_space
 from runtime.mvp_runtime.crypto.features import build_feature_rows
 from runtime.mvp_runtime.crypto.indicators import rolling_median
 from runtime.mvp_runtime.crypto.live_sizing import SymbolFilters, size_live_order
-from runtime.mvp_runtime.crypto.paper import (
+from runtime.mvp_runtime.crypto.trade_plan import (
     MIN_VOL_SIZE_MULTIPLIER,
     volatility_size_multiplier,
 )
@@ -220,8 +220,8 @@ def test_the_reference_is_not_mintable():
     spec condition on the denominator of its own position size."""
     from runtime.mvp_runtime.crypto import factory
 
-    assert "atr_pct_reference" not in factory.NUMERIC_FEATURES
-    assert "atr_pct_reference" not in factory.CATEGORICAL_FEATURES
+    assert "atr_pct_reference" not in template_space.NUMERIC_FEATURES
+    assert "atr_pct_reference" not in template_space.CATEGORICAL_FEATURES
 
 
 def test_the_plan_carries_the_multiplier_so_the_two_cannot_disagree():

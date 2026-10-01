@@ -24,7 +24,7 @@ import json
 
 import pytest
 
-from runtime.mvp_runtime.crypto import positioning_store
+from runtime.mvp_runtime.crypto import positioning_store, template_space
 from runtime.mvp_runtime.crypto.cycle import (
     accumulate_positioning_cohort,
     attach_feeds,
@@ -515,13 +515,13 @@ def test_the_families_are_not_mintable_until_the_store_covers_the_window():
     one: a caller who did not measure gets no positioning families."""
     from runtime.mvp_runtime.crypto import factory
 
-    assert factory.POSITIONING_FAMILIES, "the families must exist to be gated"
+    assert template_space.POSITIONING_FAMILIES, "the families must exist to be gated"
     for timeframe in ("15m", "1h", "4h", "1d"):
         minted = {t.family for t in factory.templates_for_timeframe(timeframe)}
-        assert not (factory.POSITIONING_FAMILIES & minted), timeframe
+        assert not (template_space.POSITIONING_FAMILIES & minted), timeframe
         eligible = {t.family for t in factory.templates_for_timeframe(
             timeframe, positioning_eligible=True)}
-        assert factory.POSITIONING_FAMILIES <= eligible, timeframe
+        assert template_space.POSITIONING_FAMILIES <= eligible, timeframe
 
 
 def test_eligibility_is_the_stores_own_measurement_not_a_new_number():
