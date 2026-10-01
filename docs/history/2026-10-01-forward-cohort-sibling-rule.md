@@ -1,4 +1,4 @@
-# Cross-cohort siblings: one key, one open cohort (proposal)
+# Cross-cohort siblings: one key, one open cohort (decided)
 
 - **Why now:** the one-member-per-key rule (family, symbol scope, timeframe) holds within a single cohort freeze
   only. `eligible_members` drops earlier cohorts' members by candidate_id, so a same-key lineage with a different
@@ -20,3 +20,10 @@
     different families. Their daily R correlates at a median 0.62 against 0.31 (28 of 53 pairs comparable).
   - All 3 siblings that re-test a refuted key run negative, and one turned FORWARD_CONTRADICTED on its first walk.
   - The recommendation stands.
+- **Decided (Thomas 2026-10-01, after the overlap measurement):** S1–S4 as recommended.
+  - S1: A + B.
+  - S2: a key is released at its holder cohort's close, 2027-03-22 for cohort 1 and 2027-03-30 for cohort 2.
+  - S3: the key definition is unchanged.
+  - S4: siblings of pool-occupying lineages are out of scope.
+
+  The implementation PR (§5) must be merged and deployed before the 10-29 freeze.

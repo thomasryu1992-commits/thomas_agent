@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **48**건: `DRAFT` 4 · `PARTIALLY DECIDED` 9 · `DECIDED` 6 · `IMPLEMENTED` 26 · `SUPERSEDED` 1 · `RECORD` 2
+제안서 **48**건: `DRAFT` 3 · `PARTIALLY DECIDED` 9 · `DECIDED` 7 · `IMPLEMENTED` 26 · `SUPERSEDED` 1 · `RECORD` 2
 
-## Thomas 결정 대기 (13)
+## Thomas 결정 대기 (12)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -23,10 +23,9 @@
 | [RESEARCH_EPOCH_V0.1.md](RESEARCH_EPOCH_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | Q1·Q2(판정 규칙 지문과 그 표시)는 #972·#976으로 구현. Q3는 B로 결정(Thomas 2026-09-26, 경계 주기는 미정). Q4(다음 cohort에 판정 지문)는 다음 cohort를 동결할 때 정한다. |
 | [RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md](RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | (c) 순서 결정: 슬리피지 실측이 먼저다. (a)(b)(d)는 실측 뒤에 정하고, 그때까지 현재 값을 유지하며 LIVE_AUTONOMOUS로 올리지 않는다(Thomas 2026-09-26, 시스템 점검 D5). **값은 하나도 바뀌지 않았다**. |
 | [SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md](SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | §5의 D1·D2·D3·D4·D7·D8 채택, D6 보류(현상 유지). D5는 슬리피지 실측 뒤에 결정한다(§5 뒤 "결정" 절). 단계 0은 #980, 단계 1의 선행 조건 없는 항목은 #982–#989로 구현됐다. D3의 범위와 종료 조건은 2026-10-01에 다시 정했다("결정 (Thomas 2026-10-01)" 절: 측정·표시 허용, 종료는 1차 cohort 마감 2027-03-22). |
-| [FORWARD_COHORT_SIBLING_RULE_V0.1.md](FORWARD_COHORT_SIBLING_RULE_V0.1.md) | `DRAFT` | 2026-10-01 | S1–S4 결정 대기. forward 겹침 측정 반영(§8). 10-29 동결 전에 정해야 그 회차부터 적용된다. D3 밖(Thomas 2026-10-01, D3-3). |
 | [RESEARCH_FORWARD_THROUGHPUT_ANALYSIS_V0.1.md](RESEARCH_FORWARD_THROUGHPUT_ANALYSIS_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-01 | P0-1(D3 범위)은 권고대로 결정(Thomas): 측정·표시 허용, 종료는 1차 cohort 마감 2027-03-22, cohort 사이 형제 규칙은 D3 밖(`SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md` "결정 (Thomas 2026-10-01)"). 나머지 P0·P1·P2는 결정 대기. 조사·설계만 했고 코드·상수·문은 바꾸지 않았다. |
 
-## 결정됨 — 구현 남음 (6)
+## 결정됨 — 구현 남음 (7)
 
 결정은 끝났고 결정된 것이 아직 다 지어지지 않았다. 결정이 만든 구현 대기열이다.
 
@@ -38,6 +37,7 @@
 | [CRYPTO_REFACTOR_AND_MODULARIZATION_PLAN_V0.1.md](CRYPTO_REFACTOR_AND_MODULARIZATION_PLAN_V0.1.md) | `DECIDED` | 2026-09-30 | D-1~D-5 권고대로(Thomas). 진행: PR-02·03(#1049), PR-04(#1059), PR-05(#1060), PR-07(#1064), PR-08(#1068, 리플레이 백테스트 분리), PR-09(#1071, 템플릿 공간 분리), PR-10(#1072, 생성기 분리), PR-11(#1075, 사이클 단계 함수 추출), PR-12(#1077, `live_order` 저장소 분리), PR-13(#1079, `live_leg` 결과 어휘·판독 함수 분리) 머지. `factory`는 5,477줄에서 1,763줄이, `live_order`는 2,041줄에서 769줄이, `live_leg`는 1,931줄에서 1,432줄이 됐다. PR-06 실측은 §K-1에 기록. PR-13까지는 candidate-1079로 배포해 첫 파이어를 관측했고(2026-09-30) 단계마다 독립 리뷰도 받았다. PR-13의 서명 테스트넷 사이클 1회는 아직 없다: 2026-09-30에 운영자가 실행했고, 실행 단계가 PAPER이고 테스트넷 opt-in이 꺼져 있어 가드가 거부했다(설계대로). SIGNED_TESTNET 전이 뒤에 다시 돌린다. PR-S3(#1082, 승격 문 CAS, 행동 변경: 풀이 바뀌었으면 설치 거부) 머지, candidate-1082로 배포·관측. PR-14(#1085, `live_route` 사실 수집 분리: `_read_leg_facts`·`_read_entry_facts`, 같은 모듈, 읽는 순서 그대로) 머지, candidate-1085로 배포·관측. PR-15(#1086, S-2: 베뉴 계약이 주문 불가 리더 `BinanceFuturesVenueReader`를 받는다)와 후속(#1087, 운영자 스크립트 두 개도 리더) 머지, candidate-1086·1087로 배포·관측. PR-14·15도 테스트넷 사이클 없이 진행했다(Thomas 결정). PR-13과 함께 SIGNED_TESTNET 전이 뒤에 돌린다. PR-16(N10, 옛 재수출 제거): 형제 모듈에서 가져와 자기는 쓰지 않는 이름 379개 가운데 그 모듈 경로로 읽는 곳이 없는 64개를 지웠다(import 줄만, 같은 객체). `pool`은 설계상 파사드라 제외했고, `factory`의 템플릿 빌더는 은퇴 시험이 계산된 이름으로 찾아서 남겼다. 남은 재수출은 `tests/test_mvp_runtime_crypto_reexport_roster.py`가 모듈·출처별로 정확히 고정한다. PR-16은 #1090으로 머지해 candidate-1090으로 배포·관측했다. 후속 PR에서 시험만 읽던 재수출 95개의 시험 쪽 읽기 326곳을 정의 모듈로 옮기고 재수출 96개를 지웠다(PR-16에서 마지막 호출자를 잃은 `paper.STOP_BEYOND_LIQUIDATION` 포함). 남긴 것은 셋이다: `__all__`에 선언된 4개, 시험 파일이 정의 모듈 이름을 지역 변수로 쓰는 8개(`cost`·`order_request`·`state`), 그리고 런타임·스크립트가 읽는 재수출이다. 후속은 #1093으로 머지해 candidate-1093으로 배포·관측했다. §S의 구현 PR은 이것으로 끝이다. §M-2e(연구 층은 거래 스위치를 열지 않는다)는 시험만으로 추가했다: strategy·decision 모듈은 라이브·서명 테스트넷 스위치의 이름·값·플래그·제공자, 그리고 그 스위치로 고르는 selector를 부르지 않는다(`test_mvp_runtime_crypto_layers.py`, 현재 위반 0). (#1097 머지.) L-2.3 이름 부채: `live_promotion`을 `live_evidence`로 바꿨다(카나리 기록과 실거래 증거를 읽는 보드). 옛 이름은 같은 모듈 객체를 가리키는 별칭(`sys.modules`)이라 import·패치·`python -m …live_promotion`이 그대로 동작한다. |
 | [SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md](SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md) | `DECIDED` | 2026-09-30 | D1 C·D2·D3 B→A·D4 예(Thomas): LIVE는 FORWARD_CONFIRMED 필수, forward 기준을 `observed_lineages`로 보정, 재사용 홀드아웃 표시는 버그 수정으로 지금 구현, 검증 슬라이스는 에포크 경계. 남은 구현: ① 문 변경, ② B 표시. ② A는 `REMAINING_WORK.md` §L. |
 | [CRYPTO_STRATEGY_EDGE_ORDER_V0.1.md](CRYPTO_STRATEGY_EDGE_ORDER_V0.1.md) | `DECIDED` | 2026-10-01 | S1·S2·S3 권고대로(Thomas). S1: 첫 forward cohort 판정 때 factory mint 비중을 1d로 기울인다(손실을 줄이는 선택이지 엣지 주장이 아님). S2: 쌍둥이 기준 판정은 에포크 경계에서 `REMAINING_WORK.md` §L E1과 함께 다룬다. S3: maker 진입은 지금 다시 열지 않는다. 0단계(`report --arms`)는 #1088로 구현됐고, S1·S2의 실행은 각 관문(첫 판정, 에포크 경계)을 기다린다. 이 문서가 바꾼 판정 규칙·보드·상수는 없다. |
+| [FORWARD_COHORT_SIBLING_RULE_V0.1.md](FORWARD_COHORT_SIBLING_RULE_V0.1.md) | `DECIDED` | 2026-10-01 | S1–S4 권고대로(Thomas). - S1: A(열린 cohort의 키는 다음 동결에서 제외) + B(2차 형제는 읽는 시점에 표시). - S2: 키는 보유 cohort 마감(동결 + 180일)에 풀린다. - S3: 키 정의는 그대로 둔다. - S4: 풀 점유 계보와의 형제는 범위 밖이다. |
 
 ## 구현됨 (26)
 
