@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **46**건: `DRAFT` 4 · `PARTIALLY DECIDED` 8 · `DECIDED` 6 · `IMPLEMENTED` 25 · `SUPERSEDED` 1 · `RECORD` 2
+제안서 **46**건: `DRAFT` 3 · `PARTIALLY DECIDED` 8 · `DECIDED` 6 · `IMPLEMENTED` 26 · `SUPERSEDED` 1 · `RECORD` 2
 
-## Thomas 결정 대기 (12)
+## Thomas 결정 대기 (11)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -23,7 +23,6 @@
 | [RESEARCH_EPOCH_V0.1.md](RESEARCH_EPOCH_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | Q1·Q2(판정 규칙 지문과 그 표시)는 #972·#976으로 구현. Q3는 B로 결정(Thomas 2026-09-26, 경계 주기는 미정). Q4(다음 cohort에 판정 지문)는 다음 cohort를 동결할 때 정한다. |
 | [RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md](RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | (c) 순서 결정: 슬리피지 실측이 먼저다. (a)(b)(d)는 실측 뒤에 정하고, 그때까지 현재 값을 유지하며 LIVE_AUTONOMOUS로 올리지 않는다(Thomas 2026-09-26, 시스템 점검 D5). **값은 하나도 바뀌지 않았다**. |
 | [SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md](SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | §5의 D1·D2·D3·D4·D7·D8 채택, D6 보류(현상 유지). D5는 슬리피지 실측 뒤에 결정한다(§5 뒤 "결정" 절). 단계 0은 #980, 단계 1의 선행 조건 없는 항목은 #982–#989로 구현됐다. |
-| [FORWARD_COHORT_EXPANSION_V0.1.md](FORWARD_COHORT_EXPANSION_V0.1.md) | `DRAFT` | 2026-10-01 | "확대"는 진입 기준 완화가 아니라 이미 자격이 있는데 시계가 없는 계보 82명을 2차 cohort로 동결하는 것이다(오늘 dry-run, 17개 문맥). 동결은 기존 코드로 되고 새 코드는 없다. 결정 N1–N4: 2차 동결이 D3 밖인가, 동결 주기, cohort 사이 K 합산 규칙, 1차 cohort의 고정 마감일. 동결 자체는 결정 뒤 운영 명령이고 이 문서가 하지 않는다. |
 
 ## 결정됨 — 구현 남음 (6)
 
@@ -38,7 +37,7 @@
 | [SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md](SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md) | `DECIDED` | 2026-09-30 | D1 C·D2·D3 B→A·D4 예(Thomas): LIVE는 FORWARD_CONFIRMED 필수, forward 기준을 `observed_lineages`로 보정, 재사용 홀드아웃 표시는 버그 수정으로 지금 구현, 검증 슬라이스는 에포크 경계. 남은 구현: ① 문 변경, ② B 표시. ② A는 `REMAINING_WORK.md` §L. |
 | [CRYPTO_STRATEGY_EDGE_ORDER_V0.1.md](CRYPTO_STRATEGY_EDGE_ORDER_V0.1.md) | `DECIDED` | 2026-10-01 | S1·S2·S3 권고대로(Thomas). S1: 첫 forward cohort 판정 때 factory mint 비중을 1d로 기울인다(손실을 줄이는 선택이지 엣지 주장이 아님). S2: 쌍둥이 기준 판정은 에포크 경계에서 `REMAINING_WORK.md` §L E1과 함께 다룬다. S3: maker 진입은 지금 다시 열지 않는다. 0단계(`report --arms`)는 #1088로 구현됐고, S1·S2의 실행은 각 관문(첫 판정, 에포크 경계)을 기다린다. 이 문서가 바꾼 판정 규칙·보드·상수는 없다. |
 
-## 구현됨 (25)
+## 구현됨 (26)
 
 결정되고 지어졌다. 문서는 결정의 근거 기록으로 남는다.
 
@@ -69,6 +68,7 @@
 | [CRYPTO_SYSTEM_IMPROVEMENT_GAP_ANALYSIS_V0.1.md](CRYPTO_SYSTEM_IMPROVEMENT_GAP_ANALYSIS_V0.1.md) | `IMPLEMENTED` | 2026-09-30 | Q1·Q2·Q3 권고대로(Thomas) 결정·구현: forward cohort 읽기 열은 D3 밖(PR-D #1067), 슬리피지 재가격 열은 C2 예외(PR-E #1069), pause/kill 의미는 유지(변경 없음). PR-A·B·C는 #1050·#1051·#1052. 외부 개선안 16개 절 중 이미 구현 5, 부분 구현 5, 결정에 따라 보류 6이고, 권한을 새로 만드는 항목은 없다. 보류 6건은 각 항목의 조건(첫 cohort 판정, 슬리피지 실측, 에포크 경계)이 차면 이 문서를 근거로 다시 연다. |
 | [EXECUTION_STAGE_ANTI_ROLLBACK_V0.1.md](EXECUTION_STAGE_ANTI_ROLLBACK_V0.1.md) | `IMPLEMENTED` | 2026-09-30 | D1 a·D2·D3 a·D4 권고대로(Thomas) 구현. 배포 뒤 운영 단계 두 가지가 남는다: BOOTSTRAP(PAPER) 승인 1회로 장부 시작, 호스트 백업 스크립트에 앵커 제외 설치(§Implementation). |
 | [PROTECTION_UNKNOWN_ESCALATION_V0.1.md](PROTECTION_UNKNOWN_ESCALATION_V0.1.md) | `IMPLEMENTED` | 2026-09-30 | D1–D4 권고대로(Thomas) 구현(`crypto/protection_watch.py`). 한 가지를 바꿨다: U1은 사이클 정지(`record["halt"]`)가 아니라 신규 진입 보류다. 사이클 정지는 다른 심볼 포지션의 관리까지 건너뛰기 때문이다(§Implementation). 보드 한 줄(§2.5)은 D3 표시 동결로 미구현. |
+| [FORWARD_COHORT_EXPANSION_V0.1.md](FORWARD_COHORT_EXPANSION_V0.1.md) | `IMPLEMENTED` | 2026-10-01 | N1–N4 권고대로(Thomas). N1: 2차 동결은 D3 밖이다. N2: 28일마다 운영자가 수동으로 동결하되, 1h 선정 행이 약 200일을 넘기 전이어야 한다. N3: Decision 2 B 아래 K는 같은 문맥의 모든 동결 cohort를 합산한다. N4: 1차 cohort는 2027-03-22(동결 + 180일)에 한 번 판정하고 닫으며, 이후 cohort도 동결 + 180일이다. Decision 2 B는 그 마감 판정과 쌍둥이 확정률을 놓고 다시 묻는다. 2차 cohort `fwd_cohort_31fbbb4ff2b2491fedd8`(82명, 17개 문맥)와 그 쌍둥이 82명을 2026-10-01 04:04 UTC에 동결했다. 다음 동결은 2026-10-29, 2차 마감은 2027-03-30. |
 
 ## 대체됨 (1)
 
