@@ -62,12 +62,6 @@ from typing import Any, Callable, Mapping, Sequence
 from runtime.read_only_kernel import integrity
 
 from . import market_data
-from .cost import (
-    FUNDING_SOURCE_FALLBACK,
-    FUNDING_SOURCE_PARTIAL,
-    FUNDING_SOURCE_VENUE,
-    CostModel,
-)
 from .candidate_identity import candidate_id, derive_candidate_id
 from .robustness import MIN_HOLDOUT_TRADES
 from .strategy import SpecParseError, StrategySpec

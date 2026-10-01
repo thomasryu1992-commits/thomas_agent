@@ -34,9 +34,6 @@ ROSTER: dict[str, dict[str, frozenset[str]]] = {
             "HOLDOUT_FRACTION", "HOLDOUT_PERIODS", "MIN_BARS_FOR_HOLDOUT", "MIN_TRADES_PER_WINDOW",
             "WALK_FORWARD_MIN_PERIODS", "WALK_FORWARD_PERIODS", "holdout_split_index",
         }),
-        "cost": frozenset({
-            "CostModel", "FUNDING_SOURCE_FALLBACK", "FUNDING_SOURCE_PARTIAL", "FUNDING_SOURCE_VENUE",
-        }),
         "template_space": frozenset({
             "_bollinger_breakdown_short_entry", "_bollinger_breakout_entry", "_breakdown_short_entry",
             "_breakout_entry", "_funding_fade_long_entry", "_funding_fade_short_entry",
@@ -64,8 +61,8 @@ ROSTER: dict[str, dict[str, frozenset[str]]] = {
     },
     "live_execution": {
         "order_request": frozenset({
-            "ALGO_TYPE_CONDITIONAL", "CONDITIONAL_ORDER_TYPES", "MISMATCH", "NOT_FOUND", "ORDER_TYPE_LIMIT",
-            "ORDER_TYPE_MARKET", "ORDER_TYPE_STOP_MARKET", "RECONCILED", "TIME_IN_FORCE_GTC",
+            "CONDITIONAL_ORDER_TYPES", "NOT_FOUND", "ORDER_TYPE_LIMIT", "ORDER_TYPE_MARKET",
+            "ORDER_TYPE_STOP_MARKET", "RECONCILED", "TIME_IN_FORCE_GTC",
         }),
     },
     "live_leg": {

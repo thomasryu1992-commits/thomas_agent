@@ -18,6 +18,12 @@ import pytest
 
 from runtime.mvp_runtime import control, timeutil
 from runtime.mvp_runtime.control import ControlState, ControlStore
+from runtime.mvp_runtime.crypto.cost import (
+    FUNDING_SOURCE_FALLBACK,
+    FUNDING_SOURCE_PARTIAL,
+    FUNDING_SOURCE_VENUE,
+    CostModel,
+)
 from runtime.mvp_runtime.crypto import (
     backtest, factory, features, generator, indicators, market_data, pool, robustness, template_space,
     trade_plan,
@@ -1038,10 +1044,10 @@ def test_pooling_refuses_frames_from_a_different_cost_model():
     rates describes no book."""
     spec = StrategySpec.from_dict(_spec_dict())
     snapshot = _trending_snapshot()
-    cheap = factory.CostModel(taker_fee_bps=1.0)
+    cheap = CostModel(taker_fee_bps=1.0)
     frames = [factory.build_replay_frame(snapshot, cost=cheap)]
     with pytest.raises(ValueError, match="different cost model"):
-        factory.backtest_spec_pooled(spec, [snapshot], frames=frames, cost=factory.CostModel())
+        factory.backtest_spec_pooled(spec, [snapshot], frames=frames, cost=CostModel())
 
 
 def test_a_pooled_backtest_needs_something_to_replay():
@@ -1154,10 +1160,10 @@ def test_a_pooled_carry_is_only_as_sourced_as_its_worst_leg():
         for c in with_funding["candles"]
     ]
     frames = [factory.build_replay_frame(with_funding), factory.build_replay_frame(_shifted_snapshot())]
-    assert frames[0].funding_source == factory.FUNDING_SOURCE_VENUE
-    assert frames[1].funding_source == factory.FUNDING_SOURCE_FALLBACK
+    assert frames[0].funding_source == FUNDING_SOURCE_VENUE
+    assert frames[1].funding_source == FUNDING_SOURCE_FALLBACK
     pooled = factory.backtest_spec_pooled(spec, [], frames=frames)
-    assert pooled["cost_summary"]["cost_model"]["funding_source"] == factory.FUNDING_SOURCE_FALLBACK
+    assert pooled["cost_summary"]["cost_model"]["funding_source"] == FUNDING_SOURCE_FALLBACK
 
 
 def test_a_partial_leg_weakens_a_pooled_carry_without_collapsing_it_to_modelled():
@@ -1177,10 +1183,10 @@ def test_a_partial_leg_weakens_a_pooled_carry_without_collapsing_it_to_modelled(
         for c in partial["candles"][len(partial["candles"]) // 3:]
     ]
     frames = [factory.build_replay_frame(covered), factory.build_replay_frame(partial)]
-    assert frames[0].funding_source == factory.FUNDING_SOURCE_VENUE
-    assert frames[1].funding_source == factory.FUNDING_SOURCE_PARTIAL
+    assert frames[0].funding_source == FUNDING_SOURCE_VENUE
+    assert frames[1].funding_source == FUNDING_SOURCE_PARTIAL
     pooled = factory.backtest_spec_pooled(spec, [], frames=frames)
-    assert pooled["cost_summary"]["cost_model"]["funding_source"] == factory.FUNDING_SOURCE_PARTIAL
+    assert pooled["cost_summary"]["cost_model"]["funding_source"] == FUNDING_SOURCE_PARTIAL
 
 
 # --- prior windows: does the tail's answer hold before the tail? ----------------
