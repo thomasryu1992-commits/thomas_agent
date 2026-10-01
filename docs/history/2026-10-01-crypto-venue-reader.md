@@ -21,13 +21,25 @@
   the refresh's entry names it. The env-gate roster is unedited (`live_execution.py` was already on it).
 - **Left as they are:** the operator scripts `list_resting_orders.py` (reads resting orders) and
   `diagnose_bracket_leg.py` (validates one request) still take the order adapter. They are doors
-  outside the trading fire, pinned by the script roster. Moving them to the reader is a follow-up.
+  outside the trading fire, pinned by the script roster. Moving them to the reader is a follow-up,
+  and it adds `live_execution.select_venue_reader` to the script roster's non-sending callees.
 - **Tests:** `test_mvp_runtime_crypto_venue_reader.py` pins the reader's surface (the five, no
   `submit`, no `cancel_order`), the order adapter as the reader plus those two and nothing else,
   the selector in both states of the opt-in, and that the refresh with no adapter given selects the
   reader and never calls `select_order_adapter`. The venue contract's three tests that drive the real
   class's methods now build the reader, which is what the refresh holds.
-- **Evidence:** EVIDENCE_LINES
+- **Evidence:**
+  - the methods moved verbatim: every base line of `live_execution.py` is in the new file except the
+    old class line and its docstring;
+  - the record comparison over 6,728 lane tests, request logs included: 4 files differ, all of them
+    the scheduler's measured durations;
+  - the patch-reach census on `live_execution` finds no test that patches one of its globals that
+    its own functions read, on either commit. The patches that matter here are on the class and the
+    selector, and the tests above pin those;
+  - 7 mutants (the reader gains a cancel or says no egress, the selector builds the order adapter or
+    an inert default that claims egress or loses the gate's authorization, the refresh selects the
+    order adapter again, the order adapter overrides a read) are each killed by a named test;
+  - an independent review found no behaviour difference, and the full suite passes.
 - **Not done:** the plan's evidence for PR-13~15 includes one signed testnet cycle. It has not run for
   PR-13, PR-14 or this PR: the stage is PAPER and the testnet opt-in is off, so the guard refuses it
   (2026-09-30, as designed). Thomas chose to go ahead without it.

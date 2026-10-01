@@ -842,14 +842,15 @@ def select_order_adapter(*, now: str | None = None, root: Path | None = None) ->
     )
 
 
-def select_venue_reader(*, now: str | None = None, root: Path | None = None) -> VenueReader:
+def select_venue_reader(*, now: str | None = None, root: Path | None = None) -> VenueReader | DryRunOrderAdapter:
     """The venue's read-and-validate surface if live trading is opted in, else the inert adapter (PR-15).
 
     On the order adapter's own gate: the same switch, flags and provider, and the same key, because
     ``/order/test`` and the order reads are signed with the order key. What it builds is
     :class:`BinanceFuturesVenueReader`, which has no ``submit`` and no ``cancel_order``. The inert
     default is the dry-run order adapter, which opens no socket and says ``network_egress = False``,
-    the value the venue contract reads as "not opted in" before it asks anything."""
+    the value the venue contract reads as "not opted in" before it asks anything. It has no
+    ``position_mode``, so it is not a :class:`VenueReader`, and is never asked as one."""
     return safety_gate.select_env_gated(
         env_var=LIVE_TRADING_ENV,
         opt_in_value=REAL_LIVE_TRADING,
