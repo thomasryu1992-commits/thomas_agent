@@ -27,7 +27,7 @@ What these tests are guarding, in rough order of how quietly each would fail:
 
 from __future__ import annotations
 
-from runtime.mvp_runtime.crypto import factory, features
+from runtime.mvp_runtime.crypto import factory, features, generator, template_space
 from runtime.mvp_runtime.crypto.cycle import attach_cross_section, attach_reference
 from runtime.mvp_runtime.crypto.features import build_feature_rows
 from runtime.mvp_runtime.crypto.market_data import (
@@ -335,9 +335,9 @@ def test_only_the_normalized_columns_are_mintable():
     at 4h, and ``xs_members`` is a count of how many peers answered — a condition on it would
     mine feed availability rather than the market."""
     for column in features.XS_NUMERIC_COLUMNS:
-        assert column in factory.NUMERIC_FEATURES, column
+        assert column in template_space.NUMERIC_FEATURES, column
     for column in features.XS_EVIDENCE_COLUMNS:
-        assert column not in factory.NUMERIC_FEATURES, column
+        assert column not in template_space.NUMERIC_FEATURES, column
     assert set(features.XS_EVIDENCE_COLUMNS) == {"xs_dispersion", "xs_members"}
 
 
@@ -377,12 +377,12 @@ def test_the_families_are_minted_and_reach_a_real_trade_count():
     assert attach_cross_section(snapshot, collector=collector, now=NOW, limit=2000) is None
     rows = build_feature_rows(snapshot)
 
-    for family in sorted(factory.CROSS_SECTION_FAMILIES):
+    for family in sorted(template_space.CROSS_SECTION_FAMILIES):
         template = next(
             t for t in factory.templates_for_timeframe("1h", symbol="ETHUSDT")
             if t.family == family
         )
-        spec = StrategySpec.from_dict(factory.build_spec_dict(
+        spec = StrategySpec.from_dict(generator.build_spec_dict(
             template, template.base_params, strategy_id="S001",
             generation_id="GEN-001", symbol="ETHUSDT",
         ))
@@ -396,7 +396,7 @@ def test_the_families_survive_every_timeframe_because_the_cohort_is_a_constant()
     these must NOT drop at 1d, where the library is otherwise at its thinnest."""
     for timeframe in ("15m", "1h", "4h", "1d"):
         families = {t.family for t in factory.templates_for_timeframe(timeframe)}
-        assert factory.CROSS_SECTION_FAMILIES <= families, timeframe
+        assert template_space.CROSS_SECTION_FAMILIES <= families, timeframe
 
 
 def test_the_cohort_gate_drops_the_families_when_the_universe_is_too_small(monkeypatch):
@@ -408,7 +408,7 @@ def test_the_cohort_gate_drops_the_families_when_the_universe_is_too_small(monke
 
     monkeypatch.setattr(market_data, "CROSS_SECTION_UNIVERSE", ("BTCUSDT", "ETHUSDT"))
     families = {t.family for t in factory.templates_for_timeframe("1h", symbol="ETHUSDT")}
-    assert not (factory.CROSS_SECTION_FAMILIES & families)
+    assert not (template_space.CROSS_SECTION_FAMILIES & families)
     # ...and the rest of the library is untouched, so the gate is narrow.
     assert "trend_pullback" in families
 

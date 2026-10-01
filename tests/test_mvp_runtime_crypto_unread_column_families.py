@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from runtime.mvp_runtime.crypto import factory
+from runtime.mvp_runtime.crypto import factory, generator, template_space
 from runtime.mvp_runtime.crypto.strategy import StrategySpec, evaluate_spec
 
 NEW_FAMILIES = frozenset({
@@ -43,7 +43,7 @@ def _template(family):
 def _spec(family, **overrides):
     template = _template(family)
     params = {**template.base_params, **overrides}
-    return StrategySpec.from_dict(factory.build_spec_dict(
+    return StrategySpec.from_dict(generator.build_spec_dict(
         template, params, strategy_id="S999", generation_id="GEN-999",
     ))
 
@@ -68,8 +68,8 @@ def test_every_new_family_reads_only_mintable_classified_columns(family):
     dropped everywhere and read as a broken family rather than as an unclassified column."""
     numeric, categorical = factory.known_features(factory.market_data.BINANCE_FUTURES)
     mintable = numeric | frozenset(categorical)
-    assert factory.template_features(_template(family)) <= mintable
-    assert REACHED_COLUMN[family] in factory.NUMERIC_FEATURES
+    assert template_space.template_features(_template(family)) <= mintable
+    assert REACHED_COLUMN[family] in template_space.NUMERIC_FEATURES
 
 
 @pytest.mark.parametrize("family", sorted(NEW_FAMILIES))
@@ -82,7 +82,7 @@ def test_every_new_family_passes_its_own_validator(family):
 def test_htf_reversal_inherits_the_higher_timeframe_gate():
     """1d has no collected step above it. Minting there would produce a spec whose filter is
     indeterminate on every bar — no-entry forever, which is noise wearing diversity's coat."""
-    assert {"htf_reversal_long", "htf_reversal_short"} <= factory.HTF_FAMILIES
+    assert {"htf_reversal_long", "htf_reversal_short"} <= template_space.HTF_FAMILIES
     families_1d = {t.family for t in factory.templates_for_timeframe("1d", symbol="BTCUSDT")}
     assert not ({"htf_reversal_long", "htf_reversal_short"} & families_1d)
 
@@ -90,7 +90,7 @@ def test_htf_reversal_inherits_the_higher_timeframe_gate():
 def test_funding_momentum_inherits_the_funding_feed_gate():
     """The funding fetch does not reach the 1d replay window (`_funding_feed_reaches`), so a
     funding family minted at 1d is scored over a window its own feed cannot answer."""
-    assert {"funding_momentum_long", "funding_momentum_short"} <= factory.FUNDING_FAMILIES
+    assert {"funding_momentum_long", "funding_momentum_short"} <= template_space.FUNDING_FAMILIES
     families_1d = {t.family for t in factory.templates_for_timeframe("1d", symbol="BTCUSDT")}
     assert not ({"funding_momentum_long", "funding_momentum_short"} & families_1d)
     assert {"funding_momentum_long", "funding_momentum_short"} <= {

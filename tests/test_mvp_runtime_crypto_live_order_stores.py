@@ -31,7 +31,7 @@ def test_every_name_of_the_stores_that_live_order_offers_is_the_same_object():
             "read_live_entry_marks", "LIVE_DAILY_ORDER_CAP_REACHED", "MAX_CONSECUTIVE_API_ERRORS"} <= set(names), (
         "the scan lost the stores' own names: it broke, not the module")
     offered = [n for n in names if n in vars(live_order)]
-    assert {"LiveOrderCounter", "LiveEntryMarks", "LIVE_DAILY_ORDER_CAP_REACHED"} <= set(offered)
+    assert {"LiveOrderCounter", "LiveEntryMarks", "count_today"} <= set(offered)
     different = sorted(n for n in offered if getattr(live_order, n) is not getattr(live_order_stores, n))
     assert different == [], f"live_order holds a different object for: {different}"
 

@@ -68,7 +68,6 @@ from .cost import (
     FUNDING_SOURCE_VENUE,
     CostModel,
 )
-from .trade_plan import ASSUMED_LEVERAGE
 from .candidate_identity import candidate_id, derive_candidate_id
 from .robustness import MIN_HOLDOUT_TRADES
 from .strategy import SpecParseError, StrategySpec
@@ -78,9 +77,8 @@ from .strategy import SpecParseError, StrategySpec
 # does not reach a function defined there.
 from .backtest import (  # noqa: F401
     HOLDOUT_FRACTION, HOLDOUT_PERIODS, MIN_BARS_FOR_HOLDOUT, MIN_TRADES_PER_WINDOW,
-    PRIOR_WINDOWS, UNSUPPLIABLE_FEATURE, WALK_FORWARD_MIN_PERIODS, WALK_FORWARD_PERIODS,
-    ReplayFrame, _prefix_frame, _prior_window_evidence, _replay, backtest_spec,
-    backtest_spec_pooled, build_replay_frame, funding_charges_per_bar, holdout_split_index,
+    UNSUPPLIABLE_FEATURE, WALK_FORWARD_MIN_PERIODS, WALK_FORWARD_PERIODS, ReplayFrame,
+    _replay, backtest_spec, backtest_spec_pooled, build_replay_frame, holdout_split_index,
     unsuppliable_features,
 )
 # The template space lives in `template_space.py` (moved whole, refactor plan PR-09): the validator's
@@ -89,21 +87,18 @@ from .backtest import (  # noqa: F401
 # look a retired family's builder up here by name. Same rule as the replay above: patch a name where
 # the function that reads it is defined.
 from .template_space import (  # noqa: F401
-    CATEGORICAL_FEATURES, CROSS_SECTION_FAMILIES, FUNDING_FAMILIES, HTF_FAMILIES,
-    MAX_ENTRY_CONDITIONS, MAX_FUSION_ENTRY_CONDITIONS, MAX_HOLDING_BARS_RANGE, MIN_REWARD_RISK,
-    NUMERIC_FEATURES, OI_FAMILIES, POSITIONING_FAMILIES, ParamSpec, REFERENCE_FAMILIES,
-    RETIRED_FAMILIES, SESSION_FAMILIES, STOP_ATR_RANGE, TARGET_ATR_RANGE, TEMPLATES, _EXIT_BASE,
-    _EXIT_PARAMS, _FADE_EXIT_BASE, _FADE_EXIT_PARAMS, _FEATURE_FEED, _GENERATION_SPACES,
+    MAX_ENTRY_CONDITIONS, MAX_FUSION_ENTRY_CONDITIONS, MAX_HOLDING_BARS_RANGE, RETIRED_FAMILIES,
+    STOP_ATR_RANGE, TARGET_ATR_RANGE, TEMPLATES, _EXIT_PARAMS, _GENERATION_SPACES,
     _bollinger_breakdown_short_entry, _bollinger_breakout_entry, _breakdown_short_entry,
-    _breakout_entry, _funding_fade_long_entry, _funding_fade_short_entry, _funding_feed_reaches,
+    _breakout_entry, _funding_fade_long_entry, _funding_fade_short_entry,
     _funding_momentum_long_entry, _funding_momentum_short_entry, _htf_pullback_long_entry,
     _htf_pullback_short_entry, _htf_reversal_long_entry, _htf_reversal_short_entry,
     _htf_trend_long_entry, _htf_trend_short_entry, _htf_trend_strength_long_entry,
-    _htf_trend_strength_short_entry, _judgeable_hold_space, _ma_cross_down_entry,
-    _ma_cross_up_entry, _macd_cross_down_entry, _macd_cross_up_entry, _macd_momentum_entry,
-    _macd_momentum_short_entry, _mean_reversion_long_entry, _mean_reversion_short_entry,
-    _oi_feed_reaches, _oi_squeeze_long_entry, _oi_squeeze_short_entry, _oi_unwind_long_entry,
-    _oi_unwind_short_entry, _positioning_divergence_long_entry, _positioning_divergence_short_entry,
+    _htf_trend_strength_short_entry, _ma_cross_down_entry, _ma_cross_up_entry,
+    _macd_cross_down_entry, _macd_cross_up_entry, _macd_momentum_entry, _macd_momentum_short_entry,
+    _mean_reversion_long_entry, _mean_reversion_short_entry, _oi_squeeze_long_entry,
+    _oi_squeeze_short_entry, _oi_unwind_long_entry, _oi_unwind_short_entry,
+    _positioning_divergence_long_entry, _positioning_divergence_short_entry,
     _premium_fade_long_entry, _premium_fade_short_entry, _rel_strength_long_entry,
     _rel_strength_short_entry, _session_trend_long_entry, _session_trend_short_entry,
     _taker_absorption_long_entry, _taker_absorption_short_entry, _taker_flow_fade_long_entry,
@@ -111,20 +106,16 @@ from .template_space import (  # noqa: F401
     _trend_pullback_entry, _trend_pullback_short_entry, _volatility_expansion_long_entry,
     _volatility_expansion_short_entry, _volatility_squeeze_long_entry,
     _volatility_squeeze_short_entry, _xs_momentum_long_entry, _xs_momentum_short_entry,
-    _xs_reversion_long_entry, _xs_reversion_short_entry, judgeable_holding_bars, known_features,
-    template_features, templates_for_timeframe, validate_strategy,
+    _xs_reversion_long_entry, _xs_reversion_short_entry, known_features, templates_for_timeframe,
+    validate_strategy,
 )
 # The seeded generator lives in `generator.py` (moved whole, refactor plan PR-10): its knobs, the
-# probe ceiling, `mutate_params`, the elite centres and `generate_batch`. What its callers still read
-# here is re-exported as the same objects, under the same rule: patch a name where the function that
-# reads it is defined.
-from .generator import (  # noqa: F401
-    DEFAULT_BATCH_SIZE, ELITE_EVIDENCE_MIN_TRADES, PROBE_LIQUIDATION_ADMIT_FRACTION,
-    _EXIT_PROBE_SLOTS, _MAX_ATTEMPTS_PER_SPEC, _MUTATION_SCALE, _apply_reward_risk_floor,
-    _best_mint_params, _elite_flip, _fold_into_bounds, _matches_context, _rotation_offset,
-    build_spec_dict, cohort_probe_stop_ceiling, context_rotation_phase, elite_base_params,
-    elite_centres, generate_batch, holdout_permits_centring, liquidation_admissible_stop_atr,
-    mutate_params,
+# probe ceiling, `mutate_params`, the elite centres and `generate_batch`. This module imports what it
+# calls; nothing of the generator's is re-exported any more (refactor plan PR-16). Same rule: patch a
+# name where the function that reads it is defined.
+from .generator import (
+    DEFAULT_BATCH_SIZE, _matches_context, cohort_probe_stop_ceiling, elite_centres,
+    generate_batch,
 )
 
 

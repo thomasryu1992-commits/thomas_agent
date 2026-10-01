@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from runtime.mvp_runtime.crypto import factory
+from runtime.mvp_runtime.crypto import template_space
 from runtime.mvp_runtime.crypto.cycle import attach_mining_legs
 from runtime.mvp_runtime.crypto.features import latest_feature_row
 from runtime.mvp_runtime.crypto.market_data import (
@@ -65,7 +65,7 @@ def test_a_bare_snapshot_is_missing_the_non_price_half_of_the_vocabulary():
     Not a defect in `collect_market_data` — OHLCV plus the aggressor split is what its klines
     response promises, and the taker columns ride it. The defect is judging a spec on that."""
     snapshot, _ = _bare()
-    missing = set(factory.NUMERIC_FEATURES) - _supplied(snapshot)
+    missing = set(template_space.NUMERIC_FEATURES) - _supplied(snapshot)
     assert len(missing) >= 20, f"a bare snapshot now supplies more than expected: {len(missing)}"
     # Every non-price information source, absent.
     for name in ("funding_zscore", "htf_rsi", "rel_strength_roc_4", "xs_rank_pct",
@@ -84,7 +84,7 @@ def test_attach_mining_legs_supplies_every_reachable_mintable_column():
     future column needing a sixth leg fails here instead of silently scoring zero trades."""
     snapshot, collector = _bare()
     attach_mining_legs(snapshot, collector=collector, timeframe="1h", now=NOW)
-    missing = (set(factory.NUMERIC_FEATURES) - _supplied(snapshot)) - _UNREACHABLE_WITH_A_MOCK
+    missing = (set(template_space.NUMERIC_FEATURES) - _supplied(snapshot)) - _UNREACHABLE_WITH_A_MOCK
     assert not missing, f"mining frame cannot supply mintable columns: {sorted(missing)}"
 
 

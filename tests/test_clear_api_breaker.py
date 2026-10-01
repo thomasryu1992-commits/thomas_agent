@@ -11,11 +11,11 @@ import pytest
 from tests._helpers import make_gate_authorization
 
 from runtime.mvp_runtime.crypto.live_order import (
-    MAX_CONSECUTIVE_API_ERRORS,
     DryRunLiveApiErrorBreaker,
     LiveApiErrorBreaker,
     api_breaker_status,
 )
+from runtime.mvp_runtime.crypto.live_order_stores import MAX_CONSECUTIVE_API_ERRORS
 from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_FLAGS, LIVE_TRADING_PROVIDER_ID
 from scripts import clear_api_breaker as cab
 
@@ -164,7 +164,7 @@ def test_a_fail_closed_refusal_is_blocked_not_usage(tripped, capsys, monkeypatch
 
 
 def test_an_unreadable_record_is_blocked_even_for_show(tmp_path, capsys):
-    from runtime.mvp_runtime.crypto.live_order import API_BREAKER_FILENAME
+    from runtime.mvp_runtime.crypto.live_order_stores import API_BREAKER_FILENAME
     from runtime.mvp_runtime.crypto.state import venue_state_dir
 
     path = venue_state_dir(tmp_path) / API_BREAKER_FILENAME

@@ -52,13 +52,12 @@ from .vocabulary import (  # noqa: E402,F401
 
 from .state import STATE_REL, VENUE_MAINNET, state_dir, venue_state_dir  # noqa: E402  (one root for both trading planes; re-exported for the live-plane importers)
 # The ledger's readers live in `live_ledger` (store) and the outcome-row builder in `live_settlement`
-# (execution) since crypto PR7d-3; both are re-exported here, as the same objects, for this module's
-# writer and its importers. `_approvals_for` is not: the corrected read looks it up in `live_ledger`,
+# (execution) since crypto PR7d-3. The readers this module's importers still read here are re-exported,
+# as the same objects; the builder's re-export and the rest went in refactor plan PR-16, when the tests
+# that read them moved to the defining modules. `_approvals_for` is not: the corrected read looks it up in `live_ledger`,
 # so a patch on this module would miss it, and without the name here such a patch fails loudly.
 from .live_ledger import (  # noqa: E402,F401
-    LIVE_HISTORY_DUPLICATE,
     LIVE_HISTORY_TAMPERED,
-    LIVE_HISTORY_UNREADABLE,
     LIVE_OUTCOMES_FILENAME,
     UNKNOWN_R,
     live_outcomes_for_analysis,
@@ -66,7 +65,6 @@ from .live_ledger import (  # noqa: E402,F401
     read_live_outcomes_raw,
     stop_slippage_observations,
 )
-from .live_settlement import build_live_outcome_record, realized_stop_slippage_bps  # noqa: E402,F401
 
 
 # --- LP5.4: the outcome bridge -------------------------------------------------

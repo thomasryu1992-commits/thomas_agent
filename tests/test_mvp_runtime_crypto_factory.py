@@ -19,22 +19,22 @@ import pytest
 from runtime.mvp_runtime import control, timeutil
 from runtime.mvp_runtime.control import ControlState, ControlStore
 from runtime.mvp_runtime.crypto import (
-    backtest, factory, features, generator, indicators, market_data, pool, robustness,
-    template_space,
+    backtest, factory, features, generator, indicators, market_data, pool, robustness, template_space,
+    trade_plan,
 )
 from runtime.mvp_runtime.crypto.factory import (
     generate_batch,
     backtest_spec,
     fuse_specs,
-    mutate_params,
     next_generation_id,
     rank_fusion_parents,
     run_factory,
     templates_for_timeframe,
     validate_strategy,
     FusionRefused,
-    ParamSpec,
 )
+from runtime.mvp_runtime.crypto.generator import mutate_params
+from runtime.mvp_runtime.crypto.template_space import ParamSpec
 from runtime.mvp_runtime.crypto.strategy import StrategySpec, evaluate_spec
 from runtime.mvp_runtime.errors import ToolBlocked
 from runtime.mvp_runtime import scheduler as scheduler_mod
@@ -252,11 +252,11 @@ def test_a_centre_on_the_bound_does_not_send_half_its_children_back_to_it():
     rows (14.6% of the 48 it supplies for the trend space), two of them re-pinning above 50%."""
     rng = random.Random(19)
     floor = factory._EXIT_PARAMS["reward_risk"].lo
-    centre = {**factory._EXIT_BASE, "reward_risk": floor}
+    centre = {**template_space._EXIT_BASE, "reward_risk": floor}
     draws = [mutate_params(centre, factory._EXIT_PARAMS, rng)["reward_risk"] for _ in range(8000)]
     on_floor = sum(1 for d in draws if abs(d - floor) < 1e-9)
     assert on_floor / len(draws) < 0.01, f"{on_floor / len(draws):.1%} re-pinned on the floor"
-    span = (factory._EXIT_PARAMS["reward_risk"].hi - floor) * factory._MUTATION_SCALE
+    span = (factory._EXIT_PARAMS["reward_risk"].hi - floor) * generator._MUTATION_SCALE
     assert max(draws) > floor + span * 0.5, (
         "the fold must spread the overshoot INTO the space, not delete it")
 
@@ -270,11 +270,11 @@ def test_the_fold_keeps_the_aim_where_truncating_would_move_it():
     A mutation is a claim about a NEIGHBOURHOOD. The point of this change was to fix the shape
     of the draw without moving where it aims, and that is the half that is easy to lose."""
     rng = random.Random(23)
-    draws = [mutate_params(factory._EXIT_BASE, factory._EXIT_PARAMS, rng)["reward_risk"]
+    draws = [mutate_params(template_space._EXIT_BASE, factory._EXIT_PARAMS, rng)["reward_risk"]
              for _ in range(20000)]
-    assert abs(statistics.median(draws) - factory._EXIT_BASE["reward_risk"]) < 0.15, (
+    assert abs(statistics.median(draws) - template_space._EXIT_BASE["reward_risk"]) < 0.15, (
         f"median {statistics.median(draws):.3f} against a base of "
-        f"{factory._EXIT_BASE['reward_risk']} — the draw has been re-aimed, not reshaped"
+        f"{template_space._EXIT_BASE['reward_risk']} — the draw has been re-aimed, not reshaped"
     )
 
 
@@ -286,14 +286,14 @@ def test_the_low_target_region_survives_as_a_region_rather_than_a_spike():
     region it was standing in."""
     rng = random.Random(37)
     floor = factory._EXIT_PARAMS["reward_risk"].lo
-    draws = [mutate_params(factory._EXIT_BASE, factory._EXIT_PARAMS, rng)["reward_risk"]
+    draws = [mutate_params(template_space._EXIT_BASE, factory._EXIT_PARAMS, rng)["reward_risk"]
              for _ in range(20000)]
     # The bottom of the drawn window rather than a fixed ratio: the base is 2.07 and the span
     # 0.805, so the FLOOR itself is out of reach from the template centre (min draw ~1.27) and
     # a fixed `floor + eps` band would be testing arithmetic instead of the distribution. What
     # must survive is a REGION of near-target geometry, and the elite ratchet is what reaches
     # below it — see `_EXIT_PARAMS`.
-    low = [d for d in draws if d < factory._EXIT_BASE["reward_risk"] - 0.45]
+    low = [d for d in draws if d < template_space._EXIT_BASE["reward_risk"] - 0.45]
     assert len(low) / len(draws) > 0.15, "the low band has been squeezed out, not un-spiked"
     on_floor = sum(1 for d in low if abs(d - floor) < 1e-9)
     assert on_floor / len(low) < 0.05, (
@@ -304,8 +304,8 @@ def test_the_low_target_region_survives_as_a_region_rather_than_a_spike():
 def test_the_fold_holds_for_a_span_wider_than_its_own_interval():
     """No space in the library reaches this (the widest is `max_holding_bars`, span 12.6 against
     a width of 36), and a single reflection would land outside the bounds when one does."""
-    assert factory._fold_into_bounds(100.0, 0.0, 1.0) == pytest.approx(0.0)
-    assert factory._fold_into_bounds(-100.5, 0.0, 1.0) == pytest.approx(0.5)
+    assert generator._fold_into_bounds(100.0, 0.0, 1.0) == pytest.approx(0.0)
+    assert generator._fold_into_bounds(-100.5, 0.0, 1.0) == pytest.approx(0.5)
     rng = random.Random(41)
     space = {"x": ParamSpec(0.0, 1.0)}
     for _ in range(2000):
@@ -317,7 +317,7 @@ def test_the_fold_holds_for_a_span_wider_than_its_own_interval():
 def test_the_fold_leaves_a_draw_that_never_left_the_space_alone():
     """It must be identity inside the interval, or it is a second perturbation."""
     for value in (0.0, 0.25, 1.0, 3.999):
-        assert factory._fold_into_bounds(value, 0.0, 4.0) == pytest.approx(value)
+        assert generator._fold_into_bounds(value, 0.0, 4.0) == pytest.approx(value)
 
 
 def test_an_unordered_continuous_parameter_is_refused():
@@ -475,11 +475,11 @@ def test_contexts_firing_together_do_not_mint_the_same_block():
         total = len(library)
         families, unphased = set(), set()
         for symbol in members:
-            phase = factory.context_rotation_phase(symbol, timeframe, count=count, total=total)
+            phase = generator.context_rotation_phase(symbol, timeframe, count=count, total=total)
             for offset, sink in (
-                (factory._rotation_offset("GEN-999", 0, count, total,
+                (generator._rotation_offset("GEN-999", 0, count, total,
                                           rotation_index=fire, phase=phase), families),
-                (factory._rotation_offset("GEN-999", 0, count, total,
+                (generator._rotation_offset("GEN-999", 0, count, total,
                                           rotation_index=fire, phase=0), unphased),
             ):
                 sink.update(library[(offset + i) % total] for i in range(count))
@@ -509,10 +509,10 @@ def test_the_rotation_phase_preserves_library_coverage():
     for symbol, timeframe in (("BTCUSDT", "1h"), ("SOLUSDT", "4h"), ("ETHUSDT", "1d")):
         templates = templates_for_timeframe(timeframe, symbol=symbol)
         total = len(templates)
-        phase = factory.context_rotation_phase(symbol, timeframe, count=count, total=total)
+        phase = generator.context_rotation_phase(symbol, timeframe, count=count, total=total)
         seen = set()
         for fire in range(-(-total // count)):
-            offset = factory._rotation_offset(
+            offset = generator._rotation_offset(
                 "GEN-999", 0, count, total, rotation_index=fire, phase=phase
             )
             seen.update(templates[(offset + i) % total].family for i in range(count))
@@ -532,20 +532,20 @@ def test_the_rotation_phase_is_a_stable_property_of_the_context():
     the rotation already reaches."""
     import math
 
-    assert factory.context_rotation_phase("BTCUSDT", "1h", count=4, total=38) == \
-        factory.context_rotation_phase("BTCUSDT", "1h", count=4, total=38)
-    assert factory.context_rotation_phase("BTCUSDT", "1h", count=4, total=38) != \
-        factory.context_rotation_phase("BTCUSDT", "4h", count=4, total=38)
+    assert generator.context_rotation_phase("BTCUSDT", "1h", count=4, total=38) == \
+        generator.context_rotation_phase("BTCUSDT", "1h", count=4, total=38)
+    assert generator.context_rotation_phase("BTCUSDT", "1h", count=4, total=38) != \
+        generator.context_rotation_phase("BTCUSDT", "4h", count=4, total=38)
 
     for total in (30, 32, 36, 38):
         cycle = total // math.gcd(4, total)
         for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT"):
-            phase = factory.context_rotation_phase(symbol, "1h", count=4, total=total)
+            phase = generator.context_rotation_phase(symbol, "1h", count=4, total=total)
             assert 0 <= phase < cycle, f"{symbol}/{total}: phase {phase} outside [0, {cycle})"
 
     # An empty library is the degenerate case the offset helper already guards; the phase must
     # not raise on it either (a factory with no mintable family is a refusal, not a crash).
-    assert factory.context_rotation_phase("BTCUSDT", "1h", count=4, total=0) == 0
+    assert generator.context_rotation_phase("BTCUSDT", "1h", count=4, total=0) == 0
 
 
 def test_the_rotation_cursor_counts_fires_not_candidates():
@@ -641,9 +641,9 @@ def _refuse_family(monkeypatch, family):
 def _first_family(*, symbol="BTCUSDT", timeframe="1h", rotation_index=0, count=4):
     """The family ``generate_batch`` reaches first for this context — the one to jam."""
     templates = templates_for_timeframe(timeframe, symbol=symbol)
-    offset = factory._rotation_offset(
+    offset = generator._rotation_offset(
         "x", 0, count, len(templates), rotation_index=rotation_index,
-        phase=factory.context_rotation_phase(symbol, timeframe, count=count,
+        phase=generator.context_rotation_phase(symbol, timeframe, count=count,
                                              total=len(templates)),
     )
     return templates[offset].family
@@ -665,7 +665,7 @@ def test_a_stuck_family_no_longer_takes_the_whole_fire_with_it(monkeypatch):
     assert batch["batch_complete"]
     # It spent its own share and no more — `_MAX_ATTEMPTS_PER_SPEC`, not the whole budget.
     assert sum(1 for r in batch["rejected"] if r.get("strategy_family") == stuck) == (
-        factory._MAX_ATTEMPTS_PER_SPEC
+        generator._MAX_ATTEMPTS_PER_SPEC
     )
 
 
@@ -679,19 +679,19 @@ def test_every_family_stuck_still_terminates(monkeypatch):
                            rotation_index=0)
     assert batch["accepted_count"] == 0
     assert not batch["batch_complete"]
-    assert len(batch["rejected"]) == 4 * factory._MAX_ATTEMPTS_PER_SPEC
+    assert len(batch["rejected"]) == 4 * generator._MAX_ATTEMPTS_PER_SPEC
 
 
 def test_the_cursor_is_the_accept_index_when_nothing_is_stuck():
     """The guard must be invisible on the path every fire in the store has taken — 185 of 185
     minted exactly `count`, so a cursor that advanced on anything else would move them all."""
     templates = templates_for_timeframe("1h", symbol="BTCUSDT")
-    phase = factory.context_rotation_phase("BTCUSDT", "1h", count=4, total=len(templates))
+    phase = generator.context_rotation_phase("BTCUSDT", "1h", count=4, total=len(templates))
     for rotation_index in range(12):
         batch = generate_batch(f"GEN-{rotation_index:03d}", seed=rotation_index, count=4,
                                symbol="BTCUSDT", timeframe="1h", rotation_index=rotation_index)
         assert batch["batch_complete"]
-        offset = factory._rotation_offset("x", 0, 4, len(templates),
+        offset = generator._rotation_offset("x", 0, 4, len(templates),
                                           rotation_index=rotation_index, phase=phase)
         assert [s["strategy_family"] for s in batch["specs"]] == [
             templates[(offset + j) % len(templates)].family for j in range(4)
@@ -1119,7 +1119,7 @@ def test_the_mint_scope_still_defaults_to_the_symbol_being_mined():
     """Every one of the stored candidates carries a single-symbol scope, and `run_factory`
     is untouched — widening is a caller's decision, never a default."""
     template = templates_for_timeframe("1d")[0]
-    spec = factory.build_spec_dict(
+    spec = generator.build_spec_dict(
         template, dict(template.base_params), strategy_id="S1",
         generation_id="GEN-001", symbol="SOLUSDT",
     )
@@ -1130,7 +1130,7 @@ def test_a_widened_mint_scope_is_sorted_and_deduplicated():
     """`symbol_scope` is inside `strategy_rule_fingerprint`, so two callers naming the same
     set in different orders must reach the same rule hash."""
     template = templates_for_timeframe("1d")[0]
-    build = lambda scope: factory.build_spec_dict(
+    build = lambda scope: generator.build_spec_dict(
         template, dict(template.base_params), strategy_id="S1",
         generation_id="GEN-001", symbol="BTCUSDT", symbol_scope=scope,
     )
@@ -1207,7 +1207,7 @@ def test_slicing_a_built_frame_equals_rebuilding_it_except_the_last_bars_funding
     snapshot = _trending_snapshot(n=200)
     full = factory.build_replay_frame(snapshot)
     keep = factory.holdout_split_index(len(full.rows))
-    sliced = factory._prefix_frame(full, keep)
+    sliced = backtest._prefix_frame(full, keep)
     rebuilt = factory.build_replay_frame(
         {**snapshot, "candles": list(snapshot["candles"])[:keep], "candle_count": keep})
 
@@ -1284,7 +1284,7 @@ def test_prefix_invariance_holds_with_htf_and_external_series():
 
     full = factory.build_replay_frame(snapshot)
     keep = factory.holdout_split_index(len(full.rows))
-    sliced = factory._prefix_frame(full, keep)
+    sliced = backtest._prefix_frame(full, keep)
     rebuilt = factory.build_replay_frame(
         {**snapshot, "candles": candles[:keep], "candle_count": keep})
 
@@ -1300,9 +1300,9 @@ def test_the_earlier_windows_are_adjacent_and_do_not_overlap():
     overlap would score the same bars twice and read as agreement between windows."""
     frame = factory.build_replay_frame(_trending_snapshot(n=200))
     keep, bounds = len(frame.rows), [(frame.split, len(frame.rows))]
-    for _ in range(factory.PRIOR_WINDOWS):
+    for _ in range(backtest.PRIOR_WINDOWS):
         keep = factory.holdout_split_index(keep)
-        prefix = factory._prefix_frame(frame, keep)
+        prefix = backtest._prefix_frame(frame, keep)
         if prefix is None:
             break
         bounds.append((prefix.split, keep))
@@ -1317,7 +1317,7 @@ def test_the_holdout_block_carries_the_earlier_windows():
     holdout = factory.backtest_spec_pooled(
         _spec_for_prior_windows(), [], frames=frames)["holdout"]
     assert len(holdout["prior_window_r"]) == len(holdout["prior_window_trades"])
-    assert len(holdout["prior_window_r"]) <= factory.PRIOR_WINDOWS
+    assert len(holdout["prior_window_r"]) <= backtest.PRIOR_WINDOWS
     assert "period_r" in holdout, "the sibling field must still be there"
 
 
@@ -1327,7 +1327,7 @@ def test_a_series_too_short_yields_fewer_windows_rather_than_an_error():
     frames = [factory.build_replay_frame(_trending_snapshot(n=70))]
     holdout = factory.backtest_spec_pooled(
         _spec_for_prior_windows(), [], frames=frames)["holdout"]
-    assert len(holdout["prior_window_r"]) < factory.PRIOR_WINDOWS
+    assert len(holdout["prior_window_r"]) < backtest.PRIOR_WINDOWS
 
 
 def test_a_leg_that_runs_out_stops_the_whole_window_rather_than_shrinking_the_pool():
@@ -1335,9 +1335,9 @@ def test_a_leg_that_runs_out_stops_the_whole_window_rather_than_shrinking_the_po
     comparing it to the holdout would be comparing two populations."""
     frames = [factory.build_replay_frame(_trending_snapshot(n=200)),
               factory.build_replay_frame(_shifted_snapshot(n=70))]
-    r, n = factory._prior_window_evidence(
+    r, n = backtest._prior_window_evidence(
         _spec_for_prior_windows(), frames, cost=frames[0].cost)
-    assert len(r) == len(n) < factory.PRIOR_WINDOWS
+    assert len(r) == len(n) < backtest.PRIOR_WINDOWS
 
 
 # --- pooled minting (F9 shape B: 4h and 1d, 1h left single-symbol) --------------
@@ -2267,11 +2267,11 @@ def test_two_slices_a_fire_tile_the_library_in_half_the_fires():
     for symbol, timeframe in (("BTCUSDT", "1h"), ("SOLUSDT", "4h"), ("ETHUSDT", "1d")):
         templates = templates_for_timeframe(timeframe, symbol=symbol)
         total = len(templates)
-        phase = factory.context_rotation_phase(symbol, timeframe, count=count, total=total)
+        phase = generator.context_rotation_phase(symbol, timeframe, count=count, total=total)
         seen = set()
         for fire in range(-(-total // (2 * count))):
             for step in (2 * fire, 2 * fire + 1):
-                offset = factory._rotation_offset("GEN-999", 0, count, total, rotation_index=step, phase=phase)
+                offset = generator._rotation_offset("GEN-999", 0, count, total, rotation_index=step, phase=phase)
                 seen.update(templates[(offset + i) % total].family for i in range(count))
         assert seen == {t.family for t in templates}, (
             f"{symbol} {timeframe}: unreachable in one half-length pass: "
@@ -2606,11 +2606,11 @@ def test_the_stop_floor_holds_and_the_base_sits_inside_it():
     stop = factory._EXIT_PARAMS["stop_atr"]
     assert stop.lo >= 1.2, "the tight band is negative at 15m and worse at 4h than the alternative"
 
-    base = factory._EXIT_BASE["stop_atr"]
+    base = template_space._EXIT_BASE["stop_atr"]
     assert stop.lo < base < stop.hi, "the base must sit strictly inside its own range"
 
     rng = random.Random(11)
-    draws = [factory.mutate_params(factory._EXIT_BASE, factory._EXIT_PARAMS, rng)["stop_atr"]
+    draws = [generator.mutate_params(template_space._EXIT_BASE, factory._EXIT_PARAMS, rng)["stop_atr"]
              for _ in range(2000)]
     pinned = sum(1 for d in draws if d <= stop.lo + 1e-9) / len(draws)
     assert pinned < 0.10, (
@@ -2634,8 +2634,8 @@ def test_the_stop_ceiling_leaves_room_the_old_one_truncated():
     spec can be drawn meaningfully above where the store stops, and that the pair the space
     can now mint stays inside what `validate_strategy` admits."""
     stop = factory._EXIT_PARAMS["stop_atr"]
-    base = factory._EXIT_BASE["stop_atr"]
-    reach = base + (stop.hi - stop.lo) * factory._MUTATION_SCALE
+    base = template_space._EXIT_BASE["stop_atr"]
+    reach = base + (stop.hi - stop.lo) * generator._MUTATION_SCALE
     assert reach > 2.0, (
         f"the template half reaches only {reach:.2f} — the region the sweep found optima in "
         "is still truncated, so widening the ceiling bought nothing"
@@ -2661,7 +2661,7 @@ def test_widening_the_stop_no_longer_drags_the_target_distribution_with_it():
         space["stop_atr"] = ParamSpec(space["stop_atr"].lo, stop_hi)
         rng = random.Random(97)
         return statistics.median(
-            mutate_params(factory._EXIT_BASE, space, rng)["reward_risk"] for _ in range(8000))
+            mutate_params(template_space._EXIT_BASE, space, rng)["reward_risk"] for _ in range(8000))
 
     narrow, wide = ratio_median(2.0), ratio_median(3.0)
     assert abs(narrow - wide) < 1e-9, (
@@ -2678,7 +2678,7 @@ def test_the_fade_geometry_keeps_its_narrow_stop():
     risk unit so much as a longer wait in a position whose premise has already failed, which
     is the fade's own failure mode. Left narrow deliberately, and pinned so that a later
     widening of the trend space does not carry it along by habit."""
-    assert factory._FADE_EXIT_PARAMS["stop_atr"].hi <= 2.0
+    assert template_space._FADE_EXIT_PARAMS["stop_atr"].hi <= 2.0
 
 
 def test_fusion_cannot_carry_a_child_outside_the_space_it_mints_from():
@@ -2737,7 +2737,7 @@ def test_a_fused_parameter_and_a_mutated_one_obey_the_same_bounds():
             # longer drawn. See `_fused_exit_param`.
             union_lo = min(s["stop_atr"].lo * s["reward_risk"].lo for s in factory._GENERATION_SPACES)
             union_hi = max(s["stop_atr"].hi * s["reward_risk"].hi for s in factory._GENERATION_SPACES)
-            spec = factory.ParamSpec(union_lo, union_hi)
+            spec = template_space.ParamSpec(union_lo, union_hi)
         else:
             spec = factory._EXIT_PARAMS[name]
             union_lo = min(space[name].lo for space in factory._GENERATION_SPACES)
@@ -2752,7 +2752,7 @@ def test_a_fused_parameter_and_a_mutated_one_obey_the_same_bounds():
         illegal = high * 10
         assert factory._fused_exit_param(name, illegal, illegal) == (
             int(round(illegal)) if spec.integer else round(illegal, 4))
-    mutated = mutate_params(factory._EXIT_BASE, factory._EXIT_PARAMS, rng)
+    mutated = mutate_params(template_space._EXIT_BASE, factory._EXIT_PARAMS, rng)
     for name, spec in factory._EXIT_PARAMS.items():
         assert spec.lo <= mutated[name] <= spec.hi
 
@@ -2838,7 +2838,7 @@ def test_every_mintable_feature_is_classified():
     )
     stale = classified - vocabulary
     assert not stale, f"classified but not mintable: {sorted(stale)}"
-    for feed in factory._FEATURE_FEED.values():
+    for feed in template_space._FEATURE_FEED.values():
         assert feed in market_data.KNOWN_FEEDS, f"unknown feed named: {feed}"
 
 
@@ -2852,7 +2852,7 @@ def test_an_unclassified_feature_is_mintable_nowhere(monkeypatch):
     it takes BLOCK_UNKNOWN_FEATURE.
     """
     monkeypatch.setattr(
-        template_space, "NUMERIC_FEATURES", factory.NUMERIC_FEATURES | {"liquidation_burst_ratio"}
+        template_space, "NUMERIC_FEATURES", template_space.NUMERIC_FEATURES | {"liquidation_burst_ratio"}
     )
     for venue in market_data.VENUE_FEEDS:
         numeric, _ = factory.known_features(venue)
@@ -2881,13 +2881,13 @@ def test_binance_keeps_the_whole_vocabulary():
     # The vocabulary was built for this venue, so scoping must subtract nothing from it —
     # this is the "crypto verdicts are unchanged" guarantee in its narrowest form.
     numeric, categorical = factory.known_features(market_data.BINANCE_FUTURES)
-    assert numeric == factory.NUMERIC_FEATURES
-    assert categorical == factory.CATEGORICAL_FEATURES
+    assert numeric == template_space.NUMERIC_FEATURES
+    assert categorical == template_space.CATEGORICAL_FEATURES
 
 
 def test_hyperliquid_loses_exactly_the_features_its_feeds_cannot_produce():
     numeric, categorical = factory.known_features(market_data.HYPERLIQUID)
-    removed = factory.NUMERIC_FEATURES - numeric
+    removed = template_space.NUMERIC_FEATURES - numeric
     assert removed == {
         "liquidation_spike_ratio", "liquidation_total", "long_liquidation", "short_liquidation",
         "open_interest_change_pct", "open_interest_zscore",
@@ -2901,7 +2901,7 @@ def test_hyperliquid_loses_exactly_the_features_its_feeds_cannot_produce():
     assert {"avg_trade_size_zscore", "trade_count_zscore"} <= numeric
     # Funding is a real series here, and the categorical columns are all candle-derived.
     assert {"funding_rate", "funding_zscore"} <= numeric
-    assert categorical == factory.CATEGORICAL_FEATURES
+    assert categorical == template_space.CATEGORICAL_FEATURES
 
 
 def test_a_fabricated_constant_feature_is_refused_where_its_feed_can_never_exist():
@@ -2977,9 +2977,9 @@ def test_binance_mints_every_template():
         scoped = factory.templates_for_timeframe(timeframe, venue=market_data.BINANCE_FUTURES)
         unscoped_families = {
             t.family for t in factory.TEMPLATES
-            if t.family not in factory.POSITIONING_FAMILIES
+            if t.family not in template_space.POSITIONING_FAMILIES
         }
-        assert {t.family for t in scoped} >= unscoped_families - factory.HTF_FAMILIES
+        assert {t.family for t in scoped} >= unscoped_families - template_space.HTF_FAMILIES
 
 
 def test_hyperliquid_drops_the_families_whose_feeds_it_lacks():
@@ -3007,7 +3007,7 @@ def test_the_hold_bound_reads_the_window_through_the_replays_own_split():
     for tf in ("15m", "1h", "4h", "1d"):
         total = market_data.factory_candle_target(tf)
         holdout = total - factory.holdout_split_index(total)
-        assert factory.judgeable_holding_bars(tf) == holdout // robustness.MIN_HOLDOUT_TRADES
+        assert template_space.judgeable_holding_bars(tf) == holdout // robustness.MIN_HOLDOUT_TRADES
 
 
 def test_the_hold_space_is_narrowed_only_where_its_own_holdout_could_not_judge_it():
@@ -3019,7 +3019,7 @@ def test_the_hold_space_is_narrowed_only_where_its_own_holdout_could_not_judge_i
                   if (s := t.param_space.get("max_holding_bars"))}
         assert spaces == {(12, 48), (4, 16)}, f"{tf} must keep its space"
 
-    cap = factory.judgeable_holding_bars("1d")
+    cap = template_space.judgeable_holding_bars("1d")
     assert cap == 24
     for template in factory.templates_for_timeframe("1d"):
         spec = template.param_space["max_holding_bars"]
@@ -3040,7 +3040,7 @@ def test_the_hold_bound_cannot_be_escaped_by_an_elite_centre_outside_it():
                     if t.param_space["max_holding_bars"].hi == 24)
     stale = {**template.base_params, "max_holding_bars": 37.0}
     rng = random.Random(4)
-    drawn = [factory.mutate_params(stale, template.param_space, rng)["max_holding_bars"]
+    drawn = [generator.mutate_params(stale, template.param_space, rng)["max_holding_bars"]
              for _ in range(200)]
     assert max(drawn) <= 24 and min(drawn) >= 12
 
@@ -3050,9 +3050,9 @@ def test_a_family_whose_shortest_hold_cannot_be_judged_is_not_minted():
     at 4 against a 1d cap of 24 — and exists so that a deeper floor or a shallower window
     cannot turn the bound into a space with `lo > hi` that draws silently."""
     template = factory.templates_for_timeframe("1d")[0]
-    assert factory._judgeable_hold_space(template, 1) is None
+    assert template_space._judgeable_hold_space(template, 1) is None
     # A cap at or above the space's own top leaves the template untouched, object and all.
-    assert factory._judgeable_hold_space(template, 10_000) is template
+    assert template_space._judgeable_hold_space(template, 10_000) is template
 
 
 def test_a_templates_feature_set_does_not_move_with_its_params():
@@ -3072,15 +3072,15 @@ def test_a_templates_feature_set_does_not_move_with_its_params():
             for key in ("feature", "value_from")
             if (name := cond.get(key))
         )
-        assert shifted == factory.template_features(template), template.family
+        assert shifted == template_space.template_features(template), template.family
 
 
 def test_every_template_names_only_mintable_features():
     # A template naming something outside the vocabulary would be dropped on EVERY venue by
     # the new gate — silently, since a dropped family looks exactly like an ungated one.
-    vocabulary = frozenset(factory.NUMERIC_FEATURES) | frozenset(factory.CATEGORICAL_FEATURES)
+    vocabulary = frozenset(template_space.NUMERIC_FEATURES) | frozenset(template_space.CATEGORICAL_FEATURES)
     for template in factory.TEMPLATES:
-        unknown = factory.template_features(template) - vocabulary
+        unknown = template_space.template_features(template) - vocabulary
         assert not unknown, f"{template.family} names {sorted(unknown)}"
 
 
@@ -3143,7 +3143,7 @@ def test_every_fade_family_mints_from_the_fade_space_and_no_other_family_does():
     with a fade premise and the trend space is the silent half of this — it would mint the very
     geometry mismatch this space exists to remove, and nothing else in the suite would notice."""
     got = {t.family for t in factory.TEMPLATES
-           if t.param_space["max_holding_bars"] is factory._FADE_EXIT_PARAMS["max_holding_bars"]}
+           if t.param_space["max_holding_bars"] is template_space._FADE_EXIT_PARAMS["max_holding_bars"]}
     assert got == _FADE_FAMILIES, (
         f"fade space on the wrong set: unexpected {sorted(got - _FADE_FAMILIES)}, "
         f"missing {sorted(_FADE_FAMILIES - got)}"
@@ -3160,19 +3160,19 @@ def test_the_fade_space_can_never_draw_a_reward_risk_the_validator_refuses():
     This is why the fade target floor is 2.0: it equals the stop ceiling, and the property is
     arithmetic rather than lucky. It is asserted on the BOUNDS first, because a draw-based test
     alone would pass on a space that is merely unlikely to violate it."""
-    ratio = factory._FADE_EXIT_PARAMS["reward_risk"]
-    assert ratio.lo >= factory.MIN_REWARD_RISK, (
+    ratio = template_space._FADE_EXIT_PARAMS["reward_risk"]
+    assert ratio.lo >= template_space.MIN_REWARD_RISK, (
         f"ratio floor {ratio.lo} is below MIN_REWARD_RISK — some draws are unmintable"
     )
     # And the other end: the pair is drawn independently, so the PRODUCT has to stay inside
     # what the validator admits or the same attempt-burning returns from the top corner.
-    stop = factory._FADE_EXIT_PARAMS["stop_atr"]
+    stop = template_space._FADE_EXIT_PARAMS["stop_atr"]
     assert stop.hi * ratio.hi <= factory.TARGET_ATR_RANGE[1]
 
     rng = random.Random(5)
     for _ in range(2000):
-        drawn = factory.mutate_params(factory._FADE_EXIT_BASE, factory._FADE_EXIT_PARAMS, rng)
-        assert drawn["reward_risk"] >= factory.MIN_REWARD_RISK
+        drawn = generator.mutate_params(template_space._FADE_EXIT_BASE, template_space._FADE_EXIT_PARAMS, rng)
+        assert drawn["reward_risk"] >= template_space.MIN_REWARD_RISK
         assert drawn["stop_atr"] * drawn["reward_risk"] <= factory.TARGET_ATR_RANGE[1]
 
 
@@ -3182,10 +3182,10 @@ def test_the_fade_bases_sit_strictly_inside_their_bounds():
     shifting it. Checked for all three, not just the stop, because the fade space moved all
     three and a mid-range base is cheap insurance on each."""
     rng = random.Random(17)
-    draws = [factory.mutate_params(factory._FADE_EXIT_BASE, factory._FADE_EXIT_PARAMS, rng)
+    draws = [generator.mutate_params(template_space._FADE_EXIT_BASE, template_space._FADE_EXIT_PARAMS, rng)
              for _ in range(2000)]
-    for name, spec in factory._FADE_EXIT_PARAMS.items():
-        base = factory._FADE_EXIT_BASE[name]
+    for name, spec in template_space._FADE_EXIT_PARAMS.items():
+        base = template_space._FADE_EXIT_BASE[name]
         assert spec.lo < base < spec.hi, f"{name}: base {base} is on a bound of its own range"
         values = [d[name] for d in draws]
         assert min(values) >= spec.lo and max(values) <= spec.hi
@@ -3247,7 +3247,7 @@ def test_the_momentum_pair_is_retired_rather_than_deleted_and_cannot_return_alon
     # The cohort gate names only what is minted (see CROSS_SECTION_FAMILIES), so the swap has to
     # move that set too or the minted pair escapes the gate. Disjointness itself is pinned in
     # tests/test_mvp_runtime_crypto_cross_section.py, which owns that property.
-    assert factory.CROSS_SECTION_FAMILIES == {"xs_reversion_long", "xs_reversion_short"}
+    assert template_space.CROSS_SECTION_FAMILIES == {"xs_reversion_long", "xs_reversion_short"}
 
 
 def test_macd_momentum_is_retired_and_its_event_form_is_still_in_the_library():
@@ -3359,7 +3359,7 @@ def test_no_generation_space_can_draw_a_reward_risk_the_validator_refuses():
     same attempt-burning returns from the top corner instead of the bottom."""
     for space in factory._GENERATION_SPACES:
         ratio = space["reward_risk"]
-        assert ratio.lo >= factory.MIN_REWARD_RISK
+        assert ratio.lo >= template_space.MIN_REWARD_RISK
         assert space["stop_atr"].hi * ratio.hi <= factory.TARGET_ATR_RANGE[1]
 
     rng = random.Random(23)
@@ -3372,9 +3372,9 @@ def test_no_generation_space_can_draw_a_reward_risk_the_validator_refuses():
         ]
         for centre in adverse:
             for _ in range(2000):
-                drawn = factory.mutate_params(centre, space, rng)
+                drawn = generator.mutate_params(centre, space, rng)
                 target = drawn["stop_atr"] * drawn["reward_risk"]
-                assert drawn["reward_risk"] >= factory.MIN_REWARD_RISK
+                assert drawn["reward_risk"] >= template_space.MIN_REWARD_RISK
                 assert factory.TARGET_ATR_RANGE[0] <= target <= factory.TARGET_ATR_RANGE[1]
 
 
@@ -3395,23 +3395,23 @@ def test_the_reward_risk_floor_is_inert_because_the_pair_can_no_longer_be_drawn_
     The function stays because it is `mutate_params`' contract to any space that draws a
     `target_atr` against a `stop_atr`, not a property of the two spaces that no longer do."""
     rng = random.Random(29)
-    draws = [factory.mutate_params(factory._EXIT_BASE, factory._EXIT_PARAMS, rng)
+    draws = [generator.mutate_params(template_space._EXIT_BASE, factory._EXIT_PARAMS, rng)
              for _ in range(20000)]
     ratios = [d["reward_risk"] for d in draws]
-    at_floor = sum(1 for r in ratios if abs(r - factory.MIN_REWARD_RISK) < 1e-9) / len(ratios)
+    at_floor = sum(1 for r in ratios if abs(r - template_space.MIN_REWARD_RISK) < 1e-9) / len(ratios)
     assert at_floor == 0.0, (
-        f"{at_floor:.2%} of draws sit on R:R exactly {factory.MIN_REWARD_RISK} — the ratio's "
+        f"{at_floor:.2%} of draws sit on R:R exactly {template_space.MIN_REWARD_RISK} — the ratio's "
         "own floor should make that unreachable, not merely rare"
     )
-    assert min(ratios) >= factory.MIN_REWARD_RISK
+    assert min(ratios) >= template_space.MIN_REWARD_RISK
 
     # Still correct for a space that DOES draw a target against a stop.
-    legacy = {"stop_atr": factory.ParamSpec(1.2, 2.0),
-              "target_atr": factory.ParamSpec(1.6, 8.0)}
+    legacy = {"stop_atr": template_space.ParamSpec(1.2, 2.0),
+              "target_atr": template_space.ParamSpec(1.6, 8.0)}
     out = {"stop_atr": 1.9, "target_atr": 1.6}
-    factory._apply_reward_risk_floor(
+    generator._apply_reward_risk_floor(
         out, {"stop_atr": 1.45, "target_atr": 3.0}, legacy, random.Random(3), scale=0.35)
-    assert out["target_atr"] >= 1.9 * factory.MIN_REWARD_RISK
+    assert out["target_atr"] >= 1.9 * template_space.MIN_REWARD_RISK
 
 
 def test_the_trend_ratio_floor_is_not_raised_to_delete_the_near_target_region():
@@ -3429,15 +3429,15 @@ def test_the_trend_ratio_floor_is_not_raised_to_delete_the_near_target_region():
     the assertion moved with it: the floor stays at `MIN_REWARD_RISK`, and the drawn window
     keeps real mass in its lower half rather than aiming past it."""
     ratio = factory._EXIT_PARAMS["reward_risk"]
-    assert ratio.lo == factory.MIN_REWARD_RISK, (
+    assert ratio.lo == template_space.MIN_REWARD_RISK, (
         "the trend ratio floor was raised off MIN_REWARD_RISK — that deletes the near-target "
         "region, which measures as the least negative band in the store; see `_EXIT_PARAMS`"
     )
 
     rng = random.Random(31)
-    draws = [factory.mutate_params(factory._EXIT_BASE, factory._EXIT_PARAMS, rng)["reward_risk"]
+    draws = [generator.mutate_params(template_space._EXIT_BASE, factory._EXIT_PARAMS, rng)["reward_risk"]
              for _ in range(20000)]
-    below_base = sum(1 for d in draws if d < factory._EXIT_BASE["reward_risk"]) / len(draws)
+    below_base = sum(1 for d in draws if d < template_space._EXIT_BASE["reward_risk"]) / len(draws)
     assert below_base > 0.40, (
         f"only {below_base:.1%} of draws sit below the centre — the window has been aimed past "
         "the near-target region rather than spanning it"
@@ -3461,7 +3461,7 @@ def test_the_reward_risk_floor_leaves_an_unsatisfiable_draw_alone_for_the_valida
     so it is constructed rather than waited for."""
     impossible = {"stop_atr": ParamSpec(3.0, 3.0), "target_atr": ParamSpec(1.0, 1.5)}
     rng = random.Random(37)
-    draws = [factory.mutate_params({"stop_atr": 3.0, "target_atr": 1.2}, impossible, rng)
+    draws = [generator.mutate_params({"stop_atr": 3.0, "target_atr": 1.2}, impossible, rng)
              for _ in range(500)]
     targets = [d["target_atr"] for d in draws]
 
@@ -3472,7 +3472,7 @@ def test_the_reward_risk_floor_leaves_an_unsatisfiable_draw_alone_for_the_valida
         "a draw it cannot help instead of leaving it for the validator"
     )
     for drawn in draws:
-        assert drawn["target_atr"] / drawn["stop_atr"] < factory.MIN_REWARD_RISK
+        assert drawn["target_atr"] / drawn["stop_atr"] < template_space.MIN_REWARD_RISK
     spec = _parent_spec("S1", [_CLOSE_OVER_MA20], exit_rules={
         "stop_model": "atr", "stop_atr": draws[0]["stop_atr"],
         "target_atr": draws[0]["target_atr"], "max_holding_bars": 24})
@@ -3508,7 +3508,7 @@ def test_an_adverse_elite_centre_no_longer_spends_a_batch_on_refusals():
             refused_seeds.append(seed)
         for spec in batch["specs"]:
             exit_rules = spec["exit_rules"]
-            assert exit_rules["target_atr"] / exit_rules["stop_atr"] >= factory.MIN_REWARD_RISK
+            assert exit_rules["target_atr"] / exit_rules["stop_atr"] >= template_space.MIN_REWARD_RISK
     assert not refused_seeds, (
         f"seeds {refused_seeds} spent attempts on risk:reward refusals from an elite centre"
     )
@@ -3781,10 +3781,9 @@ class TestLiquidationGuard:
         and would have had to be re-typed every time the assumption moved (it moved to 5x
         on 2026-09-02). What this test is for is the refusal, not the leverage.
         """
-        from runtime.mvp_runtime.crypto.paper import (
-            ASSUMED_LEVERAGE, MAINTENANCE_MARGIN_RATE,
-            liquidation_price, stop_is_beyond_liquidation,
-            stop_beyond_liquidation_refusal,
+        from runtime.mvp_runtime.crypto.paper import ASSUMED_LEVERAGE, stop_beyond_liquidation_refusal
+        from runtime.mvp_runtime.crypto.trade_plan import (
+            MAINTENANCE_MARGIN_RATE, liquidation_price, stop_is_beyond_liquidation,
         )
         entry = 100.0
         liq = liquidation_price(entry, "LONG")
@@ -3809,12 +3808,10 @@ class TestLiquidationGuard:
 
     def test_short_direction(self):
         """SHORT: liquidation is above entry; stop above liquidation is refused."""
-        from runtime.mvp_runtime.crypto.paper import (
-            liquidation_price, stop_is_beyond_liquidation, stop_beyond_liquidation_refusal,
-        )
-        from runtime.mvp_runtime.crypto.paper import (
-            ASSUMED_LEVERAGE, MAINTENANCE_MARGIN_RATE,
-        )
+        from runtime.mvp_runtime.crypto.paper import stop_beyond_liquidation_refusal
+        from runtime.mvp_runtime.crypto.trade_plan import liquidation_price, stop_is_beyond_liquidation
+        from runtime.mvp_runtime.crypto.paper import ASSUMED_LEVERAGE
+        from runtime.mvp_runtime.crypto.trade_plan import MAINTENANCE_MARGIN_RATE
         entry = 100.0
         liq = liquidation_price(entry, "SHORT")
         # Derived, not spelled: the literal used to be 104.6, which was 20x written as a
@@ -3831,9 +3828,7 @@ class TestLiquidationGuard:
 
     def test_low_leverage_admits_wide_stop(self):
         """At 5x leverage, the liquidation distance is ~19.6% — most stops fit."""
-        from runtime.mvp_runtime.crypto.paper import (
-            liquidation_price, stop_is_beyond_liquidation,
-        )
+        from runtime.mvp_runtime.crypto.trade_plan import liquidation_price, stop_is_beyond_liquidation
         entry = 100.0
         liq = liquidation_price(entry, "LONG", leverage=5.0)
         # liq ≈ 100 * (1 - 0.2 + 0.004) = 80.4
@@ -3842,7 +3837,7 @@ class TestLiquidationGuard:
 
     def test_high_leverage_refuses_normal_stop(self):
         """At 125x, the liquidation distance is ~0.4% — even a 1-ATR stop exceeds it."""
-        from runtime.mvp_runtime.crypto.paper import stop_is_beyond_liquidation
+        from runtime.mvp_runtime.crypto.trade_plan import stop_is_beyond_liquidation
         entry = 100.0
         # At 125x: liq ≈ 100 * (1 - 0.008 + 0.004) = 99.6 — stop at 98 is way below
         assert stop_is_beyond_liquidation(entry, 98.0, True, leverage=125.0)
@@ -3856,9 +3851,8 @@ class TestLiquidationGuard:
         account's real 5x. Pinning the number made this test a statement about the leverage
         instead of about the counter."""
         from runtime.mvp_runtime.crypto.cost import CostModel
-        from runtime.mvp_runtime.crypto.paper import (
-            ASSUMED_LEVERAGE, MAINTENANCE_MARGIN_RATE,
-        )
+        from runtime.mvp_runtime.crypto.paper import ASSUMED_LEVERAGE
+        from runtime.mvp_runtime.crypto.trade_plan import MAINTENANCE_MARGIN_RATE
 
         room = 1.0 / ASSUMED_LEVERAGE - MAINTENANCE_MARGIN_RATE
         breaching_stop = round(room / 0.03 + 1.0, 2)   # +1 so the tail of the ATR range clears too
@@ -3881,7 +3875,7 @@ class TestLiquidationGuard:
         assert "liquidation_guard" in result
         guard = result["liquidation_guard"]
         assert guard["applied"] is True
-        assert guard["assumed_leverage"] == factory.ASSUMED_LEVERAGE
+        assert guard["assumed_leverage"] == trade_plan.ASSUMED_LEVERAGE
         assert guard["maintenance_margin_rate"] == 0.004
         assert guard["refused_entries"] >= 0
 
@@ -4025,14 +4019,14 @@ def test_exit_probe_slots_mint_the_unexplored_stop_ceiling():
         "GEN-777", seed=11, count=8, symbol="BTCUSDT", timeframe="1d",
         elite_params={family: dict(elite) for family in spaces},
     )
-    flip = factory._elite_flip("GEN-777")
+    flip = generator._elite_flip("GEN-777")
     probed = []
     for index, spec in enumerate(batch["specs"]):
         family = spec["strategy_family"]
         space = spaces[family]["stop_atr"]
-        span = (space.hi - space.lo) * factory._MUTATION_SCALE
+        span = (space.hi - space.lo) * generator._MUTATION_SCALE
         stop = spec["exit_rules"]["stop_atr"]
-        if (index + flip) % 4 in factory._EXIT_PROBE_SLOTS:
+        if (index + flip) % 4 in generator._EXIT_PROBE_SLOTS:
             probed.append(index)
             assert stop >= space.hi - span - 1e-9, (
                 f"probe slot {index} drew stop {stop} below its band [{space.hi - span}, {space.hi}]"
@@ -4058,17 +4052,17 @@ def test_the_probe_moves_the_stop_centre_and_nothing_else():
         "GEN-778", seed=13, count=8, symbol="BTCUSDT", timeframe="1d",
         elite_params={family: dict(elite) for family in spaces},
     )
-    flip = factory._elite_flip("GEN-778")
+    flip = generator._elite_flip("GEN-778")
     checked = 0
     for index, spec in enumerate(batch["specs"]):
-        if (index + flip) % 4 not in factory._EXIT_PROBE_SLOTS:
+        if (index + flip) % 4 not in generator._EXIT_PROBE_SLOTS:
             continue
         if (index + flip) % 2 != 0:
             continue  # base-parity probe: the elite centre has no claim on it
         space = spaces[spec["strategy_family"]]
         if "reward_risk" not in space:
             continue
-        rr_span = (space["reward_risk"].hi - space["reward_risk"].lo) * factory._MUTATION_SCALE
+        rr_span = (space["reward_risk"].hi - space["reward_risk"].lo) * generator._MUTATION_SCALE
         exit_rules = spec["exit_rules"]
         drawn_rr = exit_rules["target_atr"] / exit_rules["stop_atr"]
         assert abs(drawn_rr - elite_rr) <= rr_span + 1e-2, (
@@ -4102,7 +4096,7 @@ def test_the_probe_ceiling_admits_the_fraction_it_promises():
     from runtime.mvp_runtime.crypto import paper
 
     candles = _volatile_candles(atr_pct_by_bar=lambda i: 0.10 if i % 10 == 0 else 0.01)
-    ceiling = factory.liquidation_admissible_stop_atr(candles)
+    ceiling = generator.liquidation_admissible_stop_atr(candles)
     assert ceiling is not None
 
     # Replay the guard's own question per bar: would a stop this wide sit beyond liquidation?
@@ -4113,16 +4107,16 @@ def test_the_probe_ceiling_admits_the_fraction_it_promises():
     judged = [(close, atr) for close, atr in zip(closes, atr_series) if atr]
     admitted = sum(
         1 for close, atr in judged
-        if not paper.stop_is_beyond_liquidation(close, close - ceiling * atr, True)
+        if not trade_plan.stop_is_beyond_liquidation(close, close - ceiling * atr, True)
     )
     fraction = admitted / len(judged)
-    assert fraction >= factory.PROBE_LIQUIDATION_ADMIT_FRACTION - 0.02, (
+    assert fraction >= generator.PROBE_LIQUIDATION_ADMIT_FRACTION - 0.02, (
         f"ceiling {ceiling} admitted only {fraction:.2%} of bars"
     )
     # And it is a real bound, not a vacuous one: doubling it loses bars the ceiling kept.
     wider = sum(
         1 for close, atr in judged
-        if not paper.stop_is_beyond_liquidation(close, close - 2 * ceiling * atr, True)
+        if not trade_plan.stop_is_beyond_liquidation(close, close - 2 * ceiling * atr, True)
     )
     assert wider < admitted, "the ceiling must be tight enough that widening it costs coverage"
 
@@ -4138,13 +4132,13 @@ def test_a_binding_ceiling_narrows_the_probe_and_a_loose_one_changes_nothing():
     tight = 2.0
     bounded = generate_batch("GEN-780", probe_stop_ceiling=tight, **kwargs)
     templates = {t.family: t.param_space for t in templates_for_timeframe("1d", symbol="BTCUSDT")}
-    flip = factory._elite_flip("GEN-780")
+    flip = generator._elite_flip("GEN-780")
     probed = 0
     for index, spec in enumerate(bounded["specs"]):
         space = templates[spec["strategy_family"]]["stop_atr"]
-        if (index + flip) % 4 not in factory._EXIT_PROBE_SLOTS or space.hi <= tight:
+        if (index + flip) % 4 not in generator._EXIT_PROBE_SLOTS or space.hi <= tight:
             continue
-        span = (space.hi - space.lo) * factory._MUTATION_SCALE
+        span = (space.hi - space.lo) * generator._MUTATION_SCALE
         stop = spec["exit_rules"]["stop_atr"]
         # Centred on the ceiling now, so the draw sits within one span of it — and crucially
         # below the band the space's own ceiling would have produced.
@@ -4161,16 +4155,16 @@ def test_a_ceiling_under_the_family_floor_spends_the_slot_on_an_ordinary_draw():
     floor = min(space["stop_atr"].lo for space in templates.values())
     batch = generate_batch("GEN-781", seed=5, count=8, symbol="BTCUSDT", timeframe="1d",
                            probe_stop_ceiling=floor - 0.1)
-    flip = factory._elite_flip("GEN-781")
+    flip = generator._elite_flip("GEN-781")
     for index, spec in enumerate(batch["specs"]):
         space = templates[spec["strategy_family"]]["stop_atr"]
-        span = (space.hi - space.lo) * factory._MUTATION_SCALE
+        span = (space.hi - space.lo) * generator._MUTATION_SCALE
         stop = spec["exit_rules"]["stop_atr"]
         assert stop >= space.lo - 1e-9, "a refused probe must not mint below the space"
         # Only the TREND space can answer this: a fade family's band [1.79, 2.0] overlaps what
         # an ordinary draw around its 1.7 base already reaches, so a draw landing there proves
         # nothing either way. The trend space's band starts at 2.37, beyond any centre's reach.
-        if (index + flip) % 4 in factory._EXIT_PROBE_SLOTS and space.hi > 2.5:
+        if (index + flip) % 4 in generator._EXIT_PROBE_SLOTS and space.hi > 2.5:
             assert stop <= space.hi - span + 1e-9, (
                 f"slot {index} still drew in the probe band ({stop}) under an impossible ceiling"
             )
@@ -4183,10 +4177,10 @@ def test_the_cohort_ceiling_takes_the_most_binding_leg():
     wild = {"candles": _volatile_candles(atr_pct_by_bar=lambda i: 0.05)}
     silent = {"candles": _volatile_candles(n=3)}
 
-    calm_ceiling = factory.liquidation_admissible_stop_atr(calm["candles"])
-    wild_ceiling = factory.liquidation_admissible_stop_atr(wild["candles"])
+    calm_ceiling = generator.liquidation_admissible_stop_atr(calm["candles"])
+    wild_ceiling = generator.liquidation_admissible_stop_atr(wild["candles"])
     assert wild_ceiling < calm_ceiling
-    assert factory.liquidation_admissible_stop_atr(silent["candles"]) is None
+    assert generator.liquidation_admissible_stop_atr(silent["candles"]) is None
 
     assert factory.cohort_probe_stop_ceiling([calm, wild]) == wild_ceiling
     assert factory.cohort_probe_stop_ceiling([calm, silent]) == calm_ceiling

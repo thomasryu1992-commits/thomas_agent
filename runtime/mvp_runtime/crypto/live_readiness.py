@@ -125,9 +125,8 @@ from .venue_contract import (
 # re-exported as the same objects, less the names nothing read here (refactor plan PR-16): this module
 # collects the facts and renders the board.
 from .readiness_model import (  # noqa: F401
-    READINESS_COMPONENTS, READINESS_MODEL, SOURCE_RECORDED, SOURCE_THIS_PROCESS, _mapping,
-    _opted_in, contradicts_recorded_gate, env_out_of_scope, minority_may_enter,
-    readiness_data, readiness_state,
+    SOURCE_RECORDED, SOURCE_THIS_PROCESS, _mapping, _opted_in, contradicts_recorded_gate,
+    env_out_of_scope, minority_may_enter, readiness_data, readiness_state,
 )
 
 # LP4's order adapter exists (merged 2026-07-25): `live_execution.BinanceFuturesOrderAdapter`

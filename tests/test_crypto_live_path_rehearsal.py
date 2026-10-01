@@ -42,7 +42,6 @@ from runtime.mvp_runtime.crypto.account import AccountSnapshot
 from runtime.mvp_runtime.crypto.guards import run_risk_guard
 from runtime.mvp_runtime.crypto.live_order import (
     CANARY_CONFIRMATION_PHRASE,
-    ENTRY_MARKS_VERSION,
     LIVE_CONFIRMATION_PHRASE,
     LiveEntryMarks,
     LiveOrderCounter,
@@ -50,6 +49,7 @@ from runtime.mvp_runtime.crypto.live_order import (
     count_today,
     read_live_entry_marks,
 )
+from runtime.mvp_runtime.crypto.live_order_stores import ENTRY_MARKS_VERSION
 from runtime.mvp_runtime.crypto.live_pnl import (
     LIVE_TRADING_FLAGS,
     LIVE_TRADING_PROVIDER_ID,
