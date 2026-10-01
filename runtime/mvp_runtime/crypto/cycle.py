@@ -753,6 +753,10 @@ def run_crypto_cycle(
     # of costs, at any sample size. Beneath that the registered budget, the venue-sourced daily
     # loss breaker, the bracket breaker and both kill switches all still bind.
     #
+    # The cycle's id is fixed by its inputs, so it is known before the live leg runs: the leg stamps
+    # it on any position it opens, and the record below carries the same value (refactor plan J-5.1).
+    cycle_id = cycle_id_for(symbol, timeframe, now)
+
     # Never raises: `run_live_leg` reports, because a traceback here would be indistinguishable
     # from "no live activity".
     live = run_live_leg(
@@ -775,6 +779,7 @@ def run_crypto_cycle(
         control_store=control_store,
         live_arm_approvals=live_arm_approvals,
         optional_data=optional_data,
+        cycle_id=cycle_id,
     )
     reason_codes.extend(live["live_reason_codes"])
 
@@ -899,10 +904,14 @@ def run_crypto_cycle(
         for key in ("stale", "missing"):
             if optional_data[key]:
                 record[f"optional_data_{key}"] = list(optional_data[key])
-    record["cycle_id"] = integrity.short_id(
-        "crypto_cycle", {"symbol": symbol, "timeframe": timeframe, "at": now}
-    )
+    record["cycle_id"] = cycle_id
     return record
+
+
+def cycle_id_for(symbol: str, timeframe: str, now: str) -> str:
+    """One context's cycle id: a function of the context and the fire's time, nothing else, so it can
+    be computed before the cycle runs and handed to what the cycle opens (refactor plan J-5.1)."""
+    return integrity.short_id("crypto_cycle", {"symbol": symbol, "timeframe": timeframe, "at": now})
 
 
 def pool_cycle_contexts(

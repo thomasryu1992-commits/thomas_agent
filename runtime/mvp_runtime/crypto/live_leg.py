@@ -476,6 +476,7 @@ def execute_live_entry(
     now: str,
     timeout_seconds: int = 10,
     sleep: Any = time.sleep,
+    cycle_id: str | None = None,
 ) -> dict[str, Any]:
     """Open one live position from a ``READY`` decision, protected or not at all.
 
@@ -742,6 +743,8 @@ def execute_live_entry(
         timeframe=_exit_terms(decision).get("timeframe"),
         max_holding_bars=_exit_terms(decision).get("max_holding_bars"),
         risk_snapshot_sha256=intent.get("risk_snapshot_sha256"),
+        # The cycle that opened it (refactor plan J-5.1); None from a caller that does not say.
+        cycle_id=cycle_id,
     )
     # The bracket ids ride on the stored record (additive keys, so LP5.1's builder is untouched)
     # because the exit path has to cancel exactly these orders and nothing else.
