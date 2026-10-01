@@ -1,12 +1,12 @@
 # 제안: forward cohort 사이 형제 규칙 — 한 키는 열린 cohort 하나만 (v0.1)
 
-**상태:** DECIDED 2026-10-01 — S1–S4 권고대로(Thomas).
+**상태:** IMPLEMENTED 2026-10-01 — S1–S4 권고대로(Thomas). 구현은 아래 "구현" 절. 배포 뒤 10-29 동결부터 적용된다.
 - S1: A(열린 cohort의 키는 다음 동결에서 제외) + B(2차 형제는 읽는 시점에 표시).
 - S2: 키는 보유 cohort 마감(동결 + 180일)에 풀린다.
 - S3: 키 정의는 그대로 둔다.
 - S4: 풀 점유 계보와의 형제는 범위 밖이다.
 
-구현은 10-29 동결 전에 넣어야 한다. D3 밖이다(D3-3).
+D3 밖이다(D3-3).
 **대상:** `crypto/forward_cohort.py`의 `eligible_members`·`freeze_cohort`, 그리고 cohort 보고서의 표시.
 **기준 시점:** 2026-10-01, main(#1094 머지 후). 운영 상태는 읽기만 했다(uid 10001, 순수 함수 `eligible_members`).
 **표기:** [확인]은 직접 잰 값, [추정]은 계산이나 외삽으로 얻은 값, [문서]는 저장소 기록을 인용한 값이다.
@@ -122,6 +122,26 @@ family 쌍은 13%다. 일별 R 상관도 0.62 대 0.31이다. 반박된 키에 �
 - **S3 → 키 정의 유지.** 키는 (family, 심볼 범위, tf)다.
 - **S4 → 범위 밖.** 풀 점유 계보와 키가 같은 멤버는 B의 표시에만 보인다.
 - **남은 일:** §5의 구현 PR. 10-29 동결 전에 머지·배포되어야 그 회차부터 적용된다.
+
+## 구현 (2026-10-01)
+
+- **`crypto/forward_cohort.py`:**
+  - `COHORT_LIFETIME_DAYS = 180`을 추가했다. N4의 마감이 코드에 처음 들어갔다. `tunables`에도 OPERATOR로 등록했다.
+  - `open_cohort_lineages(cohorts, now=)`를 추가했다. 동결 후 180일이 지나지 않은 cohort들의 키 집합을 돌려준다.
+    동결 시각을 읽지 못하면 그 cohort는 열린 것으로 본다.
+  - `eligible_members(..., exclude_lineages=)`가 그 키를 건너뛴다. `freeze_cohort`가 이 집합을 넘긴다.
+    형제만 남은 동결은 `FORWARD_COHORT_EMPTY`가 된다.
+  - 동결 기록에 `observation_entry_bar.v2`, `one_member_per: "... across every open cohort"`, `cohort_lifetime_days`를 찍는다.
+  - `sibling_of(cohorts)`를 추가했다. 이것은 읽는 시점의 표시다. `cohort_report`는 멤버마다 `sibling_of`를 싣고,
+    `board_summary`는 `siblings`를 센다.
+- **표시:**
+  - 보드 줄에 `형제 N`이 나온다. 0이면 나오지 않는다.
+  - `scripts/forward_cohort report`는 `sibling of <id>`를 덧붙인다.
+  - 판정, 문, K는 이 표시를 읽지 않는다.
+- **운영 상태 대조(읽기 전용 컨테이너, 새 코드):**
+  - 지금 동결 dry-run은 0명이다. 이전 규칙에서는 41명이었다.
+  - 2차 cohort의 형제 53명이 보드와 리포트에 표시된다.
+- **하지 않은 것:** 키 군집을 한 단위로 세는 계층 판정. 아직 그런 판정이 없다. 표시가 그 판정이 읽을 입력이다.
 
 ## 7. 이 문서가 하지 않는 것
 

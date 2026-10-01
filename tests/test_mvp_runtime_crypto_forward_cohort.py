@@ -320,6 +320,74 @@ def test_freeze_appends_once_and_the_next_cohort_holds_only_new_lineages(tmp_pat
     assert exc.value.reason_code == fco.FORWARD_COHORT_EMPTY
 
 
+def test_a_key_an_open_cohort_holds_admits_no_sibling_in_a_later_freeze(tmp_path):
+    # FORWARD_COHORT_SIBLING_RULE S1 A: the one-member-per-key rule holds across open cohorts. A
+    # sibling (same family, scope and timeframe, another rule hash) waits; a new key does not.
+    pool_state.append_candidates([_record("cand_a")], root=tmp_path)
+    fco.freeze_cohort(tmp_path, now=NOW, apply=True)
+    sibling = _record("cand_sib", adx=30.0)
+    assert sibling["strategy_rule_hash"] != _record("cand_a")["strategy_rule_hash"]
+    pool_state.append_candidates([sibling, _record("cand_new", family="other")], root=tmp_path)
+    record = fco.freeze_cohort(tmp_path, now=_day(21))
+    assert [m["candidate_id"] for m in record["members"]] == ["cand_new"]
+    assert record["eligibility"]["version"] == "observation_entry_bar.v2"
+    assert record["eligibility"]["cohort_lifetime_days"] == fco.COHORT_LIFETIME_DAYS == 180
+
+
+def test_a_freeze_offered_only_siblings_is_empty(tmp_path):
+    pool_state.append_candidates([_record("cand_a")], root=tmp_path)
+    fco.freeze_cohort(tmp_path, now=NOW, apply=True)
+    pool_state.append_candidates([_record("cand_sib", adx=30.0)], root=tmp_path)
+    with pytest.raises(ToolError) as exc:
+        fco.freeze_cohort(tmp_path, now=_day(21), apply=True)
+    assert exc.value.reason_code == fco.FORWARD_COHORT_EMPTY
+
+
+def test_a_cohort_releases_its_keys_at_its_close_and_not_a_day_before():
+    # S2: the key is held until freeze + COHORT_LIFETIME_DAYS, and released on that instant.
+    cohort = {"frozen_at_utc": "2026-01-01T00:00:00Z",
+              "members": [{"strategy_family": "breakout", "symbol_scope": ["BTCUSDT"], "timeframe": "1d"}]}
+    key = ("breakout", ("BTCUSDT",), "1d")
+    assert fco.open_cohort_lineages([cohort], now="2026-06-29T23:59:59Z") == {key}  # day 179.99
+    assert fco.open_cohort_lineages([cohort], now="2026-06-30T00:00:00Z") == frozenset()  # day 180
+
+
+def test_a_cohort_whose_freeze_time_does_not_parse_keeps_its_keys():
+    cohort = {"frozen_at_utc": "not a time",
+              "members": [{"strategy_family": "breakout", "symbol_scope": ["BTCUSDT"], "timeframe": "1d"}]}
+    assert fco.open_cohort_lineages([cohort], now=NOW) == {("breakout", ("BTCUSDT",), "1d")}
+
+
+def test_a_released_key_admits_a_new_lineage(tmp_path):
+    pool_state.append_candidates([_record("cand_a")], root=tmp_path)
+    fco.freeze_cohort(tmp_path, now=NOW, apply=True)
+    pool_state.append_candidates([_record("cand_sib", adx=30.0)], root=tmp_path)
+    later = "2027-01-16T00:00:00Z"  # NOW + 180 days
+    assert [m["candidate_id"] for m in fco.freeze_cohort(tmp_path, now=later)["members"]] == ["cand_sib"]
+
+
+def test_a_sibling_sealed_before_the_rule_is_marked_never_dropped(tmp_path):
+    # S1 B: a v1 cohort could admit a sibling of an earlier member. It stays walked and judged as
+    # frozen; the report marks it, and the board counts it. Display only.
+    _install_cohort(tmp_path, _record("cand_a"), _record("cand_b", family="other"))
+    _install_cohort(tmp_path, _record("cand_sib", adx=30.0), _record("cand_new", family="third"))
+    first, second = fco.cohort_report(tmp_path)
+    assert {m["candidate_id"]: m["sibling_of"] for m in first["members"]} == {"cand_a": None, "cand_b": None}
+    assert {m["candidate_id"]: m["sibling_of"] for m in second["members"]} == {
+        "cand_sib": "cand_a", "cand_new": None}
+    assert fco.board_summary(tmp_path)["siblings"] == 1
+    from runtime.mvp_runtime.crypto.dashboard import build_status, render_status_text
+    assert "forward 코호트 4계보 · 기록 0 · 형제 1 · 탐색" in render_status_text(build_status(tmp_path, now=NOW))
+
+
+def test_sibling_of_marks_only_across_cohorts_and_names_the_first_holder():
+    def cohort(*members):
+        return {"members": [{"candidate_id": cid, "strategy_family": fam, "symbol_scope": ["BTCUSDT"],
+                             "timeframe": "1d"} for cid, fam in members]}
+    marked = fco.sibling_of([cohort(("a", "x")), cohort(("b", "x"), ("c", "y")), cohort(("d", "x"), ("e", "y"))])
+    assert marked == {"b": "a", "d": "a", "e": "c"}
+
+
 def test_a_lineage_the_pool_ever_clocked_is_not_frozen(tmp_path):
     pool_state.append_candidates([_record("cand_a"), _record("cand_b", family="other")], root=tmp_path)
     clocked = {"outcome_closed": True, "candidate_id": "cand_b", "settlement_id": "settle_b",

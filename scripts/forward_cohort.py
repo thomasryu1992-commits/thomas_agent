@@ -311,7 +311,8 @@ def _report(root: Path, detail: bool = False, arms: bool = False) -> int:
             print("  %-26s %-4s %-28s %5s %9s %6s  %s" % (
                 m.get("candidate_id"), m.get("timeframe") or "", m.get("strategy_family") or "",
                 m.get("priceable_count", ""), "" if mean is None else f"{mean:+.3f}",
-                m.get("active_slices", ""), m.get("status")))
+                m.get("active_slices", ""),
+                m.get("status") + (f"  sibling of {m['sibling_of']}" if m.get("sibling_of") else "")))
         if detail:
             _print_detail(cohort, members, columns)
     if arms:
