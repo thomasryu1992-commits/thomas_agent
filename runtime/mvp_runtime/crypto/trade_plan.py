@@ -6,7 +6,8 @@ backtest and paper is deliberate: the factory scores a strategy with the maths t
 it with. It lived in `paper`, beside the stateful position kernel (`run_paper_update`, `RealPaperStore`,
 `route_entries`), which put it above the factory and the forward book that read it. By what it does it is
 strategy-layer work, pure computation over a strategy's spec and the cost model, and it imports nothing
-from `paper`. `paper` re-exports every name as the same object, so its importers keep their lines.
+from `paper`. `paper` re-exports, as the same objects, the names its importers still read there
+(refactor plan PR-16 removed the rest).
 
 The labels these functions stamp into records and the kernel reads back (`PAPER_PROVENANCE`,
 `DEFAULT_VENUE`, the entry status) live in `vocabulary`. `PAPER_KERNEL_VERSION`, which only

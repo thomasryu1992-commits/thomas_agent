@@ -13,7 +13,8 @@ refusals this code raises itself.
 
 All of it is pure: no network, no clock, no state. It lived in `live_execution` beside the adapters that
 sign and send. That module keeps the egress (the adapters, their selection, the halt backstop) and the
-send-and-reconcile loop that joins the two sides, and re-exports every name here as the same object.
+send-and-reconcile loop that joins the two sides, and re-exports, as the same objects, the names its
+callers still read there (refactor plan PR-16 removed the rest).
 """
 
 from __future__ import annotations

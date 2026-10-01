@@ -50,8 +50,8 @@ Since crypto PR7e-4 the order's shape at the venue (``build_order_request``, ``n
 ``reconcile_order``, ``fill_facts`` and the vocabulary they share, the ``reconcile_status`` verdicts
 among it) lives in ``order_request``, which is pure. This module keeps what reaches the venue: the
 adapters, their selection behind the live-trading switch, the halt backstop, and
-``submit_and_reconcile``, which joins the two. It re-exports every definition in ``order_request`` as
-the same object.
+``submit_and_reconcile``, which joins the two. It re-exports, as the same objects, the names in
+``order_request`` its callers still read here (refactor plan PR-16 removed the rest).
 """
 
 from __future__ import annotations
@@ -81,16 +81,14 @@ from .vocabulary import (
 from . import pre_order_gate
 # The order's shape at the venue (the request built from an intent, the venue's answer normalised, the
 # verdict on it, and the vocabulary they share) is `order_request`'s since crypto PR7e-4. This module
-# keeps the egress and the send-and-reconcile loop, and re-exports every name, as the same object, for
-# the callers that read them as `live_execution.<name>`.
+# keeps the egress and the send-and-reconcile loop, and re-exports, as the same objects, the names the
+# callers still read as `live_execution.<name>` (refactor plan PR-16 removed the rest).
 from .order_request import (  # noqa: F401
     ALGO_TYPE_CONDITIONAL, CLIENT_ORDER_ID_PATTERN, CONDITIONAL_ORDER_TYPES, MALFORMED_INTENT,
     MISMATCH, NOT_FOUND, ORDER_MALFORMED_RESULT, ORDER_TYPE_LIMIT, ORDER_TYPE_MARKET,
-    ORDER_TYPE_STOP_MARKET, ORDER_TYPE_TAKE_PROFIT_MARKET, RECONCILED, RESTING_ORDER_TYPES,
-    SUPPORTED_ORDER_TYPES, TIMES_IN_FORCE, TIME_IN_FORCE_GTC, UNRECONCILABLE, WORKING_TYPES,
-    WORKING_TYPE_CONTRACT_PRICE, WORKING_TYPE_MARK_PRICE, _intended_price, _order_rows,
-    build_order_request, fill_facts, is_algo_request, is_protective_request, normalize_algo_order,
-    reconcile_order,
+    ORDER_TYPE_STOP_MARKET, RECONCILED, RESTING_ORDER_TYPES, TIME_IN_FORCE_GTC, UNRECONCILABLE,
+    _intended_price, _order_rows, build_order_request, fill_facts, is_algo_request,
+    is_protective_request, normalize_algo_order, reconcile_order,
 )
 from .state import VENUE_MAINNET
 

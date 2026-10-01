@@ -73,7 +73,7 @@ from typing import Any, Mapping
 # Constants only — no I/O at import, the same reason `trade_plan.py` takes `R_BASIS_INTENT_NET` from there.
 from ..errors import ToolError
 from . import market_data
-from .vocabulary import R_BASES_NET_OF_COSTS, R_BASIS_FILLED, STOP_EXIT_REASONS
+from .vocabulary import R_BASES_NET_OF_COSTS, R_BASIS_FILLED
 
 # The taker rate this venue actually charges, measured — not the source default.
 #

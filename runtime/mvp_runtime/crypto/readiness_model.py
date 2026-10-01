@@ -6,8 +6,8 @@ own switches and account read on the trading process, the trading process's reco
 and renders the board; this module says what those facts add up to.
 
 It was the middle of ``live_readiness`` until crypto refactor plan PR-07, moved whole and unchanged.
-``live_readiness`` re-exports every public name as the same object, so its importers and the board's
-output are what they were.
+``live_readiness`` re-exports, as the same objects, the names its importers still read there (refactor
+plan PR-16 removed ``NOT_REPORTED``), so the board's output is what it was.
 """
 
 from __future__ import annotations

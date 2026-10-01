@@ -7,8 +7,9 @@ keep and refuse is pinned where it always was (``test_mvp_runtime_crypto_live_gu
 ``…_bracket_breaker.py``, ``…_api_breaker.py``, ``…_live_entry_marks.py``), through ``live_order``.
 This file pins what the move itself has to keep true:
 
-- every name the stores define is the same object on ``live_order``, so the counter a door reserves
-  on and the counter the board reads cannot become two;
+- every name of the stores' that ``live_order`` still offers is the same object there, so the counter
+  a door reserves on and the counter the board reads cannot become two. Which names it still offers is
+  pinned by ``test_mvp_runtime_crypto_reexport_roster.py`` (PR-16);
 - the four selectors did not move. They are where live trading's opt-in chooses the durable store,
   and ``test_the_env_only_gate_has_exactly_the_capabilities_thomas_named`` names ``live_order.py`` for
   them. The stores module selects nothing.
@@ -23,14 +24,16 @@ SELECTORS = ("select_live_order_counter", "select_live_bracket_breaker", "select
              "select_live_entry_marks")
 
 
-def test_live_order_offers_every_name_the_stores_define_as_the_same_object():
+def test_every_name_of_the_stores_that_live_order_offers_is_the_same_object():
     names = defined_names(live_order_stores)
     assert {"LiveOrderCounter", "count_today", "LiveBracketFailureBreaker", "bracket_breaker_status",
             "LiveApiErrorBreaker", "api_breaker_status", "ApiErrorRecordingAdapter", "LiveEntryMarks",
             "read_live_entry_marks", "LIVE_DAILY_ORDER_CAP_REACHED", "MAX_CONSECUTIVE_API_ERRORS"} <= set(names), (
         "the scan lost the stores' own names: it broke, not the module")
-    different = sorted(n for n in names if getattr(live_order, n, None) is not getattr(live_order_stores, n))
-    assert different == [], f"live_order holds a different object, or none, for: {different}"
+    offered = [n for n in names if n in vars(live_order)]
+    assert {"LiveOrderCounter", "LiveEntryMarks", "LIVE_DAILY_ORDER_CAP_REACHED"} <= set(offered)
+    different = sorted(n for n in offered if getattr(live_order, n) is not getattr(live_order_stores, n))
+    assert different == [], f"live_order holds a different object for: {different}"
 
 
 def test_the_selectors_stayed_in_live_order_and_choose_the_stores_classes(monkeypatch):

@@ -1,8 +1,9 @@
 """The template space: what a minted spec may be, and which templates a context is offered.
 
-Moved whole out of ``factory`` (crypto refactor plan PR-09). ``factory`` re-exports every name
-defined here as the same object, so ``factory.TEMPLATES``, ``factory.validate_strategy`` and the
-rest still resolve.
+Moved whole out of ``factory`` (crypto refactor plan PR-09). ``factory`` re-exports, as
+the same objects, the names its callers still read there, ``factory.TEMPLATES`` and
+``factory.validate_strategy`` among them, and every template builder (refactor plan PR-16 removed the
+rest; the set is pinned by ``test_mvp_runtime_crypto_reexport_roster.py``).
 
 What is here:
 

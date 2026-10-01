@@ -122,10 +122,11 @@ from .venue_contract import (
 )
 # The readiness state (model v2, crypto PR5a): the eleven components and their three-valued AND are
 # `readiness_model`'s since refactor plan PR-07, pure over the report `build_readiness` assembles. Imported and
-# re-exported as the same objects: this module collects the facts and renders the board.
+# re-exported as the same objects, less the names nothing read here (refactor plan PR-16): this module
+# collects the facts and renders the board.
 from .readiness_model import (  # noqa: F401
-    NOT_REPORTED, READINESS_COMPONENTS, READINESS_MODEL, SOURCE_RECORDED, SOURCE_THIS_PROCESS,
-    _mapping, _opted_in, contradicts_recorded_gate, env_out_of_scope, minority_may_enter,
+    READINESS_COMPONENTS, READINESS_MODEL, SOURCE_RECORDED, SOURCE_THIS_PROCESS, _mapping,
+    _opted_in, contradicts_recorded_gate, env_out_of_scope, minority_may_enter,
     readiness_data, readiness_state,
 )
 

@@ -2,8 +2,9 @@
 
 Two properties the split rests on, pinned where a later change would break them. `live_execution` is
 still the order path's public face, so every name its readers and their tests use through it must be the
-very object `order_request` defines. Then there is one definition, and the record capture's request log,
-which finds its seams by identity, logs the calls through every module that binds them: a copy would
+very object `order_request` defines (which names it still offers is pinned by
+`test_mvp_runtime_crypto_reexport_roster.py`, PR-16). Then there is one definition, and the record
+capture's request log, which finds its seams by identity, logs the calls through every module that binds them: a copy would
 hide one module's callers from it. And `order_request` must stay pure. The order-path tripwire (`LIVE_ORDER_MODULES`) and the safety-gate roster
 leave it out because it cannot reach a venue, so nothing else would notice if it started to.
 """
@@ -28,10 +29,12 @@ def _definitions() -> list[str]:
             or (isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name))]
 
 
-def test_live_execution_re_exports_every_definition_as_the_same_object():
+def test_every_definition_live_execution_offers_is_the_same_object():
     names = _definitions()
     assert len(names) >= 28
-    assert [n for n in names if getattr(live_execution, n, None) is not getattr(order_request, n)] == []
+    offered = [n for n in names if n in vars(live_execution)]
+    assert {"build_order_request", "RECONCILED"} <= set(offered)
+    assert [n for n in offered if getattr(live_execution, n) is not getattr(order_request, n)] == []
 
 
 def test_the_order_shape_imports_nothing_that_could_reach_a_venue():

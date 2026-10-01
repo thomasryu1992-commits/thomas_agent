@@ -37,17 +37,14 @@ from ..safety_gate import Authorization
 LIVE_LEDGER_TOOL_ID = "crypto.live.pnl_ledger"
 LIVE_LEDGER_TOOL_VERSION = "0.1.0"
 
-# The live-trading opt-in's names, the R-basis labels, the stop-exit reasons and `utc_day` live in
-# `vocabulary` since crypto PR7b-2, below every layer that reads them. They are re-exported here, as
-# the same objects, for this module's importers.
+# The live-trading opt-in's names, the stop-exit reasons and `utc_day` live in `vocabulary` since
+# crypto PR7b-2, below every layer that reads them. They are re-exported here, as the same objects, for
+# this module's importers. The R-basis labels are there too; refactor plan PR-16 removed their
+# re-export, which nothing read.
 from .vocabulary import (  # noqa: E402,F401
     LIVE_TRADING_ENV,
     LIVE_TRADING_FLAGS,
     LIVE_TRADING_PROVIDER_ID,
-    R_BASES_NET_OF_COSTS,
-    R_BASIS_FILLED,
-    R_BASIS_INTENT,
-    R_BASIS_INTENT_NET,
     REAL_LIVE_TRADING,
     STOP_EXIT_REASONS,
     utc_day,
@@ -69,7 +66,7 @@ from .live_ledger import (  # noqa: E402,F401
     read_live_outcomes_raw,
     stop_slippage_observations,
 )
-from .live_settlement import LIVE_PROVENANCE, build_live_outcome_record, realized_stop_slippage_bps  # noqa: E402,F401
+from .live_settlement import build_live_outcome_record, realized_stop_slippage_bps  # noqa: E402,F401
 
 
 # --- LP5.4: the outcome bridge -------------------------------------------------

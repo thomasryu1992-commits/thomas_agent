@@ -1469,8 +1469,9 @@ def test_the_board_re_exports_the_model_as_the_same_objects():
     reading the board, so each public name there must be the model's own object, never a copy."""
     from runtime.mvp_runtime.crypto import readiness_model
 
+    # PR-16 removed `NOT_REPORTED`, which nothing read through the board.
     for name in ("READINESS_MODEL", "READINESS_COMPONENTS", "SOURCE_THIS_PROCESS", "SOURCE_RECORDED",
-                 "NOT_REPORTED", "readiness_state", "readiness_data", "minority_may_enter",
+                 "readiness_state", "readiness_data", "minority_may_enter",
                  "contradicts_recorded_gate", "env_out_of_scope"):
         assert getattr(live_readiness, name) is getattr(readiness_model, name), name
 

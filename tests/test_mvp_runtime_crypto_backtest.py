@@ -3,9 +3,10 @@ refactor plan PR-08; ``docs/proposals/CRYPTO_REFACTOR_AND_MODULARIZATION_PLAN_V0
 
 The replay moved out of ``factory`` whole. What it computes is pinned where it always was, in
 ``test_mvp_runtime_crypto_factory.py`` and ``test_mvp_runtime_crypto_holdout.py``, which still call it
-through ``factory``. This file pins what the move itself has to keep true: every name the replay
-defines is the same object on ``factory``, so a caller of either gets one function and one constant,
-not two that can drift.
+through ``factory``. This file pins what the move itself has to keep true: every name of the replay's
+that ``factory`` still offers is the same object there, so a caller of either gets one function and one
+constant, not two that can drift. Which names it still offers is pinned by
+``test_mvp_runtime_crypto_reexport_roster.py`` (PR-16).
 
 That the replay imports nothing from ``factory`` is pinned by the layer test's cycle rule: ``factory``
 imports it, so the reverse import would be a cycle.
@@ -32,10 +33,12 @@ def _defined(tree: ast.Module) -> list[str]:
     return names
 
 
-def test_factory_offers_every_name_the_replay_defines_as_the_same_object():
+def test_every_name_of_the_replays_that_factory_offers_is_the_same_object():
     names = _defined(ast.parse(Path(backtest.__file__).read_text(encoding="utf-8")))
     assert {"backtest_spec", "backtest_spec_pooled", "build_replay_frame", "ReplayFrame", "_replay",
             "holdout_split_index", "HOLDOUT_FRACTION", "UNSUPPLIABLE_FEATURE"} <= set(names), (
         "the scan lost the replay's own names: it broke, not the module")
-    different = sorted(n for n in names if getattr(factory, n, None) is not getattr(backtest, n))
-    assert different == [], f"factory holds a different object, or none, for: {different}"
+    offered = [n for n in names if n in vars(factory)]
+    assert {"backtest_spec", "holdout_split_index"} <= set(offered)
+    different = sorted(n for n in offered if getattr(factory, n) is not getattr(backtest, n))
+    assert different == [], f"factory holds a different object for: {different}"

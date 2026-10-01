@@ -12,9 +12,10 @@ refuses the context for a live entry. Paper, the counterfactual shadow and the p
 backtested or replayed on.
 
 This is market work: it reads the venue and the vendors through `market_data` and the market stores,
-and nothing above them. It lived in `cycle`, which re-exports every name here as the same object:
-`run_crypto_cycle` calls the five attaches and `optional_data_health` once per context, and the
-scheduler's factory dispatches reach `attach_mining_legs` through the re-export.
+and nothing above them. It lived in `cycle`, which re-exports, as the same objects, the names its
+callers still read there (refactor plan PR-16 removed the rest): `run_crypto_cycle` calls the five
+attaches and `optional_data_health` once per context, and the scheduler's factory dispatches reach
+`attach_mining_legs` through the re-export.
 """
 
 from __future__ import annotations

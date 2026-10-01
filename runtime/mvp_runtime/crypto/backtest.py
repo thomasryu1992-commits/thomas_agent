@@ -1,7 +1,8 @@
 """The replay backtest: one spec replayed over a candle window into costed evidence.
 
-Moved whole out of ``factory`` (crypto refactor plan PR-08). ``factory`` re-exports every name
-defined here as the same object, so ``factory.backtest_spec`` and the rest still resolve.
+Moved whole out of ``factory`` (crypto refactor plan PR-08). ``factory`` re-exports, as
+the same objects, the names its callers still read there (refactor plan PR-16 removed the rest; the
+set is pinned by ``test_mvp_runtime_crypto_reexport_roster.py``).
 
 This is the part of the factory that reads nothing else in it. It takes a spec, a snapshot and
 the cost model and returns evidence. It does not generate, validate or store a spec, and it
