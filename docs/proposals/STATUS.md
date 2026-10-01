@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **45**건: `DRAFT` 3 · `PARTIALLY DECIDED` 8 · `DECIDED` 6 · `IMPLEMENTED` 25 · `SUPERSEDED` 1 · `RECORD` 2
+제안서 **46**건: `DRAFT` 4 · `PARTIALLY DECIDED` 8 · `DECIDED` 6 · `IMPLEMENTED` 25 · `SUPERSEDED` 1 · `RECORD` 2
 
-## Thomas 결정 대기 (11)
+## Thomas 결정 대기 (12)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -23,6 +23,7 @@
 | [RESEARCH_EPOCH_V0.1.md](RESEARCH_EPOCH_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | Q1·Q2(판정 규칙 지문과 그 표시)는 #972·#976으로 구현. Q3는 B로 결정(Thomas 2026-09-26, 경계 주기는 미정). Q4(다음 cohort에 판정 지문)는 다음 cohort를 동결할 때 정한다. |
 | [RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md](RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | (c) 순서 결정: 슬리피지 실측이 먼저다. (a)(b)(d)는 실측 뒤에 정하고, 그때까지 현재 값을 유지하며 LIVE_AUTONOMOUS로 올리지 않는다(Thomas 2026-09-26, 시스템 점검 D5). **값은 하나도 바뀌지 않았다**. |
 | [SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md](SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | §5의 D1·D2·D3·D4·D7·D8 채택, D6 보류(현상 유지). D5는 슬리피지 실측 뒤에 결정한다(§5 뒤 "결정" 절). 단계 0은 #980, 단계 1의 선행 조건 없는 항목은 #982–#989로 구현됐다. |
+| [FORWARD_COHORT_EXPANSION_V0.1.md](FORWARD_COHORT_EXPANSION_V0.1.md) | `DRAFT` | 2026-10-01 | "확대"는 진입 기준 완화가 아니라 이미 자격이 있는데 시계가 없는 계보 82명을 2차 cohort로 동결하는 것이다(오늘 dry-run, 17개 문맥). 동결은 기존 코드로 되고 새 코드는 없다. 결정 N1–N4: 2차 동결이 D3 밖인가, 동결 주기, cohort 사이 K 합산 규칙, 1차 cohort의 고정 마감일. 동결 자체는 결정 뒤 운영 명령이고 이 문서가 하지 않는다. |
 
 ## 결정됨 — 구현 남음 (6)
 
