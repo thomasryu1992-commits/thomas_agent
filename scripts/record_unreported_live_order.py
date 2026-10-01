@@ -36,7 +36,7 @@ from pathlib import Path
 
 from runtime.mvp_runtime import timeutil
 from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE, force_utf8_io
-from runtime.mvp_runtime.crypto import live_governance, live_promotion
+from runtime.mvp_runtime.crypto import live_evidence, live_governance
 from runtime.mvp_runtime.errors import MvpRuntimeError
 from runtime.mvp_runtime.store import LedgerStore
 
@@ -87,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         # 1. The evidence. The registry row was written BEFORE the crash, which is the only
         #    reason anything can be said about the order at all.
-        records = live_promotion.read_canary_orders(root)
+        records = live_evidence.read_canary_orders(root)
         matches = [r for r in records if r.get("canary_order_id") == args.canary_order_id]
         if not matches:
             sys.stderr.write(

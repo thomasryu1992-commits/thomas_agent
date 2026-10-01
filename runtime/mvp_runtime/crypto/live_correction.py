@@ -200,7 +200,7 @@ def read_corrections(path: Path) -> list[dict[str, Any]]:
 def _recompute(outcome: Mapping[str, Any]) -> tuple[float, float] | None:
     """`(realized, R)` re-derived from the target row alone, or ``None`` if it cannot be.
 
-    The same expression `live_promotion._pnl_agrees_with_prices` evaluates on every row of the
+    The same expression `live_evidence._pnl_agrees_with_prices` evaluates on every row of the
     evidence board: ``realized == (exit - entry) * quantity``, negated when the row closed a
     SHORT. `side` is the CLOSING order's side, so ``SELL`` closed a LONG. This is what makes a
     DERIVED correction verifiable — the figures are the row's own arithmetic, not a number

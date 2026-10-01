@@ -16,7 +16,7 @@ import json
 import pytest
 
 from runtime.read_only_kernel import integrity
-from runtime.mvp_runtime.crypto import live_promotion as lp
+from runtime.mvp_runtime.crypto import live_evidence as lp
 from runtime.mvp_runtime.errors import ToolError
 
 NOW = "2026-07-29T09:00:00Z"

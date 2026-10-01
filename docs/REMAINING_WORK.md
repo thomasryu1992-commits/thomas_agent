@@ -207,7 +207,8 @@ Every claim below was re-checked against `main` and against the code it describe
 > the guard's clean-canary promotion gate (PR1r), so "the clean-canary evidence threshold" above,
 > the per-machine count below and "the canary evidence" in the routing paragraph no longer gate
 > anything, and the readiness board has no `canary_evidence` row. The 4/4 on the machine that ran
-> them is frozen history, still shown by `python -m runtime.mvp_runtime.crypto.live_promotion`.
+> them is frozen history, still shown by `python -m runtime.mvp_runtime.crypto.live_evidence` (the old
+> `…live_promotion` path still works).
 > The execution stage replaced that floor on 2026-09-16 (PR1b): a fresh machine reads
 > `READ_ONLY` and the entry guard refuses every new entry until Thomas registers a rung.
 >

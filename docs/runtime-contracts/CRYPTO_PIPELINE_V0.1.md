@@ -196,7 +196,7 @@ and the rule hash covers the spec's behavioural subset and nothing the router re
   - The pre-order gate binds it (`INTENT_BOUND_FIELDS`, `pre_order_intent.v2`) and refuses an
     autonomous order whose lineage names none, and `verify_live_arm` requires the armed entry's
     artifact to be the one the plan was made from (`PRE_ORDER_RISK_SNAPSHOT_V0.1.md` §2-3).
-  - The live-trades board (`live_promotion`) prints it beside the rule hash.
+  - The live-trades board (`live_evidence`, named `live_promotion` until refactor plan L-2.3) prints it beside the rule hash.
   - Nothing keys on it: the realized ranking, the lifecycle and the allowances group by the
     lineage key (candidate, else generation and rule, else display id), below.
 

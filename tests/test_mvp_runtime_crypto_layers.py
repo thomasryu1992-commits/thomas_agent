@@ -157,6 +157,8 @@ LAYER: dict[str, str] = {
     "live_reconcile": "reconciliation",
     # outcome: what it earned, and what that says
     "live_pnl": "outcome", "feedback": "outcome", "digest": "outcome", "counterfactual": "outcome",
+    "live_evidence": "outcome",
+    # the old name of `live_evidence` (refactor plan L-2.3): an alias that maps to the same module
     "live_promotion": "outcome",
     # orchestration: runs the stages in order
     "cycle": "orchestration", "live_route": "orchestration",
@@ -655,7 +657,8 @@ def test_the_names_pr04_moved_are_the_same_objects_where_they_were():
     let the two drift, which is what this pins."""
     from runtime.mvp_runtime import control
     from runtime.mvp_runtime.crypto import (
-        live_promotion, live_route, order_request, promotion, testnet_evidence, testnet_execution, vocabulary,
+        live_evidence, live_promotion, live_route, order_request, promotion, testnet_evidence,
+        testnet_execution, vocabulary,
     )
 
     for name in ("ROUTE_DISABLED", "ROUTE_BLOCKED", "ROUTE_HELD", "ROUTE_SETTLED", "ROUTE_OPENED",
@@ -667,4 +670,6 @@ def test_the_names_pr04_moved_are_the_same_objects_where_they_were():
     assert live_route.halt_advice is control.halt_advice
     for name in ("TESTNET_MAX_ORDER_NOTIONAL_USDT", "TESTNET_MAX_DAILY_ORDERS"):
         assert getattr(testnet_execution, name) is getattr(testnet_evidence, name), name
-    assert live_promotion.RECONCILED is order_request.RECONCILED
+    assert live_evidence.RECONCILED is order_request.RECONCILED
+    # refactor plan L-2.3: the old name is the same module object, not a copy of it
+    assert live_promotion is live_evidence
