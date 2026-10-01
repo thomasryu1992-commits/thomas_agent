@@ -310,6 +310,10 @@ def run_live_leg(
     # (`feed_assembly.optional_data_health`). None — a caller that does not say — refuses every entry;
     # closes are decided above the entry block and never read it.
     optional_data: Mapping[str, Any] | None = None,
+    # Refactor plan J-5.1: the calling cycle's id (`cycle.cycle_id_for`), stamped on a position this
+    # leg opens so the position names the cycle that opened it. Not part of the sealed intent and
+    # not part of the position id. None (a caller that does not say) books the position without it.
+    cycle_id: str | None = None,
 ) -> dict[str, Any]:
     """One cycle's live leg: reconcile, settle, protect, maybe open. Returns a record.
 
@@ -374,6 +378,7 @@ def run_live_leg(
             control_store=control_store,
             timeout_seconds=timeout_seconds,
             optional_data=optional_data,
+            cycle_id=cycle_id,
         )
     except MvpRuntimeError as exc:
         # A typed refusal before or between venue calls (a foreign root run, an unreadable
@@ -415,6 +420,7 @@ def _run_gated_live_leg(
     timeout_seconds: int,
     live_arm_approvals: Mapping[str, str | None] | None = None,
     optional_data: Mapping[str, Any] | None = None,
+    cycle_id: str | None = None,
 ) -> dict[str, Any]:
     """The leg proper, once the gate is open. Split out so every exit path above is one
     ``except`` rather than a ``try`` wrapped around two hundred lines.
@@ -651,6 +657,7 @@ def _run_gated_live_leg(
         limits=gate_kwargs["limits"],
         now=now,
         timeout_seconds=timeout_seconds,
+        cycle_id=cycle_id,
     )
     record["live_opened"] = entry
     record["live_reason_codes"].extend(entry["reason_codes"])
