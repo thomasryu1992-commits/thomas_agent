@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **44**건: `DRAFT` 3 · `PARTIALLY DECIDED` 8 · `DECIDED` 5 · `IMPLEMENTED` 25 · `SUPERSEDED` 1 · `RECORD` 2
+제안서 **45**건: `DRAFT` 4 · `PARTIALLY DECIDED` 8 · `DECIDED` 5 · `IMPLEMENTED` 25 · `SUPERSEDED` 1 · `RECORD` 2
 
-## Thomas 결정 대기 (11)
+## Thomas 결정 대기 (12)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -23,6 +23,7 @@
 | [RESEARCH_EPOCH_V0.1.md](RESEARCH_EPOCH_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | Q1·Q2(판정 규칙 지문과 그 표시)는 #972·#976으로 구현. Q3는 B로 결정(Thomas 2026-09-26, 경계 주기는 미정). Q4(다음 cohort에 판정 지문)는 다음 cohort를 동결할 때 정한다. |
 | [RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md](RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | (c) 순서 결정: 슬리피지 실측이 먼저다. (a)(b)(d)는 실측 뒤에 정하고, 그때까지 현재 값을 유지하며 LIVE_AUTONOMOUS로 올리지 않는다(Thomas 2026-09-26, 시스템 점검 D5). **값은 하나도 바뀌지 않았다**. |
 | [SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md](SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | §5의 D1·D2·D3·D4·D7·D8 채택, D6 보류(현상 유지). D5는 슬리피지 실측 뒤에 결정한다(§5 뒤 "결정" 절). 단계 0은 #980, 단계 1의 선행 조건 없는 항목은 #982–#989로 구현됐다. |
+| [CRYPTO_STRATEGY_EDGE_ORDER_V0.1.md](CRYPTO_STRATEGY_EDGE_ORDER_V0.1.md) | `DRAFT` | 2026-10-01 | 전략 수립 과정을 10점 만점에 4점으로 매기고, 점수를 올릴 일을 언제 할 수 있는지(지금 / 첫 cohort 판정 때 / 에포크 경계 / 별도 결정)로 나눴다. 지금 할 수 있는 실제 전략 대 대조군 비교 표(`report --arms`)는 이 PR에서 만든다. stop 폭 확대는 2026-08-04에 반박돼 목록에서 뺐다. S1–S3는 Thomas가 정한다. |
 
 ## 결정됨 — 구현 남음 (5)
 
