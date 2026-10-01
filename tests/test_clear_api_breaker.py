@@ -13,8 +13,8 @@ from tests._helpers import make_gate_authorization
 from runtime.mvp_runtime.crypto.live_order import (
     DryRunLiveApiErrorBreaker,
     LiveApiErrorBreaker,
-    api_breaker_status,
 )
+from runtime.mvp_runtime.crypto.live_order_stores import api_breaker_status
 from runtime.mvp_runtime.crypto.live_order_stores import MAX_CONSECUTIVE_API_ERRORS
 from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_FLAGS, LIVE_TRADING_PROVIDER_ID
 from scripts import clear_api_breaker as cab

@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from runtime.mvp_runtime import timeutil
-from runtime.mvp_runtime.crypto import factory
+from runtime.mvp_runtime.crypto import backtest, factory
 from runtime.mvp_runtime.crypto.robustness import (
     CONFIDENCE_Z,
     HOLDOUT_CONFIRMED,
@@ -67,16 +67,16 @@ def _snapshot(prices):
 # --- the split ----------------------------------------------------------------
 
 def test_split_is_deterministic_and_leaves_a_real_tail():
-    assert factory.holdout_split_index(200) == 140
-    assert factory.holdout_split_index(200) == factory.holdout_split_index(200)
-    assert 0 < factory.holdout_split_index(100) < 100
+    assert backtest.holdout_split_index(200) == 140
+    assert backtest.holdout_split_index(200) == backtest.holdout_split_index(200)
+    assert 0 < backtest.holdout_split_index(100) < 100
 
 
 def test_a_window_too_short_holds_nothing_out():
     """Rather than pretend a two-bar tail proved something: everything trains, and the
     verdict layer then reports the holdout as unusable."""
-    short = factory.MIN_BARS_FOR_HOLDOUT - 1
-    assert factory.holdout_split_index(short) == short
+    short = backtest.MIN_BARS_FOR_HOLDOUT - 1
+    assert backtest.holdout_split_index(short) == short
 
 
 def test_the_score_never_sees_the_holdout_bars():
@@ -86,7 +86,7 @@ def test_the_score_never_sees_the_holdout_bars():
     a = factory.backtest_spec(StrategySpec.from_dict(_spec_dict()), _snapshot(rising))
 
     tail_crashed = list(rising)
-    for i in range(factory.holdout_split_index(200), 200):   # rewrite the tail only
+    for i in range(backtest.holdout_split_index(200), 200):   # rewrite the tail only
         tail_crashed[i] = 50.0
     b = factory.backtest_spec(StrategySpec.from_dict(_spec_dict()), _snapshot(tail_crashed))
 

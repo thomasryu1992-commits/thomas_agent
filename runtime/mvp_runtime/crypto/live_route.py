@@ -93,6 +93,13 @@ from .live_filters import read_symbol_filters
 from .market_data import ORDER_BOOK_LEVELS, PRICE_UNREADABLE, TIMEFRAMES, read_reference_quote
 from .execution_stage import resolve_execution_stage
 from .live_order import (
+    resolve_live_order_limits,
+    select_live_api_breaker,
+    select_live_bracket_breaker,
+    select_live_entry_marks,
+    select_live_order_counter,
+)
+from .live_order_stores import (
     ApiErrorRecordingAdapter,
     api_breaker_status,
     api_breaker_trip_lines,
@@ -100,14 +107,10 @@ from .live_order import (
     count_today,
     read_live_entry_marks,
     recorded_like,
-    resolve_live_order_limits,
-    select_live_api_breaker,
-    select_live_bracket_breaker,
-    select_live_entry_marks,
-    select_live_order_counter,
     stop_cooldown_until,
 )
-from .live_pnl import STOP_EXIT_REASONS, live_risk_snapshot, select_live_ledger, venue_daily_realized_net
+from .live_pnl import live_risk_snapshot, select_live_ledger, venue_daily_realized_net
+from .vocabulary import STOP_EXIT_REASONS
 from .live_position import (
     DRIFT,
     LIVE_POSITION_SLOT_TAKEN,
@@ -123,7 +126,7 @@ from .live_reconcile import (
     DRIFT_UNTRACKED_AT_VENUE,
     reconcile_positions,
 )
-from . import paper
+from . import paper, trade_plan
 from .paper import build_entry_plan
 from .promotion import (  # noqa: F401
     LIVE_ARM_ENTRY_CHANGED, verify_live_arm,
@@ -1197,7 +1200,7 @@ def _time_exit_or_hold(
         return
 
     updated = dict(position)
-    paper.advance_holding(updated, candle_ts)
+    trade_plan.advance_holding(updated, candle_ts)
     max_hold, legacy = paper.position_max_hold(updated, timeframe)
     held = int(updated.get("holding_candles") or 0)
 

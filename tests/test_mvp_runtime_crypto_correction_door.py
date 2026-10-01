@@ -19,7 +19,8 @@ import json
 import pytest
 
 from runtime.mvp_runtime.crypto import live_correction as LC
-from runtime.mvp_runtime.crypto.live_pnl import read_live_outcomes, read_live_outcomes_raw, state_dir
+from runtime.mvp_runtime.crypto.live_pnl import read_live_outcomes, read_live_outcomes_raw
+from runtime.mvp_runtime.crypto.state import state_dir
 from runtime.mvp_runtime.errors import MvpRuntimeError, ToolError
 from runtime.read_only_kernel import integrity
 from scripts import correct_live_outcome as DOOR

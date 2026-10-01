@@ -43,8 +43,8 @@ from .features import latest_feature_row
 # read as `cycle.<name>` are re-exported, as the same objects (refactor plan PR-16 removed the rest);
 # the scheduler's factory dispatches reach `attach_mining_legs` that way.
 from .feed_assembly import (  # noqa: F401
-    OPTIONAL_DATA_DEGRADED_CODES, attach_cross_section, attach_feeds, attach_htf,
-    attach_mining_legs, attach_positioning, attach_reference, optional_data_health,
+    attach_cross_section, attach_feeds, attach_htf, attach_positioning,
+    attach_reference, optional_data_health,
 )
 # The retention stores' cohort sweeps are `cohort_retention`'s (market) since crypto PR7e-6. The fan-out
 # below calls them after its context loop; they are re-exported, as the same objects, for the callers
@@ -86,7 +86,6 @@ from .live_route import (
     run_live_leg,
 )
 from .paper import (
-    ENTRY_COST_UNECONOMIC,
     SUPPORTING_SHADOW_REASONS,
     PaperStore,
     build_entry_plan,
@@ -94,6 +93,9 @@ from .paper import (
     read_outcomes,
     run_paper_update,
     split_by_provenance,
+)
+from .trade_plan import (
+    ENTRY_COST_UNECONOMIC,
 )
 from .risk_limits import resolve_risk_limits
 

@@ -15,7 +15,7 @@ from tests._helpers import make_gate_authorization
 
 from runtime.mvp_runtime import control, safety_gate
 from runtime.mvp_runtime.control import ACTIVE, KILLED, PAUSED, ControlState, ControlStore
-from runtime.mvp_runtime.crypto import live_execution as lx
+from runtime.mvp_runtime.crypto import live_execution as lx, live_order_stores
 from runtime.mvp_runtime.crypto import live_order, testnet_execution
 from runtime.mvp_runtime.crypto.live_order import build_live_order_intent, enrich_order_identity
 from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_FLAGS, LIVE_TRADING_PROVIDER_ID
@@ -201,7 +201,7 @@ def test_the_refusal_is_nothing_sent_and_not_an_api_failure(tmp_path, sent):
         _live(tmp_path).submit(ENTRY)
     assert exc.value.reason_code in lx.NOTHING_SENT_ERRORS
     assert lx.submit_may_have_landed(exc.value.reason_code, str(exc.value)) is False
-    assert live_order.api_error_counts(exc.value) is False
+    assert live_order_stores.api_error_counts(exc.value) is False
     assert not (exc.value.data or {}).get("venue_code") and not (exc.value.data or {}).get("http_status")
 
 

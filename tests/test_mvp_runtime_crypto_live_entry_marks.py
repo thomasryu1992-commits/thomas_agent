@@ -51,7 +51,7 @@ def test_a_reservation_takes_a_slot_and_the_cap_refuses_the_next(tmp_path):
     with pytest.raises(ToolError) as refused:
         counter.reserve_submission(limit=2, day=DAY)
     assert _code(refused) == live_order_stores.LIVE_DAILY_ORDER_CAP_REACHED
-    assert live_order.count_today(tmp_path, day=DAY) == 2, "a refused reservation must not count"
+    assert live_order_stores.count_today(tmp_path, day=DAY) == 2, "a refused reservation must not count"
 
 
 def test_an_order_counted_after_the_send_fills_the_same_cap(tmp_path):
@@ -67,7 +67,7 @@ def test_an_unconfigured_cap_reserves_nothing(tmp_path, limit):
     with pytest.raises(ToolError) as refused:
         _counter(tmp_path).reserve_submission(limit=limit, day=DAY)
     assert _code(refused) == live_order_stores.LIVE_DAILY_ORDER_CAP_REACHED
-    assert live_order.count_today(tmp_path, day=DAY) == 0
+    assert live_order_stores.count_today(tmp_path, day=DAY) == 0
 
 
 def test_the_cap_is_per_day(tmp_path):
@@ -100,7 +100,7 @@ def test_concurrent_reservations_never_exceed_the_cap(tmp_path):
         thread.join(timeout=60)
     assert sorted(r for r in results if isinstance(r, int)) == [1, 2, 3]
     assert results.count(live_order_stores.LIVE_DAILY_ORDER_CAP_REACHED) == 5
-    assert live_order.count_today(tmp_path, day=DAY) == 3
+    assert live_order_stores.count_today(tmp_path, day=DAY) == 3
 
 
 @pytest.mark.parametrize("stored", [
@@ -123,7 +123,7 @@ def test_a_damaged_counter_refuses_and_is_left_as_evidence(tmp_path, stored):
     with pytest.raises(ToolError):
         _counter(tmp_path).record_submission(day=DAY)
     with pytest.raises(ToolError):
-        live_order.count_today(tmp_path, day=DAY)
+        live_order_stores.count_today(tmp_path, day=DAY)
     assert path.read_text(encoding="utf-8") == text
 
 
@@ -147,7 +147,7 @@ def test_an_unreadable_counter_reserves_nothing(tmp_path):
 def test_a_counter_with_no_authorization_reserves_nothing(tmp_path):
     with pytest.raises(MvpRuntimeError):
         live_order.LiveOrderCounter(root=tmp_path, authorization=None).reserve_submission(limit=5, day=DAY)
-    assert live_order.count_today(tmp_path, day=DAY) == 0
+    assert live_order_stores.count_today(tmp_path, day=DAY) == 0
 
 
 def test_the_inert_counter_reserves_without_writing(tmp_path, monkeypatch):
@@ -161,13 +161,13 @@ def test_the_inert_counter_reserves_without_writing(tmp_path, monkeypatch):
 # --- the entry marks: reading ----------------------------------------------------------------
 
 def _write_marks(tmp_path, payload):
-    path = venue_state_dir(tmp_path) / live_order.ENTRY_MARKS_FILENAME
+    path = venue_state_dir(tmp_path) / live_order_stores.ENTRY_MARKS_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(payload if isinstance(payload, str) else json.dumps(payload), encoding="utf-8")
 
 
 def test_a_machine_with_no_marks_reads_empty(tmp_path):
-    assert live_order.read_live_entry_marks(tmp_path) == {
+    assert live_order_stores.read_live_entry_marks(tmp_path) == {
         "version": live_order_stores.ENTRY_MARKS_VERSION, "entered": {}, "cooldown": {}, "in_flight": {},
         "in_flight_notional": {}}
 
@@ -187,7 +187,7 @@ def test_marks_that_cannot_be_trusted_refuse_rather_than_read_empty(tmp_path, pa
     "no mark" is a real order on a bar that may already have had one."""
     _write_marks(tmp_path, payload)
     with pytest.raises(ToolError) as refused:
-        live_order.read_live_entry_marks(tmp_path)
+        live_order_stores.read_live_entry_marks(tmp_path)
     assert _code(refused) == live_order_stores.LIVE_ENTRY_MARKS_UNREADABLE
 
 
@@ -196,10 +196,10 @@ def test_marks_that_cannot_be_trusted_refuse_rather_than_read_empty(tmp_path, pa
 def test_a_bar_is_claimed_once(tmp_path):
     marks = _marks(tmp_path)
     marks.claim_bar(symbol="BTCUSDT", timeframe="4h", bar_time=BAR)
-    assert live_order.read_live_entry_marks(tmp_path)["entered"] == {"BTCUSDT__4h": BAR}
+    assert live_order_stores.read_live_entry_marks(tmp_path)["entered"] == {"BTCUSDT__4h": BAR}
     with pytest.raises(ToolError) as refused:
         _marks(tmp_path).claim_bar(symbol="BTCUSDT", timeframe="4h", bar_time=BAR)
-    assert _code(refused) == live_order.LIVE_ENTRY_BAR_ALREADY_ENTERED
+    assert _code(refused) == live_order_stores.LIVE_ENTRY_BAR_ALREADY_ENTERED
 
 
 def test_an_older_bar_cannot_be_claimed_and_a_newer_one_moves_the_mark(tmp_path):
@@ -208,14 +208,14 @@ def test_an_older_bar_cannot_be_claimed_and_a_newer_one_moves_the_mark(tmp_path)
     with pytest.raises(ToolError):
         marks.claim_bar(symbol="BTCUSDT", timeframe="4h", bar_time="2026-09-16T00:00:00Z")
     marks.claim_bar(symbol="BTCUSDT", timeframe="4h", bar_time="2026-09-16T08:00:00Z")
-    assert live_order.read_live_entry_marks(tmp_path)["entered"] == {"BTCUSDT__4h": "2026-09-16T08:00:00Z"}
+    assert live_order_stores.read_live_entry_marks(tmp_path)["entered"] == {"BTCUSDT__4h": "2026-09-16T08:00:00Z"}
 
 
 def test_contexts_claim_their_own_bars(tmp_path):
     marks = _marks(tmp_path)
     for symbol, timeframe in (("BTCUSDT", "4h"), ("BTCUSDT", "1d"), ("ETHUSDT", "4h")):
         marks.claim_bar(symbol=symbol, timeframe=timeframe, bar_time=BAR)
-    assert set(live_order.read_live_entry_marks(tmp_path)["entered"]) == {
+    assert set(live_order_stores.read_live_entry_marks(tmp_path)["entered"]) == {
         "BTCUSDT__4h", "BTCUSDT__1d", "ETHUSDT__4h"}
 
 
@@ -241,7 +241,7 @@ def test_concurrent_claims_on_one_bar_have_one_winner(tmp_path):
     for thread in threads:
         thread.join(timeout=60)
     assert outcomes.count("won") == 1
-    assert outcomes.count(live_order.LIVE_ENTRY_BAR_ALREADY_ENTERED) == 5
+    assert outcomes.count(live_order_stores.LIVE_ENTRY_BAR_ALREADY_ENTERED) == 5
 
 
 def test_a_claim_inside_a_cooldown_is_refused_under_the_lock(tmp_path):
@@ -251,8 +251,8 @@ def test_a_claim_inside_a_cooldown_is_refused_under_the_lock(tmp_path):
     marks.record_stop_cooldown(symbol="BTCUSDT", timeframe="4h", until="2026-09-16T12:00:00Z")
     with pytest.raises(ToolError) as refused:
         marks.claim_bar(symbol="BTCUSDT", timeframe="4h", bar_time="2026-09-16T08:00:00Z")
-    assert _code(refused) == live_order.LIVE_ENTRY_STOP_LOSS_COOLDOWN
-    assert live_order.read_live_entry_marks(tmp_path)["entered"] == {}
+    assert _code(refused) == live_order_stores.LIVE_ENTRY_STOP_LOSS_COOLDOWN
+    assert live_order_stores.read_live_entry_marks(tmp_path)["entered"] == {}
     marks.claim_bar(symbol="BTCUSDT", timeframe="4h", bar_time="2026-09-16T12:00:00Z")
 
 
@@ -265,8 +265,8 @@ def test_a_claim_inside_a_cooldown_is_refused_under_the_lock(tmp_path):
 def test_a_bar_that_cannot_be_named_cannot_be_claimed(tmp_path, kw):
     with pytest.raises(ToolError) as refused:
         _marks(tmp_path).claim_bar(**kw)
-    assert _code(refused) == live_order.LIVE_ENTRY_BAR_UNKNOWN
-    assert not (venue_state_dir(tmp_path) / live_order.ENTRY_MARKS_FILENAME).exists()
+    assert _code(refused) == live_order_stores.LIVE_ENTRY_BAR_UNKNOWN
+    assert not (venue_state_dir(tmp_path) / live_order_stores.ENTRY_MARKS_FILENAME).exists()
 
 
 def test_a_corrupt_file_refuses_the_claim_and_is_left_for_the_operator(tmp_path):
@@ -274,7 +274,7 @@ def test_a_corrupt_file_refuses_the_claim_and_is_left_for_the_operator(tmp_path)
     with pytest.raises(ToolError) as refused:
         _marks(tmp_path).claim_bar(symbol="BTCUSDT", timeframe="4h", bar_time=BAR)
     assert _code(refused) == live_order_stores.LIVE_ENTRY_MARKS_UNREADABLE
-    path = venue_state_dir(tmp_path) / live_order.ENTRY_MARKS_FILENAME
+    path = venue_state_dir(tmp_path) / live_order_stores.ENTRY_MARKS_FILENAME
     assert path.read_text(encoding="utf-8") == "{broken", "a refusal must not overwrite the evidence"
 
 
@@ -284,16 +284,16 @@ def test_a_cooldown_never_shortens(tmp_path):
     marks = _marks(tmp_path)
     marks.record_stop_cooldown(symbol="BTCUSDT", timeframe="4h", until="2026-09-16T12:00:00Z")
     marks.record_stop_cooldown(symbol="BTCUSDT", timeframe="4h", until="2026-09-16T08:00:00Z")
-    assert live_order.read_live_entry_marks(tmp_path)["cooldown"] == {"BTCUSDT__4h": "2026-09-16T12:00:00Z"}
+    assert live_order_stores.read_live_entry_marks(tmp_path)["cooldown"] == {"BTCUSDT__4h": "2026-09-16T12:00:00Z"}
     marks.record_stop_cooldown(symbol="BTCUSDT", timeframe="4h", until="2026-09-16T16:00:00Z")
-    assert live_order.read_live_entry_marks(tmp_path)["cooldown"] == {"BTCUSDT__4h": "2026-09-16T16:00:00Z"}
+    assert live_order_stores.read_live_entry_marks(tmp_path)["cooldown"] == {"BTCUSDT__4h": "2026-09-16T16:00:00Z"}
 
 
 def test_a_cooldown_keeps_the_bars_already_claimed(tmp_path):
     marks = _marks(tmp_path)
     marks.claim_bar(symbol="BTCUSDT", timeframe="4h", bar_time=BAR)
     marks.record_stop_cooldown(symbol="BTCUSDT", timeframe="4h", until="2026-09-16T16:00:00Z")
-    stored = live_order.read_live_entry_marks(tmp_path)
+    stored = live_order_stores.read_live_entry_marks(tmp_path)
     assert stored["entered"] == {"BTCUSDT__4h": BAR}
     assert stored["cooldown"] == {"BTCUSDT__4h": "2026-09-16T16:00:00Z"}
 
@@ -305,7 +305,7 @@ def test_a_cooldown_keeps_the_bars_already_claimed(tmp_path):
 def test_a_cooldown_that_cannot_be_named_is_refused(tmp_path, kw):
     with pytest.raises(ToolError) as refused:
         _marks(tmp_path).record_stop_cooldown(**kw)
-    assert _code(refused) == live_order.LIVE_ENTRY_BAR_UNKNOWN
+    assert _code(refused) == live_order_stores.LIVE_ENTRY_BAR_UNKNOWN
 
 
 @pytest.mark.parametrize("closed_at,minutes,expected", [
@@ -318,13 +318,13 @@ def test_a_cooldown_that_cannot_be_named_is_refused(tmp_path, kw):
 def test_the_cooldown_bound_is_two_bars_after_the_stop_bar(closed_at, minutes, expected):
     """Paper's window on the open-time basis: the stop bar and the one after it are held, and
     the bar after that is the first that may enter."""
-    assert live_order.stop_cooldown_until(closed_at, timeframe_minutes=minutes, bars=2) == expected
+    assert live_order_stores.stop_cooldown_until(closed_at, timeframe_minutes=minutes, bars=2) == expected
 
 
 @pytest.mark.parametrize("minutes,bars", [(0, 2), (-15, 2), (15, -1), (True, 2), (15.0, 2)])
 def test_a_cooldown_bound_needs_a_bar_length(minutes, bars):
     with pytest.raises(ToolError) as refused:
-        live_order.stop_cooldown_until(BAR, timeframe_minutes=minutes, bars=bars)
+        live_order_stores.stop_cooldown_until(BAR, timeframe_minutes=minutes, bars=bars)
     assert _code(refused) == live_order_stores.LIVE_ENTRY_COOLDOWN_UNCOMPUTABLE
 
 
@@ -332,7 +332,7 @@ def test_a_cooldown_bound_needs_a_bar_length(minutes, bars):
 def test_a_cooldown_bound_needs_an_instant_it_can_read(closed_at):
     """Typed, not a bare ValueError from the parser."""
     with pytest.raises(ToolError) as refused:
-        live_order.stop_cooldown_until(closed_at, timeframe_minutes=240, bars=2)
+        live_order_stores.stop_cooldown_until(closed_at, timeframe_minutes=240, bars=2)
     assert _code(refused) == live_order_stores.LIVE_ENTRY_COOLDOWN_UNCOMPUTABLE
 
 
@@ -342,7 +342,7 @@ def test_a_mark_store_with_no_authorization_writes_nothing(tmp_path):
     with pytest.raises(MvpRuntimeError):
         live_order.LiveEntryMarks(root=tmp_path, authorization=None).claim_bar(
             symbol="BTCUSDT", timeframe="4h", bar_time=BAR)
-    assert not (venue_state_dir(tmp_path) / live_order.ENTRY_MARKS_FILENAME).exists()
+    assert not (venue_state_dir(tmp_path) / live_order_stores.ENTRY_MARKS_FILENAME).exists()
 
 
 def test_with_the_switch_off_the_marks_are_inert(tmp_path, monkeypatch):
@@ -351,7 +351,7 @@ def test_with_the_switch_off_the_marks_are_inert(tmp_path, monkeypatch):
     assert marks.filesystem_write is False
     marks.claim_bar(symbol="BTCUSDT", timeframe="4h", bar_time=BAR)
     marks.record_stop_cooldown(symbol="BTCUSDT", timeframe="4h", until=BAR)
-    assert not (venue_state_dir(tmp_path) / live_order.ENTRY_MARKS_FILENAME).exists()
+    assert not (venue_state_dir(tmp_path) / live_order_stores.ENTRY_MARKS_FILENAME).exists()
 
 
 def test_with_the_switch_on_the_marks_are_durable(tmp_path, monkeypatch):
@@ -359,13 +359,13 @@ def test_with_the_switch_on_the_marks_are_durable(tmp_path, monkeypatch):
     marks = live_order.select_live_entry_marks(root=tmp_path)
     assert marks.filesystem_write is True
     marks.claim_bar(symbol="BTCUSDT", timeframe="4h", bar_time=BAR)
-    assert live_order.read_live_entry_marks(tmp_path)["entered"] == {"BTCUSDT__4h": BAR}
+    assert live_order_stores.read_live_entry_marks(tmp_path)["entered"] == {"BTCUSDT__4h": BAR}
 
 
 def test_each_venue_keeps_its_own_marks(tmp_path):
     _marks(tmp_path, venue=VENUE_TESTNET).claim_bar(symbol="BTCUSDT", timeframe="4h", bar_time=BAR)
-    assert live_order.read_live_entry_marks(tmp_path)["entered"] == {}
-    assert live_order.read_live_entry_marks(tmp_path, venue=VENUE_TESTNET)["entered"] == {"BTCUSDT__4h": BAR}
+    assert live_order_stores.read_live_entry_marks(tmp_path)["entered"] == {}
+    assert live_order_stores.read_live_entry_marks(tmp_path, venue=VENUE_TESTNET)["entered"] == {"BTCUSDT__4h": BAR}
     _marks(tmp_path).claim_bar(symbol="BTCUSDT", timeframe="4h", bar_time=BAR)
 
 
@@ -380,10 +380,10 @@ def test_a_venue_store_judges_its_claims_on_its_own_marks(tmp_path):
     testnet.claim_bar(symbol="ETHUSDT", timeframe="4h", bar_time=BAR)
     with pytest.raises(ToolError) as refused:
         testnet.claim_bar(symbol="BTCUSDT", timeframe="4h", bar_time=BAR)
-    assert _code(refused) == live_order.LIVE_ENTRY_BAR_ALREADY_ENTERED
+    assert _code(refused) == live_order_stores.LIVE_ENTRY_BAR_ALREADY_ENTERED
     testnet.record_stop_cooldown(symbol="SOLUSDT", timeframe="4h", until="2026-09-16T08:00:00Z")
-    assert live_order.read_live_entry_marks(tmp_path)["cooldown"] == {"ETHUSDT__4h": "2026-09-17T00:00:00Z"}
-    assert live_order.read_live_entry_marks(tmp_path, venue=VENUE_TESTNET)["cooldown"] == {
+    assert live_order_stores.read_live_entry_marks(tmp_path)["cooldown"] == {"ETHUSDT__4h": "2026-09-17T00:00:00Z"}
+    assert live_order_stores.read_live_entry_marks(tmp_path, venue=VENUE_TESTNET)["cooldown"] == {
         "SOLUSDT__4h": "2026-09-16T08:00:00Z"}
 
 
@@ -439,19 +439,19 @@ def _open_position(tmp_path, symbol="BTCUSDT"):
 def test_a_symbol_is_taken_once_and_given_back_by_its_own_order(tmp_path, frozen_wall):
     marks = _marks(tmp_path)
     _claim(marks)
-    marks_now = live_order.read_live_entry_marks(tmp_path)
+    marks_now = live_order_stores.read_live_entry_marks(tmp_path)
     assert marks_now["in_flight"] == {"BTCUSDT": {"claimed_at": NOW, "door": "autonomous", "client_order_id": ORDER}}
     # PR2c-3: the notional rides beside the claim, bound to its order.
     assert marks_now["in_flight_notional"] == {"BTCUSDT": {"client_order_id": ORDER, "notional_usdt": 60.0}}
     with pytest.raises(ToolError) as refused:
         _claim(_marks(tmp_path), door="probe", client_order_id="TAI_BTCUSDT_LONG_bbbb")
-    assert _code(refused) == live_order.LIVE_ENTRY_SYMBOL_IN_FLIGHT
+    assert _code(refused) == live_order_stores.LIVE_ENTRY_SYMBOL_IN_FLIGHT
     with pytest.raises(ToolError) as lost:
         _marks(tmp_path).release_symbol(symbol="BTCUSDT", client_order_id="TAI_BTCUSDT_LONG_bbbb")
-    assert _code(lost) == live_order.LIVE_ENTRY_CLAIM_LOST
-    assert "BTCUSDT" in live_order.read_live_entry_marks(tmp_path)["in_flight"], "not that order's claim"
+    assert _code(lost) == live_order_stores.LIVE_ENTRY_CLAIM_LOST
+    assert "BTCUSDT" in live_order_stores.read_live_entry_marks(tmp_path)["in_flight"], "not that order's claim"
     marks.release_symbol(symbol="BTCUSDT", client_order_id=ORDER)
-    assert live_order.read_live_entry_marks(tmp_path)["in_flight"] == {}
+    assert live_order_stores.read_live_entry_marks(tmp_path)["in_flight"] == {}
     _claim(_marks(tmp_path), door="probe", client_order_id="TAI_BTCUSDT_LONG_bbbb")
 
 
@@ -459,7 +459,7 @@ def test_symbols_are_taken_on_their_own(tmp_path, frozen_wall):
     marks = _marks(tmp_path)
     _claim(marks)
     _claim(marks, symbol="ETHUSDT", client_order_id="TAI_ETHUSDT_LONG_cccc")
-    assert set(live_order.read_live_entry_marks(tmp_path)["in_flight"]) == {"BTCUSDT", "ETHUSDT"}
+    assert set(live_order_stores.read_live_entry_marks(tmp_path)["in_flight"]) == {"BTCUSDT", "ETHUSDT"}
 
 
 def test_a_symbol_holding_a_position_cannot_be_taken(tmp_path, frozen_wall):
@@ -469,7 +469,7 @@ def test_a_symbol_holding_a_position_cannot_be_taken(tmp_path, frozen_wall):
     with pytest.raises(ToolError) as refused:
         _claim(_marks(tmp_path))
     assert _code(refused) == live_order_stores.LIVE_ENTRY_SYMBOL_OCCUPIED
-    assert live_order.read_live_entry_marks(tmp_path)["in_flight"] == {}
+    assert live_order_stores.read_live_entry_marks(tmp_path)["in_flight"] == {}
 
 
 def test_a_book_that_cannot_be_read_refuses_the_claim(tmp_path, frozen_wall):
@@ -480,7 +480,7 @@ def test_a_book_that_cannot_be_read_refuses_the_claim(tmp_path, frozen_wall):
     path.write_text("{not json", encoding="utf-8")
     with pytest.raises(ToolError):
         _claim(_marks(tmp_path))
-    assert live_order.read_live_entry_marks(tmp_path)["in_flight"] == {}
+    assert live_order_stores.read_live_entry_marks(tmp_path)["in_flight"] == {}
 
 
 def test_a_claim_expires_after_thirty_minutes(tmp_path, frozen_wall):
@@ -491,28 +491,28 @@ def test_a_claim_expires_after_thirty_minutes(tmp_path, frozen_wall):
         _claim(_marks(tmp_path), client_order_id="TAI_BTCUSDT_LONG_late")
     frozen_wall["now"] = "2026-09-17T04:35:00Z"
     _claim(_marks(tmp_path), client_order_id="TAI_BTCUSDT_LONG_late")
-    claim = live_order.read_live_entry_marks(tmp_path)["in_flight"]["BTCUSDT"]
+    claim = live_order_stores.read_live_entry_marks(tmp_path)["in_flight"]["BTCUSDT"]
     assert claim == {"claimed_at": "2026-09-17T04:35:00Z", "door": "autonomous",
                      "client_order_id": "TAI_BTCUSDT_LONG_late"}
     # The dead entry's late release cannot remove the claim that replaced it, and it is told so.
     with pytest.raises(ToolError) as lost:
         _marks(tmp_path).release_symbol(symbol="BTCUSDT", client_order_id=ORDER)
-    assert _code(lost) == live_order.LIVE_ENTRY_CLAIM_LOST
-    assert live_order.read_live_entry_marks(tmp_path)["in_flight"]["BTCUSDT"] == claim
+    assert _code(lost) == live_order_stores.LIVE_ENTRY_CLAIM_LOST
+    assert live_order_stores.read_live_entry_marks(tmp_path)["in_flight"]["BTCUSDT"] == claim
     # A claim that is gone altogether is lost too.
     with pytest.raises(ToolError) as gone:
         _marks(tmp_path).release_symbol(symbol="ETHUSDT", client_order_id=ORDER)
-    assert _code(gone) == live_order.LIVE_ENTRY_CLAIM_LOST
+    assert _code(gone) == live_order_stores.LIVE_ENTRY_CLAIM_LOST
 
 
 def test_a_claim_is_stamped_with_the_later_of_now_and_the_wall_clock(tmp_path, frozen_wall):
     """The cycle's `now` can be minutes old when its leg runs; an early stamp would expire early."""
     frozen_wall["now"] = "2026-09-17T04:20:00Z"
     _claim(_marks(tmp_path), now=NOW)
-    assert live_order.read_live_entry_marks(tmp_path)["in_flight"]["BTCUSDT"]["claimed_at"] == "2026-09-17T04:20:00Z"
+    assert live_order_stores.read_live_entry_marks(tmp_path)["in_flight"]["BTCUSDT"]["claimed_at"] == "2026-09-17T04:20:00Z"
     frozen_wall["now"] = "2026-09-17T04:00:00Z"
     _claim(_marks(tmp_path), symbol="ETHUSDT", client_order_id="TAI_ETHUSDT_LONG_dddd", now=NOW)
-    assert live_order.read_live_entry_marks(tmp_path)["in_flight"]["ETHUSDT"]["claimed_at"] == NOW
+    assert live_order_stores.read_live_entry_marks(tmp_path)["in_flight"]["ETHUSDT"]["claimed_at"] == NOW
 
 
 @pytest.mark.parametrize("kw", [
@@ -523,7 +523,7 @@ def test_a_claim_that_cannot_be_named_is_refused(tmp_path, kw):
     with pytest.raises(ToolError) as refused:
         _claim(_marks(tmp_path), **kw)
     assert _code(refused) == live_order_stores.LIVE_ENTRY_CLAIM_MALFORMED
-    assert not (venue_state_dir(tmp_path) / live_order.ENTRY_MARKS_FILENAME).exists()
+    assert not (venue_state_dir(tmp_path) / live_order_stores.ENTRY_MARKS_FILENAME).exists()
 
 
 def test_concurrent_claims_on_one_symbol_have_one_winner(tmp_path, frozen_wall):
@@ -548,13 +548,13 @@ def test_concurrent_claims_on_one_symbol_have_one_winner(tmp_path, frozen_wall):
     for thread in threads:
         thread.join(timeout=60)
     assert outcomes.count("won") == 1
-    assert outcomes.count(live_order.LIVE_ENTRY_SYMBOL_IN_FLIGHT) == 5
+    assert outcomes.count(live_order_stores.LIVE_ENTRY_SYMBOL_IN_FLIGHT) == 5
 
 
 def test_a_file_from_before_the_rule_reads_with_nothing_in_flight(tmp_path):
     _write_marks(tmp_path, {"version": live_order_stores.ENTRY_MARKS_VERSION,
                             "entered": {"BTCUSDT__4h": BAR}, "cooldown": {}})
-    assert live_order.read_live_entry_marks(tmp_path)["in_flight"] == {}
+    assert live_order_stores.read_live_entry_marks(tmp_path)["in_flight"] == {}
 
 
 @pytest.mark.parametrize("in_flight", [
@@ -573,7 +573,7 @@ def test_an_in_flight_map_that_cannot_be_trusted_refuses(tmp_path, in_flight):
     _write_marks(tmp_path, {"version": live_order_stores.ENTRY_MARKS_VERSION, "entered": {}, "cooldown": {},
                             "in_flight": in_flight})
     with pytest.raises(ToolError) as refused:
-        live_order.read_live_entry_marks(tmp_path)
+        live_order_stores.read_live_entry_marks(tmp_path)
     assert _code(refused) == live_order_stores.LIVE_ENTRY_MARKS_UNREADABLE
 
 
@@ -582,7 +582,7 @@ def test_the_bar_rules_and_the_claims_share_one_file(tmp_path, frozen_wall):
     _claim(marks)
     marks.claim_bar(symbol="BTCUSDT", timeframe="4h", bar_time=BAR)
     marks.record_stop_cooldown(symbol="ETHUSDT", timeframe="4h", until=BAR)
-    stored = live_order.read_live_entry_marks(tmp_path)
+    stored = live_order_stores.read_live_entry_marks(tmp_path)
     assert stored["entered"] == {"BTCUSDT__4h": BAR} and "BTCUSDT" in stored["in_flight"]
     assert stored["cooldown"] == {"ETHUSDT__4h": BAR}
 
@@ -593,13 +593,13 @@ def test_the_bar_rules_and_the_claims_share_one_file(tmp_path, frozen_wall):
 ])
 def test_the_pure_read_of_a_claim(now, held):
     marks = {"in_flight": {"BTCUSDT": {"claimed_at": NOW, "door": "probe", "client_order_id": ORDER}}}
-    assert (live_order.symbol_in_flight(marks, "BTCUSDT", now=now) is not None) is held
-    assert live_order.symbol_in_flight(marks, "ETHUSDT", now=now) is None
-    holds = live_order.live_entry_holds(dict(marks, entered={}, cooldown={}), symbol="BTCUSDT",
+    assert (live_order_stores.symbol_in_flight(marks, "BTCUSDT", now=now) is not None) is held
+    assert live_order_stores.symbol_in_flight(marks, "ETHUSDT", now=now) is None
+    holds = live_order_stores.live_entry_holds(dict(marks, entered={}, cooldown={}), symbol="BTCUSDT",
                                         timeframe="4h", bar_time=BAR, now=now)
-    assert (live_order.LIVE_ENTRY_SYMBOL_IN_FLIGHT in holds) is held
+    assert (live_order_stores.LIVE_ENTRY_SYMBOL_IN_FLIGHT in holds) is held
     # Without a time, the bar rules alone: the claim is the lock's to judge.
-    assert live_order.live_entry_holds(dict(marks, entered={}, cooldown={}), symbol="BTCUSDT",
+    assert live_order_stores.live_entry_holds(dict(marks, entered={}, cooldown={}), symbol="BTCUSDT",
                                        timeframe="4h", bar_time=BAR) == []
 
 
@@ -608,7 +608,7 @@ def test_a_claim_whose_expiry_cannot_be_computed_still_holds():
     fail towards holding, never raise into the leg."""
     marks = {"in_flight": {"BTCUSDT": {"claimed_at": "9999-12-31T23:59:59Z", "door": "probe",
                                        "client_order_id": ORDER}}}
-    assert live_order.symbol_in_flight(marks, "BTCUSDT", now=NOW) is not None
+    assert live_order_stores.symbol_in_flight(marks, "BTCUSDT", now=NOW) is not None
 
 
 def test_claims_need_the_live_authorization_and_are_inert_with_the_switch_off(tmp_path, monkeypatch):
@@ -618,12 +618,12 @@ def test_claims_need_the_live_authorization_and_are_inert_with_the_switch_off(tm
     inert = live_order.select_live_entry_marks(root=tmp_path)
     _claim(inert)
     inert.release_symbol(symbol="BTCUSDT", client_order_id=ORDER)
-    assert not (venue_state_dir(tmp_path) / live_order.ENTRY_MARKS_FILENAME).exists()
+    assert not (venue_state_dir(tmp_path) / live_order_stores.ENTRY_MARKS_FILENAME).exists()
 
 
 def test_a_testnet_claim_is_not_a_mainnet_claim(tmp_path, frozen_wall):
     _claim(_marks(tmp_path, venue=VENUE_TESTNET))
-    assert live_order.read_live_entry_marks(tmp_path)["in_flight"] == {}
+    assert live_order_stores.read_live_entry_marks(tmp_path)["in_flight"] == {}
     _claim(_marks(tmp_path))
 
 
@@ -644,7 +644,7 @@ def _order(symbol):
 
 
 def _write_marks_file(tmp_path, **maps):
-    path = state.venue_state_dir(tmp_path) / live_order.ENTRY_MARKS_FILENAME
+    path = state.venue_state_dir(tmp_path) / live_order_stores.ENTRY_MARKS_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"version": live_order_stores.ENTRY_MARKS_VERSION, "entered": {}, "cooldown": {},
                                 **maps}), encoding="utf-8")
@@ -659,7 +659,7 @@ def test_two_doors_on_two_symbols_cannot_both_take_the_last_position(tmp_path, f
     with pytest.raises(ToolError) as refused:
         _claim(_marks(tmp_path), symbol="BTCUSDT", door="probe", exposure=seen)
     assert _code(refused) == live_order_stores.LIVE_ENTRY_CAPACITY_TAKEN
-    assert set(live_order.read_live_entry_marks(tmp_path)["in_flight"]) == {"SOLUSDT"}
+    assert set(live_order_stores.read_live_entry_marks(tmp_path)["in_flight"]) == {"SOLUSDT"}
 
 
 def test_two_doors_on_two_symbols_cannot_both_spend_the_last_exposure(tmp_path, frozen_wall):
@@ -671,7 +671,7 @@ def test_two_doors_on_two_symbols_cannot_both_spend_the_last_exposure(tmp_path, 
     assert _code(refused) == live_order_stores.LIVE_ENTRY_EXPOSURE_TAKEN
     # Room for the second one once the first is only 40; the notional goes back with the claim.
     _marks(tmp_path).release_symbol(symbol="SOLUSDT", client_order_id=_order("SOLUSDT"))
-    assert live_order.read_live_entry_marks(tmp_path)["in_flight_notional"] == {}
+    assert live_order_stores.read_live_entry_marks(tmp_path)["in_flight_notional"] == {}
     _claim(_marks(tmp_path), symbol="SOLUSDT", client_order_id=_order("SOLUSDT"), notional_usdt=40.0,
            exposure=seen)
     _claim(_marks(tmp_path), symbol="BTCUSDT", exposure=seen)
@@ -742,7 +742,7 @@ def test_a_claim_without_its_own_recorded_notional_counts_as_the_whole_cap(tmp_p
 
 
 def test_a_booked_record_whose_notional_cannot_be_read_counts_as_the_whole_cap(tmp_path, frozen_wall):
-    marks = live_order.read_live_entry_marks(tmp_path)
+    marks = live_order_stores.read_live_entry_marks(tmp_path)
     booked = [{"symbol": "ETHUSDT", "position_id": "p1", "notional_usdt": None}]
     problem = live_order_stores.claim_caps_problem(
         marks, booked, symbol="BTCUSDT", now=NOW, notional_usdt=0.01, max_positions=2,
@@ -779,7 +779,7 @@ def test_a_claim_that_cannot_say_what_it_adds_is_refused(tmp_path, frozen_wall, 
     with pytest.raises(ToolError) as refused:
         _claim(_marks(tmp_path), notional_usdt=notional, exposure=exposure)
     assert _code(refused) == live_order_stores.LIVE_ENTRY_CLAIM_MALFORMED
-    assert live_order.read_live_entry_marks(tmp_path)["in_flight"] == {}
+    assert live_order_stores.read_live_entry_marks(tmp_path)["in_flight"] == {}
 
 
 @pytest.mark.parametrize("entry", [
@@ -797,7 +797,7 @@ def test_a_claim_that_cannot_say_what_it_adds_is_refused(tmp_path, frozen_wall, 
 def test_a_recorded_notional_that_cannot_be_read_makes_the_marks_unreadable(tmp_path, entry):
     _write_marks_file(tmp_path, in_flight={}, in_flight_notional={"BTCUSDT": entry})
     with pytest.raises(ToolError) as refused:
-        live_order.read_live_entry_marks(tmp_path)
+        live_order_stores.read_live_entry_marks(tmp_path)
     assert _code(refused) == live_order_stores.LIVE_ENTRY_MARKS_UNREADABLE
 
 
@@ -806,9 +806,9 @@ def test_a_claim_keeps_the_shape_a_runtime_from_before_reads(tmp_path, frozen_wa
     file and refuses every entry, so a rollback with a claim still in the file would stop trading.
     The claim keeps its three fields; the notional is a map that runtime does not read, and drops."""
     _claim(_marks(tmp_path))
-    raw = json.loads((state.venue_state_dir(tmp_path) / live_order.ENTRY_MARKS_FILENAME).read_text())
+    raw = json.loads((state.venue_state_dir(tmp_path) / live_order_stores.ENTRY_MARKS_FILENAME).read_text())
     assert all(set(claim) == {"claimed_at", "door", "client_order_id"} for claim in raw["in_flight"].values())
     assert set(raw) == {"version", "entered", "cooldown", "in_flight", "in_flight_notional"}
     # What a runtime from before keeps of it, and this runtime then reads: the claim, at the whole cap.
     _write_marks_file(tmp_path, in_flight=raw["in_flight"])
-    assert live_order_stores.claim_notional(live_order.read_live_entry_marks(tmp_path), "BTCUSDT") is None
+    assert live_order_stores.claim_notional(live_order_stores.read_live_entry_marks(tmp_path), "BTCUSDT") is None

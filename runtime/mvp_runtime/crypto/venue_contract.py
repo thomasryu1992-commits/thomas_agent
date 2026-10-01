@@ -516,7 +516,7 @@ def _failure(exc: BaseException) -> dict[str, Any]:
 def _could_not_answer(answer: Mapping[str, Any]) -> bool:
     """Whether a validator's refusal says the venue could not be asked rather than what it thinks of
     the request: the breaker's own codes and statuses (`live_order`), a 418/429 or any 5xx."""
-    from .live_order import API_ERROR_HTTP_STATUSES, API_ERROR_VENUE_CODES
+    from .live_order_stores import API_ERROR_HTTP_STATUSES, API_ERROR_VENUE_CODES
 
     code, status = answer.get("code"), answer.get("http_status")
     if isinstance(status, int) and not isinstance(status, bool) and (
@@ -816,10 +816,10 @@ def run_checks(*, symbols: Sequence[str], adapter: Any, collector: Any, now: str
     The first answer that says the venue could not be asked stops the run (a fire whose market data
     was already rate limited stops before the first call): every call after it is RUN_STOPPED. The
     adapter is asked only through its validator and its reads; never raises for a venue answer."""
-    from . import account_store, paper
+    from . import account_store, trade_plan
     from .live_execution import build_order_request
     from .live_filters import parse_symbol_filters
-    from .live_order import api_error_counts
+    from .live_order_stores import api_error_counts
     from .live_sizing import round_price_to_tick
     from .market_data import read_reference_quote
 
@@ -886,7 +886,7 @@ def run_checks(*, symbols: Sequence[str], adapter: Any, collector: Any, now: str
     # 4. Leverage (the account snapshot this lane keeps; no call).
     if snapshot is None:
         snapshot = account_store.read_snapshot(root)
-    checks.append(check_leverage(snapshot, symbols, now=now, max_leverage=float(paper.ASSUMED_LEVERAGE)))
+    checks.append(check_leverage(snapshot, symbols, now=now, max_leverage=float(trade_plan.ASSUMED_LEVERAGE)))
 
     # 5-7. The hypotheses. Each request is the runtime's own, built by the money path's builder inside
     # the call, so a builder refusal is this check's answer rather than the run's end.

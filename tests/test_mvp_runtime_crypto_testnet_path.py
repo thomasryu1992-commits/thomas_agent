@@ -15,7 +15,7 @@ import json
 import pytest
 
 from runtime.mvp_runtime import safety_gate
-from runtime.mvp_runtime.crypto import execution_stage as es
+from runtime.mvp_runtime.crypto import execution_stage as es, live_order_stores
 from runtime.mvp_runtime.crypto import live_execution, testnet_evidence, testnet_execution
 from runtime.mvp_runtime.crypto.state import VENUE_MAINNET, VENUE_TESTNET
 from runtime.mvp_runtime.errors import ToolError
@@ -351,8 +351,8 @@ def test_the_door_records_one_cycle_and_counts_it_on_the_testnet_venue(tmp_path,
     assert "venue_positions" in rows[0]["position_reconciliation"], "the venue was never asked"
     assert rows[0]["operator"] == "thomas" and rows[0]["failure"] is None
     # The orders counted against the TESTNET venue's counter, never the live one.
-    assert live_order.count_today(tmp_path, venue=VENUE_TESTNET) >= 1
-    assert live_order.count_today(tmp_path) == 0
+    assert live_order_stores.count_today(tmp_path, venue=VENUE_TESTNET) >= 1
+    assert live_order_stores.count_today(tmp_path) == 0
     # PR2b: the entry left under a snapshot recorded on the TESTNET venue's store, and the row
     # names it; the mainnet store is untouched.
     from runtime.mvp_runtime.crypto import pre_order_gate

@@ -1100,7 +1100,8 @@ def test_fire_sends_nothing_when_no_order_slot_can_be_reserved(tmp_path, monkeyp
 
 
 def test_fire_on_the_real_counter_refuses_the_slot_the_live_leg_already_spent(tmp_path, monkeypatch):
-    from runtime.mvp_runtime.crypto.live_order import LiveOrderCounter, count_today
+    from runtime.mvp_runtime.crypto.live_order import LiveOrderCounter
+    from runtime.mvp_runtime.crypto.live_order_stores import count_today
     from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_FLAGS, LIVE_TRADING_PROVIDER_ID
     from tests._helpers import make_gate_authorization
 
@@ -1124,7 +1125,8 @@ def test_fire_on_the_real_counter_refuses_the_slot_the_live_leg_already_spent(tm
 def test_fire_s_gate_re_reads_a_slot_the_live_leg_spent_after_the_first_read(tmp_path, monkeypatch):
     """PR2c-2a: the first read said 9 of 10; by the gate the other process had spent the tenth. The
     re-read sees it, so the gate refuses before the symbol, the slot or the cell is touched."""
-    from runtime.mvp_runtime.crypto.live_order import LiveOrderCounter, count_today
+    from runtime.mvp_runtime.crypto.live_order import LiveOrderCounter
+    from runtime.mvp_runtime.crypto.live_order_stores import count_today
     from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_FLAGS, LIVE_TRADING_PROVIDER_ID
     from tests._helpers import make_gate_authorization
 
@@ -1842,7 +1844,7 @@ def test_fire_gives_the_symbol_back_after_a_plain_rejection_only(tmp_path, monke
 
 
 def test_fire_says_so_when_it_outlived_its_claim(tmp_path, monkeypatch, capsys):
-    from runtime.mvp_runtime.crypto.live_order import LIVE_ENTRY_CLAIM_LOST
+    from runtime.mvp_runtime.crypto.live_order_stores import LIVE_ENTRY_CLAIM_LOST
 
     class _Lost(_RecordingMarks):
         def release_symbol(self, **kw):
@@ -2429,7 +2431,7 @@ def test_a_cell_whose_claim_is_gone_or_another_s_is_resolved_as_before(tmp_path,
 
 
 def test_unreadable_marks_cannot_show_a_cell_is_finished(tmp_path, monkeypatch):
-    from runtime.mvp_runtime.crypto.live_order import ENTRY_MARKS_FILENAME
+    from runtime.mvp_runtime.crypto.live_order_stores import ENTRY_MARKS_FILENAME
     from runtime.mvp_runtime.crypto.state import venue_state_dir
 
     opened = _cell_in_flight(tmp_path)
@@ -2624,7 +2626,7 @@ def test_a_fire_whose_call_latches_the_breaker_says_so_at_once_and_tells_the_cha
         tmp_path, monkeypatch, capsys):
     """The probe is the other door with signed calls. Inside the call it only prints; the chat is
     told after the fire, once (review of #889: a send inside a signed call held the call up)."""
-    from runtime.mvp_runtime.crypto.live_order import api_breaker_status
+    from runtime.mvp_runtime.crypto.live_order_stores import api_breaker_status
     from runtime.mvp_runtime.crypto.live_order_stores import MAX_CONSECUTIVE_API_ERRORS
 
     _wire_fire_to_the_guard(tmp_path, monkeypatch, _VenueMustNotBeTouched())
@@ -2657,7 +2659,7 @@ def test_a_fire_whose_call_latches_the_breaker_says_so_at_once_and_tells_the_cha
     (_Chat(egress=False), None),
 ], ids=["send-fails", "inert-channel"])
 def test_a_chat_that_did_not_hear_leaves_the_notice_to_be_sent(tmp_path, monkeypatch, capsys, chat, said):
-    from runtime.mvp_runtime.crypto.live_order import api_breaker_status
+    from runtime.mvp_runtime.crypto.live_order_stores import api_breaker_status
     from runtime.mvp_runtime.crypto.live_order_stores import MAX_CONSECUTIVE_API_ERRORS
 
     breaker = _durable_api_breaker(tmp_path)
@@ -2716,7 +2718,7 @@ def test_a_breaker_write_that_fails_is_said_on_the_spot(tmp_path, monkeypatch, c
 def test_the_fire_s_settlement_counts_its_fill_history_read(tmp_path, monkeypatch):
     """The fill history a settlement falls back to is a signed read of the fire too: the probe
     hands its settlement the feed recorded into the same breaker as its adapter."""
-    from runtime.mvp_runtime.crypto.live_order import api_breaker_status
+    from runtime.mvp_runtime.crypto.live_order_stores import api_breaker_status
 
     class _Feed:
         network_egress = True
@@ -2898,7 +2900,7 @@ def test_a_contract_refusal_comes_before_any_signed_read_or_breaker_count(tmp_pa
     """Review of #903: the contract is a record on this machine, so a probe it refuses has read the
     public market (the cell is chosen by regime, and a probe in flight is named first) but not the
     account over a signed call, and the API breaker has counted nothing."""
-    from runtime.mvp_runtime.crypto.live_order import ApiErrorRecordingAdapter
+    from runtime.mvp_runtime.crypto.live_order_stores import ApiErrorRecordingAdapter
 
     _wire_fire_to_the_guard(tmp_path, monkeypatch, _VenueMustNotBeTouched())
     touched: list[str] = []

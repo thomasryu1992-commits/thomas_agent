@@ -57,7 +57,7 @@ def _seed(root, *outcomes):
     verified read and reports `risk_history_unreadable`, which is a refusal but never the one a
     test here means."""
     from runtime.mvp_runtime.crypto.live_settlement import build_live_outcome_record
-    from runtime.mvp_runtime.crypto.live_pnl import state_dir as live_state_dir
+    from runtime.mvp_runtime.crypto.state import state_dir as live_state_dir
 
     target = live_state_dir(root)
     target.mkdir(parents=True, exist_ok=True)

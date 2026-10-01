@@ -24,5 +24,5 @@ def test_every_definition_cycle_offers_is_the_same_object():
              or (isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name))]
     assert "attach_mining_legs" in names and len(names) >= 17
     offered = [n for n in names if n in vars(cycle)]
-    assert "attach_mining_legs" in offered
+    assert "attach_feeds" in offered
     assert [n for n in offered if getattr(cycle, n) is not getattr(feed_assembly, n)] == []

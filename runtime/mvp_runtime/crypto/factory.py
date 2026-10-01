@@ -70,10 +70,8 @@ from .strategy import SpecParseError, StrategySpec
 # test that patches a name the replay reads patches it on `backtest`: a patch on this module's copy
 # does not reach a function defined there.
 from .backtest import (  # noqa: F401
-    HOLDOUT_FRACTION, HOLDOUT_PERIODS, MIN_BARS_FOR_HOLDOUT, MIN_TRADES_PER_WINDOW,
-    UNSUPPLIABLE_FEATURE, WALK_FORWARD_MIN_PERIODS, WALK_FORWARD_PERIODS, ReplayFrame,
-    _replay, backtest_spec, backtest_spec_pooled, build_replay_frame, holdout_split_index,
-    unsuppliable_features,
+    UNSUPPLIABLE_FEATURE, ReplayFrame, _replay, backtest_spec, backtest_spec_pooled,
+    build_replay_frame, unsuppliable_features,
 )
 # The template space lives in `template_space.py` (moved whole, refactor plan PR-09): the validator's
 # bounds, the feature vocabulary, the template library and `validate_strategy`. What its callers still
@@ -100,7 +98,7 @@ from .template_space import (  # noqa: F401
     _trend_pullback_entry, _trend_pullback_short_entry, _volatility_expansion_long_entry,
     _volatility_expansion_short_entry, _volatility_squeeze_long_entry,
     _volatility_squeeze_short_entry, _xs_momentum_long_entry, _xs_momentum_short_entry,
-    _xs_reversion_long_entry, _xs_reversion_short_entry, known_features, templates_for_timeframe,
+    _xs_reversion_long_entry, _xs_reversion_short_entry, templates_for_timeframe,
     validate_strategy,
 )
 # The seeded generator lives in `generator.py` (moved whole, refactor plan PR-10): its knobs, the

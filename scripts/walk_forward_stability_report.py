@@ -3,7 +3,7 @@
 
     docker exec thomas-scheduler python -m scripts.walk_forward_stability_report
 
-Every candidate minted since `factory.WALK_FORWARD_PERIODS` landed carries the scored region
+Every candidate minted since `backtest.WALK_FORWARD_PERIODS` landed carries the scored region
 subtotalled into equal-bar periods (`walk_forward.period_r` / `period_trades`). Nothing judges
 on them yet — `temporal_stability` is written as None — and this script is what decides whether
 that changes: it aggregates the stored blocks, adds no new measurement, replays nothing, and
@@ -41,7 +41,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Mapping
 
-from runtime.mvp_runtime.crypto import factory, pool, robustness
+from runtime.mvp_runtime.crypto import backtest, pool, robustness
 from runtime.mvp_runtime.crypto.strategy import StrategySpec
 
 
@@ -58,7 +58,7 @@ def would_be_temporal_stability(walk_forward: Mapping[str, Any]) -> float | None
     judged = [(r, n) for r, n in zip(period_r, period_trades)
               if isinstance(n, (int, float)) and not isinstance(n, bool) and n > 0
               and isinstance(r, (int, float)) and not isinstance(r, bool)]
-    if len(judged) < factory.WALK_FORWARD_MIN_PERIODS:
+    if len(judged) < backtest.WALK_FORWARD_MIN_PERIODS:
         return None
     return sum(1 for r, _ in judged if r > 0) / len(judged)
 
@@ -131,8 +131,8 @@ def main(argv: list[str] | None = None) -> int:
         judged_counts.append(judged)
         timeframe = str((record.get("strategy_spec") or {}).get("timeframe") or "?")
         by_timeframe[timeframe].append(judged)
-    floor = factory.WALK_FORWARD_MIN_PERIODS
-    total = factory.WALK_FORWARD_PERIODS
+    floor = backtest.WALK_FORWARD_MIN_PERIODS
+    total = backtest.WALK_FORWARD_PERIODS
     below = sum(1 for n in judged_counts if n < floor)
     print(f"\noccupancy (periods judged, of {total}; floor {floor}):")
     print(f"  distribution: {dict(sorted(Counter(judged_counts).items()))}")

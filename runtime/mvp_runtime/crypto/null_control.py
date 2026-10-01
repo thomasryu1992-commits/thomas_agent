@@ -143,7 +143,7 @@ def _slice(frame: ReplayFrame, start: int) -> ReplayFrame:
     computed over the whole series, so every value in them is already the point-in-time read for
     its own bar — taking a suffix cannot reach forward and does not re-run warmup.
     """
-    from .factory import holdout_split_index
+    from .backtest import holdout_split_index
 
     rows, candles = frame.rows[start:], frame.candles[start:]
     funding = frame.funding[start:] if frame.funding is not None else None

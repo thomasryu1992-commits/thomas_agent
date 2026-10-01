@@ -28,7 +28,7 @@ from pathlib import Path
 import pytest
 
 from runtime.mvp_runtime.crypto import (
-    account_store, live_execution, live_order_stores, market_data, order_request, paper,
+    account_store, live_execution, live_order_stores, market_data, order_request, trade_plan,
 )
 from runtime.mvp_runtime.crypto import venue_contract as vc
 from runtime.mvp_runtime.errors import ToolError
@@ -322,7 +322,7 @@ def test_leverage_at_or_below_the_backtests_passes_and_above_fails():
     above = vc.check_leverage(_snapshot(DOGEUSDT=20.0), SYMBOLS, now=NOW, max_leverage=5.0)
     assert above["result"] == "FAIL" and "DOGEUSDT 20x" in above["detail"]
     assert above["observed"]["above"] == ["DOGEUSDT"]
-    assert paper.ASSUMED_LEVERAGE == 5   # decision 45's bound is the backtests' own number
+    assert trade_plan.ASSUMED_LEVERAGE == 5   # decision 45's bound is the backtests' own number
 
 
 @pytest.mark.parametrize("snapshot", [

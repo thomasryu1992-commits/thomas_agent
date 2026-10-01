@@ -155,7 +155,7 @@ def slice_width_days(timeframe: str) -> float | None:
     ``None`` for a timeframe the factory does not target: a width invented here would be
     a threshold minted outside the judge it claims to mirror.
     """
-    from .factory import HOLDOUT_FRACTION, HOLDOUT_PERIODS  # local: heavy module
+    from .backtest import HOLDOUT_FRACTION, HOLDOUT_PERIODS  # local: heavy module
     from .market_data import (  # local: heavy module
         FACTORY_DEPTH_DAYS, TIMEFRAMES, factory_candle_target,
     )
