@@ -56,6 +56,7 @@ def test_with_the_opt_in_the_reader_selector_builds_the_reader_on_the_order_adap
     assert type(reader) is lx.BinanceFuturesVenueReader
     assert reader.network_egress is True
     assert reader.provider_id == lx.select_order_adapter(now=NOW, root=tmp_path).provider_id
+    reader._assert()   # it was handed the gate's authorization: every request it signs re-checks this
 
 
 def test_the_refresh_selects_the_reader_and_never_the_order_adapter(tmp_path, monkeypatch):
