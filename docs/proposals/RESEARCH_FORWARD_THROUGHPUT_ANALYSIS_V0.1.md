@@ -1,6 +1,8 @@
 # 분석: Research / Paper / Forward 처리량 확대 — 사전 분석과 설계 (DRAFT v0.1)
 
-**상태:** DRAFT 2026-10-01 — 조사·설계만. 코드·상수·문 변경 없음. 결정 항목은 §19와 §23.
+**상태:** PARTIALLY DECIDED 2026-10-01 — P0-1(D3 범위)은 권고대로 결정(Thomas): 측정·표시 허용, 종료는 1차 cohort 마감
+2027-03-22, cohort 사이 형제 규칙은 D3 밖(`SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md` "결정 (Thomas 2026-10-01)"). 나머지 P0·P1·P2는 결정 대기.
+조사·설계만 했고 코드·상수·문은 바꾸지 않았다.
 **기준 시점:** 2026-10-01 04:00–05:00 UTC, main `03f2ed84`, 운영 이미지 candidate-1055. 실행 단계 PAPER, LIVE 무장 0.
 **함께 읽을 것:** 같은 날 결정된 `FORWARD_COHORT_EXPANSION_V0.1.md`(#1091 머지, #1092)의 N1–N4. 2차 cohort 82명과 쌍둥이 82명은
 04:04 UTC에 이미 동결됐다. 이 문서는 그 결정을 전제로 쓴다. 겹치는 내용은 인용만 한다.

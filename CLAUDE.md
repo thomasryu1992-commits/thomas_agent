@@ -59,11 +59,21 @@ core thin while lanes grow, stated as rules:
   why the per-machine grants were retired and what that gave up: `docs/BUILD_HISTORY.md`.
 - **Claude does not touch the live money path.** The crypto stack can place a real order.
   Claude does not run it, does not handle keys, does not enable live trading.
-- **Crypto research machinery is paused until the first forward-cohort verdict** (Thomas
-  2026-09-26, review D3). No new hypothesis, trial or display machinery in `crypto/`. Exempt: bug
-  fixes, the slippage measurement (review C2), 1h mining on all five symbols (C3), and the PR7 split work. Judgement
-  rules loosen only at a research-epoch boundary (`RESEARCH_EPOCH_V0.1.md` Q3). Record:
-  `docs/proposals/SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md`, "결정 (Thomas 2026-09-26)".
+- **Crypto research machinery is paused until cohort 1's close on 2027-03-22** (Thomas 2026-09-26,
+  review D3; scope and end restated 2026-10-01). No new templates, hypotheses or trials in `crypto/`,
+  and no reallocation of the mint budget across families. A first FORWARD_CONFIRMED before that date
+  does not end the pause; it triggers E1/E2 (`docs/REMAINING_WORK.md` §L). Exempt:
+  - bug fixes;
+  - the slippage measurement (review C2);
+  - 1h mining on all five symbols (C3);
+  - the PR7 split work;
+  - measurement and display that change no judgement and that no door reads, e.g. entry-refusal
+    counters or a member-minus-twin readout;
+  - tightening cohort membership, such as a cross-cohort sibling rule.
+
+  Judgement rules loosen only at a research-epoch boundary (`RESEARCH_EPOCH_V0.1.md` Q3). Record:
+  `docs/proposals/SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md`, "결정 (Thomas 2026-09-26)" and
+  "결정 (Thomas 2026-10-01)".
 - **Never run state-writing CLIs on the host as root.** Services run as uid 10001 and mount
   `.runtime_governance_state/`; a root run leaves files the service can no longer write and
   fails later, in another process, with nothing pointing back at the cause. Use
