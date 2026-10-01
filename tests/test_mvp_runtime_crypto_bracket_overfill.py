@@ -52,8 +52,8 @@ from __future__ import annotations
 
 import pytest
 
+from runtime.mvp_runtime.crypto.order_request import MISMATCH
 from runtime.mvp_runtime.crypto.live_execution import (
-    MISMATCH,
     fill_facts,
     normalize_algo_order,
     reconcile_order,
