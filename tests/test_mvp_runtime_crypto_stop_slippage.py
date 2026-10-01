@@ -19,13 +19,15 @@ from __future__ import annotations
 
 import pytest
 
-from runtime.mvp_runtime.crypto import cost, live_leg, live_pnl
+from runtime.mvp_runtime.crypto import cost, live_leg
 from runtime.mvp_runtime.crypto.cost import CostModel, apply_cost_model, cost_model_for
 from runtime.mvp_runtime.crypto.live_pnl import (
     STOP_EXIT_REASONS,
+    stop_slippage_observations,
+)
+from runtime.mvp_runtime.crypto.live_settlement import (
     build_live_outcome_record,
     realized_stop_slippage_bps,
-    stop_slippage_observations,
 )
 
 NOW = "2026-08-10T15:00:00Z"

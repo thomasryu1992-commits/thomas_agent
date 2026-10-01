@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import pytest
 
-from runtime.mvp_runtime.crypto import factory, features
+from runtime.mvp_runtime.crypto import factory, features, template_space
 from runtime.mvp_runtime.crypto.cycle import attach_feeds, attach_reference
 from runtime.mvp_runtime.crypto.features import build_feature_rows
 from runtime.mvp_runtime.crypto.indicators import rolling_correlation
@@ -215,10 +215,10 @@ def test_premium_index_moves_every_bar_where_funding_steps():
 
 
 def test_premium_columns_are_mintable_and_the_raw_prices_stay_ordered_comparisons():
-    assert {"premium_index", "premium_index_zscore"} <= factory.NUMERIC_FEATURES
+    assert {"premium_index", "premium_index_zscore"} <= template_space.NUMERIC_FEATURES
     # mark/index were already mintable and stay so — they are only meaningful against each
     # other or against close, which `value_from` expresses.
-    assert {"mark_price", "index_price", "mark_index_basis_bps"} <= factory.NUMERIC_FEATURES
+    assert {"mark_price", "index_price", "mark_index_basis_bps"} <= template_space.NUMERIC_FEATURES
 
 
 # --- cross-asset reference ----------------------------------------------------
@@ -314,10 +314,10 @@ def test_reference_families_are_not_minted_for_the_reference_symbol():
     here by SYMBOL rather than by timeframe, which is why the gate takes one."""
     for_proxy = {t.family for t in factory.templates_for_timeframe("1h", symbol=REFERENCE_SYMBOL)}
     for_other = {t.family for t in factory.templates_for_timeframe("1h", symbol="ETHUSDT")}
-    assert not (factory.REFERENCE_FAMILIES & for_proxy)
-    assert factory.REFERENCE_FAMILIES <= for_other
+    assert not (template_space.REFERENCE_FAMILIES & for_proxy)
+    assert template_space.REFERENCE_FAMILIES <= for_other
     # A caller that names no symbol is asking for the library, not a mintable set.
-    assert factory.REFERENCE_FAMILIES <= {t.family for t in factory.templates_for_timeframe("1h")}
+    assert template_space.REFERENCE_FAMILIES <= {t.family for t in factory.templates_for_timeframe("1h")}
 
 
 def test_generate_batch_honours_the_symbol_gate():
@@ -327,7 +327,7 @@ def test_generate_batch_honours_the_symbol_gate():
             f"GEN-{n:03d}", seed=n, symbol=REFERENCE_SYMBOL, timeframe="1h"
         )["specs"]:
             minted.add(spec["strategy_family"])
-    assert not (factory.REFERENCE_FAMILIES & minted)
+    assert not (template_space.REFERENCE_FAMILIES & minted)
 
 
 def test_the_new_families_mint_and_backtest_on_a_reference_enriched_frame():
@@ -343,7 +343,7 @@ def test_the_new_families_mint_and_backtest_on_a_reference_enriched_frame():
         )["specs"]:
             minted.setdefault(spec["strategy_family"], spec)
 
-    wanted = factory.REFERENCE_FAMILIES | {"premium_fade_long", "premium_fade_short"}
+    wanted = template_space.REFERENCE_FAMILIES | {"premium_fade_long", "premium_fade_short"}
     assert wanted <= set(minted), f"never minted: {sorted(wanted - set(minted))}"
     for family in sorted(wanted):
         evidence = factory.backtest_spec(StrategySpec.from_dict(minted[family]), snapshot)

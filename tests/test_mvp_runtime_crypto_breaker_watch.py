@@ -56,7 +56,7 @@ def _seed(root, *outcomes):
     shaped exactly as `live_leg.execute_live_exit` writes it — a hand-made row fails the
     verified read and reports `risk_history_unreadable`, which is a refusal but never the one a
     test here means."""
-    from runtime.mvp_runtime.crypto.live_pnl import build_live_outcome_record
+    from runtime.mvp_runtime.crypto.live_settlement import build_live_outcome_record
     from runtime.mvp_runtime.crypto.live_pnl import state_dir as live_state_dir
 
     target = live_state_dir(root)

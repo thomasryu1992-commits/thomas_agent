@@ -1,8 +1,8 @@
 """The seeded generator: which templates a fire draws, around which centres, and the draws.
 
-Moved whole out of ``factory`` (crypto refactor plan PR-10). ``factory`` re-exports, as
-the same objects, the names its callers still read there (refactor plan PR-16 removed the rest; the
-set is pinned by ``test_mvp_runtime_crypto_reexport_roster.py``).
+Moved whole out of ``factory`` (crypto refactor plan PR-10). ``factory`` imports what it calls
+from here and re-exports nothing: refactor plan PR-16 moved the last readers of ``factory.<name>``
+here (pinned by ``test_mvp_runtime_crypto_reexport_roster.py``).
 
 What is here:
 

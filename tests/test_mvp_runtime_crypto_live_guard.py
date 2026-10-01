@@ -14,7 +14,7 @@ import json
 import pytest
 from tests._helpers import make_gate_authorization
 
-from runtime.mvp_runtime.crypto import live_pnl
+from runtime.mvp_runtime.crypto import live_ledger, live_pnl
 from runtime.mvp_runtime.crypto import execution_stage as es
 from runtime.mvp_runtime.crypto.live_order import (
     CONFIRMATION_ENV,
@@ -42,7 +42,6 @@ from runtime.mvp_runtime.crypto.live_pnl import (
     REAL_LIVE_TRADING,
     DryRunLiveLedger,
     RealLiveLedger,
-    build_live_outcome_record,
     daily_loss_limit_breached,
     daily_realized_pnl,
     live_risk_snapshot,
@@ -50,6 +49,7 @@ from runtime.mvp_runtime.crypto.live_pnl import (
     select_live_ledger,
     state_dir,
 )
+from runtime.mvp_runtime.crypto.live_settlement import build_live_outcome_record
 from runtime.mvp_runtime.errors import SafetyGateBlocked, ToolError
 from runtime.mvp_runtime.safety_gate import Authorization
 
@@ -192,7 +192,7 @@ def test_duplicate_settlement_refuses(tmp_path):
     _write_outcomes(tmp_path, [record, record])
     with pytest.raises(ToolError) as exc:
         read_live_outcomes(tmp_path)
-    assert exc.value.reason_code == live_pnl.LIVE_HISTORY_DUPLICATE
+    assert exc.value.reason_code == live_ledger.LIVE_HISTORY_DUPLICATE
 
 
 # === LP2: the write side of that check — the append is idempotent ==================
@@ -226,7 +226,7 @@ def test_the_dup_check_never_reads_an_unverifiable_history_as_not_recorded(tmp_p
     path.write_text("{not json\n", encoding="utf-8")
     with pytest.raises(ToolError) as exc:
         _authorized_ledger(tmp_path).append_outcome(_outcome(-1.0))
-    assert exc.value.reason_code == live_pnl.LIVE_HISTORY_UNREADABLE
+    assert exc.value.reason_code == live_ledger.LIVE_HISTORY_UNREADABLE
     assert path.read_text(encoding="utf-8") == "{not json\n"   # nothing was appended
 
 
@@ -236,7 +236,7 @@ def test_unparseable_line_refuses(tmp_path):
     (target / live_pnl.LIVE_OUTCOMES_FILENAME).write_text("{not json\n", encoding="utf-8")
     with pytest.raises(ToolError) as exc:
         read_live_outcomes(tmp_path)
-    assert exc.value.reason_code == live_pnl.LIVE_HISTORY_UNREADABLE
+    assert exc.value.reason_code == live_ledger.LIVE_HISTORY_UNREADABLE
 
 
 def test_risk_snapshot_fails_closed_on_unreadable_history(tmp_path):
@@ -245,7 +245,7 @@ def test_risk_snapshot_fails_closed_on_unreadable_history(tmp_path):
     (target / live_pnl.LIVE_OUTCOMES_FILENAME).write_text("garbage\n", encoding="utf-8")
     snapshot = live_risk_snapshot(limit_usdt=20.0, root=tmp_path, now=NOW)
     assert snapshot["daily_loss_limit_breached"] is True
-    assert snapshot["history_error"] == live_pnl.LIVE_HISTORY_UNREADABLE
+    assert snapshot["history_error"] == live_ledger.LIVE_HISTORY_UNREADABLE
     assert snapshot["daily_realized_pnl_usdt"] is None
 
 

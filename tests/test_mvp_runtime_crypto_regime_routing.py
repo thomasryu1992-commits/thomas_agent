@@ -26,12 +26,14 @@ import pytest
 from runtime.read_only_kernel import integrity
 from runtime.mvp_runtime.crypto import factory
 from runtime.mvp_runtime.crypto.paper import (
-    MIN_REGIME_TRADES_TO_EXCLUDE,
-    REGIME_EXCLUDED,
     STATUS_ENTRY_CANDIDATE,
     STATUS_NO_ENTRY,
     regime_admits,
     route_entries,
+)
+from runtime.mvp_runtime.crypto.trade_plan import (
+    MIN_REGIME_TRADES_TO_EXCLUDE,
+    REGIME_EXCLUDED,
 )
 from runtime.mvp_runtime.crypto.strategy import StrategySpec
 

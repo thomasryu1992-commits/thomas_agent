@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from runtime.mvp_runtime.crypto import cycle, factory, market_data
+from runtime.mvp_runtime.crypto import factory, feed_assembly, market_data, template_space
 from runtime.mvp_runtime.crypto.cycle import attach_feeds
 from runtime.mvp_runtime.crypto.features import build_feature_rows, latest_feature_row
 from runtime.mvp_runtime.crypto.market_data import (
@@ -140,7 +140,7 @@ def test_raw_open_interest_stays_unmintable():
     """It is a venue-scale quantity: a threshold on it means something different on
     every symbol, and something different again after the venue grows. The row carries
     it as evidence; the factory may not build a rule on it."""
-    assert "open_interest" not in factory.NUMERIC_FEATURES
+    assert "open_interest" not in template_space.NUMERIC_FEATURES
     spec = StrategySpec.from_dict(_oi_spec([
         {"feature": "open_interest", "comparison": ">", "value": 1_000_000.0}]))
     assert "BLOCK_UNKNOWN_FEATURE" in factory.validate_strategy(spec)["block_reasons"]
@@ -148,7 +148,7 @@ def test_raw_open_interest_stays_unmintable():
 
 def test_oi_families_are_present_and_generate_valid_specs():
     families = {t.family for t in factory.templates_for_timeframe("1h")}
-    assert factory.OI_FAMILIES <= families
+    assert template_space.OI_FAMILIES <= families
     batch = factory.generate_batch("GEN-001", seed=5, timeframe="1h")
     assert batch["accepted_count"] == batch["requested_count"]
     for spec_dict in batch["specs"]:
@@ -163,8 +163,8 @@ def test_oi_families_drop_where_the_feed_cannot_reach_the_replay_window():
     not catch that, because the column is populated on the newest quarter."""
     for timeframe in ("15m", "1h", "4h"):
         families = {t.family for t in factory.templates_for_timeframe(timeframe)}
-        assert factory.OI_FAMILIES <= families, timeframe
-    assert not (factory.OI_FAMILIES & {t.family for t in factory.templates_for_timeframe("1d")})
+        assert template_space.OI_FAMILIES <= families, timeframe
+    assert not (template_space.OI_FAMILIES & {t.family for t in factory.templates_for_timeframe("1d")})
 
 
 def test_the_oi_gate_reads_the_same_depth_the_fetch_asks_for():
@@ -173,18 +173,18 @@ def test_the_oi_gate_reads_the_same_depth_the_fetch_asks_for():
     `cycle` asked the feed for its own private 520 and `factory` had no opinion at all, so the
     day `MIN_FACTORY_BARS` pushed 1d past that depth there was nothing to notice it. If a future
     edit moves the fetch, this fails rather than silently re-opening the window."""
-    assert cycle._LIQUIDATION_DAYS is market_data.DERIVATIVE_HISTORY_DAYS
+    assert feed_assembly._LIQUIDATION_DAYS is market_data.DERIVATIVE_HISTORY_DAYS
     # ...and the gate is that constant against the window, not a hardcoded timeframe list.
-    assert factory._oi_feed_reaches("4h") is True
-    assert factory._oi_feed_reaches("1d") is False
-    assert factory._oi_feed_reaches("nonsense") is False
+    assert template_space._oi_feed_reaches("4h") is True
+    assert template_space._oi_feed_reaches("1d") is False
+    assert template_space._oi_feed_reaches("nonsense") is False
 
 
 def test_the_oi_gate_would_reopen_if_the_feed_got_deeper(monkeypatch):
     """Stated as a property of the depth, so nobody has to re-derive which timeframes bind."""
     monkeypatch.setattr(market_data, "DERIVATIVE_HISTORY_DAYS", 2_000)
-    assert factory._oi_feed_reaches("1d") is True
-    assert factory.OI_FAMILIES <= {t.family for t in factory.templates_for_timeframe("1d")}
+    assert template_space._oi_feed_reaches("1d") is True
+    assert template_space.OI_FAMILIES <= {t.family for t in factory.templates_for_timeframe("1d")}
 
 
 # --- the feed seam ------------------------------------------------------------
@@ -327,8 +327,8 @@ def test_the_funding_gate_reads_the_depth_the_fetch_can_actually_reach():
         market_data.FUNDING_MAX_PAGES * market_data.FUNDING_ROWS_PER_PAGE,
     ) / market_data.FUNDING_SETTLEMENTS_PER_DAY
     # The cycle asks for the same number the gate judges against — the OI gap in miniature.
-    assert cycle._FUNDING_RECORDS is market_data.DEFAULT_FUNDING_RECORDS
-    assert factory._funding_feed_reaches("nonsense") is False
+    assert feed_assembly._FUNDING_RECORDS is market_data.DEFAULT_FUNDING_RECORDS
+    assert template_space._funding_feed_reaches("nonsense") is False
 
 
 def test_the_funding_gate_binds_at_1d_and_only_at_1d():
@@ -341,13 +341,13 @@ def test_the_funding_gate_binds_at_1d_and_only_at_1d():
     reached that block since 1d came back on 2026-08-04."""
     assert market_data.funding_history_days() >= market_data.FACTORY_DEPTH_DAYS
     for timeframe in ("1h", "4h"):
-        assert factory._funding_feed_reaches(timeframe) is True
-        assert factory.FUNDING_FAMILIES <= {
+        assert template_space._funding_feed_reaches(timeframe) is True
+        assert template_space.FUNDING_FAMILIES <= {
             t.family for t in factory.templates_for_timeframe(timeframe)
         }, timeframe
-    assert factory._funding_feed_reaches("1d") is False
+    assert template_space._funding_feed_reaches("1d") is False
     families_1d = {t.family for t in factory.templates_for_timeframe("1d")}
-    assert not (factory.FUNDING_FAMILIES & families_1d)
+    assert not (template_space.FUNDING_FAMILIES & families_1d)
     assert families_1d, "the non-funding rotation must survive at 1d"
 
 
@@ -359,8 +359,8 @@ def test_the_funding_gate_closes_when_the_window_outruns_either_constant(monkeyp
     version could only be reached one way, and this series has two."""
     # 1. the window moves and the feed does not
     monkeypatch.setattr(market_data, "FACTORY_DEPTH_DAYS", 4_000)
-    assert factory._funding_feed_reaches("4h") is False
-    assert not (factory.FUNDING_FAMILIES & {t.family for t in factory.templates_for_timeframe("4h")})
+    assert template_space._funding_feed_reaches("4h") is False
+    assert not (template_space.FUNDING_FAMILIES & {t.family for t in factory.templates_for_timeframe("4h")})
     # ...and the rest of the rotation is untouched, so this narrows rather than empties.
     assert {t.family for t in factory.templates_for_timeframe("4h")}
     monkeypatch.undo()
@@ -369,13 +369,13 @@ def test_the_funding_gate_closes_when_the_window_outruns_either_constant(monkeyp
     #    what binds, which is the half a single-constant check would miss.
     monkeypatch.setattr(market_data, "FUNDING_MAX_PAGES", 1)
     assert market_data.funding_history_days() < market_data.FACTORY_DEPTH_DAYS
-    assert factory._funding_feed_reaches("4h") is False
+    assert template_space._funding_feed_reaches("4h") is False
 
 
 def test_the_funding_gate_reopens_when_the_feed_catches_up(monkeypatch):
     monkeypatch.setattr(market_data, "FACTORY_DEPTH_DAYS", 4_000)
-    assert factory._funding_feed_reaches("1h") is False
+    assert template_space._funding_feed_reaches("1h") is False
     monkeypatch.setattr(market_data, "DEFAULT_FUNDING_RECORDS", 20_000)
     monkeypatch.setattr(market_data, "FUNDING_MAX_PAGES", 40)
-    assert factory._funding_feed_reaches("1h") is True
-    assert factory.FUNDING_FAMILIES <= {t.family for t in factory.templates_for_timeframe("1h")}
+    assert template_space._funding_feed_reaches("1h") is True
+    assert template_space.FUNDING_FAMILIES <= {t.family for t in factory.templates_for_timeframe("1h")}

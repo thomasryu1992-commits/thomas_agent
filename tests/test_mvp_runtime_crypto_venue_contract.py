@@ -27,7 +27,9 @@ from pathlib import Path
 
 import pytest
 
-from runtime.mvp_runtime.crypto import account_store, live_execution, market_data, paper
+from runtime.mvp_runtime.crypto import (
+    account_store, live_execution, live_order_stores, market_data, order_request, paper,
+)
 from runtime.mvp_runtime.crypto import venue_contract as vc
 from runtime.mvp_runtime.errors import ToolError
 
@@ -374,7 +376,7 @@ def test_the_sentinel_asks_only_through_the_validator_and_the_reads():
     sent_ids = [c[1].get("newClientOrderId") or c[1].get("clientAlgoId") for c in adapter.calls if c[0] == "validate_order"]
     queried_ids = [c[1] for c in adapter.calls if c[0] == "fetch_order"]
     assert sent_ids and all(i.startswith(vc.SENTINEL_ID_PREFIX) for i in sent_ids + queried_ids)
-    assert all(live_execution.CLIENT_ORDER_ID_PATTERN.match(i) for i in sent_ids + queried_ids)
+    assert all(order_request.CLIENT_ORDER_ID_PATTERN.match(i) for i in sent_ids + queried_ids)
     # One-way mode and every entry request are the runtime's own: no positionSide, built by the builder.
     entries = [c[1] for c in adapter.calls if c[0] == "validate_order" and c[1].get("type") == "MARKET"]
     assert [e["symbol"] for e in entries] == SYMBOLS
@@ -805,7 +807,7 @@ def test_the_sentinel_is_not_a_door_the_api_breaker_counts():
     """Decision 27 counts the money path's signed calls; the sentinel asks the raw adapter."""
     from runtime.mvp_runtime.crypto import live_order
 
-    assert "position_mode" not in live_order.API_ADAPTER_CALLS
+    assert "position_mode" not in live_order_stores.API_ADAPTER_CALLS
     assert "select_live_api_breaker" not in Path(vc.__file__).read_text(encoding="utf-8")
 
 

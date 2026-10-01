@@ -43,8 +43,7 @@ from .features import latest_feature_row
 # read as `cycle.<name>` are re-exported, as the same objects (refactor plan PR-16 removed the rest);
 # the scheduler's factory dispatches reach `attach_mining_legs` that way.
 from .feed_assembly import (  # noqa: F401
-    HTF_DEGRADED, OPTIONAL_DATA_DEGRADED_CODES, OPTIONAL_FEED_MAX_AGE_HOURS, OPTIONAL_LEG_COLUMNS,
-    _FUNDING_RECORDS, _LIQUIDATION_DAYS, attach_cross_section, attach_feeds, attach_htf,
+    OPTIONAL_DATA_DEGRADED_CODES, attach_cross_section, attach_feeds, attach_htf,
     attach_mining_legs, attach_positioning, attach_reference, optional_data_health,
 )
 # The retention stores' cohort sweeps are `cohort_retention`'s (market) since crypto PR7e-6. The fan-out
@@ -63,18 +62,10 @@ from .guards import (
     run_data_health_check,
     run_risk_guard,
 )
-# The optional legs' degrade codes are judged in `feed_assembly` now; they stay imported here because
-# readers name them as `cycle.<code>` beside `cycle.optional_data_health`.
+# The optional legs' degrade codes are judged in `feed_assembly` now, and since refactor plan PR-16 their
+# readers take them from `market_data`. What is imported here is what the cycle and its callers still read.
 from .market_data import (  # noqa: F401
-    CROSS_SECTION_DEGRADED,
-    FUNDING_DEGRADED,
-    INDEX_PRICE_DEGRADED,
-    LIQUIDATION_DEGRADED,
-    MARK_PRICE_DEGRADED,
-    OPEN_INTEREST_DEGRADED,
-    PREMIUM_INDEX_DEGRADED,
     MARKET_DATA_DEGRADED,
-    REFERENCE_DEGRADED,
     TIMEFRAMES,
     MarketDataCollector,
     PeerCandleCache,

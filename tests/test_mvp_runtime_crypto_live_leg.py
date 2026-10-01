@@ -1452,11 +1452,11 @@ def test_a_claim_that_cannot_be_given_back_is_reported_never_raised(error):
 
 def test_the_real_marks_give_the_symbol_back_and_the_book_refuses_the_next_entry(tmp_path, monkeypatch):
     from runtime.mvp_runtime.crypto.live_order import (
-        LIVE_ENTRY_SYMBOL_OCCUPIED,
         read_live_entry_marks,
         select_live_entry_marks,
         select_live_order_counter,
     )
+    from runtime.mvp_runtime.crypto.live_order_stores import LIVE_ENTRY_SYMBOL_OCCUPIED
     from runtime.mvp_runtime.crypto.live_position import select_live_position_store
 
     monkeypatch.setenv("MVP_LIVE_TRADING", "real")
@@ -1752,8 +1752,8 @@ def test_the_claim_is_told_what_the_guard_judged_and_the_cap_the_gate_judged():
 
 
 def test_a_decision_that_does_not_say_what_it_judged_costs_nothing_on_the_real_marks(tmp_path, monkeypatch):
-    from runtime.mvp_runtime.crypto.live_order import LIVE_ENTRY_CLAIM_MALFORMED, read_live_entry_marks, \
-        select_live_entry_marks
+    from runtime.mvp_runtime.crypto.live_order import read_live_entry_marks, select_live_entry_marks
+    from runtime.mvp_runtime.crypto.live_order_stores import LIVE_ENTRY_CLAIM_MALFORMED
 
     monkeypatch.setenv("MVP_LIVE_TRADING", "real")
     counter, adapter = FakeCounter(), FakeAdapter()

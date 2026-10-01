@@ -14,7 +14,7 @@ import json
 
 import pytest
 
-from runtime.mvp_runtime.crypto import live_budget, live_order, live_pnl, live_position
+from runtime.mvp_runtime.crypto import live_budget, live_order, live_order_stores, live_pnl, live_position
 from runtime.mvp_runtime.crypto.state import (
     VENUE_MAINNET,
     VENUE_TESTNET,
@@ -26,11 +26,11 @@ from runtime.mvp_runtime.errors import ToolError
 
 # Every path a live order's state reaches, with the helper that resolves it.
 _PATHS = {
-    "counter": lambda root, venue: venue_state_dir(root, venue=venue) / live_order.COUNTER_FILENAME,
+    "counter": lambda root, venue: venue_state_dir(root, venue=venue) / live_order_stores.COUNTER_FILENAME,
     "positions": lambda root, venue: live_position.live_positions_dir(root, venue=venue),
     "position_file": lambda root, venue: live_position.live_position_path("BTCUSDT", root, venue=venue),
     "outcomes": lambda root, venue: venue_state_dir(root, venue=venue) / live_pnl.LIVE_OUTCOMES_FILENAME,
-    "breaker": lambda root, venue: venue_state_dir(root, venue=venue) / live_order.BRACKET_BREAKER_FILENAME,
+    "breaker": lambda root, venue: venue_state_dir(root, venue=venue) / live_order_stores.BRACKET_BREAKER_FILENAME,
     "budget": lambda root, venue: live_budget.budget_path(root, venue=venue),
 }
 
@@ -79,7 +79,7 @@ def test_the_default_is_mainnet_everywhere_so_an_existing_caller_moves_nothing()
     defaults = {
         "count_today": inspect.signature(live_order.count_today).parameters["venue"],
         "read_live_entry_marks": inspect.signature(live_order.read_live_entry_marks).parameters["venue"],
-        "read_bracket_failures": inspect.signature(live_order.read_bracket_failures).parameters["venue"],
+        "read_bracket_failures": inspect.signature(live_order_stores.read_bracket_failures).parameters["venue"],
         "live_positions_dir": inspect.signature(live_position.live_positions_dir).parameters["venue"],
         "live_position_path": inspect.signature(live_position.live_position_path).parameters["venue"],
         "load_open_live_position": inspect.signature(live_position.load_open_live_position).parameters["venue"],
@@ -129,13 +129,13 @@ def test_two_venues_keep_their_own_books_and_breakers(tmp_path, monkeypatch):
                                     at=f"2026-09-16T00:0{i}:00Z")
     breaker = live_order.LiveBracketFailureBreaker(root=tmp_path, authorization=auth, venue=VENUE_TESTNET)
     breaker.record_failure(symbol="BTCUSDT", status="REJECTED", reason_codes=["X"], at="2026-09-16T00:10:00Z")
-    assert live_order.read_bracket_failures(tmp_path)["consecutive"] == 2, "the live streak moved"
-    assert live_order.read_bracket_failures(tmp_path, venue=VENUE_TESTNET)["consecutive"] == 1
+    assert live_order_stores.read_bracket_failures(tmp_path)["consecutive"] == 2, "the live streak moved"
+    assert live_order_stores.read_bracket_failures(tmp_path, venue=VENUE_TESTNET)["consecutive"] == 1
     assert live_order.bracket_breaker_status(tmp_path, venue=VENUE_TESTNET)["consecutive"] == 1
     # And the other way: a second live failure counts 3, not 1.
     live_breaker.record_failure(symbol="BTCUSDT", status="REJECTED", reason_codes=["X"],
                                 at="2026-09-16T00:20:00Z")
-    assert live_order.read_bracket_failures(tmp_path)["consecutive"] == 3
+    assert live_order_stores.read_bracket_failures(tmp_path)["consecutive"] == 3
 
 
 def test_two_venues_keep_their_own_outcome_ledgers(tmp_path, monkeypatch):

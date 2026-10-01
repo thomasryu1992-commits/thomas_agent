@@ -26,6 +26,6 @@ def test_every_name_of_the_generators_that_factory_offers_is_the_same_object():
             "cohort_probe_stop_ceiling", "_rotation_offset"} <= set(names), (
         "the scan lost the generator's own names: it broke, not the module")
     offered = [n for n in names if n in vars(factory)]
-    assert {"generate_batch", "mutate_params"} <= set(offered)
+    assert {"generate_batch"} <= set(offered)
     different = sorted(n for n in offered if getattr(factory, n) is not getattr(generator, n))
     assert different == [], f"factory holds a different object for: {different}"

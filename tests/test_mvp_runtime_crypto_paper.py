@@ -13,7 +13,7 @@ from tests._helpers import make_gate_authorization
 
 from runtime.mvp_runtime import control, safety_gate
 from runtime.mvp_runtime.control import ControlState, ControlStore
-from runtime.mvp_runtime.crypto import paper, pool as pool_mod
+from runtime.mvp_runtime.crypto import paper, pool as pool_mod, trade_plan
 from runtime.mvp_runtime.crypto.guards import run_risk_guard
 from runtime.mvp_runtime.crypto.paper import (
     BLOCK_DIRECTION_CONFLICT,
@@ -1236,20 +1236,20 @@ def test_intrabar_ambiguous_only_when_both_levels_are_touched():
 def test_resolve_intrabar_exit_returns_whichever_came_first():
     tp_first = [_fine("2026-07-23T00:01:00Z", 109.5, 105.0), _fine("2026-07-23T00:02:00Z", 106.0, 101.0)]
     sl_first = [_fine("2026-07-23T00:01:00Z", 106.0, 101.5), _fine("2026-07-23T00:02:00Z", 110.0, 105.0)]
-    assert paper.resolve_intrabar_exit(_position(), tp_first) == "take_profit"
-    assert paper.resolve_intrabar_exit(_position(), sl_first) == "stop_loss"
+    assert trade_plan.resolve_intrabar_exit(_position(), tp_first) == "take_profit"
+    assert trade_plan.resolve_intrabar_exit(_position(), sl_first) == "stop_loss"
 
 
 def test_resolve_intrabar_exit_orders_by_time_not_by_argument_order():
     # Same two bars, reversed: the TIME order decides, not the sequence handed in.
     later_first = [_fine("2026-07-23T00:02:00Z", 106.0, 101.0), _fine("2026-07-23T00:01:00Z", 109.5, 105.0)]
-    assert paper.resolve_intrabar_exit(_position(), later_first) == "take_profit"
+    assert trade_plan.resolve_intrabar_exit(_position(), later_first) == "take_profit"
 
 
 def test_resolve_intrabar_exit_is_none_when_nothing_is_touched():
     # A gap or a too-short window must read as UNRESOLVED, never as a resolution.
-    assert paper.resolve_intrabar_exit(_position(), [_fine("2026-07-23T00:01:00Z", 106.0, 104.0)]) is None
-    assert paper.resolve_intrabar_exit(_position(), []) is None
+    assert trade_plan.resolve_intrabar_exit(_position(), [_fine("2026-07-23T00:01:00Z", 106.0, 104.0)]) is None
+    assert trade_plan.resolve_intrabar_exit(_position(), []) is None
 
 
 def test_settle_uses_observed_order_over_the_pessimistic_assumption():

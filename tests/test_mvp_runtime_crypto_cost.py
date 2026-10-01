@@ -326,7 +326,7 @@ def _events(pairs) -> list[dict]:
 def test_a_bar_sums_every_settlement_inside_it():
     """Three 8h settlements land in one 1d bar. Carrying the LAST one forward — the feature
     rule — would charge a third of the day."""
-    from runtime.mvp_runtime.crypto.factory import funding_charges_per_bar
+    from runtime.mvp_runtime.crypto.backtest import funding_charges_per_bar
 
     charges, source = funding_charges_per_bar(
         _bars(["2026-07-01T00:00:00Z", "2026-07-02T00:00:00Z"]),
@@ -342,7 +342,7 @@ def test_a_bar_sums_every_settlement_inside_it():
 def test_a_settlement_at_a_bar_open_belongs_to_that_bar():
     """Half-open bars, so `charges[entry+1:exit+1]` bills exactly the intervals a position
     opened at bar `entry`'s CLOSE actually sat through — no double count at a boundary."""
-    from runtime.mvp_runtime.crypto.factory import funding_charges_per_bar
+    from runtime.mvp_runtime.crypto.backtest import funding_charges_per_bar
 
     # The leading event only puts bar 0 inside the series' coverage, so this stays a test about
     # the boundary rather than about the partial-coverage fallback below.
@@ -364,7 +364,7 @@ def test_bars_before_the_series_starts_are_charged_the_modelled_rate():
 
     Same number the empty-series case charges, and the label says the difference: a partial
     series measured part of the window and is silent about the rest."""
-    from runtime.mvp_runtime.crypto.factory import funding_charges_per_bar
+    from runtime.mvp_runtime.crypto.backtest import funding_charges_per_bar
 
     charges, source = funding_charges_per_bar(
         _bars(["2026-07-01T00:00:00Z", "2026-07-02T00:00:00Z", "2026-07-03T00:00:00Z"]),
@@ -386,7 +386,7 @@ def test_a_fully_covered_series_is_not_labelled_partial():
     """The label has to be able to say no, or it says nothing. Today's 500-day window sits
     inside the ~533 days `DEFAULT_FUNDING_RECORDS` buys, so every candidate minted now must
     still read `venue_history` — this guard is latent until the window is deepened."""
-    from runtime.mvp_runtime.crypto.factory import funding_charges_per_bar
+    from runtime.mvp_runtime.crypto.backtest import funding_charges_per_bar
 
     _, source = funding_charges_per_bar(
         _bars(["2026-07-02T00:00:00Z", "2026-07-03T00:00:00Z"]),
@@ -399,7 +399,7 @@ def test_a_fully_covered_series_is_not_labelled_partial():
 def test_a_missing_series_falls_back_to_the_base_rate_not_to_zero():
     """The direction that matters. A missing series means UNMEASURED, and charging nothing for
     it is exactly the omission this whole change closes."""
-    from runtime.mvp_runtime.crypto.factory import funding_charges_per_bar
+    from runtime.mvp_runtime.crypto.backtest import funding_charges_per_bar
 
     charges, source = funding_charges_per_bar(
         _bars(["2026-07-01T00:00:00Z", "2026-07-02T00:00:00Z"]), None,
@@ -414,7 +414,7 @@ def test_a_missing_series_falls_back_to_the_base_rate_not_to_zero():
 def test_the_fallback_prices_a_fast_timeframe_as_a_fraction_of_an_interval():
     """A 15m bar sits through 1/32 of an 8h interval. Charging a whole one per bar would price
     a scalper like a swing trader — and 15m is the deepest factory window (48k bars)."""
-    from runtime.mvp_runtime.crypto.factory import funding_charges_per_bar
+    from runtime.mvp_runtime.crypto.backtest import funding_charges_per_bar
 
     fast, _ = funding_charges_per_bar(_bars(["2026-07-01T00:00:00Z"]), [],
                                       timeframe="15m", cost=CostModel())
