@@ -553,6 +553,102 @@ def test_reach_follows_a_chain_through_a_function_local_import(tmp_path):
     assert "other" not in reached
 
 
+# --- the research layers open no trading gate (refactor plan §M-2e) ------------------------------------
+#
+# Strategy and decision modules generate, judge and choose strategies, and open paper positions. The
+# layer order already keeps them from importing the modules that send. It does not keep them from
+# opening the trading switch themselves: `vocabulary` (foundation) holds the live switch's names, and
+# `safety_gate.select_env_gated` will build whatever factory it is handed once the switch is set. This
+# rule closes that. No research module names a trading switch (live or signed testnet), its value, its
+# flags or its provider, or calls a selector that builds on one. The paper store's own switch
+# (`MVP_PAPER_TRADING`, in `paper`) is not a trading switch and is not affected.
+RESEARCH_LAYERS = frozenset({"strategy", "decision"})
+TRADING_SWITCH_NAMES = frozenset({
+    "LIVE_TRADING_ENV", "REAL_LIVE_TRADING", "LIVE_TRADING_FLAGS", "LIVE_TRADING_PROVIDER_ID",
+    "TESTNET_TRADING_ENV", "REAL_TESTNET_TRADING", "TESTNET_TRADING_FLAGS", "TESTNET_PROVIDER_ID",
+})
+
+
+def _trading_selectors(root: Path = CRYPTO) -> frozenset[str]:
+    """The lane's functions that select on a trading switch: each calls ``select_env_gated`` (or a
+    variant) and names one of the switches."""
+    found = set()
+    for path in root.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+                names |= {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
+                if any(n.startswith("select_env_gated") for n in names) and names & TRADING_SWITCH_NAMES:
+                    found.add(node.name)
+    return frozenset(found)
+
+
+def _trading_switch_uses(root: Path = CRYPTO, layer=None) -> dict[str, list[str]]:
+    """``{module: [what it names]}`` for every research module that names a trading switch, its value or
+    a trading selector, at module level or inside a function."""
+    from runtime.mvp_runtime.crypto import testnet_execution, vocabulary
+
+    layer = LAYER if layer is None else layer
+    forbidden = TRADING_SWITCH_NAMES | _trading_selectors(root)
+    values = {vocabulary.LIVE_TRADING_ENV, testnet_execution.TESTNET_TRADING_ENV}
+    uses: dict[str, list[str]] = {}
+    for path in sorted(root.rglob("*.py")):
+        module = path.stem if path.parent == root else ".".join(path.relative_to(root).with_suffix("").parts)
+        if layer.get(module) not in RESEARCH_LAYERS:
+            continue
+        hits = set()
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Name) and node.id in forbidden:
+                hits.add(node.id)
+            elif isinstance(node, ast.Attribute) and node.attr in forbidden:
+                hits.add(node.attr)
+            elif isinstance(node, ast.alias) and node.name in forbidden:
+                hits.add(node.name)
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value in values:
+                hits.add(repr(node.value))
+        if hits:
+            uses[module] = sorted(hits)
+    return uses
+
+
+def test_no_research_module_opens_a_trading_switch():
+    assert _trading_switch_uses() == {}, (
+        "a strategy or decision module names a trading switch or a selector built on one. Research "
+        "decides what to trade on paper; what is sent is decided above it, behind the switch.")
+
+
+def test_the_trading_selectors_are_the_ones_the_lane_has():
+    """The derived set is what the rule forbids, so a scan that found nothing would forbid nothing."""
+    selectors = _trading_selectors()
+    assert {"select_order_adapter", "select_venue_reader", "select_testnet_order_adapter",
+            "select_live_order_counter", "select_live_position_store", "select_live_ledger"} <= selectors
+    assert "select_paper_store" not in selectors, "the paper store's switch is not a trading switch"
+
+
+def test_the_trading_switch_scan_sees_every_form(tmp_path):
+    """A synthetic lane: one research module per way of reaching a switch, a research module on the
+    paper switch, and an execution module that may name the switch."""
+    files = {
+        "gate.py": ("from runtime.mvp_runtime import safety_gate\nLIVE_TRADING_ENV = 'MVP_LIVE_TRADING'\n"
+                    "def select_thing():\n    return safety_gate.select_env_gated(env_var=LIVE_TRADING_ENV)\n"),
+        "by_name.py": "from .vocabulary import LIVE_TRADING_ENV\n",
+        "by_attr.py": "def f():\n    from . import vocabulary\n    return vocabulary.REAL_LIVE_TRADING\n",
+        "by_value.py": "import os\nX = os.environ.get('MVP_TESTNET_TRADING')\n",
+        "by_selector.py": "def f():\n    from .gate import select_thing\n    return select_thing()\n",
+        "on_paper.py": ("from runtime.mvp_runtime import safety_gate\nPAPER_ENV = 'MVP_PAPER_TRADING'\n"
+                        "def select_paper():\n    return safety_gate.select_env_gated(env_var=PAPER_ENV)\n"),
+    }
+    for rel, text in files.items():
+        (tmp_path / rel).write_text(text, encoding="utf-8")
+    layer = {"gate": "execution", "by_name": "strategy", "by_attr": "decision", "by_value": "strategy",
+             "by_selector": "decision", "on_paper": "decision"}
+    assert _trading_selectors(tmp_path) == {"select_thing"}
+    assert _trading_switch_uses(tmp_path, layer) == {
+        "by_name": ["LIVE_TRADING_ENV"], "by_attr": ["REAL_LIVE_TRADING"],
+        "by_value": ["'MVP_TESTNET_TRADING'"], "by_selector": ["select_thing"],
+    }
+
+
 def test_the_names_pr04_moved_are_the_same_objects_where_they_were():
     """Refactor plan PR-04 moved names out of the sending modules and left them re-exported there, so
     every importer and every patch on the old module keeps working. A copy instead of a re-export would
