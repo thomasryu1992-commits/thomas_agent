@@ -42,7 +42,9 @@ from . import (
 # edge is real — the holdout gate draws the same interval over a candidate's unseen tail that
 # this board draws over settled paper outcomes. Restating 1.96 here is how the two drift.
 from .judgement_fingerprint import judgement_fingerprint
+from .market_data import TIMEFRAMES
 from .robustness import CONFIDENCE_Z
+from .strategy import ALLOWED_TIMEFRAMES
 
 
 def _read_cycle_records(root: Path, limit: int) -> tuple[list[dict[str, Any]], str | None]:
@@ -550,8 +552,12 @@ _GATE_UNDECIDED = "판단 불가"
 # (The grant-expiry warning lived here until 2026-08-10 — grants retired, nothing expires.)
 
 
-# Timeframes shortest first on the funnel line; anything else after them, by name.
-_TIMEFRAME_ORDER = {"15m": 0, "1h": 1, "4h": 2, "1d": 3}
+# Timeframes shortest first on the funnel line; anything else after them, by name. Derived from the
+# authorable vocabulary and each timeframe's length (refactor plan §K), so a timeframe made authorable
+# there is ordered here without a second list to keep in step.
+_TIMEFRAME_ORDER = {
+    tf: rank for rank, tf in enumerate(sorted(ALLOWED_TIMEFRAMES, key=lambda tf: TIMEFRAMES[tf]))
+}
 
 
 # The maturity a forward-cohort leader carries on the board (2026-09-23). CONTRADICTED is absent on

@@ -397,6 +397,26 @@ def test_every_authorable_timeframe_gets_its_full_depth():
         assert bars * TIMEFRAMES[timeframe] // 1440 >= FACTORY_DEPTH_DAYS
 
 
+def test_the_positioning_periods_agree_with_the_timeframe_lengths():
+    """Refactor plan §K: ``POSITIONING_PERIOD_SECONDS`` is the vendor's period table, wider than
+    ``TIMEFRAMES`` (30m, 2h, 6h, 12h), so it is not derived from it. Where the two name the same
+    timeframe they must say the same length."""
+    from runtime.mvp_runtime.crypto.market_data import POSITIONING_PERIOD_SECONDS
+
+    shared = set(POSITIONING_PERIOD_SECONDS) & set(TIMEFRAMES)
+    assert {"15m", "1h", "4h", "1d"} <= shared
+    assert {tf: POSITIONING_PERIOD_SECONDS[tf] for tf in shared} == {tf: TIMEFRAMES[tf] * 60 for tf in shared}
+
+
+def test_the_board_orders_the_authorable_timeframes_by_length():
+    """Refactor plan §K: the board's order is derived, not a second list. A timeframe made authorable
+    takes its place by length; the four today keep the order the board always had."""
+    from runtime.mvp_runtime.crypto import dashboard
+
+    assert dashboard._TIMEFRAME_ORDER == {"15m": 0, "1h": 1, "4h": 2, "1d": 3}
+    assert set(dashboard._TIMEFRAME_ORDER) == ALLOWED_TIMEFRAMES
+
+
 def test_factory_candle_target_rejects_unknown_timeframe():
     with pytest.raises(ToolBlocked) as exc:
         factory_candle_target("7m")
