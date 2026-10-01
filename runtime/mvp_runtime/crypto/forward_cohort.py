@@ -15,7 +15,8 @@ clock without a slot.
 - **Mechanical membership** (:func:`eligible_members`): the promotion door's own sets and bar —
   ``PROMOTABLE_DERIVATION_TYPES``, the promotable cost-basis and depth ranks,
   ``assert_observation_entry_bar`` — one member per ``(family, symbol scope, timeframe)`` in
-  ``rank_candidates`` order; a rule the pool already routes is excluded (it has a clock), and so
+  ``rank_candidates`` order, and since 2026-10-01 one per key across every open cohort
+  (:data:`COHORT_LIFETIME_DAYS`); a rule the pool already routes is excluded (it has a clock), and so
   is a lineage an earlier cohort holds or one the pool's forward book has ever settled a row for
   (its pool clock and a cohort clock would cover the same bars, and option A counts only one). Nothing is chosen by hand and nothing reads an outcome.
 - **A walker with its own store** (:func:`run_cohort_walk`): each member-context advances bar
@@ -94,8 +95,17 @@ from .vocabulary import OCCUPYING_STATUSES
 
 FORWARD_COHORT_VERSION = "forward_cohort.v1"
 # The membership rule's name, stamped into every record with the thresholds it read, so a
-# cohort frozen under one bar is never read as frozen under a later one.
-ELIGIBILITY_VERSION = "observation_entry_bar.v1"
+# cohort frozen under one bar is never read as frozen under a later one. v2 (2026-10-01): the
+# one-member-per-lineage rule holds across every OPEN cohort, not only within one freeze.
+ELIGIBILITY_VERSION = "observation_entry_bar.v2"
+# How long a frozen cohort stays open: it is judged once and closed at its freeze plus this many
+# days (Thomas 2026-10-01, `FORWARD_COHORT_EXPANSION_V0.1.md` N4). Until then it HOLDS its members'
+# lineage keys, and a later freeze admits no sibling on them (`FORWARD_COHORT_SIBLING_RULE_V0.1.md`
+# S1 A, S2). Measured the day it was decided: 53 of cohort 2's 82 members shared a key with a
+# cohort 1 member and a median 55% of its forward entries (13% for other same-context pairs), and
+# three re-tested a key cohort 1 had already refuted. Key occupancy reads no outcome, so it closes
+# that retry path without making membership depend on the forward record.
+COHORT_LIFETIME_DAYS = 180
 COHORTS_FILENAME = "forward_cohorts.jsonl"
 POSITIONS_FILENAME = "forward_cohort_positions.json"
 OUTCOMES_FILENAME = "forward_cohort_outcomes.jsonl"
@@ -184,11 +194,32 @@ def member_candidate_ids(root: Path | None = None) -> frozenset[str]:
     )
 
 
+def open_cohort_lineages(cohorts: Iterable[Mapping[str, Any]], *, now: str) -> frozenset[tuple[Any, ...]]:
+    """The lineage keys (``promotion_backlog._lineage_key``) every cohort still open at ``now`` holds.
+
+    Open means frozen less than :data:`COHORT_LIFETIME_DAYS` ago. A cohort whose freeze time does
+    not parse is read as open: a key this cannot release on evidence stays held, the refusing
+    direction. Pure."""
+    cutoff = timeutil.parse_iso(now) - timedelta(days=COHORT_LIFETIME_DAYS)
+    held: set[tuple[Any, ...]] = set()
+    for cohort in cohorts:
+        try:
+            frozen = timeutil.parse_iso(str(cohort.get("frozen_at_utc") or ""))
+        except (ValueError, TypeError):
+            frozen = None
+        if frozen is not None and frozen <= cutoff:
+            continue
+        for member in cohort.get("members") or []:
+            held.add(_lineage_key(member))
+    return frozenset(held)
+
+
 def eligible_members(
     candidates: Sequence[Mapping[str, Any]],
     pool: Mapping[str, Any],
     *,
     exclude_candidate_ids: frozenset[str] = frozenset(),
+    exclude_lineages: frozenset[tuple[Any, ...]] = frozenset(),
 ) -> list[dict[str, Any]]:
     """The lineages a cohort frozen now would hold, in ``rank_candidates`` order. Pure.
 
@@ -197,6 +228,8 @@ def eligible_members(
     derivation allowlist, the cost-basis and depth ranks, then the OBSERVATION entry bar. A rule
     an occupying pool entry routes is out — it already has a clock — and so is a candidate id an
     earlier cohort holds. A row that cannot say when it was made cannot start a clock and is out.
+    A lineage key in ``exclude_lineages`` is out as well: :func:`freeze_cohort` passes the keys the
+    open cohorts hold (:func:`open_cohort_lineages`), so one key has one open cohort member.
     """
     occupying_hashes = {
         entry.get("strategy_rule_hash") for entry in (pool.get("active_strategies") or [])
@@ -225,7 +258,7 @@ def eligible_members(
         if selection_cutoff(record) is None:
             continue
         lineage = _lineage_key(spec)
-        if lineage in seen_lineages:
+        if lineage in seen_lineages or lineage in exclude_lineages:
             continue
         seen_lineages.add(lineage)
         members.append({
@@ -259,7 +292,8 @@ def build_cohort_record(members: Sequence[Mapping[str, Any]], *, now: str) -> di
             "promotable_derivation_types": sorted(PROMOTABLE_DERIVATION_TYPES),
             "promotable_cost_basis_ranks": sorted(PROMOTABLE_COST_BASIS_RANKS),
             "promotable_evidence_depth_ranks": sorted(PROMOTABLE_EVIDENCE_DEPTH_RANKS),
-            "one_member_per": "strategy_family + symbol_scope + timeframe",
+            "one_member_per": "strategy_family + symbol_scope + timeframe, across every open cohort",
+            "cohort_lifetime_days": COHORT_LIFETIME_DAYS,
         },
         # The judgement rules this cohort was frozen under, values included, so a reader after a
         # threshold change can still judge it by them (RESEARCH_EPOCH_V0.1, decided 2026-09-24).
@@ -279,13 +313,19 @@ def freeze_cohort(root: Path | None = None, *, now: str, apply: bool = False) ->
     book ever settled a row for is left out: were it re-promoted off its cohort record, its old
     pool rows would cover bars the cohort period also covered, and the arming door reads them. An
     empty cohort is refused on apply (``FORWARD_COHORT_EMPTY``): a record with no members would
-    be a K of zero that nothing can be judged against."""
+    be a K of zero that nothing can be judged against. A lineage key an open cohort holds is left
+    out too (:data:`COHORT_LIFETIME_DAYS`), so a freeze with only siblings on offer is empty."""
     pool_clocked = frozenset(
         str(row["candidate_id"]) for row in forward_book.read_forward_outcomes(root)
         if row.get("candidate_id"))
+    cohorts = read_cohorts(root)
+    held_ids = frozenset(
+        str(member["candidate_id"])
+        for cohort in cohorts for member in cohort.get("members") or [] if member.get("candidate_id"))
     members = eligible_members(
         read_candidates(root), load_active_pool(root),
-        exclude_candidate_ids=member_candidate_ids(root) | pool_clocked,
+        exclude_candidate_ids=held_ids | pool_clocked,
+        exclude_lineages=open_cohort_lineages(cohorts, now=now),
     )
     record = build_cohort_record(members, now=now)
     if apply:
@@ -813,6 +853,32 @@ def maturity_of(member: Mapping[str, Any]) -> str:
     return MATURITY_MATURE if int(member.get("priceable_count") or 0) >= floor else MATURITY_EXPLORATORY
 
 
+def sibling_of(cohorts: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """``{member candidate id: the earlier cohort's member on the same lineage key}``. Pure.
+
+    For cohorts frozen before the key was held across cohorts (``observation_entry_bar.v1``), which
+    admitted a sibling of an earlier member on the same (family, symbol scope, timeframe). Sealed
+    records cannot drop them, so they are walked and judged as frozen and MARKED, at read time
+    (`FORWARD_COHORT_SIBLING_RULE_V0.1.md` S1 B). Display only: nothing here enters a judgement, and
+    a reader pooling evidence by key should count a marked member with the one it names."""
+    first: dict[tuple[Any, ...], str] = {}
+    marked: dict[str, str] = {}
+    for cohort in cohorts:
+        here: dict[tuple[Any, ...], str] = {}
+        for member in cohort.get("members") or []:
+            cid = str(member.get("candidate_id") or "")
+            if not cid:
+                continue
+            key = _lineage_key(member)
+            if key in first:
+                marked[cid] = first[key]
+            else:
+                here.setdefault(key, cid)
+        for key, cid in here.items():
+            first.setdefault(key, cid)
+    return marked
+
+
 def cohort_report(root: Path | None = None) -> list[dict[str, Any]]:
     """Per cohort, each member's forward numbers over the cohort's own rows. Reads only.
 
@@ -828,7 +894,9 @@ def cohort_report(root: Path | None = None) -> list[dict[str, Any]]:
     rows = read_cohort_outcomes(root)
     # Two passes: the floor pools every member's trades, so it exists only once all are priced.
     priced: list[tuple[Mapping[str, Any], list[tuple[Mapping[str, Any], Any, list[float]]]]] = []
-    for cohort in read_cohorts(root):
+    cohorts = read_cohorts(root)
+    siblings = sibling_of(cohorts)
+    for cohort in cohorts:
         members = []
         for member in cohort.get("members") or []:
             record = latest.get(str(member.get("candidate_id")))
@@ -854,6 +922,7 @@ def cohort_report(root: Path | None = None) -> list[dict[str, Any]]:
                 **trade_bounds(nets, spread_floor=floor),
                 "trade_spread_floor_r": floor,
                 "trade_floor": min_forward_trades(member.get("timeframe")),
+                "sibling_of": siblings.get(str(member.get("candidate_id"))),
             }
             line["maturity"] = maturity_of(line)
             lines.append(line)
@@ -910,6 +979,7 @@ def board_summary(root: Path | None = None) -> dict[str, Any] | None:
         "at_floor": sum(1 for m in members
                         if (m.get("priceable_count") or 0) >= min_forward_trades(m.get("timeframe"))),
         "status_counts": dict(sorted(status_counts.items())),
+        "siblings": sum(1 for m in members if m.get("sibling_of")),
         "maturity_counts": {maturity: n for maturity in MATURITIES
                             if (n := sum(1 for m in members if (m.get("maturity") or maturity_of(m)) == maturity))},
         "leaders": [{**{k: m.get(k) for k in ("candidate_id", "timeframe", "priceable_count",

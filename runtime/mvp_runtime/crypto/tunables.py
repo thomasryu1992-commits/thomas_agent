@@ -53,6 +53,7 @@ from . import (
     feed_assembly,
     feedback,
     forward_book,
+    forward_cohort,
     forward_confirmation,
     generator,
     guards,
@@ -217,6 +218,11 @@ TUNABLES: tuple[Tunable, ...] = (
             "-1111 tick-residue mode, which is deterministic and which a limit of 2 latched on "
             "before its own error_detail could be read",
             "naked round trips ceasing to be cheap, or a bracket failure this runtime has not seen"),
+    Tunable("COHORT_LIFETIME_DAYS", forward_cohort.COHORT_LIFETIME_DAYS, "crypto/forward_cohort.py", OPERATOR,
+            "Thomas 2026-10-01 (FORWARD_COHORT_EXPANSION N4, SIBLING_RULE S2): a cohort is judged once "
+            "and closed at freeze + 180 days, and holds its lineage keys against later freezes until then",
+            "Decision 2 B re-asked at cohort 1's close (2027-03-22), or the 1h walk cap (~200 days) "
+            "binding before a member reaches its trade floor"),
     Tunable("PROTECTION_UNKNOWN_NOTIFY_MINUTES", protection_watch.PROTECTION_UNKNOWN_NOTIFY_MINUTES,
             "crypto/protection_watch.py", OPERATOR,
             "Thomas 2026-09-30 (PROTECTION_UNKNOWN_ESCALATION D1): two 15-minute passes, so a single "

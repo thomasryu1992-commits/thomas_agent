@@ -942,6 +942,9 @@ def render_status_text(status: dict[str, Any]) -> str:
         maturity = cohort.get("maturity_counts") or {}
         lines.append(
             f"       forward 코호트 {cohort['members']}계보 · 기록 {cohort.get('with_rows')} · "
+            # Siblings an earlier cohort's member already asks the same key for (sealed before the
+            # cross-cohort rule; marked, never dropped). Silent at zero.
+            + (f"형제 {cohort['siblings']} · " if cohort.get("siblings") else "")
             + " · ".join(f"{_COHORT_MATURITY_WORDS[m]} {maturity.get(m, 0)}"
                          for m in ("EXPLORATORY", "MATURE", "CONFIRMED", "CONTRADICTED"))
             + f" (선별 전용, 마지막 워크 {_stamp(cohort.get('last_walk_utc')) or '없음'})"
