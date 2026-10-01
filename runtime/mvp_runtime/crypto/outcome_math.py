@@ -6,11 +6,15 @@ backtest (strategy) read them, and both lived in `feedback`, the report module a
 readers. This is strategy-layer work by what it does: pure maths over the cost model, used to score
 strategies (the factory backtest, the lifecycle ladder, forward confirmation), and below the guards
 (risk) that also read it. `feedback` re-exports both as the same functions.
+
+`consecutive_losses` is the one streak rule the pool-wide breaker (`guards`) and the per-lineage live
+allowance (`live_allowance`) both count by (refactor plan §K-1). What each counts over, and how it reads
+a row's R, stays the caller's.
 """
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from ..coerce import as_float as _f
 from .cost import FUNDING_INTERVALS_PER_DAY, CostModel, funding_cost_r, outcome_net_r
@@ -94,6 +98,29 @@ def _funding_intervals(outcome: Mapping[str, Any], *, intervals_per_day: int = F
     if bars <= 0 or not minutes:
         return 0.0
     return (bars * minutes / 1440.0) * intervals_per_day
+
+
+def consecutive_losses(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    r_of: Callable[[Mapping[str, Any]], float],
+    skip: Callable[[Mapping[str, Any]], Any] | None = None,
+) -> int:
+    """The losing streak at the end of ``rows`` (oldest first): newest first, each row whose R is
+    below zero adds one, and the first that is not ends it. A row ``skip`` names is passed over in
+    both directions: it neither adds to the streak nor ends it.
+
+    ``r_of`` reads a row's R and is the caller's: what a missing or malformed R means differs between
+    them, and it stays theirs. A value that is not below zero, NaN included, ends the streak."""
+    count = 0
+    for row in reversed(list(rows)):
+        if skip is not None and skip(row):
+            continue
+        if r_of(row) < 0:
+            count += 1
+        else:
+            break
+    return count
 
 
 def net_result_r(

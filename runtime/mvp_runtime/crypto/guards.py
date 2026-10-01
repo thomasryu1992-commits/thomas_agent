@@ -328,16 +328,14 @@ def _consecutive_losses(rows: list[dict[str, Any]]) -> int:
     that happens to close positive (a timeout exit at market above entry) must not RESET a
     real strategy streak. Probes stay fully counted where money is money — the daily and
     weekly sums and the drawdown read every closed row, probe or not.
+
+    The streak rule is `outcome_math.consecutive_losses`, shared with the live allowance (refactor
+    plan §K-1). What is this breaker's own: probes skipped, and R read as the row's ``pnl_r`` (net R,
+    `_judged_r`), where a missing or non-numeric value raises rather than ending the streak.
     """
-    count = 0
-    for row in reversed(rows):
-        if row.get("is_probe"):
-            continue
-        if row["pnl_r"] < 0:
-            count += 1
-        else:
-            break
-    return count
+    return outcome_math.consecutive_losses(
+        rows, r_of=lambda row: row["pnl_r"], skip=lambda row: row.get("is_probe"),
+    )
 
 
 def _drawdowns_r(rows: list[dict[str, Any]]) -> tuple[float, float]:

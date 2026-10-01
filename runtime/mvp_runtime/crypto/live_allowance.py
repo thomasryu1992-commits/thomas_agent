@@ -35,6 +35,7 @@ from typing import Any, Mapping, Sequence
 from ..coerce import as_optional_float as _f
 from .candidate_identity import predecessor_keys
 from .lifecycle import outcome_attribution_key
+from .outcome_math import consecutive_losses
 
 LIVE_ALLOWANCE_VERSION = "live_allowance.v0.1"
 
@@ -57,19 +58,18 @@ BREACH_CUMULATIVE_R = "LIVE_ALLOWANCE_CUMULATIVE_R"
 BREACH_HISTORY_UNREADABLE = "LIVE_ALLOWANCE_HISTORY_UNREADABLE"
 
 
-def _consecutive_losses(rows: Sequence[Mapping[str, Any]]) -> int:
-    """Newest-first until a non-loss, the pool-wide breaker's own rule (`guards._consecutive_losses`).
+def _loss_r(row: Mapping[str, Any]) -> float:
+    """A live row's raw ``result_R``. A missing or malformed one is not a loss and ends the streak."""
+    value = _f(row.get("result_R"))
+    return 0.0 if value is None else value
 
-    Deliberately the same shape so the two controls cannot disagree about what a streak is —
-    the only difference between them is the population they count over."""
-    count = 0
-    for row in reversed(list(rows)):
-        value = _f(row.get("result_R"))
-        if value is not None and value < 0:
-            count += 1
-        else:
-            break
-    return count
+
+def _consecutive_losses(rows: Sequence[Mapping[str, Any]]) -> int:
+    """Newest-first until a non-loss: `outcome_math.consecutive_losses`, the rule the pool-wide breaker
+    (`guards._consecutive_losses`) counts by too (refactor plan §K-1), so the two controls cannot
+    disagree about what a streak is. What differs is theirs: this one counts every live row, probes
+    included, and reads the raw ``result_R``, where a missing value ends the streak instead of raising."""
+    return consecutive_losses(rows, r_of=_loss_r)
 
 
 def evaluate_live_allowance(

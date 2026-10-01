@@ -171,6 +171,29 @@ def test_the_pool_breaker_reads_net_r_and_the_allowance_reads_the_row_as_written
     assert live_allowance._consecutive_losses(rows) == 0
 
 
+def test_one_streak_rule_with_each_counters_own_reading():
+    """Refactor plan §K-1: one rule, `outcome_math.consecutive_losses`. A skipped row neither adds to the
+    streak nor ends it; NaN is not a loss and ends it."""
+    from runtime.mvp_runtime.crypto.outcome_math import consecutive_losses
+
+    rows = [{"r": -1.0}, {"r": 2.0}, {"r": -1.0}, {"r": 5.0, "skip": True}, {"r": -0.5}]
+    assert consecutive_losses(rows, r_of=lambda row: row["r"]) == 1
+    assert consecutive_losses(rows, r_of=lambda row: row["r"], skip=lambda row: row.get("skip")) == 2
+    assert consecutive_losses([{"r": -1.0}, {"r": float("nan")}], r_of=lambda row: row["r"]) == 0
+    assert consecutive_losses([], r_of=lambda row: row["r"]) == 0
+
+
+def test_a_row_without_its_r_raises_at_the_pool_breaker_and_ends_the_allowances_streak():
+    """What a missing R means stayed each counter's own through the merge: the breaker reads a
+    normalised row and fails loudly; the allowance reads the ledger as written and stops counting."""
+    for row in ({"result_R": None}, {"pnl_r": None, "result_R": None}):
+        with pytest.raises((KeyError, TypeError)):
+            guards._consecutive_losses([{"pnl_r": -1.0}, row])
+    assert live_allowance._consecutive_losses([{"result_R": -1.0}, {"result_R": None}]) == 0
+    assert live_allowance._consecutive_losses([{"result_R": -1.0}, {"result_R": "x"}]) == 0
+    assert live_allowance._consecutive_losses([{"result_R": "-1"}, {"result_R": -2.0}]) == 2
+
+
 # --- the cycle's stage order ---------------------------------------------------------------------------
 
 def test_the_cycle_runs_its_stages_in_this_order(tmp_path, monkeypatch, dry):
