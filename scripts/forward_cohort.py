@@ -18,6 +18,8 @@ Four subcommands, each dry unless it says otherwise:
   adds a second table per cohort: win rate, profit factor, drawdown, the average win and loss, what
   fees and slippage cost per trade, and the gap to the recorded backtest and holdout expectancy.
   These columns are computed here and nowhere else; no verdict, board or ranking reads them.
+  ``--arms`` adds, per timeframe, the mean net R per trade of the members and of their coin-flip
+  twins (``crypto/forward_cohort_null.py``) side by side, also display only.
 
 Nothing here reaches the pool, the arming door or an order: cohort rows live in their own
 store, which the arming door's reader refuses. Writes runtime state, so it runs in the container
@@ -29,6 +31,7 @@ as uid 10001, in module form::
     docker exec thomas-scheduler python -m scripts.forward_cohort walk --apply
     docker exec thomas-scheduler python -m scripts.forward_cohort report
     docker exec thomas-scheduler python -m scripts.forward_cohort report --detail
+    docker exec thomas-scheduler python -m scripts.forward_cohort report --arms
 
 A damaged candidate, pool, forward or cohort store refuses the run (``EXIT_BLOCKED``) before
 anything is fetched or written.
@@ -205,6 +208,66 @@ def detail_report(root: Path) -> dict[tuple[Any, str], dict[str, Any]]:
     return detail
 
 
+def arm_means(root: Path) -> dict[str, dict[str, Any]]:
+    """Per timeframe, the members' and their twins' mean net R per trade (display only, Thomas
+    2026-09-30 gap analysis Q1). The board's verdict counts (``forward_cohort_null.arm_comparison``)
+    are the designed comparison; this is the size of the difference beside them.
+
+    The rows are the ones the judge prices: a member's as :func:`detail_report` resolves it, a
+    twin's as ``forward_cohort_null.null_report`` judges it, over the active null arm only (a twin
+    of a superseded arm and its rows never enter). Per timeframe and never pooled across them: the
+    null's own baseline differs by timeframe, so one pooled figure would mix different questions.
+    Members of different sizes are pooled within a timeframe, so a mean says direction, not a
+    per-lineage magnitude. An arm with no priced row has ``None`` for its mean, never 0."""
+    from runtime.mvp_runtime.crypto import forward_cohort_null
+
+    real: dict[str, list[float]] = {}
+    latest = {candidate_id(record): record for record in read_candidates(root)}
+    rows = forward_cohort.read_cohort_outcomes(root)
+    for cohort in forward_cohort.read_cohorts(root):
+        for member in cohort.get("members") or []:
+            record = latest.get(str(member.get("candidate_id")))
+            if record is None:
+                continue
+            judged = {**record, "created_at_utc": member.get("selected_at_utc")}
+            real.setdefault(str(member.get("timeframe")), []).extend(
+                net for _, net in priced_rows(judged, rows))
+    null: dict[str, list[float]] = {}
+    null_rows = forward_cohort_null.read_null_outcomes(root)
+    for arm in forward_cohort_null.active_null_records(root):
+        for twin in arm.get("members") or []:
+            judged = {"candidate_id": twin.get("null_id"), "created_at_utc": twin.get("selected_at_utc"),
+                      "strategy_spec": twin.get("null_spec") or {}}
+            null.setdefault(str(twin.get("timeframe")), []).extend(
+                net for _, net in priced_rows(judged, null_rows))
+    means: dict[str, dict[str, Any]] = {}
+    for timeframe in sorted(set(real) | set(null)):
+        real_nets, null_nets = real.get(timeframe, []), null.get(timeframe, [])
+        real_mean = sum(real_nets) / len(real_nets) if real_nets else None
+        null_mean = sum(null_nets) / len(null_nets) if null_nets else None
+        means[timeframe] = {
+            "real_n": len(real_nets), "real_mean_r": real_mean,
+            "null_n": len(null_nets), "null_mean_r": null_mean,
+            "real_minus_null_r": None if real_mean is None or null_mean is None else real_mean - null_mean,
+        }
+    return means
+
+
+def _print_arms(means: Mapping[str, Mapping[str, Any]]) -> None:
+    print("arms (display only; the board's verdict counts are the designed comparison). Mean net R per "
+          "trade over the rows the judge prices, per timeframe, never pooled across timeframes; '-' is "
+          "no priced row.")
+    layout = "  %-4s %7s %9s %7s %9s %10s"
+    print(layout % ("tf", "real_n", "real_R", "null_n", "null_R", "real-null"))
+
+    def signed(value: float | None) -> str:
+        return "-" if value is None else f"{value:+.3f}"
+
+    for timeframe, arm in means.items():
+        print(layout % (timeframe, arm["real_n"], signed(arm["real_mean_r"]), arm["null_n"],
+                        signed(arm["null_mean_r"]), signed(arm["real_minus_null_r"])))
+
+
 _DETAIL_COLUMNS = (
     ("win%", "win_rate", lambda v: f"{v * 100:.0f}"),
     ("PF", "profit_factor", lambda v: f"{v:.2f}"),
@@ -236,7 +299,7 @@ def _print_detail(
             "-" if columns[key] is None else render(columns[key]) for _, key, render in _DETAIL_COLUMNS)))
 
 
-def _report(root: Path, detail: bool = False) -> int:
+def _report(root: Path, detail: bool = False, arms: bool = False) -> int:
     columns = detail_report(root) if detail else {}
     for cohort in forward_cohort.cohort_report(root):
         members = sorted(cohort["members"], key=lambda m: -(m.get("priceable_count") or 0))
@@ -251,6 +314,8 @@ def _report(root: Path, detail: bool = False) -> int:
                 m.get("active_slices", ""), m.get("status")))
         if detail:
             _print_detail(cohort, members, columns)
+    if arms:
+        _print_arms(arm_means(root))
     return EXIT_OK
 
 
@@ -263,6 +328,8 @@ def main(argv: list[str] | None = None) -> int:
     report = sub.add_parser("report")
     report.add_argument("--detail", action="store_true",
                         help="add the per-member detail table (display only)")
+    report.add_argument("--arms", action="store_true",
+                        help="add the members' and their twins' mean net R per timeframe (display only)")
     args = parser.parse_args(argv)
 
     try:
@@ -279,7 +346,7 @@ def main(argv: list[str] | None = None) -> int:
             return _freeze_nulls(ROOT, now, args.apply)
         if args.command == "walk":
             return _walk(ROOT, now, args.apply)
-        return _report(ROOT, args.detail)
+        return _report(ROOT, args.detail, args.arms)
     except MvpRuntimeError as exc:
         print(f"BLOCKED {exc.reason_code}: {exc.reason}", file=sys.stderr)
         return EXIT_BLOCKED

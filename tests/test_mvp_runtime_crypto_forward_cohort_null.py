@@ -387,3 +387,59 @@ def test_after_re_freezing_only_v2_walks_and_v1_rows_are_never_priced_into_it(tm
     assert _null_walk(tmp_path, frame)["settled"] == 0
     ids = {r["candidate_id"] for r in fcn.read_null_outcomes(tmp_path)}
     assert ids == {"null_cand_a", "null_v2_cand_a"}
+
+
+# --- the script's arm table (2026-10-01): mean net R beside the verdict counts, display only -----
+
+def test_the_arm_table_stands_on_the_rows_each_judge_prices(tmp_path):
+    from scripts import forward_cohort as script
+
+    _install_cohort(tmp_path, _eager("cand_a"))
+    _walk(tmp_path, _frame(range(1, 12), stop_on={5, 9}))
+    _freeze(tmp_path)
+    _null_walk(tmp_path, _frame(range(1, 12), stop_on={5, 9}))
+    means = script.arm_means(tmp_path)
+    (member,) = [m for c in fco.cohort_report(tmp_path) for m in c["members"]]
+    (twin,) = fcn.null_report(tmp_path)
+    arm = means["1d"]
+    assert arm["real_n"] == member["priceable_count"] > 0
+    assert arm["null_n"] == twin["priceable_count"] > 0
+    assert arm["real_mean_r"] == pytest.approx(member["trade_mean_r"], abs=1e-6)
+    assert arm["real_minus_null_r"] == pytest.approx(arm["real_mean_r"] - arm["null_mean_r"])
+
+
+def test_a_row_of_a_twin_outside_the_active_arm_never_enters(tmp_path):
+    from scripts import forward_cohort as script
+
+    _install_cohort(tmp_path, _eager("cand_a"))
+    _freeze(tmp_path)
+    _null_walk(tmp_path, _frame(range(1, 12), stop_on={5, 9}))
+    before = script.arm_means(tmp_path)["1d"]
+    (row,) = fcn.read_null_outcomes(tmp_path)[:1]
+    stray = {k: v for k, v in row.items() if k not in ("record_sha256", "integrity")}
+    _seal_null_rows(tmp_path, [{**stray, "candidate_id": "null_v1_cand_a", "settlement_id": "settle_v1_stray",
+                                "result_R": 9.0}])
+    assert len(fcn.read_null_outcomes(tmp_path)) == before["null_n"] + 1  # the row is on file
+    assert script.arm_means(tmp_path)["1d"] == before
+    # and the same row under the active twin's id is counted: the filter is the arm, not the row
+    _seal_null_rows(tmp_path, [{**stray, "settlement_id": "settle_v2_extra", "result_R": 9.0}])
+    assert script.arm_means(tmp_path)["1d"]["null_n"] == before["null_n"] + 1
+
+
+def test_an_arm_with_no_priced_row_reads_none_never_zero(tmp_path, monkeypatch, capsys):
+    from scripts import forward_cohort as script
+
+    _install_cohort(tmp_path, _record("cand_a"))
+    _walk(tmp_path, _frame(range(1, 8), stop_on={5}))
+    means = script.arm_means(tmp_path)  # no null arm frozen yet
+    assert means["1d"]["null_n"] == 0 and means["1d"]["null_mean_r"] is None
+    assert means["1d"]["real_minus_null_r"] is None and means["1d"]["real_n"] == 1
+    monkeypatch.setattr(script, "ROOT", tmp_path)
+    monkeypatch.setattr(script, "assert_not_foreign_root_run", lambda _: None)
+    assert script.main(["report"]) == 0
+    plain = capsys.readouterr().out.splitlines()
+    assert script.main(["report", "--arms"]) == 0
+    with_arms = capsys.readouterr().out.splitlines()
+    assert with_arms[:len(plain)] == plain
+    (line,) = [l for l in with_arms[len(plain):] if l.strip().startswith("1d")]
+    assert line.split()[:2] == ["1d", "1"] and line.split()[3:] == ["0", "-", "-"]
