@@ -15,6 +15,8 @@
   - B, for the already sealed cohort 2: the report marks `sibling_of` at read time, and the hierarchical
     judgement counts a key cluster as one unit.
   - Rejected: excluding only refuted keys (C), because it makes membership depend on forward outcomes.
-- **Still to measure:** forward entry overlap between siblings and their counterparts. Cohort 2's first walk
-  (2026-10-01 07:15 UTC) replays from each member's selecting row, and the numbers go into §8 before the 10-29
-  freeze.
+- **Measured after cohort 2's first walk (2026-10-01 07:15 UTC):**
+  - Sibling pairs share forward entries at a median 55%, against 13% for same-context, same-direction pairs from
+    different families. Their daily R correlates at a median 0.62 against 0.31 (28 of 53 pairs comparable).
+  - All 3 siblings that re-test a refuted key run negative, and one turned FORWARD_CONTRADICTED on its first walk.
+  - The recommendation stands.
