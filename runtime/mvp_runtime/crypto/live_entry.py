@@ -82,7 +82,7 @@ from .market_data import (
     reference_quote_problem,
 )
 from .orderbook_store import estimate_market_impact, summarize_book
-from .paper import STOP_BEYOND_LIQUIDATION, stop_beyond_liquidation_refusal
+from .paper import stop_beyond_liquidation_refusal
 from .execution_stage import StageStatus
 from .live_order import (
     LIVE_ENTRY_BAR_ALREADY_ENTERED as BAR_ALREADY_ENTERED,

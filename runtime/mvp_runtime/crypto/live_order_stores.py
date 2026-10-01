@@ -1,8 +1,9 @@
 """What the live entry door keeps on disk between orders: four stores, each with its reader.
 
-Moved whole out of ``live_order`` (crypto refactor plan PR-12). ``live_order`` re-exports every name
-defined here as the same object, so ``live_order.LiveOrderCounter``, ``live_order.count_today`` and
-the rest still resolve.
+Moved whole out of ``live_order`` (crypto refactor plan PR-12). ``live_order`` re-exports, as
+the same objects, the names its callers still read there, ``live_order.LiveOrderCounter`` and
+``live_order.count_today`` among them (refactor plan PR-16 removed the rest; the set is pinned by
+``test_mvp_runtime_crypto_reexport_roster.py``).
 
 - **the daily submission counter** (``LiveOrderCounter``, ``count_today``): what the daily-order cap
   reads. A reservation that would pass the cap is refused before it is written;

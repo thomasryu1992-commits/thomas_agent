@@ -29,8 +29,9 @@ unreadable outcome history raises so the caller routes it into
 
 Since crypto PR7c the pure trade-plan maths (the entry plan, settlement, the managed stop and the
 outcome record) lives in ``trade_plan``, and the labels it stamps into records live in ``vocabulary``.
-This module keeps the stateful kernel and the router, and re-exports both sets of names as the same
-objects, so the factory backtest and the forward book no longer import the kernel to reach the maths.
+This module keeps the stateful kernel and the router, and re-exports, as the same objects, the names
+its importers still read here (refactor plan PR-16 removed the rest), so the factory backtest and the
+forward book no longer import the kernel to reach the maths.
 """
 
 from __future__ import annotations
@@ -56,17 +57,14 @@ from .candidate_identity import PREDECESSOR_KEYS_FIELD, entry_attribution_keys, 
 from .strategy import StrategySpec, evaluate_spec
 from .strategy_artifact import ARTIFACT_SHA256_FIELD
 # The trade-plan maths lives in `trade_plan` (strategy) and the record labels in `vocabulary` since
-# crypto PR7c; both are re-exported here, as the same objects, for this module's many importers.
+# crypto PR7c; what this module's many importers still read here is re-exported as the same objects.
 from .trade_plan import (  # noqa: F401
     ASSUMED_LEVERAGE,
     COOLDOWN_BARS_AFTER_STOPLOSS,
-    DEFAULT_MAX_HOLD_BARS,
     ENTRY_COST_UNECONOMIC,
     MAINTENANCE_MARGIN_RATE,
-    MAX_HOLD_BARS,
     MIN_REGIME_TRADES_TO_EXCLUDE,
     MIN_VOL_SIZE_MULTIPLIER,
-    PAPER_KERNEL_VERSION,
     REGIME_EXCLUDED,
     STOP_BEYOND_LIQUIDATION,
     advance_holding,

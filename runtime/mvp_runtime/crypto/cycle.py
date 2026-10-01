@@ -39,13 +39,12 @@ from ..errors import MvpRuntimeError, ToolBlocked, ToolError
 from . import feedback, pool, positioning_store
 from .features import latest_feature_row
 # One context's market inputs are assembled in `feed_assembly` (market) since crypto PR7e-2:
-# `run_crypto_cycle` calls the attaches and `optional_data_health` once per context. Every name is
-# re-exported, as the same object, for the callers that read them as `cycle.<name>`; the scheduler's
-# factory dispatches reach `attach_mining_legs` that way.
+# `run_crypto_cycle` calls the attaches and `optional_data_health` once per context. The names callers
+# read as `cycle.<name>` are re-exported, as the same objects (refactor plan PR-16 removed the rest);
+# the scheduler's factory dispatches reach `attach_mining_legs` that way.
 from .feed_assembly import (  # noqa: F401
-    DAILY_SERIES_MAX_AGE_HOURS, FUNDING_MAX_AGE_HOURS, HTF_DEGRADED, OPTIONAL_DATA_DEGRADED_CODES,
-    OPTIONAL_FEED_MAX_AGE_HOURS, OPTIONAL_LEG_COLUMNS, POSITIONING_MAX_AGE_HOURS, _FUNDING_RECORDS,
-    _LIQUIDATION_DAYS, _feed_readings, attach_cross_section, attach_feeds, attach_htf,
+    HTF_DEGRADED, OPTIONAL_DATA_DEGRADED_CODES, OPTIONAL_FEED_MAX_AGE_HOURS, OPTIONAL_LEG_COLUMNS,
+    _FUNDING_RECORDS, _LIQUIDATION_DAYS, attach_cross_section, attach_feeds, attach_htf,
     attach_mining_legs, attach_positioning, attach_reference, optional_data_health,
 )
 # The retention stores' cohort sweeps are `cohort_retention`'s (market) since crypto PR7e-6. The fan-out
@@ -83,7 +82,6 @@ from .market_data import (  # noqa: F401
     collect_market_data,
     degraded_market_data_record,
 )
-from .cooldown import CooldownMarkStore
 from .counterfactual import read_counterfactual_outcomes, run_counterfactual_update
 from .forward_book import FORWARD_SPEC_UNPARSEABLE, run_forward_book_update
 from .lifecycle import run_lifecycle, split_for_record as lifecycle_split

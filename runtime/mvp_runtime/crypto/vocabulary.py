@@ -3,9 +3,10 @@
 Each lived in `live_pnl`, the module that builds the records they label, which sits near the top of
 the lane, so every lower reader imported upward (`cost`, `paper`, the order path). They carry no
 logic: the live-trading opt-in's names, the labels an outcome's R is measured on, the exits that
-leave through a stop, and the UTC day a record belongs to. `live_pnl` re-exports every one, so its
-importers keep their import lines and read the same objects. Since crypto PR7c the paper plane's
-record labels that two layers read are here too, re-exported by `paper`.
+leave through a stop, and the UTC day a record belongs to. `live_pnl` re-exports, as the same
+objects, the ones its importers still read there (refactor plan PR-16 removed the R-basis labels).
+Since crypto PR7c the paper plane's record labels that two layers read are here too, re-exported by
+`paper`.
 """
 
 from __future__ import annotations

@@ -1,7 +1,8 @@
 """The seeded generator: which templates a fire draws, around which centres, and the draws.
 
-Moved whole out of ``factory`` (crypto refactor plan PR-10). ``factory`` re-exports every name
-defined here as the same object, so ``factory.generate_batch`` and the rest still resolve.
+Moved whole out of ``factory`` (crypto refactor plan PR-10). ``factory`` re-exports, as
+the same objects, the names its callers still read there (refactor plan PR-16 removed the rest; the
+set is pinned by ``test_mvp_runtime_crypto_reexport_roster.py``).
 
 What is here:
 

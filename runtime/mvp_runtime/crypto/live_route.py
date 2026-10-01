@@ -126,8 +126,7 @@ from .live_reconcile import (
 from . import paper
 from .paper import build_entry_plan
 from .promotion import (  # noqa: F401
-    LIVE_ARM_APPROVAL_UNREADABLE, LIVE_ARM_ENTRY_CHANGED, LIVE_ARM_ENTRY_UNBOUND,
-    LIVE_ARM_REARMED_OUTSIDE_THE_DOOR, LIVE_ARM_SPEC_NOT_ITS_RULE, live_arm_problem, verify_live_arm,
+    LIVE_ARM_APPROVAL_UNREADABLE, LIVE_ARM_ENTRY_CHANGED, verify_live_arm,
 )
 from .risk_limits import resolve_risk_limits
 from .venue_contract import entry_fact as read_venue_contract
@@ -1595,7 +1594,8 @@ def _contract_summary(fact: Any) -> dict[str, Any] | None:
 
 # The arming approval behind an entry, verified at the gate (PR2c-2b), with the reasons it cannot be:
 # `promotion`'s since refactor plan PR-04, beside `live_arm_problem`, so the readiness board reads it
-# without importing this module. Imported above and re-exported as the same objects; the route calls
+# without importing this module. Imported above and re-exported as the same objects, less the three
+# codes and `live_arm_problem` that nothing read here (refactor plan PR-16); the route calls
 # its own binding, so a patch on `live_route.verify_live_arm` still reaches the route.
 
 

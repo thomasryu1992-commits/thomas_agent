@@ -7,8 +7,9 @@ behaves identically in backtest and live" because both share one evaluator and o
 exit model) holds here by construction, since ``strategy.evaluate_spec`` and
 ``trade_plan.settle_trade_plan`` are exactly what the live cycle runs. The replay itself
 lives in ``backtest.py``, the template library and validator in ``template_space.py`` and
-the seeded generator in ``generator.py``; all three are re-exported here, and what is said
-below about them describes those modules.
+the seeded generator in ``generator.py``; the names their callers still read here are
+re-exported (refactor plan PR-16 removed the rest), and what is said below about them
+describes those modules.
 
 Template library: the families whose features the C3 rows compute. ``funding_fade_*``
 joined when the funding series landed, and the ``htf_*`` legs when every timeframe in
@@ -62,7 +63,6 @@ from runtime.read_only_kernel import integrity
 
 from . import market_data
 from .cost import (
-    FUNDING_INTERVALS_PER_DAY,
     FUNDING_SOURCE_FALLBACK,
     FUNDING_SOURCE_PARTIAL,
     FUNDING_SOURCE_VENUE,
@@ -72,59 +72,59 @@ from .trade_plan import ASSUMED_LEVERAGE
 from .candidate_identity import candidate_id, derive_candidate_id
 from .robustness import MIN_HOLDOUT_TRADES
 from .strategy import SpecParseError, StrategySpec
-# The replay backtest lives in `backtest.py` (moved whole, refactor plan PR-08). Every name it defines
-# is re-exported here as the same object, so `factory.backtest_spec` and the rest still resolve. A
+# The replay backtest lives in `backtest.py` (moved whole, refactor plan PR-08). The names its callers
+# still read here are re-exported as the same objects, `factory.backtest_spec` among them. A
 # test that patches a name the replay reads patches it on `backtest`: a patch on this module's copy
 # does not reach a function defined there.
 from .backtest import (  # noqa: F401
-    BACKTEST_WINDOWS, HOLDOUT_FRACTION, HOLDOUT_PERIODS, MIN_BARS_FOR_HOLDOUT,
-    MIN_TRADES_PER_WINDOW, PRIOR_WINDOWS, UNSUPPLIABLE_FEATURE, WALK_FORWARD_MIN_PERIODS,
-    WALK_FORWARD_PERIODS, ReplayFrame, _FUNDING_SOURCE_STRENGTH, _holdout_evidence,
-    _prefix_frame, _prior_window_evidence, _replay, backtest_spec, backtest_spec_pooled,
-    build_replay_frame, funding_charges_per_bar, holdout_split_index, unsuppliable_features,
+    HOLDOUT_FRACTION, HOLDOUT_PERIODS, MIN_BARS_FOR_HOLDOUT, MIN_TRADES_PER_WINDOW,
+    PRIOR_WINDOWS, UNSUPPLIABLE_FEATURE, WALK_FORWARD_MIN_PERIODS, WALK_FORWARD_PERIODS,
+    ReplayFrame, _prefix_frame, _prior_window_evidence, _replay, backtest_spec,
+    backtest_spec_pooled, build_replay_frame, funding_charges_per_bar, holdout_split_index,
+    unsuppliable_features,
 )
 # The template space lives in `template_space.py` (moved whole, refactor plan PR-09): the validator's
-# bounds, the feature vocabulary, the template library and `validate_strategy`. Re-exported here as
-# the same objects, under the same rule as the replay above: patch a name where the function that
-# reads it is defined.
+# bounds, the feature vocabulary, the template library and `validate_strategy`. What its callers still
+# read here is re-exported as the same objects, and so is every template builder: the retirement tests
+# look a retired family's builder up here by name. Same rule as the replay above: patch a name where
+# the function that reads it is defined.
 from .template_space import (  # noqa: F401
     CATEGORICAL_FEATURES, CROSS_SECTION_FAMILIES, FUNDING_FAMILIES, HTF_FAMILIES,
-    MAX_ENTRY_CONDITIONS, MAX_FUSION_ENTRY_CONDITIONS, MAX_HOLDING_BARS_RANGE, MAX_RISK_PER_TRADE_R,
-    MIN_REWARD_RISK, NUMERIC_FEATURES, OI_FAMILIES, POSITIONING_FAMILIES, ParamSpec,
-    REFERENCE_FAMILIES, RETIRED_FAMILIES, SESSION_FAMILIES, STOP_ATR_RANGE, StrategyTemplate,
-    TARGET_ATR_RANGE, TEMPLATES, _CATEGORICAL_COMPARISONS, _EXIT_BASE, _EXIT_PARAMS,
-    _FADE_EXIT_BASE, _FADE_EXIT_PARAMS, _FEATURE_FEED, _GENERATION_SPACES, _NUMERIC_COMPARISONS,
-    _REGIME_VALUES, _bollinger_breakdown_short_entry, _bollinger_breakout_entry,
-    _breakdown_short_entry, _breakout_entry, _funding_fade_long_entry, _funding_fade_short_entry,
-    _funding_feed_reaches, _funding_momentum_long_entry, _funding_momentum_short_entry,
-    _htf_pullback_long_entry, _htf_pullback_short_entry, _htf_reversal_long_entry,
-    _htf_reversal_short_entry, _htf_trend_long_entry, _htf_trend_short_entry,
-    _htf_trend_strength_long_entry, _htf_trend_strength_short_entry, _judgeable_hold_space,
-    _ma_cross_down_entry, _ma_cross_up_entry, _macd_cross_down_entry, _macd_cross_up_entry,
-    _macd_momentum_entry, _macd_momentum_short_entry, _mean_reversion_long_entry,
-    _mean_reversion_short_entry, _oi_feed_reaches, _oi_squeeze_long_entry, _oi_squeeze_short_entry,
-    _oi_unwind_long_entry, _oi_unwind_short_entry, _positioning_divergence_long_entry,
-    _positioning_divergence_short_entry, _premium_fade_long_entry, _premium_fade_short_entry,
-    _rel_strength_long_entry, _rel_strength_short_entry, _replay_days, _session_label,
-    _session_trend_long_entry, _session_trend_short_entry, _taker_absorption_long_entry,
-    _taker_absorption_short_entry, _taker_flow_fade_long_entry, _taker_flow_fade_short_entry,
-    _taker_flow_long_entry, _taker_flow_short_entry, _trend_pullback_entry,
-    _trend_pullback_short_entry, _volatility_expansion_long_entry,
+    MAX_ENTRY_CONDITIONS, MAX_FUSION_ENTRY_CONDITIONS, MAX_HOLDING_BARS_RANGE, MIN_REWARD_RISK,
+    NUMERIC_FEATURES, OI_FAMILIES, POSITIONING_FAMILIES, ParamSpec, REFERENCE_FAMILIES,
+    RETIRED_FAMILIES, SESSION_FAMILIES, STOP_ATR_RANGE, TARGET_ATR_RANGE, TEMPLATES, _EXIT_BASE,
+    _EXIT_PARAMS, _FADE_EXIT_BASE, _FADE_EXIT_PARAMS, _FEATURE_FEED, _GENERATION_SPACES,
+    _bollinger_breakdown_short_entry, _bollinger_breakout_entry, _breakdown_short_entry,
+    _breakout_entry, _funding_fade_long_entry, _funding_fade_short_entry, _funding_feed_reaches,
+    _funding_momentum_long_entry, _funding_momentum_short_entry, _htf_pullback_long_entry,
+    _htf_pullback_short_entry, _htf_reversal_long_entry, _htf_reversal_short_entry,
+    _htf_trend_long_entry, _htf_trend_short_entry, _htf_trend_strength_long_entry,
+    _htf_trend_strength_short_entry, _judgeable_hold_space, _ma_cross_down_entry,
+    _ma_cross_up_entry, _macd_cross_down_entry, _macd_cross_up_entry, _macd_momentum_entry,
+    _macd_momentum_short_entry, _mean_reversion_long_entry, _mean_reversion_short_entry,
+    _oi_feed_reaches, _oi_squeeze_long_entry, _oi_squeeze_short_entry, _oi_unwind_long_entry,
+    _oi_unwind_short_entry, _positioning_divergence_long_entry, _positioning_divergence_short_entry,
+    _premium_fade_long_entry, _premium_fade_short_entry, _rel_strength_long_entry,
+    _rel_strength_short_entry, _session_trend_long_entry, _session_trend_short_entry,
+    _taker_absorption_long_entry, _taker_absorption_short_entry, _taker_flow_fade_long_entry,
+    _taker_flow_fade_short_entry, _taker_flow_long_entry, _taker_flow_short_entry,
+    _trend_pullback_entry, _trend_pullback_short_entry, _volatility_expansion_long_entry,
     _volatility_expansion_short_entry, _volatility_squeeze_long_entry,
     _volatility_squeeze_short_entry, _xs_momentum_long_entry, _xs_momentum_short_entry,
     _xs_reversion_long_entry, _xs_reversion_short_entry, judgeable_holding_bars, known_features,
     template_features, templates_for_timeframe, validate_strategy,
 )
 # The seeded generator lives in `generator.py` (moved whole, refactor plan PR-10): its knobs, the
-# probe ceiling, `mutate_params`, the elite centres and `generate_batch`. Re-exported here as the
-# same objects, under the same rule: patch a name where the function that reads it is defined.
+# probe ceiling, `mutate_params`, the elite centres and `generate_batch`. What its callers still read
+# here is re-exported as the same objects, under the same rule: patch a name where the function that
+# reads it is defined.
 from .generator import (  # noqa: F401
     DEFAULT_BATCH_SIZE, ELITE_EVIDENCE_MIN_TRADES, PROBE_LIQUIDATION_ADMIT_FRACTION,
-    _EXIT_PROBE_SLOTS, _LIQUIDATION_CEILING_STEP, _MAX_ATTEMPTS_PER_SPEC, _MUTATION_SCALE,
-    _apply_reward_risk_floor, _best_mint_params, _elite_flip, _fold_into_bounds, _matches_context,
-    _project, _rotation_offset, build_spec_dict, cohort_probe_stop_ceiling, context_rotation_phase,
-    elite_base_params, elite_centres, generate_batch, holdout_permits_centring,
-    liquidation_admissible_stop_atr, mutate_params,
+    _EXIT_PROBE_SLOTS, _MAX_ATTEMPTS_PER_SPEC, _MUTATION_SCALE, _apply_reward_risk_floor,
+    _best_mint_params, _elite_flip, _fold_into_bounds, _matches_context, _rotation_offset,
+    build_spec_dict, cohort_probe_stop_ceiling, context_rotation_phase, elite_base_params,
+    elite_centres, generate_batch, holdout_permits_centring, liquidation_admissible_stop_atr,
+    mutate_params,
 )
 
 
