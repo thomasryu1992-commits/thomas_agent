@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from runtime.mvp_runtime.crypto import execution_stage as es, readiness_model
-from runtime.mvp_runtime.crypto import live_promotion, live_readiness, live_route
+from runtime.mvp_runtime.crypto import live_evidence, live_readiness, live_route
 from runtime.mvp_runtime.crypto import pool as pool_store
 from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_ENV, state_dir
 from runtime.mvp_runtime.crypto.live_order import CONFIRMATION_ENV, LIVE_CONFIRMATION_PHRASE
@@ -301,7 +301,7 @@ def test_the_board_no_longer_reads_the_canary_registry(tmp_path, clean_env):
     damaged frozen registry is the history board's news, not a failed gate here."""
     target = state_dir(tmp_path)
     target.mkdir(parents=True, exist_ok=True)
-    (target / live_promotion.CANARY_ORDERS_FILENAME).write_text("garbage\n", encoding="utf-8")
+    (target / live_evidence.CANARY_ORDERS_FILENAME).write_text("garbage\n", encoding="utf-8")
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
     assert not any("CANARY_HISTORY" in c["detail"] or "canary" in c["check"] for c in status["checks"])
     assert "clean_canary_orders" not in status["guard_dry_run"]

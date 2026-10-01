@@ -25,7 +25,7 @@ port, then the source repo was frozen. This document covers bringing it across.
 | LP1 live account read | `live_canary_preparation.LiveReadOnlyProbe` | yes | **no method exists** |
 | LP2 P&L ledger + loss breaker | `execution/live_pnl_ledger.py` (L1) | yes | no |
 | LP3 order intent + final guard | `execution/live_order_final_guard.py` (L2) | yes | no — it only refuses |
-| LP6 canary promotion evidence | `execution/live_promotion.py` (L5 gate) | yes — the gate and the registry writer were removed 2026-09-15 (PR1r); the verified reader and the history board remain | no |
+| LP6 canary promotion evidence | `crypto/live_evidence.py` (L5 gate; `live_promotion.py` until refactor plan L-2.3, now an alias) | yes — the gate and the registry writer were removed 2026-09-15 (PR1r); the verified reader and the history board remain | no |
 | LP4 order adapter | `execution/live_canary_adapter.py` | **yes** (2026-07-25) | **YES** — `live_execution.py`, behind `MVP_LIVE_TRADING=real` + the order key + a guard PASS |
 | LP5 position kernel + routing | `execution/live_position_kernel.py` (L5/L3/L6) | **almost** — 5.1 state/reconciliation, 5.2 sizing, 5.3 the entry decision **and the executing leg**, 5.4 the outcome bridge | the executing leg can, with an **injected** adapter — but nothing autonomous may import it (tripwire test), so **cycle routing is the only piece left** |
 
@@ -450,7 +450,7 @@ canaries, the evidence moves to real trades), and on 2026-09-15 Thomas removed t
 registry writer and the guard's clean-canary promotion gate together (PR1r). With the door went
 its declared-notional check (`ORDER_NOTIONAL_UNDERSTATED`, `ORDER_NOTIONAL_PRICE_UNKNOWN`) and the
 budget's `--min-clean-canary-orders` bar. The frozen registry is still verified and shown by
-`python -m runtime.mvp_runtime.crypto.live_promotion`, and nothing counts it. **The execution
+`python -m runtime.mvp_runtime.crypto.live_evidence` (the old `…live_promotion` path still works), and nothing counts it. **The execution
 stage replaced this floor on 2026-09-16 (PR1b): a fresh machine reads `READ_ONLY` and every new
 entry is refused until Thomas registers a rung** (`EXECUTION_STAGE_V0.1.md`). The steps this gate held are in git history and in
 `docs/BUILD_HISTORY.md`.

@@ -206,9 +206,9 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `BRIDGE_LIMITS_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | `__init__` | `max_frame_bytes < 1 or request_timeout_seconds <= 0` |
 | `BUDGET_EXHAUSTED` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow.py` | `validate_plan` | `needed > budget.max_model_calls` |
 | `BUDGET_PROFILE_KIND_MISMATCH` | `PlannerBlocked` | `runtime/mvp_runtime/budgets.py` | `require_budget_profile` | `request_kind not in BUDGET_PROFILES[profile]['request_kinds']` |
-| `CANARY_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/live_promotion.py` | `read_canary_orders` | `order_id in seen` |
-| `CANARY_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_promotion.py` | `read_canary_orders` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
-| `CANARY_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_promotion.py` | `read_canary_orders` | `—` |
+| `CANARY_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/live_evidence.py` | `read_canary_orders` | `order_id in seen` |
+| `CANARY_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_evidence.py` | `read_canary_orders` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
+| `CANARY_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_evidence.py` | `read_canary_orders` | `—` |
 | `CANDIDATES_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | `read_candidates` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
 | `CANDIDATES_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | `read_candidates` | `—` |
 | `CANDIDATE_AMBIGUOUS` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | `resolve_candidates` | `ambiguous` |

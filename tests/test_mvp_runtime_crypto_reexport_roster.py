@@ -59,6 +59,9 @@ ROSTER: dict[str, dict[str, frozenset[str]]] = {
             "known_features",
         }),
     },
+    "live_evidence": {
+        "order_request": frozenset({"RECONCILED"}),
+    },
     "live_execution": {
         "order_request": frozenset({
             "ALGO_TYPE_CONDITIONAL", "CONDITIONAL_ORDER_TYPES", "MISMATCH", "NOT_FOUND", "ORDER_TYPE_LIMIT",
@@ -88,9 +91,6 @@ ROSTER: dict[str, dict[str, frozenset[str]]] = {
         "live_ledger": frozenset({"stop_slippage_observations"}),
         "state": frozenset({"STATE_REL", "state_dir"}),
         "vocabulary": frozenset({"STOP_EXIT_REASONS"}),
-    },
-    "live_promotion": {
-        "order_request": frozenset({"RECONCILED"}),
     },
     "live_readiness": {
         "readiness_model": frozenset({"readiness_data"}),

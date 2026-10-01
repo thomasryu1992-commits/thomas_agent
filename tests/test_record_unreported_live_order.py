@@ -134,7 +134,7 @@ class _Ledger:
 def wired(monkeypatch):
     """The registry returns our row; the Core binding and the ledger are stubbed."""
     _Ledger.rows = []
-    monkeypatch.setattr(rec.live_promotion, "read_canary_orders", lambda root: [dict(CANARY_ROW)])
+    monkeypatch.setattr(rec.live_evidence, "read_canary_orders", lambda root: [dict(CANARY_ROW)])
     monkeypatch.setattr(
         rec.live_governance, "prepare_unreported_order_recording",
         lambda canary_record, **kw: {"bound_task": _TASK, "canary_order_id": CANARY_ID},

@@ -974,7 +974,7 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
 
     # 7. Retired 2026-09-15 (PR1r): the `canary_evidence` row, with the promotion gate it reported.
     #    The frozen canary history is still readable on its own board:
-    #    python -m runtime.mvp_runtime.crypto.live_promotion
+    #    python -m runtime.mvp_runtime.crypto.live_evidence
 
     # 8. The account read (LP1) — not required to place an order, but going live without
     #    being able to see the account is flying blind, so it is reported. `account_configured`

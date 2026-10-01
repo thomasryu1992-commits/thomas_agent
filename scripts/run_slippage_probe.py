@@ -67,7 +67,7 @@ from runtime.mvp_runtime.cli_common import (  # noqa: E402
 )
 from runtime.mvp_runtime.control import ControlStore  # noqa: E402
 from runtime.mvp_runtime.crypto import live_execution, live_governance, live_leg, probe  # noqa: E402
-from runtime.mvp_runtime.crypto import live_promotion, pre_order_gate  # noqa: E402
+from runtime.mvp_runtime.crypto import live_evidence, pre_order_gate  # noqa: E402
 from runtime.mvp_runtime.crypto.account import read_account, select_account_feed  # noqa: E402
 from runtime.mvp_runtime.crypto.features import latest_feature_row  # noqa: E402
 from runtime.mvp_runtime.crypto.guards import DEFAULT_RISK_LIMITS, run_risk_guard  # noqa: E402
@@ -458,7 +458,7 @@ def _warn_if_leg_left(result: dict, symbol: str) -> bool:
 def _close_failure(closed: dict) -> str:
     """What an unsuccessful close actually was, in words: an unconfirmed close is not the same as
     one the venue confirmed and this runtime could not price (whose legs are already withdrawn)."""
-    if closed.get("exit") and (closed["exit"].get("reconcile_status") == live_promotion.RECONCILED):
+    if closed.get("exit") and (closed["exit"].get("reconcile_status") == live_evidence.RECONCILED):
         return "the close confirmed but could not be priced"
     return "the close did not confirm"
 
@@ -964,7 +964,7 @@ def run_fire(
     fill = entry.get("fill") or {}
     filled_qty = float(fill.get("executed_qty") or 0.0)
     fill_price = float(fill.get("avg_price") or 0.0)
-    confirmed = entry["reconcile_status"] == live_promotion.RECONCILED and filled_qty > 0 and fill_price > 0
+    confirmed = entry["reconcile_status"] == live_evidence.RECONCILED and filled_qty > 0 and fill_price > 0
 
     def _fail_cell(note: str) -> None:
         _record_plan(probe.mark_cell(plan, cell_index, status=probe.CELL_EMPTY,

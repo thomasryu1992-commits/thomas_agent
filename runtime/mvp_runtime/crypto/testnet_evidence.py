@@ -10,7 +10,8 @@ fill whose renamed fields the settle path could not read, 42 cycles stuck) were 
 *after* the entry. An entry-only rehearsal reproduces none of them; one full cycle reproduces all
 three.
 
-The shape of this registry is the retired canary registry's, deliberately (`live_promotion`, PR1r):
+The shape of this registry is the retired canary registry's, deliberately (`live_evidence`, named
+`live_promotion` until refactor plan L-2.3; PR1r):
 
 - **the venue's own answers are stored, and the verdict is derived** — never a stored ``clean``
   boolean a writer could assert. A row is complete because its parts say so, on every read;

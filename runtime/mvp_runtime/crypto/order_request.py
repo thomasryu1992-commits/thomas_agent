@@ -70,9 +70,9 @@ CLIENT_ORDER_ID_PATTERN = re.compile(r"\A[.A-Z:/a-z0-9_-]{1,36}\Z")
 # reconcile_status vocabulary. RECONCILED is also what the historical canary rows derived `clean` from
 # (clean iff RECONCILED and no mismatch). It was defined in live_promotion, beside those rows, until
 # crypto PR7b-2 moved it into live_execution, below the ledger that reads it; since crypto PR7e-4 it is
-# defined here and live_execution re-exports it. live_promotion and the live leg import it through
-# live_execution, so the rows and this vocabulary still agree by construction, and
-# scripts/run_slippage_probe.py reads it through live_promotion.
+# defined here and live_execution re-exports it. live_evidence (named live_promotion until refactor plan
+# L-2.3) imports it from here, so the rows and this vocabulary still agree by construction, and
+# scripts/run_slippage_probe.py reads it through live_evidence.
 RECONCILED = "RECONCILED"
 MISMATCH = "MISMATCH"
 NOT_FOUND = "NOT_FOUND"

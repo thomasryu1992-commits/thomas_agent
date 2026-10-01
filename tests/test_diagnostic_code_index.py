@@ -154,7 +154,7 @@ def test_a_code_named_by_a_module_constant_is_resolved():
         ("LIVE_HISTORY_TAMPERED", "runtime/mvp_runtime/crypto/live_ledger.py"),
         ("LIVE_HISTORY_TAMPERED", "runtime/mvp_runtime/crypto/live_pnl.py"),
         ("LIVE_HISTORY_UNREADABLE", "runtime/mvp_runtime/crypto/live_ledger.py"),
-        ("CANARY_HISTORY_UNREADABLE", "runtime/mvp_runtime/crypto/live_promotion.py"),
+        ("CANARY_HISTORY_UNREADABLE", "runtime/mvp_runtime/crypto/live_evidence.py"),
     ):
         assert module in per_code.get(code, set()), f"{code} is raised from {module} but not indexed"
 

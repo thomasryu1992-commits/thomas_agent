@@ -124,7 +124,7 @@ def read_live_outcomes(root: Path | None = None) -> list[dict[str, Any]]:
     Unchanged signature and unchanged rows whenever no correction exists, which is every
     deployment until one is written: with the corrections file absent this reads nothing extra,
     touches no approval store, and returns exactly what it always did. That is what let the
-    correction record be added at ONE chokepoint — `breaker_watch`, `cycle`, `live_promotion`,
+    correction record be added at ONE chokepoint — `breaker_watch`, `cycle`, `live_evidence`,
     `run_slippage_probe` and `live_pnl`'s own readers all pass through here, and not one of
     them needed a line.
 
