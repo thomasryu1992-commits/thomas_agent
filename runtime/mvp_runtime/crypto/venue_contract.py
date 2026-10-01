@@ -1004,7 +1004,7 @@ def refresh_verification(*, collector: Any, now: str, root: Path | None = None, 
     take down the loop that manages real positions in order to fail at bookkeeping. Every failure is
     a status line and a moved mark.
 
-    Asks nothing unless live trading is opted in (the live adapter exists only then) and a valid budget
+    Asks nothing unless live trading is opted in (the venue reader exists only then) and a valid budget
     names the symbols, and nothing in a fire whose market data the venue already rate limited; asks
     through the raw adapter, never the one the API breaker records."""
     try:
@@ -1022,9 +1022,9 @@ def refresh_verification(*, collector: Any, now: str, root: Path | None = None, 
             mark["outcome"] = OUTCOME_RATE_LIMITED
         else:
             if adapter is None:
-                from .live_execution import select_order_adapter
+                from .live_execution import select_venue_reader
 
-                adapter = select_order_adapter(now=now, root=root)
+                adapter = select_venue_reader(now=now, root=root)
             if getattr(adapter, "network_egress", False) is not True:
                 mark["outcome"] = OUTCOME_NOT_OPTED_IN
             else:

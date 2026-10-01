@@ -1,6 +1,6 @@
 # Crypto 리팩터·모듈화 계획 — 현재 구조 지도와 남은 단계
 
-**상태:** DECIDED 2026-09-30 — D-1~D-5 권고대로(Thomas). 진행: PR-02·03(#1049), PR-04(#1059), PR-05(#1060), PR-07(#1064), PR-08(#1068, 리플레이 백테스트 분리), PR-09(#1071, 템플릿 공간 분리), PR-10(#1072, 생성기 분리), PR-11(#1075, 사이클 단계 함수 추출), PR-12(#1077, `live_order` 저장소 분리), PR-13(#1079, `live_leg` 결과 어휘·판독 함수 분리) 머지. `factory`는 5,477줄에서 1,763줄이, `live_order`는 2,041줄에서 769줄이, `live_leg`는 1,931줄에서 1,432줄이 됐다. PR-06 실측은 §K-1에 기록. PR-13까지는 candidate-1079로 배포해 첫 파이어를 관측했고(2026-09-30) 단계마다 독립 리뷰도 받았다. PR-13의 서명 테스트넷 사이클 1회는 아직 없다: 2026-09-30에 운영자가 실행했고, 실행 단계가 PAPER이고 테스트넷 opt-in이 꺼져 있어 가드가 거부했다(설계대로). SIGNED_TESTNET 전이 뒤에 다시 돌린다. PR-S3(#1082, 승격 문 CAS, 행동 변경: 풀이 바뀌었으면 설치 거부) 머지, candidate-1082로 배포·관측. PR-14(`live_route` 사실 수집 분리: `_read_leg_facts`·`_read_entry_facts`, 같은 모듈, 읽는 순서 그대로) PR 열림. PR-14도 테스트넷 사이클 없이 진행했다(Thomas 결정). PR-13과 함께 SIGNED_TESTNET 전이 뒤에 돌린다. 남은 구현: §S의 PR-15(R5).
+**상태:** DECIDED 2026-09-30 — D-1~D-5 권고대로(Thomas). 진행: PR-02·03(#1049), PR-04(#1059), PR-05(#1060), PR-07(#1064), PR-08(#1068, 리플레이 백테스트 분리), PR-09(#1071, 템플릿 공간 분리), PR-10(#1072, 생성기 분리), PR-11(#1075, 사이클 단계 함수 추출), PR-12(#1077, `live_order` 저장소 분리), PR-13(#1079, `live_leg` 결과 어휘·판독 함수 분리) 머지. `factory`는 5,477줄에서 1,763줄이, `live_order`는 2,041줄에서 769줄이, `live_leg`는 1,931줄에서 1,432줄이 됐다. PR-06 실측은 §K-1에 기록. PR-13까지는 candidate-1079로 배포해 첫 파이어를 관측했고(2026-09-30) 단계마다 독립 리뷰도 받았다. PR-13의 서명 테스트넷 사이클 1회는 아직 없다: 2026-09-30에 운영자가 실행했고, 실행 단계가 PAPER이고 테스트넷 opt-in이 꺼져 있어 가드가 거부했다(설계대로). SIGNED_TESTNET 전이 뒤에 다시 돌린다. PR-S3(#1082, 승격 문 CAS, 행동 변경: 풀이 바뀌었으면 설치 거부) 머지, candidate-1082로 배포·관측. PR-14(#1085, `live_route` 사실 수집 분리: `_read_leg_facts`·`_read_entry_facts`, 같은 모듈, 읽는 순서 그대로) 머지, candidate-1085로 배포·관측. PR-15(S-2: 베뉴 계약이 주문 불가 리더 `BinanceFuturesVenueReader`를 받는다) PR 열림. PR-14·15도 테스트넷 사이클 없이 진행했다(Thomas 결정). PR-13과 함께 SIGNED_TESTNET 전이 뒤에 돌린다. §S의 구현 PR은 이것으로 끝이다.
 
 **이 문서가 무엇인가:** "Crypto_AI_System — Architecture Refactor & Modularization Planning Task" 지시서(2026-09-30)에 대한
 조사 보고서와 이행 계획이다. 기준은 `origin/main` `97b3dd98`(2026-09-30 03:41Z)이다. 런타임 코드·테스트·설정은 바꾸지 않았다.
@@ -53,6 +53,7 @@
   2026-09-15 Thomas 결정("kill/pause 의미 유지 + Trading Soft Halt 신설")이다. 거래소에 걸린 브래킷 주문은 남아 있다.
 - **S-2 (묵시적 능력).** 스케줄러의 거래 발화가 `venue_contract` 새로고침에서 메인넷 **주문 가능** 어댑터를 만든다.
   실제로 부르는 것은 `/order/test`와 GET뿐이고, 시험이 모듈 단위로 이를 고정한다. 그래도 능력이 쓰임보다 넓다.
+  PR-15(2026-10-01)에서 주문 불가 리더로 좁혔다(아래 S-2).
 - **S-3 (경합).** 승격 문(`scripts/promote_strategy_candidates.py`)은 풀을 잠금 밖에서 읽는다. 그리고 파일 전체를 잠금
   안에서 교체한다. 그 사이에 사이클의 두 writer(상태 전이, LIVE tier 해제)가 쓴 내용은 덮어써질 수 있다.
 
@@ -377,7 +378,9 @@ M-2b의 대상이 아니다.
 - 2026-09-15 조사가 P1으로 보고했고, Thomas가 "kill/pause 의미 유지 + Trading Soft Halt 신설"로 결정했다.
   이 리팩터는 이 의미를 바꾸지 않는다. 지시서의 halt 계약과 다르다는 점은 운영 문서에 계속 남겨 둔다.
 
-**S-2 — 스케줄러 거래 발화가 주문 가능 어댑터를 만든다 (CURRENT, 새로 적음).**
+**S-2 — 스케줄러 거래 발화가 주문 가능 어댑터를 만든다 (HISTORICAL — PR-15로 고침, 아래는 고치기 전 기록).**
+
+- **고친 내용 (PR-15, 2026-10-01):** `BinanceFuturesOrderAdapter`를 둘로 나눴다. `BinanceFuturesVenueReader`는 서명·`validate_order`·`position_mode`·`fetch_order`·`open_orders`·`algo_open_orders`만 가진다. `BinanceFuturesOrderAdapter`는 그것을 상속하고 `submit`·`cancel_order`만 더한다. `venue_contract.refresh_verification`은 `select_order_adapter` 대신 같은 게이트의 `select_venue_reader`로 리더를 만든다. 그래서 이 모듈에 `adapter.submit`이 들어와도 그 객체에는 그 메서드가 없다. 명부(PR-02)는 그대로 모든 호출을 고정한다. 운영자 스크립트 `list_resting_orders.py`·`diagnose_bracket_leg.py`는 아직 주문 어댑터를 받는다(후속 후보).
 
 - 무엇이 일어나나: `_refresh_venue_contract`(scheduler) → `venue_contract.py:1025` `select_order_adapter` →
   `MVP_LIVE_TRADING=real`이면 `BinanceFuturesOrderAdapter`가 만들어진다. `submit`·`cancel_order` 메서드를 가진 객체다.

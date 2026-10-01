@@ -130,7 +130,8 @@ from .readiness_model import (  # noqa: F401
 )
 
 # LP4's order adapter exists (merged 2026-07-25): `live_execution.BinanceFuturesOrderAdapter`
-# can sign, send, and reconcile an order. This is a constant rather than a computed check
+# can sign, send, and reconcile an order (its read-and-validate half is `BinanceFuturesVenueReader`
+# since refactor plan PR-15). This is a constant rather than a computed check
 # because it is a fact about the codebase, not about this machine — whether an order may
 # actually be sent is the live-trading opt-in, the confirmation phrase, the registered budget
 # and the kill switches, each of which the board checks on its own row.
