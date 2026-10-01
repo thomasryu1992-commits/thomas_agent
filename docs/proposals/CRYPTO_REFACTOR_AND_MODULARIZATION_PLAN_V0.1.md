@@ -380,7 +380,7 @@ M-2b의 대상이 아니다.
 
 **S-2 — 스케줄러 거래 발화가 주문 가능 어댑터를 만든다 (HISTORICAL — PR-15로 고침, 아래는 고치기 전 기록).**
 
-- **고친 내용 (PR-15, 2026-10-01):** `BinanceFuturesOrderAdapter`를 둘로 나눴다. `BinanceFuturesVenueReader`는 서명·`validate_order`·`position_mode`·`fetch_order`·`open_orders`·`algo_open_orders`만 가진다. `BinanceFuturesOrderAdapter`는 그것을 상속하고 `submit`·`cancel_order`만 더한다. `venue_contract.refresh_verification`은 `select_order_adapter` 대신 같은 게이트의 `select_venue_reader`로 리더를 만든다. 그래서 이 모듈에 `adapter.submit`이 들어와도 그 객체에는 그 메서드가 없다. 명부(PR-02)는 그대로 모든 호출을 고정한다. 운영자 스크립트 `list_resting_orders.py`·`diagnose_bracket_leg.py`는 아직 주문 어댑터를 받는다(후속 후보).
+- **고친 내용 (PR-15, 2026-10-01):** `BinanceFuturesOrderAdapter`를 둘로 나눴다. `BinanceFuturesVenueReader`는 서명·`validate_order`·`position_mode`·`fetch_order`·`open_orders`·`algo_open_orders`만 가진다. `BinanceFuturesOrderAdapter`는 그것을 상속하고 `submit`·`cancel_order`만 더한다. `venue_contract.refresh_verification`은 `select_order_adapter` 대신 같은 게이트의 `select_venue_reader`로 리더를 만든다. 그래서 이 모듈에 `adapter.submit`이 들어와도 그 객체에는 그 메서드가 없다. 명부(PR-02)는 그대로 모든 호출을 고정한다. 운영자 스크립트 `list_resting_orders.py`·`diagnose_bracket_leg.py`도 후속 PR에서 리더로 옮겼다. 스크립트 명부는 이제 주문 어댑터를 고르는 스크립트를 `EXCHANGE_WRITE`로 분류한다.
 
 - 무엇이 일어나나: `_refresh_venue_contract`(scheduler) → `venue_contract.py:1025` `select_order_adapter` →
   `MVP_LIVE_TRADING=real`이면 `BinanceFuturesOrderAdapter`가 만들어진다. `submit`·`cancel_order` 메서드를 가진 객체다.

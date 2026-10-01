@@ -3,7 +3,8 @@
     python -m scripts.list_resting_orders
     python -m scripts.list_resting_orders --symbol ETHUSDT --json
 
-Read-only. It places nothing, cancels nothing, and has no flag that would let it.
+Read-only. It places nothing, cancels nothing, and has no flag that would let it. It holds the venue
+reader (``live_execution.select_venue_reader``), which has no method that sends or cancels.
 
 **Why it exists.** On 2026-08-03T04:28:58Z a ``closePosition`` STOP_MARKET was accepted by the
 venue, could not be found by the query that followed, was therefore recorded as ``placed:
@@ -24,8 +25,8 @@ leg, a hand-placed order, or an orphan all land there, and only a person can tel
 The runtime holding no open positions makes every resting order unowned by definition, which is
 exactly the state that matters after a naked close.
 
-Reaching the venue needs the order key, so without ``MVP_LIVE_TRADING=real`` this selects the
-inert adapter and says plainly that it asked nothing. Claude does not run this and does not
+Reaching the venue needs the order key, so without ``MVP_LIVE_TRADING=real`` the reader's selector
+hands back the inert adapter and says plainly that it asked nothing. Claude does not run this and does not
 handle the keys.
 """
 
@@ -40,7 +41,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from runtime.mvp_runtime.crypto.live_execution import select_order_adapter  # noqa: E402
+from runtime.mvp_runtime.crypto.live_execution import select_venue_reader  # noqa: E402
 from runtime.mvp_runtime.crypto.live_position import list_open_live_positions  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
 
@@ -94,9 +95,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        adapter = select_order_adapter()
+        adapter = select_venue_reader()
     except MvpRuntimeError as exc:
-        print(f"BLOCKED: could not select an order adapter ({exc.reason_code})")
+        print(f"BLOCKED: could not select the venue reader ({exc.reason_code})")
         return EXIT_BLOCKED
     live = bool(getattr(adapter, "network_egress", False))
 
