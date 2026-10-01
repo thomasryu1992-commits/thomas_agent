@@ -52,7 +52,7 @@ A_TARGET = {"symbol": "ETHUSDT", "side": "BUY", "type": "LIMIT",
 
 
 def _run(monkeypatch, *, adapter, positions=(), argv=None):
-    monkeypatch.setattr(lister, "select_order_adapter", lambda: adapter)
+    monkeypatch.setattr(lister, "select_venue_reader", lambda: adapter)
     monkeypatch.setattr(lister, "list_open_live_positions", lambda root=None: list(positions))
     return lister.main(argv or [])
 

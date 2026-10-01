@@ -38,7 +38,8 @@ rejection that depends on account state at that instant — no position to reduc
 count, a margin condition — can pass here and still fail on the real path. So ACCEPTED narrows
 the cause to something state-dependent; it never says the order would land.
 
-**Read-only against the venue, and still Thomas's.** It signs with the live order key, so
+**Read-only against the venue, and still Thomas's.** It signs with the live order key through the venue
+reader (``live_execution.select_venue_reader``), which has no method that sends or cancels, so
 without ``MVP_LIVE_TRADING=real`` it selects the inert dry-run adapter and asks nothing — and
 says so, rather than reporting an unasked question as a pass. Claude does not run this and does
 not handle the keys.
@@ -57,7 +58,7 @@ if str(ROOT) not in sys.path:
 
 from runtime.mvp_runtime.crypto.live_execution import (  # noqa: E402
     build_order_request,
-    select_order_adapter,
+    select_venue_reader,
 )
 from runtime.mvp_runtime.crypto.live_leg import build_bracket_intent  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
@@ -127,9 +128,9 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_USAGE
 
     try:
-        adapter = select_order_adapter()
+        adapter = select_venue_reader()
     except MvpRuntimeError as exc:
-        print(f"BLOCKED: could not select an order adapter ({exc.reason_code})")
+        print(f"BLOCKED: could not select the venue reader ({exc.reason_code})")
         return EXIT_USAGE
     live = bool(getattr(adapter, "network_egress", False))
 

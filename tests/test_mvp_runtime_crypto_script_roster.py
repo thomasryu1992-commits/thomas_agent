@@ -9,8 +9,9 @@ what the other rosters already establish, so a class cannot be picked by hand wi
   here, and nothing else is.
 - **the exchange classes come from the egress roster.** ``EXCHANGE_WRITE`` is exactly the set of
   scripts whose entries in ``test_mvp_runtime_crypto_egress_roster.ROSTER`` reach a send or a cancel.
-  ``ORDER_KEY_READ`` is exactly the set whose entries there only select the order-key adapter,
-  validate an order or read. A script cannot be relabelled without its calls changing too.
+  ``ORDER_KEY_READ`` is exactly the set whose entries there only select the venue reader,
+  validate an order or read. Selecting the order adapter itself makes a script ``EXCHANGE_WRITE``
+  (PR-15 follow-up): that object can send, whatever the script calls on it today. A script cannot be relabelled without its calls changing too.
 - **the writers come from the state guard.** Every lane script in
   ``test_state_guard_covers_state_writing_clis.GUARDED`` writes something, so none of them may be
   ``READ``. No ``READ`` script calls the host-root guard either, because only a writer needs it.
@@ -18,7 +19,8 @@ what the other rosters already establish, so a class cannot be picked by hand wi
 The classes:
 
 - ``EXCHANGE_WRITE``: can send, close or cancel at the venue.
-- ``ORDER_KEY_READ``: holds the mainnet order-key adapter to validate or read, and sends nothing.
+- ``ORDER_KEY_READ``: holds the venue reader (the mainnet order key, no ``submit`` or ``cancel_order``) to
+  validate or read, and sends nothing.
 - ``STATE_WRITE``: writes governed or live state (approvals, stage, pool, budget, limits, breakers,
   ledger).
 - ``RESEARCH_WRITE``: writes research or observation stores only (candidates, forward books,
@@ -81,10 +83,11 @@ SCRIPTS: dict[str, str] = {
 
 CLASSES = frozenset({EXCHANGE_WRITE, ORDER_KEY_READ, STATE_WRITE, RESEARCH_WRITE, READ})
 
-# Egress-roster callees that do not send: selecting the order-key adapter, validating, and the checks
-# that validate and read. A script whose roster entries are only these is ORDER_KEY_READ.
+# Egress-roster callees that do not send: selecting the venue reader, validating, and the checks that
+# validate and read. A script whose roster entries are only these is ORDER_KEY_READ. The order adapter's
+# own selector is not one of them: it hands over an object that can send.
 NON_SENDING_CALLEES = frozenset({
-    "live_execution.select_order_adapter", "adapter.validate_order", "venue_contract.refresh_verification",
+    "live_execution.select_venue_reader", "adapter.validate_order", "venue_contract.refresh_verification",
 })
 
 
@@ -163,7 +166,8 @@ def test_no_read_script_guards_against_a_root_write():
 def test_the_derivations_see_what_they_check(tmp_path):
     """The derivations above, on inputs built to break them. An aliased lane import and a
     function-local one both count as the lane, and a similar-looking module does not. A script that
-    only validates is ORDER_KEY_READ. One that also cancels is EXCHANGE_WRITE."""
+    only validates through the venue reader is ORDER_KEY_READ. One that also cancels is EXCHANGE_WRITE,
+    and so is one that only selects the order adapter."""
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     (scripts / "a.py").write_text("from runtime.mvp_runtime.crypto import live_route as r\n")
@@ -171,8 +175,10 @@ def test_the_derivations_see_what_they_check(tmp_path):
     (scripts / "c.py").write_text("import runtime.mvp_runtime.crypto_other\nfrom runtime.mvp_runtime import store\n")
     assert lane_scripts(tmp_path) == {"scripts/a.py", "scripts/b.py"}
     roster = {("scripts/v.py", "main", "adapter.validate_order"): (1, ""),
-              ("scripts/v.py", "main", "live_execution.select_order_adapter"): (1, ""),
+              ("scripts/v.py", "main", "live_execution.select_venue_reader"): (1, ""),
+              ("scripts/u.py", "main", "live_execution.select_order_adapter"): (1, ""),
               ("scripts/w.py", "main", "live_execution.select_order_adapter"): (1, ""),
               ("scripts/w.py", "main", "adapter.cancel_order"): (1, ""),
               ("runtime/x.py", "f", "adapter.submit"): (1, "")}
-    assert exchange_classes(roster) == {"scripts/v.py": ORDER_KEY_READ, "scripts/w.py": EXCHANGE_WRITE}
+    assert exchange_classes(roster) == {"scripts/v.py": ORDER_KEY_READ, "scripts/u.py": EXCHANGE_WRITE,
+                                        "scripts/w.py": EXCHANGE_WRITE}

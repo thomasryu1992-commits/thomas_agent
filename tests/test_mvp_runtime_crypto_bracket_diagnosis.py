@@ -94,7 +94,7 @@ class _Venue:
 
 
 def _adapter(body, code):
-    adapter = lx.BinanceFuturesOrderAdapter.__new__(lx.BinanceFuturesOrderAdapter)
+    adapter = lx.BinanceFuturesVenueReader.__new__(lx.BinanceFuturesVenueReader)
     venue = _Venue(body, code)
     adapter._signed_request = venue._signed_request  # type: ignore[method-assign]
     return adapter, venue
@@ -123,7 +123,7 @@ def test_it_asks_the_validation_endpoint_and_never_the_order_endpoint():
 
 def test_a_transport_failure_still_raises():
     """'The venue refused it' and 'I could not ask' must not arrive as the same value."""
-    adapter = lx.BinanceFuturesOrderAdapter.__new__(lx.BinanceFuturesOrderAdapter)
+    adapter = lx.BinanceFuturesVenueReader.__new__(lx.BinanceFuturesVenueReader)
 
     def _boom(*a, **k):
         raise MvpRuntimeError(lx.ORDER_TRANSPORT, "live order request failed or timed out")
@@ -169,7 +169,7 @@ def test_a_rejection_exits_non_zero(monkeypatch, capsys):
         def validate_order(self, request, *, timeout_seconds=10):
             return {"accepted": False, "code": -4136, "msg": "stop price less than..."}
 
-    monkeypatch.setattr(diag, "select_order_adapter", lambda: _Rejecting())
+    monkeypatch.setattr(diag, "select_venue_reader", lambda: _Rejecting())
     assert diag.main([]) == diag.EXIT_REJECTED
     assert "-4136" in capsys.readouterr().out
 
@@ -181,7 +181,7 @@ def test_an_unreachable_venue_is_neither_accepted_nor_rejected(monkeypatch, caps
         def validate_order(self, request, *, timeout_seconds=10):
             raise MvpRuntimeError(lx.ORDER_TRANSPORT, "timed out")
 
-    monkeypatch.setattr(diag, "select_order_adapter", lambda: _Down())
+    monkeypatch.setattr(diag, "select_venue_reader", lambda: _Down())
     assert diag.main([]) == diag.EXIT_OK      # not a rejection — nothing was learned
     assert "UNREACHABLE" in capsys.readouterr().out
 
@@ -211,7 +211,7 @@ def test_the_plain_target_leg_is_still_validatable():
 def test_the_real_adapter_declines_an_algo_request_without_opening_a_socket():
     """Structural: it must not reach `_signed_request` at all, or an unreachable venue and an
     unvalidatable request would arrive as the same failure."""
-    adapter = lx.BinanceFuturesOrderAdapter.__new__(lx.BinanceFuturesOrderAdapter)
+    adapter = lx.BinanceFuturesVenueReader.__new__(lx.BinanceFuturesVenueReader)
 
     def _boom(*a, **k):
         raise AssertionError("validate_order opened a socket for an algo request")

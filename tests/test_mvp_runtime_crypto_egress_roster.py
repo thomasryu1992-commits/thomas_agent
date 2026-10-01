@@ -117,9 +117,9 @@ ROSTER: dict[tuple[str, str, str], tuple[int, str]] = {
     (_TESTNET, "run_cycle", "adapter.cancel_order"): (1, "the testnet legs"),
     (_TESTNET, "run_cycle", "live_leg.place_bracket_leg"): (1, "the testnet brackets"),
     ("scripts/emergency_close.py", "run_confirm", "live_route.run_emergency_close"): (1, "the approved emergency close"),
-    ("scripts/diagnose_bracket_leg.py", "main", "live_execution.select_order_adapter"): (1, "validation only"),
+    ("scripts/diagnose_bracket_leg.py", "main", "live_execution.select_venue_reader"): (1, "validation only; no submit or cancel"),
     ("scripts/diagnose_bracket_leg.py", "main", "adapter.validate_order"): (1, "/order/test only; creates nothing"),
-    ("scripts/list_resting_orders.py", "main", "live_execution.select_order_adapter"): (1, "reads resting orders only"),
+    ("scripts/list_resting_orders.py", "main", "live_execution.select_venue_reader"): (1, "reads resting orders only; no submit or cancel"),
     # --- not exchange calls: the same method name on other objects ----------------------------------------
     ("runtime/mvp_runtime/dispatch_bridge.py", "apply_workflow_command", "workflow_store.submit"): (1, "not an exchange call"),
     ("runtime/mvp_runtime/scheduler.py", "_execute", "workflow_store.submit"): (1, "not an exchange call"),
