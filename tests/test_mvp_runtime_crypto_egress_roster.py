@@ -34,9 +34,10 @@ entry whose call is gone. Adding an entry is the decision. It belongs in the sam
 a reviewer sees it.
 
 Two decisions stand behind the current entries. Recording them here makes them visible, not new.
-- The venue-contract refresh runs inside the trading fire and builds the mainnet order-capable
-  adapter to validate and read (S-2 in the plan, Thomas D-5 2026-09-30: this roster covers it; the
-  read-only adapter protocol waits for the execution-layer step).
+- The venue-contract refresh runs inside the trading fire and builds a mainnet adapter with the order
+  key to validate and read (S-2 in the plan, Thomas D-5 2026-09-30). Since PR-15 that adapter is
+  ``BinanceFuturesVenueReader``, which has no ``submit`` and no ``cancel_order``; this roster still
+  pins every call it makes.
 - The operator's probe, signed-testnet and emergency-close scripts are deliberate doors outside
   ``live_route``.
 """
@@ -56,7 +57,7 @@ METHOD_PRIMITIVES = frozenset({"submit", "cancel_order", "validate_order"})
 # Functions that reach a primitive, by the lane module that defines them. A call is matched by name and
 # resolved through the file's imports. It is skipped only when it resolves to a module outside the lane.
 DOORS: dict[str, frozenset[str]] = {
-    "live_execution": frozenset({"submit_and_reconcile", "select_order_adapter"}),
+    "live_execution": frozenset({"submit_and_reconcile", "select_order_adapter", "select_venue_reader"}),
     "testnet_execution": frozenset({"select_testnet_order_adapter"}),
     "live_route": frozenset({"select_live_gate", "run_live_leg", "run_emergency_close"}),
     "live_leg": frozenset({"execute_live_entry", "execute_live_exit", "place_bracket_leg",
@@ -100,7 +101,7 @@ ROSTER: dict[tuple[str, str, str], tuple[int, str]] = {
         1, "the only autonomous caller of the live plane"),
     # --- the venue contract: validates and reads with the order key, never sends (S-2, D-5) --------------
     (_VENUE, "run_checks", "adapter.validate_order"): (3, "/order/test only; creates nothing"),
-    (_VENUE, "refresh_verification", "live_execution.select_order_adapter"): (1, "the order-key adapter, for validation"),
+    (_VENUE, "refresh_verification", "live_execution.select_venue_reader"): (1, "the order-key reader: validates and reads, no submit or cancel"),
     (_VENUE, "refresh_verification", "venue_contract.run_checks"): (1, "the checks"),
     ("runtime/mvp_runtime/scheduler.py", "_execute._refresh_venue_contract", "venue_contract.refresh_verification"): (
         1, "the trading fire's contract refresh"),
@@ -129,7 +130,7 @@ ROSTER: dict[tuple[str, str, str], tuple[int, str]] = {
 # (file, enclosing function, verb) -> (calls, what it is for): signed requests that are not GETs.
 SIGNED_WRITES: dict[tuple[str, str, str], tuple[int, str]] = {
     (_EXEC, "BinanceFuturesOrderAdapter.submit", "POST"): (1, "/fapi/v1/order or /fapi/v1/algoOrder"),
-    (_EXEC, "BinanceFuturesOrderAdapter.validate_order", "POST"): (1, "/fapi/v1/order/test"),
+    (_EXEC, "BinanceFuturesVenueReader.validate_order", "POST"): (1, "/fapi/v1/order/test"),
     (_EXEC, "BinanceFuturesOrderAdapter.cancel_order", "DELETE"): (1, "/fapi/v1/order or /fapi/v1/algoOrder"),
     ("runtime/mvp_runtime/crypto/testnet_execution.py", "BinanceTestnetOrderAdapter.submit", "POST"): (1, "testnet host"),
     ("runtime/mvp_runtime/crypto/testnet_execution.py", "BinanceTestnetOrderAdapter.cancel_order", "DELETE"): (1, "testnet host"),

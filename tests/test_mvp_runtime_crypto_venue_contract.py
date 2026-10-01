@@ -220,7 +220,7 @@ def test_the_probe_is_the_measured_shape_and_reaches_the_literal_validator_path(
     assert "algoType" not in probe and probe["closePosition"] == "true" and probe["type"] == "STOP_MARKET"
     assert live_execution.is_algo_request(probe) is False
 
-    adapter = live_execution.BinanceFuturesOrderAdapter.__new__(live_execution.BinanceFuturesOrderAdapter)
+    adapter = live_execution.BinanceFuturesVenueReader.__new__(live_execution.BinanceFuturesVenueReader)
     sent = []
 
     def signed(method, path, params, *, timeout_seconds):
@@ -252,7 +252,7 @@ def test_only_a_business_answer_judges_the_migration(answer, result):
 
 
 def test_the_validator_answer_carries_its_http_status_only_when_the_venue_sent_one():
-    adapter = live_execution.BinanceFuturesOrderAdapter.__new__(live_execution.BinanceFuturesOrderAdapter)
+    adapter = live_execution.BinanceFuturesVenueReader.__new__(live_execution.BinanceFuturesVenueReader)
     adapter._signed_request = lambda m, p, params, *, timeout_seconds: ({"code": -2021, "msg": "x"}, -2021)
     assert adapter.validate_order({"symbol": "ETHUSDT"}) == {"accepted": False, "code": -2021, "msg": "x"}
 
@@ -342,7 +342,7 @@ def test_hedge_mode_fails_and_an_unanswered_mode_is_unverified_even_on_a_404():
 
 
 def test_the_position_mode_read_never_reads_an_unclear_answer_as_one_way():
-    adapter = live_execution.BinanceFuturesOrderAdapter.__new__(live_execution.BinanceFuturesOrderAdapter)
+    adapter = live_execution.BinanceFuturesVenueReader.__new__(live_execution.BinanceFuturesVenueReader)
     answers = iter([({"dualSidePosition": False}, None), ({"dualSidePosition": True}, None), ({}, None),
                     ({"code": -2015, "msg": "Invalid API-key"}, -2015)])
     sent = []

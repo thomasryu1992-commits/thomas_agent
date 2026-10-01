@@ -304,6 +304,28 @@ class OrderAdapter(Protocol):
     ) -> dict[str, Any] | None: ...
 
 
+class VenueReader(Protocol):
+    """What the venue contract sentinel asks of the venue (PR-15): whether it would accept a request,
+    the position mode, and the orders it holds. Nothing here places or cancels an order."""
+
+    tool_id: str
+    tool_version: str
+    network_egress: bool
+
+    def validate_order(self, order_request: Mapping[str, Any], *, timeout_seconds: int = 10) -> dict[str, Any]: ...
+
+    def position_mode(self, *, timeout_seconds: int = 10) -> bool: ...
+
+    def fetch_order(
+        self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10,
+        algo: bool = False,
+    ) -> dict[str, Any] | None: ...
+
+    def open_orders(self, symbol: str | None = None, *, timeout_seconds: int = 10) -> list[dict[str, Any]]: ...
+
+    def algo_open_orders(self, symbol: str | None = None, *, timeout_seconds: int = 10) -> list[dict[str, Any]]: ...
+
+
 class DryRunOrderAdapter:
     """Default, inert adapter: records what WOULD be sent and reports a synthetic FILLED order,
     opening no socket. Lets the whole submit+reconcile orchestration run and be tested with zero
@@ -432,13 +454,17 @@ def _refusal_data(code: int, answer: Any) -> dict[str, Any]:
     return {"venue_code": code, **({"http_status": status} if isinstance(status, int) else {})}
 
 
-class BinanceFuturesOrderAdapter:
-    """The real adapter — constructed only behind the live-trading opt-in, host-allowlisted,
-    re-asserting authorization at every egress.
+class BinanceFuturesVenueReader:
+    """The real adapter's read-and-validate surface (crypto refactor plan PR-15, finding S-2):
+    constructed only behind the live-trading opt-in, host-allowlisted, re-asserting authorization at
+    every egress. It can ask the venue whether it would accept an order (``/order/test``, which
+    creates nothing) and read orders and the position mode. It has no ``submit`` and no
+    ``cancel_order``: those are :class:`BinanceFuturesOrderAdapter`'s, which adds them to this class.
+    A caller that only validates and reads (the venue contract sentinel) holds this one, so a send
+    added there fails on a method this object does not have, as well as on the egress roster.
 
-    **This is the repository's first WRITE network egress.** Every other network path
-    (``account``, ``market_data``) is GET-only. The credential posture mirrors ``account.py``
-    exactly, because the signature travels in the query string:
+    The credential posture mirrors ``account.py`` exactly, because the signature travels in the query
+    string:
 
     - the key is read from its **own** env at call time (never stored on the instance), and a
       missing credential is reported **by name only**;
@@ -446,11 +472,7 @@ class BinanceFuturesOrderAdapter:
       a message, a log, or a record;
     - authorization is re-asserted before every request, so clearing ``MVP_LIVE_TRADING`` is a
       live revocation mid-flight — weaker than the grant file it replaced, since a running
-      container's environment does not change under it, but not nothing.
-
-    It still sends nothing on its own: ``submit_and_reconcile`` refuses unless the final guard
-    PASSed, and the whole adapter is only reachable once the operator has set
-    ``MVP_LIVE_TRADING=real`` and the order key."""
+      container's environment does not change under it, but not nothing."""
 
     tool_id = ORDER_ADAPTER_TOOL_ID
     tool_version = ORDER_ADAPTER_TOOL_VERSION
@@ -466,6 +488,7 @@ class BinanceFuturesOrderAdapter:
         self._base_url = base_url.rstrip("/")
         self._authorization = authorization
         # Where the control state is read at every submit (`control_refusal`); None is this checkout.
+        # Only the order adapter submits; the reader keeps it so both are built the same way.
         self._root = root
 
     def _assert(self) -> None:
@@ -539,44 +562,6 @@ class BinanceFuturesOrderAdapter:
             raise ToolError(
                 ORDER_MALFORMED_RESULT, "live order endpoint returned an unparseable response"
             ) from None
-
-    def submit(self, order_request: Mapping[str, Any], *, timeout_seconds: int = 10) -> dict[str, Any]:
-        """Send one order. Raises ``ToolError`` on a venue rejection or a transport failure.
-
-        A rejection is raised rather than returned because a rejected submit is not an outcome the
-        caller can act on directly — ``submit_and_reconcile`` catches it and asks the venue what
-        actually happened. The one rejection that is *informative* is a duplicate client order id:
-        it means this exact order already landed, so the reconcile read will find it.
-
-        Before anything is signed, the runtime control state is asked whether this order may leave
-        (`control_refusal`): an order that could add exposure is refused with ``ORDER_HALTED`` while
-        entries are not allowed. Exits and protection are never refused there."""
-        refusal = control_refusal(order_request, root=self._root)
-        if refusal is not None:
-            raise ToolError(ORDER_HALTED, f"order not sent: {refusal}")
-        body, code = answer = self._signed_request(
-            "POST",
-            ALGO_ORDER_PATH if is_algo_request(order_request) else ORDER_PATH,
-            dict(order_request),
-            timeout_seconds=timeout_seconds,
-        )
-        if code is not None:
-            if code == VENUE_DUPLICATE_CLIENT_ORDER_ID:
-                # Idempotency did its job: the original submission is already at the venue.
-                raise ToolError(
-                    ORDER_REJECTED,
-                    f"duplicate client order id ({code}) — the original order already landed; "
-                    "reconcile decides the outcome",
-                    data=_refusal_data(code, answer),
-                )
-            msg = body.get("msg") if isinstance(body, dict) else None
-            if code in VENUE_UNKNOWN_OUTCOME_CODES:
-                raise ToolError(ORDER_OUTCOME_UNKNOWN,
-                                f"venue could not say whether the order was applied (code {code}): {msg}",
-                                data=_refusal_data(code, answer))
-            raise ToolError(ORDER_REJECTED, f"venue rejected the order (code {code}): {msg}",
-                            data=_refusal_data(code, answer))
-        return body if isinstance(body, dict) else {}
 
     def validate_order(
         self, order_request: Mapping[str, Any], *, timeout_seconds: int = 10
@@ -743,6 +728,57 @@ class BinanceFuturesOrderAdapter:
             raise ToolError(ORDER_MALFORMED_RESULT, "the position-mode query did not say dualSidePosition")
         return hedge
 
+
+class BinanceFuturesOrderAdapter(BinanceFuturesVenueReader):
+    """The real order adapter: :class:`BinanceFuturesVenueReader` plus the two methods that change
+    what rests at the venue, ``submit`` and ``cancel_order``.
+
+    **This is the repository's first WRITE network egress.** Every other network path
+    (``account``, ``market_data``) is GET-only, and the reader's one POST (``/order/test``) creates
+    nothing. The credential posture is the reader's.
+
+    It still sends nothing on its own: ``submit_and_reconcile`` refuses unless the final guard
+    PASSed, and the whole adapter is only reachable once the operator has set
+    ``MVP_LIVE_TRADING=real`` and the order key."""
+
+    def submit(self, order_request: Mapping[str, Any], *, timeout_seconds: int = 10) -> dict[str, Any]:
+        """Send one order. Raises ``ToolError`` on a venue rejection or a transport failure.
+
+        A rejection is raised rather than returned because a rejected submit is not an outcome the
+        caller can act on directly — ``submit_and_reconcile`` catches it and asks the venue what
+        actually happened. The one rejection that is *informative* is a duplicate client order id:
+        it means this exact order already landed, so the reconcile read will find it.
+
+        Before anything is signed, the runtime control state is asked whether this order may leave
+        (`control_refusal`): an order that could add exposure is refused with ``ORDER_HALTED`` while
+        entries are not allowed. Exits and protection are never refused there."""
+        refusal = control_refusal(order_request, root=self._root)
+        if refusal is not None:
+            raise ToolError(ORDER_HALTED, f"order not sent: {refusal}")
+        body, code = answer = self._signed_request(
+            "POST",
+            ALGO_ORDER_PATH if is_algo_request(order_request) else ORDER_PATH,
+            dict(order_request),
+            timeout_seconds=timeout_seconds,
+        )
+        if code is not None:
+            if code == VENUE_DUPLICATE_CLIENT_ORDER_ID:
+                # Idempotency did its job: the original submission is already at the venue.
+                raise ToolError(
+                    ORDER_REJECTED,
+                    f"duplicate client order id ({code}) — the original order already landed; "
+                    "reconcile decides the outcome",
+                    data=_refusal_data(code, answer),
+                )
+            msg = body.get("msg") if isinstance(body, dict) else None
+            if code in VENUE_UNKNOWN_OUTCOME_CODES:
+                raise ToolError(ORDER_OUTCOME_UNKNOWN,
+                                f"venue could not say whether the order was applied (code {code}): {msg}",
+                                data=_refusal_data(code, answer))
+            raise ToolError(ORDER_REJECTED, f"venue rejected the order (code {code}): {msg}",
+                            data=_refusal_data(code, answer))
+        return body if isinstance(body, dict) else {}
+
     def cancel_order(
         self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10,
         algo: bool = False,
@@ -803,6 +839,24 @@ def select_order_adapter(*, now: str | None = None, root: Path | None = None) ->
         provider_id=LIVE_TRADING_PROVIDER_ID,
         default_factory=DryRunOrderAdapter,
         gated_factory=lambda authorization: BinanceFuturesOrderAdapter(authorization=authorization, root=root),
+    )
+
+
+def select_venue_reader(*, now: str | None = None, root: Path | None = None) -> VenueReader:
+    """The venue's read-and-validate surface if live trading is opted in, else the inert adapter (PR-15).
+
+    On the order adapter's own gate: the same switch, flags and provider, and the same key, because
+    ``/order/test`` and the order reads are signed with the order key. What it builds is
+    :class:`BinanceFuturesVenueReader`, which has no ``submit`` and no ``cancel_order``. The inert
+    default is the dry-run order adapter, which opens no socket and says ``network_egress = False``,
+    the value the venue contract reads as "not opted in" before it asks anything."""
+    return safety_gate.select_env_gated(
+        env_var=LIVE_TRADING_ENV,
+        opt_in_value=REAL_LIVE_TRADING,
+        flags=LIVE_TRADING_FLAGS,
+        provider_id=LIVE_TRADING_PROVIDER_ID,
+        default_factory=DryRunOrderAdapter,
+        gated_factory=lambda authorization: BinanceFuturesVenueReader(authorization=authorization, root=root),
     )
 
 
