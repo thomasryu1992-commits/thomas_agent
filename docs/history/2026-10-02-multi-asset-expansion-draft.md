@@ -46,3 +46,10 @@
   the same capital and not zero; use the same holdout/forward evidence bar; compare net of costs. The
   comparison cannot run until P4's multi-leg representation and option judgement rules exist. Before
   then, the only possible step is a read-only implied-vs-realised volatility measurement.
+- **Appendix A terms check 1-2 read from the source (2026-10-02):** the KIS customer terms (enacted
+  2022-08-08) allow automated self-use of one's own account around the clock, under rate limiting. Load
+  "above a certain level" can suspend or terminate access (arts. 9, 10, 12). The terms define no
+  read-only scope: one app key and secret cover both reads and orders (arts. 3, 7). So read-only is
+  enforced in code unless the application screen offers a scope. The check also found two conditions the
+  check list lacked. Quotes may not be given to third parties (art. 5(3)), so KIS quotes do not go to
+  hosted model prompts or outside channels. Keys may not be lent or delegated (art. 5(2)).
