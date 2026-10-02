@@ -38,3 +38,11 @@
   check) and keeps orders out of scope, so opening them is a new judgement rather than a promotion. If
   KIS keys carry no read-only scope, read-only is enforced in code on the #1086 pattern (a reader with
   no place or cancel). Until those three places are filled, no P1 code starts.
+- **D2 decided in the same PR (Thomas 2026-10-02):** options are for return, adopted only when they are
+  more capital-efficient than the alternatives. They are an option, not a lane. The draft recommended
+  deferral and the decision is wider, but what gets built and when does not move: options stay P4, last.
+  §6 records a derived, unratified comparison standard, because "efficiency" is where short gamma wins by
+  construction. Four rules: measure against worst loss and not margin; compare with the next-best use of
+  the same capital and not zero; use the same holdout/forward evidence bar; compare net of costs. The
+  comparison cannot run until P4's multi-leg representation and option judgement rules exist. Before
+  then, the only possible step is a read-only implied-vs-realised volatility measurement.
