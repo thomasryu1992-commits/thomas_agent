@@ -33,7 +33,7 @@ def test_every_definition_live_execution_offers_is_the_same_object():
     names = _definitions()
     assert len(names) >= 28
     offered = [n for n in names if n in vars(live_execution)]
-    assert {"build_order_request", "RECONCILED"} <= set(offered)
+    assert {"build_order_request", "reconcile_order"} <= set(offered)
     assert [n for n in offered if getattr(live_execution, n) is not getattr(order_request, n)] == []
 
 

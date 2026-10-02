@@ -105,6 +105,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from runtime.mvp_runtime.crypto import order_request
 
 CRYPTO = Path(__file__).resolve().parents[1] / "runtime" / "mvp_runtime" / "crypto"
 _PACKAGE = "runtime.mvp_runtime.crypto"
@@ -490,18 +491,17 @@ ACTING_EXTRA = frozenset({"live_route"})
 # The acting modules that reach research today, transitively, and what they reach
 # (docs/proposals/CRYPTO_SYSTEM_IMPROVEMENT_GAP_ANALYSIS_V0.1.md §16). Neither edge is direct:
 # - live_route -> promotion (``live_arm_problem``) -> forward_confirmation / judgement_fingerprint ->
-#   robustness / factory;
-# - breaker_watch -> pool -> candidate_ranking -> robustness / factory.
+#   robustness / backtest;
+# - breaker_watch -> pool -> candidate_ranking -> robustness / backtest.
 # Moving ``live_arm_problem`` off ``promotion`` is a live-path change (PR7 discipline). This pin only
 # shrinks: a module that stops reaching research must leave it in the same PR, and a new one fails.
 #
-# ``backtest``, ``template_space`` and ``generator`` are named since the replay, the template space and
-# the generator moved out of ``factory`` (refactor plan PR-08 to PR-10). They are the same code both
-# modules already reached inside ``factory``, under their own names, and no new edge: they reach them
-# through ``factory``'s imports.
+# ``factory``, ``template_space`` and ``generator`` left both sets when those three readers took the
+# replay's constants and ``holdout_split_index`` from ``backtest``, which defines them, instead of
+# through ``factory``'s re-exports (refactor plan PR-16, third follow-up).
 ACTING_MODULES_THAT_REACH_RESEARCH: dict[str, frozenset[str]] = {
-    "breaker_watch": frozenset({"factory", "template_space", "generator", "backtest", "robustness"}),
-    "live_route": frozenset({"factory", "template_space", "generator", "backtest", "robustness"}),
+    "breaker_watch": frozenset({"backtest", "robustness"}),
+    "live_route": frozenset({"backtest", "robustness"}),
 }
 
 
@@ -670,6 +670,6 @@ def test_the_names_pr04_moved_are_the_same_objects_where_they_were():
     assert live_route.halt_advice is control.halt_advice
     for name in ("TESTNET_MAX_ORDER_NOTIONAL_USDT", "TESTNET_MAX_DAILY_ORDERS"):
         assert getattr(testnet_execution, name) is getattr(testnet_evidence, name), name
-    assert live_evidence.RECONCILED is order_request.RECONCILED
+    assert order_request.RECONCILED is order_request.RECONCILED
     # refactor plan L-2.3: the old name is the same module object, not a copy of it
     assert live_promotion is live_evidence

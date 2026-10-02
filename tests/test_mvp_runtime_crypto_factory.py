@@ -861,7 +861,7 @@ def test_volatility_families_close_trades_on_a_market_that_has_regimes():
         if template.family not in VOLATILITY_FAMILIES:
             continue
         evidence = backtest_spec(_template_spec(template), snapshot)
-        assert evidence["closed_count"] >= factory.MIN_TRADES_PER_WINDOW, (
+        assert evidence["closed_count"] >= backtest.MIN_TRADES_PER_WINDOW, (
             f"{template.family} closed {evidence['closed_count']} trades — a family that "
             "cannot trade its own premise is noise in the rotation, not diversity"
         )
@@ -928,7 +928,7 @@ def test_backtest_is_deterministic_and_produces_outcomes():
     assert a["champion_score"] == a["robustness"]["robustness_score"]
     assert a["robustness"]["verdict"] in {"ROBUST", "PROVISIONAL", "FRAGILE"}
     # bars_replayed is what the SCORE saw; the rest is the untouched holdout tail.
-    assert a["bars_replayed"] == factory.holdout_split_index(200) == 140
+    assert a["bars_replayed"] == backtest.holdout_split_index(200) == 140
     assert a["holdout"]["bars"] == 200 - 140
     # M4a: realized payoff legs ride in the evidence for the promotion ranking.
     assert "avg_win_R" in a and "avg_loss_R" in a
@@ -1026,7 +1026,7 @@ def test_pooled_depth_is_per_symbol_and_never_the_sum():
     would tier a pooled candidate as though shown history that does not exist."""
     spec = StrategySpec.from_dict(_spec_dict())
     pooled = factory.backtest_spec_pooled(spec, [_trending_snapshot(), _shifted_snapshot()])
-    assert pooled["bars_replayed"] == factory.holdout_split_index(200) == 140
+    assert pooled["bars_replayed"] == backtest.holdout_split_index(200) == 140
     assert pooled["holdout"]["bars"] == 200 - 140
 
 
@@ -1036,7 +1036,7 @@ def test_pooled_depth_takes_the_shallowest_leg():
     pooled = factory.backtest_spec_pooled(
         spec, [_trending_snapshot(200), _shifted_snapshot(120)]
     )
-    assert pooled["bars_replayed"] == factory.holdout_split_index(120)
+    assert pooled["bars_replayed"] == backtest.holdout_split_index(120)
 
 
 def test_pooling_refuses_frames_from_a_different_cost_model():
@@ -1072,9 +1072,9 @@ def test_walk_forward_periods_subtotal_the_scored_region_exactly():
     evidence = backtest_spec(StrategySpec.from_dict(_spec_dict()), _trending_snapshot(400))
     assert evidence["closed_count"] > 0, "fixture must trade, or this pins nothing"
     wf = evidence["walk_forward"]
-    assert len(wf["period_r"]) == factory.WALK_FORWARD_PERIODS
-    assert len(wf["period_trades"]) == factory.WALK_FORWARD_PERIODS
-    assert wf["periods"] == factory.WALK_FORWARD_PERIODS
+    assert len(wf["period_r"]) == backtest.WALK_FORWARD_PERIODS
+    assert len(wf["period_trades"]) == backtest.WALK_FORWARD_PERIODS
+    assert wf["periods"] == backtest.WALK_FORWARD_PERIODS
     assert sum(wf["period_trades"]) == evidence["closed_count"]
     assert sum(wf["period_r"]) == pytest.approx(
         evidence["cost_summary"]["total_net_r"], abs=1e-6)
@@ -1212,7 +1212,7 @@ def test_slicing_a_built_frame_equals_rebuilding_it_except_the_last_bars_funding
     and deleting the check when it fails, is what keeps the exception from quietly growing."""
     snapshot = _trending_snapshot(n=200)
     full = factory.build_replay_frame(snapshot)
-    keep = factory.holdout_split_index(len(full.rows))
+    keep = backtest.holdout_split_index(len(full.rows))
     sliced = backtest._prefix_frame(full, keep)
     rebuilt = factory.build_replay_frame(
         {**snapshot, "candles": list(snapshot["candles"])[:keep], "candle_count": keep})
@@ -1289,7 +1289,7 @@ def test_prefix_invariance_holds_with_htf_and_external_series():
     }
 
     full = factory.build_replay_frame(snapshot)
-    keep = factory.holdout_split_index(len(full.rows))
+    keep = backtest.holdout_split_index(len(full.rows))
     sliced = backtest._prefix_frame(full, keep)
     rebuilt = factory.build_replay_frame(
         {**snapshot, "candles": candles[:keep], "candle_count": keep})
@@ -1307,7 +1307,7 @@ def test_the_earlier_windows_are_adjacent_and_do_not_overlap():
     frame = factory.build_replay_frame(_trending_snapshot(n=200))
     keep, bounds = len(frame.rows), [(frame.split, len(frame.rows))]
     for _ in range(backtest.PRIOR_WINDOWS):
-        keep = factory.holdout_split_index(keep)
+        keep = backtest.holdout_split_index(keep)
         prefix = backtest._prefix_frame(frame, keep)
         if prefix is None:
             break
@@ -2861,7 +2861,7 @@ def test_an_unclassified_feature_is_mintable_nowhere(monkeypatch):
         template_space, "NUMERIC_FEATURES", template_space.NUMERIC_FEATURES | {"liquidation_burst_ratio"}
     )
     for venue in market_data.VENUE_FEEDS:
-        numeric, _ = factory.known_features(venue)
+        numeric, _ = template_space.known_features(venue)
         assert "liquidation_burst_ratio" not in numeric, f"admitted on {venue}"
     # And the CI half still names it, so the mistake is reported rather than only absorbed.
     with pytest.raises(AssertionError, match="liquidation_burst_ratio"):
@@ -2886,13 +2886,13 @@ def test_no_venue_can_declare_the_unclassified_feed():
 def test_binance_keeps_the_whole_vocabulary():
     # The vocabulary was built for this venue, so scoping must subtract nothing from it —
     # this is the "crypto verdicts are unchanged" guarantee in its narrowest form.
-    numeric, categorical = factory.known_features(market_data.BINANCE_FUTURES)
+    numeric, categorical = template_space.known_features(market_data.BINANCE_FUTURES)
     assert numeric == template_space.NUMERIC_FEATURES
     assert categorical == template_space.CATEGORICAL_FEATURES
 
 
 def test_hyperliquid_loses_exactly_the_features_its_feeds_cannot_produce():
-    numeric, categorical = factory.known_features(market_data.HYPERLIQUID)
+    numeric, categorical = template_space.known_features(market_data.HYPERLIQUID)
     removed = template_space.NUMERIC_FEATURES - numeric
     assert removed == {
         "liquidation_spike_ratio", "liquidation_total", "long_liquidation", "short_liquidation",
@@ -3012,7 +3012,7 @@ def test_the_hold_bound_reads_the_window_through_the_replays_own_split():
     the window or the split moves this with it."""
     for tf in ("15m", "1h", "4h", "1d"):
         total = market_data.factory_candle_target(tf)
-        holdout = total - factory.holdout_split_index(total)
+        holdout = total - backtest.holdout_split_index(total)
         assert template_space.judgeable_holding_bars(tf) == holdout // robustness.MIN_HOLDOUT_TRADES
 
 
@@ -3033,7 +3033,7 @@ def test_the_hold_space_is_narrowed_only_where_its_own_holdout_could_not_judge_i
         # The centre has to live inside the space it centres, or the family aims outside it.
         assert spec.lo <= template.base_params["max_holding_bars"] <= spec.hi
         # The whole point: no draw can put the ceiling under the floor it is judged against.
-        holdout = 2_000 - factory.holdout_split_index(2_000)
+        holdout = 2_000 - backtest.holdout_split_index(2_000)
         assert holdout / spec.hi >= robustness.MIN_HOLDOUT_TRADES
 
 
@@ -3787,7 +3787,8 @@ class TestLiquidationGuard:
         and would have had to be re-typed every time the assumption moved (it moved to 5x
         on 2026-09-02). What this test is for is the refusal, not the leverage.
         """
-        from runtime.mvp_runtime.crypto.paper import ASSUMED_LEVERAGE, stop_beyond_liquidation_refusal
+        from runtime.mvp_runtime.crypto.paper import stop_beyond_liquidation_refusal
+        from runtime.mvp_runtime.crypto.trade_plan import ASSUMED_LEVERAGE
         from runtime.mvp_runtime.crypto.trade_plan import (
             MAINTENANCE_MARGIN_RATE, liquidation_price, stop_is_beyond_liquidation,
         )
@@ -3816,7 +3817,7 @@ class TestLiquidationGuard:
         """SHORT: liquidation is above entry; stop above liquidation is refused."""
         from runtime.mvp_runtime.crypto.paper import stop_beyond_liquidation_refusal
         from runtime.mvp_runtime.crypto.trade_plan import liquidation_price, stop_is_beyond_liquidation
-        from runtime.mvp_runtime.crypto.paper import ASSUMED_LEVERAGE
+        from runtime.mvp_runtime.crypto.trade_plan import ASSUMED_LEVERAGE
         from runtime.mvp_runtime.crypto.trade_plan import MAINTENANCE_MARGIN_RATE
         entry = 100.0
         liq = liquidation_price(entry, "SHORT")
@@ -3857,7 +3858,7 @@ class TestLiquidationGuard:
         account's real 5x. Pinning the number made this test a statement about the leverage
         instead of about the counter."""
         from runtime.mvp_runtime.crypto.cost import CostModel
-        from runtime.mvp_runtime.crypto.paper import ASSUMED_LEVERAGE
+        from runtime.mvp_runtime.crypto.trade_plan import ASSUMED_LEVERAGE
         from runtime.mvp_runtime.crypto.trade_plan import MAINTENANCE_MARGIN_RATE
 
         room = 1.0 / ASSUMED_LEVERAGE - MAINTENANCE_MARGIN_RATE

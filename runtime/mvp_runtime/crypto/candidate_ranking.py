@@ -473,7 +473,7 @@ def expected_replayed_bars(timeframe: str) -> int | None:
     # constants, and the ranking should not pull the whole miner into its import graph to read
     # one pure function. (Both are strategy; while this lived in the pool it was local by
     # layering too.)
-    from .factory import holdout_split_index
+    from .backtest import holdout_split_index
 
     return holdout_split_index(market_data.factory_candle_target(timeframe))
 

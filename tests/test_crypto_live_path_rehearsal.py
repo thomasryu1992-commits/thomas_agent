@@ -46,6 +46,8 @@ from runtime.mvp_runtime.crypto.live_order import (
     LiveEntryMarks,
     LiveOrderCounter,
     LiveOrderLimits,
+)
+from runtime.mvp_runtime.crypto.live_order_stores import (
     count_today,
     read_live_entry_marks,
 )
@@ -431,7 +433,7 @@ def test_the_leg_opens_a_position_from_a_decision_the_planner_actually_produced(
     assert result["position"]["risk_snapshot_sha256"] == recorded["risk_snapshot_sha256"]
 
     # PR2b-2: the symbol was taken for the entry and given back once the book held the position.
-    from runtime.mvp_runtime.crypto.live_order import read_live_entry_marks
+    from runtime.mvp_runtime.crypto.live_order_stores import read_live_entry_marks
 
     assert read_live_entry_marks(tmp_path)["in_flight"] == {}
 

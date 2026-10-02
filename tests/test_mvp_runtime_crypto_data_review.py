@@ -12,7 +12,7 @@ import json
 import pytest
 
 from runtime.mvp_runtime.control import ControlStore
-from runtime.mvp_runtime.crypto import market_data
+from runtime.mvp_runtime.crypto import market_data, template_space
 from runtime.mvp_runtime.crypto.data_review import (
     CURRENT_SOURCES,
     DATA_FAMILIES,
@@ -218,7 +218,7 @@ def test_an_accumulating_source_says_it_feeds_nothing_yet():
     assert "Feeds no feature yet" not in by_source["coinalyze_open_interest"]
     assert "Feeds no feature yet" not in by_source["binance_futures_positioning"]
     assert "positioning_*" in by_source["binance_futures_positioning"]
-    numeric, categorical = factory.known_features(market_data.BINANCE_FUTURES)
+    numeric, categorical = template_space.known_features(market_data.BINANCE_FUTURES)
     mintable = numeric | frozenset(categorical)
     assert set(features.POSITIONING_NUMERIC_COLUMNS) <= mintable, (
         "the entry claims the positioning columns are mintable — if they stop being, the "

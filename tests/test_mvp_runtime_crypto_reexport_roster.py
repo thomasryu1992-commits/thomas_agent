@@ -27,13 +27,8 @@ DESIGNED_FACADES = {"pool"}
 ROSTER: dict[str, dict[str, frozenset[str]]] = {
     "cycle": {
         "cohort_retention": frozenset({"retention_cohort"}),
-        "feed_assembly": frozenset({"OPTIONAL_DATA_DEGRADED_CODES", "attach_mining_legs"}),
     },
     "factory": {
-        "backtest": frozenset({
-            "HOLDOUT_FRACTION", "HOLDOUT_PERIODS", "MIN_BARS_FOR_HOLDOUT", "MIN_TRADES_PER_WINDOW",
-            "WALK_FORWARD_MIN_PERIODS", "WALK_FORWARD_PERIODS", "holdout_split_index",
-        }),
         "template_space": frozenset({
             "_bollinger_breakdown_short_entry", "_bollinger_breakout_entry", "_breakdown_short_entry",
             "_breakout_entry", "_funding_fade_long_entry", "_funding_fade_short_entry",
@@ -53,16 +48,6 @@ ROSTER: dict[str, dict[str, frozenset[str]]] = {
             "_volatility_expansion_long_entry", "_volatility_expansion_short_entry",
             "_volatility_squeeze_long_entry", "_volatility_squeeze_short_entry", "_xs_momentum_long_entry",
             "_xs_momentum_short_entry", "_xs_reversion_long_entry", "_xs_reversion_short_entry",
-            "known_features",
-        }),
-    },
-    "live_evidence": {
-        "order_request": frozenset({"RECONCILED"}),
-    },
-    "live_execution": {
-        "order_request": frozenset({
-            "CONDITIONAL_ORDER_TYPES", "NOT_FOUND", "ORDER_TYPE_LIMIT", "ORDER_TYPE_MARKET",
-            "ORDER_TYPE_STOP_MARKET", "RECONCILED", "TIME_IN_FORCE_GTC",
         }),
     },
     "live_leg": {
@@ -71,30 +56,14 @@ ROSTER: dict[str, dict[str, frozenset[str]]] = {
             "CLOSE_REASON_UNPROTECTED", "bracket_error_detail", "leg_status_line", "legs_left_resting",
         }),
     },
-    "live_order": {
-        "live_order_stores": frozenset({
-            "API_CALL_CLASSES", "API_ERROR_HTTP_STATUSES", "API_ERROR_VENUE_CODES",
-            "ApiErrorRecordingAdapter", "ENTRY_MARKS_FILENAME", "LIVE_ENTRY_BAR_ALREADY_ENTERED",
-            "LIVE_ENTRY_BAR_UNKNOWN", "LIVE_ENTRY_CLAIM_LOST", "LIVE_ENTRY_CLAIM_TTL_MINUTES",
-            "LIVE_ENTRY_MARKS_UNKNOWN", "LIVE_ENTRY_STOP_LOSS_COOLDOWN", "LIVE_ENTRY_SYMBOL_IN_FLIGHT",
-            "MAX_CONSECUTIVE_BRACKET_FAILURES", "api_breaker_status", "api_breaker_trip_lines",
-            "api_error_counts", "bracket_breaker_status", "claim_expires_at", "count_today",
-            "entry_context_key", "live_entry_holds", "read_live_entry_marks", "recorded_like",
-            "stop_cooldown_until", "symbol_in_flight",
-        }),
-        "order_identity": frozenset({"make_client_order_id", "make_idempotency_key"}),
-    },
     "live_pnl": {
-        "live_ledger": frozenset({"stop_slippage_observations"}),
         "state": frozenset({"STATE_REL", "state_dir"}),
-        "vocabulary": frozenset({"STOP_EXIT_REASONS"}),
     },
     "live_readiness": {
         "readiness_model": frozenset({"readiness_data"}),
     },
     "paper": {
         "state": frozenset({"STATE_REL"}),
-        "trade_plan": frozenset({"ASSUMED_LEVERAGE", "ENTRY_COST_UNECONOMIC", "advance_holding"}),
     },
 }
 
@@ -124,9 +93,9 @@ def _lane_re_exports() -> dict[str, dict[str, frozenset[str]]]:
 
 
 def test_the_scan_sees_a_re_export_it_must_see():
-    """``cycle`` re-exports ``attach_mining_legs`` for the scheduler's factory dispatch: a scan that
+    """``live_pnl`` re-exports ``state.py``'s ``STATE_REL`` for the one-state-root pin: a scan that
     misses it is broken, and its empty answer would mean nothing."""
-    assert _re_exports(LANE / "cycle.py")["attach_mining_legs"] == ("feed_assembly", "attach_mining_legs")
+    assert _re_exports(LANE / "live_pnl.py")["STATE_REL"] == ("state", "STATE_REL")
 
 
 def test_each_module_re_exports_exactly_its_roster():

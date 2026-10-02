@@ -1233,7 +1233,7 @@ def _execute(
         # ALLOW-tier read: collects the same fed frame the factory mines, replays each stored
         # spec on the bars minted AFTER it against seeded null entries, and appends one record.
         # Touches no pool, no candidates, no orders.
-        from .crypto import cycle as crypto_cycle
+        from .crypto import feed_assembly as crypto_feed_assembly
         from .crypto import null_control
         from .crypto.market_data import (
             collect_market_data,
@@ -1331,7 +1331,7 @@ def _execute(
         # selected specs (8.1%) read at least one such column, and they are the non-price
         # families the pool most needs judged. Invisible because `too_young` is checked first
         # and is still the answer for every cell; earliest measurable date ~2026-08-23.
-        crypto_cycle.attach_mining_legs(
+        crypto_feed_assembly.attach_mining_legs(
             snapshot, collector=collector, timeframe=timeframe, now=now, root=repo_root,
             liquidation_feed=select_liquidation_feed(now=now, root=repo_root),
             candle_target=factory_candle_target,
@@ -1658,7 +1658,7 @@ def _execute(
         # the factory can never touch the active pool (promotion is the operator
         # door). A degraded backend simply skips the run: candidates mined from no
         # data would be evidence-free noise.
-        from .crypto import cycle as crypto_cycle
+        from .crypto import feed_assembly as crypto_feed_assembly
         from .crypto import pool as crypto_pool
         from .crypto import positioning_store
         from .crypto.factory import run_factory
@@ -1698,7 +1698,7 @@ def _execute(
             # C9: the factory backtests on the same feed-enriched frame the router evaluates —
             # one feature source for backtest and live (the source rule). All five legs go
             # through `attach_mining_legs`, which is where that rule lives.
-            crypto_cycle.attach_mining_legs(
+            crypto_feed_assembly.attach_mining_legs(
                 built, collector=collector, timeframe=timeframe, now=now, root=repo_root,
                 liquidation_feed=liquidation_feed, candle_target=factory_candle_target,
                 candle_cache=candle_cache,
@@ -1795,7 +1795,7 @@ def _execute(
         # (MAX_PROPOSALS_PER_RUN) already bounds one fire. Two gated reads reuse existing
         # chokepoints (market data + the validator provider); a degraded backend skips the
         # fire rather than proposing over no candles. ALLOW-tier: the record installs nothing.
-        from .crypto import cycle as crypto_cycle
+        from .crypto import feed_assembly as crypto_feed_assembly
         from .crypto import factory as crypto_factory
         from .crypto import proposer as crypto_proposer
         from .crypto.market_data import (
@@ -1888,7 +1888,7 @@ def _execute(
         # away. That the proposal's backtest is therefore judged over a short window is a real
         # and separate question about the proposer's evidence depth; it is not this fix, and
         # widening it here would multiply the fire's request count for a reason nobody measured.
-        crypto_cycle.attach_mining_legs(
+        crypto_feed_assembly.attach_mining_legs(
             snapshot, collector=collector, timeframe=timeframe, now=now, root=repo_root,
             liquidation_feed=select_liquidation_feed(now=now, root=repo_root),
         )

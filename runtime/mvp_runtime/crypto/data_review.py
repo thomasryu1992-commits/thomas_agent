@@ -29,7 +29,7 @@ from runtime.read_only_kernel import integrity
 from ..budgets import TRIAGE_TIMEOUT_SECONDS
 from ..errors import ProviderError, ToolBlocked
 from ..worker import Provider
-from . import factory, market_data
+from . import market_data, template_space
 
 DATA_REVIEW_WORKER_ID = "mvp.crypto.data_gap_reviewer.llm"
 DATA_REVIEW_WORKER_VERSION = "0.1.0"
@@ -143,7 +143,7 @@ def _mintable(venue: str) -> frozenset[str] | None:
     as a reason to degrade rather than as an inventory to reason from.
     """
     try:
-        numeric, categorical = factory.known_features(venue)
+        numeric, categorical = template_space.known_features(venue)
     except ToolBlocked:
         return None
     return numeric | frozenset(categorical)

@@ -16,7 +16,7 @@ import json
 
 import pytest
 
-from runtime.mvp_runtime.crypto import factory, null_control
+from runtime.mvp_runtime.crypto import factory, null_control, template_space
 from runtime.mvp_runtime.crypto.strategy import StrategySpec
 
 CANDLES = [{"open_time": f"2026-0{1 + i // 28}-{1 + i % 28:02d}T00:00:00Z"} for i in range(56)]
@@ -63,7 +63,7 @@ def test_the_null_feature_is_not_mintable():
     """The property that keeps a null out of the pool by construction rather than by care:
     `NULL_FEATURE` is absent from the validator's vocabulary, so any spec naming it is refused
     at the door every real spec goes through."""
-    numeric, categorical = factory.known_features(factory.market_data.BINANCE_FUTURES)
+    numeric, categorical = template_space.known_features(factory.market_data.BINANCE_FUTURES)
     assert null_control.NULL_FEATURE not in numeric
     assert null_control.NULL_FEATURE not in categorical
 

@@ -19,7 +19,7 @@ from __future__ import annotations
 import pytest
 
 from runtime.mvp_runtime.crypto import template_space
-from runtime.mvp_runtime.crypto.cycle import attach_mining_legs
+from runtime.mvp_runtime.crypto.feed_assembly import attach_mining_legs
 from runtime.mvp_runtime.crypto.features import latest_feature_row
 from runtime.mvp_runtime.crypto.market_data import (
     MockMarketDataCollector,

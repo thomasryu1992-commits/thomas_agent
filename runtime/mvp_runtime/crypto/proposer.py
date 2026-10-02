@@ -56,7 +56,7 @@ from runtime.read_only_kernel import integrity
 from ..budgets import TRIAGE_TIMEOUT_SECONDS
 from ..errors import ProviderError, ToolBlocked
 from ..worker import Provider
-from . import factory, market_data
+from . import factory, market_data, template_space
 from .robustness import score_robustness
 from .strategy import ALLOWED_TIMEFRAMES, SpecParseError, StrategySpec
 
@@ -305,7 +305,7 @@ def known_features(venue: str = market_data.BINANCE_FUTURES) -> frozenset[str]:
     venue scoping cannot be true at validation and false here — which is the failure this
     function had when it read `NUMERIC_FEATURES` directly.
     """
-    numeric, categorical = factory.known_features(venue)
+    numeric, categorical = template_space.known_features(venue)
     return numeric | frozenset(categorical)
 
 

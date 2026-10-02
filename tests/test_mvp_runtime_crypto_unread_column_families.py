@@ -66,7 +66,7 @@ def test_every_new_family_reads_only_mintable_classified_columns(family):
     """The venue gate is what stands between a family and a column the venue cannot serve.
     It works by containment, so a template whose features are not all classified would be
     dropped everywhere and read as a broken family rather than as an unclassified column."""
-    numeric, categorical = factory.known_features(factory.market_data.BINANCE_FUTURES)
+    numeric, categorical = template_space.known_features(factory.market_data.BINANCE_FUTURES)
     mintable = numeric | frozenset(categorical)
     assert template_space.template_features(_template(family)) <= mintable
     assert REACHED_COLUMN[family] in template_space.NUMERIC_FEATURES

@@ -39,6 +39,6 @@ def test_every_name_of_the_replays_that_factory_offers_is_the_same_object():
             "holdout_split_index", "HOLDOUT_FRACTION", "UNSUPPLIABLE_FEATURE"} <= set(names), (
         "the scan lost the replay's own names: it broke, not the module")
     offered = [n for n in names if n in vars(factory)]
-    assert {"backtest_spec", "holdout_split_index"} <= set(offered)
+    assert {"backtest_spec", "build_replay_frame"} <= set(offered)
     different = sorted(n for n in offered if getattr(factory, n) is not getattr(backtest, n))
     assert different == [], f"factory holds a different object for: {different}"

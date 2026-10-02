@@ -784,7 +784,7 @@ def test_imported_history_drives_risk_guard(tmp_path):
 
 def _write_live_outcomes(root, rows):
     """Append live outcome records the way the gated ledger does, self-hash included."""
-    from runtime.mvp_runtime.crypto.live_pnl import state_dir
+    from runtime.mvp_runtime.crypto.state import state_dir
     from runtime.mvp_runtime.crypto.live_settlement import build_live_outcome_record
 
     target = state_dir(root)
@@ -826,7 +826,7 @@ def test_a_live_loss_with_no_recorded_risk_is_excluded_not_read_as_a_breakeven(t
 
 def test_an_unreadable_live_history_fails_the_guard_closed(tmp_path):
     """A history that cannot prove itself must not be allowed to argue the breaker is clear."""
-    from runtime.mvp_runtime.crypto.live_pnl import state_dir
+    from runtime.mvp_runtime.crypto.state import state_dir
 
     _install_pool(tmp_path, _always_spec())
     target = state_dir(tmp_path)
@@ -1085,7 +1085,7 @@ def test_a_tampered_limits_record_fails_the_cycle_guard_closed(tmp_path):
     The fallback is the fail-open direction: an operator who tightened a breaker would have it
     silently loosened back to the default by the very failure meant to be conservative."""
     from runtime.mvp_runtime.crypto import risk_limits
-    from runtime.mvp_runtime.crypto.live_pnl import state_dir
+    from runtime.mvp_runtime.crypto.state import state_dir
 
     _install_pool(tmp_path, _always_spec())
     target = state_dir(tmp_path)
@@ -1109,7 +1109,7 @@ def test_an_unhashable_limits_record_fails_the_cycle_guard_closed_rather_than_ab
     """Review of #873: a NaN or a secret-shaped key raised a bare ValueError / IntegrityError past
     the typed catch below, aborting the cycle before the live leg could manage open positions."""
     from runtime.mvp_runtime.crypto import risk_limits
-    from runtime.mvp_runtime.crypto.live_pnl import state_dir
+    from runtime.mvp_runtime.crypto.state import state_dir
 
     _install_pool(tmp_path, _always_spec())
     target = state_dir(tmp_path)
@@ -1275,7 +1275,7 @@ def _seed_live_losses(root, *, candidate_id="cand-1", count=2, risk=10.0):
     the exit path writes it: a hand-made row fails the verified read, which is also a refusal but
     never the one these tests mean."""
     from runtime.mvp_runtime.crypto.live_settlement import build_live_outcome_record
-    from runtime.mvp_runtime.crypto.live_pnl import state_dir as live_state_dir
+    from runtime.mvp_runtime.crypto.state import state_dir as live_state_dir
 
     target = live_state_dir(root)
     target.mkdir(parents=True, exist_ok=True)
@@ -1395,7 +1395,7 @@ def test_an_unreadable_live_history_disarms_every_lineage_before_the_leg(tmp_pat
     """The conservative direction, pinned at the cycle rather than only at the evaluator: a
     history that cannot prove itself must not be able to argue an allowance is still unspent —
     and it must not do so a cycle late."""
-    from runtime.mvp_runtime.crypto.live_pnl import state_dir as live_state_dir
+    from runtime.mvp_runtime.crypto.state import state_dir as live_state_dir
 
     spec = _always_spec()
     _install_live_armed_pool(tmp_path, spec)
@@ -1873,7 +1873,7 @@ def test_only_the_optional_legs_degrade_codes_count():
         {}, codes=[market_data.FUNDING_DEGRADED, None, c.MARKET_DATA_DEGRADED, feed_assembly.HTF_DEGRADED, market_data.FUNDING_DEGRADED],
         bar_time=BAR)
     assert health["degraded"] == sorted([market_data.FUNDING_DEGRADED, feed_assembly.HTF_DEGRADED])
-    assert c.OPTIONAL_DATA_DEGRADED_CODES == {
+    assert feed_assembly.OPTIONAL_DATA_DEGRADED_CODES == {
         market_data.FUNDING_DEGRADED, market_data.MARK_PRICE_DEGRADED, market_data.INDEX_PRICE_DEGRADED, market_data.PREMIUM_INDEX_DEGRADED,
         market_data.LIQUIDATION_DEGRADED, market_data.OPEN_INTEREST_DEGRADED, feed_assembly.HTF_DEGRADED, market_data.REFERENCE_DEGRADED,
         market_data.CROSS_SECTION_DEGRADED}

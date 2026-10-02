@@ -29,8 +29,7 @@ from runtime.mvp_runtime.crypto.live_pnl import (
     LIVE_TRADING_PROVIDER_ID,
     REAL_LIVE_TRADING,
 )
-from runtime.mvp_runtime.crypto.live_evidence import RECONCILED
-from runtime.mvp_runtime.crypto.order_request import ALGO_TYPE_CONDITIONAL, MISMATCH
+from runtime.mvp_runtime.crypto.order_request import ALGO_TYPE_CONDITIONAL, MISMATCH, NOT_FOUND, RECONCILED
 from runtime.mvp_runtime.errors import SafetyGateBlocked, ToolError
 from runtime.mvp_runtime.safety_gate import Authorization
 
@@ -128,7 +127,7 @@ def test_reconcile_matching_order_is_reconciled():
 
 def test_reconcile_missing_order_is_not_found():
     status, problems = lx.reconcile_order(_intent(), None)
-    assert status == lx.NOT_FOUND and problems
+    assert status == NOT_FOUND and problems
 
 
 @pytest.mark.parametrize("override, needle", [
@@ -162,7 +161,7 @@ def test_refuses_an_unapproved_guard_verdict():
 def test_a_lost_submit_reconciles_to_not_found():
     intent = _intent()
     res = _submit(intent, adapter=_FakeAdapter(venue_order=None), guard_verdict=APPROVED, now=NOW)
-    assert res["reconcile_status"] == lx.NOT_FOUND
+    assert res["reconcile_status"] == NOT_FOUND
 
 
 def test_an_ambiguous_submit_that_landed_still_reconciles():
