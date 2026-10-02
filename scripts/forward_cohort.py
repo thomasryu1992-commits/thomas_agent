@@ -312,7 +312,8 @@ def _report(root: Path, detail: bool = False, arms: bool = False) -> int:
                 m.get("candidate_id"), m.get("timeframe") or "", m.get("strategy_family") or "",
                 m.get("priceable_count", ""), "" if mean is None else f"{mean:+.3f}",
                 m.get("active_slices", ""),
-                m.get("status") + (f"  sibling of {m['sibling_of']}" if m.get("sibling_of") else "")))
+                m.get("status") + (f" ({m['waiting_on']})" if m.get("waiting_on") else "")
+                + (f"  sibling of {m['sibling_of']}" if m.get("sibling_of") else "")))
         if detail:
             _print_detail(cohort, members, columns)
     if arms:
