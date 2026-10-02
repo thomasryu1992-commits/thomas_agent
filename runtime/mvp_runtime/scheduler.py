@@ -221,11 +221,16 @@ KIND_DISPATCH_SPEND = "dispatch_spend_watch"
 # that fires late costs freshness — the walker catches up over every bar it missed. Financial for
 # delegation by its `crypto_` prefix, so the assistant can never change it.
 KIND_FORWARD_COHORT = "crypto_forward_cohort"
+# The holdings board's refresh (P1-b of `docs/proposals/MULTI_ASSET_EXPANSION_V0.1.md`, Thomas
+# 2026-10-02): read the KIS account once and store the aggregate the doors render. Maintenance, not
+# risk: a late fire costs freshness, never money, and Thomas put the KIS key on scheduler-maint for
+# exactly that reason. Not `crypto_`-prefixed, so `schedule_delegation` names it as financial itself.
+KIND_HOLDINGS = "holdings_refresh"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
                    KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE,
                    KIND_BREAKER_WATCH, KIND_ROUTE_WATCH, KIND_CANDLE_ARCHIVE,
                    KIND_NULL_CONTROL, KIND_CONTENT_IDEATION, KIND_DISPATCH_SPEND, KIND_WORKFLOW,
-                   KIND_FORWARD_COHORT})
+                   KIND_FORWARD_COHORT, KIND_HOLDINGS})
 
 # The kinds whose lateness costs money rather than freshness.
 #
@@ -297,6 +302,7 @@ MAINTENANCE_KINDS: frozenset[str] = frozenset({
     KIND_TASK, KIND_PRUNE, KIND_FACTORY, KIND_REPORT, KIND_PROPOSER,
     KIND_DATA_REVIEW, KIND_ROTATE, KIND_CANDLE_ARCHIVE, KIND_NULL_CONTROL,
     KIND_CONTENT_IDEATION, KIND_DISPATCH_SPEND, KIND_WORKFLOW, KIND_FORWARD_COHORT,
+    KIND_HOLDINGS,
 })
 
 # How much of one pass the non-risk kinds may spend before it stops STARTING more of them.
@@ -1426,6 +1432,13 @@ def _execute(
             return f"breaker_changed_not_sent:{type(exc).__name__}"
         breaker_watch.write_mark(result["state"], root=repo_root)
         return breaker_watch.status_line(result)
+    if schedule.kind == KIND_HOLDINGS:
+        # A read of the KIS account through the holdings lane's own gate; writes the aggregate
+        # snapshot and nothing else. `refresh_snapshot` never raises, so a KIS outage is a status
+        # line, never a failed fire: the last good figure stays and the board shows its age.
+        from .holdings import store as holdings_store
+
+        return holdings_store.refresh_snapshot(now=now, root=repo_root)
     if schedule.kind == KIND_FORWARD_COHORT:
         # ALLOW-tier venue read, and writes to the cohort's own store alone: no pool, no forward
         # book, no candidates, no orders. A context that fails costs that context (named in the

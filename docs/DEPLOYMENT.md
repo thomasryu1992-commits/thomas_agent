@@ -484,6 +484,8 @@ Rows are keyed by the name in `.env` (what leaves the file), not by the containe
 | `GOOGLE_AI_STUDIO_API_KEY` | `operator`, `pipeline-worker` | same plane, second provider in the chain |
 | `GROQ_API_KEY` | `operator`, `pipeline-worker` | same plane, validator and front-desk provider |
 | `TAVILY_API_KEY` | `operator`, `pipeline-worker` | the read-only search tool, model plane only |
+| `KIS_APP_KEY` | `scheduler-maint` | the holdings board's KIS account read (2026-10-02) — a maintenance fire, kept off the risk lane that holds the order key |
+| `KIS_APP_SECRET` | `scheduler-maint` | same |
 | `NAVER_APIHUB_KEY` | `pipeline-worker` | Naver research runs on the engine and nowhere else |
 | `NAVER_APIHUB_KEY_ID` | `pipeline-worker` | same |
 | `NAVER_SEARCHAD_API_KEY` | `pipeline-worker` | same |

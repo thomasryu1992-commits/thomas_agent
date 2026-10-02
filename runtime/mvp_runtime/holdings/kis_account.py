@@ -463,11 +463,17 @@ def select_holdings_feed() -> HoldingsFeed:
     )
 
 
-def read_holdings(*, timeout_seconds: int = 10) -> tuple[HoldingsSnapshot | None, str | None]:
+def read_holdings(
+    *, timeout_seconds: int = 10, feed: HoldingsFeed | None = None,
+) -> tuple[HoldingsSnapshot | None, str | None]:
     """Read once. Degrades rather than raising: ``(snapshot, None)``, or ``(None, reason_code)``
-    when the gate is closed (``NOT_CONFIGURED``) or the read failed (the error's own code)."""
+    when the gate is closed (``NOT_CONFIGURED``) or the read failed (the error's own code).
+
+    ``feed`` lets a long-lived caller reuse a feed it already selected, and with it the feed's
+    in-memory token (``holdings.store``). Absent, the gate selects one for this read."""
     try:
-        feed = select_holdings_feed()
+        if feed is None:
+            feed = select_holdings_feed()
         snapshot = feed.holdings_snapshot(timeout_seconds=timeout_seconds)
     except (ToolError, ToolBlocked, SafetyGateBlocked) as exc:
         return None, exc.reason_code

@@ -3,8 +3,9 @@
 **상태:** PARTIALLY DECIDED 2026-10-02 — D1: (A) 자산 관리 먼저. D2: 옵션의 목적은 수익이고, 다른 수단보다 효율이
 나을 때만 조건부로 채택한다. D3: 첫 기록 대상은 한국투자증권. D4: 읽기 전용 보드(P1)는 연구 일시 중지 중에도 허용(넷 다
 Thomas). 부록 A의 한국투자증권 규제 기록이 완성됐다(판단: 본인 계좌 조회 운영 가능, 강도: 잠정, 외부 전송 경계 포함).
-P1-a(KIS 피드·두 렌더·`scripts/holdings_board.py`)는 지어졌고, 켜는 것은 KIS 키 발급과 env opt-in(Thomas)을 기다린다.
-P1-b(compose 배선·콘솔 verb)는 거버넌스 변경이라 따로 간다. 열린 것은 신청 화면의 권한 선택 여부 확인과 §6 D2 비교 기준의
+P1-a(KIS 피드·두 렌더·`scripts/holdings_board.py`)와 P1-b(scheduler-maint 배선, KIS 키는 scheduler-maint에만, Thomas
+2026-10-02)가 지어졌다. 켜는 것은 KIS 키 발급, `.env` 등록, 배포, 일정 등록(Thomas)을 기다린다. Hermes read(`holdings_status`)는
+정책이 이름을 올리기 전까지 dormant다. 열린 것은 신청 화면의 권한 선택 여부 확인과 §6 D2 비교 기준의
 비준이다.
 
 **대상:** 크립토 선물(바이낸스 USD-M) 단일 레인을 현물·주식·옵션으로 넓혀, 여러 계좌를 하나의 자산 관리로
@@ -147,7 +148,7 @@ P1-b(compose 배선·콘솔 verb)는 거버넌스 변경이라 따로 간다. �
 | 단계 | 일 | 관문 |
 |---|---|---|
 | P0 | 목적(D1·D2)과 규제 기록(D3). 형식은 `EQUITY_PERP_LANE_V0.1.md` 부록 A를 재사용한다(판단 주체·날짜·근거·재검토 조건) | Thomas 결정 |
-| P1 | 읽기 전용 통합 보드: 계좌별 잔고·노출·자산군 비중. 주문 경로 없음. **P1-a(코드: KIS 피드·두 렌더·스크립트) 구현, P1-b(compose 배선·콘솔 verb)는 거버넌스 변경으로 별도** | P0 + D4 + 각 계좌 읽기 capability의 env opt-in |
+| P1 | 읽기 전용 통합 보드: 계좌별 잔고·노출·자산군 비중. 주문 경로 없음. **P1-a(코드: KIS 피드·두 렌더·스크립트) #1115. P1-b(scheduler-maint 배선·`holdings_refresh` 유지보수 kind·`/holdings` verb·Hermes read dormant) 구현. KIS 키는 scheduler-maint에만 둔다(Thomas 2026-10-02)** | P0 + D4 + 각 계좌 읽기 capability의 env opt-in |
 | P2 | (A)의 한도: 계좌 전체 낙폭·자산군 비중 한도. 소유자는 `risk_limits.py`·`live_budget.py` | P1 운영 기록 |
 | P3 | (B) 알파 확장. 주식 퍼프는 §H의 S2 이후 순서를 그대로 따른다 | 연구 일시 중지 종료(2027-03-22), 크립토에서 FORWARD_CONFIRMED 1건 이상 |
 | P4 | 옵션 — 수익 목적, §6 D2의 비교 기준을 넘을 때만 채택 | P3 + 다중 레그 표현 결정 + 옵션 판정 규칙(에포크 경계) + 베뉴 S0 + D2 비교 기준 비준 |
