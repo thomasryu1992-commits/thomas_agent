@@ -59,3 +59,9 @@
   because free tiers often log or train on input. Nothing goes to public channels or other people. P1's
   tests are to show that only aggregate KIS-derived fields reach prompt assembly. The boundary yields to
   an answer from KIS if one is obtained.
+- **Appendix A completed (Thomas 2026-10-02):** the judgement is "querying one's own account through the
+  KIS Open API is something this project may operate". Its strength is provisional, and appendix A is now
+  a record rather than a draft. This opens P1's code. Switching it on still needs Thomas to issue a KIS
+  key and set an env opt-in. Orders stay outside the record: opening them is a new judgement, not a
+  promotion of this one. Still open: whether the application screen offers a scope, and ratification of
+  the D2 comparison standard.
