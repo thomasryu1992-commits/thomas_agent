@@ -239,6 +239,10 @@ def test_the_env_only_gate_has_exactly_the_capabilities_thomas_named():
         # It is on this roster for the same reason as the rest: a capability nobody had to name is
         # a capability nobody reviewed.
         "runtime/mvp_runtime/crypto/testnet_execution.py",  # the signed testnet order adapter
+        # Added 2026-10-02 (Thomas D3/D4, MULTI_ASSET_EXPANSION_V0.1.md): the holdings lane's KIS
+        # account read. Its own opt-in and provider id, deliberately NOT behind MVP_ACCOUNT_FEED —
+        # that seam is the live money path's account. Read-only; no compose service carries it yet.
+        "runtime/mvp_runtime/holdings/kis_account.py",   # the KIS holdings feed
     }, callers
 
 

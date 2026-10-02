@@ -143,6 +143,9 @@ _GATE_ENV_VARS = (
     # explicit opt-in list, replacing their per-tier grants (without it, retiring grants
     # would have silently armed all three tiers — their fallback is degrade, not block).
     "MVP_OPENROUTER_TIERS",
+    # 2026-10-02: the holdings lane's KIS account read (P1 of MULTI_ASSET_EXPANSION_V0.1.md). Read-only,
+    # but inheriting it would build the real feed on the machine that holds the KIS key.
+    "MVP_KIS_ACCOUNT",
 )
 
 
