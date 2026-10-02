@@ -528,6 +528,83 @@ def test_a_sibling_timeframe_does_not_advance_the_clock():
     assert record["live_holding"]["holding_candles"] == 1  # reported, just not advanced
 
 
+# --- no confirmed bar, no time (2026-10-02) ---------------------------------------------------
+#
+# A degraded collection hands the leg an empty feature row, so `candle_ts` is None. The counter used
+# to advance on None, and the pipeline fires every 15 minutes: an outage on a position's own
+# timeframe aged it one bar per pass. Settlement and protection still run on such a pass.
+
+def test_an_owning_pass_with_no_confirmed_bar_leaves_the_clock_alone_and_says_why():
+    # Case C, at the leg
+    store = _Store()
+    record = _settle(_timed(holding_candles=1, last_counted_candle_ts=BAR_00), candle_ts=None, store=store)
+    assert record["live_settled"] is None
+    assert record["live_protection"] is not None, "protection was not inspected"
+    assert record["live_holding"]["holding_candles"] == 1
+    assert record["live_holding"]["timed_here"] is True
+    assert record["live_holding"]["advanced"] is False
+    assert record["live_holding"]["reason"] == "NO_CONFIRMED_BAR"
+    assert live_route.LIVE_HOLD_NO_CONFIRMED_BAR in record["live_reason_codes"]
+    assert all(saved["holding_candles"] == 1 for saved in store.saved)
+
+
+def test_a_counted_bar_is_reported_as_advanced_and_a_repeat_as_a_duplicate():
+    position = _timed(holding_candles=1, last_counted_candle_ts=BAR_00)
+    store = _Store()
+    fresh = _settle(position, candle_ts="2026-07-29T00:00:00Z", store=store)
+    assert fresh["live_holding"]["advanced"] is True and fresh["live_holding"]["reason"] == "NEW_BAR"
+    again = _settle(store.saved[-1], candle_ts="2026-07-29T00:00:00Z", store=_Store())
+    assert again["live_holding"]["advanced"] is False and again["live_holding"]["reason"] == "DUPLICATE_BAR"
+    assert live_route.LIVE_HOLD_NO_CONFIRMED_BAR not in again["live_reason_codes"]
+
+
+def test_a_non_owning_pass_reports_why_it_did_not_count():
+    # Case E: a 1h pass over a 4h position settles and protects, never counts.
+    record = _settle(_timed(timeframe="4h", holding_candles=4), context_timeframe="1h", candle_ts=None)
+    assert record["live_protection"] is not None
+    assert record["live_holding"]["timed_here"] is False
+    assert record["live_holding"]["advanced"] is False
+    assert record["live_holding"]["reason"] == "NOT_TIMED_HERE"
+    assert record["live_holding"]["holding_candles"] == 4
+
+
+def test_an_outage_then_a_bar_ages_the_position_one_bar():
+    # Case F: two passes without a bar, then the bar. No catch-up for the missed passes.
+    position = _timed(max_holding_bars=12, holding_candles=10, last_counted_candle_ts=BAR_00)
+    for candle_ts in (None, None, "2026-07-29T00:00:00Z"):
+        store = _Store()
+        _settle(position, candle_ts=candle_ts, store=store)
+        position = store.saved[-1]
+    assert position["holding_candles"] == 11
+
+
+def test_one_bar_short_of_the_limit_an_outage_does_not_time_the_position_out():
+    # Case G: 11 of 12. No bar: held at 11, nothing sent. The next real bar: 12, and the exit fires.
+    position = _timed(max_holding_bars=12, holding_candles=11, last_counted_candle_ts=BAR_00)
+    store = _Store()
+    held = _settle(position, candle_ts=None, store=store)
+    assert held["live_settled"] is None
+    assert held["live_holding"]["holding_candles"] == 11
+    store2, ledger = _Store(), _Ledger()
+    due = _settle(store.saved[-1] if store.saved else position, candle_ts="2026-07-29T00:00:00Z",
+                  store=store2, ledger=ledger)
+    assert due["live_holding"]["holding_candles"] == 12
+    assert due["live_settled"] is not None
+    assert due["live_settled"]["intent"]["close_reason"] == live_leg.CLOSE_REASON_TIME_EXIT
+
+
+def test_an_exit_already_due_is_still_retried_on_a_pass_with_no_bar():
+    """A position whose count reached its limit and whose close did not confirm stays due. The
+    retry is risk-reducing and was decided on confirmed bars, so a missing bar does not hold it."""
+    store, ledger = _Store(), _Ledger()
+    record = _settle(_timed(max_holding_bars=3, holding_candles=3, last_counted_candle_ts=BAR_00),
+                     candle_ts=None, store=store, ledger=ledger)
+    assert record["live_holding"]["holding_candles"] == 3
+    assert live_route.LIVE_HOLD_NO_CONFIRMED_BAR in record["live_reason_codes"]
+    assert record["live_settled"] is not None
+    assert record["live_settled"]["intent"]["reduce_only"] is True
+
+
 def test_one_fanout_over_four_timeframes_advances_the_clock_once():
     """The regression, at the resolution it actually bit: five symbols x four timeframes is the
     live pool shape, and one pass of it used to age a position by four bars."""
@@ -1367,10 +1444,11 @@ def _wire_whole_leg(tmp_path, monkeypatch, venue, *, approval=_ARM, armed_entry=
 
     def _pass(now, bar, *, wall=None):
         # The wall clock at a settlement: the pass's own `now` unless a test says otherwise.
+        # ``bar=None`` is a degraded collection's pass: the cycle hands the leg an empty row.
         clock["now"] = wall or now
         return live_route.run_live_leg(
             live_routable_strategy_ids={"S001"}, route={"status": "ENTRY_CANDIDATE"},
-            feature_row={"timestamp": bar},
+            feature_row={"timestamp": bar} if bar is not None else {},
             verdict={"allow_new_position": True, "problems": [],
                      "risk_guard": {"limits": {"source": "default"}}},
             symbol=SYMBOL, collector=_Collector(lambda: clock["now"]), now=now, timeframe="4h",
@@ -1445,6 +1523,70 @@ def test_a_stop_inside_the_bar_does_not_buy_a_second_entry_on_that_bar(tmp_path,
     first, second = venue.entries()
     assert first["newClientOrderId"] != second["newClientOrderId"]
     assert count_today(tmp_path) == 2
+
+
+def test_a_degraded_pass_enters_nothing_ages_nothing_and_still_protects_and_settles(tmp_path, monkeypatch):
+    """Case D: market data unavailable on the position's own timeframe. New risk is refused, the clock
+    holds, and everything that manages the existing risk still runs: the bracket is read, the book is
+    reconciled against the venue, and a stop the venue filled meanwhile is settled."""
+    from runtime.mvp_runtime.crypto.live_position import list_open_live_positions
+
+    import dataclasses
+
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    opened = run("2026-07-28T04:05:00Z", BAR_00)
+    assert opened["live_route_status"] == live_route.ROUTE_OPENED, opened["live_reason_codes"]
+    [before] = list_open_live_positions(tmp_path)
+
+    # The venue holds what the book holds, until its stop fills below.
+    flat_read = live_route.read_account
+    held_at_venue = {"on": True}
+
+    def _account(**kw):
+        snapshot, extra = flat_read(**kw)
+        if not held_at_venue["on"]:
+            return snapshot, extra
+        position = AccountPosition(
+            symbol=SYMBOL, side="LONG", quantity=float(before["quantity"]),
+            entry_price=float(before["entry_price"]), mark_price=float(before["entry_price"]),
+            unrealized_pnl=0.0, leverage=1.0, notional=float(before["notional_usdt"]))
+        return dataclasses.replace(snapshot, positions=[position]), extra
+
+    monkeypatch.setattr(live_route, "read_account", _account)
+
+    held = run("2026-07-28T04:20:00Z", None)
+    assert held["live_reconcile_status"] == "RECONCILED", held["live_reason_codes"]
+    assert held["live_protection"] is not None, "the bracket was not inspected"
+    assert held["live_protection"]["status"] == live_leg.PROTECTED
+    assert held["live_holding"]["advanced"] is False
+    assert held["live_holding"]["reason"] == "NO_CONFIRMED_BAR"
+    assert live_route.LIVE_HOLD_NO_CONFIRMED_BAR in held["live_reason_codes"]
+    [after] = list_open_live_positions(tmp_path)
+    assert after["holding_candles"] == before["holding_candles"]
+    assert held["live_route_status"] != live_route.ROUTE_OPENED
+    assert len(venue.entries()) == 1, "a degraded pass sent an entry"
+
+    # The venue's stop fills during the outage: the degraded pass settles it all the same.
+    _stop_fills(venue, tmp_path)
+    held_at_venue["on"] = False
+    settled = run("2026-07-28T04:35:00Z", None)
+    assert settled["live_route_status"] == live_route.ROUTE_SETTLED, settled["live_reason_codes"]
+    assert settled["live_settled"]["outcome"]["close_reason"] == "stop_loss"
+    assert list_open_live_positions(tmp_path) == []
+    assert len(venue.entries()) == 1
+
+
+def test_a_degraded_pass_on_a_flat_book_enters_nothing(tmp_path, monkeypatch):
+    """No bar, no entry, even when the route says candidate: the entry door has no bar to claim."""
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    from runtime.mvp_runtime.crypto.live_order_stores import LIVE_ENTRY_BAR_UNKNOWN
+
+    record = run("2026-07-28T04:05:00Z", None)
+    assert record["live_route_status"] == live_route.ROUTE_HELD, record["live_reason_codes"]
+    assert record["live_decision"]["reasons"] == [LIVE_ENTRY_BAR_UNKNOWN]
+    assert venue.entries() == []
 
 
 def test_a_refusal_before_the_send_leaves_the_bar_open_for_the_next_tick(tmp_path, monkeypatch):
