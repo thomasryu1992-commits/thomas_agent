@@ -53,3 +53,9 @@
   enforced in code unless the application screen offers a scope. The check also found two conditions the
   check list lacked. Quotes may not be given to third parties (art. 5(3)), so KIS quotes do not go to
   hosted model prompts or outside channels. Keys may not be lent or delegated (art. 5(2)).
+- **External-send boundary decided (Thomas 2026-10-02):** art. 5(3) permits personal use and bars
+  redistribution. Balances, holdings, valuation and weights may go to the board and to Telegram, which
+  only Thomas receives. Hosted LLM prompts get aggregates only. Raw KIS quotes never enter a prompt,
+  because free tiers often log or train on input. Nothing goes to public channels or other people. P1's
+  tests are to show that only aggregate KIS-derived fields reach prompt assembly. The boundary yields to
+  an answer from KIS if one is obtained.
