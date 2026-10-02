@@ -397,6 +397,55 @@ def test_a_lineage_the_pool_ever_clocked_is_not_frozen(tmp_path):
     assert [m["candidate_id"] for m in fco.freeze_cohort(tmp_path, now=NOW)["members"]] == ["cand_a"]
 
 
+# --- what an unjudged member is waiting on (residual safety review PR-E, 2026-10-02) --------------
+
+@pytest.mark.parametrize("line,walked,expected", [
+    ({"status": "FORWARD_INSUFFICIENT", "priceable_count": 0, "timeframe": "1d"}, False, fco.WAITING_NOT_YET_WALKED),
+    ({"status": "FORWARD_INSUFFICIENT", "priceable_count": 0, "timeframe": "1d"}, True, fco.WAITING_NO_SIGNAL),
+    ({"status": "FORWARD_INSUFFICIENT", "priceable_count": 0, "timeframe": "1d"}, None, fco.WAITING_UNKNOWN),
+    ({"status": "FORWARD_INSUFFICIENT", "priceable_count": 4, "timeframe": "1d", "trade_floor": 10}, True,
+     fco.WAITING_TRADE_FLOOR),
+    ({"status": "FORWARD_INSUFFICIENT", "priceable_count": 12, "timeframe": "1d", "trade_floor": 10}, True,
+     fco.WAITING_NO_SPREAD),
+    ({"status": "FORWARD_INSUFFICIENT", "priceable_count": 12, "timeframe": "1d", "trade_floor": 10,
+      "mean_net_r": 0.4, "active_slices": 3}, True, fco.WAITING_SLICE_FLOOR),
+    ({"status": "FORWARD_INSUFFICIENT", "priceable_count": 40, "timeframe": "4h", "trade_floor": 25,
+      "mean_net_r": 0.4, "active_slices": 9}, True, fco.WAITING_CONFIDENCE_BOUND),
+    ({"status": "FORWARD_UNDERPOWERED", "priceable_count": 11, "timeframe": "1d", "mean_net_r": 0.2}, True,
+     fco.WAITING_CONFIDENCE_BOUND),
+    ({"status": "FORWARD_CONTRADICTED", "priceable_count": 30, "timeframe": "4h"}, True, None),
+    ({"status": "FORWARD_CONFIRMED", "priceable_count": 30, "timeframe": "4h"}, True, None),
+    ({"status": "UNRESOLVED"}, True, None),
+])
+def test_waiting_on_names_what_stands_between_a_member_and_its_verdict(line, walked, expected):
+    assert fco.waiting_on(line, walked=walked) == expected
+
+
+def test_the_report_tells_a_member_never_walked_from_one_walked_with_no_trade(tmp_path):
+    _install_cohort(tmp_path, _record("cand_a"), _record("cand_b", family="other", adx=99.0))
+    (cohort,) = fco.cohort_report(tmp_path)
+    assert {m["candidate_id"]: m["waiting_on"] for m in cohort["members"]} == {
+        "cand_a": fco.WAITING_NOT_YET_WALKED, "cand_b": fco.WAITING_NOT_YET_WALKED}
+    # cand_a matches every bar and trades through a stop; cand_b (adx >= 99) never fires.
+    _walk(tmp_path, _frame(range(1, 8), stop_on={5}))
+    (cohort,) = fco.cohort_report(tmp_path)
+    waiting = {m["candidate_id"]: m["waiting_on"] for m in cohort["members"]}
+    assert waiting == {"cand_a": fco.WAITING_TRADE_FLOOR, "cand_b": fco.WAITING_NO_SIGNAL}
+    board = fco.board_summary(tmp_path)
+    assert board["waiting_counts"] == {fco.WAITING_NO_SIGNAL: 1, fco.WAITING_TRADE_FLOOR: 1}
+    # Display only: the maturity and the judge's status are what they were.
+    assert board["maturity_counts"] == {"EXPLORATORY": 2}
+    from runtime.mvp_runtime.crypto.dashboard import build_status, render_status_text
+    assert "대기 신호 없음 1 · 거래 하한 1" in render_status_text(build_status(tmp_path, now=NOW))
+
+
+def test_waiting_on_is_unknown_when_the_walkers_book_cannot_be_read(tmp_path):
+    _install_cohort(tmp_path, _record("cand_a"))
+    fco._positions_path(tmp_path).write_text("{not json", encoding="utf-8")
+    (cohort,) = fco.cohort_report(tmp_path)
+    assert cohort["members"][0]["waiting_on"] == fco.WAITING_UNKNOWN
+
+
 def test_the_report_judges_at_the_frozen_selection_time(tmp_path):
     _install_cohort(tmp_path, _record("cand_a"))
     _walk(tmp_path, _frame(range(1, 8), stop_on={5}))

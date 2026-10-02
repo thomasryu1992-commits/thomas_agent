@@ -565,6 +565,10 @@ _TIMEFRAME_ORDER = {
 # is, so a three-trade lineage does not read as one waiting on a verdict.
 _COHORT_MATURITY_WORDS = {"EXPLORATORY": "탐색", "MATURE": "성숙", "CONFIRMED": "확정", "CONTRADICTED": "반박",
                           "UNRESOLVED": "미해석"}
+# `forward_cohort.waiting_on`, as the board says it.
+_COHORT_WAITING_WORDS = {"NOT_YET_WALKED": "워크 전", "NO_SIGNAL": "신호 없음", "TRADE_FLOOR": "거래 하한",
+                         "SLICE_FLOOR": "슬라이스 하한", "NO_SPREAD": "분산 없음",
+                         "CONFIDENCE_BOUND": "신뢰 하한", "UNKNOWN": "모름"}
 
 
 def _arm(cell: dict[str, Any] | None) -> str:
@@ -965,6 +969,12 @@ def render_status_text(status: dict[str, Any]) -> str:
                 f"평균 {_r(m.get('trade_mean_r'))}R 하한 {_r(m.get('trade_lower_bound_r'))}R "
                 f"{_cohort_mark(m)}"
                 for m in leaders))
+        # What the unjudged members are waiting on (display only): the maturity says how far a member
+        # has got, this says what stands between it and a verdict.
+        waiting = cohort.get("waiting_counts") or {}
+        if waiting:
+            lines.append("         대기 " + " · ".join(
+                f"{_COHORT_WAITING_WORDS.get(reason, reason)} {n}" for reason, n in waiting.items()))
     # Real members against their coin-flip twins, per timeframe: confirmed·contradicted / lineages.
     # The comparison is the reading; a null CONFIRMED is the judge passing noise.
     null_arm = status.get("forward_cohort_null") or {}
