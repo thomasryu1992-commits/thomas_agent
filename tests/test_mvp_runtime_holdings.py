@@ -250,26 +250,47 @@ def test_the_feed_has_no_order_capability():
         assert not [n for n in public if any(word in n.lower() for word in forbidden)], cls
 
 
-def test_nothing_in_the_runtime_imports_the_holdings_lane():
-    """D4: "no door reads it". Scripts may; the runtime outside this package may not."""
-    importers = []
+# The two dispatch sites, exactly: the scheduler's `holdings_refresh` fire and the console's
+# `/holdings` verb. Both import the lane inside a function — the core's dispatch shape
+# (`test_mvp_runtime_domain_isolation.py`) — and both reach only `holdings.store`.
+HOLDINGS_DISPATCH_SITES = {"runtime/mvp_runtime/scheduler.py", "runtime/mvp_runtime/domain_console.py"}
+
+
+def _holdings_imports(path: pathlib.Path) -> tuple[bool, bool]:
+    """(imports holdings at module level, imports it anywhere)."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+
+    def names_holdings(node: ast.AST) -> bool:
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            return "holdings" in module.split(".") or (
+                node.level > 0 and not module and any(a.name == "holdings" for a in node.names)
+            )
+        if isinstance(node, ast.Import):
+            return any("holdings" in a.name.split(".") for a in node.names)
+        return False
+
+    module_level = any(names_holdings(node) for node in tree.body)
+    anywhere = any(names_holdings(node) for node in ast.walk(tree))
+    return module_level, anywhere
+
+
+def test_the_runtime_reaches_the_holdings_lane_only_through_its_two_dispatch_sites():
+    """D4: "no door reads it" — no judgement, no promotion, no routing, nothing in `crypto/`. The
+    scheduler fire and the console verb are the only importers, and only function-locally."""
+    importers, module_level = set(), set()
     for path in (ROOT / "runtime").rglob("*.py"):
-        if path.relative_to(ROOT / "runtime").parts[:2] == ("mvp_runtime", "holdings"):
+        rel = path.relative_to(ROOT).as_posix()
+        if rel.startswith("runtime/mvp_runtime/holdings/"):
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            module = ""
-            if isinstance(node, ast.ImportFrom):
-                module = node.module or ""
-                names = [a.name for a in node.names]
-                if module.endswith("holdings") or "holdings" in module.split(".") or (
-                    node.level and not module and "holdings" in names
-                ):
-                    importers.append(path.relative_to(ROOT).as_posix())
-            elif isinstance(node, ast.Import):
-                if any("holdings" in a.name.split(".") for a in node.names):
-                    importers.append(path.relative_to(ROOT).as_posix())
-    assert importers == []
+        at_module, anywhere = _holdings_imports(path)
+        if anywhere:
+            importers.add(rel)
+        if at_module:
+            module_level.add(rel)
+    assert module_level == set()
+    assert importers == HOLDINGS_DISPATCH_SITES
+    assert not [rel for rel in importers if rel.startswith("runtime/mvp_runtime/crypto/")]
 
 
 # --- credentials, token, errors ---------------------------------------------------------
@@ -427,3 +448,132 @@ def test_the_script_blocks_on_a_failed_read(monkeypatch, gate_open, capsys):
     _venue(monkeypatch, token=urllib.error.URLError("down"))
     assert holdings_board.main([]) == EXIT_BLOCKED
     assert "TOOL_TRANSPORT" in capsys.readouterr().out
+
+
+# --- P1-b: the snapshot store, the maintenance fire, the doors ---------------------------
+
+from runtime.mvp_runtime import domain_console, read_bridge, schedule_delegation, scheduler  # noqa: E402
+from runtime.mvp_runtime.holdings import store  # noqa: E402
+
+NOW = "2026-10-02T09:00:00Z"
+LATER = "2026-10-02T13:30:00Z"
+
+
+@pytest.fixture(autouse=True)
+def _fresh_feed_cache(monkeypatch):
+    monkeypatch.setattr(store, "_cached_feed", None)
+
+
+def test_the_snapshot_holds_the_aggregate_and_nothing_else(monkeypatch, gate_open, tmp_path):
+    _venue(monkeypatch)
+    assert store.refresh_snapshot(now=NOW, root=tmp_path) == "holdings snapshot: refreshed"
+    raw = store.snapshot_path(tmp_path).read_text(encoding="utf-8")
+    assert set(json.loads(raw)) == board.AGGREGATE_KEYS | {"record_type", "as_of", "written_at"}
+    for leaked in (DOMESTIC_SYMBOL, DOMESTIC_NAME, OVERSEAS_SYMBOL, "43219", "512.34"):
+        assert leaked not in raw, leaked
+    assert _leaks(raw) == []
+
+
+def test_fires_share_one_token_while_the_gate_stays_open(monkeypatch, gate_open, tmp_path):
+    venue = _venue(monkeypatch)
+    store.refresh_snapshot(now=NOW, root=tmp_path)
+    store.refresh_snapshot(now=LATER, root=tmp_path)
+    assert venue.paths().count(TOKEN_PATH) == 1
+
+
+def test_closing_the_gate_drops_the_cached_feed(monkeypatch, gate_open, tmp_path):
+    venue = _venue(monkeypatch)
+    store.refresh_snapshot(now=NOW, root=tmp_path)
+    monkeypatch.delenv(KIS_ACCOUNT_ENV)
+    assert store.refresh_snapshot(now=LATER, root=tmp_path) == "holdings snapshot: no KIS account configured"
+    assert store._cached_feed is None
+    monkeypatch.setenv(KIS_ACCOUNT_ENV, KIS_ACCOUNT_ON)
+    store.refresh_snapshot(now=LATER, root=tmp_path)
+    assert venue.paths().count(TOKEN_PATH) == 2
+
+
+def test_a_failed_read_keeps_the_last_good_snapshot(monkeypatch, gate_open, tmp_path):
+    _venue(monkeypatch)
+    store.refresh_snapshot(now=NOW, root=tmp_path)
+    good = store.snapshot_path(tmp_path).read_text(encoding="utf-8")
+    monkeypatch.setattr(store, "_cached_feed", None)
+    _venue(monkeypatch, token=urllib.error.URLError("down"))
+    status = store.refresh_snapshot(now=LATER, root=tmp_path)
+    assert status == "holdings snapshot: degraded (TOOL_TRANSPORT); kept the previous one"
+    assert store.snapshot_path(tmp_path).read_text(encoding="utf-8") == good
+    assert json.loads(store.refresh_mark_path(tmp_path).read_text())["attempted_at"] == LATER
+
+
+def test_the_board_says_when_there_is_no_snapshot(tmp_path):
+    text, data = store.load_holdings_view(now=NOW, root=tmp_path)
+    assert "no snapshot yet" in text
+    assert data == {"available": False, "reason_code": store.HOLDINGS_SNAPSHOT_MISSING, "last_attempt": None}
+
+
+def test_an_old_snapshot_shows_its_number_and_says_it_is_stale(monkeypatch, gate_open, tmp_path):
+    _venue(monkeypatch)
+    store.refresh_snapshot(now=NOW, root=tmp_path)
+    as_of = json.loads(store.snapshot_path(tmp_path).read_text())["as_of"]
+    text, data = store.load_holdings_view(now="2099-01-01T00:00:00Z", root=tmp_path)
+    assert data["stale"] is True and "STALE" in text
+    assert "3,812,340 KRW" in text
+    fresh_text, fresh = store.load_holdings_view(now=as_of, root=tmp_path)
+    assert fresh["stale"] is False and "STALE" not in fresh_text
+
+
+def test_an_unreadable_snapshot_raises_rather_than_rendering_empty(tmp_path):
+    path = store.snapshot_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text("{not json", encoding="utf-8")
+    with pytest.raises(ToolError) as excinfo:
+        store.load_holdings_view(now=NOW, root=tmp_path)
+    assert excinfo.value.reason_code == store.HOLDINGS_SNAPSHOT_UNREADABLE
+
+
+def _holdings_schedule() -> scheduler.Schedule:
+    return scheduler.Schedule(
+        schedule_id="schedule_holdings_test", kind=scheduler.KIND_HOLDINGS,
+        request="", interval_seconds=3600, enabled=True, created_by="test",
+        created_at=NOW, next_run_at=NOW,
+    )
+
+
+def test_the_maintenance_fire_writes_the_snapshot(monkeypatch, gate_open, tmp_path):
+    _venue(monkeypatch)
+    status = scheduler._execute(
+        _holdings_schedule(), now=NOW, ledger=None, working_memory=None,
+        programization=None, repo_root=tmp_path, executor=lambda **_: {},
+    )
+    assert status == "holdings snapshot: refreshed"
+    assert store.snapshot_path(tmp_path).exists()
+
+
+def test_an_unconfigured_fire_is_a_status_line_not_a_failure(monkeypatch, creds, tmp_path):
+    monkeypatch.delenv(KIS_ACCOUNT_ENV, raising=False)
+    status = scheduler._execute(
+        _holdings_schedule(), now=NOW, ledger=None, working_memory=None,
+        programization=None, repo_root=tmp_path, executor=lambda **_: {},
+    )
+    assert status == "holdings snapshot: no KIS account configured"
+
+
+def test_the_kind_is_maintenance_and_not_the_assistants_to_change():
+    assert scheduler.KIND_HOLDINGS in scheduler.MAINTENANCE_KINDS
+    assert scheduler.KIND_HOLDINGS not in scheduler.RISK_KINDS
+    assert scheduler.KIND_HOLDINGS in schedule_delegation.FINANCIAL_KINDS
+
+
+def test_the_operator_verb_renders_the_snapshot(monkeypatch, gate_open, tmp_path):
+    _venue(monkeypatch)
+    store.refresh_snapshot(now=NOW, root=tmp_path)
+    command = domain_console.parse_domain_command("/holdings")
+    assert command == ("HOLDINGS", None)
+    outcome = domain_console.apply_domain_command(command, operator_id="op", now=NOW, repo_root=tmp_path)
+    assert outcome["action"] == "HOLDINGS_STATUS"
+    assert outcome["data"]["available"] is True
+    assert DOMESTIC_SYMBOL not in outcome["reply"]
+
+
+def test_the_assistant_read_is_dormant_until_the_policy_lists_it():
+    assert "holdings_status" in read_bridge._READS
+    assert "holdings_status" in read_bridge.POLICY_GATED_READS

@@ -45,7 +45,11 @@ MAX_REQUEST_CHARS = 20_000
 # set is the part of the complement that is refused rather than proposed.
 FINANCIAL_KINDS: frozenset[str] = scheduler.RISK_KINDS | frozenset(
     k for k in scheduler.KINDS if k.startswith("crypto_") or k == scheduler.KIND_CANDLE_ARCHIVE
-)
+) | {
+    # Reads a brokerage account (P1-b, 2026-10-02). Its cadence is also how often KIS is asked and,
+    # past the cached token, how often the account holder is notified, so it is not the assistant's.
+    scheduler.KIND_HOLDINGS,
+}
 
 
 @dataclass(frozen=True)
