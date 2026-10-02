@@ -72,8 +72,8 @@ from . import forward_book
 from .candidate_identity import candidate_id
 from .candidate_ranking import candidate_quality, rank_candidates
 from .forward_confirmation import (
-    FORWARD_CONFIRMED, FORWARD_CONTRADICTED, forward_outcomes_for, judge_forward, min_forward_trades,
-    selection_cutoff,
+    FORWARD_CONFIRMED, FORWARD_CONTRADICTED, FORWARD_UNDERPOWERED, forward_outcomes_for, judge_forward,
+    min_forward_trades, selection_cutoff,
 )
 from .judgement_fingerprint import judgement_fingerprint, judgement_rules
 from .market_data import TIMEFRAMES
@@ -87,7 +87,7 @@ from .pool_admission import (
 )
 from .pool_state import load_active_pool, read_candidates
 from .promotion_backlog import _lineage_key
-from .robustness import CONFIDENCE_Z
+from .robustness import CONFIDENCE_Z, MIN_HOLDOUT_PERIODS
 from .state import state_dir
 from .strategy import StrategySpec
 from .strategy_artifact import admission_evidence
@@ -130,6 +130,20 @@ MATURITY_CONTRADICTED = "CONTRADICTED"    # FORWARD_CONTRADICTED
 MATURITY_UNRESOLVED = "UNRESOLVED"        # the member's candidate row cannot be found
 MATURITIES = (MATURITY_EXPLORATORY, MATURITY_MATURE, MATURITY_CONFIRMED, MATURITY_CONTRADICTED,
               MATURITY_UNRESOLVED)
+
+# What an unjudged member is waiting on (2026-10-02, residual safety review PR-E). Display only, beside
+# the maturity rather than inside it, so the board's maturity counts keep their meaning. EXPLORATORY
+# covered a member no walk had reached, one walked with no trade closed and one a few trades short;
+# MATURE covered both "too few slices" and "an interval that spans zero". Each is a different wait.
+WAITING_NOT_YET_WALKED = "NOT_YET_WALKED"      # frozen, and no walk has reached it yet
+WAITING_NO_SIGNAL = "NO_SIGNAL"                # walked, and no trade has closed
+WAITING_TRADE_FLOOR = "TRADE_FLOOR"            # trades closed, fewer than its timeframe's floor
+WAITING_SLICE_FLOOR = "SLICE_FLOOR"            # at the floor, fewer active slices than the judge needs
+WAITING_NO_SPREAD = "NO_SPREAD"                # at the floor, and the trades show no spread to judge
+WAITING_CONFIDENCE_BOUND = "CONFIDENCE_BOUND"  # judged far enough, and its interval still spans zero
+WAITING_UNKNOWN = "UNKNOWN"                    # the walker's book could not be read, or no slice width
+WAITING_REASONS = (WAITING_NOT_YET_WALKED, WAITING_NO_SIGNAL, WAITING_TRADE_FLOOR, WAITING_SLICE_FLOOR,
+                   WAITING_NO_SPREAD, WAITING_CONFIDENCE_BOUND, WAITING_UNKNOWN)
 
 # Pre-cutoff bars fetched so every indicator is warm by the first counted bar — the seeder's
 # figure, for the seeder's reason (the deepest consumer is a 100-bar percentile window).
@@ -879,6 +893,40 @@ def sibling_of(cohorts: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     return marked
 
 
+def waiting_on(line: Mapping[str, Any], *, walked: bool | None) -> str | None:
+    """Why this member's verdict is not in yet, from the judge's own numbers. None once it is
+    CONFIRMED or CONTRADICTED (or cannot be resolved). ``walked``: whether the walker's book holds a
+    candle mark for it, None when the book could not be read. Pure, and display only."""
+    status = line.get("status")
+    if status == FORWARD_UNDERPOWERED:
+        return WAITING_CONFIDENCE_BOUND
+    if status not in (None, "FORWARD_INSUFFICIENT"):
+        return None
+    priced = int(line.get("priceable_count") or 0)
+    if priced == 0:
+        if walked is None:
+            return WAITING_UNKNOWN
+        return WAITING_NO_SIGNAL if walked else WAITING_NOT_YET_WALKED
+    if priced < int(line.get("trade_floor") or min_forward_trades(line.get("timeframe"))):
+        return WAITING_TRADE_FLOOR
+    if line.get("mean_net_r") is None:
+        return WAITING_NO_SPREAD
+    slices = line.get("active_slices")
+    if slices is None:
+        return WAITING_UNKNOWN
+    return WAITING_SLICE_FLOOR if int(slices) < MIN_HOLDOUT_PERIODS else WAITING_CONFIDENCE_BOUND
+
+
+def _walked_lineages(root: Path | None) -> frozenset[str] | None:
+    """The ``cand:<id>`` lineages the walker's book holds a candle mark for; None if unreadable."""
+    try:
+        entries = load_positions(root).get("entries") or {}
+    except MvpRuntimeError:
+        return None
+    return frozenset(str(entry.get("lineage")) for entry in entries.values()
+                     if isinstance(entry, Mapping) and entry.get("last_seen_candle"))
+
+
 def cohort_report(root: Path | None = None) -> list[dict[str, Any]]:
     """Per cohort, each member's forward numbers over the cohort's own rows. Reads only.
 
@@ -896,6 +944,7 @@ def cohort_report(root: Path | None = None) -> list[dict[str, Any]]:
     priced: list[tuple[Mapping[str, Any], list[tuple[Mapping[str, Any], Any, list[float]]]]] = []
     cohorts = read_cohorts(root)
     siblings = sibling_of(cohorts)
+    walked = _walked_lineages(root)
     for cohort in cohorts:
         members = []
         for member in cohort.get("members") or []:
@@ -925,6 +974,8 @@ def cohort_report(root: Path | None = None) -> list[dict[str, Any]]:
                 "sibling_of": siblings.get(str(member.get("candidate_id"))),
             }
             line["maturity"] = maturity_of(line)
+            line["waiting_on"] = waiting_on(
+                line, walked=None if walked is None else f"cand:{member.get('candidate_id')}" in walked)
             lines.append(line)
         report.append({
             "cohort_id": cohort.get("cohort_id"), "frozen_at_utc": cohort.get("frozen_at_utc"),
@@ -980,6 +1031,8 @@ def board_summary(root: Path | None = None) -> dict[str, Any] | None:
                         if (m.get("priceable_count") or 0) >= min_forward_trades(m.get("timeframe"))),
         "status_counts": dict(sorted(status_counts.items())),
         "siblings": sum(1 for m in members if m.get("sibling_of")),
+        "waiting_counts": {reason: n for reason in WAITING_REASONS
+                           if (n := sum(1 for m in members if m.get("waiting_on") == reason))},
         "maturity_counts": {maturity: n for maturity in MATURITIES
                             if (n := sum(1 for m in members if (m.get("maturity") or maturity_of(m)) == maturity))},
         "leaders": [{**{k: m.get(k) for k in ("candidate_id", "timeframe", "priceable_count",
