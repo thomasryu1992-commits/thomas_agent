@@ -32,3 +32,9 @@
   exempt list, because the existing "measurement and display" exemption was written for `crypto/` and the
   board needs a new account-read capability. The same commit corrects the draft's pause end from "first
   forward verdict" to cohort 1's close on 2027-03-22, the scope restated on 2026-10-01.
+- **D3 scoped in the same PR (Thomas 2026-10-02):** the first regulatory record is Korea Investment &
+  Securities (KIS Developers), for P1's account reads only. Appendix A drafts it in the equity-perp
+  appendix-A form. It leaves three places for Thomas (the judgement, its strength, and the terms-of-use
+  check) and keeps orders out of scope, so opening them is a new judgement rather than a promotion. If
+  KIS keys carry no read-only scope, read-only is enforced in code on the #1086 pattern (a reader with
+  no place or cancel). Until those three places are filled, no P1 code starts.
