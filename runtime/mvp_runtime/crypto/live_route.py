@@ -186,6 +186,11 @@ LIVE_TIME_EXIT_DEFERRED = "LIVE_ROUTING_TIME_EXIT_DEFERRED"
 # rather than silent: "the counter did not move this cycle" and "this context may not move it"
 # look identical in a record that says nothing.
 LIVE_HOLD_NOT_TIMED_HERE = "LIVE_ROUTING_HOLD_NOT_TIMED_HERE"
+# The owning context ran with no confirmed bar — a degraded collection, an empty feature row — so
+# the holding counter did not move (2026-10-02): unknown time evidence must not spend the
+# strategy's bars. Settlement and protection ran as usual; a position already at its limit still
+# gets its time exit retried.
+LIVE_HOLD_NO_CONFIRMED_BAR = "LIVE_ROUTING_HOLD_NO_CONFIRMED_BAR"
 # The position's time is up, but the venue holds a different position on its symbol than the book
 # (PR2c-0 review): the time exit waits for the drift to be resolved, its stop still resting.
 LIVE_TIME_EXIT_HELD_ON_DRIFT = "LIVE_ROUTING_TIME_EXIT_HELD_ON_DRIFT"
@@ -1167,7 +1172,8 @@ def _time_exit_or_hold(
     * **the count advances even when nothing closes** — that is what makes time pass at all,
       and it is why the store write below is unconditional rather than only on the exit;
     * **one bar counts once**, deduped on the candle timestamp by ``trade_plan.advance_holding``, so
-      a cycle that re-runs inside one interval cannot accelerate the exit;
+      a cycle that re-runs inside one interval cannot accelerate the exit — and a cycle with no
+      confirmed bar (a degraded collection) counts none (``LIVE_HOLD_NO_CONFIRMED_BAR``);
     * **one context owns the clock** — the position's own timeframe
       (:func:`position_timing_context`). Paper gets this for free because its book is keyed by
       ``(symbol, timeframe)``, so exactly one context can ever reach a given position. The live
@@ -1195,12 +1201,13 @@ def _time_exit_or_hold(
             "max_holding_bars": max_hold_now, "timeframe": timeframe or None,
             "legacy_max_hold_fallback": legacy_now,
             "timed_by": owner, "timed_here": False,
+            "advanced": False, "reason": "NOT_TIMED_HERE",
         }
         record["live_reason_codes"].append(LIVE_HOLD_NOT_TIMED_HERE)
         return
 
     updated = dict(position)
-    trade_plan.advance_holding(updated, candle_ts)
+    advance = trade_plan.advance_holding(updated, candle_ts)
     max_hold, legacy = paper.position_max_hold(updated, timeframe)
     held = int(updated.get("holding_candles") or 0)
 
@@ -1213,7 +1220,13 @@ def _time_exit_or_hold(
         "max_holding_bars": max_hold, "timeframe": timeframe or None,
         "legacy_max_hold_fallback": legacy,
         "timed_by": owner, "timed_here": True,
+        "advanced": advance == trade_plan.HOLD_NEW_BAR, "reason": advance,
     }
+    if advance == trade_plan.HOLD_NO_CONFIRMED_BAR:
+        # Not a time-exit trigger of its own: the counter did not move. A position whose count had
+        # ALREADY reached its limit (a close that did not confirm last cycle) still falls through to
+        # the retry below — that exit was decided on confirmed bars, and closing is risk-reducing.
+        record["live_reason_codes"].append(LIVE_HOLD_NO_CONFIRMED_BAR)
     if legacy:
         # Named rather than inferred from a divergent R curve later: this position is being
         # judged by the timeframe table, not by the number its own backtest was built on.
