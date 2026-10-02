@@ -20,5 +20,9 @@
 - **Web survey (2026-10-02, public sources, unverified by account):** KIS Developers and Kiwoom REST
   offer API orders for Korean and US equities to Korean residents. IBKR excludes Korean residents from
   KRX access. Alpaca's support for Korea is unconfirmed.
-- **Open:** D1 (what comes first), D2 (what options are for), D3 (regulatory records, appendix-A
+- **Open at drafting:** D1 (what comes first), D2 (what options are for), D3 (regulatory records, appendix-A
   form), D4 (whether a read-only multi-account board falls under the review-D3 pause).
+- **D1 decided in the same PR (Thomas 2026-10-02):** asset management first, as recommended. The status
+  line moves from DRAFT to PARTIALLY DECIDED, and §6 records what changed (the §5 order is fixed, so P1
+  and P2 come before P3) and what did not (no code, and P1 still waits on D3, D4 and the account-read
+  env opt-in).
