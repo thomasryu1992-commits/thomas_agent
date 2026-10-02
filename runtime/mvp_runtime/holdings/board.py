@@ -132,9 +132,12 @@ def render_full(snapshot: HoldingsSnapshot | None, *, reason_code: str | None = 
         quantity = "n/a" if holding.quantity is None else f"{holding.quantity:g}"
         value = "n/a" if holding.value is None else f"{holding.value:,.2f}"
         pnl = "n/a" if holding.unrealized_pnl is None else f"{holding.unrealized_pnl:+,.2f}"
+        # Overseas rows are requested in KRW mode, so the row's purchase currency may not be the
+        # unit of its value — unverified until the first live read. Say "as reported", not "USD".
+        unit = holding.currency if holding.market == "domestic" else f"as reported ({holding.currency} position)"
         lines.append(
             f"{holding.market:9} {holding.symbol:12} {holding.name} qty {quantity} "
-            f"value {value} {holding.currency} upnl {pnl}"
+            f"value {value} {unit} upnl {pnl}"
         )
     lines.extend(f"WARNING     : {warning}" for warning in snapshot.warnings)
     return "\n".join(lines)
