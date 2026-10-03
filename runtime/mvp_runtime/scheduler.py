@@ -1736,9 +1736,10 @@ def _execute(
         # Every mined leg, not just the primary: a family gated on positioning must be
         # suppliable everywhere the pooled spec claims to trade, and `coverage_summary` already
         # takes the list.
-        positioning_eligible = bool(positioning_store.coverage_summary(
-            repo_root, symbols=symbols or [symbol],
-        )["eligible"])
+        # Since 2026-10-03 coverage is necessary and not sufficient: `mint_eligible` also needs the
+        # explicit decision (`positioning_store.MINTING_DECIDED`, R2 of the archive backfill), so a
+        # backfilled store cannot mint a family by itself.
+        positioning_eligible = positioning_store.mint_eligible(repo_root, symbols=symbols or [symbol])
         # The fetch above stayed in this process; the ~400s of pure compute leaves it (#705
         # remedy — see the factory-child section above `run_due`). The reads passed as inputs
         # (active pool, existing candidates) happen HERE, parent-side, so the child receives a

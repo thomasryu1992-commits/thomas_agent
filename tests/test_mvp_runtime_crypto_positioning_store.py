@@ -912,3 +912,66 @@ def test_the_refresh_reports_the_stored_newest_without_a_third_parse(tmp_path):
         assert entry["newest"] == positioning_store.newest_timestamp(
             tmp_path, symbol="BTCUSDT", series=series
         ), series
+
+
+# --- coverage is necessary, not sufficient (Thomas 2026-10-03, CRYPTO_ARCHIVE_BACKFILL R2) ---------
+
+_COVERED = {"cells": [{"symbol": "BTCUSDT"}], "min_covered_days": 1000.0, "required_days": 1000,
+            "eligible": True}
+
+
+def test_minting_is_closed_by_default_however_full_the_store_is(monkeypatch):
+    assert positioning_store.MINTING_DECIDED is False
+    monkeypatch.setattr(positioning_store, "coverage_summary", lambda root=None, **kw: dict(_COVERED))
+    assert positioning_store.mint_eligible(None, symbols=["BTCUSDT"]) is False
+
+
+def test_an_undecided_gate_does_not_even_read_the_store(monkeypatch):
+    def _unreadable(root=None, **kw):
+        raise AssertionError("an undecided gate read the store")
+
+    monkeypatch.setattr(positioning_store, "coverage_summary", _unreadable)
+    assert positioning_store.mint_eligible(None, symbols=["BTCUSDT"]) is False
+
+
+def test_a_decided_gate_still_needs_the_coverage(monkeypatch):
+    monkeypatch.setattr(positioning_store, "MINTING_DECIDED", True)
+    monkeypatch.setattr(positioning_store, "coverage_summary", lambda root=None, **kw: dict(_COVERED))
+    assert positioning_store.mint_eligible(None, symbols=["BTCUSDT"]) is True
+    monkeypatch.setattr(positioning_store, "coverage_summary",
+                        lambda root=None, **kw: {**_COVERED, "eligible": False})
+    assert positioning_store.mint_eligible(None, symbols=["BTCUSDT"]) is False
+
+
+def test_a_factory_fire_over_a_covered_store_mints_no_positioning_family(tmp_path, monkeypatch):
+    """The path the decision is about: the scheduler's factory fire. With the store reporting full
+    coverage, what reaches the factory is still `positioning_eligible=False`."""
+    from runtime.mvp_runtime import scheduler
+    from runtime.mvp_runtime.control import ControlStore
+    from runtime.mvp_runtime.scheduler import KIND_FACTORY, ScheduleStore, build_schedule, run_due
+    from runtime.mvp_runtime.store import LEDGER_REL, LedgerStore
+
+    monkeypatch.setattr(positioning_store, "coverage_summary", lambda root=None, **kw: dict(_COVERED))
+    seen: list[bool] = []
+
+    def _capture(compute, args, kwargs, **kw):
+        seen.append(kwargs["positioning_eligible"])
+        return scheduler.STATUS_FACTORY_SPAWNED
+
+    monkeypatch.setattr(scheduler, "_spawn_factory_child", _capture)
+    store = ScheduleStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.add(build_schedule(kind=KIND_FACTORY, request="", interval_seconds=86400,
+                             created_by="op", now="2026-07-22T10:00:00Z"))
+    run_due(store, now="2026-07-23T11:00:00Z", control_store=ControlStore(tmp_path),
+            ledger=LedgerStore(tmp_path / LEDGER_REL), repo_root=tmp_path)
+    assert seen == [False]
+    scheduler._reset_factory_child()
+
+
+def test_the_board_says_covered_is_not_open(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto.dashboard import build_status, render_status_text
+
+    monkeypatch.setattr(positioning_store, "coverage_summary", lambda root=None, **kw: dict(_COVERED))
+    text = render_status_text(build_status(tmp_path, now="2026-10-03T00:00:00Z"))
+    assert "포지셔닝 1000.0/1000일 (커버 충족·생성 닫힘(결정 전)" in text

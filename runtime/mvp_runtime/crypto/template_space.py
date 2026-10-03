@@ -1451,8 +1451,10 @@ CROSS_SECTION_FAMILIES = frozenset({"xs_reversion_long", "xs_reversion_short"})
 # is why the note in the research record said "collect now, decide later".
 #
 # What changes here is only WHO decides. The columns, the alignment, the vocabulary and the
-# families are built and tested now; the store's own measured coverage flips them on, so nobody
-# has to remember a paragraph in a document sixteen months from now.
+# families are built and tested now. **Since 2026-10-03 coverage alone no longer flips them on**
+# (Thomas, `CRYPTO_ARCHIVE_BACKFILL_V0.1.md` R2): a backfill can fill the store in an afternoon, and
+# minting a new family is research the review-D3 pause holds until 2027-03-22. The factory now gets
+# `positioning_store.mint_eligible`, which is coverage AND `positioning_store.MINTING_DECIDED`.
 POSITIONING_FAMILIES = frozenset({"positioning_divergence_long", "positioning_divergence_short"})
 
 
