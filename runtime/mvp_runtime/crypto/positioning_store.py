@@ -15,8 +15,9 @@ is now false: :func:`feed_assembly.attach_positioning` reads :func:`read_rows` o
 :func:`features._positioning_columns` computes ``POSITIONING_NUMERIC_COLUMNS`` from it — columns
 that are in the mintable vocabulary. What survives is the **minting** half, and only that:
 :data:`~.factory.POSITIONING_FAMILIES` stay unoffered until
-:func:`coverage_summary` says the window is covered, which `factory` passes as
-``positioning_eligible``.
+:func:`coverage_summary` says the window is covered AND :data:`MINTING_DECIDED` is set (Thomas
+2026-10-03, R2: coverage alone no longer opens it), which `factory` receives as ``positioning_eligible``
+through :func:`mint_eligible`.
 
 The distinction is the point rather than a technicality. Attaching is safe at any coverage — an
 absent reading is ``None`` and a spec reading it simply does not trade. MINTING against it is
@@ -524,7 +525,28 @@ def coverage_summary(root: Path | None = None, *, symbols: Iterable[str]) -> dic
     }
 
 
+# **Coverage is no longer the switch** (Thomas 2026-10-03, `CRYPTO_ARCHIVE_BACKFILL_V0.1.md` R2). Until
+# then `coverage_summary(...)["eligible"]` went straight to the factory as `positioning_eligible`, so
+# the day the store covered the replay window the positioning families would mint on the next fire,
+# with nobody deciding. That was harmless while the store could only grow a day a day (2029), and it
+# stops being harmless once a backfill can fill it in an afternoon: minting a new family is new
+# research machinery, paused until cohort 1's close (review D3). So minting needs BOTH: coverage,
+# which the data decides, and this flag, which only Thomas does — changed in a PR that cites the
+# decision, never by a threshold. Coverage stays measured and shown exactly as before.
+MINTING_DECIDED = False
+
+
+def mint_eligible(root: Path | None = None, *, symbols: Iterable[str]) -> bool:
+    """Whether the factory may mint the positioning families now: decided (:data:`MINTING_DECIDED`)
+    AND covered (``coverage_summary(...)["eligible"]``). Undecided answers False without reading the
+    store, so neither a full store nor a damaged one can open it."""
+    if not MINTING_DECIDED:
+        return False
+    return bool(coverage_summary(root, symbols=symbols)["eligible"])
+
+
 __all__ = [
+    "MINTING_DECIDED", "mint_eligible",
     "POSITIONING_FILENAME", "POSITIONING_PERIOD", "RECORD_TYPE", "REFRESH_MARKS_FILENAME",
     "REQUIRED_COVERAGE_DAYS", "append_rows", "coverage", "coverage_summary", "is_due",
     "newest_timestamp", "positioning_path", "read_refresh_marks", "read_rows",

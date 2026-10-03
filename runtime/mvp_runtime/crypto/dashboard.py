@@ -1012,7 +1012,13 @@ def render_status_text(status: dict[str, Any]) -> str:
         lines.append(f"       fusion 부모 {n}개 리니지 ({note})")
     positioning = status.get("positioning") or {}
     if positioning.get("cells"):
-        state = "적격" if positioning.get("eligible") else "축적 중"
+        # Covered is not open (R2, 2026-10-03): the families mint only on the explicit decision too.
+        if not positioning.get("eligible"):
+            state = "축적 중"
+        elif positioning_store.MINTING_DECIDED:
+            state = "적격·생성 열림"
+        else:
+            state = "커버 충족·생성 닫힘(결정 전)"
         lines.append(
             f"       포지셔닝 {positioning.get('min_covered_days')}/{positioning.get('required_days')}일 "
             f"({state}, 최소 커버 셀 기준 · 피처 미연결)"

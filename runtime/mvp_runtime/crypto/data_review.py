@@ -85,7 +85,8 @@ SUGGESTIONS_OUTPUT_SPEC = {"suggestions": "objects(name, data_family, venue, rat
 # `binance_futures_positioning` is the one to read carefully, because `positioning_store`'s
 # own docstring said "it feeds nothing" and that claim went stale under it: the columns ARE
 # computed onto every feature row and ARE mintable, and what is gated is whether the two
-# POSITIONING_FAMILIES are OFFERED (`positioning_eligible`, a coverage measurement). Saying
+# POSITIONING_FAMILIES are OFFERED (`positioning_eligible`: coverage AND, since 2026-10-03, the explicit
+# `positioning_store.MINTING_DECIDED`). Saying
 # "feeds nothing" here would invite the one suggestion that is already built.
 CURRENT_SOURCES = (
     {"source": "binance_futures_klines", "venue": "binance_futures", "family": "candles",
