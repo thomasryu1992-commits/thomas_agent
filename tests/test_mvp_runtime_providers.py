@@ -1325,3 +1325,48 @@ def test_a_slow_first_member_fails_over_in_its_share_and_the_next_member_answers
     assert _time.monotonic() - started < 7                   # the first member's 5 s share, not 30
     assert result.model_id == "google_ai_studio" and second.calls == 1
     assert [f["kind"] for f in result.failovers] == ["transport"]   # tried and cut, not "not_tried"
+
+
+# --- a Role key whose value is a list of records (2026-10-03, the data-gap review) -----------
+
+_OBJECTS_SPEC = {"suggestions": "objects(name, rationale)"}
+
+
+def test_an_objects_key_is_an_array_of_closed_records_in_each_dialect():
+    from runtime.mvp_runtime.providers import (
+        analysis_json_schema, analysis_response_schema, response_instruction)
+
+    strict = analysis_json_schema(_OBJECTS_SPEC)["properties"]["suggestions"]
+    google = analysis_response_schema(_OBJECTS_SPEC)["properties"]["suggestions"]
+    for schema in (strict, google):
+        assert schema["type"] == "array" and schema["items"]["type"] == "object"
+        assert schema["items"]["properties"] == {"name": {"type": "string"},
+                                                 "rationale": {"type": "string"}}
+        assert schema["items"]["required"] == ["name", "rationale"]
+    assert strict["items"]["additionalProperties"] is False      # OpenAI strict closes objects
+    assert "additionalProperties" not in google["items"]         # Google rejects the keyword
+    assert "suggestions" in analysis_json_schema(_OBJECTS_SPEC)["required"]
+    assert response_instruction(_OBJECTS_SPEC).endswith(
+        "suggestions (array of objects {name: string, rationale: string}).")
+
+
+def test_the_older_kinds_read_exactly_as_before():
+    from runtime.mvp_runtime.providers import analysis_json_schema, response_instruction
+
+    assert response_instruction({"a": "string", "b": "array", "c": "anything"}).endswith(
+        "a (string), b (array of strings), c (array of strings).")
+    props = analysis_json_schema({"a": "string", "b": "array", "c": "objects()"})["properties"]
+    assert props["a"] == {"type": "string"}
+    assert props["b"] == props["c"] == {"type": "array", "items": {"type": "string"}}
+
+
+def test_an_objects_key_left_out_is_malformed(monkeypatch):
+    from runtime.mvp_runtime.providers import GroqProvider
+
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    monkeypatch.setattr("urllib.request.urlopen",
+                        lambda request, timeout: _FakeResp(_groq_response(_ANALYSIS)))
+    bound = GroqProvider(authorization=_groq_auth()).bind_role_output_keys(_OBJECTS_SPEC)
+    with pytest.raises(ProviderError) as exc:
+        bound.generate("p", max_output_tokens=100, timeout_seconds=10)
+    assert exc.value.reason_code == "MALFORMED_RESPONSE" and "suggestions" in exc.value.reason

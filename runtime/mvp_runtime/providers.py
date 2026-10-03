@@ -189,8 +189,40 @@ _ANALYSIS_JSON_SCHEMA: dict[str, Any] = {
 # array of strings), matching what ``worker._role_specific_output`` reads back. An unknown
 # declared type becomes an array rather than being dropped: the Role asked for the field, and
 # omitting it here would put us back to the vendor rejecting it.
-def _role_key_schema(kind: str) -> dict[str, Any]:
+#
+# One more kind, ``objects(<field>, <field>, ...)``: a list of records whose fields are all
+# strings. Added for the crypto data-gap review (2026-10-03), whose ``suggestions`` are records,
+# not strings: its only statement of that key was earlier in the prompt, and groq, after the
+# format instruction listed the analysis keys alone, dropped it on 3 of 4 weekly fires (the
+# 2026-09-28 blog failure, again). The object dialects differ: OpenAI strict closes every object
+# with ``additionalProperties: false``, which Google's ``responseSchema`` rejects.
+_OBJECTS_KIND = re.compile(r"^objects\(\s*([a-z_][a-z0-9_]*(?:\s*,\s*[a-z_][a-z0-9_]*)*)\s*\)$")
+
+
+def _object_fields(kind: str) -> tuple[str, ...] | None:
+    """The field names of an ``objects(...)`` kind, or ``None`` for any other kind."""
+    match = _OBJECTS_KIND.match(kind.strip())
+    return tuple(field.strip() for field in match.group(1).split(",")) if match else None
+
+
+def _role_key_schema(kind: str, *, strict: bool = False) -> dict[str, Any]:
+    fields = _object_fields(kind)
+    if fields is not None:
+        item: dict[str, Any] = {"type": "object",
+                                "properties": {field: {"type": "string"} for field in fields},
+                                "required": list(fields)}
+        if strict:
+            item["additionalProperties"] = False
+        return {"type": "array", "items": item}
     return {"type": "string"} if kind == "string" else _STRING_ARRAY
+
+
+def _role_key_text(kind: str) -> str:
+    """How the format instruction names a Role key's type."""
+    fields = _object_fields(kind)
+    if fields is not None:
+        return "array of objects {" + ", ".join(f"{field}: string" for field in fields) + "}"
+    return "string" if kind == "string" else "array of strings"
 
 
 def response_instruction(role_output_spec: Mapping[str, str] | None = None) -> str:
@@ -209,10 +241,7 @@ def response_instruction(role_output_spec: Mapping[str, str] | None = None) -> s
     """
     if not role_output_spec:
         return _RESPONSE_INSTRUCTION
-    keys = ", ".join(
-        f"{key} ({'string' if kind == 'string' else 'array of strings'})"
-        for key, kind in role_output_spec.items()
-    )
+    keys = ", ".join(f"{key} ({_role_key_text(kind)})" for key, kind in role_output_spec.items())
     return (_RESPONSE_INSTRUCTION[:-1] + ". This run's Role ALSO requires these keys in the same "
             f"object, each present and filled in — they are the deliverable: {keys}.")
 
@@ -252,7 +281,7 @@ def analysis_json_schema(role_output_spec: Mapping[str, str] | None = None) -> d
         return _ANALYSIS_JSON_SCHEMA
     schema = json.loads(json.dumps(_ANALYSIS_JSON_SCHEMA))
     for key, kind in role_output_spec.items():
-        schema["properties"][key] = _role_key_schema(kind)
+        schema["properties"][key] = _role_key_schema(kind, strict=True)
         if key not in schema["required"]:
             schema["required"].append(key)
     return schema

@@ -560,3 +560,81 @@ def test_the_scheduled_fire_raises_on_a_stalled_loop(tmp_path, monkeypatch):
     rows = [json.loads(line) for line in
             (tmp_path / LEDGER_REL / RECORDS_FILE).read_text(encoding="utf-8").splitlines()]
     assert len([r for r in rows if r["kind"] == DATA_REVIEW_LEDGER_KIND]) == 2
+
+
+# --- `suggestions` is named in the format instruction (2026-10-03) ------------
+#
+# Groq answered 3 of the 4 weekly fires from 2026-09-12 to 2026-10-03 with a well-formed
+# analysis and no `suggestions`: the instruction the providers append LAST listed the analysis
+# keys alone. These run the real GroqProvider with only the socket faked.
+
+def _wire_groq(monkeypatch, answer: dict):
+    from runtime.mvp_runtime.providers import GroqProvider
+    from runtime.mvp_runtime.safety_gate import MODEL_INVOCATION, NETWORK_ACCESS
+    from tests._helpers import FakeResp, make_gate_authorization
+
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    bodies: list[dict] = []
+
+    def urlopen(request, timeout):
+        bodies.append(json.loads(request.data.decode("utf-8")))
+        return FakeResp(json.dumps({
+            "choices": [{"message": {"content": json.dumps(answer)}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }))
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    auth = make_gate_authorization(flags=(MODEL_INVOCATION, NETWORK_ACCESS), provider_id="groq")
+    return GroqProvider(authorization=auth), bodies
+
+
+def test_the_format_instruction_the_model_reads_last_names_suggestions(monkeypatch):
+    from runtime.mvp_runtime.crypto.data_review import DATA_REVIEW_PROMPT_VERSION, SUGGESTIONS_OUTPUT_SPEC
+    from runtime.mvp_runtime.providers import response_instruction
+
+    inventory = build_data_inventory([], [])
+    provider, bodies = _wire_groq(monkeypatch, _prompt_example(build_review_prompt(inventory)))
+    record = review_data_gaps(inventory, provider=provider, now=NOW)
+
+    content = bodies[0]["messages"][0]["content"]
+    assert content.endswith(response_instruction(SUGGESTIONS_OUTPUT_SPEC))
+    assert ("suggestions (array of objects {name: string, data_family: string, venue: string, "
+            "rationale: string, expected_use: string})") in content
+    assert "degraded" not in record and record["suggested_count"] >= 1
+    assert "answer_keys" not in record
+    assert record["prompt_version"] == DATA_REVIEW_PROMPT_VERSION == record["invocation"]["prompt_version"]
+
+
+def test_an_answer_that_drops_suggestions_is_refused_at_the_provider(monkeypatch):
+    """The live answer: every analysis key, no `suggestions`. Bound, the provider refuses it
+    as MALFORMED_RESPONSE (which a failover chain moves past) instead of handing back an
+    analysis this review can only count as zero suggestions."""
+    inventory = build_data_inventory([], [])
+    answer = {k: v for k, v in _prompt_example(build_review_prompt(inventory)).items()
+              if k != "suggestions"}
+    provider, _ = _wire_groq(monkeypatch, answer)
+    record = review_data_gaps(inventory, provider=provider, now=NOW)
+
+    assert record["degraded"] == DATA_REVIEW_DEGRADED
+    assert "MALFORMED_RESPONSE" in record["degraded_reason"]
+    assert "suggestions" in record["degraded_reason"]
+    assert record["invocation"] is None and record["suggested_count"] == 0
+
+
+def test_a_parsed_answer_without_suggestions_records_its_key_names_only():
+    class EnvelopeOnly(MockDataReviewProvider):
+        _ANSWER = {"summary": "a secret-free but useless answer", "key_findings": ["x"], "facts": []}
+
+    record = review_data_gaps(build_data_inventory([], []), provider=EnvelopeOnly(), now=NOW)
+    assert record["degraded"] == DATA_REVIEW_DEGRADED
+    assert record["answer_keys"] == ["facts", "key_findings", "summary"]
+    assert "useless" not in json.dumps(record)
+
+
+def test_a_provider_that_cannot_be_bound_degrades_rather_than_raising():
+    class Unbindable(MockDataReviewProvider):
+        def bind_role_output_keys(self, spec):
+            raise ProviderError("ROLE_BINDING_UNSUPPORTED", "a member cannot be bound")
+
+    record = review_data_gaps(build_data_inventory([], []), provider=Unbindable(), now=NOW)
+    assert record["degraded"] == DATA_REVIEW_DEGRADED
+    assert "ROLE_BINDING_UNSUPPORTED" in record["degraded_reason"]
