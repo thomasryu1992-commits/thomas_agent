@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **50**건: `DRAFT` 4 · `PARTIALLY DECIDED` 10 · `DECIDED` 5 · `IMPLEMENTED` 28 · `SUPERSEDED` 1 · `RECORD` 2
+제안서 **50**건: `DRAFT` 3 · `PARTIALLY DECIDED` 10 · `DECIDED` 6 · `IMPLEMENTED` 28 · `SUPERSEDED` 1 · `RECORD` 2
 
-## Thomas 결정 대기 (14)
+## Thomas 결정 대기 (13)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -25,9 +25,8 @@
 | [SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md](SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | §5의 D1·D2·D3·D4·D7·D8 채택, D6 보류(현상 유지). D5는 슬리피지 실측 뒤에 결정한다(§5 뒤 "결정" 절). 단계 0은 #980, 단계 1의 선행 조건 없는 항목은 #982–#989로 구현됐다. D3의 범위와 종료 조건은 2026-10-01에 다시 정했다("결정 (Thomas 2026-10-01)" 절: 측정·표시 허용, 종료는 1차 cohort 마감 2027-03-22). |
 | [RESEARCH_FORWARD_THROUGHPUT_ANALYSIS_V0.1.md](RESEARCH_FORWARD_THROUGHPUT_ANALYSIS_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-01 | P0-1(D3 범위)은 권고대로 결정(Thomas): 측정·표시 허용, 종료는 1차 cohort 마감 2027-03-22, cohort 사이 형제 규칙은 D3 밖(`SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md` "결정 (Thomas 2026-10-01)"). 나머지 P0·P1·P2는 결정 대기. 조사·설계만 했고 코드·상수·문은 바꾸지 않았다. |
 | [MULTI_ASSET_EXPANSION_V0.1.md](MULTI_ASSET_EXPANSION_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-02 | D1: (A) 자산 관리 먼저. D2: 옵션의 목적은 수익이고, 다른 수단보다 효율이 나을 때만 조건부로 채택한다. D3: 첫 기록 대상은 한국투자증권. D4: 읽기 전용 보드(P1)는 연구 일시 중지 중에도 허용(넷 다 Thomas). 부록 A의 한국투자증권 규제 기록이 완성됐다(판단: 본인 계좌 조회 운영 가능, 강도: 잠정, 외부 전송 경계 포함). P1-a(KIS 피드·두 렌더·`scripts/holdings_board.py`)와 P1-b(scheduler-maint 배선, KIS 키는 scheduler-maint에만, Thomas 2026-10-02)가 지어졌다. 켜는 것은 KIS 키 발급, `.env` 등록, 배포, 일정 등록(Thomas)을 기다린다. Hermes read(`holdings_status`)는 정책이 이름을 올리기 전까지 dormant다. 열린 것은 신청 화면의 권한 선택 여부 확인과 §6 D2 비교 기준의 비준이다. |
-| [CRYPTO_ARCHIVE_BACKFILL_V0.1.md](CRYPTO_ARCHIVE_BACKFILL_V0.1.md) | `DRAFT` | 2026-10-03 | R1–R4 결정 대기. 코드, 스케줄, 상수 변경 없음. |
 
-## 결정됨 — 구현 남음 (5)
+## 결정됨 — 구현 남음 (6)
 
 결정은 끝났고 결정된 것이 아직 다 지어지지 않았다. 결정이 만든 구현 대기열이다.
 
@@ -38,6 +37,7 @@
 | [RISK_LANE_WATCHDOG_V0.1.md](RISK_LANE_WATCHDOG_V0.1.md) | `DECIDED` | 2026-09-29 | 타임아웃 시 프로세스 재시작, 마감값 600/120/120 s(Thomas). 구현 PR 두 개(§7) 진행 중. |
 | [SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md](SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md) | `DECIDED` | 2026-09-30 | D1 C·D2·D3 B→A·D4 예(Thomas): LIVE는 FORWARD_CONFIRMED 필수, forward 기준을 `observed_lineages`로 보정, 재사용 홀드아웃 표시는 버그 수정으로 지금 구현, 검증 슬라이스는 에포크 경계. 남은 구현: ① 문 변경, ② B 표시. ② A는 `REMAINING_WORK.md` §L. |
 | [CRYPTO_STRATEGY_EDGE_ORDER_V0.1.md](CRYPTO_STRATEGY_EDGE_ORDER_V0.1.md) | `DECIDED` | 2026-10-01 | S1·S2·S3 권고대로(Thomas). S1: 첫 forward cohort 판정 때 factory mint 비중을 1d로 기울인다(손실을 줄이는 선택이지 엣지 주장이 아님). S2: 쌍둥이 기준 판정은 에포크 경계에서 `REMAINING_WORK.md` §L E1과 함께 다룬다. S3: maker 진입은 지금 다시 열지 않는다. 0단계(`report --arms`)는 #1088로 구현됐고, S1·S2의 실행은 각 관문(첫 판정, 에포크 경계)을 기다린다. 이 문서가 바꾼 판정 규칙·보드·상수는 없다. |
+| [CRYPTO_ARCHIVE_BACKFILL_V0.1.md](CRYPTO_ARCHIVE_BACKFILL_V0.1.md) | `DECIDED` | 2026-10-03 | R1–R4 권고대로(Thomas). R1: OI 측정·백필은 지금, 피처 전환은 첫 cohort 판정 때 S1과 함께. R2: 롱숏은 게이트를 명시적 결정으로 고정한 뒤 백필, 생성은 2027-03-22 이후. R3: 아카이브는 런타임 밖에서 받는다. R4: 호가 깊이는 D3 이후. 남은 일: 단계 1(측정 스크립트) 구현. |
 
 ## 구현됨 (28)
 

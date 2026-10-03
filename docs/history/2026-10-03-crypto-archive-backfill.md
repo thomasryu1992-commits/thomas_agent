@@ -1,4 +1,4 @@
-# The information sources are shallow, and Binance's public archive is deep (proposal)
+# The information sources are shallow, and Binance's public archive is deep (decided)
 
 - **Why:** the system score (2026-10-03) put research diversity at 4/10 and real edge at 2.5/10. When we asked
   what would raise them, the bottleneck turned out to be not the number of hypotheses but how deep the
@@ -21,3 +21,10 @@
     the switch that mints the family;
   - fetch the archive outside the runtime, so that runtime egress is unchanged;
   - leave order-book depth until after D3.
+- **Decided (Thomas 2026-10-03):** R1–R4 as recommended.
+  - Measure and backfill OI now. Switch the OI feature source at the first cohort verdict, with S1.
+  - Pin the positioning gate to an explicit decision before backfilling it, and mint positioning families only
+    after 2027-03-22.
+  - Fetch the archive outside the runtime.
+  - Order-book depth comes after D3.
+  - Next: step 1, the measurement script.
