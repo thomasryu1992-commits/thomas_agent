@@ -33,3 +33,8 @@
   - `--confirm` through the CLI;
   - the host export and the importer agree on shape and label (the archive's 01:00 reading becomes the
     store's 00:00 hour).
+- **Decided (Thomas 2026-10-03):** option (c), wait.
+  - Positioning backfill is deferred until minting approaches (after 2027-03-22).
+  - When it does, the archive rows go in a separate file that only coverage and the factory read, never the
+    `cycle` fan-out's full read.
+  - Recorded in the proposal's "추가 결정" section.

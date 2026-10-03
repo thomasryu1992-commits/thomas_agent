@@ -37,7 +37,7 @@
 | [RISK_LANE_WATCHDOG_V0.1.md](RISK_LANE_WATCHDOG_V0.1.md) | `DECIDED` | 2026-09-29 | 타임아웃 시 프로세스 재시작, 마감값 600/120/120 s(Thomas). 구현 PR 두 개(§7) 진행 중. |
 | [SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md](SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md) | `DECIDED` | 2026-09-30 | D1 C·D2·D3 B→A·D4 예(Thomas): LIVE는 FORWARD_CONFIRMED 필수, forward 기준을 `observed_lineages`로 보정, 재사용 홀드아웃 표시는 버그 수정으로 지금 구현, 검증 슬라이스는 에포크 경계. 남은 구현: ① 문 변경, ② B 표시. ② A는 `REMAINING_WORK.md` §L. |
 | [CRYPTO_STRATEGY_EDGE_ORDER_V0.1.md](CRYPTO_STRATEGY_EDGE_ORDER_V0.1.md) | `DECIDED` | 2026-10-01 | S1·S2·S3 권고대로(Thomas). S1: 첫 forward cohort 판정 때 factory mint 비중을 1d로 기울인다(손실을 줄이는 선택이지 엣지 주장이 아님). S2: 쌍둥이 기준 판정은 에포크 경계에서 `REMAINING_WORK.md` §L E1과 함께 다룬다. S3: maker 진입은 지금 다시 열지 않는다. 0단계(`report --arms`)는 #1088로 구현됐고, S1·S2의 실행은 각 관문(첫 판정, 에포크 경계)을 기다린다. 이 문서가 바꾼 판정 규칙·보드·상수는 없다. |
-| [CRYPTO_ARCHIVE_BACKFILL_V0.1.md](CRYPTO_ARCHIVE_BACKFILL_V0.1.md) | `DECIDED` | 2026-10-03 | R1–R4 권고대로(Thomas). R1: OI 측정·백필은 지금, 피처 전환은 첫 cohort 판정 때 S1과 함께. R2: 롱숏은 게이트를 명시적 결정으로 고정한 뒤 백필, 생성은 2027-03-22 이후. R3: 아카이브는 런타임 밖에서 받는다. R4: 호가 깊이는 D3 이후. 단계 1은 #1119로, R2의 게이트 고정(`positioning_store.MINTING_DECIDED`=False)은 이번 PR로 구현됐다. 남은 일: 단계 2(저장소 백필), 첫 판정 때 단계 3. |
+| [CRYPTO_ARCHIVE_BACKFILL_V0.1.md](CRYPTO_ARCHIVE_BACKFILL_V0.1.md) | `DECIDED` | 2026-10-03 | R1–R4 권고대로(Thomas). R1: OI 측정·백필은 지금, 피처 전환은 첫 cohort 판정 때 S1과 함께. R2: 롱숏은 게이트를 명시적 결정으로 고정한 뒤 백필, 생성은 2027-03-22 이후. R3: 아카이브는 런타임 밖에서 받는다. R4: 호가 깊이는 D3 이후. 단계 1은 #1119로, R2의 게이트 고정(`positioning_store.MINTING_DECIDED`=False)은 이번 PR로 구현됐다. OI 백필 도구는 #1121(단계 2). 롱숏 백필은 저장 방식 때문에 보류(아래 2026-10-03 추가 결정). 남은 일: OI import 실행, 첫 판정 때 단계 3. |
 
 ## 구현됨 (28)
 
