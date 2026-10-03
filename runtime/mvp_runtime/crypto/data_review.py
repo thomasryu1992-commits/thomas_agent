@@ -37,7 +37,9 @@ DATA_REVIEW_WORKER_VERSION = "0.1.0"
 # rather than edited in place because the two degraded records already in the ledger were
 # produced by v1, and which prompt produced a record is the first question anyone rereading
 # them asks. See `build_review_prompt`.
-DATA_REVIEW_PROMPT_VERSION = "mvp_crypto_data_gap_review.v3"
+# v4 (2026-10-03): the prompt text is v3's, but the provider is bound to
+# `SUGGESTIONS_OUTPUT_SPEC`, so the format instruction appended to it now names `suggestions`.
+DATA_REVIEW_PROMPT_VERSION = "mvp_crypto_data_gap_review.v4"
 
 # v1 = the family vintage: suggestion verdicts carry `data_family`/`venue` and can be
 # refused `already_collected_family` / `unknown_data_family`; v0 rows carry `data_kind`
@@ -52,6 +54,14 @@ DATA_REVIEW_STALLED = "DATA_REVIEW_PERSISTENTLY_DEGRADED"
 DATA_REVIEW_TOKEN_ALLOWANCE = 4000
 DATA_REVIEW_TIMEOUT_SECONDS = TRIAGE_TIMEOUT_SECONDS
 MAX_SUGGESTIONS_PER_RUN = 5
+# `suggestions` as a bound Role key (`providers.bind_role_output_keys`). Unbound, the last word
+# of every hosted prompt was the format instruction listing the analysis keys alone. Groq runs
+# plain `json_object`, so that instruction is the only statement of the shape it gets, and
+# answers that followed it dropped `suggestions`: 3 of the 4 weekly fires from 2026-09-12 to
+# 2026-10-03 returned a well-formed analysis with no suggestions (the 2026-09-28 blog failure,
+# again). Bound, the instruction names the key with its fields, the schema-enforcing vendors
+# emit it, and an answer without it is MALFORMED_RESPONSE, which a failover chain moves past.
+SUGGESTIONS_OUTPUT_SPEC = {"suggestions": "objects(name, data_family, venue, rationale, expected_use)"}
 
 # The sources the runtime collects today — stated deterministically so the model is
 # told, not asked, what exists. Kept in one place; a new source joins this list in the
@@ -235,12 +245,15 @@ def build_review_prompt(inventory: Mapping[str, Any], *, count: int = MAX_SUGGES
     proposer never had this because it never contradicts the envelope; it asks to be inside
     it. Stating one shape that satisfies both instructions is the whole fix.
 
-    Not a schema change: the vendors that ENFORCE the analysis shape (OpenRouter's strict
-    ``json_schema``, Google's ``responseSchema``) are closed over their key set and will not
-    emit ``suggestions`` at the top level at all. That is the proposer's existing situation
-    too, and ``_extract_suggestions`` covers it by digging an embedded object out of
-    ``summary``. Widening the shared schema for one lane's key would put a crypto concern in
-    the core's provider contract, which is the trade this deliberately does not make.
+    Stating the shape in this prompt was not enough, though (2026-10-03). The providers'
+    appended instruction still came LAST and still listed the analysis keys alone, and groq's
+    answers dropped ``suggestions`` on 3 of 4 weekly fires. So the caller now also binds
+    :data:`SUGGESTIONS_OUTPUT_SPEC` as a Role key. That is a per-call derivation
+    (``providers.bind_role_output_keys``), not a widening of the shared schema: the analysis
+    runs' instruction and schemas stay byte-identical, and no crypto key enters the core's
+    contract. Bound, the schema-enforcing vendors (OpenRouter's strict ``json_schema``,
+    Google's ``responseSchema``) emit ``suggestions`` too. ``_extract_suggestions`` still digs
+    an embedded object out of ``summary`` for an answer that put it there.
     """
     return (
         "You review the DATA INPUTS of a governed crypto paper-trading pipeline.\n"
@@ -426,6 +439,7 @@ def review_data_gaps(
     degraded: str | None = None
     invocation: dict[str, Any] | None = None
     raw: list[dict[str, Any]] = []
+    answer_keys: list[str] | None = None
     if inventory.get("mintable_features") is None:
         # Not an early return: the record is built once at the bottom, so a degraded review
         # has exactly the shape of every other one and no second construction to drift.
@@ -435,8 +449,11 @@ def review_data_gaps(
         )
     else:
         prompt = build_review_prompt(inventory)
+        # A provider without the binder (the mock) answers as before.
+        binder = getattr(provider, "bind_role_output_keys", None)
         try:
-            result = provider.generate(
+            bound = binder(SUGGESTIONS_OUTPUT_SPEC) if binder is not None else provider
+            result = bound.generate(
                 prompt,
                 max_output_tokens=DATA_REVIEW_TOKEN_ALLOWANCE,
                 timeout_seconds=DATA_REVIEW_TIMEOUT_SECONDS,
@@ -444,9 +461,13 @@ def review_data_gaps(
         except (ProviderError, TimeoutError) as exc:
             degraded = f"data-review provider failed: {exc}"
         else:
-            raw = _extract_suggestions(result.analysis if isinstance(result.analysis, Mapping) else {})
+            analysis = result.analysis if isinstance(result.analysis, Mapping) else {}
+            raw = _extract_suggestions(analysis)
             if not raw:
                 degraded = "data reviewer returned no parseable suggestions"
+                # The answer's key NAMES, never its content: what it did carry is the first
+                # question a degraded fire raises, and the record kept nothing to answer it.
+                answer_keys = sorted(str(key) for key in analysis)
             invocation = {
                 "worker_id": DATA_REVIEW_WORKER_ID,
                 "worker_version": DATA_REVIEW_WORKER_VERSION,
@@ -486,6 +507,8 @@ def review_data_gaps(
     if degraded:
         record["degraded"] = DATA_REVIEW_DEGRADED
         record["degraded_reason"] = degraded
+    if answer_keys is not None:
+        record["answer_keys"] = answer_keys
     record["review_id"] = integrity.short_id("data_review", {"at": now})
     record["record_sha256"] = integrity.sha256_record(record)
     return record
