@@ -67,6 +67,7 @@ SCRIPTS: dict[str, str] = {
     "scripts/dedupe_counterfactual_book.py": RESEARCH_WRITE,
     "scripts/forward_cohort.py": RESEARCH_WRITE,
     "scripts/hypothesis_trial.py": RESEARCH_WRITE,
+    "scripts/import_archive_oi.py": RESEARCH_WRITE,             # --apply: archive OI into oi_store
     "scripts/rescore_stale_holdout_candidates.py": RESEARCH_WRITE,
     "scripts/seed_forward_book.py": RESEARCH_WRITE,
     # reads and reports

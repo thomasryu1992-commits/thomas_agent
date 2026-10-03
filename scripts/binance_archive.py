@@ -14,6 +14,9 @@ nothing under ``.runtime_governance_state/``. It reads the OI store file read-on
   checked against the archive's own ``.CHECKSUM`` (sha256) before it is kept. A day the archive does
   not serve is recorded in ``missing.json``, not retried forever. An existing verified file is
   skipped, so a fetch resumes where it stopped.
+- ``export-oi`` writes the fetched hourly OI as ``oi_store``-shaped rows (JSONL on stdout), already
+  relabelled to the hour's start, for ``scripts/import_archive_oi.py --confirm`` to append inside the container
+  as the service user (step 2). The host never writes the store.
 - ``measure`` reads what was fetched and reports, per symbol:
   - the first and last day held and the missing days between them;
   - the span against the replay depths the factory needs (1,000 days below 1d, 2,000 bars at 1d);
@@ -302,6 +305,17 @@ def measure(dest: Path, *, symbols: Sequence[str], oi_store: Path | None) -> dic
     return report
 
 
+def export_oi_rows(dest: Path, *, symbols: Sequence[str]) -> Iterable[dict[str, Any]]:
+    """Every held day's hourly OI as ``oi_store``-shaped rows (``symbol``, ``timestamp`` = the hour's
+    START, ``open_interest``), oldest first, one file at a time. What
+    ``scripts/import_archive_oi.py`` reads on stdin inside the container (step 2)."""
+    for symbol in symbols:
+        folder = dest / METRICS / symbol
+        for path in sorted(folder.glob(f"{symbol}-{METRICS}-*.zip")) if folder.exists() else []:
+            for label, value in sorted(hourly_open_interest(read_metrics_zip(path)).items()):
+                yield {"symbol": symbol, "timestamp": label, "open_interest": value}
+
+
 # --- the command line -----------------------------------------------------------------------------
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -318,6 +332,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     m.add_argument("--dest", required=True, type=Path)
     m.add_argument("--oi-store", type=Path, default=None)
     m.add_argument("--json", action="store_true")
+    e = sub.add_parser("export-oi", help="hourly OI as oi_store rows (JSONL on stdout), for the importer")
+    e.add_argument("--symbols", default=",".join(DEFAULT_SYMBOLS))
+    e.add_argument("--dest", required=True, type=Path)
     args = parser.parse_args(argv)
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
     if args.command == "fetch":
@@ -330,6 +347,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         for symbol, tally in counts.items():
             print(f"{symbol}: kept {tally['kept']}, already present {tally['present']}, "
                   f"not in the archive {tally['missing']}")
+        return 0
+    if args.command == "export-oi":
+        for row in export_oi_rows(args.dest, symbols=symbols):
+            sys.stdout.write(json.dumps(row) + "\n")
         return 0
     report = measure(args.dest, symbols=symbols, oi_store=args.oi_store)
     if args.json:

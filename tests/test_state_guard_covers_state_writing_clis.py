@@ -37,6 +37,7 @@ GUARDED = {
     "run_slippage_probe": "the probe plan store, the approval store, and the probe order's audit event",
     "disarm_live_strategies": "the active strategy pool's live tier and the control ledger",
     "run_signed_testnet_cycle": "the testnet venue's order counter and its evidence registry",
+    "import_archive_oi": "the hourly open-interest store and its archive-import record",
 }
 
 # Writers whose guard is deliberately NOT at the top of main, because they have a read-only
@@ -47,6 +48,7 @@ GUARDED_AT_THE_WRITE_POINT = {
     "run_signed_testnet_cycle": "--list and --plan only read",
     "register_program_candidate": "--list only reads",
     "import_crypto_history": "the default run is a dry-run report",
+    "import_archive_oi": "the default run is a dry-run report",
 }
 
 
