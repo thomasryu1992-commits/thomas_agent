@@ -1,6 +1,6 @@
 # 제안: "Phase 7.14 정렬·안전 리팩터" 계획 — 저장소 대조 감사 (v0.1)
 
-**상태:** DRAFT 2026-10-05 — 계획의 PR-1·2·3은 Thomas 결정 세 건(09-29 사다리, 08-10 env 게이트, 자격증명 평면)을 뒤집어야 지을 수 있고, PR-4·5는 D3에 걸린다. §5의 Q1–Q4 답을 받기 전에는 코드를 바꾸지 않는다. 코드·스키마·정책 변경 없음.
+**상태:** IMPLEMENTED 2026-10-05 — Q1–Q4 모두 권고대로(Thomas): 카나리 rung 없음 유지, 코드 상수 2차 권위 없음, 어댑터 키 읽기 유지, D3 중 ResearchSignal v2·ID 체인 보류. §D의 P2 테스트 3건(paper 격리, 증거는 단계 증인이 아님, 안전 불변식 lane)을 같은 PR에서 지었다. 코드·스키마·정책 변경 없음. ResearchSignal·ID 체인은 첫 cohort 판정 뒤 이 문서를 근거로 다시 연다.
 
 **대조 기준:** origin/main `d6c2f10f`(#1121), 2026-10-05. 호스트 단계는 읽기 전용으로 확인했다
 (`register_execution_stage --show`): **PAPER**, 정책 1.6.1, 원장 1행.
@@ -119,6 +119,10 @@
 
 ## 5. Thomas 결정 항목
 
+**결정 (Thomas 2026-10-05): Q1–Q4 모두 권고대로. §D의 P2 테스트 3건은 D3 밖으로 보고 진행.**
+
+아래는 결정 전에 적은 질문과 권고다.
+
 - **Q1. 09-29 "카나리 rung 없음"을 뒤집는가?** 권고: 유지. 뒤집는다면 별도 제안 문서(스키마 v0.2, 원장 마이그레이션,
   REBIND 설계)가 먼저다. 계획 §2도 "단순 rename 금지, 자동 마이그레이션 금지"라고 한다.
 - **Q2. 단계 원장 위에 코드 상수로 된 두 번째 권위를 두는가?** 권고: 두지 않는다. 지금 PAPER가 계획이 원하는 상태를
@@ -128,4 +132,13 @@
 - **Q4. D3 중 ResearchSignal v2 / ID 체인을 예외로 하는가?** 권고: 예외로 하지 않는다(첫 cohort 판정 뒤 재검토).
   §D의 P2 테스트는 D3 밖으로 보고 진행해도 되는지 함께 답을 받는다.
 
-Q1–Q4 답이 오면 그에 맞춰 `CHANGE_PLAN`을 쓴다. 지금 쓰면 결정을 앞질러 계획하게 된다.
+## 6. 구현 (결정 뒤, 같은 PR)
+
+결정이 모두 "현재 유지"이므로 별도 `CHANGE_PLAN`은 쓰지 않는다. 지은 것은 §D의 P2 세 건뿐이고, 셋 다 기존 동작을
+고정할 뿐 권한을 만들거나 줄이지 않는다.
+
+| 테스트 | 고정하는 것 | 변이 확인 |
+|---|---|---|
+| `test_a_paper_cycle_reaches_no_venue_even_with_every_trading_opt_in_set` (`test_mvp_runtime_crypto_paper.py`) | paper·live·testnet opt-in을 모두 켠 채 paper 개설→청산 한 사이클이 소켓을 열지 않고 거래소 어댑터를 만들지 않는다. 키는 설정하지도 읽지도 않는다 | `run_paper_update`에 `getaddrinfo` 한 줄을 넣으면 실패 |
+| `test_evidence_is_not_permission_a_climb_on_good_results_alone_reads_read_only` (`test_mvp_runtime_crypto_execution_stage.py`) | READY 보드·CI 통과·paper 기대값·dry-run 증거를 모두 담은 SIGNED_TESTNET 기록도, 증인이 보고서 id·소비되지 않은 승인·CI가 소비한 승인이면 READ_ONLY(`STAGE_APPROVAL_NOT_CONSUMED`)로 읽힌다. 대조군: 같은 기록이 Thomas가 소비한 승인 위에서는 묶인다 | 대조군이 같은 테스트 안에 있다 |
+| 안전 불변식 lane: `tests/safety_lane.args` + `.github/workflows/safety-invariants.yml` + `tests/test_safety_lane.py` | 단계·증인·env 게이트·테스트넷/라이브 분리·pre-order 게이트·paper 격리 테스트 파일 12개를 따로 돌린다(`python -m pytest @tests/safety_lane.args`, 로컬 약 20초). **필수 체크가 아니다**(Q14). 핀 테스트가 lane 파일의 존재와, 핵심 불변식 8개를 담은 파일이 lane에 있는지를 테스트 정의를 검색해 확인한다 | paper 파일을 lane에서 빼면 핀 테스트 실패 |

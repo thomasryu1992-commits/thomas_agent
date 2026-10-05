@@ -646,6 +646,54 @@ def test_real_open_then_settle_cycle(tmp_path):
     assert records2[0]["filesystem_write"] is True
 
 
+def test_a_paper_cycle_reaches_no_venue_even_with_every_trading_opt_in_set(tmp_path, monkeypatch):
+    """Paper isolation (PHASE_7_14_ALIGNMENT_AUDIT_V0.1 §D, Thomas 2026-10-05): a full open-then-
+    settle cycle through the env-selected durable store, with the live and testnet opt-ins set as
+    well, opens no socket and constructs no venue adapter. Those opt-ins gate THEIR lanes; nothing
+    in the paper step may route through them. No key is set — the test reads none."""
+    import socket
+
+    from runtime.mvp_runtime.crypto import live_execution, testnet_execution
+
+    monkeypatch.setenv(PAPER_ENV, "real")
+    monkeypatch.setenv("MVP_LIVE_TRADING", "real")
+    monkeypatch.setenv(testnet_execution.TESTNET_TRADING_ENV, "real")
+    reached = []
+
+    def _no_network(*args, **kwargs):
+        reached.append("socket")
+        raise AssertionError("the paper step reached the network")
+
+    def _no_adapter(name):
+        def _init(self, *args, **kwargs):
+            reached.append(name)
+            raise AssertionError(f"the paper step constructed the {name}")
+        return _init
+
+    monkeypatch.setattr(socket.socket, "connect", _no_network)
+    monkeypatch.setattr(socket, "create_connection", _no_network)
+    monkeypatch.setattr(socket, "getaddrinfo", _no_network)
+    # The live order adapter subclasses the reader, so one patch covers both live classes.
+    monkeypatch.setattr(live_execution.BinanceFuturesVenueReader, "__init__", _no_adapter("live venue adapter"))
+    monkeypatch.setattr(testnet_execution.BinanceTestnetOrderAdapter, "__init__", _no_adapter("testnet adapter"))
+
+    control_store = ControlStore(tmp_path)
+    store = select_paper_store(now=NOW, root=tmp_path)
+    assert isinstance(store, RealPaperStore)
+    summary, _ = run_paper_update(_snapshot(), ROW, _pool(_pool_entry()), _verdict(),
+                                  store=store, now=NOW, root=tmp_path, control_store=control_store)
+    assert summary["opened"] is not None
+    sl_candle = {"open_time": "2026-07-22T00:00:00Z", "open": 104.0, "high": 104.5, "low": 101.0,
+                 "close": 103.0, "volume": 9.0, "close_time": "2026-07-23T00:00:00Z"}
+    later = "2026-07-23T12:00:00Z"
+    summary2, _ = run_paper_update(_snapshot(sl_candle), ROW_NO_MATCH, _pool(_pool_entry()), _verdict(),
+                                   store=select_paper_store(now=later, root=tmp_path), now=later,
+                                   root=tmp_path, control_store=control_store)
+    assert summary2["settled"]["close_reason"] == "stop_loss"
+    assert len(read_outcomes(tmp_path)) == 1
+    assert reached == []
+
+
 def test_single_position_no_double_open(tmp_path):
     control_store = ControlStore(tmp_path)
     run_paper_update(_snapshot(), ROW, _pool(_pool_entry()), _verdict(),
