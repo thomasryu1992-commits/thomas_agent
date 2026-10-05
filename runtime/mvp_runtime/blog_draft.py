@@ -33,7 +33,10 @@ __all__ = [
     "detect_fact_checks",
     "evidence_index",
     "fact_checks",
+    "load_object",
+    "parse_prose",
     "parse_structured",
+    "prose_title_candidates",
     "render_blocks",
     "resolve_sources",
     "sanitize_paragraph",
@@ -52,6 +55,8 @@ MAX_TAGS = 30
 MAX_IMAGE_SHOTS = 20
 MAX_FACT_CHECKS = 30
 MAX_SOURCES = 10
+# The package schema's ceiling on editor directions (`body_blocks`).
+MAX_BODY_BLOCKS = 100
 # The table is its own field (2026-09-29). Asked to write it as ' | ' rows inside `paragraphs`,
 # a model broke the JSON exactly there: it replaced a section's `"heading": …` with the key
 # `": | : | :"`, and the draft lost every key after it (tags, image shots, fact checks, sources).
@@ -202,20 +207,14 @@ def _loads(text: str) -> Any:
     return json.loads(text, strict=False)
 
 
-def parse_structured(text: str) -> tuple[dict[str, Any] | None, str | None]:
-    """``(draft, None)`` for a usable structured draft, ``(None, reason)`` otherwise.
-
-    Tolerates exactly two kinds of wrapping a model adds — a code fence, and prose before or
-    after the object — by taking the outermost ``{...}``, and two kinds of damage: brackets left
-    out (:func:`repair_brackets`), including a draft that stopped with brackets still open, and
-    raw control characters inside strings (:func:`_loads`). Anything that is not then a JSON object with at
-    least one section holding prose is not a structured draft, and the caller falls back to the
-    legacy parser and says so. A repaired draft says how many closers it needed in
-    ``brackets_inserted``; the key is 0 otherwise."""
+def load_object(text: str) -> tuple[dict[str, Any] | None, int, str | None]:
+    """``(object, brackets_inserted, None)`` for text that holds one JSON object, ``(None, 0,
+    reason)`` otherwise — the tolerance half of :func:`parse_structured`, shared with a platform
+    that reads its own extra keys from the same object (`blog_tistory`)."""
     raw = _FENCE_RE.sub("", str(text or "").strip())
     start, end = raw.find("{"), raw.rfind("}")
     if start < 0 or end <= start:
-        return None, "NO_JSON_OBJECT"
+        return None, 0, "NO_JSON_OBJECT"
     whole = raw[start:].rstrip()
     raw = raw[start:end + 1]
     inserted = 0
@@ -226,15 +225,34 @@ def parse_structured(text: str) -> tuple[dict[str, Any] | None, str | None]:
         # taken to its end with the brackets it left open closed there.
         repaired = repair_brackets(raw) or repair_brackets(whole, close_at_end=True)
         if repaired is None:
-            return None, "JSON_UNPARSEABLE"
+            return None, 0, "JSON_UNPARSEABLE"
         try:
             data = _loads(repaired[0])
         except ValueError:
-            return None, "JSON_UNPARSEABLE"
+            return None, 0, "JSON_UNPARSEABLE"
         inserted = repaired[1]
     if not isinstance(data, dict):
-        return None, "JSON_NOT_OBJECT"
+        return None, 0, "JSON_NOT_OBJECT"
+    return data, inserted, None
 
+
+def parse_structured(text: str, *, extended: bool = False) -> tuple[dict[str, Any] | None, str | None]:
+    """``(draft, None)`` for a usable structured draft, ``(None, reason)`` otherwise.
+
+    Tolerates exactly two kinds of wrapping a model adds — a code fence, and prose before or
+    after the object — by taking the outermost ``{...}``, and two kinds of damage: brackets left
+    out (:func:`repair_brackets`), including a draft that stopped with brackets still open, and
+    raw control characters inside strings (:func:`_loads`). Anything that is not then a JSON object with at
+    least one section holding prose is not a structured draft, and the caller falls back to the
+    legacy parser and says so. A repaired draft says how many closers it needed in
+    ``brackets_inserted``; the key is 0 otherwise.
+
+    ``extended`` keeps two fields only a markdown platform renders: a section's heading
+    ``level`` (2 or 3) and a capture direction's ``alt_text``. Off, the draft is exactly what it
+    always was — the Naver revision re-serializes it, so an extra key would change its request."""
+    data, inserted, reason = load_object(text)
+    if data is None:
+        return None, reason
     draft_captures: list[tuple[int, str]] = []
     intro: list[str] = []
     for paragraph in _str_list(data.get("intro"), limit=2000, cap=MAX_PARAGRAPHS_PER_SECTION):
@@ -258,7 +276,11 @@ def parse_structured(text: str) -> tuple[dict[str, Any] | None, str | None]:
             if body:
                 paragraphs.append(body)
         if heading and paragraphs:
-            sections.append({"heading": heading, "paragraphs": paragraphs})
+            section = {"heading": heading, "paragraphs": paragraphs}
+            if extended:
+                level = item.get("level")
+                section["level"] = level if level in (2, 3) and not isinstance(level, bool) else 2
+            sections.append(section)
         if len(sections) >= MAX_SECTIONS:
             break
     if not sections:
@@ -276,6 +298,10 @@ def parse_structured(text: str) -> tuple[dict[str, Any] | None, str | None]:
         tool = _text(item.get("tool_name"), 100)
         if tool:
             shot["tool_name"] = tool
+        if extended:
+            alt = sanitize_paragraph(_text(item.get("alt_text"), 200))
+            if alt:
+                shot["alt_text"] = alt
         shots.append(shot)
     shots += [{"after_section": s, "what_to_capture": w} for s, w in draft_captures]
 
@@ -364,6 +390,91 @@ def render_blocks(draft: Mapping[str, Any]) -> dict[str, Any]:
         shots.append(rendered)
     return {"body_paste": "\n\n".join(paragraphs), "body_blocks": blocks,
             "image_shots": shots[:MAX_IMAGE_SHOTS], "paragraph_count": len(paragraphs)}
+
+
+# --- the legacy prose draft (a model that answered in prose anyway) ------------------------
+
+# The `\s+` after the hashes is load-bearing, not style. A Korean hashtag line —
+# `#미리캔버스 #포스터제작` — also begins with `#`, and without the required space this regex
+# claimed it as a heading, so every draft's tag line became a title and `tags` came back empty.
+_PROSE_HEADING_RE = re.compile(r"^\s{0,3}#{1,4}\s+(?P<text>.+?)\s*$")
+_PROSE_CAPTURE_RE = re.compile(r"\[캡처:\s*(?P<what>[^\]]+)\]")
+_PROSE_TAG_RE = re.compile(r"#([^\s#]{1,40})")
+
+
+def parse_prose(draft: str) -> dict[str, Any]:
+    """Split one plain-text draft into the package's paste body and its editor instructions.
+
+    The paste body is what goes into SmartEditor, so the markers the editor cannot interpret
+    are lifted out of it and become instructions beside it: a heading line becomes a
+    `body_blocks` entry, a `[캡처: …]` marker becomes an `image_shots` entry naming the
+    paragraph it followed, and trailing `#tags` become `tags`. Everything is truncated at the
+    schema's ceiling rather than allowed to fail validation — see the constants above.
+    """
+    tags: list[str] = []
+    blocks: list[dict[str, Any]] = []
+    shots: list[dict[str, Any]] = []
+    kept: list[str] = []
+
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", draft or "") if p.strip()]
+    for para in paragraphs:
+        captures = _PROSE_CAPTURE_RE.findall(para)
+        body = _PROSE_CAPTURE_RE.sub("", para).strip()
+        # Asked first: a paragraph that is only hashtags is the draft's tag line, not a
+        # paragraph and not a heading.
+        if body and not _PROSE_TAG_RE.sub("", body).strip() and _PROSE_TAG_RE.search(body):
+            tags.extend(_PROSE_TAG_RE.findall(body))
+            continue
+        heading = _PROSE_HEADING_RE.match(body)
+        if heading:
+            body = heading.group("text").strip()
+        if body:
+            kept.append(body)
+            index = len(kept) - 1
+            if heading:
+                blocks.append({"paragraph_index": index, "action": "heading"})
+            for what in captures:
+                shots.append({"after_paragraph": index, "what_to_capture": what.strip()})
+        elif captures:
+            index = max(len(kept) - 1, 0)
+            for what in captures:
+                shots.append({"after_paragraph": index, "what_to_capture": what.strip()})
+
+    # Tags may also trail the final paragraph rather than standing alone.
+    if kept:
+        trailing = _PROSE_TAG_RE.findall(kept[-1])
+        if trailing and not _PROSE_TAG_RE.sub("", kept[-1]).strip():
+            tags.extend(trailing)
+            kept.pop()
+
+    seen: set[str] = set()
+    unique_tags = [t for t in tags if not (t in seen or seen.add(t))]
+    return {
+        "body_paste": "\n\n".join(kept),
+        "body_blocks": blocks[:MAX_BODY_BLOCKS],
+        "image_shots": shots[:MAX_IMAGE_SHOTS],
+        "tags": unique_tags[:MAX_TAGS],
+        "paragraph_count": len(kept),
+    }
+
+
+_PROSE_TITLE_RE = re.compile(r"^\s{0,3}#\s+(?P<text>.+?)\s*$")
+
+
+def prose_title_candidates(draft: str) -> list[str]:
+    """Titles from a prose draft: its level-1 headings (``# …``) only.
+
+    Every heading used to qualify, so a section called '프롬프트 만들기' was offered as the post's
+    title. A section heading is a section; a draft with no ``#`` title line yields no candidate,
+    and the quality check names the gap rather than a heading standing in for one."""
+    titles: list[str] = []
+    for line in (draft or "").splitlines():
+        match = _PROSE_TITLE_RE.match(line)
+        if match:
+            text = match.group("text").strip()
+            if text and text not in titles:
+                titles.append(text[:100])
+    return titles[:MAX_TITLES]
 
 
 # --- evidence a draft may cite ----------------------------------------------------------

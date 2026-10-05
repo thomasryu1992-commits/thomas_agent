@@ -544,7 +544,8 @@ def build_schedule(
             "MISSING_REQUEST",
             "a content_ideation schedule requires seed keywords in its request "
             "(comma separated; `source=queue` takes them from the vault keyword queue; "
-            "`target=<keyword>` overrides the week's selection)",
+            "`target=<keyword>` overrides the week's selection; `platform=tistory` drafts for "
+            "Tistory instead of Naver)",
         )
     if not (isinstance(created_by, str) and created_by.strip()):
         raise SchedulerBlocked("MISSING_CREATOR", "a schedule requires a created_by identity")
@@ -1122,20 +1123,25 @@ def format_ideation_sheet(reply: Mapping[str, Any]) -> str:
                           if evidence.get("blog_competing_posts") is not None else ""))
     else:
         target_line = f"no row for the target itself ({evidence.get('degraded_reason_code')})"
+    overlap = reply.get("overlap") or {}
     lines = [
         "=== blog package ===",
         "",
+        f"platform  : {reply.get('platform') or 'naver'}",
         f"keyword   : {reply.get('target_keyword')}",
         f"package   : {reply.get('package_id')}",
         f"evidence  : {target_line}",
         f"draft     : {measured.get('body_chars', '?')} chars, "
-        f"{measured.get('headings', '?')} headings, {measured.get('images', '?')} image cues",
+        f"{measured.get('headings', measured.get('h2_sections', '?'))} headings, "
+        f"{measured.get('images', '?')} image cues",
         f"standards : {'PASS' if score.get('critical_pass') else 'MISS'} "
         f"({score.get('standards_version')})",
     ]
     if score.get("quality_state"):
         lines.append(f"quality   : {score['quality_state']}"
                      " (a draft for review either way; nothing is published)")
+    if overlap.get("overlap_type"):
+        lines.append(f"overlap   : {overlap['overlap_type']} -> {overlap.get('action')}")
     if not score.get("critical_pass"):
         lines += ["", "critical criteria missed — the package is recorded, not discarded:"]
         lines += [f"  {line}" for line in (reply.get("scorecard_lines") or [])

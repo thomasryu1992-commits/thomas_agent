@@ -51,8 +51,14 @@ from runtime.read_only_kernel.schema_validation import (  # noqa: E402
 )
 
 _ISO = "%Y-%m-%dT%H:%M:%SZ"
-# Mirrors the schema's own pattern so the refusal names the rule instead of a validator trace.
-_URL_PATTERN = re.compile(r"^https://blog\.naver\.com/.+")
+# Mirrors the schemas' own patterns, per platform, so the refusal names the rule instead of a
+# validator trace. The platform is the package's (`blog_content.package_platform`): v0.1/v0.2
+# rows carry none and are Naver packages.
+_URL_PATTERNS = {
+    "naver": re.compile(r"^https://blog\.naver\.com/.+"),
+    "tistory": re.compile(r"^https://[a-z0-9-]+\.tistory\.com/.+"),
+}
+_URL_EXAMPLES = {"naver": "https://blog.naver.com/", "tistory": "https://<blog>.tistory.com/"}
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -61,7 +67,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--list", action="store_true",
                    help="read-only: list every package's newest row (id, state, keyword, url)")
     p.add_argument("--package-id", help="the package to mark published")
-    p.add_argument("--url", help="the published post's URL (https://blog.naver.com/...)")
+    p.add_argument("--url", help="the published post's URL (https://blog.naver.com/... for a "
+                                  "Naver package, https://<blog>.tistory.com/... for a Tistory one)")
     p.add_argument("--replace", action="store_true",
                    help="append a corrected row for a package that is ALREADY published "
                         "(without this, a second publish run refuses)")
@@ -121,16 +128,18 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         for record in sorted(packages.values(), key=lambda r: str(r.get("created_at_utc"))):
             url = record.get("published_url", "-")
-            print(f"{record['package_id']}  {record.get('publish_state'):9}  "
+            print(f"{record['package_id']}  {blog_content.package_platform(record):7}  "
+                  f"{record.get('publish_state'):9}  "
                   f"{record.get('created_at_utc')}  {record.get('target_keyword')}  {url}")
         return 0
 
     if not args.package_id or not args.url:
         print("ERROR: --package-id and --url are both required (or use --list)", file=sys.stderr)
         return 2
-    if not _URL_PATTERN.match(args.url):
-        print("ERROR URL_INVALID: the URL must start with https://blog.naver.com/ — "
-              "that pattern is the schema's own rule, not this script's taste", file=sys.stderr)
+    if not any(pattern.match(args.url) for pattern in _URL_PATTERNS.values()):
+        print("ERROR URL_INVALID: the URL must start with https://blog.naver.com/ or "
+              "https://<blog>.tistory.com/ — the schema's own rule, not this script's taste",
+              file=sys.stderr)
         return 2
 
     # Same reasoning as the budget registrar: a host-side root run leaves ledger files the
@@ -146,6 +155,11 @@ def main(argv: list[str] | None = None) -> int:
     if package is None:
         print(f"ERROR PACKAGE_NOT_FOUND: no ledger row carries package_id {args.package_id} "
               f"(--list shows what exists)", file=sys.stderr)
+        return 2
+    platform = blog_content.package_platform(package)
+    if not _URL_PATTERNS[platform].match(args.url):
+        print(f"ERROR URL_INVALID: {args.package_id} is a {platform} package; its URL must start "
+              f"with {_URL_EXAMPLES[platform]}", file=sys.stderr)
         return 2
     if package.get("publish_state") == "published" and not args.replace:
         print(f"ERROR ALREADY_PUBLISHED: {args.package_id} already records "

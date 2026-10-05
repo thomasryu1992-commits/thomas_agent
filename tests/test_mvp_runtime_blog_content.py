@@ -11,6 +11,8 @@ standards — are recorded rather than implied.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from runtime.mvp_runtime import blog_content
@@ -18,7 +20,7 @@ from runtime.mvp_runtime.paths import repo_root
 from runtime.read_only_kernel.schema_validation import validate_against_schema
 from tests._helpers import requires_local_core
 
-SCHEMA = repo_root() / "schemas" / "blog_content_package.v0.2.schema.json"
+SCHEMA = repo_root() / "schemas" / "blog_content_package.v0.3.schema.json"
 NOW = "2026-08-23T09:00:00Z"
 
 DRAFT = """# 미리캔버스로 포스터 만들기
@@ -229,10 +231,35 @@ def test_a_degraded_target_brief_says_which_leg_failed():
 
 
 def test_the_lineage_names_real_traces_and_null_for_runs_that_did_not_happen():
-    lineage = _build()["lineage"]
+    lineage = dict(_build()["lineage"])
+    prompt = lineage.pop("prompt")
     assert lineage == {"selection_research_trace_id": "trace-sel",
                        "target_research_trace_id": "trace-c", "content_trace_id": "trace-c",
                        "revision_trace_id": None}
+    # v0.3: which prompt, profile, standards and schema produced it (no request was sent here).
+    assert prompt["platform"] == "naver" and prompt["schema_version"] == blog_content.PACKAGE_SCHEMA_VERSION
+    assert prompt["request_sha256"] is None and prompt["revision_request_sha256"] is None
+
+
+def as_v02_row(package):
+    """What a ledger row written before 2026-10-05 looks like: the same package without
+    v0.3's additions. Every such row is a Naver package."""
+    row = {k: v for k, v in package.items()
+           if k not in ("platform", "content_intent", "overlap", "platform_metadata")}
+    row["schema_version"] = "blog_content_package.v0.2"
+    row["lineage"] = {k: v for k, v in package["lineage"].items() if k != "prompt"}
+    row["quality"] = {k: v for k, v in package["quality"].items() if k != "layers"}
+    return row
+
+
+def test_a_v0_2_package_row_stays_valid_and_reads_as_naver():
+    """v0.3 is a new version: the rows already in the ledger are not rewritten, still satisfy
+    their own schema, and every reader takes them for what they were — Naver packages."""
+    row = as_v02_row(_build())
+    validate_against_schema(row, blog_content.package_schema_path("blog_content_package.v0.2"),
+                            "blog_content_package")
+    assert blog_content.package_platform(row) == "naver"
+    assert blog_content.package_dir(row).startswith("blog/2026-")
 
 
 def test_a_v0_1_package_row_stays_valid_against_its_own_schema():
@@ -413,6 +440,19 @@ def test_the_open_gate_writes_both_files_and_records_each(tmp_path):
     assert [r["kind"] for r in ledger.rows] == ["write_use", "write_use"]
     assert all(r["trace_id"] == package["package_id"] for r in ledger.rows)
     assert note.startswith("workspace/blog/")
+
+
+def test_a_tistory_package_writes_post_md_and_its_markdown_paste_in_its_own_folder(tmp_path):
+    from tests.test_mvp_runtime_blog_tistory import tistory_package
+
+    package = tistory_package()
+    written, files, note = blog_content._write_package_files(
+        package, writer=_real_writer(), ledger=_ListLedger(), now=NOW, repo_root=tmp_path)
+    assert written is True and [Path(f).name for f in files] == ["POST.md", "PASTE.md"]
+    assert all("/blog/tistory/" in f"/{Path(f).as_posix()}" for f in files)
+    paste = (workspace_root(tmp_path) / files[1]).read_text(encoding="utf-8")
+    assert paste == blog_content.render_paste_txt(package) and "\n## " in paste
+    assert note.startswith("workspace/blog/tistory/")
 
 
 def test_a_refused_write_degrades_instead_of_failing_the_fire(tmp_path):

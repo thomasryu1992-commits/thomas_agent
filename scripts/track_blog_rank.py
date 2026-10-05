@@ -102,6 +102,11 @@ def main(argv: list[str] | None = None, *, tool=None, now: str | None = None) ->
     if package is None:
         print(f"ERROR PACKAGE_NOT_FOUND: {args.package_id}", file=sys.stderr)
         return 2
+    if str(package.get("platform") or "naver") != "naver":
+        print(f"ERROR {blog_rank.PLATFORM_NOT_TRACKED}: {args.package_id} is a "
+              f"{package.get('platform')} package; this tracker reads Naver's blog search only",
+              file=sys.stderr)
+        return 2
     if not blog_rank.trackable(package):
         print(f"ERROR {blog_rank.PACKAGE_NOT_PUBLISHED}: {args.package_id} has no published_url",
               file=sys.stderr)

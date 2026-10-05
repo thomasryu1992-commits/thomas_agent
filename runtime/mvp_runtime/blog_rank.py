@@ -40,6 +40,7 @@ RESULT_WINDOW = 100
 CHECKPOINTS: tuple[tuple[str, int], ...] = (("D+1", 1), ("D+7", 7), ("D+14", 14), ("D+28", 28))
 
 PACKAGE_NOT_PUBLISHED = "PACKAGE_NOT_PUBLISHED"
+PLATFORM_NOT_TRACKED = "PLATFORM_NOT_TRACKED"
 CHECKPOINT_NOT_DUE = "CHECKPOINT_NOT_DUE"
 CHECKPOINT_ALREADY_TAKEN = "CHECKPOINT_ALREADY_TAKEN"
 RANK_SNAPSHOT_SCHEMA_INVALID = "RANK_SNAPSHOT_SCHEMA_INVALID"
@@ -108,8 +109,14 @@ def rank_in(links: Iterable[Any], published_url: str) -> tuple[int | None, str |
 
 
 def trackable(package: Mapping[str, Any]) -> bool:
-    """Only a package the operator recorded as published, with its URL."""
-    return package.get("publish_state") == "published" and bool(package.get("published_url"))
+    """Only a NAVER package the operator recorded as published, with its URL.
+
+    The lookup is Naver's blog search, so a Tistory post (a v0.3 package with
+    ``platform: tistory``) is never in its window: tracking it would record "not found" at every
+    checkpoint — a rank that reads as a measurement and is not one. Rows without ``platform``
+    (v0.1/v0.2) are Naver packages."""
+    return (str(package.get("platform") or "naver") == "naver"
+            and package.get("publish_state") == "published" and bool(package.get("published_url")))
 
 
 def _parse(ts: str) -> datetime:

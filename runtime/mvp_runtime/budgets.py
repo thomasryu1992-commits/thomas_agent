@@ -60,8 +60,16 @@ BLOG_CONTENT_BUDGET_PROFILE = "blog_content"
 # (68 s measured for one real-sized draft), and the chain's 120 s left its first member 40 s.
 # 360 s gives each of three members up to 120 s (`FailoverProvider` member cap) and keeps a
 # whole fire (research + draft + one revision) inside the scheduler's 1,500 s deadline.
+# The Tistory draft (2026-10-05, `blog_tistory`): 3,500~5,000 characters of body against Naver's
+# 1,800~3,500, plus a brief, an FAQ, alt texts and SEO fields in the same JSON — about 6,000~8,000
+# output tokens, at or past the Naver profile's 8,000-token output half. Its revision carries that
+# whole draft back as input, which the 8,000 input half cannot hold beside the request. Same kind
+# binding, same runtime; only the share grows, and only for a request that names this profile.
+BLOG_TISTORY_BUDGET_PROFILE = "blog_content_tistory"
 BUDGET_PROFILES: dict[str, dict[str, Any]] = {
     BLOG_CONTENT_BUDGET_PROFILE: {"tokens_per_agent": 16000, "max_runtime_seconds": 360,
+                                  "request_kinds": frozenset({"content"})},
+    BLOG_TISTORY_BUDGET_PROFILE: {"tokens_per_agent": 24000, "max_runtime_seconds": 360,
                                   "request_kinds": frozenset({"content"})},
 }
 
