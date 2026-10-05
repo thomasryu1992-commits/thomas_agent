@@ -338,6 +338,13 @@
             "skipped_written": {
               "type": "integer",
               "minimum": 0
+            },
+            "section": {
+              "description": "Which part of the queue the seeds were read from: Naver's '다음 편 후보' sections, or the '티스토리 전용' section a Tistory fire reads (optional; absent on rows written before 2026-10-05's second Tistory change).",
+              "enum": [
+                "다음 편 후보",
+                "티스토리 전용"
+              ]
             }
           }
         }
