@@ -88,7 +88,10 @@ _REASONS = {
 INTENT_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("troubleshooting", ("오류", "에러", "안될때", "안됨", "안돼요", "해결")),
     ("cancellation", ("해지", "환불", "탈퇴", "취소")),
-    ("pricing", ("요금제", "요금", "가격", "비용", "구독료")),
+    # '유료'·'플랜' since 2026-10-05: without them '챗GPT 유료 차이' read as a comparison and
+    # '챗gpt 유료 가격' as pricing, so a Tistory fire drafted the second beside the first —
+    # one subject, one searcher, two posts.
+    ("pricing", ("요금제", "요금", "가격", "비용", "구독료", "유료", "플랜")),
     ("free_tier", ("무료", "한도", "제한")),
     ("comparison", ("비교", "차이", "vs")),
     ("template", ("양식", "예시", "템플릿", "샘플", "예문")),

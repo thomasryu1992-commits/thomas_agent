@@ -710,6 +710,12 @@ def _interpret_prose(text: str, target: str, index: Mapping[str, Any], parse_rea
         "tables": 1 if any(" | " in p for p in prose) else 0,
         "keyword_hits": blog_draft_score.keyword_hits(text, target),
     }
+    # The citations survive the broken JSON: resolved against THIS run's evidence, they are the
+    # sources the one revision carries forward. Dropped, a revision that repaired the structure
+    # shipped with zero sources and every check unsourced ('챗gpt 유료 가격',
+    # bcp_503b936428417a0034a8, 2026-10-05 — its first draft had cited [S1]..[S3]).
+    sources = blog_draft.resolve_sources([{"source_ref": ref} for ref in blog_draft.cited_refs(text)], index)
+    measured["sources"] = len(sources)
     titles = blog_draft.prose_title_candidates(text)
     failures = list(blog_draft_score.critical_failures(measured, STANDARDS))
     failures += ["title_candidates"] if len(titles) < MIN_TITLES else []
@@ -726,7 +732,7 @@ def _interpret_prose(text: str, target: str, index: Mapping[str, Any], parse_rea
         "draft_format": blog_draft.DRAFT_FORMAT_LEGACY, "parse_reason": parse_reason,
         "title_candidates": titles, "body_paste": "\n\n".join(body),
         "body_blocks": parsed["body_blocks"], "tags": parsed["tags"],
-        "image_shots": parsed["image_shots"], "sources": [],
+        "image_shots": parsed["image_shots"], "sources": sources,
         "fact_checks": blog_draft.fact_checks([], prose, index), "structured": None,
         "content_brief": _brief(None, target, None),
         "platform_metadata": {

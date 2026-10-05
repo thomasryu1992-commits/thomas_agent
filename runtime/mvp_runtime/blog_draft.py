@@ -30,6 +30,7 @@ __all__ = [
     "DRAFT_FORMAT_LEGACY",
     "DRAFT_FORMAT_STRUCTURED",
     "MIN_TITLES",
+    "cited_refs",
     "detect_fact_checks",
     "evidence_index",
     "fact_checks",
@@ -543,6 +544,12 @@ def _keys(ref: Any) -> list[str]:
 def _resolve(ref: Any, index: Mapping[str, Any]) -> str | None:
     """The first key of ``ref`` this run's evidence has, or None."""
     return next((key for key in _keys(ref) if key in index), None)
+
+
+def cited_refs(text: str) -> list[str]:
+    """Every single or grouped ``[S#]``/``[K#]`` citation in ``text``, in order — for a draft
+    whose JSON could not be read, the citations it still carries."""
+    return _GROUP_REF_RE.findall(str(text or ""))
 
 
 def strip_evidence_refs(text: str) -> str:
