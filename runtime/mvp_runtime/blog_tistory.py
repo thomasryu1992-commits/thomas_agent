@@ -57,7 +57,14 @@ PLATFORM = "tistory"
 # sentences in 해라체 ("…언급된다.", "…수치다.") — the blog writes 존댓말, the request never said so,
 # and the revision's model mirrored the request's own imperative register. Said in the request
 # and in the revision request, and counted (:func:`plain_sentences`).
-PROMPT_VERSION = "tistory_prompt.2026-10-05.4"
+# .5 (2026-10-05): the vault's own Tistory editorial system, ported where the runtime can keep it.
+# One fixed skeleton every week (6 H2 × 3, FAQ always 4) is the "도장" pattern the vault removed in
+# September (`naver-to-google-seo` 1-B: FAQ exactly 5 was itself a banned stamp). The post's form
+# (판정형·계산형·절차형·통설검증형), its intro hook and its FAQ count now rotate against the vault's
+# last Tistory posts (:func:`editorial_plan`); the key sentence of each H2 is bold; a cited
+# sentence links its source in place; and the paragraph count rose to 24 — four live drafts wrote
+# ~145 characters a paragraph against a 160 floor and three ended under 3,500.
+PROMPT_VERSION = "tistory_prompt.2026-10-05.5"
 PROFILE_VERSION = "tistory_profile.2026-10-05"
 STANDARDS_VERSION = "tistory_draft_standards.2026-10-05"
 PASTE_FILE = "PASTE.md"
@@ -88,9 +95,13 @@ STANDARDS: dict[str, Standard] = {
 # adds ~300~500, so the plan's floor clears the 3,500 standard and its ceiling stays far under
 # 7,000. The arithmetic is checked against `STANDARDS` in the tests.
 PLAN_INTRO_PARAGRAPHS = 3
-PLAN_SECTIONS = 6
+# The body under the form's H2s (and their H3s): 21 paragraphs, 3~5 a section. PLAN_SECTIONS is the
+# H2 count a form's skeleton names (4) — the shape still shows one section of three as format.
+PLAN_SECTIONS = 4
+PLAN_SECTION_PARAGRAPHS = 21
 PLAN_PARAGRAPHS_PER_SECTION = 3
 PLAN_FAQ = 4
+FAQ_COUNTS = (3, 4, 5)
 PLAN_PARAGRAPH_CHARS = (160, 190)          # visible characters, whitespace excluded
 PLAN_FAQ_ANSWER_CHARS = 80                 # the floor the plan counts an FAQ answer at
 PLAN_SENTENCES_PER_PARAGRAPH = "4"
@@ -109,7 +120,7 @@ MAX_NAMED_PARAGRAPHS = 12
 
 
 def plan_paragraphs() -> int:
-    return PLAN_INTRO_PARAGRAPHS + PLAN_SECTIONS * PLAN_PARAGRAPHS_PER_SECTION
+    return PLAN_INTRO_PARAGRAPHS + PLAN_SECTION_PARAGRAPHS
 
 
 def plan_target() -> int:
@@ -120,7 +131,7 @@ def plan_target() -> int:
 def plan_body_chars() -> tuple[int, int]:
     """The plan's body total at its paragraph floor and ceiling, FAQ answers at their floor."""
     low, high = PLAN_PARAGRAPH_CHARS
-    faq = PLAN_FAQ * PLAN_FAQ_ANSWER_CHARS
+    faq = min(FAQ_COUNTS) * PLAN_FAQ_ANSWER_CHARS
     return plan_paragraphs() * low + faq, plan_paragraphs() * high + faq
 
 
@@ -163,7 +174,8 @@ _DRAFT_SHAPE = json.dumps({
              + [f"도입 문단 {i}({PLAN_SENTENCES_PER_PARAGRAPH}문장)" for i in range(2, PLAN_INTRO_PARAGRAPHS + 1)],
     "sections": [{"heading": "H2 소제목", "level": 2,
                   "paragraphs": [f"문단 {i}({PLAN_SENTENCES_PER_PARAGRAPH}문장)"
-                                 for i in range(1, PLAN_PARAGRAPHS_PER_SECTION + 1)]}],
+                                 for i in range(1, PLAN_PARAGRAPHS_PER_SECTION + 1)],
+                  "key_sentence": "이 섹션 paragraphs 안의 결론 문장 하나 그대로"}],
 }, ensure_ascii=False)
 
 # --- the request ------------------------------------------------------------------------
@@ -183,22 +195,23 @@ STRUCTURE_RULE = (
     "첫 섹션은 level 2다. 소제목은 설명이 아니라 검색할 수 있는 문구(예: '카페 소개글 예시')로 쓰고, "
     "secondary_keywords를 소제목에 자연스럽게 싣되 키워드를 억지로 반복하지 마라."
 )
-FAQ_RULE = (f"faq는 {PLAN_FAQ}문항(3~5)이다 — 질문은 brief.user_questions에서 고르고, 답은 2~3문장으로 본문에 근거가 "
+def _faq_rule(count: int) -> str:
+    return (f"faq는 {count}문항이다 — 질문은 brief.user_questions에서 고르고, 답은 2~3문장으로 본문에 근거가 "
             "있는 내용만 쓰되 본문 문장을 되풀이하지 말고 그 질문에만 바로 답하는 새 문장으로 쓴다.")
 LAYOUT_RULE = (
     "image_shots 6개 이상(생성 이미지가 아니라 실제 화면 캡처, alt_text는 화면을 설명하는 한국어 한 문장이고 "
     "키워드 나열 금지), 표 1개는 table 필드에만(첫 행이 머리글, 데이터 행 3개 이상, 머리글 칸에는 비교하는 "
     "대상의 실제 이름), tags 5~10개, sources 2~5개."
 )
-def length_plan() -> str:
+def length_plan(faq_count: int = PLAN_FAQ) -> str:
     """The plan in prose, beside the shape that already carries it: counts, the paragraph's
     target and range, the total, the example, and a count-before-you-answer check both ways."""
     low, high = PLAN_PARAGRAPH_CHARS
     total_low, total_high = plan_body_chars()
     return (
-        f"분량 계획(이대로 써라): intro 문단 {PLAN_INTRO_PARAGRAPHS}개 + level 2 섹션 {PLAN_SECTIONS}개 × "
-        f"섹션마다 paragraphs {PLAN_PARAGRAPHS_PER_SECTION}개 = 문단 {plan_paragraphs()}개, 그리고 faq 답 "
-        f"{PLAN_FAQ}개(각 2~3문장). 문단 하나는 {PLAN_SENTENCES_PER_PARAGRAPH}문장, 공백 빼고 "
+        f"분량 계획(이대로 써라): intro 문단 {PLAN_INTRO_PARAGRAPHS}개 + 섹션 문단 합 {PLAN_SECTION_PARAGRAPHS}개"
+        f"(아래 뼈대의 H2와 그 아래 H3에 나눠, 섹션마다 3~5개) = 문단 {plan_paragraphs()}개, 그리고 faq 답 "
+        f"{faq_count}개(각 2~3문장). 문단 하나는 {PLAN_SENTENCES_PER_PARAGRAPH}문장, 공백 빼고 "
         f"{plan_target()}자 안팎({low}~{high}자)이다. 합계 약 {total_low:,}~{total_high:,}자이고, 합계가 "
         f"{STANDARDS['body_chars'].low:,}자에 못 미치거나 intro 합이 {INTRO_SNIPPET_CHARS}자에 못 미치면 "
         "불합격이다. 한두 문장짜리 문단을 만들지 마라 — 각 문단은 방법·이유·예시·주의점 중 둘 이상을 담아 "
@@ -208,6 +221,104 @@ def length_plan() -> str:
         f"{plan_paragraphs()}개인지, 각 문단이 {low}~{high}자인지 세어 보고, 모자란 문단은 더하고 넘치는 "
         f"문단은 덜어 {plan_target()}자 안팎으로 맞춰라."
     )
+
+
+# --- the editorial plan: form, intro hook and FAQ count rotate (vault `naver-to-google-seo` 1-B) ---
+#
+# The runtime takes four of the vault's six forms. 실측형 needs inputs actually run and 사례해부형 a
+# real case; this lane has neither, and the vault forbids the form without them.
+FORMS: dict[str, dict[str, str]] = {
+    "판정형": {
+        "asset": "판정트리",
+        "skeleton": ("H2 ① 판정 기준 표(조건 | 결과 | 확인할 곳 — table 필드) ② 경우별 판정(H3 세 개: 조건 → "
+                     "판정 → 다음에 할 일) ③ 해당되면 할 일과 기한 ④ 판정이 갈리는 경계 사례"),
+    },
+    "계산형": {
+        "asset": "계산예제",
+        "skeleton": ("H2 ① 항목과 계산식(표 — table 필드) ② 예제 세 가지(H3마다 입력값 → 단계 계산 → 결과, 근거에 "
+                     "있는 수치로만) ③ 예제마다 빠지기 쉬운 함정 ④ 내 경우를 계산하는 순서"),
+    },
+    "절차형": {
+        "asset": "화면절차",
+        "skeleton": ("H2 ① 준비물과 조건(표 — table 필드) ② 단계별 진행(H3 단계마다: 화면 이름 → 누르는 것 → "
+                     "막히는 지점) ③ 막혔을 때 확인할 것 ④ 끝난 뒤 확인하는 법"),
+    },
+    "통설검증형": {
+        "asset": "원문인용",
+        "skeleton": ("H2 ① 통설별 판정(H3 통설마다: 통설 → 맞다·틀리다·조건부 → 근거 → 할 일) ② 정답표(통설 | "
+                     "판정 | 근거 — table 필드) ③ 통설이 퍼진 이유 ④ 지금 할 일"),
+    },
+}
+INTRO_HOOKS: dict[str, str] = {
+    "결론먼저": "intro 첫 문장에 결론(판정·답)을 쓴다",
+    "숫자먼저": "intro 첫 문장을 근거에 있는 숫자(가격·한도·기한·용량)로 시작한다",
+    "조건분기": "intro 첫 문장을 '…라면 A, 아니면 B'처럼 조건으로 갈라 쓴다",
+    "부정먼저": "intro 첫 문장을 흔한 오해를 바로잡는 문장('…가 아닙니다')으로 시작한다",
+    "질문답": "intro 첫 문장은 검색자의 질문, 둘째 문장은 그 답이다",
+}
+_FORM_AFFINITY = {
+    "procedure": ("절차형", "판정형", "통설검증형", "계산형"),
+    "troubleshooting": ("절차형", "판정형", "통설검증형", "계산형"),
+    "cancellation": ("절차형", "판정형", "통설검증형", "계산형"),
+    "how_to": ("절차형", "판정형", "통설검증형", "계산형"),
+    "pricing": ("판정형", "계산형", "통설검증형", "절차형"),
+    "free_tier": ("판정형", "통설검증형", "계산형", "절차형"),
+    "comparison": ("판정형", "계산형", "통설검증형", "절차형"),
+}
+_DEFAULT_AFFINITY = ("판정형", "통설검증형", "절차형", "계산형")
+# Within the last five posts a form may appear at most twice, the new one included (vault 1-B).
+RECENT_POSTS = 5
+MAX_FORM_IN_RECENT = 2
+# Searches whose answer is a number that moves: the post carries a date to re-check it by.
+REFRESH_INTENTS = frozenset({"pricing", "free_tier", "cancellation", "comparison"})
+REFRESH_DAYS = 30
+# Tistory has two categories; the Tistory-only queue is AI tools, and a pricing/limit/error intent
+# is one. Anything else is the operator's call (None).
+CATEGORY_AI = "사장님 AI 활용법"
+FIXED_TAGS = ("소상공인", "자영업")
+MAX_TAGS = 10
+
+
+def editorial_plan(target: str, posts: Sequence[Mapping[str, Any]], now: str | None = None) -> dict[str, Any]:
+    """This post's form, intro hook and FAQ count, rotated against the vault's Tistory posts in
+    number order — the vault's own rule: not the previous post's form, at most twice in the last
+    five; the next intro hook after the previous post's; FAQ 3/4/5 by the post's number. Pure."""
+    mine = sorted((p for p in posts if p.get("platform") == PLATFORM and not p.get("reserved")
+                   and isinstance(p.get("number"), int)), key=lambda p: p["number"])
+    recent = [str(p.get("form") or "") for p in mine[-RECENT_POSTS:]]
+    previous = recent[-1] if recent else None
+    intent = blog_overlap.keyword_intent(target)
+    order = _FORM_AFFINITY.get(intent, _DEFAULT_AFFINITY)
+    form = next((f for f in order if f != previous and recent.count(f) < MAX_FORM_IN_RECENT),
+                next(f for f in order if f != previous))
+    hooks = list(INTRO_HOOKS)
+    last_hook = str(mine[-1].get("intro_hook") or "") if mine else ""
+    hook = hooks[(hooks.index(last_hook) + 1) % len(hooks)] if last_hook in hooks else hooks[0]
+    number = (mine[-1]["number"] + 1) if mine else 0
+    plan: dict[str, Any] = {
+        "form": form, "unique_asset": FORMS[form]["asset"], "intro_hook": hook,
+        "faq_count": FAQ_COUNTS[number % len(FAQ_COUNTS)], "previous_form": previous or None,
+        "category": CATEGORY_AI if intent in REFRESH_INTENTS | {"troubleshooting"} else None,
+        "refresh_by": None,
+    }
+    if now and intent in REFRESH_INTENTS:
+        import datetime as _dt
+        day = _dt.date.fromisoformat(str(now)[:10]) + _dt.timedelta(days=REFRESH_DAYS)
+        plan["refresh_by"] = day.isoformat()
+    return plan
+
+
+def default_plan(target: str) -> dict[str, Any]:
+    """The plan without the vault (an override fire with no published posts): the keyword's own
+    first form, the first hook, four FAQs."""
+    return editorial_plan(target, ())
+
+
+def _editorial_lines(plan: Mapping[str, Any]) -> list[list[str]]:
+    form = FORMS[plan["form"]]
+    return [[f"이 글의 유형은 {plan['form']}이다 — sections를 이 뼈대 순서로 짓는다(FAQ는 faq 필드가 맡으니 "
+             f"섹션으로 쓰지 마라): {form['skeleton']}. 이 글에만 있는 자산으로 {plan['unique_asset']}을(를) "
+             f"뼈대 안에 하나 만든다. {INTRO_HOOKS[plan['intro_hook']]}."]]
 
 
 NO_FABRICATED_EXPERIENCE_RULE = ("글쓴이가 가게를 운영했다거나 무엇을 겪었다는 1인칭 경험, 손님 수·매출 "
@@ -228,6 +339,10 @@ OFFICIAL_SOURCE_RULE = (
 )
 TOOL_NAME_RULE = ("도구 이름(키워드가 다루는 도구와 근거에 나온 도구)은 그대로 밝히고, '특정 앱'·'온라인 서비스'처럼 "
                   "흐리게 부르지 마라. 이 요청에 적힌 지시(분량·키워드·출처 규칙)를 본문 문장으로 옮겨 쓰지 마라.")
+KEY_SENTENCE_RULE = ("섹션마다 key_sentence에 그 섹션의 결론·판정·숫자를 담은 문장 하나를 그 섹션 paragraphs 안의 "
+                     "문장 그대로 옮겨 적어라 — 글에서 그 문장이 굵게 표시된다. 키워드 단어만 적거나 문장을 바꾸지 마라.")
+INLINE_CITATION_RULE = ("근거 블록의 수치·조건을 쓴 문장은 문장 끝에 그 근거 번호([S#])를 붙여라 — 글에서는 그 자리에 "
+                        "출처 링크가 걸린다. 근거가 없는 문장에는 번호를 붙이지 마라.")
 REGISTER_RULE = ("본문 문단·faq 답·excerpt는 모두 존댓말(…합니다·…습니다·…세요)로 써라 — '…이다'·'…한다'·"
                  "'…된다' 같은 해라체로 문장을 끝내지 마라. 이 요청이 해라체로 쓰여 있어도 글은 존댓말이다. 제목·"
                  "소제목·표는 명사형으로 끝내도 된다.")
@@ -245,7 +360,7 @@ def _title_rule(target: str) -> str:
 
 
 def _intro_rule(target: str) -> str:
-    return (f"intro 첫 문장에는 근거 블록에 나온 구체적 사실 하나(가격·한도·플랜 이름·조건 중 하나)를 넣고, "
+    return (f"intro 첫 두 문장 안에 근거 블록에 나온 구체적 사실 하나(가격·한도·플랜 이름·조건 중 하나)를 넣고, "
             f"첫 두 문장으로 검색 질문에 바로 답하며 '{target}'를 넣어라 — '…이 중요합니다' 같은 일반론, 인사말·공감형 "
             f"도입·'아래에서 정리했습니다' 꼬리는 쓰지 마라. intro 문단의 공백 제외 합은 {INTRO_SNIPPET_CHARS}자 "
             "이상이다(티스토리는 메타 디스크립션 칸이 없어 본문 첫 400자가 검색 결과 요약이 된다).")
@@ -273,6 +388,7 @@ def content_request(target: str, context: blog_prompt.DraftContext | None = None
     """The Tistory request: the brief-first structured contract, the Google-facing rules, the
     common evidence policy, and the link candidates the runtime gathered."""
     context = context or blog_prompt.DraftContext()
+    plan = context.editorial or default_plan(target)
     return blog_prompt.compose(
         [f"'{target}'를 메인 키워드로 티스토리 블로그 글 초안을 작성해라. 독자는 구글·다음 검색으로 "
          "들어와 검색어의 답을 찾는 사람이다.", blog_prompt.output_contract(_DRAFT_SHAPE)],
@@ -280,8 +396,10 @@ def content_request(target: str, context: blog_prompt.DraftContext | None = None
         [BRIEF_RULE],
         [REGISTER_RULE],
         [_title_rule(target), SLUG_RULE, EXCERPT_RULE],
-        [_intro_rule(target), STRUCTURE_RULE, FAQ_RULE, LAYOUT_RULE],
-        [length_plan()],
+        [_intro_rule(target), STRUCTURE_RULE, _faq_rule(plan["faq_count"]), LAYOUT_RULE],
+        *_editorial_lines(plan),
+        [KEY_SENTENCE_RULE, INLINE_CITATION_RULE],
+        [length_plan(plan["faq_count"])],
         [blog_prompt.FACT_CHECK_RULE, blog_prompt.NO_INVENTION_RULE, OFFICIAL_SOURCE_RULE,
          blog_prompt.PLAIN_PARAGRAPH_RULE, NO_FABRICATED_EXPERIENCE_RULE, EVIDENCE_RULE, TOOL_NAME_RULE,
          CLOSER_RULE, blog_prompt.SECTION_FOCUS_ASK],
@@ -309,7 +427,7 @@ _FAILURE_ASKS = {
     **blog_prompt.COMMON_FAILURE_ASKS,
 }
 _GROW_FAILURES = frozenset({"body_chars", "intro_chars"})
-REVISION_KEEP_LAYOUT_RULE = ("brief, image_shots(alt_text 포함), table, internal_links, faq는 첫 초안의 것을 "
+REVISION_KEEP_LAYOUT_RULE = ("brief, image_shots(alt_text 포함), table, internal_links, faq, 섹션의 key_sentence는 첫 초안의 것을 "
                              "그대로 유지하라(없으면 새로 채워라).")
 
 
@@ -342,7 +460,7 @@ def _length_ask(first: Mapping[str, Any]) -> str:
     paragraphs = len(structured.get("intro") or []) + sum(
         len(s.get("paragraphs") or []) for s in structured.get("sections") or [])
     ask = (f"현재 문단 {paragraphs}개·본문 {measured.get('body_chars', '-')}자·도입 "
-           f"{measured.get('intro_chars', '-')}자. {length_plan()}")
+           f"{measured.get('intro_chars', '-')}자. {length_plan(len((first.get('platform_metadata') or {}).get('faq') or []) or PLAN_FAQ)}")
     named = _short_paragraphs(structured)
     if named:
         more = f" 외 {len(named) - MAX_NAMED_PARAGRAPHS}개" if len(named) > MAX_NAMED_PARAGRAPHS else ""
@@ -459,6 +577,13 @@ def _links(value: Any, context: blog_prompt.DraftContext, sections: int) -> list
     return out[:MAX_INTERNAL_LINKS]
 
 
+def with_fixed_tags(tags: Sequence[str]) -> list[str]:
+    """The draft's tags with the blog's two fixed tags appended, at most :data:`MAX_TAGS` — the
+    vault's tag rule (variants + neighbours + the series' fixed pair, 10 or fewer)."""
+    own = [t for t in tags if t not in FIXED_TAGS][:MAX_TAGS - len(FIXED_TAGS)]
+    return own + list(FIXED_TAGS)
+
+
 def title_problems(title: str, target: str) -> list[str]:
     """What a title breaks of the Tistory title rule, by name; empty when it holds."""
     problems: list[str] = []
@@ -491,15 +616,51 @@ FAQ_HEADING = "자주 묻는 질문"
 SOURCES_HEADING = "참고한 자료"
 
 
+_INLINE_REF_RE = re.compile(r"\s*\[\s*[SK]\d{1,3}(?:\s*,\s*[SK]?\d{1,3})*\s*\]")
+# "…가능합니다. [S3]" — a marker after the full stop belongs to the sentence before it.
+_TRAILING_REF_RE = re.compile(r"([.!?。])(\s*\[\s*[SK]\d{1,3}(?:\s*,\s*[SK]?\d{1,3})*\s*\])")
+
+
+def refs_inside(text: str) -> str:
+    """Citation markers moved inside the sentence they follow: "…다. [S3]" -> "…다 [S3]."."""
+    return _TRAILING_REF_RE.sub(lambda m: f"{m.group(2)}{m.group(1)}", str(text or ""))
+
+
+def _cite(text: str, by_ref: Mapping[str, Mapping[str, Any]]) -> str:
+    """``[S#]`` markers in a paragraph as links to the source they name, in place; a marker that
+    resolves to nothing with a URL (a keyword row, a source this run never had) is removed."""
+    def link(match: re.Match[str]) -> str:
+        for key in blog_draft.ref_keys(match.group(0).strip()):
+            source = by_ref.get(f"[{key}]")
+            if source and source.get("url"):
+                return f" ([{source.get('title') or '출처'}]({source['url']}))"
+        return ""
+    return _INLINE_REF_RE.sub(link, refs_inside(text))
+
+
+def _bold(paragraphs: list[str], key: str | None) -> tuple[list[str], bool]:
+    """The section's key sentence in bold where it stands — once, and only if it is really there."""
+    if not key:
+        return paragraphs, False
+    out = list(paragraphs)
+    for i, paragraph in enumerate(out):
+        if key in paragraph:
+            out[i] = paragraph.replace(key, f"**{key}**", 1)
+            return out, True
+    return out, False
+
+
 def render_markdown(
     structured: Mapping[str, Any], *, faq: Sequence[Mapping[str, str]] = (),
     links: Sequence[Mapping[str, Any]] = (), sources: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """The draft as Tistory markdown, deterministically: the intro, each section under its
-    ``##``/``###`` heading with its table and internal links after it, the FAQ as ``##`` with a
-    ``###`` per question, and the resolved web sources as a linked list. The draft's own
-    paragraphs carry no markup; every symbol here is the runtime's."""
-    blocks: list[str] = list(structured.get("intro") or [])
+    ``##``/``###`` heading with its key sentence in bold, its table and internal links after it,
+    the FAQ as ``##`` with a ``###`` per question, and the resolved web sources as a linked list;
+    a cited sentence links its source in place. The draft's own paragraphs carry no markup;
+    every symbol here is the runtime's."""
+    by_ref = {str(s.get("source_ref")): s for s in sources}
+    blocks: list[str] = [_cite(p, by_ref) for p in structured.get("intro") or []]
     headings: list[dict[str, Any]] = []
     section_end: list[int] = []
     table = structured.get("table")
@@ -508,9 +669,12 @@ def render_markdown(
         headings.append({"paragraph_index": len(blocks), "action": "heading"})
         blocks.append(f"{'#' * level} {text}")
 
+    bolded = 0
     for index, section in enumerate(structured.get("sections") or []):
         heading(int(section.get("level") or 2), section["heading"])
-        blocks.extend(section["paragraphs"])
+        paragraphs, done = _bold(list(section["paragraphs"]), section.get("key_sentence"))
+        bolded += done
+        blocks.extend(_cite(p, by_ref) for p in paragraphs)
         if table and table["after_section"] == index:
             blocks.append(_markdown_table(table))
         for link in links:
@@ -521,7 +685,7 @@ def render_markdown(
         heading(2, FAQ_HEADING)
         for item in faq:
             heading(3, item["question"])
-            blocks.append(item["answer"])
+            blocks.append(_cite(item["answer"], by_ref))
     linked = [s for s in sources if s.get("url")]
     if linked:
         heading(2, SOURCES_HEADING)
@@ -537,7 +701,8 @@ def render_markdown(
                 rendered[key] = shot[key]
         shots.append(rendered)
     return {"body_paste": "\n\n".join(blocks), "body_blocks": headings[:blog_draft.MAX_BODY_BLOCKS],
-            "image_shots": shots[:blog_draft.MAX_IMAGE_SHOTS], "paragraph_count": len(blocks)}
+            "image_shots": shots[:blog_draft.MAX_IMAGE_SHOTS], "paragraph_count": len(blocks),
+            "bold_sections": bolded}
 
 
 def _key(text: str) -> str:
@@ -622,7 +787,26 @@ def faq_echoes(faq: Sequence[Mapping[str, str]], paragraphs: Sequence[str]) -> i
 
 
 def _visible(text: str) -> int:
-    return len(re.sub(r"\s", "", str(text or "")))
+    """Visible characters of the prose, the citation markers left out (they become links)."""
+    return len(re.sub(r"\s", "", blog_draft.strip_evidence_refs(str(text or ""))))
+
+
+def _clean(paragraphs: Sequence[str]) -> list[str]:
+    return [blog_draft.strip_evidence_refs(p).strip() for p in paragraphs]
+
+
+def _inline_checks(paragraphs: Sequence[str]) -> list[dict[str, Any]]:
+    """Each sentence that carries its own ``[S#]`` and states something that changes (a price, a
+    limit, a date — `blog_draft.detect_fact_checks`): a check whose source the draft named."""
+    checks: list[dict[str, Any]] = []
+    for paragraph in paragraphs:
+        for sentence in _sentences(refs_inside(paragraph)):
+            refs = blog_draft.cited_refs(sentence)
+            clean = blog_draft.strip_evidence_refs(sentence).strip()
+            if refs and blog_draft.detect_fact_checks([clean]):
+                found = blog_draft.detect_fact_checks([clean])[0]
+                checks.append({"claim": found["claim"], "why": found["why"], "source_ref": refs[0]})
+    return checks
 
 
 def measure(structured: Mapping[str, Any], *, faq: Sequence[Mapping[str, str]], images: int,
@@ -666,20 +850,26 @@ def interpret(
     data, _inserted, _reason = blog_draft.load_object(text)
     data = data or {}
     brackets_inserted = int(structured.pop("brackets_inserted", 0) or 0)
-    sources = blog_draft.resolve_sources(structured["sources"], index)
     faq = _faq(data.get("faq"))
+    raw_prose = list(structured["intro"]) + [p for s in structured["sections"] for p in s["paragraphs"]]
+    raw_prose += [q["answer"] for q in faq]
+    inline = [{"source_ref": ref} for p in raw_prose for ref in blog_draft.cited_refs(p)]
+    # The listed sources, then the ones only cited inline — both resolved against THIS run.
+    sources = blog_draft.resolve_sources(list(structured["sources"]) + inline, index)
     links = _links(data.get("internal_links"), context, len(structured["sections"]))
     rendered = render_markdown(structured, faq=faq, links=links, sources=sources)
     seo_title = _text(data.get("seo_title"), 100) or (structured["title_candidates"][:1] or [""])[0]
     titles = [t for t in dict.fromkeys([seo_title, *structured["title_candidates"]]) if t]
-    prose = list(structured["intro"]) + [p for s in structured["sections"] for p in s["paragraphs"]]
+    prose = _clean(list(structured["intro"]) + [p for s in structured["sections"] for p in s["paragraphs"]])
+    faq_clean = [dict(q, answer=blog_draft.strip_evidence_refs(q["answer"]).strip()) for q in faq]
     shots = structured["image_shots"]
     measured = measure(structured, faq=faq, images=len(shots),
                        images_with_alt=sum(1 for s in shots if s.get("alt_text")),
                        sources=len(sources), links=len(links),
                        link_source_state=context.link_source_state, keyword=target_keyword)
+    measured["bold_sections"] = int(rendered["bold_sections"])
     slug_value = slug(data.get("slug"))
-    intro_text = " ".join(structured["intro"])
+    intro_text = " ".join(_clean(structured["intro"]))
     metadata = {
         "paste_format": "markdown",
         "seo_title": seo_title or target_keyword,
@@ -694,35 +884,39 @@ def interpret(
         "internal_link_candidates": len(context.link_candidates),
         "internal_link_source_state": context.link_source_state,
     }
+    if context.editorial:
+        metadata["editorial"] = dict(context.editorial)
     failures = list(blog_draft_score.critical_failures(measured, STANDARDS))
     if len(titles) < MIN_TITLES:
         failures.append("title_candidates")
     if metadata["seo_title_problems"]:
         failures.append("seo_title")
-    if slug_value is None:
-        failures.append("slug")
+    # No slug is a warning, not a failure (.5): this blog's addresses are numbers (`/N`), so the
+    # slug only names the vault file — the vault's own rule (`naver-to-google-seo` 3단계).
     if structured["sections"] and int(structured["sections"][0].get("level") or 2) != 2:
         failures.append("heading_hierarchy")
-    repeated = blog_draft.repeated_sentences(prose + [q["answer"] for q in faq])
-    measured["repeated_sentences"] = blog_draft.repeat_count(prose + [q["answer"] for q in faq])
+    answers = [q["answer"] for q in faq_clean]
+    repeated = blog_draft.repeated_sentences(prose + answers)
+    measured["repeated_sentences"] = blog_draft.repeat_count(prose + answers)
     measured["generic_closers"] = generic_closers(prose)
-    measured["faq_echoes"] = faq_echoes(faq, prose)
-    measured["plain_sentences"] = plain_sentences(prose + [q["answer"] for q in faq])[0]
+    measured["faq_echoes"] = faq_echoes(faq_clean, prose)
+    measured["plain_sentences"] = plain_sentences(prose + answers)[0]
     if repeated:
         failures.append("repeated_sentences")
-    if plain_register(prose + [q["answer"] for q in faq]) is not None:
+    if plain_register(prose + answers) is not None:
         failures.append("plain_register")
-    if example_reused(prose + [q["answer"] for q in faq]):
+    if example_reused(prose + answers):
         failures.append("length_example_copied")
     return {
         "draft_format": blog_draft.DRAFT_FORMAT_STRUCTURED,
         "title_candidates": titles[:blog_draft.MAX_TITLES],
         "body_paste": rendered["body_paste"],
         "body_blocks": rendered["body_blocks"],
-        "tags": structured["tags"][:blog_draft.MAX_TAGS],
+        "tags": with_fixed_tags(structured["tags"]),
         "image_shots": rendered["image_shots"],
         "sources": sources,
-        "fact_checks": blog_draft.fact_checks(structured["fact_checks"], prose + [q["answer"] for q in faq], index),
+        "fact_checks": blog_draft.fact_checks(list(structured["fact_checks"]) + _inline_checks(raw_prose),
+                                              prose + answers, index),
         "structured": {**structured, "brief": data.get("brief"), "seo_title": data.get("seo_title"),
                        "slug": data.get("slug"), "excerpt": data.get("excerpt"),
                        "internal_links": data.get("internal_links"), "faq": faq},
@@ -761,7 +955,7 @@ def _interpret_prose(text: str, target: str, index: Mapping[str, Any], parse_rea
     titles = blog_draft.prose_title_candidates(text)
     failures = list(blog_draft_score.critical_failures(measured, STANDARDS))
     failures += ["title_candidates"] if len(titles) < MIN_TITLES else []
-    failures += ["structured_output", "seo_title", "slug"]
+    failures += ["structured_output", "seo_title"]
     repeated = blog_draft.repeated_sentences(prose)
     measured["repeated_sentences"] = blog_draft.repeat_count(prose)
     measured["generic_closers"] = generic_closers(prose)
@@ -776,7 +970,7 @@ def _interpret_prose(text: str, target: str, index: Mapping[str, Any], parse_rea
     return {
         "draft_format": blog_draft.DRAFT_FORMAT_LEGACY, "parse_reason": parse_reason,
         "title_candidates": titles, "body_paste": "\n\n".join(body),
-        "body_blocks": parsed["body_blocks"], "tags": parsed["tags"],
+        "body_blocks": parsed["body_blocks"], "tags": with_fixed_tags(parsed["tags"]),
         "image_shots": parsed["image_shots"], "sources": sources,
         "fact_checks": blog_draft.fact_checks([], prose, index), "structured": None,
         "content_brief": _brief(None, target, None),
@@ -787,9 +981,43 @@ def _interpret_prose(text: str, target: str, index: Mapping[str, Any], parse_rea
             "meta_description_source": "body_first_400", "headings": [], "faq": [],
             "internal_links": [], "internal_link_candidates": len(context.link_candidates),
             "internal_link_source_state": context.link_source_state,
+            **({"editorial": dict(context.editorial)} if context.editorial else {}),
         },
         "measured": measured, "failures": failures, "repeated": repeated,
     }
+
+
+def _carry_marks(old: Mapping[str, Any], patched: dict[str, Any]) -> None:
+    """A revision runs with no evidence and drops every ``[S#]`` and, often, the key sentences.
+    A revised sentence that is the first draft's sentence (endings aside — `blog_draft.claim_key`)
+    gets its citation back; a section with no key sentence gets the first draft's same-heading
+    one, if that sentence is still in it."""
+    refs: dict[str, str] = {}
+    for paragraph in list(old.get("intro") or []) + [p for s in old.get("sections") or [] for p in s["paragraphs"]]:
+        for sentence in _sentences(refs_inside(paragraph)):
+            cited = blog_draft.cited_refs(sentence)
+            if cited:
+                refs[blog_draft.claim_key(blog_draft.strip_evidence_refs(sentence))] = cited[0]
+
+    def mark(paragraph: str) -> str:
+        if blog_draft.cited_refs(paragraph):
+            return paragraph
+        out = []
+        for sentence in _sentences(paragraph):
+            ref = refs.get(blog_draft.claim_key(sentence))
+            out.append(f"{sentence} {ref}" if ref else sentence)
+        return " ".join(out)
+
+    keys = {s["heading"]: s.get("key_sentence") for s in old.get("sections") or [] if s.get("key_sentence")}
+    patched["intro"] = [mark(p) for p in patched.get("intro") or []]
+    sections = []
+    for section in patched.get("sections") or []:
+        section = dict(section, paragraphs=[mark(p) for p in section["paragraphs"]])
+        key = keys.get(section["heading"])
+        if not section.get("key_sentence") and key and any(key in p for p in section["paragraphs"]):
+            section["key_sentence"] = key
+        sections.append(section)
+    patched["sections"] = sections
 
 
 def carry_layout(first: Mapping[str, Any], carried: dict[str, Any], measured: dict[str, Any]) -> None:
@@ -807,6 +1035,7 @@ def carry_layout(first: Mapping[str, Any], carried: dict[str, Any], measured: di
         patched["image_shots"] = [dict(s, after_section=min(s["after_section"], last)) for s in old["image_shots"]]
     if new.get("table") is None and old.get("table") is not None:
         patched["table"] = dict(old["table"], after_section=min(old["table"]["after_section"], last))
+    _carry_marks(old, patched)
     metadata = dict(carried.get("platform_metadata") or {})
     first_meta = first.get("platform_metadata") or {}
     if not metadata.get("faq") and first_meta.get("faq"):
@@ -822,6 +1051,7 @@ def carry_layout(first: Mapping[str, Any], carried: dict[str, Any], measured: di
     carried.update({"structured": patched, "body_paste": rendered["body_paste"],
                     "body_blocks": rendered["body_blocks"], "image_shots": rendered["image_shots"],
                     "platform_metadata": metadata})
+    measured["bold_sections"] = int(rendered["bold_sections"])
     shots = patched.get("image_shots") or []
     measured.update({"images": len(shots), "images_with_alt": sum(1 for s in shots if s.get("alt_text")),
                      "tables": 1 if patched.get("table") is not None else 0,
@@ -843,7 +1073,7 @@ def platform_checks(parts: Mapping[str, Any], target: str) -> list[dict[str, Any
     checks = [
         {"check": "seo_title", "state": "fail" if problems else "ok",
          "detail": ", ".join(problems) or f"'{meta.get('seo_title')}'"},
-        {"check": "slug", "state": "ok" if meta.get("slug") else "fail", "detail": meta.get("slug") or "missing or not ASCII kebab"},
+        {"check": "slug", "state": "ok" if meta.get("slug") else "warn", "detail": meta.get("slug") or "missing or not ASCII kebab"},
         {"check": "intro_snippet", "state": "ok" if measured.get("intro_chars", 0) >= INTRO_SNIPPET_CHARS else "fail",
          "detail": f"{measured.get('intro_chars', 0)} chars before the first heading"},
         {"check": "keyword_in_snippet", "state": "ok" if blog_draft_score.keyword_hits(first_sentence_window, target) > 0 else "warn",
@@ -863,6 +1093,9 @@ def platform_checks(parts: Mapping[str, Any], target: str) -> list[dict[str, Any
          "detail": f"{measured.get('generic_closers', 0)} paragraphs end on a sentence that fits any post"},
         {"check": "faq_echoes", "state": "ok" if not measured.get("faq_echoes") else "warn",
          "detail": f"{measured.get('faq_echoes', 0)} FAQ answer sentences repeat the body"},
+        {"check": "bold_key_sentences",
+         "state": "ok" if measured.get("bold_sections", 0) * 2 >= max(measured.get("h2_sections", 0), 1) else "warn",
+         "detail": f"{measured.get('bold_sections', 0)} sections carry a bold key sentence"},
         {"check": "register", "state": "fail" if "plain_register" in (parts.get("failures") or []) else "ok",
          "detail": f"{measured.get('plain_sentences', 0)} sentences end in 해라체; the blog writes 존댓말"},
         {"check": "length_example", "state": "fail" if "length_example_copied" in (parts.get("failures") or []) else "ok",

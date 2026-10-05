@@ -299,10 +299,15 @@ class VaultPublishedKeywordSource:
                 # The folder is the platform: it is where the vault files a post, and it is what
                 # `kw_pipeline own_posts` reads. A `platform:` line that disagrees is not trusted
                 # over it.
+                number = re.match(r"\d+", path.name)
                 posts.append({"platform": platform, "path": str(path.relative_to(self.root)),
                               "title": _front_value(front, "title") or None,
                               "url": _front_value(front, "url") or None,
                               "status": _front_value(front, "status") or None,
+                              # The editorial rotation reads these (`blog_tistory.editorial_plan`).
+                              "number": int(number.group(0)) if number else None,
+                              "form": _front_value(front, "form") or None,
+                              "intro_hook": _front_value(front, "intro_hook") or None,
                               "keywords": tuple(post_keywords), "tags": tuple(post_tags)})
                 if google:
                     # A Naver post's `google_kw` is the keyword its Google (Tistory) version is
@@ -1063,6 +1068,7 @@ def _render_tistory_metadata(meta: Mapping[str, Any]) -> list[str]:
     if not meta:
         return []
     brief = meta.get("brief") or {}
+    editorial = meta.get("editorial") or {}
     lines = ["", "## 티스토리 발행 정보",
              f"- SEO 제목: {meta.get('seo_title')}",
              f"- 슬러그: {meta.get('slug') or '(없음 — 직접 정할 것)'}",
@@ -1081,6 +1087,16 @@ def _render_tistory_metadata(meta: Mapping[str, Any]) -> list[str]:
         if brief.get("secondary_keywords"):
             lines.append("- 보조 키워드: " + ", ".join(
                 k["keyword"] + ("" if k.get("measured") else "(미측정)") for k in brief["secondary_keywords"]))
+    if editorial:
+        lines += [f"- 글 유형: {editorial.get('form')} (직전 편 {editorial.get('previous_form') or '-'}) · 도입: "
+                  f"{editorial.get('intro_hook')} · FAQ {editorial.get('faq_count')}문항",
+                  "- 볼트 프론트매터(이 값으로 회전이 이어진다):", "",
+                  "```yaml", "platform: tistory", f"slug: {meta.get('slug') or ''}",
+                  f"category: {editorial.get('category') or ''}", f"form: {editorial.get('form')}",
+                  f"unique_asset: {editorial.get('unique_asset')}", f"intro_hook: {editorial.get('intro_hook')}"]
+        if editorial.get("refresh_by"):
+            lines.append(f"refresh: {editorial['refresh_by']}")
+        lines += ["```"]
     return lines
 
 
@@ -1452,6 +1468,8 @@ def run_content_ideation(
         source_state="measured" if published is not None else "unavailable")
     links = link_candidates(target, published, profile.name)
     context = blog_prompt.DraftContext(
+        editorial=(profile.editorial_plan(target, published.posts if published is not None else (), now)
+                   if profile.editorial_plan is not None else None),
         link_candidates=links.link_candidates, link_source_state=links.link_source_state,
         repurpose_from=tuple({"platform": m["existing_platform"], "keyword": m["existing_keyword"],
                               "title": m["existing_title"]}

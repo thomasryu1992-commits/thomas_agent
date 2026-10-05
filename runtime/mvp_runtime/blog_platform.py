@@ -47,6 +47,8 @@ class PlatformProfile:
     interpret: Callable[..., dict[str, Any]]
     carry_layout: Callable[..., None]
     platform_checks: Callable[..., list[dict[str, Any]]]
+    # The post's editorial plan from the platform's published posts, or None (Naver has none).
+    editorial_plan: Callable[..., dict[str, Any]] | None = None
 
 
 PROFILES: dict[str, PlatformProfile] = {
@@ -87,6 +89,7 @@ PROFILES: dict[str, PlatformProfile] = {
         interpret=blog_tistory.interpret,
         carry_layout=blog_tistory.carry_layout,
         platform_checks=blog_tistory.platform_checks,
+        editorial_plan=blog_tistory.editorial_plan,
     ),
 }
 

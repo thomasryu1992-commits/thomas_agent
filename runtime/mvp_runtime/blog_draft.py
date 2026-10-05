@@ -31,6 +31,8 @@ __all__ = [
     "DRAFT_FORMAT_STRUCTURED",
     "MIN_TITLES",
     "cited_refs",
+    "claim_key",
+    "ref_keys",
     "detect_fact_checks",
     "evidence_index",
     "fact_checks",
@@ -281,6 +283,9 @@ def parse_structured(text: str, *, extended: bool = False) -> tuple[dict[str, An
             if extended:
                 level = item.get("level")
                 section["level"] = level if level in (2, 3) and not isinstance(level, bool) else 2
+                key = sanitize_paragraph(_text(item.get("key_sentence"), 300))
+                if key:
+                    section["key_sentence"] = key
             sections.append(section)
         if len(sections) >= MAX_SECTIONS:
             break
@@ -546,6 +551,11 @@ def _resolve(ref: Any, index: Mapping[str, Any]) -> str | None:
     return next((key for key in _keys(ref) if key in index), None)
 
 
+def ref_keys(ref: Any) -> list[str]:
+    """Every evidence key one citation names: "[S1, 3]" -> ["S1", "S3"]."""
+    return _keys(ref)
+
+
 def cited_refs(text: str) -> list[str]:
     """Every single or grouped ``[S#]``/``[K#]`` citation in ``text``, in order — for a draft
     whose JSON could not be read, the citations it still carries."""
@@ -655,7 +665,7 @@ def _states_nothing(sentence: str) -> bool:
     return not re.search(r"\d", sentence) and bool(_NOT_A_CLAIM_RE.search(sentence))
 
 
-def _claim_key(claim: str) -> str:
+def claim_key(claim: str) -> str:
     """A claim with spacing, punctuation and its sentence ending taken off, for telling that the
     model's "…제공한다." and the detector's "…제공합니다." are the same sentence."""
     text = re.sub(r"[\s.!?。,'\"]", "", claim)
@@ -765,10 +775,10 @@ def fact_checks(
     claims: set[str] = set()
     for check in model_checks:
         claim = str(check.get("claim") or "").strip()[:500]
-        if not claim or _claim_key(claim) in claims:
+        if not claim or claim_key(claim) in claims:
             continue
         key = _resolve(check.get("source_ref"), index)
-        claims.add(_claim_key(claim))
+        claims.add(claim_key(claim))
         out.append({
             "claim": claim,
             "why": str(check.get("why") or "")[:300] or "모델이 확인 필요로 표시한 문장",
@@ -778,7 +788,7 @@ def fact_checks(
             "verified_at": None,
         })
     for check in detect_fact_checks(paragraphs):
-        found = _claim_key(check["claim"])
+        found = claim_key(check["claim"])
         if found in claims or any(found in c or c in found for c in claims):
             continue
         claims.add(found)
