@@ -140,7 +140,7 @@ def test_the_profiles_the_schema_and_the_overlap_policy_name_the_same_platforms(
 def test_naver_only_rules_do_not_reach_the_tistory_request():
     tistory = blog_tistory.content_request("클로드 무료 사용법")
     for naver_only in ("네이버 블로그", blog_naver.KEY_ORDER_RULE, blog_naver.LAYOUT_RULE,
-                       "섹션 5개 중 3개", "분량 계획(이대로 써라)", blog_naver.LENGTH_EXAMPLE_PARAGRAPH[:30]):
+                       "섹션 5개 중 3개", blog_naver._length_plan(), blog_naver.LENGTH_EXAMPLE_PARAGRAPH[:30]):
         assert naver_only not in tistory, naver_only
 
 

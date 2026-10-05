@@ -174,6 +174,39 @@ def test_a_scheduled_post_or_a_plain_http_url_is_never_a_link_candidate():
                                                        "https://thomasai.tistory.com/74"]
 
 
+def test_the_length_plan_adds_up_to_every_standard():
+    """The first live fire was asked for a total and wrote 956 characters; the plan is a shape,
+    and a shape that does not add up to the standards would just move the miss."""
+    import re
+
+    low, high = blog_tistory.PLAN_PARAGRAPH_CHARS
+    total_low, total_high = blog_tistory.plan_body_chars()
+    standard = blog_tistory.STANDARDS
+    assert total_low >= standard["body_chars"].low and total_high <= standard["body_chars"].high
+    assert blog_tistory.PLAN_INTRO_PARAGRAPHS * low >= standard["intro_chars"].low
+    assert standard["faq"].within(blog_tistory.PLAN_FAQ)
+    assert standard["h2_sections"].within(blog_tistory.PLAN_SECTIONS)
+    assert low <= len(re.sub(r"\s", "", blog_tistory.LENGTH_EXAMPLE_PARAGRAPH)) <= high
+
+
+def test_the_request_states_the_plan_in_the_shape_and_in_prose():
+    request = blog_tistory.content_request(TARGET)
+    shape = json.loads(blog_tistory._DRAFT_SHAPE)
+    assert len(shape["intro"]) == blog_tistory.PLAN_INTRO_PARAGRAPHS
+    assert len(shape["sections"][0]["paragraphs"]) == blog_tistory.PLAN_PARAGRAPHS_PER_SECTION
+    assert request.count(blog_tistory.length_plan()) == 1
+    assert f"문단 {blog_tistory.plan_paragraphs()}개" in request
+
+
+def test_a_short_draft_revision_names_each_short_paragraph_and_how_much_it_needs():
+    short = _tdraft(h2=3, per_section=1)
+    short["sections"][0]["paragraphs"] = ["두 문장만 있는 짧은 문단입니다. 이것으로 끝입니다."]
+    first = blog_tistory.interpret(json.dumps(short, ensure_ascii=False), TARGET, _records())
+    request = blog_tistory.revision_request(TARGET, first, json.dumps(short, ensure_ascii=False), _records())
+    assert "분량 계획(이대로 써라)" in request
+    assert "섹션 0의 문단 0(현재" in request and "자 더)" in request
+
+
 def test_without_published_posts_the_request_says_there_are_no_link_candidates():
     request = blog_tistory.content_request(TARGET, blog_prompt.DraftContext())
     assert blog_tistory.NO_LINK_CANDIDATES_RULE in request and "내부 링크 후보:" not in request
