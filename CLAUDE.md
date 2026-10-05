@@ -231,9 +231,9 @@ First-time setup, local Core activation, and end-to-end verification: use the `v
 MVP use case = "analyze this business idea"; MVP role = `general.specialist`; the MVP runtime
 is a new module reusing kernel parts, not a kernel extension. Provider = free hosted APIs
 behind the Safety-Flag Gate as an **ordered failover chain**
-(`MVP_HOSTED_PROVIDER=openrouter,google_ai_studio,groq`; Thomas 2026-07-20; openrouter
-prepended Thomas 2026-07-24; grants retired Thomas 2026-08-10, the env
-names the chain): a chain with an unknown or duplicate member fails closed **entirely**
+(`MVP_HOSTED_PROVIDER=google_ai_studio,openrouter,groq`; Thomas 2026-07-20; openrouter
+prepended Thomas 2026-07-24, moved second Thomas 2026-10-05 after it failed over on 151 of 160
+runs — scorecard Q2; grants retired Thomas 2026-08-10, the env names the chain): a chain with an unknown or duplicate member fails closed **entirely**
 (never silently shrinks). Failover fires on a failure that belongs to the member — 429/503 after
 its own retry, a missing key, 401/403/404, 5xx, a timeout or dropped connection, a malformed answer
 (Thomas 2026-09-26, review D1; `providers.failover_kind`) — never on a request-shaped 4xx or a gate
