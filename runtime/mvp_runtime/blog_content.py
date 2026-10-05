@@ -976,7 +976,7 @@ def render_post_md(package: Mapping[str, Any]) -> str:
     paragraphs = str(package.get("body_paste") or "").split("\n\n")
     if profile is not None and profile.paste_format == "markdown":
         lines += ["", f"## 본문 ({profile.paste_file}와 같은 마크다운)", ""]
-        lines += paragraphs
+        lines += ["\n\n".join(paragraphs)]
     else:
         lines += ["", "## 본문 (소제목 표시는 이 파일에만 — PASTE.txt는 기호 없음)", ""]
         lines += [f"### {p}" if i in headings else p for i, p in enumerate(paragraphs)]
@@ -1278,19 +1278,24 @@ def _run(kind: str, request: str, *, blocked_code: str, **kwargs: Any) -> dict[s
 
 
 MAX_LINK_CANDIDATES = 8
+_GENERIC_LINK_WORDS = frozenset({"ai", "무료", "유료", "비교", "가격", "사용", "정리", "추천", "기능", "도구",
+                                 "앱", "사이트", "프로그램", "소상공인", "자영업", "사장님"})
 
 
 def link_candidates(
     target: str, published: PublishedKeywords | None, platform: str,
 ) -> blog_prompt.DraftContext:
     """The internal-link list for a ``platform`` draft: that platform's published posts with an
-    https URL that share a topic word with ``target``, most shared first (path breaks ties, so the
-    list is the same every time). An unrelated link is noise to a reader and to a search engine,
+    https URL that name ``target``'s tool or subject (not its intent or a generic word), most
+    shared first (path breaks ties, so the list is the same every time). An unrelated link is noise to a reader and to a search engine,
     so a post with nothing in common is never offered to fill the list."""
     if published is None:
         return blog_prompt.DraftContext(link_source_state="unavailable")
-    want = set(blog_overlap.content_words(target)) | {blog_overlap.topic_core(target)}
-    want.discard("")
+    # The tool or subject words only: '요금제', 'AI', '무료' are in half the blog's titles, and
+    # matching on them linked a Notion pricing post to a Claude pricing post (2026-10-05).
+    want = {w for w in blog_overlap.content_words(target)
+            if w not in _GENERIC_LINK_WORDS and not any(
+                w in markers for _intent, markers in blog_overlap.INTENT_MARKERS)}
     scored: list[tuple[int, str, Mapping[str, Any]]] = []
     for post in published.posts:
         # Published only: a scheduled post already has its URL in the vault (`status: scheduled`,
@@ -1299,10 +1304,9 @@ def link_candidates(
         if (post.get("platform") != platform or post.get("reserved") or post.get("status") != "published"
                 or not str(post.get("url") or "").startswith("https://")):
             continue
-        words: set[str] = set()
-        for text in (post.get("title") or "", *(post.get("keywords") or ()), *(post.get("tags") or ())):
-            words |= set(blog_overlap.content_words(text)) | {blog_overlap.topic_core(text)}
-        shared = len(want & words)
+        text = naver_research.normalize_keyword(
+            " ".join([str(post.get("title") or ""), *(post.get("keywords") or ()), *(post.get("tags") or ())]))
+        shared = sum(1 for w in want if naver_research.normalize_keyword(w) in text)
         if shared:
             scored.append((shared, str(post.get("path")), post))
     scored.sort(key=lambda item: (-item[0], item[1]))

@@ -356,3 +356,59 @@ def test_the_package_files_are_post_md_and_paste_md_under_their_own_folder(tmp_p
     assert "메타 디스크립션 칸이 없어" in post and "alt:" in post
     assert "## 품질 레이어" in post
     assert blog_content.render_paste_txt(package).startswith(f"{TARGET}의 결론부터")
+
+
+# --- .3: what the first ready draft showed (bcp_c4be3ea7381cd1fa1faf, scored 6.1/10) ---------
+
+def test_the_length_example_is_far_from_anything_the_lane_writes_about():
+    """The .2 example was about 요금제·해지·환불 and was pasted in as an intro paragraph."""
+    from runtime.mvp_runtime import blog_overlap
+    markers = {m for _intent, ms in blog_overlap.INTENT_MARKERS for m in ms}
+    assert not any(m in blog_tistory.LENGTH_EXAMPLE_PARAGRAPH for m in markers | {"요금", "플랜", "AI", "결제"})
+
+
+def test_a_draft_that_reuses_the_length_example_fails_and_the_revision_is_told_why():
+    reused = _tdraft()
+    reused["intro"][2] = blog_tistory.LENGTH_EXAMPLE_PARAGRAPH.replace("베란다에서", "집 베란다에서")
+    first = blog_tistory.interpret(json.dumps(reused, ensure_ascii=False), TARGET, _records())
+    assert "length_example_copied" in first["failures"]
+    request = blog_tistory.revision_request(TARGET, first, json.dumps(reused, ensure_ascii=False), _records())
+    assert "길이 예시 문단을 본문에 옮겼다" in request
+    assert "length_example_copied" not in blog_tistory.interpret(
+        json.dumps(_tdraft(), ensure_ascii=False), TARGET, _records())["failures"]
+
+
+def test_the_request_asks_for_a_fact_first_official_prices_and_no_generic_closers():
+    request = blog_tistory.content_request(TARGET)
+    assert "intro 첫 문장에는 근거 블록에 나온 구체적 사실 하나" in request
+    assert blog_tistory.OFFICIAL_SOURCE_RULE in request and "(해외 기준)" in request
+    assert blog_tistory.CLOSER_RULE in request
+    assert "본문 문장을 되풀이하지 말고" in request
+
+
+def test_generic_closers_and_faq_echoes_are_counted_and_pointed_at_not_gated():
+    body = ["플러스 요금제는 월 12달러입니다. 연간 결제는 10달러입니다. 안전한 데이터 관리가 곧 업무 효율을 지키는 지름길입니다.",
+            "무료 플랜은 AI 체험 횟수가 정해져 있습니다. 횟수는 계정마다 한 번 주어집니다. 월 20회까지라 아껴 쓰는 편이 좋습니다."]
+    assert blog_tistory.generic_closers(body) == 1          # the digit keeps the second one in
+    faq = [{"question": "무료로 되나요", "answer": "무료 플랜은 AI 체험 횟수가 정해져 있습니다. 결제하면 늘어납니다."}]
+    assert blog_tistory.faq_echoes(faq, body) == 1
+    draft = _tdraft()
+    draft["sections"][0]["paragraphs"][0] += " 꼼꼼한 확인이 성공의 지름길입니다."
+    first = blog_tistory.interpret(json.dumps(draft, ensure_ascii=False), TARGET, _records())
+    checks = {c["check"]: c["state"] for c in blog_tistory.platform_checks(first, TARGET)}
+    assert checks["generic_closers"] == "warn" and "generic_closers" not in first["failures"]
+
+
+def test_link_candidates_must_name_the_tool_not_just_share_an_intent_word():
+    posts = POSTS + ({"platform": "tistory", "path": "content/tistory/44.md", "title": "노션 요금제 정리",
+                      "url": "https://thomasai.tistory.com/44", "status": "published",
+                      "keywords": ("노션 요금제",), "tags": ()},)
+    context = blog_content.link_candidates("노션 AI 요금제", _Source(posts).load(), "tistory")
+    # '클로드 요금제' shares only '요금제'; it is not offered.
+    assert [c.url for c in context.link_candidates] == ["https://thomasai.tistory.com/44"]
+
+
+def test_the_reading_file_keeps_blank_lines_between_markdown_blocks():
+    post = blog_content.render_post_md(tistory_package())
+    body = post.split("## 본문 (PASTE.md와 같은 마크다운)")[1]
+    assert "\n\n## 무료 계정 0단계 설정\n\n" in body
