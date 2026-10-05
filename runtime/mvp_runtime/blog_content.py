@@ -508,12 +508,21 @@ class VaultKeywordQueue:
     deliberately not seeds: "지금 체급 밖" is the gate's own rejects, "보유 키워드의 변형"
     and "시즌 임박" point at posts that already exist, and "내 글 순위" is a rank report.
 
+    A Tistory fire (``platform="tistory"``) reads the queue's "티스토리 전용" section instead: the
+    AI-tool intents (요금제·무료 한도·해지·환불·오류·비교) `kw_pipeline` keeps for posts with no
+    Naver original, because Google's top ten has a blog slot for those and none for the 실무 lane
+    (vault benchmark 2026-10-03, Thomas's decision the same day). The "다음 편 후보" sections are
+    Naver's candidates — the first Tistory row read them, and its top pick was '개인사업자정책자금'.
+    Each item there is ``keyword(monthly volume)``; the volume is its score. A "자리 없음" line —
+    measured with no blog slot — is never a candidate.
+
     Fails closed: a missing or unparseable queue is ``KEYWORD_QUEUE_UNAVAILABLE``, one older
     than ``QUEUE_MAX_AGE_DAYS`` is ``KEYWORD_QUEUE_STALE``.
     """
 
-    def __init__(self, root: Path | str):
+    def __init__(self, root: Path | str, platform: str | None = None):
         self.root = Path(root)
+        self.platform = platform
 
     def load(self, now: str) -> KeywordQueue:
         path = self.root / QUEUE_REL
@@ -530,6 +539,8 @@ class VaultKeywordQueue:
             raise ToolError(KEYWORD_QUEUE_STALE,
                             f"the keyword queue is from {as_of}, {age} days old "
                             f"(limit {QUEUE_MAX_AGE_DAYS}); rebuild it with kw_pipeline run")
+        if self.platform == "tistory":
+            return KeywordQueue(as_of=as_of, candidates=tuple(_tistory_candidates(text, path)))
         candidates: list[QueueCandidate] = []
         lane: str | None = None
         for line in text.splitlines():
@@ -547,6 +558,33 @@ class VaultKeywordQueue:
         if not candidates:
             raise ToolError(KEYWORD_QUEUE_UNAVAILABLE, f"{path} lists no '다음 편 후보' candidates")
         return KeywordQueue(as_of=as_of, candidates=tuple(candidates))
+
+
+TISTORY_QUEUE_LANE = "티스토리 전용"
+_TISTORY_SECTION_RE = re.compile(r"^##\s+티스토리 전용\b")
+_TISTORY_LINE_RE = re.compile(r"^-\s+(?P<label>[^:]+):\s*(?P<items>.+)$")
+_TISTORY_ITEM_RE = re.compile(r"(?P<keyword>[^,()…]+?)\s*\((?P<volume>\d[\d,]*)\)")
+
+
+def _tistory_candidates(text: str, path: Path) -> list[QueueCandidate]:
+    """The "티스토리 전용" section's items, by label line, skipping any "…없음" line."""
+    candidates: list[QueueCandidate] = []
+    inside = False
+    for line in text.splitlines():
+        if line.startswith("## "):
+            inside = bool(_TISTORY_SECTION_RE.match(line))
+            continue
+        match = _TISTORY_LINE_RE.match(line.strip()) if inside else None
+        if match is None or "없음" in match.group("label"):
+            continue
+        for item in _TISTORY_ITEM_RE.finditer(match.group("items")):
+            candidates.append(QueueCandidate(
+                keyword=item.group("keyword").strip(),
+                score=float(item.group("volume").replace(",", "")), lane=TISTORY_QUEUE_LANE))
+    if not candidates:
+        raise ToolError(KEYWORD_QUEUE_UNAVAILABLE,
+                        f"{path} lists no '{TISTORY_QUEUE_LANE}' candidates with a blog slot")
+    return candidates
 
 
 def queue_seeds(
@@ -1366,13 +1404,14 @@ def run_content_ideation(
     seed_source: dict[str, Any] = {"kind": "request"}
     if use_queue and target is None:
         queue_source = keyword_queue if keyword_queue is not None else VaultKeywordQueue(
-            getattr(source, "root", ""))
+            getattr(source, "root", ""), platform=profile.name)
         loaded = queue_source.load(now)
         queue_candidates, skipped = queue_seeds(
             loaded, already_written=written_keywords(ledger, published),
             already_tagged=published.tags if published is not None else (),
             covered_by=covered_by)
         seed_source = {"kind": "vault_queue", "as_of": loaded.as_of,
+                       "section": (TISTORY_QUEUE_LANE if profile.name == "tistory" else "다음 편 후보"),
                        "candidates_read": len(loaded.candidates),
                        "skipped_written": len(skipped)}
         if not queue_candidates:

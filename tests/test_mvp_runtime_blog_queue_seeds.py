@@ -44,6 +44,14 @@ QUEUE = """# 키워드 큐 — 2026-09-27
 1. **카드뉴스 만들기** — 점수 57.8 · 월 1,540회 · 경쟁 64/2/5 · 도달 0.75
 2. **소량명함제작** — 점수 123.8 · 월 2,750회 · 경쟁 39/1/4 · 도달 0.9
 
+## 티스토리 전용 — 구글에 블로그 자리가 있는 AI 도구 의도 (변환을 건너뛴 슬롯용)
+
+> 도구명 + 요금제·무료 한도·해지·환불·오류·비교.
+
+- 자리 있음: 퍼플렉시티 무료(660)
+- 측정 대기: 챗gpt 유료 가격(14,750), 캡컷 유료(5,210), 제미나이 해지(1,680), 클로드 환불(1,410) …
+- 자리 없음(쓰지 않는다): 캔바 사용법(3,000)
+
 ## 참고: 지금 체급 밖 — 검색량은 크지만 상위가 굳어 있다
 
 1. **CHATGPT** — 점수 900.0 · 월 2,310,000회 · 경쟁 900/10/9 · 도달 0.01
@@ -192,7 +200,8 @@ def test_a_queue_fire_researches_the_queue_seeds_and_records_where_they_came_fro
     assert sheet["target_keyword"] == "스티커제작"
     selection = sheet["package"]["selection_evidence"]
     assert selection["seed_source"] == {"kind": "vault_queue", "as_of": "2026-09-27",
-                                        "candidates_read": 7, "skipped_written": 2}
+                                        "candidates_read": 7, "skipped_written": 2,
+                                        "section": "다음 편 후보"}
     assert selection["seeds"][0] == "스티커제작"
     validate_against_schema(sheet["package"], SCHEMA, "blog_content_package")
 
@@ -216,3 +225,56 @@ def test_the_queue_is_read_from_the_published_sources_root_by_default(tmp_path, 
         blog_content.run_content_ideation({"seeds": "source=queue"}, now=NOW,
                                           published_source=_Source(root=tmp_path))
     assert exc.value.reason_code == blog_content.KEYWORD_QUEUE_STALE
+
+
+# --- the Tistory section ---------------------------------------------------------------------
+
+def test_a_tistory_queue_reads_only_the_tistory_section_and_never_a_no_slot_line(tmp_path):
+    """The first Tistory row read Naver's '다음 편 후보' and would have picked '개인사업자정책자금' —
+    a 실무 keyword Google has no blog slot for. Tistory reads its own section; "자리 없음" is out."""
+    _vault(tmp_path)
+    queue = blog_content.VaultKeywordQueue(tmp_path, platform="tistory").load(NOW)
+    assert [(c.keyword, c.score) for c in queue.candidates] == [
+        ("퍼플렉시티 무료", 660.0), ("챗gpt 유료 가격", 14750.0), ("캡컷 유료", 5210.0),
+        ("제미나이 해지", 1680.0), ("클로드 환불", 1410.0)]
+    assert {c.lane for c in queue.candidates} == {"티스토리 전용"}
+    # Naver still reads what it always read.
+    naver = blog_content.VaultKeywordQueue(tmp_path).load(NOW)
+    assert "캔바 사용법" not in {c.keyword for c in naver.candidates} | {c.keyword for c in queue.candidates}
+    assert "명함제작" in {c.keyword for c in naver.candidates}
+
+
+def test_a_queue_without_a_tistory_section_fails_closed_for_tistory(tmp_path):
+    _vault(tmp_path, QUEUE.split("## 티스토리 전용")[0])
+    with pytest.raises(ToolError) as exc:
+        blog_content.VaultKeywordQueue(tmp_path, platform="tistory").load(NOW)
+    assert exc.value.reason_code == blog_content.KEYWORD_QUEUE_UNAVAILABLE
+
+
+def test_a_tistory_queue_fire_seeds_from_its_section_and_records_it(tmp_path, monkeypatch):
+    from tests.test_mvp_runtime_blog_tistory import _result, _tdraft
+
+    _vault(tmp_path)
+    calls = []
+
+    def fake_run(kind, request, **kwargs):
+        calls.append((kind, kwargs))
+        if kind == "research":
+            rows = [{"keyword": k.replace(" ", ""), "monthly_pc": 1, "monthly_mobile": 9, "monthly_total": v,
+                     "competition": "낮음", "low_volume": False, "source": "naver_searchad"}
+                    for k, v in (("챗gpt 유료 가격", 900), ("캡컷 유료", 400), ("챗gpt", 2000000))]
+            return {"status": "COMPLETED", "records": {"task": {"identity": {"trace_id": "trace-sel"}},
+                    "keyword_research": {"created_at": NOW, "degraded": False, "metrics": rows}}}
+        return _result(_tdraft(), trace="trace-c")
+
+    monkeypatch.setattr(blog_content, "_run", fake_run)
+    sheet = blog_content.run_content_ideation(
+        {"seeds": "platform=tistory, source=queue"}, now=NOW,
+        published_source=_Source(root=tmp_path))
+    research = calls[0][1]["keyword_seeds"].split(", ")
+    assert research == ["챗gpt 유료 가격", "캡컷 유료", "제미나이 해지", "클로드 환불", "퍼플렉시티 무료"]
+    # The head term the brief surfaced is not a queue candidate, whatever its demand.
+    assert sheet["target_keyword"] == "챗gpt 유료 가격"
+    seed_source = sheet["package"]["selection_evidence"]["seed_source"]
+    assert seed_source["section"] == "티스토리 전용" and seed_source["kind"] == "vault_queue"
+    validate_against_schema(sheet["package"], SCHEMA, "blog_content_package")
