@@ -41,7 +41,11 @@ from . import blog_draft, blog_draft_score, blog_overlap, blog_prompt, naver_res
 from .blog_draft_score import Standard
 
 PLATFORM = "tistory"
-PROMPT_VERSION = "tistory_prompt.2026-10-05"
+# .2 (2026-10-05): the length plan. The first live fire ('퍼플렉시티 요금제',
+# bcp_390f9954b2beefe109ed) was asked for "3,500~5,000자" as a total and wrote 956 — two sentences
+# a paragraph, the model stopping by itself at 2,607 output tokens of 12,000. Naver learned the
+# same in September (`blog_naver._length_plan`): a total does not move a draft, a shape does.
+PROMPT_VERSION = "tistory_prompt.2026-10-05.2"
 PROFILE_VERSION = "tistory_profile.2026-10-05"
 STANDARDS_VERSION = "tistory_draft_standards.2026-10-05"
 PASTE_FILE = "PASTE.md"
@@ -63,6 +67,47 @@ STANDARDS: dict[str, Standard] = {
     "internal_links": Standard("내부 링크", 2, None, note="-1 when no candidate list could be read"),
     "tables": Standard("표", 1, None),
 }
+
+# --- the length plan ----------------------------------------------------------------------
+#
+# A shape that adds up to the standards, stated in the draft's own JSON shape and in prose:
+# 3 intro paragraphs (≥400 for the snippet at the plan's floor: 3 × 160 = 480) + 6 H2 sections ×
+# 3 paragraphs + 4 FAQ answers. At 160~190 a paragraph the prose alone is 3,360~3,990 and the FAQ
+# adds ~300~500, so the plan's floor clears the 3,500 standard and its ceiling stays far under
+# 7,000. The arithmetic is checked against `STANDARDS` in the tests.
+PLAN_INTRO_PARAGRAPHS = 3
+PLAN_SECTIONS = 6
+PLAN_PARAGRAPHS_PER_SECTION = 3
+PLAN_FAQ = 4
+PLAN_PARAGRAPH_CHARS = (160, 190)          # visible characters, whitespace excluded
+PLAN_FAQ_ANSWER_CHARS = 80                 # the floor the plan counts an FAQ answer at
+PLAN_SENTENCES_PER_PARAGRAPH = "4"
+# One paragraph of the planned length, a LENGTH reference only (generic on purpose, and the
+# request says not to reuse it): "175자" alone is a number; this is what it looks like.
+LENGTH_EXAMPLE_PARAGRAPH = (
+    "요금제 화면에 들어가면 무료와 유료 플랜이 나란히 정리되어 있습니다. 먼저 지금 쓰는 기능이 무료 범위 "
+    "안에 있는지 확인하고, 한도에 자주 걸리는 기능이 무엇인지 메모장에 적어 두면 플랜끼리 비교하기가 훨씬 "
+    "쉬워집니다. 결제 주기는 월간과 연간 가운데 고를 수 있는데, 몇 달만 써 볼 생각이라면 월간 결제가 부담이 "
+    "적습니다. 해지 방법과 환불 조건도 결제하기 전에 같은 화면에서 미리 확인해 두는 편이 안전합니다."
+)
+MAX_NAMED_PARAGRAPHS = 12
+
+
+def plan_paragraphs() -> int:
+    return PLAN_INTRO_PARAGRAPHS + PLAN_SECTIONS * PLAN_PARAGRAPHS_PER_SECTION
+
+
+def plan_target() -> int:
+    low, high = PLAN_PARAGRAPH_CHARS
+    return (low + high) // 2
+
+
+def plan_body_chars() -> tuple[int, int]:
+    """The plan's body total at its paragraph floor and ceiling, FAQ answers at their floor."""
+    low, high = PLAN_PARAGRAPH_CHARS
+    faq = PLAN_FAQ * PLAN_FAQ_ANSWER_CHARS
+    return plan_paragraphs() * low + faq, plan_paragraphs() * high + faq
+
 
 MIN_TITLES = blog_draft.MIN_TITLES
 TITLE_MAX_CHARS = 45
@@ -99,9 +144,11 @@ _DRAFT_SHAPE = json.dumps({
     "sources": [{"source_ref": "[S1]", "title": None}],
     "fact_checks": [{"claim": "본문 문장", "why": "확인이 필요한 이유", "source_ref": None}],
     "faq": [{"question": "질문", "answer": "2~3문장 답"}],
-    "intro": ["도입 문단 1 — 검색 질문의 답부터", "도입 문단 2"],
-    "sections": [{"heading": "H2 소제목", "level": 2, "paragraphs": ["문단"]},
-                 {"heading": "그 H2 아래 H3 소제목", "level": 3, "paragraphs": ["문단"]}],
+    "intro": [f"도입 문단 1({PLAN_SENTENCES_PER_PARAGRAPH}문장 — 검색 질문의 답부터)"]
+             + [f"도입 문단 {i}({PLAN_SENTENCES_PER_PARAGRAPH}문장)" for i in range(2, PLAN_INTRO_PARAGRAPHS + 1)],
+    "sections": [{"heading": "H2 소제목", "level": 2,
+                  "paragraphs": [f"문단 {i}({PLAN_SENTENCES_PER_PARAGRAPH}문장)"
+                                 for i in range(1, PLAN_PARAGRAPHS_PER_SECTION + 1)]}],
 }, ensure_ascii=False)
 
 # --- the request ------------------------------------------------------------------------
@@ -121,18 +168,33 @@ STRUCTURE_RULE = (
     "첫 섹션은 level 2다. 소제목은 설명이 아니라 검색할 수 있는 문구(예: '카페 소개글 예시')로 쓰고, "
     "secondary_keywords를 소제목에 자연스럽게 싣되 키워드를 억지로 반복하지 마라."
 )
-FAQ_RULE = ("faq는 3~5문항이다 — 질문은 brief.user_questions에서 고르고, 답은 2~3문장으로 본문에 근거가 "
+FAQ_RULE = (f"faq는 {PLAN_FAQ}문항(3~5)이다 — 질문은 brief.user_questions에서 고르고, 답은 2~3문장으로 본문에 근거가 "
             "있는 내용만 쓴다.")
 LAYOUT_RULE = (
     "image_shots 6개 이상(생성 이미지가 아니라 실제 화면 캡처, alt_text는 화면을 설명하는 한국어 한 문장이고 "
     "키워드 나열 금지), 표 1개는 table 필드에만(첫 행이 머리글, 데이터 행 3개 이상, 머리글 칸에는 비교하는 "
     "대상의 실제 이름), tags 5~10개, sources 2~5개."
 )
-LENGTH_RULE = (
-    "분량: intro·섹션 문단·faq 답을 합쳐 공백 빼고 3,500~5,000자. 모자라면 문단을 불리거나 같은 말을 "
-    "되풀이하지 말고 brief.user_questions 중 아직 답하지 않은 질문을 섹션으로 더해라 — 반복과 키워드 "
-    "채우기는 검색에서 손해다."
-)
+def length_plan() -> str:
+    """The plan in prose, beside the shape that already carries it: counts, the paragraph's
+    target and range, the total, the example, and a count-before-you-answer check both ways."""
+    low, high = PLAN_PARAGRAPH_CHARS
+    total_low, total_high = plan_body_chars()
+    return (
+        f"분량 계획(이대로 써라): intro 문단 {PLAN_INTRO_PARAGRAPHS}개 + level 2 섹션 {PLAN_SECTIONS}개 × "
+        f"섹션마다 paragraphs {PLAN_PARAGRAPHS_PER_SECTION}개 = 문단 {plan_paragraphs()}개, 그리고 faq 답 "
+        f"{PLAN_FAQ}개(각 2~3문장). 문단 하나는 {PLAN_SENTENCES_PER_PARAGRAPH}문장, 공백 빼고 "
+        f"{plan_target()}자 안팎({low}~{high}자)이다. 합계 약 {total_low:,}~{total_high:,}자이고, 합계가 "
+        f"{STANDARDS['body_chars'].low:,}자에 못 미치거나 intro 합이 {INTRO_SNIPPET_CHARS}자에 못 미치면 "
+        "불합격이다. 한두 문장짜리 문단을 만들지 마라 — 각 문단은 방법·이유·예시·주의점 중 둘 이상을 담아 "
+        "풀어 써라. 문단 하나의 길이는 이 정도다(길이만 참고하고 내용은 따라 쓰지 마라): "
+        f"「{LENGTH_EXAMPLE_PARAGRAPH}」 그래도 쓸 말이 모자라면 같은 말을 되풀이하거나 키워드를 채우지 말고 "
+        "brief.user_questions 중 아직 답하지 않은 질문을 섹션으로 더해라. JSON을 내기 전에 문단이 "
+        f"{plan_paragraphs()}개인지, 각 문단이 {low}~{high}자인지 세어 보고, 모자란 문단은 더하고 넘치는 "
+        f"문단은 덜어 {plan_target()}자 안팎으로 맞춰라."
+    )
+
+
 NO_FABRICATED_EXPERIENCE_RULE = ("글쓴이가 가게를 운영했다거나 무엇을 겪었다는 1인칭 경험, 손님 수·매출 "
                                  "같은 확인할 수 없는 수치를 지어내지 마라.")
 NO_LINK_CANDIDATES_RULE = "내부 링크 후보가 없다 — internal_links는 빈 목록 []으로 둬라."
@@ -181,7 +243,7 @@ def content_request(target: str, context: blog_prompt.DraftContext | None = None
         [BRIEF_RULE],
         [_title_rule(target), SLUG_RULE, EXCERPT_RULE],
         [_intro_rule(target), STRUCTURE_RULE, FAQ_RULE, LAYOUT_RULE],
-        [LENGTH_RULE],
+        [length_plan()],
         [blog_prompt.FACT_CHECK_RULE, blog_prompt.NO_INVENTION_RULE, blog_prompt.PLAIN_PARAGRAPH_RULE,
          NO_FABRICATED_EXPERIENCE_RULE, blog_prompt.EVIDENCE_SPECIFICS_ASK,
          blog_prompt.SECTION_FOCUS_ASK],
@@ -209,6 +271,44 @@ REVISION_KEEP_LAYOUT_RULE = ("brief, image_shots(alt_text 포함), table, intern
                              "그대로 유지하라(없으면 새로 채워라).")
 
 
+def _short_paragraphs(structured: Mapping[str, Any] | None) -> list[str]:
+    """Each prose paragraph under the plan's floor, labelled with how much it needs: "섹션 2의
+    문단 1(현재 74자, 약 100자 더)". The named list is what moved Naver's short drafts; "longer"
+    alone did not."""
+    if not structured:
+        return []
+    low = PLAN_PARAGRAPH_CHARS[0]
+    out: list[str] = []
+
+    def label(n: int) -> str:
+        return f"현재 {n}자, 약 {max(10, (plan_target() - n + 5) // 10 * 10)}자 더"
+
+    for i, paragraph in enumerate(structured.get("intro") or []):
+        if _visible(paragraph) < low:
+            out.append(f"도입 문단 {i}({label(_visible(paragraph))})")
+    for s_index, section in enumerate(structured.get("sections") or []):
+        for p_index, paragraph in enumerate(section.get("paragraphs") or []):
+            if _visible(paragraph) < low:
+                out.append(f"섹션 {s_index}의 문단 {p_index}({label(_visible(paragraph))})")
+    return out
+
+
+def _length_ask(first: Mapping[str, Any]) -> str:
+    """The plan against the draft's own numbers, with the short paragraphs named."""
+    measured = first.get("measured") or {}
+    structured = first.get("structured") or {}
+    paragraphs = len(structured.get("intro") or []) + sum(
+        len(s.get("paragraphs") or []) for s in structured.get("sections") or [])
+    ask = (f"현재 문단 {paragraphs}개·본문 {measured.get('body_chars', '-')}자·도입 "
+           f"{measured.get('intro_chars', '-')}자. {length_plan()}")
+    named = _short_paragraphs(structured)
+    if named:
+        more = f" 외 {len(named) - MAX_NAMED_PARAGRAPHS}개" if len(named) > MAX_NAMED_PARAGRAPHS else ""
+        ask += (f" {PLAN_PARAGRAPH_CHARS[0]}자에 못 미치는 문단(번호는 0부터): "
+                f"{', '.join(named[:MAX_NAMED_PARAGRAPHS])}{more}. 이 문단마다 적힌 만큼 늘려라.")
+    return f"{ask} {blog_prompt.ADD_SUBSTANCE_ASK}"
+
+
 def grows(first: Mapping[str, Any]) -> bool:
     """Whether the revision is asked to ADD text: the body or the intro under its floor."""
     measured = first.get("measured") or {}
@@ -227,6 +327,8 @@ def revision_request(
     context = context or blog_prompt.DraftContext()
     measured = first.get("measured") or {}
     asks = [f"- {_FAILURE_ASKS.get(f, f)} (현재 {measured.get(f, '-')})" for f in first["failures"]]
+    if _GROW_FAILURES & set(first["failures"]):
+        asks.append(f"- {_length_ask(first)}")
     if first.get("repeated"):
         asks.append(f"- {blog_prompt.repeated_sentences_ask(first['repeated'])}")
     growing = grows(first)
