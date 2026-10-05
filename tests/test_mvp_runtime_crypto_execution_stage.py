@@ -198,6 +198,47 @@ def test_a_record_the_door_did_not_spend_an_approval_for_reads_read_only(tmp_pat
         "READ_ONLY", es.STAGE_APPROVAL_NOT_CONSUMED, "PAPER")
 
 
+_GOOD_RESULTS = ("readiness report: THIS PROCESS READY; CI: the five required checks green; "
+                 "paper: +0.4R expectancy over 300 independent trades; dry-run executor evidence clean")
+
+
+@pytest.mark.parametrize("witness", ["a report id", "granted but never spent", "spent by CI", "spent by Thomas"])
+def test_evidence_is_not_permission_a_climb_on_good_results_alone_reads_read_only(tmp_path, witness):
+    """Evidence creates evidence, not permission (PHASE_7_14_ALIGNMENT_AUDIT_V0.1 §D, Thomas
+    2026-10-05). A SIGNED_TESTNET record whose evidence is every good result the machine can produce
+    — a READY board, green CI, paper expectancy, a clean dry run — still binds nothing unless a
+    Thomas-verified approval was SPENT on it. What stands in for that approval here is what a
+    process could produce on its own: the id of a report, an ask nobody spent, a grant CI spent.
+    The last case is the control: the same record on a spent Thomas approval binds."""
+    approvals = _Approvals()
+    paper = _paper(tmp_path, approvals)
+    content = es.plan_transition(paper, target="SIGNED_TESTNET", registered_by="thomas", reason="good results",
+                                 attestation=_GOOD_RESULTS)
+    if witness == "a report id":
+        # The schema already refuses an id outside `approval_*`; an approval-shaped name that the
+        # ledger does not hold is what a report would have to pose as.
+        approval_id = "approval_live_readiness_report"
+        fingerprint = _Approvals().grant(approval_id, content)["action_fingerprint"]
+    else:
+        approval_id = "approval_tn"
+        fingerprint = approvals.grant(approval_id, content)["action_fingerprint"]
+    record = es.record_from_approved(content, status_now=paper, approval_id=approval_id,
+                                     action_fingerprint=fingerprint, now=NOW)
+    if witness.startswith("spent"):
+        approvals.consume(approval_id, record)
+    if witness == "spent by CI":
+        approvals.records[approval_id]["approver"].update(approved_by="ci", identity_verification_method="github_actions")
+    es.write_stage_record(record, tmp_path)
+
+    status = _resolve(tmp_path, approvals)
+    if witness == "spent by Thomas":
+        assert (status.stage, status.valid) == ("SIGNED_TESTNET", True) and status.allows(es.PURPOSE_TESTNET)
+        return
+    assert (status.stage, status.recorded_stage, status.reason_code) == (
+        "READ_ONLY", "SIGNED_TESTNET", es.STAGE_APPROVAL_NOT_CONSUMED)
+    assert not status.allows(es.PURPOSE_TESTNET)
+
+
 def test_an_unreadable_approval_ledger_is_not_a_witness(tmp_path):
     _paper(tmp_path, _Approvals())
 

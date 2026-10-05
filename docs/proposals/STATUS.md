@@ -4,7 +4,7 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **50**건: `DRAFT` 3 · `PARTIALLY DECIDED` 10 · `DECIDED` 6 · `IMPLEMENTED` 28 · `SUPERSEDED` 1 · `RECORD` 2
+제안서 **51**건: `DRAFT` 3 · `PARTIALLY DECIDED` 10 · `DECIDED` 6 · `IMPLEMENTED` 29 · `SUPERSEDED` 1 · `RECORD` 2
 
 ## Thomas 결정 대기 (13)
 
@@ -39,7 +39,7 @@
 | [CRYPTO_STRATEGY_EDGE_ORDER_V0.1.md](CRYPTO_STRATEGY_EDGE_ORDER_V0.1.md) | `DECIDED` | 2026-10-01 | S1·S2·S3 권고대로(Thomas). S1: 첫 forward cohort 판정 때 factory mint 비중을 1d로 기울인다(손실을 줄이는 선택이지 엣지 주장이 아님). S2: 쌍둥이 기준 판정은 에포크 경계에서 `REMAINING_WORK.md` §L E1과 함께 다룬다. S3: maker 진입은 지금 다시 열지 않는다. 0단계(`report --arms`)는 #1088로 구현됐고, S1·S2의 실행은 각 관문(첫 판정, 에포크 경계)을 기다린다. 이 문서가 바꾼 판정 규칙·보드·상수는 없다. |
 | [CRYPTO_ARCHIVE_BACKFILL_V0.1.md](CRYPTO_ARCHIVE_BACKFILL_V0.1.md) | `DECIDED` | 2026-10-03 | R1–R4 권고대로(Thomas). R1: OI 측정·백필은 지금, 피처 전환은 첫 cohort 판정 때 S1과 함께. R2: 롱숏은 게이트를 명시적 결정으로 고정한 뒤 백필, 생성은 2027-03-22 이후. R3: 아카이브는 런타임 밖에서 받는다. R4: 호가 깊이는 D3 이후. 단계 1은 #1119로, R2의 게이트 고정(`positioning_store.MINTING_DECIDED`=False)은 이번 PR로 구현됐다. OI 백필 도구는 #1121(단계 2). 롱숏 백필은 저장 방식 때문에 보류(아래 2026-10-03 추가 결정). 남은 일: OI import 실행, 첫 판정 때 단계 3. |
 
-## 구현됨 (28)
+## 구현됨 (29)
 
 결정되고 지어졌다. 문서는 결정의 근거 기록으로 남는다.
 
@@ -73,6 +73,7 @@
 | [PROTECTION_UNKNOWN_ESCALATION_V0.1.md](PROTECTION_UNKNOWN_ESCALATION_V0.1.md) | `IMPLEMENTED` | 2026-09-30 | D1–D4 권고대로(Thomas) 구현(`crypto/protection_watch.py`). 한 가지를 바꿨다: U1은 사이클 정지(`record["halt"]`)가 아니라 신규 진입 보류다. 사이클 정지는 다른 심볼 포지션의 관리까지 건너뛰기 때문이다(§Implementation). 보드 한 줄(§2.5)은 D3 표시 동결로 미구현. |
 | [FORWARD_COHORT_EXPANSION_V0.1.md](FORWARD_COHORT_EXPANSION_V0.1.md) | `IMPLEMENTED` | 2026-10-01 | N1–N4 권고대로(Thomas). N1: 2차 동결은 D3 밖이다. N2: 28일마다 운영자가 수동으로 동결하되, 1h 선정 행이 약 200일을 넘기 전이어야 한다. N3: Decision 2 B 아래 K는 같은 문맥의 모든 동결 cohort를 합산한다. N4: 1차 cohort는 2027-03-22(동결 + 180일)에 한 번 판정하고 닫으며, 이후 cohort도 동결 + 180일이다. Decision 2 B는 그 마감 판정과 쌍둥이 확정률을 놓고 다시 묻는다. 2차 cohort `fwd_cohort_31fbbb4ff2b2491fedd8`(82명, 17개 문맥)와 그 쌍둥이 82명을 2026-10-01 04:04 UTC에 동결했다. 다음 동결은 2026-10-29, 2차 마감은 2027-03-30. |
 | [FORWARD_COHORT_SIBLING_RULE_V0.1.md](FORWARD_COHORT_SIBLING_RULE_V0.1.md) | `IMPLEMENTED` | 2026-10-01 | S1–S4 권고대로(Thomas). 구현은 아래 "구현" 절. 배포 뒤 10-29 동결부터 적용된다. - S1: A(열린 cohort의 키는 다음 동결에서 제외) + B(2차 형제는 읽는 시점에 표시). - S2: 키는 보유 cohort 마감(동결 + 180일)에 풀린다. - S3: 키 정의는 그대로 둔다. - S4: 풀 점유 계보와의 형제는 범위 밖이다. |
+| [PHASE_7_14_ALIGNMENT_AUDIT_V0.1.md](PHASE_7_14_ALIGNMENT_AUDIT_V0.1.md) | `IMPLEMENTED` | 2026-10-05 | Q1–Q4 모두 권고대로(Thomas): 카나리 rung 없음 유지, 코드 상수 2차 권위 없음, 어댑터 키 읽기 유지, D3 중 ResearchSignal v2·ID 체인 보류. §D의 P2 테스트 3건(paper 격리, 증거는 단계 증인이 아님, 안전 불변식 lane)을 같은 PR에서 지었다. 코드·스키마·정책 변경 없음. ResearchSignal·ID 체인은 첫 cohort 판정 뒤 이 문서를 근거로 다시 연다. |
 
 ## 대체됨 (1)
 

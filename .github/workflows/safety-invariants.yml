@@ -1,0 +1,58 @@
+name: Safety invariants lane
+
+# The execution-safety invariants on their own (PHASE_7_14_ALIGNMENT_AUDIT_V0.1 §D, Thomas
+# 2026-10-05): the stage ladder and its witness, the env gate, the testnet/live split, the pre-order
+# gate, paper isolation. The same tests run in the full suite; this lane exists so they report by
+# themselves, in about a minute, and can be run alone (`python -m pytest @tests/safety_lane.args`).
+# NOT a required check — the five required checks are Thomas decision Q14, and this lane is not one.
+# Membership lives in tests/safety_lane.args; tests/test_safety_lane.py pins it.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: safety-invariants-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  safety-lane:
+    name: Safety invariants (ubuntu-latest)
+    runs-on: ubuntu-latest
+    env:
+      PYTHONUTF8: "1"
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-validation.lock
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements-validation.lock pytest
+
+      # The stage registration tests are gated on a local Core, like the full suite's.
+      - name: Activate an ephemeral Core for the test run
+        shell: bash
+        run: |
+          git config user.email "ci-tests@thomas-agent.local"
+          git config user.name "Thomas Agent CI"
+          python scripts/ci_activate_core_for_tests.py
+
+      - name: Run the safety lane
+        run: python -m pytest @tests/safety_lane.args -q --junitxml=junit.xml
+
+      - name: Fail if the run skipped what CI must never skip
+        run: python scripts/check_test_skips.py --junit junit.xml
