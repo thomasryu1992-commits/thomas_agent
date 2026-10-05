@@ -13,7 +13,7 @@
 - **What it deliberately does not do:** it does not re-propose the parked Kmong and Upwork tracks or
   the paused runtime blog lane. It names them as the things a passed gate gives evidence to revisit.
 - **B1 decided the same day (Thomas 2026-10-05):** stage 0 measurement starts with the week ending
-  10-11. Neighbour count, likes and comments come from Naver's public API in the vault's
-  `blog-weekly.py`; neighbour views and return rate come from stats screenshots. The series lives in
+  10-11. Neighbour count, likes and comments come from Naver's public API in the host's
+  `~/.claude/scripts/blog-weekly.py`; neighbour views and return rate come from stats screenshots. The series lives in
   the vault's `analytics/branding.tsv`. Those files are outside this repo, so this PR records the
   decision and changes no code here.
