@@ -35,6 +35,10 @@ E = blog_overlap.ExistingContent
     ("공유오피스 사업자등록", "tistory", "공유오피스 사업자등록", "naver", "platform_repurpose"),
     # and the cross-platform twin of 2
     ("캔바 사용 방법", "tistory", "캔바 사용법", "naver", "high_topic_overlap"),
+    # the pair the third live Tistory fire missed: one tool's paid plans, asked two ways
+    ("챗gpt 유료 가격", "tistory", "챗GPT 유료 차이", "tistory", "cannibalization_risk"),
+    # ...while another subject on the same tool stays its own post
+    ("챗gpt 유료 가격", "tistory", "챗GPT 클로드 비교", "tistory", "safe_distinct_intent"),
 ])
 def test_each_case_classifies_deterministically(requested, platform, existing, existing_platform, expected):
     for _ in range(3):
@@ -50,6 +54,7 @@ def test_the_intent_lexicon_reads_the_marker_in_priority_order():
     assert blog_overlap.keyword_intent("클로드 오류 해결") == "troubleshooting"
     assert blog_overlap.keyword_intent("업무 자동화 7가지") == "listicle"
     assert blog_overlap.keyword_intent("미리캔버스 포스터") == "informational"
+    assert blog_overlap.keyword_intent("캡컷 유료") == blog_overlap.keyword_intent("챗GPT 플랜 차이") == "pricing"
 
 
 @pytest.mark.parametrize("platform,overlap,action", [

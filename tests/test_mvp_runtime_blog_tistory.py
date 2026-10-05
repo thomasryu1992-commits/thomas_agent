@@ -15,7 +15,7 @@ from unittest import mock
 
 import pytest
 
-from runtime.mvp_runtime import blog_content, blog_prompt, blog_tistory
+from runtime.mvp_runtime import blog_content, blog_draft, blog_prompt, blog_tistory
 from runtime.mvp_runtime.errors import ToolError
 from runtime.mvp_runtime.paths import repo_root
 from runtime.read_only_kernel.schema_validation import validate_against_schema
@@ -412,3 +412,30 @@ def test_the_reading_file_keeps_blank_lines_between_markdown_blocks():
     post = blog_content.render_post_md(tistory_package())
     body = post.split("## 본문 (PASTE.md와 같은 마크다운)")[1]
     assert "\n\n## 무료 계정 0단계 설정\n\n" in body
+
+
+def _broken(draft: dict) -> str:
+    """The third live fire's damage: a stray quote before the final brace (`…"]}"}`)."""
+    text = json.dumps(draft, ensure_ascii=False)
+    return text[:-1] + '"}'
+
+
+def test_a_draft_whose_json_broke_still_hands_its_citations_to_the_package():
+    text = _broken(_tdraft())
+    assert blog_draft.parse_structured(text)[0] is None
+    first = blog_tistory.interpret(text, TARGET, _records())
+    assert first["draft_format"] == "legacy_markdown"
+    assert [s["source_ref"] for s in first["sources"]] == ["[S1]", "[S2]"]
+    assert first["measured"]["sources"] == 2
+    # A citation this run never had is still not a source.
+    assert all(s["source_ref"] != "[S9]" for s in blog_tistory.interpret(
+        text.replace("[S2]", "[S9]"), TARGET, _records())["sources"])
+
+
+def test_a_revision_that_repairs_the_structure_keeps_the_broken_drafts_sources():
+    sheet, _calls = _ideate([_broken(_tdraft()), _tdraft()])
+    package = sheet["package"]
+    assert package["quality"]["first_draft_failures"][:1] and "structured_output" in package["quality"]["first_draft_failures"]
+    assert [s["source_ref"] for s in package["sources"]] == ["[S1]", "[S2]"]
+    assert package["quality"]["layers"]["evidence"]["web_sources"] == 2
+    assert "- [Claude 도움말 1](https://support.claude.com/1)" in package["body_paste"]
