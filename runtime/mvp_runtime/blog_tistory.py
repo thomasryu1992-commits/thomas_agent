@@ -33,6 +33,7 @@ Pure: no I/O, no clock.
 
 from __future__ import annotations
 
+import difflib
 import json
 import re
 from typing import Any, Mapping, Sequence
@@ -45,7 +46,14 @@ PLATFORM = "tistory"
 # bcp_390f9954b2beefe109ed) was asked for "3,500~5,000자" as a total and wrote 956 — two sentences
 # a paragraph, the model stopping by itself at 2,607 output tokens of 12,000. Naver learned the
 # same in September (`blog_naver._length_plan`): a total does not move a draft, a shape does.
-PROMPT_VERSION = "tistory_prompt.2026-10-05.2"
+# .3 (2026-10-05): read against its own output ('노션 AI 요금제', bcp_c4be3ea7381cd1fa1faf, scored
+# 6.1/10). The length example was about 요금제·해지·환불 — the lane's own topic — and the draft
+# copied it as an intro paragraph (similarity 0.95); the first sentences answered nothing; every
+# section closed on "…지름길입니다"; FAQ answers repeated the body; the price came from a
+# third-party blog because the shared Korean-reader rule forbids a foreign service's own price;
+# and ~900 characters of print-shop naming rules rode along on an AI-tool post. Each is answered
+# below, and the example's reuse and the closers are now measured, not only asked about.
+PROMPT_VERSION = "tistory_prompt.2026-10-05.3"
 PROFILE_VERSION = "tistory_profile.2026-10-05"
 STANDARDS_VERSION = "tistory_draft_standards.2026-10-05"
 PASTE_FILE = "PASTE.md"
@@ -82,14 +90,17 @@ PLAN_FAQ = 4
 PLAN_PARAGRAPH_CHARS = (160, 190)          # visible characters, whitespace excluded
 PLAN_FAQ_ANSWER_CHARS = 80                 # the floor the plan counts an FAQ answer at
 PLAN_SENTENCES_PER_PARAGRAPH = "4"
-# One paragraph of the planned length, a LENGTH reference only (generic on purpose, and the
-# request says not to reuse it): "175자" alone is a number; this is what it looks like.
+# One paragraph of the planned length, a LENGTH reference only: "175자" alone is a number; this is
+# what it looks like. Its subject is deliberately far from anything this lane writes about — the
+# .2 example was about 요금제 and the first draft under it pasted it in (see PROMPT_VERSION).
 LENGTH_EXAMPLE_PARAGRAPH = (
-    "요금제 화면에 들어가면 무료와 유료 플랜이 나란히 정리되어 있습니다. 먼저 지금 쓰는 기능이 무료 범위 "
-    "안에 있는지 확인하고, 한도에 자주 걸리는 기능이 무엇인지 메모장에 적어 두면 플랜끼리 비교하기가 훨씬 "
-    "쉬워집니다. 결제 주기는 월간과 연간 가운데 고를 수 있는데, 몇 달만 써 볼 생각이라면 월간 결제가 부담이 "
-    "적습니다. 해지 방법과 환불 조건도 결제하기 전에 같은 화면에서 미리 확인해 두는 편이 안전합니다."
+    "베란다에서 허브를 키울 때는 먼저 하루에 햇빛이 드는 시간을 재어 봅니다. 바질과 로즈마리는 햇빛을 "
+    "좋아해서 남향 창가에 두면 잎이 두껍게 자라고, 그늘에 두면 줄기만 길어지기 쉽습니다. 물은 흙 겉면이 "
+    "마른 것을 손가락으로 직접 확인한 뒤에 주는 편이 뿌리가 썩지 않아 안전합니다. 잎을 딸 때는 맨 위쪽 "
+    "순을 두 마디씩 잘라 주면 옆으로 새순이 여러 개 돋아서 한 포기에서 거두는 양이 눈에 띄게 늘어납니다."
 )
+# A draft paragraph this close to the example is the example, reworded at most.
+EXAMPLE_REUSE_RATIO = 0.6
 MAX_NAMED_PARAGRAPHS = 12
 
 
@@ -169,7 +180,7 @@ STRUCTURE_RULE = (
     "secondary_keywords를 소제목에 자연스럽게 싣되 키워드를 억지로 반복하지 마라."
 )
 FAQ_RULE = (f"faq는 {PLAN_FAQ}문항(3~5)이다 — 질문은 brief.user_questions에서 고르고, 답은 2~3문장으로 본문에 근거가 "
-            "있는 내용만 쓴다.")
+            "있는 내용만 쓰되 본문 문장을 되풀이하지 말고 그 질문에만 바로 답하는 새 문장으로 쓴다.")
 LAYOUT_RULE = (
     "image_shots 6개 이상(생성 이미지가 아니라 실제 화면 캡처, alt_text는 화면을 설명하는 한국어 한 문장이고 "
     "키워드 나열 금지), 표 1개는 table 필드에만(첫 행이 머리글, 데이터 행 3개 이상, 머리글 칸에는 비교하는 "
@@ -197,6 +208,24 @@ def length_plan() -> str:
 
 NO_FABRICATED_EXPERIENCE_RULE = ("글쓴이가 가게를 운영했다거나 무엇을 겪었다는 1인칭 경험, 손님 수·매출 "
                                  "같은 확인할 수 없는 수치를 지어내지 마라.")
+# The evidence rule, Tistory's: the shared one (`blog_prompt.EVIDENCE_SPECIFICS_ASK`) carries
+# Naver's print-shop naming block and a Korean-reader rule that forbids a foreign service's own
+# price — on an AI-tool pricing post that sent the draft to a third-party blog's won price.
+EVIDENCE_RULE = (
+    "근거 블록([S#])에 나온 구체적인 내용 — 플랜 이름, 가격, 한도, 메뉴·버튼·기능 이름, 절차 단계 — 을 "
+    "섹션마다 최소 1개 본문에 그 이름 그대로 쓰고, 그 근거를 sources에 넣어라. 근거에 없는 이름·수치는 "
+    "지어내지 마라. 근거 글의 문장은 옮기지 말고 네 말로 풀어 써라."
+)
+OFFICIAL_SOURCE_RULE = (
+    "가격·무료 한도·해지·환불 같은 조건은 그 도구의 공식 요금·도움말 페이지 근거를 먼저 쓰고, 개인 블로그·"
+    "뉴스의 수치는 공식 근거가 없을 때만 쓰되 그 문장을 fact_checks에 넣어라. 공식 가격이 달러 같은 외화로만 "
+    "나와 있으면 그 금액 그대로 쓰고 '(해외 기준)'을 붙여라 — 원화로 바꾸거나 다른 곳의 원화 가격으로 대신하지 "
+    "마라. 근거에 기준 날짜가 있으면 '2026년 10월 기준'처럼 함께 밝혀라."
+)
+TOOL_NAME_RULE = ("도구 이름(키워드가 다루는 도구와 근거에 나온 도구)은 그대로 밝히고, '특정 앱'·'온라인 서비스'처럼 "
+                  "흐리게 부르지 마라. 이 요청에 적힌 지시(분량·키워드·출처 규칙)를 본문 문장으로 옮겨 쓰지 마라.")
+CLOSER_RULE = ("문단을 '…이 중요합니다'·'…지름길입니다'·'…도움이 됩니다'·'…바람직합니다'처럼 어느 글에나 붙는 "
+               "맺음 문장으로 끝내지 마라 — 마지막 문장도 그 문단에만 있는 정보(수치·조건·예시·다음에 할 일)다.")
 NO_LINK_CANDIDATES_RULE = "내부 링크 후보가 없다 — internal_links는 빈 목록 []으로 둬라."
 LINK_FACTS_RULE = "[L#]은 internal_links에만 쓰고 본문·facts·fact_checks·sources에는 쓰지 마라."
 
@@ -209,7 +238,8 @@ def _title_rule(target: str) -> str:
 
 
 def _intro_rule(target: str) -> str:
-    return (f"intro 첫 문단의 첫 두 문장으로 검색 질문에 바로 답하고 '{target}'를 넣어라 — 인사말·공감형 "
+    return (f"intro 첫 문장에는 근거 블록에 나온 구체적 사실 하나(가격·한도·플랜 이름·조건 중 하나)를 넣고, "
+            f"첫 두 문장으로 검색 질문에 바로 답하며 '{target}'를 넣어라 — '…이 중요합니다' 같은 일반론, 인사말·공감형 "
             f"도입·'아래에서 정리했습니다' 꼬리는 쓰지 마라. intro 문단의 공백 제외 합은 {INTRO_SNIPPET_CHARS}자 "
             "이상이다(티스토리는 메타 디스크립션 칸이 없어 본문 첫 400자가 검색 결과 요약이 된다).")
 
@@ -244,9 +274,9 @@ def content_request(target: str, context: blog_prompt.DraftContext | None = None
         [_title_rule(target), SLUG_RULE, EXCERPT_RULE],
         [_intro_rule(target), STRUCTURE_RULE, FAQ_RULE, LAYOUT_RULE],
         [length_plan()],
-        [blog_prompt.FACT_CHECK_RULE, blog_prompt.NO_INVENTION_RULE, blog_prompt.PLAIN_PARAGRAPH_RULE,
-         NO_FABRICATED_EXPERIENCE_RULE, blog_prompt.EVIDENCE_SPECIFICS_ASK,
-         blog_prompt.SECTION_FOCUS_ASK],
+        [blog_prompt.FACT_CHECK_RULE, blog_prompt.NO_INVENTION_RULE, OFFICIAL_SOURCE_RULE,
+         blog_prompt.PLAIN_PARAGRAPH_RULE, NO_FABRICATED_EXPERIENCE_RULE, EVIDENCE_RULE, TOOL_NAME_RULE,
+         CLOSER_RULE, blog_prompt.SECTION_FOCUS_ASK],
         *_links_lines(context),
         *_repurpose_lines(context),
     )
@@ -264,6 +294,8 @@ _FAILURE_ASKS = {
                   "비ASCII 기호와 '사장님' 없이 다시 써라"),
     "slug": "slug를 영문 소문자·숫자·하이픈으로 된 2~8단어로 써라",
     "heading_hierarchy": "첫 섹션은 level 2로, level 3 섹션은 level 2 섹션 뒤에만 둬라",
+    "length_example_copied": ("요청의 길이 예시 문단을 본문에 옮겼다 — 그 문단을 지우고 그 자리에 이 글 주제의 "
+                              "새 내용(근거에 나온 수치·조건·절차)을 같은 길이로 써라"),
     **blog_prompt.COMMON_FAILURE_ASKS,
 }
 _GROW_FAILURES = frozenset({"body_chars", "intro_chars"})
@@ -498,6 +530,58 @@ def render_markdown(
             "image_shots": shots[:blog_draft.MAX_IMAGE_SHOTS], "paragraph_count": len(blocks)}
 
 
+def _key(text: str) -> str:
+    return re.sub(r"\s", "", str(text or ""))
+
+
+def example_reused(paragraphs: Sequence[str]) -> bool:
+    """Whether any paragraph is the request's length example, at most reworded."""
+    example = _key(LENGTH_EXAMPLE_PARAGRAPH)
+    return any(difflib.SequenceMatcher(None, example, _key(p)).ratio() >= EXAMPLE_REUSE_RATIO
+               for p in paragraphs if p)
+
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。])\s+")
+# A closing sentence true of any post: '…이 중요합니다', '…지름길입니다'. A digit keeps it in —
+# "월 20회까지라 아껴 쓰는 편이 좋습니다" still says something.
+_GENERIC_CLOSER_RE = re.compile(
+    r"(중요합니다|필요합니다|지름길입니다|바람직합니다|도움이\s*됩니다|유용합니다|현명합니다|안전합니다|"
+    r"좋습니다|만듭니다|길입니다)[.!]?$")
+FAQ_ECHO_OVERLAP = 0.6
+
+
+def _sentences(text: str) -> list[str]:
+    return [x.strip() for x in _SENTENCE_SPLIT_RE.split(str(text or "")) if x.strip()]
+
+
+def generic_closers(paragraphs: Sequence[str]) -> int:
+    """How many prose paragraphs end on a sentence that would fit any post."""
+    count = 0
+    for paragraph in paragraphs:
+        sentences = _sentences(paragraph)
+        if sentences and " | " not in paragraph and not re.search(r"\d", sentences[-1]) \
+                and _GENERIC_CLOSER_RE.search(sentences[-1]):
+            count += 1
+    return count
+
+
+def _pairs(text: str) -> set[str]:
+    return {text[i:i + 2] for i in range(len(text) - 1)}
+
+
+def faq_echoes(faq: Sequence[Mapping[str, str]], paragraphs: Sequence[str]) -> int:
+    """FAQ answer sentences whose character pairs mostly (:data:`FAQ_ECHO_OVERLAP`) repeat one body
+    sentence — an answer that says the body again instead of answering the question."""
+    body = [_pairs(_key(x)) for p in paragraphs for x in _sentences(p) if len(_key(x)) >= 15]
+    count = 0
+    for item in faq:
+        for sentence in _sentences(item.get("answer") or ""):
+            pairs = _pairs(_key(sentence))
+            if len(pairs) >= 14 and any(len(pairs & b) / len(pairs) >= FAQ_ECHO_OVERLAP for b in body):
+                count += 1
+    return count
+
+
 def _visible(text: str) -> int:
     return len(re.sub(r"\s", "", str(text or "")))
 
@@ -582,8 +666,12 @@ def interpret(
         failures.append("heading_hierarchy")
     repeated = blog_draft.repeated_sentences(prose + [q["answer"] for q in faq])
     measured["repeated_sentences"] = blog_draft.repeat_count(prose + [q["answer"] for q in faq])
+    measured["generic_closers"] = generic_closers(prose)
+    measured["faq_echoes"] = faq_echoes(faq, prose)
     if repeated:
         failures.append("repeated_sentences")
+    if example_reused(prose + [q["answer"] for q in faq]):
+        failures.append("length_example_copied")
     return {
         "draft_format": blog_draft.DRAFT_FORMAT_STRUCTURED,
         "title_candidates": titles[:blog_draft.MAX_TITLES],
@@ -628,8 +716,12 @@ def _interpret_prose(text: str, target: str, index: Mapping[str, Any], parse_rea
     failures += ["structured_output", "seo_title", "slug"]
     repeated = blog_draft.repeated_sentences(prose)
     measured["repeated_sentences"] = blog_draft.repeat_count(prose)
+    measured["generic_closers"] = generic_closers(prose)
+    measured["faq_echoes"] = 0
     if repeated:
         failures.append("repeated_sentences")
+    if example_reused(prose):
+        failures.append("length_example_copied")
     return {
         "draft_format": blog_draft.DRAFT_FORMAT_LEGACY, "parse_reason": parse_reason,
         "title_candidates": titles, "body_paste": "\n\n".join(body),
@@ -716,5 +808,11 @@ def platform_checks(parts: Mapping[str, Any], target: str) -> list[dict[str, Any
         {"check": "faq", "state": "ok" if STANDARDS["faq"].within(measured.get("faq", 0)) else "warn",
          "detail": f"{measured.get('faq', 0)} questions"},
         {"check": "excerpt", "state": "ok" if meta.get("excerpt") else "warn", "detail": "list/share summary"},
+        {"check": "generic_closers", "state": "ok" if not measured.get("generic_closers") else "warn",
+         "detail": f"{measured.get('generic_closers', 0)} paragraphs end on a sentence that fits any post"},
+        {"check": "faq_echoes", "state": "ok" if not measured.get("faq_echoes") else "warn",
+         "detail": f"{measured.get('faq_echoes', 0)} FAQ answer sentences repeat the body"},
+        {"check": "length_example", "state": "fail" if "length_example_copied" in (parts.get("failures") or []) else "ok",
+         "detail": "the request's length example is not in the body"},
     ]
     return checks

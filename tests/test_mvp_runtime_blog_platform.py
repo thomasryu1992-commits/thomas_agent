@@ -154,8 +154,17 @@ def test_tistory_only_rules_do_not_reach_the_naver_request():
 def test_both_requests_carry_the_common_evidence_policy_once():
     for request in (blog_naver.content_request(TARGET), blog_tistory.content_request(TARGET)):
         for rule in (blog_prompt.FACT_CHECK_RULE, blog_prompt.NO_INVENTION_RULE,
-                     blog_prompt.EVIDENCE_SPECIFICS_ASK, blog_prompt.SECTION_FOCUS_ASK):
+                     blog_prompt.PLAIN_PARAGRAPH_RULE, blog_prompt.SECTION_FOCUS_ASK):
             assert request.count(rule) == 1
+
+
+def test_naver_keeps_its_evidence_block_and_tistory_has_its_own():
+    """Tistory .3 dropped the shared block: its print-shop naming rules are noise on an AI-tool
+    post, and its no-foreign-price rule sent a pricing draft to a third-party blog's won price."""
+    naver, tistory = blog_naver.content_request(TARGET), blog_tistory.content_request(TARGET)
+    assert naver.count(blog_prompt.EVIDENCE_SPECIFICS_ASK) == 1
+    assert blog_prompt.VENDOR_NAME_ASK not in tistory and blog_prompt.DOMESTIC_READER_ASK not in tistory
+    assert tistory.count(blog_tistory.EVIDENCE_RULE) == 1 and tistory.count(blog_tistory.OFFICIAL_SOURCE_RULE) == 1
 
 
 def test_a_naver_package_is_not_made_to_carry_tistory_metadata(monkeypatch):
