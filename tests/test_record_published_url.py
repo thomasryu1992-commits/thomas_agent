@@ -146,18 +146,47 @@ def test_list_is_read_only_and_names_the_state(tmp_path, capsys):
     assert len(_rows(store)) == 1
 
 
-def test_a_v0_2_package_is_published_against_its_own_schema(tmp_path, capsys):
-    """The lane produces v0.2 now. The writer validates each row against the schema of the
-    version it was produced under — v0.1 above, v0.2 here — rather than one hardcoded path."""
+def test_a_v0_3_package_is_published_against_its_own_schema(tmp_path, capsys):
+    """The lane produces v0.3 now. The writer validates each row against the schema of the
+    version it was produced under — v0.1 above, v0.3 here — rather than one hardcoded path."""
     from tests.test_mvp_runtime_blog_content import _build
 
     package = _build()
-    assert package["schema_version"] == "blog_content_package.v0.2"
+    assert package["schema_version"] == "blog_content_package.v0.3"
     store = _seed(tmp_path, package)
     rc = record_published_url.main([
         "--package-id", package["package_id"], "--url", URL, "--root", str(tmp_path)])
     assert rc == 0, capsys.readouterr().err
     assert _rows(store)[-1]["record"]["target_evidence"] == package["target_evidence"]
+
+
+def test_a_v0_2_row_already_in_the_ledger_is_still_publishable(tmp_path, capsys):
+    """The rows written before v0.3 are not migrated: they publish against v0.2, as Naver."""
+    from tests.test_mvp_runtime_blog_content import _build, as_v02_row
+
+    package = as_v02_row(_build())
+    store = _seed(tmp_path, package)
+    rc = record_published_url.main([
+        "--package-id", package["package_id"], "--url", URL, "--root", str(tmp_path)])
+    assert rc == 0, capsys.readouterr().err
+    assert _rows(store)[-1]["record"]["schema_version"] == "blog_content_package.v0.2"
+
+
+def test_a_tistory_package_takes_a_tistory_url_and_refuses_a_naver_one(tmp_path, capsys):
+    """The URL rule is the package's platform's: a Naver URL on a Tistory package would send
+    the rank tracker to the wrong search, and the reverse would not validate at all."""
+    from tests.test_mvp_runtime_blog_tistory import tistory_package
+
+    package = tistory_package()
+    store = _seed(tmp_path, package)
+    rc = record_published_url.main([
+        "--package-id", package["package_id"], "--url", URL, "--root", str(tmp_path)])
+    assert rc == 2 and "URL_INVALID" in capsys.readouterr().err
+    rc = record_published_url.main([
+        "--package-id", package["package_id"], "--url", "https://thomasai.tistory.com/80",
+        "--root", str(tmp_path)])
+    assert rc == 0, capsys.readouterr().err
+    assert _rows(store)[-1]["record"]["published_url"] == "https://thomasai.tistory.com/80"
 
 
 def test_an_unknown_package_version_refuses_by_name(tmp_path):

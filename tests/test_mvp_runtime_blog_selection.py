@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from runtime.mvp_runtime import blog_content
+from runtime.mvp_runtime import blog_content, blog_overlap
 from runtime.mvp_runtime.errors import ToolError
 from runtime.mvp_runtime.naver_research import normalize_keyword
 from runtime.mvp_runtime.store import LedgerStore
@@ -89,18 +89,18 @@ def test_a_published_keyword_is_not_picked_again():
     ("상세페이지 AI", "ai 상세페이지"),        # same words, other order (Jaccard 1)
 ])
 def test_near_variants_of_a_written_keyword_count_as_written(candidate, written):
-    assert blog_content.covering_keyword(candidate, [written]) == written
+    assert blog_overlap.covering_keyword(candidate, [written]) == written
 
 
 def test_a_short_containment_is_a_new_topic_not_a_duplicate():
     """'네이버플레이스' inside '네이버플레이스영업시간변경' is under 60% of it — a new post."""
-    assert blog_content.covering_keyword("네이버플레이스영업시간변경", ["네이버플레이스"]) is None
+    assert blog_overlap.covering_keyword("네이버플레이스영업시간변경", ["네이버플레이스"]) is None
 
 
 def test_a_tag_covers_only_its_exact_spelling():
-    assert blog_content.covering_keyword("구글 노트북lm", [], ["구글노트북LM"]) == "구글노트북LM"
+    assert blog_overlap.covering_keyword("구글 노트북lm", [], ["구글노트북LM"]) == "구글노트북LM"
     # A short tag must not swallow every topic that mentions it.
-    assert blog_content.covering_keyword("인스타그램 광고 만들기", [], ["인스타그램"]) is None
+    assert blog_overlap.covering_keyword("인스타그램 광고 만들기", [], ["인스타그램"]) is None
 
 
 def test_the_normalization_is_whitespace_and_case_blind_and_nfc():

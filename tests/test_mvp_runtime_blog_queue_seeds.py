@@ -18,7 +18,7 @@ from runtime.mvp_runtime.paths import repo_root
 from runtime.read_only_kernel.schema_validation import validate_against_schema
 
 NOW = "2026-09-28T09:00:00Z"
-SCHEMA = repo_root() / "schemas" / "blog_content_package.v0.2.schema.json"
+SCHEMA = repo_root() / "schemas" / "blog_content_package.v0.3.schema.json"
 
 QUEUE = """# 키워드 큐 — 2026-09-27
 
