@@ -7,6 +7,7 @@ changes the one fact it is about.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -31,6 +32,8 @@ def _host(**over):
         "state_source": pf.STATE_SOURCE,
         "running_names": ["thomas-scheduler", "hermes"],
         "extra_binds": [],
+        "events": "",
+        "schedules": "",
     }
     facts.update(over)
     calls = []
@@ -72,6 +75,10 @@ def _host(**over):
             return 0, "\n".join(facts["running_names"])
         if "fetch" in argv:
             return 0, ""
+        if argv[0] == "tail" and argv[-1] == pf.SCHEDULER_EVENTS:
+            return (0, facts["events"]) if facts["events"] is not None else (1, "")
+        if argv[0] == "cat" and argv[-1] == pf.SCHEDULES:
+            return (0, facts["schedules"]) if facts["schedules"] is not None else (1, "")
         raise AssertionError(f"unexpected command {argv}")
 
     run.calls = calls
@@ -195,3 +202,92 @@ def test_it_runs_only_read_only_commands():
     for argv in promote.calls + start.calls:
         joined = " ".join(argv)
         assert not any(word in argv for word in ("tag", "build", "up", "rm", "push", "commit")), joined
+
+
+NOW = datetime(2026, 10, 5, 8, 12, 50, tzinfo=timezone.utc)
+
+
+def _iso(dt):
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _event(action, run_id, at, kind="crypto_factory", schedule="schedule_be5a7e5abf95e15f3982"):
+    return json.dumps({"action": action, "schedule_run_id": run_id, "created_at": _iso(at),
+                       "kind": kind, "schedule_id": schedule})
+
+
+def _schedule(next_run, kind="crypto_factory", enabled=True, sid="schedule_x"):
+    return json.dumps({"schedule_id": sid, "kind": kind, "enabled": enabled, "next_run_at": _iso(next_run)})
+
+
+def _fires(promote=False, **over):
+    run = _host(**over)
+    tree = TREE if promote else None
+    (result,) = [r for r in pf.preflight(run, 42, tree, promote=promote, now=NOW) if r.name == "fires"]
+    return result
+
+
+@pytest.mark.parametrize("promote", [False, True])
+def test_a_fire_in_flight_stops_both_runs(promote):
+    # The 2026-10-05 shape: DOGEUSDT 1h factory started 08:12:44, the deploy landed before it fired.
+    events = _event("started", "srun_a", NOW - timedelta(seconds=6))
+    over = {"events": events}
+    if promote:
+        over["images"] = {"latest": RUNNING, "rollback-pre-42": RUNNING, "candidate-42": "sha256:c"}
+    result = _fires(promote=promote, **over)
+    assert result.level == "STOP" and "crypto_factory" in result.message
+
+
+@pytest.mark.parametrize("terminal", ["fired", "failed", "abandoned"])
+def test_a_started_fire_that_has_ended_passes(terminal):
+    events = "\n".join([_event("started", "srun_a", NOW - timedelta(seconds=90)),
+                        _event(terminal, "srun_a", NOW - timedelta(seconds=20))])
+    assert _fires(events=events).level == "PASS"
+
+
+def test_an_old_unpaired_start_is_a_dead_run_not_one_in_flight():
+    # Older than the factory child's own timeout: the next restart closes it; a deploy cannot kill it.
+    events = _event("started", "srun_old", NOW - timedelta(seconds=pf.IN_FLIGHT_SECONDS + 60))
+    assert _fires(events=events).level == "PASS"
+
+
+def test_any_kind_in_flight_stops_not_only_the_factory():
+    events = _event("started", "srun_r", NOW - timedelta(seconds=10), kind="crypto_pipeline")
+    assert _fires(events=events).level == "STOP"
+
+
+def test_a_factory_fire_due_soon_warns_first_and_stops_the_promote():
+    schedules = _schedule(NOW + timedelta(minutes=4))
+    assert _fires(schedules=schedules).level == "WARN"
+    ready = {"latest": RUNNING, "rollback-pre-42": RUNNING, "candidate-42": "sha256:c"}
+    assert _fires(promote=True, schedules=schedules, images=ready).level == "STOP"
+
+
+def test_an_overdue_factory_fire_waiting_its_turn_counts_as_due():
+    # Deferred behind the running child, `next_run_at` stays in the past until it is claimed.
+    assert _fires(schedules=_schedule(NOW - timedelta(minutes=2))).level == "WARN"
+
+
+@pytest.mark.parametrize("schedule", [
+    {"next_run": NOW + timedelta(seconds=pf.FACTORY_DUE_MARGIN_SECONDS + 60)},
+    {"next_run": NOW + timedelta(minutes=2), "enabled": False},
+    {"next_run": NOW + timedelta(minutes=2), "kind": "crypto_pipeline"},
+])
+def test_only_an_enabled_factory_schedule_inside_the_margin_counts(schedule):
+    assert _fires(schedules=_schedule(**schedule)).level == "PASS"
+
+
+def test_the_latest_schedule_record_wins():
+    rows = "\n".join([_schedule(NOW + timedelta(minutes=3)), _schedule(NOW + timedelta(days=1))])
+    assert _fires(schedules=rows).level == "PASS"
+
+
+def test_unreadable_scheduler_state_warns_rather_than_passing():
+    assert _fires(events=None).level == "WARN"
+    assert _fires(schedules=None).level == "WARN"
+
+
+def test_a_torn_line_is_skipped_not_fatal():
+    events = '{"action": "start' + "\n" + _event("started", "srun_a", NOW - timedelta(seconds=5))
+    assert _fires(events=events).level == "STOP"
+

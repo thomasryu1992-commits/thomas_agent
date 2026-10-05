@@ -24,6 +24,10 @@ check exists). A `STOP` means stop and report. Never work around one.
 6. **Preflight again:** `python3 /root/deploy-<N>/scripts/ops/deploy_preflight.py <N> --promote --tree /root/deploy-<N>`.
    A `promote` STOP means another session redeployed after your tag. Re-read the host. If its
    image already contains your merge, verify that deploy instead of racing it.
+   A `fires` STOP means a scheduled fire is running and `up -d` would kill it (it is not retried
+   until its next interval). Wait for its `fired`/`failed` event and run this step again. Factory
+   fires run daily around 08:09–08:52 UTC; at `--promote` a factory fire due within 10 minutes
+   also stops.
 7. **Promote and up**, in one step:
    `docker tag thomas-agent-runtime:candidate-<N> thomas-agent-runtime:latest && docker compose -p thomas_agent --env-file /root/thomas_agent/.env -f /root/deploy-<N>/docker-compose.yml up -d`
 8. **Verify:**

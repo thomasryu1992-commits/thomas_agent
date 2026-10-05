@@ -62,6 +62,8 @@ class DraftContext:
     link_candidates: tuple[LinkCandidate, ...] = ()
     link_source_state: str = "unavailable"
     repurpose_from: tuple[Mapping[str, Any], ...] = ()
+    # The platform's editorial plan for this post (Tistory: `blog_tistory.editorial_plan`).
+    editorial: Mapping[str, Any] | None = None
 
 
 def compose(*lines: Sequence[str]) -> str:

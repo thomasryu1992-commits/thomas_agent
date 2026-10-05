@@ -194,7 +194,8 @@ def test_the_request_states_the_plan_in_the_shape_and_in_prose():
     shape = json.loads(blog_tistory._DRAFT_SHAPE)
     assert len(shape["intro"]) == blog_tistory.PLAN_INTRO_PARAGRAPHS
     assert len(shape["sections"][0]["paragraphs"]) == blog_tistory.PLAN_PARAGRAPHS_PER_SECTION
-    assert request.count(blog_tistory.length_plan()) == 1
+    plan = blog_tistory.default_plan(TARGET)
+    assert request.count(blog_tistory.length_plan(plan["faq_count"])) == 1
     assert f"문단 {blog_tistory.plan_paragraphs()}개" in request
 
 
@@ -254,13 +255,16 @@ def test_the_title_rule_names_what_it_breaks(title, problem):
     assert problem in blog_tistory.title_problems(title, TARGET)
 
 
-def test_a_broken_title_or_slug_is_a_failure_the_revision_is_asked_to_fix():
+def test_a_broken_title_is_a_failure_the_revision_is_asked_to_fix_and_a_bad_slug_only_warns():
+    """.5: this blog's addresses are numbers (`/N`); the slug only names the vault file."""
     bad = _tdraft(seo_title="사장님을 위한 클로드 무료 사용법 — 정리", slug="클로드-무료")
     sheet, calls = _ideate([bad, _tdraft()])
     first_failures = sheet["package"]["quality"]["first_draft_failures"]
-    assert {"seo_title", "slug"} <= set(first_failures)
+    assert "seo_title" in first_failures and "slug" not in first_failures
     revision = calls[1][1]
-    assert "seo_title을 메인 키워드로 시작해" in revision and "slug를 영문 소문자" in revision
+    assert "seo_title을 메인 키워드로 시작해" in revision
+    first = blog_tistory.interpret(json.dumps(bad, ensure_ascii=False), TARGET, _records())
+    assert {c["check"]: c["state"] for c in blog_tistory.platform_checks(first, TARGET)}["slug"] == "warn"
     assert sheet["package"]["quality"]["revision_outcome"] == "REVISED"
 
 
@@ -380,7 +384,7 @@ def test_a_draft_that_reuses_the_length_example_fails_and_the_revision_is_told_w
 
 def test_the_request_asks_for_a_fact_first_official_prices_and_no_generic_closers():
     request = blog_tistory.content_request(TARGET)
-    assert "intro 첫 문장에는 근거 블록에 나온 구체적 사실 하나" in request
+    assert "intro 첫 두 문장 안에 근거 블록에 나온 구체적 사실 하나" in request
     assert blog_tistory.OFFICIAL_SOURCE_RULE in request and "(해외 기준)" in request
     assert blog_tistory.CLOSER_RULE in request
     assert "본문 문장을 되풀이하지 말고" in request
@@ -478,3 +482,89 @@ def test_a_few_plain_lines_are_carried_and_quotes_are_not_counted():
 def test_the_complete_fixture_is_polite_throughout():
     first = blog_tistory.interpret(json.dumps(_tdraft(), ensure_ascii=False), TARGET, _records())
     assert first["measured"]["plain_sentences"] == 0 and "plain_register" not in first["failures"]
+
+
+# --- .5: the vault's editorial system — forms rotate, key sentences bold, citations link in place ---
+
+def _posts(*forms_hooks):
+    return tuple({"platform": "tistory", "number": n, "form": f, "intro_hook": h, "path": f"content/tistory/{n}.md",
+                  "keywords": (f"글 {n}",), "tags": (), "status": "published"}
+                 for n, (f, h) in enumerate(forms_hooks, start=80))
+
+
+def test_the_form_is_never_the_previous_posts_and_at_most_twice_in_five():
+    # pricing prefers 판정형, but the last post was one
+    plan = blog_tistory.editorial_plan("캡컷 유료", _posts(("절차형", "부정먼저"), ("판정형", "숫자먼저")))
+    assert plan["form"] == "계산형" and plan["previous_form"] == "판정형"
+    # 계산형 twice already in the last five: the next pricing choice
+    plan = blog_tistory.editorial_plan("캡컷 유료", _posts(("계산형", "부정먼저"), ("계산형", "숫자먼저"), ("절차형", "질문답")))
+    assert plan["form"] == "판정형"
+    # how-to prefers 절차형
+    assert blog_tistory.editorial_plan("캡컷 사용법", _posts(("판정형", "결론먼저")))["form"] == "절차형"
+
+
+def test_the_intro_hook_follows_the_previous_posts_and_the_faq_count_rotates():
+    one = blog_tistory.editorial_plan("캡컷 유료", _posts(("절차형", "숫자먼저")))
+    two = blog_tistory.editorial_plan("캡컷 유료", _posts(("절차형", "숫자먼저"), ("판정형", one["intro_hook"])))
+    assert one["intro_hook"] == "조건분기" and two["intro_hook"] != one["intro_hook"]
+    assert {one["faq_count"], two["faq_count"]} <= set(blog_tistory.FAQ_COUNTS) and one["faq_count"] != two["faq_count"]
+
+
+def test_a_pricing_post_carries_a_refresh_date_and_the_ai_category():
+    plan = blog_tistory.editorial_plan("캡컷 유료", (), now="2026-10-05T09:00:00Z")
+    assert plan["refresh_by"] == "2026-11-04" and plan["category"] == "사장님 AI 활용법"
+    assert blog_tistory.editorial_plan("미리캔버스 포스터", (), now="2026-10-05T09:00:00Z")["refresh_by"] is None
+
+
+def test_the_request_carries_the_forms_skeleton_hook_and_faq_count():
+    plan = blog_tistory.editorial_plan("캡컷 사용법", _posts(("판정형", "결론먼저")))
+    request = blog_tistory.content_request("캡컷 사용법", blog_prompt.DraftContext(editorial=plan))
+    assert "이 글의 유형은 절차형이다" in request and blog_tistory.FORMS["절차형"]["skeleton"] in request
+    assert blog_tistory.INTRO_HOOKS[plan["intro_hook"]] in request
+    assert f"faq는 {plan['faq_count']}문항이다" in request
+    assert blog_tistory.KEY_SENTENCE_RULE in request and blog_tistory.INLINE_CITATION_RULE in request
+
+
+def _cited(draft: dict) -> dict:
+    draft = json.loads(json.dumps(draft, ensure_ascii=False))
+    first = draft["sections"][0]
+    sentence = "무료 계정의 파일 업로드는 한 번에 20개까지 가능합니다."
+    first["paragraphs"][0] += f" {sentence} [S3]"
+    first["key_sentence"] = sentence
+    return draft
+
+
+def test_a_key_sentence_is_bold_and_an_inline_citation_becomes_a_link_and_a_sourced_check():
+    first = blog_tistory.interpret(json.dumps(_cited(_tdraft()), ensure_ascii=False), TARGET, _records())
+    body = first["body_paste"]
+    assert "**무료 계정의 파일 업로드는 한 번에 20개까지 가능합니다.**" in body
+    assert "([Claude 도움말 3](https://support.claude.com/3))" in body and "[S3]" not in body
+    assert "[S3]" in [s["source_ref"] for s in first["sources"]]
+    cited = [c for c in first["fact_checks"] if c["source_ref"] == "[S3]"]
+    assert cited and cited[0]["verification_state"] == "source_cited"
+    assert first["measured"]["bold_sections"] == 1
+
+
+def test_a_citation_to_evidence_the_run_never_had_is_removed_not_linked():
+    draft = _tdraft()
+    draft["intro"][0] += " 근거 없는 문장입니다. [S9]"
+    body = blog_tistory.interpret(json.dumps(draft, ensure_ascii=False), TARGET, _records())["body_paste"]
+    assert "[S9]" not in body and "근거 없는 문장입니다." in body
+
+
+def test_a_revision_that_drops_the_marks_gets_the_first_drafts_back():
+    revised = _tdraft()
+    revised["sections"][0]["paragraphs"][0] += " 무료 계정의 파일 업로드는 한 번에 20개까지 가능합니다."
+    sheet, _ = _ideate([_cited(_tdraft(h2=3)), revised])
+    body = sheet["package"]["body_paste"]
+    assert "**무료 계정의 파일 업로드는 한 번에 20개까지 가능합니다.**" in body
+    assert "(https://support.claude.com/3))" in body
+
+
+def test_the_blogs_fixed_tags_ride_along_and_the_package_records_its_editorial_plan():
+    package = tistory_package()
+    assert package["tags"][-2:] == ["소상공인", "자영업"] and len(package["tags"]) <= 10
+    editorial = package["platform_metadata"]["tistory"]["editorial"]
+    assert editorial["form"] in blog_tistory.FORMS and editorial["faq_count"] in blog_tistory.FAQ_COUNTS
+    post = blog_content.render_post_md(package)
+    assert f"form: {editorial['form']}" in post and "unique_asset:" in post
