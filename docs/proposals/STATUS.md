@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **50**건: `DRAFT` 3 · `PARTIALLY DECIDED` 10 · `DECIDED` 6 · `IMPLEMENTED` 28 · `SUPERSEDED` 1 · `RECORD` 2
+제안서 **51**건: `DRAFT` 4 · `PARTIALLY DECIDED` 10 · `DECIDED` 6 · `IMPLEMENTED` 28 · `SUPERSEDED` 1 · `RECORD` 2
 
-## Thomas 결정 대기 (13)
+## Thomas 결정 대기 (14)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -25,6 +25,7 @@
 | [SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md](SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | §5의 D1·D2·D3·D4·D7·D8 채택, D6 보류(현상 유지). D5는 슬리피지 실측 뒤에 결정한다(§5 뒤 "결정" 절). 단계 0은 #980, 단계 1의 선행 조건 없는 항목은 #982–#989로 구현됐다. D3의 범위와 종료 조건은 2026-10-01에 다시 정했다("결정 (Thomas 2026-10-01)" 절: 측정·표시 허용, 종료는 1차 cohort 마감 2027-03-22). |
 | [RESEARCH_FORWARD_THROUGHPUT_ANALYSIS_V0.1.md](RESEARCH_FORWARD_THROUGHPUT_ANALYSIS_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-01 | P0-1(D3 범위)은 권고대로 결정(Thomas): 측정·표시 허용, 종료는 1차 cohort 마감 2027-03-22, cohort 사이 형제 규칙은 D3 밖(`SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md` "결정 (Thomas 2026-10-01)"). 나머지 P0·P1·P2는 결정 대기. 조사·설계만 했고 코드·상수·문은 바꾸지 않았다. |
 | [MULTI_ASSET_EXPANSION_V0.1.md](MULTI_ASSET_EXPANSION_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-02 | D1: (A) 자산 관리 먼저. D2: 옵션의 목적은 수익이고, 다른 수단보다 효율이 나을 때만 조건부로 채택한다. D3: 첫 기록 대상은 한국투자증권. D4: 읽기 전용 보드(P1)는 연구 일시 중지 중에도 허용(넷 다 Thomas). 부록 A의 한국투자증권 규제 기록이 완성됐다(판단: 본인 계좌 조회 운영 가능, 강도: 잠정, 외부 전송 경계 포함). P1-a(KIS 피드·두 렌더·`scripts/holdings_board.py`)와 P1-b(scheduler-maint 배선, KIS 키는 scheduler-maint에만, Thomas 2026-10-02)가 지어졌다. 켜는 것은 KIS 키 발급, `.env` 등록, 배포, 일정 등록(Thomas)을 기다린다. Hermes read(`holdings_status`)는 정책이 이름을 올리기 전까지 dormant다. 열린 것은 신청 화면의 권한 선택 여부 확인과 §6 D2 비교 기준의 비준이다. |
+| [PHASE_7_14_ALIGNMENT_AUDIT_V0.1.md](PHASE_7_14_ALIGNMENT_AUDIT_V0.1.md) | `DRAFT` | 2026-10-05 | 계획의 PR-1·2·3은 Thomas 결정 세 건(09-29 사다리, 08-10 env 게이트, 자격증명 평면)을 뒤집어야 지을 수 있고, PR-4·5는 D3에 걸린다. §5의 Q1–Q4 답을 받기 전에는 코드를 바꾸지 않는다. 코드·스키마·정책 변경 없음. |
 
 ## 결정됨 — 구현 남음 (6)
 
