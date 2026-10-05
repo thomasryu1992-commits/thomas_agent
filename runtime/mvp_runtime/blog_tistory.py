@@ -53,7 +53,11 @@ PLATFORM = "tistory"
 # third-party blog because the shared Korean-reader rule forbids a foreign service's own price;
 # and ~900 characters of print-shop naming rules rode along on an AI-tool post. Each is answered
 # below, and the example's reuse and the closers are now measured, not only asked about.
-PROMPT_VERSION = "tistory_prompt.2026-10-05.3"
+# .4 (2026-10-05): the register. '캡컷 유료' (bcp_710bdd04cd3676404b5b) came back with 90 of 92
+# sentences in 해라체 ("…언급된다.", "…수치다.") — the blog writes 존댓말, the request never said so,
+# and the revision's model mirrored the request's own imperative register. Said in the request
+# and in the revision request, and counted (:func:`plain_sentences`).
+PROMPT_VERSION = "tistory_prompt.2026-10-05.4"
 PROFILE_VERSION = "tistory_profile.2026-10-05"
 STANDARDS_VERSION = "tistory_draft_standards.2026-10-05"
 PASTE_FILE = "PASTE.md"
@@ -224,6 +228,9 @@ OFFICIAL_SOURCE_RULE = (
 )
 TOOL_NAME_RULE = ("도구 이름(키워드가 다루는 도구와 근거에 나온 도구)은 그대로 밝히고, '특정 앱'·'온라인 서비스'처럼 "
                   "흐리게 부르지 마라. 이 요청에 적힌 지시(분량·키워드·출처 규칙)를 본문 문장으로 옮겨 쓰지 마라.")
+REGISTER_RULE = ("본문 문단·faq 답·excerpt는 모두 존댓말(…합니다·…습니다·…세요)로 써라 — '…이다'·'…한다'·"
+                 "'…된다' 같은 해라체로 문장을 끝내지 마라. 이 요청이 해라체로 쓰여 있어도 글은 존댓말이다. 제목·"
+                 "소제목·표는 명사형으로 끝내도 된다.")
 CLOSER_RULE = ("문단을 '…이 중요합니다'·'…지름길입니다'·'…도움이 됩니다'·'…바람직합니다'처럼 어느 글에나 붙는 "
                "맺음 문장으로 끝내지 마라 — 마지막 문장도 그 문단에만 있는 정보(수치·조건·예시·다음에 할 일)다.")
 NO_LINK_CANDIDATES_RULE = "내부 링크 후보가 없다 — internal_links는 빈 목록 []으로 둬라."
@@ -271,6 +278,7 @@ def content_request(target: str, context: blog_prompt.DraftContext | None = None
          "들어와 검색어의 답을 찾는 사람이다.", blog_prompt.output_contract(_DRAFT_SHAPE)],
         [KEY_ORDER_RULE],
         [BRIEF_RULE],
+        [REGISTER_RULE],
         [_title_rule(target), SLUG_RULE, EXCERPT_RULE],
         [_intro_rule(target), STRUCTURE_RULE, FAQ_RULE, LAYOUT_RULE],
         [length_plan()],
@@ -294,6 +302,8 @@ _FAILURE_ASKS = {
                   "비ASCII 기호와 '사장님' 없이 다시 써라"),
     "slug": "slug를 영문 소문자·숫자·하이픈으로 된 2~8단어로 써라",
     "heading_hierarchy": "첫 섹션은 level 2로, level 3 섹션은 level 2 섹션 뒤에만 둬라",
+    "plain_register": ("해라체('…이다'·'…한다'·'…된다')로 끝나는 문장을 모두 존댓말(…합니다·…습니다)로 바꿔라 — "
+                       "내용·수치·문장 순서는 그대로 두고 어미만 바꿔라"),
     "length_example_copied": ("요청의 길이 예시 문단을 본문에 옮겼다 — 그 문단을 지우고 그 자리에 이 글 주제의 "
                               "새 내용(근거에 나온 수치·조건·절차)을 같은 길이로 써라"),
     **blog_prompt.COMMON_FAILURE_ASKS,
@@ -368,7 +378,7 @@ def revision_request(
         [f"아래 '{target}' 티스토리 블로그 초안을 고쳐라.", "고칠 항목은 다음뿐이다:"],
         *([[ask] for ask in asks] or [[]]),
         [blog_prompt.revision_facts_rule(growing), blog_prompt.REVISION_SECTION_SCOPE_RULE,
-         REVISION_KEEP_LAYOUT_RULE, blog_prompt.REVISION_NO_EVIDENCE_RULE,
+         REVISION_KEEP_LAYOUT_RULE, REGISTER_RULE, blog_prompt.REVISION_NO_EVIDENCE_RULE,
          blog_prompt.revision_output_contract(_DRAFT_SHAPE, last="faq, intro, sections")],
         *_links_lines(context),
         *blog_prompt.revision_tail(first, text, records, grows=growing, key_order=DRAFT_KEY_ORDER),
@@ -554,6 +564,35 @@ def _sentences(text: str) -> list[str]:
     return [x.strip() for x in _SENTENCE_SPLIT_RE.split(str(text or "")) if x.strip()]
 
 
+# A sentence ending in '다' that is not '니다': '…언급된다.', '…수치다.', '…많다.'. Quoted speech and a
+# table row are not the post's own voice and are skipped.
+_PLAIN_END_RE = re.compile(r"(?<!니)다[.!]?$")
+PLAIN_SENTENCES_ALLOWED = 2
+PLAIN_SENTENCES_SHARE = 0.1
+
+
+def plain_sentences(paragraphs: Sequence[str]) -> tuple[int, int]:
+    """``(해라체 sentences, all sentences)`` over the post's prose."""
+    plain = total = 0
+    for paragraph in paragraphs:
+        if " | " in paragraph:
+            continue
+        for sentence in _sentences(paragraph):
+            if sentence.endswith(("\"", "'", "」", "”")):
+                continue
+            total += 1
+            plain += bool(_PLAIN_END_RE.search(sentence))
+    return plain, total
+
+
+def plain_register(paragraphs: Sequence[str]) -> int | None:
+    """The 해라체 count when it is more than the post can carry (a few quoted or listed lines are
+    fine; :data:`PLAIN_SENTENCES_ALLOWED` or :data:`PLAIN_SENTENCES_SHARE`, whichever is larger),
+    else None."""
+    plain, total = plain_sentences(paragraphs)
+    return plain if plain > max(PLAIN_SENTENCES_ALLOWED, int(total * PLAIN_SENTENCES_SHARE)) else None
+
+
 def generic_closers(paragraphs: Sequence[str]) -> int:
     """How many prose paragraphs end on a sentence that would fit any post."""
     count = 0
@@ -668,8 +707,11 @@ def interpret(
     measured["repeated_sentences"] = blog_draft.repeat_count(prose + [q["answer"] for q in faq])
     measured["generic_closers"] = generic_closers(prose)
     measured["faq_echoes"] = faq_echoes(faq, prose)
+    measured["plain_sentences"] = plain_sentences(prose + [q["answer"] for q in faq])[0]
     if repeated:
         failures.append("repeated_sentences")
+    if plain_register(prose + [q["answer"] for q in faq]) is not None:
+        failures.append("plain_register")
     if example_reused(prose + [q["answer"] for q in faq]):
         failures.append("length_example_copied")
     return {
@@ -724,8 +766,11 @@ def _interpret_prose(text: str, target: str, index: Mapping[str, Any], parse_rea
     measured["repeated_sentences"] = blog_draft.repeat_count(prose)
     measured["generic_closers"] = generic_closers(prose)
     measured["faq_echoes"] = 0
+    measured["plain_sentences"] = plain_sentences(prose)[0]
     if repeated:
         failures.append("repeated_sentences")
+    if plain_register(prose) is not None:
+        failures.append("plain_register")
     if example_reused(prose):
         failures.append("length_example_copied")
     return {
@@ -818,6 +863,8 @@ def platform_checks(parts: Mapping[str, Any], target: str) -> list[dict[str, Any
          "detail": f"{measured.get('generic_closers', 0)} paragraphs end on a sentence that fits any post"},
         {"check": "faq_echoes", "state": "ok" if not measured.get("faq_echoes") else "warn",
          "detail": f"{measured.get('faq_echoes', 0)} FAQ answer sentences repeat the body"},
+        {"check": "register", "state": "fail" if "plain_register" in (parts.get("failures") or []) else "ok",
+         "detail": f"{measured.get('plain_sentences', 0)} sentences end in 해라체; the blog writes 존댓말"},
         {"check": "length_example", "state": "fail" if "length_example_copied" in (parts.get("failures") or []) else "ok",
          "detail": "the request's length example is not in the body"},
     ]
