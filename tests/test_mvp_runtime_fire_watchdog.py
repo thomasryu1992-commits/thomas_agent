@@ -24,6 +24,10 @@ SERVICE = heartbeat.SCHEDULER_RISK_SERVICE
 MARK = {"kind": "crypto_pipeline", "schedule_id": "schedule_x", "schedule_run_id": "srun_x",
         "started_at": "2026-09-29T05:00:00Z", "deadline_at": "2026-09-29T05:10:00Z"}
 REPO_ROOT = Path(__file__).resolve().parents[1]
+# How long a test waits for the watchdog to act. A hang detector, not the deadline under test: the
+# wait returns the moment the watchdog acts, and a loaded Windows runner once took longer than 5 s
+# to get a 0.2 s watcher thread through its dump (Windows CI 2026-10-01).
+ACTS_WITHIN_SECONDS = 30
 
 
 class _Exit:
@@ -51,7 +55,7 @@ def test_a_fire_that_finishes_in_time_is_never_ended(tmp_path):
 def test_a_fire_past_its_deadline_is_ended_with_evidence(tmp_path):
     exit, err = _Exit(), io.StringIO()
     with _watchdog(tmp_path, exit, err).armed(MARK, deadline_seconds=0.2):
-        assert exit.called.wait(5)                     # the stuck fire: waits until the watchdog acts
+        assert exit.called.wait(ACTS_WITHIN_SECONDS)                     # the stuck fire: waits until the watchdog acts
     assert exit.codes == [EXIT_WATCHDOG]
     record = json.loads(fire_watchdog.diagnostic_path(SERVICE, tmp_path).read_text(encoding="utf-8"))
     assert record["schedule_run_id"] == "srun_x" and record["deadline_seconds"] == 0.2
@@ -72,7 +76,7 @@ def test_evidence_that_cannot_be_written_does_not_stop_the_exit(tmp_path):
     (tmp_path / ".runtime_governance_state" / "heartbeats").write_text("a file, not a directory")
     exit, err = _Exit(), io.StringIO()
     with _watchdog(tmp_path, exit, err).armed(MARK, deadline_seconds=0.2):
-        assert exit.called.wait(5)
+        assert exit.called.wait(ACTS_WITHIN_SECONDS)
     assert exit.codes == [EXIT_WATCHDOG]
     assert "watchdog evidence not written" in err.getvalue()
 

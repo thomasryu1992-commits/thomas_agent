@@ -1236,6 +1236,11 @@ class _TrickleHandler(_http_server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         type(self).hits.append(1)
+        # Read the body before answering. http.client sends the headers and the body in two
+        # send() calls, so the body can still sit in the kernel buffer when the handler closes;
+        # Windows answers that close with a reset that discards the response the client has not
+        # read yet, and a 429 arrived as PROVIDER_TRANSPORT (Windows CI 2026-09-30, 10-01).
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
         if type(self).status != 200:
             self.send_response(type(self).status)
             self.end_headers()
