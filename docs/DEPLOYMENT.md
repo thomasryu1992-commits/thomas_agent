@@ -150,7 +150,7 @@ TELEGRAM_BOT_TOKEN=...
 # calls getUpdates — never set this on the operator service, which does poll, or the two
 # pollers steal each other's messages. Unset falls back to TELEGRAM_BOT_TOKEN.
 HERMES_BOT_TOKEN=...            # the assistant's bot; lane notifications go there (renamed 2026-09-04)
-MVP_HOSTED_PROVIDER=openrouter,google_ai_studio,groq
+MVP_HOSTED_PROVIDER=google_ai_studio,openrouter,groq   # order: Thomas 2026-10-05 (scorecard Q2)
 OPENROUTER_API_KEY=...
 GOOGLE_AI_STUDIO_API_KEY=...
 GROQ_API_KEY=...
@@ -218,11 +218,12 @@ The compose operator runs with `--independent-validation auto` (review only
 important/high-risk requests — the R7.1 policy). To change that, edit the operator
 service's `command:` in `docker-compose.yml` — not a `docker run` flag.
 
-`MVP_HOSTED_PROVIDER` also accepts an ordered failover chain (`openrouter,google_ai_studio,groq`
+`MVP_HOSTED_PROVIDER` also accepts an ordered failover chain (`google_ai_studio,openrouter,groq`
 — put every member's API key in the `.env` too). The environment is the gate (2026-08-10):
 naming the chain IS the authorization, and a chain with an unknown or duplicate member fails
-closed at startup rather than silently shrinking. The next member is tried only when the previous
-one answers 503/429 even after its own retry. Set `MVP_VALIDATOR_PROVIDER` (e.g. `groq`)
+closed at startup rather than silently shrinking. The next member is tried on a failure that
+belongs to the previous one (429/503 after its own retry, a missing key, 401/403/404, 5xx, a timeout,
+a malformed answer — `providers.failover_kind`), never on a request-shaped 4xx. Set `MVP_VALIDATOR_PROVIDER` (e.g. `groq`)
 to run the R7.1 reviewer on its own gated provider/quota — same chain rules. **These env
 vars belong to the scheduler service too** (both `environment:` blocks list them); a key
 present for the operator but missing for the scheduler is the failure mode where scheduled
