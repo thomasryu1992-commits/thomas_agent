@@ -439,3 +439,42 @@ def test_a_revision_that_repairs_the_structure_keeps_the_broken_drafts_sources()
     assert [s["source_ref"] for s in package["sources"]] == ["[S1]", "[S2]"]
     assert package["quality"]["layers"]["evidence"]["web_sources"] == 2
     assert "- [Claude 도움말 1](https://support.claude.com/1)" in package["body_paste"]
+
+
+# --- .4: the register ('캡컷 유료', bcp_710bdd04cd3676404b5b: 90 of 92 sentences in 해라체) ---------
+
+def _plain(text: str) -> str:
+    return (text.replace("습니다", "다").replace("됩니다", "된다").replace("합니다", "한다")
+            .replace("입니다", "이다").replace("니다", "다"))
+
+
+def test_the_request_and_the_revision_both_ask_for_the_blogs_register():
+    assert blog_tistory.REGISTER_RULE in blog_tistory.content_request(TARGET)
+    first = blog_tistory.interpret(json.dumps(_tdraft(h2=3), ensure_ascii=False), TARGET, _records())
+    assert first["failures"]                       # a short draft: the revision runs for length...
+    request = blog_tistory.revision_request(TARGET, first, json.dumps(_tdraft(h2=3), ensure_ascii=False), _records())
+    assert blog_tistory.REGISTER_RULE in request     # ...and is still told the register
+
+
+def test_a_haera_che_draft_fails_and_the_revision_is_told_to_change_only_the_endings():
+    plain = json.loads(_plain(json.dumps(_tdraft(), ensure_ascii=False)))
+    first = blog_tistory.interpret(json.dumps(plain, ensure_ascii=False), TARGET, _records())
+    assert "plain_register" in first["failures"] and first["measured"]["plain_sentences"] > 50
+    request = blog_tistory.revision_request(TARGET, first, json.dumps(plain, ensure_ascii=False), _records())
+    assert "어미만 바꿔라" in request
+    checks = {c["check"]: c["state"] for c in blog_tistory.platform_checks(first, TARGET)}
+    assert checks["register"] == "fail"
+
+
+def test_a_few_plain_lines_are_carried_and_quotes_are_not_counted():
+    ok = _tdraft()
+    ok["sections"][0]["paragraphs"][0] += " 설정 화면에는 '저장이 완료되었다'라고 나온다."
+    ok["sections"][1]["paragraphs"][0] += " 결과는 바로 나온다."
+    first = blog_tistory.interpret(json.dumps(ok, ensure_ascii=False), TARGET, _records())
+    assert "plain_register" not in first["failures"]
+    assert blog_tistory.plain_sentences(["화면에는 \"완료되었다\"", "결과가 나온다."]) == (1, 1)
+
+
+def test_the_complete_fixture_is_polite_throughout():
+    first = blog_tistory.interpret(json.dumps(_tdraft(), ensure_ascii=False), TARGET, _records())
+    assert first["measured"]["plain_sentences"] == 0 and "plain_register" not in first["failures"]
