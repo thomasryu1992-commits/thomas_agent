@@ -1,6 +1,6 @@
 # 제안: 시스템 전체 점수 — 무엇이 지키고, 무엇이 아직 가치를 못 내는가 (v0.1)
 
-**상태:** PARTIALLY DECIDED 2026-10-06 — Q2 (a) 결정·적용(Thomas 2026-10-05): 체인 `google_ai_studio,openrouter,groq`. Q3 §3 처리안 권고대로(Thomas 2026-10-06). Q5 권고대로: 에포크 경계는 cohort 마감마다, 첫 경계 2027-03-22. Q6 (c): D5는 첫 cohort 판정 때 묻고 그때까지 LIVE_AUTONOMOUS로 올리지 않는다. Q1, Q4 결정 대기.
+**상태:** PARTIALLY DECIDED 2026-10-06 — Q2 (a) 결정·적용(Thomas 2026-10-05): 체인 `google_ai_studio,openrouter,groq`. Q3 §3 처리안 권고대로(Thomas 2026-10-06). Q4 (a): D8 범위에서 `general.specialist` 제외. Q5: 에포크 경계는 cohort 마감마다, 첫 경계 2027-03-22. Q6 (c): D5는 첫 cohort 판정 때 묻는다. Q1(age 공개키 전달)만 남았다.
 
 **기준 시점:** origin/main `222b50a2`(#1128), 2026-10-05. 운영 상태는 호스트에서 읽기 전용으로 쟀다.
 **선례:** `SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md`(09-26 전수 점검, 점수 없음),
@@ -149,6 +149,8 @@ PR 하나를 약 5분 늦춘다. 수정은 테스트만 바꾼다(성능 단언�
     - 처리안을 쓰며 바꾼 것 하나: APPROVAL V1은 §3 표가 적지 않았다. 전제 소멸(대화 창이 Hermes, 승인 푸시가 이미 명령을
       보여 줌)에 따라 V2·V3와 함께 짓지 않는 것으로 기록했다.
 - **Q4. D8 대상에서 `general.specialist`를 빼는가?** 권고: (a) 뺀다.
+  - **결정 (Thomas 2026-10-06): (a).** `SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md`의 같은 날 결정 절에 기록했다. 2026-11-25 검토는
+    content·research·knowledge·Hermes 레인을 보고, 블로그 레인은 실행 수가 아니라 노출·클릭으로 판단한다(첫 읽기: 티스토리 10-31).
 - **Q5. 에포크 경계를 언제로 정하는가?** RESEARCH_EPOCH Q3(B)은 판정 완화를 경계에서만 하게 했지만 주기는 정하지
   않았다. SELECTION_MULTIPLICITY D4, STRATEGY_EDGE S2, GAP_ANALYSIS의 보류 항목, 판정 상수 완화가 모두 이 경계를
   관문으로 인용한다. 아무도 열 수 없는 관문이다. 권고: 첫 경계 = 1차 cohort 마감(2027-03-22), 이후 cohort 마감마다.
