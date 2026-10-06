@@ -10,4 +10,5 @@
 - **What did not move.** The overall score stays 7 (mean 7.1). Ops waits on Thomas rotating the secrets
   that left the host in plain text. Product waits on the 10-31 Tistory verdict, and crypto edge on
   2027-03-22.
+- **Addendum (15:56Z re-measure).** Nothing moved. The skills folder is now under git, which closes one of the two process-to-9 items. The other is Thomas's answer on the IV–RV measurement exception.
 - **This PR changes no code, schema or policy.**
