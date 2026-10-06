@@ -122,61 +122,27 @@ core thin while lanes grow, stated as rules:
 ## Deploying
 
 Several sessions build and deploy from this host at once, and the compose build context is the
-primary checkout (`/root/thomas_agent`), which is often on another session's branch with
-uncommitted work in it. The procedure exists so that every deploy ships exactly `origin/main` and
-leaves a rollback point that really is the image that was running. These rules carry the same
-standing as the guardrails above:
+primary checkout (`/root/thomas_agent`), often on another session's branch with uncommitted work in
+it. Every deploy ships exactly `origin/main` and leaves a rollback point that really is the image
+that was running. **Deploy with the `deploy` skill**: it holds the step order, the commands, and why
+each rule below exists. The rules carry the same standing as the guardrails above:
 
-```
-git fetch origin main && git worktree add <tmp> origin/main --detach
-python3 <tmp>/scripts/ops/deploy_preflight.py <PR#>            # read-only: merged? RUNNING image vs `latest`? tags free?
-docker tag thomas-agent-runtime:latest thomas-agent-runtime:rollback-pre-<PR#>
-docker build -t thomas-agent-runtime:candidate-<PR#> <tmp>
-docker run --rm --entrypoint python thomas-agent-runtime:candidate-<PR#> -c "<assert the fix>"
-python3 <tmp>/scripts/ops/deploy_preflight.py <PR#> --promote --tree <tmp>   # re-read the host, immediately before the promote
-docker tag thomas-agent-runtime:candidate-<PR#> thomas-agent-runtime:latest
-docker compose -p thomas_agent --env-file /root/thomas_agent/.env -f <tmp>/docker-compose.yml up -d
-git worktree remove <tmp>
-```
+- **Build from a clean `origin/main` worktree to `candidate-<PR#>`, never to `latest`**, and never
+  `compose up --build`. A build that targets `latest` removes the running image from the store (gone,
+  not dangling); `--build` builds the primary checkout, whatever is in it.
+- **Tag the rollback point from the running image before any build.** Don't tag whatever `latest` is,
+  because a concurrent build can have moved it. When the two differ, tag from the previous
+  `rollback-pre-*` tag, never from a raw image id.
+- **Re-read the host immediately before the promote** (`deploy_preflight.py … --promote`), never your
+  own notes. A `rollback-pre-<N>` tag you did not create means another session already redeployed.
+- **Compose from the worktree with `-p thomas_agent --env-file /root/thomas_agent/.env`.** Without
+  them nothing is recreated, or the scheduler starts on an empty state directory.
+- **Judge an image by asserting against it**, never by the commit a worktree was on.
 
-The `deploy` skill walks these in order. Run the preflight from `<tmp>`, never from the primary
-checkout: that checkout is often far behind origin/main and may not have the script at all.
-
-- **Tag the rollback point before any build.** A build that targets `latest`
-  (`docker compose build`, `docker build -t …:latest`) removes the running image from the image
-  store — not dangling, gone — and then there is nothing left to tag. Building to
-  `candidate-<PR#>` keeps `latest` on the running image until the one-step promote.
-- **Tag the running image, not whatever `latest` happens to be.** A concurrent session that built
-  without deploying leaves `latest` ahead of what is running, and tagging it names the *new* image
-  as the rollback point — a tag that reads like a safety net and is not one. When the two differ,
-  tag from the previous rollback tag (`docker tag …:rollback-pre-<prev> …:rollback-pre-<PR#>`),
-  never from the raw image id, which is exactly the reference that stops resolving.
-- **Re-read the host immediately before the promote, never your own notes.** A concurrent session
-  redeploys everything, not just its own slice, and the window between build and promote is where
-  it lands. A `rollback-pre-<N>` tag you did not create is the signal that it already has.
-- **Compose from `<tmp>`, naming the project and the env file.** Without `-p thomas_agent` the
-  directory name becomes the project and nothing is recreated. Without `--env-file` the state
-  volume resolves relative to the compose file, and the live scheduler starts on an empty state
-  directory. A bare `docker compose up -d` in the primary checkout uses whatever compose file that
-  branch has. The running containers' compose labels show the stack was started this way
-  (`project=thomas_agent`, `environment_file=/root/thomas_agent/.env`, `config_files=/root/deploy-<PR#>/…`).
-- **Never `compose up --build`** — it builds the primary checkout, whatever is in it. Judge what an
-  image contains by asserting against the image, never by the commit a worktree was on.
-- If the rollback point is lost anyway, rebuild the previous commit to a candidate tag from a clean
-  worktree and promote that: minutes instead of seconds, but reproducible.
-
-**A one-off script does not need a deploy.** To run newly merged code against live state without
-restarting anything, build to a throwaway tag and run it with the scheduler's own mounts and
-user — `latest` untouched, so no other session's `compose up -d` picks it up:
-
-```
-docker run --rm --user thomas -w /app \
-  -v /root/thomas_agent/.runtime_governance_state:/app/.runtime_governance_state:rw \
-  --entrypoint python thomas-agent-runtime:tool-<PR#> -m scripts.<script> --list
-```
-
-Read the user and mounts off `docker inspect thomas-scheduler` rather than copying them from here,
-and back up any file the script rewrites first.
+**A one-off script does not need a deploy.** Build to a throwaway `tool-<PR#>` tag (`latest`
+untouched, so no other session's `compose up -d` picks it up). Run it with the scheduler's own user
+and mounts, read off `docker inspect thomas-scheduler`. Back up any file the script rewrites first.
+The skill has the command.
 
 ## Commands
 
