@@ -5,7 +5,8 @@ description: Deploy a merged PR to the running stack on this host — preflight,
 
 # Deploy a merged PR
 
-The rules are CLAUDE.md's **Deploying** section. This is the order to run them in. The two
+CLAUDE.md's **Deploying** section states the rules one line each; this skill holds the order to run
+them in, the commands, and why each rule exists (end of this file). The two
 preflight runs re-read the host at the points where concurrent sessions have caught us out
 before. The preflight is read-only (`scripts/ops/deploy_preflight.py`, docstring says why each
 check exists). A `STOP` means stop and report. Never work around one.
@@ -47,3 +48,42 @@ check exists). A `STOP` means stop and report. Never work around one.
 `docker tag thomas-agent-runtime:rollback-pre-<N> thomas-agent-runtime:latest`, then the same
 compose command from a clean origin/main tree. If the rollback tag is gone, rebuild the previous
 commit to a candidate tag and promote that.
+
+## Run a one-off script without deploying
+
+To run newly merged code against live state without restarting anything, build to a throwaway tag
+from a clean origin/main tree and run it with the scheduler's own mounts and user. `latest` stays
+untouched, so no other session's `compose up -d` picks it up:
+
+```
+docker build -t thomas-agent-runtime:tool-<N> /root/deploy-<N>
+docker run --rm --user thomas -w /app \
+  -v /root/thomas_agent/.runtime_governance_state:/app/.runtime_governance_state:rw \
+  --entrypoint python thomas-agent-runtime:tool-<N> -m scripts.<script> --list
+```
+
+Read the user and mounts off `docker inspect thomas-scheduler` rather than copying them from here,
+and back up any file the script rewrites first.
+
+## Why each rule exists
+
+- **Tag the rollback point before any build.** A build that targets `latest`
+  (`docker compose build`, `docker build -t …:latest`) removes the running image from the image
+  store. It is not left dangling; it is gone, and then there is nothing left to tag. Building to
+  `candidate-<N>` keeps `latest` on the running image until the one-step promote.
+- **Tag the running image, not whatever `latest` happens to be.** A concurrent session that built
+  without deploying leaves `latest` ahead of what is running. Tagging it names the *new* image as
+  the rollback point: a tag that reads like a safety net and is not one. When the two differ, tag
+  from the previous rollback tag (`docker tag …:rollback-pre-<prev> …:rollback-pre-<N>`), never from
+  the raw image id, which is exactly the reference that stops resolving.
+- **Re-read the host immediately before the promote, never your own notes.** A concurrent session
+  redeploys everything, not just its own slice, and the window between build and promote is where
+  it lands.
+- **Compose from the clean tree, naming the project and the env file.** Without `-p thomas_agent` the
+  directory name becomes the project and nothing is recreated. Without `--env-file` the state
+  volume resolves relative to the compose file, and the live scheduler starts on an empty state
+  directory. A bare `docker compose up -d` in the primary checkout uses whatever compose file that
+  branch has. The running containers' compose labels show how the stack was started
+  (`project=thomas_agent`, `environment_file=/root/thomas_agent/.env`,
+  `config_files=/root/deploy-<N>/…`).
+- **Never `compose up --build`.** It builds the primary checkout, whatever is in it.
