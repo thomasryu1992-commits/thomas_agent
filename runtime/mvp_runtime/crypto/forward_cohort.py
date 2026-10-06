@@ -411,15 +411,24 @@ def advance_member(
     ``state`` for the next run. Bars before ``start`` only warm the indicators; bars at or before
     ``state['last_seen_candle']`` are skipped by ``replay_entry_bar`` itself, which is what makes a
     re-run over an overlapping frame a no-op. Each bar is stamped with its own close time, so
-    settlement ids are deterministic. Mutates ``state``; returns the finalized settled rows."""
+    settlement ids are deterministic. Mutates ``state``; returns the finalized settled rows.
+
+    It also counts, per door, the matched signals refused an entry (``entry_refusals``,
+    THROUGHPUT P0-3) and the first bar it counted (``entry_refusals_from``): a slot walked before
+    the counter existed has bars nobody counted, and its counts start there. The book entry is an
+    open mapping, the way ``opens_count`` rides it; the outcome rows are not touched."""
     settled: list[dict[str, Any]] = []
+    refusals = state.setdefault("entry_refusals", {})
     for row, candle in zip(rows, candles):
         bar_now = str((candle or {}).get("close_time") or "")
         if not bar_now or bar_now < start:
             continue
+        seen_before = state.get("last_seen_candle")
         outcome = forward_book.replay_entry_bar(
             state, entry, spec, row, candle, row.get("close"),
-            symbol=symbol, timeframe=timeframe, now=bar_now)
+            symbol=symbol, timeframe=timeframe, now=bar_now, refusals=refusals)
+        if state.get("last_seen_candle") != seen_before and not state.get("entry_refusals_from"):
+            state["entry_refusals_from"] = bar_now
         if outcome is not None:
             settled.append(_finalize_row(outcome, provenance))
     return settled
@@ -917,6 +926,27 @@ def waiting_on(line: Mapping[str, Any], *, walked: bool | None) -> str | None:
     return WAITING_SLICE_FLOOR if int(slices) < MIN_HOLDOUT_PERIODS else WAITING_CONFIDENCE_BOUND
 
 
+def entry_refusals_by_lineage(root: Path | None) -> dict[str, dict[str, Any]] | None:
+    """Per ``cand:<id>`` lineage, the refused entries its walked contexts counted, summed over its
+    symbols, with the earliest bar any of them started counting; None if the book is unreadable.
+    Display only: no verdict, board or ranking reads it."""
+    try:
+        entries = load_positions(root).get("entries") or {}
+    except MvpRuntimeError:
+        return None
+    out: dict[str, dict[str, Any]] = {}
+    for entry in entries.values():
+        if not (isinstance(entry, Mapping) and isinstance(entry.get("entry_refusals"), Mapping)):
+            continue
+        cell = out.setdefault(str(entry.get("lineage")), {"counts": {}, "from": None})
+        for kind, n in entry["entry_refusals"].items():
+            cell["counts"][kind] = cell["counts"].get(kind, 0) + int(n or 0)
+        since = entry.get("entry_refusals_from")
+        if isinstance(since, str) and since and (cell["from"] is None or since < cell["from"]):
+            cell["from"] = since
+    return out
+
+
 def _walked_lineages(root: Path | None) -> frozenset[str] | None:
     """The ``cand:<id>`` lineages the walker's book holds a candle mark for; None if unreadable."""
     try:
@@ -945,6 +975,7 @@ def cohort_report(root: Path | None = None) -> list[dict[str, Any]]:
     cohorts = read_cohorts(root)
     siblings = sibling_of(cohorts)
     walked = _walked_lineages(root)
+    refusals = entry_refusals_by_lineage(root) or {}
     for cohort in cohorts:
         members = []
         for member in cohort.get("members") or []:
@@ -972,6 +1003,7 @@ def cohort_report(root: Path | None = None) -> list[dict[str, Any]]:
                 "trade_spread_floor_r": floor,
                 "trade_floor": min_forward_trades(member.get("timeframe")),
                 "sibling_of": siblings.get(str(member.get("candidate_id"))),
+                "entry_refusals": refusals.get(f"cand:{member.get('candidate_id')}"),
             }
             line["maturity"] = maturity_of(line)
             line["waiting_on"] = waiting_on(

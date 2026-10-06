@@ -260,6 +260,39 @@ def test_the_fetch_reaches_back_to_the_oldest_start_plus_the_warm_up():
     assert fco.bars_to_fetch([], timeframe="1d", now=_day(20)) is None
 
 
+def test_the_walk_counts_each_refused_entry_once_and_the_report_shows_it(tmp_path, capsys):
+    """THROUGHPUT P0-3: a matched signal a door refuses was invisible — the walk opened nothing and
+    said nothing. The regime door refuses every bar here; each is counted once, a re-walk of the
+    same bars adds nothing, and the report line and the script's cohort line carry the count."""
+    from scripts import forward_cohort as script
+
+    regime = {"trending_down": {"trades": 30, "total_r": -6.0}}
+    _install_cohort(tmp_path, _record("cand_a", regime=regime))
+    frame = _frame(range(1, 8), regime="trending_down")
+    assert _walk(tmp_path, frame)["opened"] == 0
+    _walk(tmp_path, frame)                                   # the same bars again
+    (entry,) = fco.load_positions(tmp_path)["entries"].values()
+    walked_bars = 7 - 2                                      # day 3 (the selecting row) through day 7
+    assert entry["entry_refusals"] == {"regime": walked_bars}
+    assert entry["entry_refusals_from"] == _day(3)
+    (line,) = fco.cohort_report(tmp_path)[0]["members"]
+    assert line["entry_refusals"] == {"counts": {"regime": walked_bars}, "from": _day(3)}
+    assert "entry_refusals" not in str(fco.board_summary(tmp_path))     # display only, off the board
+    script._report(tmp_path)
+    assert f"entry refusals since {_day(3)} (display only): regime {walked_bars} · distribution 0" in capsys.readouterr().out
+
+
+def test_a_bar_that_opens_counts_no_refusal_and_the_forward_book_counts_nothing(tmp_path):
+    _install_cohort(tmp_path, _record("cand_a"))
+    assert _walk(tmp_path, _frame(range(1, 8), stop_on={5}))["opened"] >= 1
+    (entry,) = fco.load_positions(tmp_path)["entries"].values()
+    assert entry["entry_refusals"] == {}
+    state: dict = {}            # a caller that passes no counter (the pool's forward book, the seeder)
+    fb.replay_entry_bar(state, fco.synthesize_entry(_record("cand_b")), StrategySpec.from_dict(
+        _spec_dict()), _row(_day(9)), _candle(_day(9)), 105.0, symbol="BTCUSDT", timeframe="1d", now=_day(9))
+    assert "entry_refusals" not in state
+
+
 # --- (3) the synthesized entry --------------------------------------------------------------
 
 def test_the_entry_carries_the_admission_evidence_a_promotion_would():
