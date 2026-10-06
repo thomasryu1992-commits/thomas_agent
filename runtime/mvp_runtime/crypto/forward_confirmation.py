@@ -106,9 +106,10 @@ def min_forward_trades(timeframe: str | None) -> int:
 #
 # The estimates are noise-dominated (SE ~ 1/sqrt(K) = 0.13-0.26), so this is "nothing
 # measurable argues against 14d", not a proof of independence — stated plainly because the
-# number of PARALLEL forward clocks grew from one routed stream to one per lineage (#807),
-# and `assert_live_tier_confirmed`'s `observed_lineages` is informational, not a correction:
-# the multiple-testing burden stays on the operator reading the ask. What does NOT loosen:
+# number of PARALLEL forward clocks grew from one routed stream to one per lineage (#807).
+# That burden is charged at the door: `assert_live_tier_confirmed` judges at
+# `robustness.selection_adjusted_z(observed_lineages)`, not at 1.96 (#1047), so a first
+# confirmation out of many watched lines must clear a higher bar. What does NOT loosen:
 # the trade floors, the trade-level z-interval, the block-level t-interval itself, and
 # MIN_HOLDOUT_PERIODS=8 distinct periods.
 #

@@ -81,6 +81,16 @@ def test_kill_then_resume_round_trip(tmp_path):
     assert store.load().execution_allowed is True
 
 
+@pytest.mark.parametrize("verb", [control.CMD_KILL, control.CMD_PAUSE])
+def test_a_halt_reply_says_a_running_task_is_not_interrupted(tmp_path, verb):
+    """K1 (CONTROL_LANE_SEPARATION, Thomas 2026-10-06): the mid-run peek makes a halt real at once,
+    but nothing aborts the task already running (K4 was not bought). The operator reads the reply,
+    not the code, so the reply is where that has to be said."""
+    out = control.apply_command(_store(tmp_path), verb, actor="op", now=NOW)
+    assert out["changed"] is True
+    assert "already running is not interrupted" in out["reply"]
+
+
 def test_corrupt_file_fails_closed_to_killed(tmp_path):
     store = _store(tmp_path)
     store.path.parent.mkdir(parents=True, exist_ok=True)
