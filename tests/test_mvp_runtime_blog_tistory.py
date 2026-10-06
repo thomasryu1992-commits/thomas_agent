@@ -191,9 +191,9 @@ def test_the_length_plan_adds_up_to_every_standard():
 
 def test_the_request_states_the_plan_in_the_shape_and_in_prose():
     request = blog_tistory.content_request(TARGET)
-    shape = json.loads(blog_tistory._DRAFT_SHAPE)
+    shape = json.loads(blog_tistory.draft_shape(blog_tistory.default_plan(TARGET), TARGET))
     assert len(shape["intro"]) == blog_tistory.PLAN_INTRO_PARAGRAPHS
-    assert len(shape["sections"][0]["paragraphs"]) == blog_tistory.PLAN_PARAGRAPHS_PER_SECTION
+    assert sum(len(s["paragraphs"]) for s in shape["sections"]) == blog_tistory.PLAN_SECTION_PARAGRAPHS
     plan = blog_tistory.default_plan(TARGET)
     assert request.count(blog_tistory.length_plan(plan["faq_count"])) == 1
     assert f"문단 {blog_tistory.plan_paragraphs()}개" in request
@@ -568,3 +568,42 @@ def test_the_blogs_fixed_tags_ride_along_and_the_package_records_its_editorial_p
     assert editorial["form"] in blog_tistory.FORMS and editorial["faq_count"] in blog_tistory.FAQ_COUNTS
     post = blog_content.render_post_md(package)
     assert f"form: {editorial['form']}" in post and "unique_asset:" in post
+
+
+# --- .6: the shape carries the form ('제미나이 해지', bcp_5be1dc3c22fb9b985b53: 15 paragraphs, 2,099) ---
+
+@pytest.mark.parametrize("form", sorted(blog_tistory.FORMS))
+def test_every_forms_layout_adds_up_to_the_plan_and_the_standards(form):
+    layout = blog_tistory.FORMS[form]["layout"]
+    assert sum(count for _level, _heading, count in layout) == blog_tistory.PLAN_SECTION_PARAGRAPHS
+    assert layout[0][0] == 2
+    assert blog_tistory.STANDARDS["h2_sections"].within(sum(1 for level, _h, _c in layout if level == 2))
+    assert any(level == 3 for level, _h, _c in layout)
+
+
+def test_the_shape_lays_out_the_forms_sections_faq_count_and_the_keywords_intent():
+    plan = blog_tistory.editorial_plan("제미나이 해지", ())
+    shape = json.loads(blog_tistory.draft_shape(plan, "제미나이 해지"))
+    assert plan["form"] == "절차형" and shape["brief"]["search_intent"] == "cancellation"
+    assert [(s["level"], len(s["paragraphs"])) for s in shape["sections"]] == [
+        (level, count) for level, _h, count in blog_tistory.FORMS["절차형"]["layout"]]
+    assert len(shape["faq"]) == plan["faq_count"]
+    assert all(("key_sentence" in s) == (s["level"] == 2) for s in shape["sections"])
+
+
+def test_the_revision_is_shown_the_same_forms_shape():
+    plan = blog_tistory.editorial_plan("제미나이 해지", ())
+    context = blog_prompt.DraftContext(editorial=plan)
+    first = blog_tistory.interpret(json.dumps(_tdraft(h2=3), ensure_ascii=False), TARGET, _records(), context)
+    request = blog_tistory.revision_request(TARGET, first, json.dumps(_tdraft(h2=3), ensure_ascii=False), _records(), context)
+    assert blog_tistory.draft_shape(plan, TARGET) in request
+
+
+def test_an_intro_that_announces_the_post_is_counted_and_pointed_at():
+    draft = _tdraft()
+    draft["intro"][2] += " 오늘은 클로드 무료 사용법의 절차와 주의할 점을 자세히 알아보겠습니다."
+    first = blog_tistory.interpret(json.dumps(draft, ensure_ascii=False), TARGET, _records())
+    assert first["measured"]["intro_tails"] == 1 and "intro_tails" not in first["failures"]
+    checks = {c["check"]: c["state"] for c in blog_tistory.platform_checks(first, TARGET)}
+    assert checks["intro_tail"] == "warn"
+    assert "알아보겠습니다" in blog_tistory.content_request(TARGET)
