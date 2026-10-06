@@ -32,7 +32,7 @@ from runtime.mvp_runtime.worker import MockProvider
 
 NOW = "2026-07-16T09:00:00Z"
 
-from tests._helpers import requires_local_core, make_gate_authorization
+from tests._helpers import ModelMock, requires_local_core, make_gate_authorization
 
 REG = OperatorIdentity(operator_id="tg-12345", chat_id="chat-777")
 
@@ -286,7 +286,7 @@ def test_run_once_handles_registered_and_replies():
     assert "Key findings" in ch.sent[1][1]
 
 
-class _FoundSomethingElseProvider(MockProvider):
+class _FoundSomethingElseProvider(ModelMock):
     """The mock answers every prompt with the same five findings, so a second run through it
     proposes nothing the store does not already hold. This one answers with a different
     finding, which is what "a later run adds more" was always reaching for."""
@@ -309,13 +309,13 @@ def test_operator_accumulates_working_memory(tmp_path):
     from runtime.mvp_runtime.working_memory import WorkingMemoryStore
     wm = WorkingMemoryStore(tmp_path / "wm")
 
-    run_operator_once(MockOperatorChannel(inbound=[_msg()]), REG, provider=MockProvider(), working_memory=wm, now=NOW)
+    run_operator_once(MockOperatorChannel(inbound=[_msg()]), REG, provider=ModelMock(), working_memory=wm, now=NOW)
     after_first = len(wm.read_all())
     assert after_first  # the operator run accumulated working memory
 
     # The same findings again, from a different request: recorded once, not twice.
     run_operator_once(MockOperatorChannel(inbound=[_msg(text="구독 사업 유지율 분석")]), REG,
-                      provider=MockProvider(), working_memory=wm, now="2026-07-16T10:00:00Z")
+                      provider=ModelMock(), working_memory=wm, now="2026-07-16T10:00:00Z")
     assert len(wm.read_all()) == after_first
 
     # A run that actually found something else still accumulates.

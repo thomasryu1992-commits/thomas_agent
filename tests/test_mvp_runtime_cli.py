@@ -13,7 +13,7 @@ from runtime.mvp_runtime.programization import ProgramizationStore
 from runtime.mvp_runtime.store import LedgerStore
 from runtime.mvp_runtime.working_memory import WorkingMemoryStore
 
-from tests._helpers import requires_local_core
+from tests._helpers import ModelMock, requires_local_core
 
 
 def _ledger_fingerprint() -> list[tuple[str, int]]:
@@ -73,10 +73,12 @@ def test_cli_auto_validation_with_important_adds_the_reviewer(tmp_path):
 
 
 @requires_local_core
-def test_cli_run_does_not_touch_the_machine_ledger_or_working_memory(tmp_path):
+def test_cli_run_does_not_touch_the_machine_ledger_or_working_memory(tmp_path, monkeypatch):
     # Regression: main() used to hardcode the repo-local stores, so this suite appended
     # synthetic runs to the operator's ledger and seeded working memory — which retrieval
-    # feeds back as context into later real runs.
+    # feeds back as context into later real runs. A plain mock run proposes no memory, so the
+    # run is given a model-declaring mock: the memory write has to happen to be checked.
+    monkeypatch.setattr(cli, "select_provider", lambda *a, **k: ModelMock())
     ledger, memory = tmp_path / "ledger", tmp_path / "memory"
     before = _ledger_fingerprint()
     rc = cli.main(["이 사업 아이디어를 분석해줘: 구독형 반려동물 사료 배송"],

@@ -25,12 +25,20 @@ NOW = "2026-07-15T09:00:00Z"
 from tests._helpers import requires_local_core
 
 
-def _run(validation_transform=None):
+class _AskedModel(MockProvider):
+    """The mock's fixture, declared as a model's answer. A plain mock run proposes no memory
+    candidates (a constant is not knowledge), so the chain that carries a MEMORY_CANDIDATE_CREATED
+    event is the chain of a run that asked a model."""
+    model_invocation = True
+
+
+def _run(validation_transform=None, provider=None):
     task = build_task("이 사업 아이디어를 분석해줘: 구독형 반려동물 사료 배송", now=NOW)
     plan = plan_task(task, now=NOW)
     hits, tool_use = run_search("구독형 반려동물 사료", tool=MockSearchTool(), now=NOW)
     out, inv = run_analysis_worker(
-        plan["task"], plan["role_assignment"], provider=MockProvider(), created_at=NOW, search_hits=hits
+        plan["task"], plan["role_assignment"], provider=provider or _AskedModel(), created_at=NOW,
+        search_hits=hits,
     )
     if validation_transform:
         out = validation_transform(out)
@@ -49,6 +57,8 @@ def test_chain_shape_and_schema():
         "TASK_CREATED", "PERMISSION_DECIDED", "OTHER", "OTHER",
         "MEMORY_CANDIDATE_CREATED", "VALIDATION_COMPLETED", "TASK_STATE_CHANGED"
     ]
+    mock_chain, _ = _run(provider=MockProvider())     # no model asked: no candidate, no such event
+    assert "MEMORY_CANDIDATE_CREATED" not in [e["event_type"] for e in mock_chain]
     for i, e in enumerate(chain, start=1):
         schema_validation.validate_against_schema(e, AUDIT_SCHEMA, "test")
         assert e["lineage"]["sequence_number"] == i

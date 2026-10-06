@@ -38,7 +38,7 @@ def _read_audit(ledger: LedgerStore) -> list[dict]:
         return []
     return [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
 
-from tests._helpers import requires_local_core
+from tests._helpers import ModelMock, requires_local_core
 NOW = "2026-07-16T09:00:00Z"
 
 # Originating-task provenance the pipeline now stamps on every candidate; promotion is audited
@@ -275,7 +275,7 @@ def test_pipeline_never_promotes(tmp_path):
     from runtime.mvp_runtime.worker import MockProvider
 
     wm = WorkingMemoryStore(tmp_path / "wm")
-    run_task("이 사업 아이디어를 분석해줘: 구독형 반려동물 사료", provider=MockProvider(), working_memory=wm, now=NOW)
+    run_task("이 사업 아이디어를 분석해줘: 구독형 반려동물 사료", provider=ModelMock(), working_memory=wm, now=NOW)
     assert wm.read_all()            # candidates were created
     assert wm.read_validated() == []  # but the run never promoted anything (no auto-promotion)
 

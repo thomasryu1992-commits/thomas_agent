@@ -19,7 +19,7 @@ from runtime.mvp_runtime.store import LedgerStore
 from runtime.mvp_runtime.working_memory import WorkingMemoryStore
 from runtime.mvp_runtime.worker import MockProvider
 
-from tests._helpers import requires_local_core
+from tests._helpers import ModelMock, requires_local_core
 
 REG = OperatorIdentity(operator_id="tg-1", chat_id="chat-1")
 
@@ -124,7 +124,7 @@ def test_handles_registered_message_and_replies(capsys, tmp_path):
 def test_cli_shares_working_memory(tmp_path):
     wm = WorkingMemoryStore(tmp_path / "wm")
     ch = MockOperatorChannel(inbound=[_msg()])
-    rc = main([], channel=ch, registration=REG, provider=MockProvider(), working_memory=wm,
+    rc = main([], channel=ch, registration=REG, provider=ModelMock(), working_memory=wm,
               store=LedgerStore(tmp_path / "ledger"))
     assert rc == 0 and wm.read_all()  # the operator CLI accumulates working memory
 

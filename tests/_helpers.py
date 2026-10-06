@@ -291,3 +291,19 @@ def defined_names(module) -> list[str]:
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             names.append(node.target.id)
     return names
+
+
+def _model_mock():
+    from runtime.mvp_runtime.worker import MockProvider
+
+    class ModelMock(MockProvider):
+        """The mock's fixture, declared as a model's answer. A plain mock run proposes no working-
+        memory candidates — a constant is not knowledge (fix/a-mock-is-not-knowledge, 2026-10-06)
+        — so a test of the memory path (proposal, accumulation, feedback, its audit event) runs
+        on this. Everything else about the mock, including no network, is unchanged."""
+        model_invocation = True
+
+    return ModelMock
+
+
+ModelMock = _model_mock()
