@@ -153,11 +153,10 @@ MIN_HOLDOUT_TRADES = 25
 # module that judges whether an edge is real) and the board imports it rather than restating it.
 #
 # Two-sided 95%, and not the one-sided 1.645 that a "is it positive" gate would suggest on its
-# own. The correction this gate cannot make is for the number of candidates tried — 979 and
-# rising daily, `candidate_ranking.rank_candidates` taking the maximum over all of them — so the
-# stricter of two defensible multipliers is the one that leaves the smaller unpaid debt. A1 in
-# `docs/TRADING_STRATEGY_REVIEW_RECORD.md` is the real fix and needs the attempt count on the
-# record; this is what can be charged without it.
+# own. This constant is the per-candidate floor and makes no correction for how many candidates
+# were tried; that correction is :func:`selection_adjusted_z` below, charged per search context
+# from the attempt count the store now records (`candidate_ranking.attempts_by_context`). 1.96 is
+# what a single attempt must clear, and what a store that cannot count its attempts falls back to.
 CONFIDENCE_Z = 1.96
 
 # --- selection: the correction the interval above cannot make on its own -------------------

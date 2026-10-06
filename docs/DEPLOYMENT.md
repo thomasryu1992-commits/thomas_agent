@@ -430,7 +430,10 @@ docker exec -u 10001 thomas-scheduler python -m scripts.emergency_close --confir
 ```
 
 A `KILLED` state blocks all new/pending execution; only `/status` and audit reads remain, and
-only the authenticated operator can `/resume`. A corrupt control file fails closed to `KILLED`.
+only the authenticated operator can `/resume`. **Neither `/kill` nor `/pause` interrupts a task that
+is already running** — the mid-run peek writes the halt state so nothing further starts, and the
+running task runs to its end (aborting it is decision K4, not bought:
+`docs/proposals/CONTROL_LANE_SEPARATION_V0.1.md`). A corrupt control file fails closed to `KILLED`.
 **A `KILLED` or `PAUSED` crypto runtime also stops managing open live positions** (no settlement,
 protection re-check, time exit or reconciliation until `/resume`; the brackets resting at the venue
 are what holds them). `halt_trading` is the halt that refuses new entries and keeps that management

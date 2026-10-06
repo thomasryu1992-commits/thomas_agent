@@ -545,7 +545,7 @@ def search_context_key(spec: Mapping[str, Any]) -> tuple[Any, ...]:
 
     Coarser than :func:`promotion_backlog._lineage_key` on purpose, and the difference is the whole
     correction.
-    A lineage key includes the family, but which of the 20 templates to mint is itself a
+    A lineage key includes the family, but which of the factory's templates to mint is itself a
     searched degree of freedom — counting attempts per family would divide the multiple-testing
     burden by the very choice that creates it. Two candidates on BTCUSDT 1h were scored against
     the same bars whatever family they came from, so they are two draws from one distribution.
