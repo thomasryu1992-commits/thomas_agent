@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **52**건: `DRAFT` 1 · `PARTIALLY DECIDED` 5 · `DECIDED` 8 · `IMPLEMENTED` 35 · `SUPERSEDED` 1 · `RECORD` 2
+제안서 **52**건: `DRAFT` 1 · `PARTIALLY DECIDED` 4 · `DECIDED` 8 · `IMPLEMENTED` 36 · `SUPERSEDED` 1 · `RECORD` 2
 
-## Thomas 결정 대기 (6)
+## Thomas 결정 대기 (5)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -17,7 +17,6 @@
 | [EVALUATION_CANNOT_ACT_PER_STRATEGY_V0.1.md](EVALUATION_CANNOT_ACT_PER_STRATEGY_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-06 | §5 계보별 LIVE 허용치는 구현(`crypto/live_allowance.py`), 셋째 기준(예산 1/4)은 폐기 (2026-09-26). §8 D는 (i)로 결정·구현: 연속손실 브레이커의 래치는 의도이고, `crypto/guards.py`의 판정 옆에 그 이유와 푸는 방법을 적었다(Thomas 2026-10-06, 아래 결정 절). §8 B(복귀 경로), R값 없는 라이브 손실, 허용치의 net R 정렬은 첫 LIVE 무장 때 다룬다(지금 무장 0, 단계 PAPER). |
 | [MULTI_ASSET_EXPANSION_V0.1.md](MULTI_ASSET_EXPANSION_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-06 | D1–D4 결정(2026-10-02): (A) 자산 관리 먼저, 옵션은 조건부, 첫 기록은 한국투자증권, 읽기 전용 보드는 연구 일시 중지 중 허용. 부록 A의 한국투자증권 규제 기록이 완성됐다(본인 계좌 조회 운영 가능, 강도 잠정, 외부 전송 경계 포함). P1-a(KIS 피드·두 렌더·`scripts/holdings_board.py`)와 P1-b(scheduler-maint 배선, KIS 키는 scheduler-maint에만)가 지어졌고, 켜는 것은 KIS 키 발급·`.env` 등록·배포·일정 등록(Thomas)을 기다린다. Hermes read(`holdings_status`)는 정책이 이름을 올리기 전까지 dormant다. §6 D2의 비교 기준 비준은 P4 때 한다(Thomas 2026-10-06, 아래 결정 절). 열린 것: 신청 화면의 권한 선택 확인(결정이 아니라 Thomas 로그인 확인), IV–RV 측정이 연구 일시 중지의 예외인지. |
 | [RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md](RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-06 | (a)(b)(d)는 첫 forward cohort 판정(2027-03-22) 때 묻는다. 그때까지 크립토 라이브는 LIVE_AUTONOMOUS로 올리지 않고 현재 값을 유지한다(Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q6). 관문이 "슬리피지 실측 뒤"에서 "첫 판정 때"로 바뀌어 순환이 없어졌다. **값은 하나도 바뀌지 않았다.** |
-| [SYSTEM_SCORECARD_V0.1.md](SYSTEM_SCORECARD_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-06 | Q2 (a) 결정·적용(Thomas 2026-10-05): 체인 `google_ai_studio,openrouter,groq`. Q3 §3 처리안 권고대로(Thomas 2026-10-06). Q4 (a): D8 범위에서 `general.specialist` 제외. Q5: 에포크 경계는 cohort 마감마다, 첫 경계 2027-03-22. Q6 (c): D5는 첫 cohort 판정 때 묻는다. Q1(age 공개키 전달)만 남았다. |
 
 ## 결정됨 — 구현 남음 (8)
 
@@ -34,7 +33,7 @@
 | [RESEARCH_EPOCH_V0.1.md](RESEARCH_EPOCH_V0.1.md) | `DECIDED` | 2026-10-06 | Q1·Q2 구현(#972·#976). Q3 B(2026-09-26), 경계는 cohort 마감마다: 첫 경계는 1차 cohort 마감 2027-03-22, 이후 각 cohort의 마감(동결 + 180일)이다(Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q5). Q4는 C로 정리됐다. 남은 구현: 두 판정의 병렬 표시 — 규칙이 처음 바뀌는 경계에서 짓는다. |
 | [RESEARCH_FORWARD_THROUGHPUT_ANALYSIS_V0.1.md](RESEARCH_FORWARD_THROUGHPUT_ANALYSIS_V0.1.md) | `DECIDED` | 2026-10-06 | P0-1(D3 범위) 결정(2026-10-01), P1-1(형제 규칙) 결정·구현(#1096·#1100). 나머지는 권고 순서대로 결정했고(Thomas 2026-10-06), D3가 허용하는 측정·표시 넷을 지었다: P0-2 주석 정정(#1137), P0-3 진입 거절 사유 카운터(#1139), P1-2 보고서 행 색인(#1138), P1-3 쌍 차이 표시(#1140). 남은 것은 관문이 있는 둘이다: P1-4 계층 판정 제안서(2027-03-22 전), P2(판정 뒤). |
 
-## 구현됨 (35)
+## 구현됨 (36)
 
 결정되고 지어졌다. 문서는 결정의 근거 기록으로 남는다.
 
@@ -74,6 +73,7 @@
 | [CONTROL_LANE_SEPARATION_V0.1.md](CONTROL_LANE_SEPARATION_V0.1.md) | `IMPLEMENTED` | 2026-10-06 | K2′ 결정·구현(2026-07-29, `operator.peek_for_halt`). K1 채택·구현: `/kill`·`/pause` 응답과 문서가 실행 중인 작업은 끊기지 않고 끝까지 돈다고 말한다. K3 종결, K4 사지 않음, K5 소멸(Thomas 2026-10-06, 아래 결정 절). |
 | [CONVERSATIONAL_ORCHESTRATION_FRONT_V0.1.md](CONVERSATIONAL_ORCHESTRATION_FRONT_V0.1.md) | `IMPLEMENTED` | 2026-10-06 | D1–D3 결정·구현(2026-07-25). D4(standing grant, `approval.v0.3`)는 "필요가 확인되기 전에는 하지 않는다"로 닫았고 D5는 함께 소멸했다(Thomas 2026-10-06, 아래 결정 절). 지을 것은 남지 않았다. |
 | [COST_GATE_RESET_THE_RECORD_V0.1.md](COST_GATE_RESET_THE_RECORD_V0.1.md) | `IMPLEMENTED` | 2026-10-06 | §6-2 추인(2026-09-26), §6-1 그대로 둠(Thomas 2026-10-06). §6-3 측정을 했다: 비용 게이트가 막은 22건은 모두 손절(가격 기준 −1R)이었고, 손절 폭 22–62 bps의 진입이다. `MAX_ENTRY_COST_R`을 완화할 근거는 없다(아래 "측정" 절). |
+| [SYSTEM_SCORECARD_V0.1.md](SYSTEM_SCORECARD_V0.1.md) | `IMPLEMENTED` | 2026-10-06 | Q1–Q6 모두 결정(Thomas). Q1: 코어 백업 age 암호화 가동(#1024, 2026-10-06; 첫 키 노출로 같은 날 키 교체). Q2 (a): 체인 `google_ai_studio,openrouter,groq`. Q3: §3 처리안 권고대로. Q4 (a): D8 범위에서 `general.specialist` 제외. Q5: 에포크 경계는 cohort 마감마다, 첫 경계 2027-03-22. Q6 (c): D5는 첫 cohort 판정 때 묻는다. |
 | [TEMPLATE_RSI_DRAW_MASS_V0.1.md](TEMPLATE_RSI_DRAW_MASS_V0.1.md) | `IMPLEMENTED` | 2026-10-06 | 선택지 0(현상 유지)으로 결정했다(Thomas 2026-10-06, 아래 결정 절). §5 재독은 D3 종료(1차 cohort 마감 2027-03-22) 때 하고, 그 전에는 B(family 재배분)를 D3가 막는다. 지을 것은 남지 않았다. |
 
 ## 대체됨 (1)
