@@ -1091,7 +1091,10 @@ def apply_command(
         new_state = ControlState(mode=PAUSED, updated_by=actor, updated_at=stamp,
                                  reason=stated or "paused by operator", stop_requested_task_ids=current.stop_requested_task_ids,
                                  trading_armed=False, halt_level=current.halt_level)
-        verb_reply = "Paused. New task requests are refused until /resume." + reason_note
+        # The halt is received mid-run (`operator.peek_for_halt`) but stops nothing that is already
+        # running: aborting a run is decision K4, which was not bought (CONTROL_LANE_SEPARATION K1).
+        verb_reply = ("Paused. New task requests are refused until /resume. A task already running "
+                      "is not interrupted; it runs to its end." + reason_note)
     elif command == CMD_KILL:
         # Stopping disarms in both dimensions and needs no approval to do it. The asymmetry is
         # the existing one: a stop must be cheap, and a start must not be.
@@ -1099,7 +1102,8 @@ def apply_command(
                                  reason=stated or "killed by operator", stop_requested_task_ids=current.stop_requested_task_ids,
                                  trading_armed=False, halt_level=current.halt_level)
         verb_reply = ("KILLED. All new/pending execution is blocked; only status and audit reads "
-                      "remain. /resume to clear." + reason_note)
+                      "remain. A task already running is not interrupted; it runs to its end. "
+                      "/resume to clear." + reason_note)
     else:  # CMD_RESUME
         # The state this resume is judged against: the one its caller checked, or the one read above.
         baseline = expected_state if expected_state is not None else current

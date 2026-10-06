@@ -89,8 +89,8 @@ enforces, and both record a tamper-evident control event to the durable ledger
 | Command | Effect |
 |---|---|
 | `/status` | Read-only report of the control state (always allowed, even when KILLED). |
-| `/pause` | Refuse new task requests until `/resume`. Reversible. |
-| `/kill` | Block all new/pending execution; only status and audit reads remain. |
+| `/pause` | Refuse new task requests until `/resume`. Reversible. A task already running is not interrupted. |
+| `/kill` | Block all new/pending execution; only status and audit reads remain. A task already running is not interrupted — it runs to its end. |
 | `/resume` | Clear pause/kill → ACTIVE. Only the **authenticated operator** may resume. |
 | `/stop <task_id>` | Record a stop request. The MVP runs tasks synchronously (nothing long-running to interrupt yet), so it is logged for audit and applies once R6 adds persistent tasks. |
 | `/audit [n]` | Read-only: verify the whole audit chain and show the last *n* events. Answers even while PAUSED/KILLED (`kill_allows: audit_read`). |
