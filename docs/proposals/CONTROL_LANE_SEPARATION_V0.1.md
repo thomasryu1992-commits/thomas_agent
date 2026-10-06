@@ -1,7 +1,7 @@
 # 제안: Control Lane 분리 — `/kill`은 언제 런타임 안으로 들어오는가 (DRAFT v0.2)
 
-**상태:** PARTIALLY DECIDED 2026-07-29 — K2′(단계 경계 halt peek)는 결정·구현(`operator.peek_for_halt`).
-K4(실행 중인 분석 중단)·K5는 결정 대기, K1은 결정 기록이 없다(`docs/BUILD_HISTORY.md`, `docs/REMAINING_WORK.md`).
+**상태:** DECIDED 2026-10-06 — K2′는 결정·구현(2026-07-29, `operator.peek_for_halt`). K1 채택, K3 종결(K2′ 구현이 정함), K4는
+사지 않음, K5 소멸(Thomas 2026-10-06, 아래 결정 절). 남은 구현: K1 — `/kill` 응답과 문서가 실행 중인 분석은 끝까지 돈다고 말한다.
 
 > **작성 당시 상태: DRAFT — 결정을 위한 문서. 어떤 것도 활성화하지 않으며 구현 착수도 아니다.**
 > 요구되는 Thomas 결정은 §6에 있다.
@@ -284,3 +284,12 @@ drain 중 각 단계 경계에서(옵션 B와 같은 `on_progress` 자리) 논�
 `runtime/mvp_runtime/pipeline.py` (`PROGRESS_STAGES` / `_progress`),
 `tests/test_mvp_runtime_crypto_live_execution.py` (`ENTRY_POINTS` / `CHOKEPOINT`),
 `governance/GOVERNANCE_POLICY.yaml` (`kill_switch`).*
+
+## 결정 (Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q3 — §3 처리안 권고대로)
+
+- **K1 — 채택.** 지금 `/kill` 응답은 "All new/pending execution is blocked"만 말한다(`control.py`의 `verb_reply`). 이미 실행 중인
+  분석이 끝까지 돈다는 사실을 응답과 문서에 적는다. 거버넌스 변경이 없는 구현 항목이다.
+- **K3 — 종결.** K2′ 구현이 이미 정했다: `operator.PEEKABLE_HALT_VERBS = {kill, pause}`(멱등한 것만).
+- **K4 — 사지 않는다.** 실행 중인 분석을 중단할 사고 기록이 없다. 재개 신호(커서 유실·중복, 실제 사고)가 생기면 다시 연다.
+  Hermes의 `switch_bridge` disable은 이미 `control.apply_command`로 직접 쓴다.
+- **K5 — 소멸.** K4에 종속된 항목이다.
