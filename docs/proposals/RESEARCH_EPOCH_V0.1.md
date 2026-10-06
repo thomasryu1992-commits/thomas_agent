@@ -1,8 +1,8 @@
 # 제안: 연구 에포크 — 규칙을 얼리는 대신, 판정이 어느 규칙에서 나왔는지 남기기 (DRAFT v0.1)
 
-**상태:** PARTIALLY DECIDED 2026-10-06 — Q1·Q2는 #972·#976으로 구현. Q3는 B(2026-09-26)이고, 경계 주기는
-`SYSTEM_SCORECARD_V0.1.md` Q5로 결정 대기. Q4는 C 적용으로 정리했다: 2차 cohort(10-01) 동결 기록부터 판정 지문이 찍힌다.
-두 판정의 병렬 표시는 규칙이 처음 바뀌는 경계에서 짓는다(Thomas 2026-10-06, 아래 결정 절).
+**상태:** DECIDED 2026-10-06 — Q1·Q2 구현(#972·#976). Q3 B(2026-09-26), 경계는 cohort 마감마다: 첫 경계는 1차 cohort 마감
+2027-03-22, 이후 각 cohort의 마감(동결 + 180일)이다(Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q5). Q4는 C로 정리됐다. 남은 구현: 두
+판정의 병렬 표시 — 규칙이 처음 바뀌는 경계에서 짓는다.
 **참고:** 이 문서의 나머지는 결정 당시의 근거로 남긴다.
 **성격:** 외부 "Crypto Live Trading Follow-up Fix Plan" §30~31(Research Epoch)에 대한 답이다.
 계획서는 에포크 동안 아홉 가지를 얼리자고 한다: family, feature, 파라미터 공간, 심볼,
@@ -125,3 +125,17 @@ cohort 동결 기록은 운영 `forward_cohorts.jsonl`로 쟀다.
   (2026-10-06): 1차 cohort(09-23)에는 없고, 2차 cohort `fwd_cohort_31fbbb4ff2b2491fedd8`(10-01)에는 `judgement_rules.v1`
   `624cb2108e16`이 있다. 남은 "두 판정을 나란히 보이기"는 규칙이 바뀌기 전에는 보일 것이 없다. 첫 에포크 경계에서 규칙이 바뀔 때 짓는다.
 - **Q3의 경계 주기**는 여기서 정하지 않았다. `SYSTEM_SCORECARD_V0.1.md` Q5가 묻는다.
+
+## 결정 (Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q5 — 권고대로)
+
+- **Q3의 경계 주기 — cohort 마감마다.** 첫 경계는 1차 cohort의 고정 마감일 2027-03-22(동결 2026-09-23 + 180일, `FORWARD_COHORT_EXPANSION_V0.1.md`
+  N4)이다. D3 연구 정지가 끝나는 날과 같다. 이후 경계는 각 cohort의 마감(동결 + 180일)이다.
+- **그래서 경계의 간격은 동결 간격이다.** N2가 동결을 28일마다로 정했으므로, 2027-03-22 다음 경계는 2027-03-30(2차, 10-01 동결),
+  그다음은 2027-04-27(3차, 10-29 동결 예정)이다. 자격자가 없어 건너뛴 회차는 마감도 없다.
+- **경계가 하는 일.** 판정 규칙을 **완화**하는 변경은 경계에서만 결정하고 적용한다. 경계마다 무언가를 바꿔야 하는 것은 아니다. 바뀐 규칙은
+  그 뒤의 판정에만 쓰이고, 어느 규칙 아래 판정했는지는 판정 지문(`judgement_rules`, Q1·Q2)이 남긴다. 강화는 Q3가 경계에 묶지 않는다.
+- **이 경계를 관문으로 인용한 항목:** `SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md` D3의 A, `CRYPTO_STRATEGY_EDGE_ORDER_V0.1.md` S2,
+  `CRYPTO_SYSTEM_IMPROVEMENT_GAP_ANALYSIS_V0.1.md`의 보류 항목, `COST_GATE_RESET_THE_RECORD_V0.1.md`의 `MAX_ENTRY_COST_R` 완화,
+  `RESEARCH_FORWARD_THROUGHPUT_ANALYSIS_V0.1.md` §12의 쌍 차이를 문에 쓸지, `FORWARD_COHORT_EXPANSION_V0.1.md` N2의 동결 자동화.
+  모두 첫 경계(2027-03-22)부터 열 수 있다. 각 항목의 결정은 그 문서에서 따로 한다.
+
