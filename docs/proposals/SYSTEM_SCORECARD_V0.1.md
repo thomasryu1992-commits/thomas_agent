@@ -1,6 +1,6 @@
 # 제안: 시스템 전체 점수 — 무엇이 지키고, 무엇이 아직 가치를 못 내는가 (v0.1)
 
-**상태:** PARTIALLY DECIDED 2026-10-05 — Q2 (a) 결정·적용(Thomas): 체인 `google_ai_studio,openrouter,groq`. Q1, Q3–Q6 결정 대기. 점수표·근거는 이 날짜의 실측이고, 이 문서가 바꾼 코드·정책·스케줄은 없다.
+**상태:** PARTIALLY DECIDED 2026-10-06 — Q2 (a) 결정·적용(Thomas 2026-10-05): 체인 `google_ai_studio,openrouter,groq`. Q3 §3 처리안 권고대로(Thomas 2026-10-06), 13개 제안서에 반영했다. Q1, Q4–Q6 결정 대기.
 
 **기준 시점:** origin/main `222b50a2`(#1128), 2026-10-05. 운영 상태는 호스트에서 읽기 전용으로 쟀다.
 **선례:** `SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md`(09-26 전수 점검, 점수 없음),
@@ -140,6 +140,14 @@ PR 하나를 약 5분 늦춘다. 수정은 테스트만 바꾼다(성능 단언�
     바꾸기 전에도 104회 중 3회만 답했으므로 초안을 쓰는 모델은 사실상 그대로다. 되돌리려면 `.env`의 그 줄을
     되돌리고 두 서비스를 같은 방식으로 재생성한다.
 - **Q3. §3의 처리안을 받는가?** 항목별 권고는 §3 표의 "제안 처리".
+  - **결정 (Thomas 2026-10-06): 권고대로.** 각 제안서의 상태 줄과 "결정 (Thomas 2026-10-06, …Q3…)" 절에 반영했다. 결과:
+    - 닫힘(지을 것 없음): CONVERSATIONAL(D4 하지 않음), APPROVAL(V1–V4 하지 않음), AUTOMATIC_SELECTION(Part 2 하지 않음),
+      TEMPLATE_RSI(선택지 0).
+    - 결정됨, 구현 남음: CONTROL(K1 문구), COST(§6-3 측정), THROUGHPUT(P0-2·P0-3·P1-2·P1-3).
+    - 일부 결정: EVALUATION(§8 D (i), 남은 것은 첫 LIVE 무장 때), RESEARCH_EPOCH(Q4 정리, Q3 주기는 Q5), MULTI_ASSET(D2 비준은 P4 때).
+    - 관문만 바로 적음: WALK_FORWARD(§4 보고서 실행 대기), RISK_BREAKER·SYSTEM_REVIEW D5(Q6로 추적).
+    - 처리안을 쓰며 바꾼 것 하나: APPROVAL V1은 §3 표가 적지 않았다. 전제 소멸(대화 창이 Hermes, 승인 푸시가 이미 명령을
+      보여 줌)에 따라 V2·V3와 함께 짓지 않는 것으로 기록했다.
 - **Q4. D8 대상에서 `general.specialist`를 빼는가?** 권고: (a) 뺀다.
 - **Q5. 에포크 경계를 언제로 정하는가?** RESEARCH_EPOCH Q3(B)은 판정 완화를 경계에서만 하게 했지만 주기는 정하지
   않았다. SELECTION_MULTIPLICITY D4, STRATEGY_EDGE S2, GAP_ANALYSIS의 보류 항목, 판정 상수 완화가 모두 이 경계를

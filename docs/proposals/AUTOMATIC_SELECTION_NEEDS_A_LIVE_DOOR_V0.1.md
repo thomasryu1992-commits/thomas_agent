@@ -1,7 +1,7 @@
 # 제안: 선정 자동화는 라이브 문을 먼저 만들어야 가능하다 (DRAFT v0.1)
 
-**상태:** PARTIALLY DECIDED 2026-08-09 — Part 1(OBSERVATION/LIVE 티어)은 2026-08-09 구현(#648, `crypto/live_tier.py`;
-승인 인용은 찾지 못했다). Part 2(관찰 티어 자동 설치)는 결정도 구현도 없다.
+**상태:** IMPLEMENTED 2026-10-06 — Part 1(OBSERVATION/LIVE 티어)은 2026-08-09 구현(#648, `crypto/live_tier.py`). Part 2(관찰 티어
+자동 설치)는 하지 않기로 결정했다(Thomas 2026-10-06, 아래 결정 절). 지을 것은 남지 않았다.
 **원래 상태(작성 당시, 2026-09-26에 위로 정정):** DRAFT — 설계 선행(구현 아님). 코드 변경 없음. 정책 활성화 없음.
 **성격:** 두 부분이며 방향이 반대다. **Part 1은 실제 돈 문을 좁힌다**(오늘 암묵적으로 열려
 있는 것을 명시적 승인 뒤로 옮긴다). **Part 2는 돈에 닿지 않는 티어에 한정한 자동화**다.
@@ -269,3 +269,12 @@ strategy_observation_tier_autoinstall_gate:
 2. Part 2는 Part 1이 병합된 뒤 별도 승인 대상으로 둔다.
 3. Part 2를 승인하지 않기로 결정하는 경우에도 §4.2의 기준(바를 낮추지 않는다)은 향후 어떤
    자동화 제안에도 적용되는 제약으로 남기기를 제안한다.
+
+## 결정 (Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q3 — §3 처리안 권고대로)
+
+- **Part 2 — 하지 않는다.** 이 문서가 Part 2로 사려던 것은 "생성→관찰" 병목의 자동화, 곧 자격자가 forward 증거를 쌓을 자리였다.
+  forward cohort(`FORWARD_COHORT_OFF_POOL_V0.1.md`, #948)가 풀에 설치하지 않고 자격자에게 forward 시계를 준다. LIVE 문은
+  FORWARD_CONFIRMED만 받는다(`SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md`, 2026-09-30). 그리고 D3(첫 cohort 판정까지 새 연구
+  장치 금지)이 Part 2를 2027-03-22까지 막는다. 전제가 대체됐다고 판단한다[추정 — 관찰 티어의 모든 쓰임이 cohort로 대체되는지는
+  재지 않았다].
+- **남는 제약:** §4.2의 기준(자동화를 위해 바를 낮추지 않는다)은 이후 어떤 자동화 제안에도 적용된다(§9의 3).
