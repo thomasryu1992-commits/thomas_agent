@@ -1,6 +1,6 @@
 # 제안: 시스템 전체 점수 — 무엇이 지키고, 무엇이 아직 가치를 못 내는가 (v0.1)
 
-**상태:** PARTIALLY DECIDED 2026-10-06 — Q2 (a) 결정·적용(Thomas 2026-10-05): 체인 `google_ai_studio,openrouter,groq`. Q3 §3 처리안 권고대로(Thomas 2026-10-06), 13개 제안서에 반영했다. Q5 권고대로(Thomas 2026-10-06): 에포크 경계는 cohort 마감마다, 첫 경계 2027-03-22. Q1, Q4, Q6 결정 대기.
+**상태:** PARTIALLY DECIDED 2026-10-06 — Q2 (a) 결정·적용(Thomas 2026-10-05): 체인 `google_ai_studio,openrouter,groq`. Q3 §3 처리안 권고대로(Thomas 2026-10-06). Q5 권고대로: 에포크 경계는 cohort 마감마다, 첫 경계 2027-03-22. Q6 (c): D5는 첫 cohort 판정 때 묻고 그때까지 LIVE_AUTONOMOUS로 올리지 않는다. Q1, Q4 결정 대기.
 
 **기준 시점:** origin/main `222b50a2`(#1128), 2026-10-05. 운영 상태는 호스트에서 읽기 전용으로 쟀다.
 **선례:** `SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md`(09-26 전수 점검, 점수 없음),
@@ -164,3 +164,5 @@ PR 하나를 약 5분 늦춘다. 수정은 테스트만 바꾼다(성능 단언�
     지금은 사실상 이것과 같다.
   권고: (c). LIVE 문은 FORWARD_CONFIRMED만 받고, 그런 멤버는 0명이다. 막혀 있어도 지금 잃는 것이 없다. 다만 "실측 뒤"가
   아니라 "첫 판정 때"로 관문을 다시 적어 순환을 기록에서 없앤다.
+  - **결정 (Thomas 2026-10-06): (c).** `RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md`와 `SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md`에 기록했다.
+    PAPER에서는 표본이 늘지 않으므로, 2027-03-22에 실제로 고를 것은 "지금 표본으로 잠정값" 또는 "계속 올리지 않음"이다.

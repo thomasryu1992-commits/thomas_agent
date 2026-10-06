@@ -1,7 +1,7 @@
 # 제안: 시스템 전수 점검 — 미흡·병목·개선 구간과 개선 설계 (DRAFT v0.1)
 
-**상태:** PARTIALLY DECIDED 2026-09-26 — §5의 D1·D2·D3·D4·D7·D8 채택, D6 보류(현상 유지). D5는 `RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md`와
-하나로 추적하고, 그 순환은 `SYSTEM_SCORECARD_V0.1.md` Q6에서 결정 대기(2026-10-06 정리). 단계 0은 #980, 단계 1의 선행 조건 없는
+**상태:** PARTIALLY DECIDED 2026-09-26 — §5의 D1·D2·D3·D4·D7·D8 채택, D6 보류(현상 유지). D5는 첫 forward cohort 판정(2027-03-22) 때
+묻고 그때까지 LIVE_AUTONOMOUS로 올리지 않는다(Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q6; `RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md`). 단계 0은 #980, 단계 1의 선행 조건 없는
 항목은 #982–#989로 구현됐다. D3의 범위와 종료 조건은 2026-10-01에 다시 정했다("결정 (Thomas 2026-10-01)" 절: 측정·표시 허용, 종료는
 1차 cohort 마감 2027-03-22).
 **점검 시각:** 2026-09-25, 브랜치 `claude/awesome-sagan-i59bu5` = main `083799c`(#978)과 같은 트리.
@@ -575,3 +575,8 @@
 
 - **D5 — 추적 정리.** D5는 `RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md`의 (a)(b)(d)와 같은 결정이다. 슬리피지 표본을 늘리는 프로브가
   `LIVE_AUTONOMOUS`를 요구하므로 "실측 뒤에 정한다"는 순환이다. `SYSTEM_SCORECARD_V0.1.md` Q6에서 결정한다.
+
+## 결정 (Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q6)
+
+- **D5 — 관문을 "첫 forward cohort 판정(2027-03-22) 때"로 바꾼다.** 그때까지 LIVE_AUTONOMOUS로 올리지 않는다. 기록과 그날의 질문은
+  `RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md`의 같은 날 결정 절에 있다.
