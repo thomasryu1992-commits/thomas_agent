@@ -63,7 +63,7 @@ from .forward_cohort import (
     cohort_report, first_verdict_suffix, load_book_at, load_positions, maturity_of, read_cohorts,
     unparseable_suffix, walk_track,
 )
-from .forward_confirmation import FORWARD_UNDERPOWERED, judge_forward, min_forward_trades
+from .forward_confirmation import FORWARD_UNDERPOWERED, index_outcomes, judge_forward, min_forward_trades, rows_for
 from .null_control import NULL_FEATURE, _null_spec
 from .pool_state import read_candidates
 from .state import state_dir
@@ -338,7 +338,7 @@ def null_report(root: Path | None = None) -> list[dict[str, Any]]:
     as `forward_cohort.cohort_report` gives a member's. The twin is judged as a record whose
     ``candidate_id`` is its null id, whose ``created_at_utc`` is its parent's selection time, and
     whose spec is its null spec (for the timeframe's floor and slice width). Reads only."""
-    rows = read_null_outcomes(root)
+    index = index_outcomes(read_null_outcomes(root))     # each twin reads its own rows (P1-2)
     lines: list[dict[str, Any]] = []
     for record in active_null_records(root):
         for twin in record.get("members") or []:
@@ -348,7 +348,7 @@ def null_report(root: Path | None = None) -> list[dict[str, Any]]:
                 "null_id": twin.get("null_id"), "parent_candidate_id": twin.get("parent_candidate_id"),
                 "cohort_id": record.get("cohort_id"), "timeframe": twin.get("timeframe"),
                 "direction": (twin.get("null_spec") or {}).get("direction"),
-                **judge_forward(judged, rows),
+                **judge_forward(judged, rows_for(judged, index)),
                 "trade_floor": min_forward_trades(twin.get("timeframe")),
             }
             line["maturity"] = maturity_of(line)
