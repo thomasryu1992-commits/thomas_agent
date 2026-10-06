@@ -23,5 +23,8 @@
 - **Q2 decided and built the same day, outside the repo.**
   - The daily prompt keeps only the sequence, the invariants and the report shape (18,107 B → 6,003 B).
   - Its dated rules moved verbatim into the skills: `naver-blog-draft` '일일 작업' A–F and `naver-to-google-seo` 1-D.
+- **Q3 decided the same day.**
+  - The Tistory production path is chosen at the 10-31 verdict. Until then the runtime engine runs manual test fires only, and its schedule rows stay disabled.
+  - A read-only comparison script outside the repo runs both engines' drafts through the same `blog-preflight.py`. Baseline: cron 3/3 body-clean, runtime 0/8.
 - **This PR changes no code, schema or policy.** It adds the review, this entry and the
   regenerated `STATUS.md`.
