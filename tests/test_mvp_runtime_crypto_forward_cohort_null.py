@@ -237,6 +237,21 @@ def test_a_twin_can_be_confirmed_by_the_judge_and_is_counted_as_a_null_confirmat
     assert comparison["real"]["1d"]["confirmed"] == 0
 
 
+def test_the_indexed_null_report_is_the_report_over_every_row(tmp_path, monkeypatch):
+    """P1-2: each twin reads its own rows from an index; the twins' report must not change."""
+    from tests.test_mvp_runtime_crypto_forward_confirmation import _spread_outcomes
+    _install_cohort(tmp_path, _record("cand_a", created="2025-12-01T00:00:00Z"),
+                    _record("cand_b", family="trend_pullback", created="2025-12-01T00:00:00Z"))
+    _freeze(tmp_path)
+    rows = [r for pair in zip(_spread_outcomes(cid="null_v2_cand_a"), _spread_outcomes(cid="null_v2_cand_b"))
+            for r in pair]
+    rows[2] = {**rows[2], "opened_at_utc": "2025-11-01T00:00:00Z"}     # before the parent's selection
+    monkeypatch.setattr(fcn, "read_null_outcomes", lambda root=None: rows)
+    indexed = fcn.null_report(tmp_path)
+    monkeypatch.setattr(fcn, "rows_for", lambda judged, index: rows)
+    assert fcn.null_report(tmp_path) == indexed and len(indexed) == 2
+
+
 def test_the_comparison_is_per_timeframe_and_absent_before_a_null_arm(tmp_path):
     _install_cohort(tmp_path, _record("cand_a"), _record("cand_h", family="h", timeframe="1h"))
     assert fcn.arm_comparison(tmp_path) is None
