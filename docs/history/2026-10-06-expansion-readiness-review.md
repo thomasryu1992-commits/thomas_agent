@@ -20,5 +20,8 @@
   - Deleting them, and turning the diverged copies into links, waits on Thomas: the session's
     permission check refused file deletion.
   - No GitHub remote: the vault already pushes these scripts off the host daily.
+- **Q2 decided and built the same day, outside the repo.**
+  - The daily prompt keeps only the sequence, the invariants and the report shape (18,107 B → 6,003 B).
+  - Its dated rules moved verbatim into the skills: `naver-blog-draft` '일일 작업' A–F and `naver-to-google-seo` 1-D.
 - **This PR changes no code, schema or policy.** It adds the review, this entry and the
   regenerated `STATUS.md`.
