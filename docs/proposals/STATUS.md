@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **57**건: `DRAFT` 1 · `PARTIALLY DECIDED` 5 · `DECIDED` 9 · `IMPLEMENTED` 36 · `SUPERSEDED` 1 · `RECORD` 5
+제안서 **57**건: `DRAFT` 1 · `PARTIALLY DECIDED` 4 · `DECIDED` 10 · `IMPLEMENTED` 36 · `SUPERSEDED` 1 · `RECORD` 5
 
-## Thomas 결정 대기 (6)
+## Thomas 결정 대기 (5)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -16,10 +16,9 @@
 | [SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md](SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | §5의 D1·D2·D3·D4·D7·D8 채택(D8 범위는 2026-10-06에 정리: `general.specialist` 제외), D6 보류(현상 유지). D5는 첫 forward cohort 판정(2027-03-22) 때 묻고 그때까지 LIVE_AUTONOMOUS로 올리지 않는다(Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q6; `RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md`). 단계 0은 #980, 단계 1의 선행 조건 없는 항목은 #982–#989로 구현됐다. D3의 범위와 종료 조건은 2026-10-01에 다시 정했다("결정 (Thomas 2026-10-01)" 절: 측정·표시 허용, 종료는 1차 cohort 마감 2027-03-22). |
 | [PERSONAL_BRANDING_EXPANSION_HYPOTHESIS_V0.1.md](PERSONAL_BRANDING_EXPANSION_HYPOTHESIS_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-05 | B1(0단계 측정)은 결정되어 지어졌다: 10-11 주(10-12 보고)부터 주간 리뷰가 잰다. 열린 항목은 B2 1단계 시작 조건, B3 관문 수치, B4 수익 기준이다. |
 | [EVALUATION_CANNOT_ACT_PER_STRATEGY_V0.1.md](EVALUATION_CANNOT_ACT_PER_STRATEGY_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-06 | §5 계보별 LIVE 허용치는 구현(`crypto/live_allowance.py`), 셋째 기준(예산 1/4)은 폐기 (2026-09-26). §8 D는 (i)로 결정·구현: 연속손실 브레이커의 래치는 의도이고, `crypto/guards.py`의 판정 옆에 그 이유와 푸는 방법을 적었다(Thomas 2026-10-06, 아래 결정 절). §8 B(복귀 경로), R값 없는 라이브 손실, 허용치의 net R 정렬은 첫 LIVE 무장 때 다룬다(지금 무장 0, 단계 PAPER). |
-| [MULTI_ASSET_EXPANSION_V0.1.md](MULTI_ASSET_EXPANSION_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-06 | D1–D4 결정(2026-10-02): (A) 자산 관리 먼저, 옵션은 조건부, 첫 기록은 한국투자증권, 읽기 전용 보드는 연구 일시 중지 중 허용. 부록 A의 한국투자증권 규제 기록이 완성됐다(본인 계좌 조회 운영 가능, 강도 잠정, 외부 전송 경계 포함). P1-a(KIS 피드·두 렌더·`scripts/holdings_board.py`)와 P1-b(scheduler-maint 배선, KIS 키는 scheduler-maint에만)가 지어졌고, 켜는 것은 KIS 키 발급·`.env` 등록·배포·일정 등록(Thomas)을 기다린다. Hermes read(`holdings_status`)는 정책이 이름을 올리기 전까지 dormant다. §6 D2의 비교 기준 비준은 P4 때 한다(Thomas 2026-10-06, 아래 결정 절). 열린 것: 신청 화면의 권한 선택 확인(결정이 아니라 Thomas 로그인 확인), IV–RV 측정이 연구 일시 중지의 예외인지. |
 | [RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md](RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-06 | (a)(b)(d)는 첫 forward cohort 판정(2027-03-22) 때 묻는다. 그때까지 크립토 라이브는 LIVE_AUTONOMOUS로 올리지 않고 현재 값을 유지한다(Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q6). 관문이 "슬리피지 실측 뒤"에서 "첫 판정 때"로 바뀌어 순환이 없어졌다. **값은 하나도 바뀌지 않았다.** |
 
-## 결정됨 — 구현 남음 (9)
+## 결정됨 — 구현 남음 (10)
 
 결정은 끝났고 결정된 것이 아직 다 지어지지 않았다. 결정이 만든 구현 대기열이다.
 
@@ -32,6 +31,7 @@
 | [CRYPTO_STRATEGY_EDGE_ORDER_V0.1.md](CRYPTO_STRATEGY_EDGE_ORDER_V0.1.md) | `DECIDED` | 2026-10-01 | S1·S2·S3 권고대로(Thomas). S1: 첫 forward cohort 판정 때 factory mint 비중을 1d로 기울인다(손실을 줄이는 선택이지 엣지 주장이 아님). S2: 쌍둥이 기준 판정은 에포크 경계에서 `REMAINING_WORK.md` §L E1과 함께 다룬다. S3: maker 진입은 지금 다시 열지 않는다. 0단계(`report --arms`)는 #1088로 구현됐고, S1·S2의 실행은 각 관문(첫 판정, 에포크 경계)을 기다린다. 이 문서가 바꾼 판정 규칙·보드·상수는 없다. |
 | [CRYPTO_ARCHIVE_BACKFILL_V0.1.md](CRYPTO_ARCHIVE_BACKFILL_V0.1.md) | `DECIDED` | 2026-10-03 | R1–R4 권고대로(Thomas). R1: OI 측정·백필은 지금, 피처 전환은 첫 cohort 판정 때 S1과 함께. R2: 롱숏은 게이트를 명시적 결정으로 고정한 뒤 백필, 생성은 2027-03-22 이후. R3: 아카이브는 런타임 밖에서 받는다. R4: 호가 깊이는 D3 이후. 단계 1은 #1119로, R2의 게이트 고정(`positioning_store.MINTING_DECIDED`=False)은 이번 PR로 구현됐다. OI 백필 도구는 #1121(단계 2). 롱숏 백필은 저장 방식 때문에 보류(아래 2026-10-03 추가 결정). 남은 일: OI import 실행, 첫 판정 때 단계 3. |
 | [EXPANSION_READINESS_REVIEW_V0.1.md](EXPANSION_READINESS_REVIEW_V0.1.md) | `DECIDED` | 2026-10-06 | Q1–Q4 모두 결정(Thomas 2026-10-06; Q3은 같은 날 앞선 크론 유지 결정을 확인). Q1: 서버 스크립트를 로컬 git으로 관리하는 부분은 지어졌고, `.bak` 삭제와 볼트 사본 통합은 Thomas 확인을 기다린다(§5). Q2: 매일 프롬프트를 순서만 남기고 날짜 붙은 규칙을 두 스킬로 옮겼다. Q3: Tistory 생산 경로는 크론으로 확정됐다(Thomas 2026-10-06). 10-31에는 런타임 Tistory 프로파일을 남길지만 정하고, 그 판단에 쓸 비교 도구를 지었다. Q4: 자산 통합 보드는 `holdings/`가 바이낸스 스냅샷 파일을 읽어 합산한다(패키지 import 없음). P2를 지을 때 KIS 보드가 켜진 뒤 구현한다. 남은 구현은 Q1의 Thomas 실행분과 Q4다. |
+| [MULTI_ASSET_EXPANSION_V0.1.md](MULTI_ASSET_EXPANSION_V0.1.md) | `DECIDED` | 2026-10-06 | D1–D4 결정(2026-10-02): (A) 자산 관리 먼저, 옵션은 조건부, 첫 기록은 한국투자증권, 읽기 전용 보드는 연구 일시 중지 중 허용. 부록 A의 한국투자증권 규제 기록이 완성됐다(본인 계좌 조회 운영 가능, 강도 잠정, 외부 전송 경계 포함). P1-a(KIS 피드·두 렌더·`scripts/holdings_board.py`)와 P1-b(scheduler-maint 배선, KIS 키는 scheduler-maint에만)가 지어졌고, 켜는 것은 KIS 키 발급·`.env` 등록·배포·일정 등록(Thomas)을 기다린다. Hermes read(`holdings_status`)는 정책이 이름을 올리기 전까지 dormant다. §6 D2의 비교 기준 비준은 P4 때 한다(Thomas 2026-10-06, 아래 결정 절). IV–RV 측정(§4.3)은 연구 일시 중지의 예외로 허용됐다(Thomas 2026-10-06, 아래 결정 절). 열린 것: 신청 화면의 권한 선택 확인(결정이 아니라 Thomas 로그인 확인). |
 | [RESEARCH_EPOCH_V0.1.md](RESEARCH_EPOCH_V0.1.md) | `DECIDED` | 2026-10-06 | Q1·Q2 구현(#972·#976). Q3 B(2026-09-26), 경계는 cohort 마감마다: 첫 경계는 1차 cohort 마감 2027-03-22, 이후 각 cohort의 마감(동결 + 180일)이다(Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q5). Q4는 C로 정리됐다. 남은 구현: 두 판정의 병렬 표시 — 규칙이 처음 바뀌는 경계에서 짓는다. |
 | [RESEARCH_FORWARD_THROUGHPUT_ANALYSIS_V0.1.md](RESEARCH_FORWARD_THROUGHPUT_ANALYSIS_V0.1.md) | `DECIDED` | 2026-10-06 | P0-1(D3 범위) 결정(2026-10-01), P1-1(형제 규칙) 결정·구현(#1096·#1100). 나머지는 권고 순서대로 결정했고(Thomas 2026-10-06), D3가 허용하는 측정·표시 넷을 지었다: P0-2 주석 정정(#1137), P0-3 진입 거절 사유 카운터(#1139), P1-2 보고서 행 색인(#1138), P1-3 쌍 차이 표시(#1140). 남은 것은 관문이 있는 둘이다: P1-4 계층 판정 제안서(2027-03-22 전), P2(판정 뒤). |
 
