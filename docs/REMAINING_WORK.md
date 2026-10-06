@@ -3043,8 +3043,9 @@ entries with no recorded intent: 2   canaries with none: 4   (both predate `inte
     this section counted two.
 - **What would settle it is unchanged, and it cannot happen at PAPER.** No new entries or stops
   accrue at this stage. The only instruments that add rows are canaries and probe batches, both
-  real orders placed by Thomas. Until then both constants stay as they are, and review D5 (loss
-  breaker values wait on the slippage measurement) has a concrete blocker instead of an open item.
+  real orders placed by Thomas. Until then both constants stay as they are. Review D5 (loss breaker values) waited on this
+  measurement and so could never open; since 2026-10-06 it is asked at the first forward cohort verdict
+  (2027-03-22) instead, with live held below LIVE_AUTONOMOUS until then (scorecard Q6).
 
 ### F9. Symbol pooling is built, unused, and the data it needs is already being bought — audited 2026-08-06, **decided and shipped 2026-08-09**
 
