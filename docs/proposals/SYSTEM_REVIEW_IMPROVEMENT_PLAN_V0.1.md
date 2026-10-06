@@ -1,6 +1,6 @@
 # 제안: 시스템 전수 점검 — 미흡·병목·개선 구간과 개선 설계 (DRAFT v0.1)
 
-**상태:** PARTIALLY DECIDED 2026-09-26 — §5의 D1·D2·D3·D4·D7·D8 채택, D6 보류(현상 유지). D5는 첫 forward cohort 판정(2027-03-22) 때
+**상태:** PARTIALLY DECIDED 2026-09-26 — §5의 D1·D2·D3·D4·D7·D8 채택(D8 범위는 2026-10-06에 정리: `general.specialist` 제외), D6 보류(현상 유지). D5는 첫 forward cohort 판정(2027-03-22) 때
 묻고 그때까지 LIVE_AUTONOMOUS로 올리지 않는다(Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q6; `RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md`). 단계 0은 #980, 단계 1의 선행 조건 없는
 항목은 #982–#989로 구현됐다. D3의 범위와 종료 조건은 2026-10-01에 다시 정했다("결정 (Thomas 2026-10-01)" 절: 측정·표시 허용, 종료는
 1차 cohort 마감 2027-03-22).
@@ -580,3 +580,15 @@
 
 - **D5 — 관문을 "첫 forward cohort 판정(2027-03-22) 때"로 바꾼다.** 그때까지 LIVE_AUTONOMOUS로 올리지 않는다. 기록과 그날의 질문은
   `RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md`의 같은 날 결정 절에 있다.
+
+## 결정 (Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q4 — (a) 권고대로)
+
+- **D8의 범위에서 `general.specialist`를 뺀다.** 이것은 떼어낼 수 있는 레인이 아니라 CLAUDE.md "Locked decisions"가 잠근 MVP
+  역할이고, CLI의 기본 경로다("이 사업 아이디어를 분석해줘"). 7일 1회라는 사용량은 그대로 기록하지만, 2026-11-25에 제거를 검토할
+  대상은 아니다. 잠긴 MVP 용도를 다시 정의하는 일은 이 결정 밖이다.
+- **D8이 2026-11-25에 보는 것은 레인이다:** content(네이버 주간 `content_ideation`, 티스토리), Hermes를 거친 research(`research.general`),
+  knowledge, 그리고 Hermes 자신. "레인은 통째로 제거한다"(`predmarket/` 선례)가 적용되는 단위다.
+- **블로그 레인의 품질 증거는 실행 수가 아니라 성과다.** 노출·클릭·순위가 증거다. `lane_digest`의 실행 수와 전달률은 레인이 돈다는
+  증거일 뿐이다. 첫 읽기는 티스토리 판정(2026-10-31)이다. 네이버 주간 행은 2026-09-27부터 꺼져 있어 증거가 쌓이지 않는다
+  (`docs/REMAINING_WORK.md` §J). 그 행을 제거할지 되살릴지도 같은 검토에서 정한다.
+
