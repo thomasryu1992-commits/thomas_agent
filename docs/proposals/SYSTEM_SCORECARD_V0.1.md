@@ -1,6 +1,6 @@
 # 제안: 시스템 전체 점수 — 무엇이 지키고, 무엇이 아직 가치를 못 내는가 (v0.1)
 
-**상태:** PARTIALLY DECIDED 2026-10-06 — Q2 (a) 결정·적용(Thomas 2026-10-05): 체인 `google_ai_studio,openrouter,groq`. Q3 §3 처리안 권고대로(Thomas 2026-10-06). Q4 (a): D8 범위에서 `general.specialist` 제외. Q5: 에포크 경계는 cohort 마감마다, 첫 경계 2027-03-22. Q6 (c): D5는 첫 cohort 판정 때 묻는다. Q1(age 공개키 전달)만 남았다.
+**상태:** IMPLEMENTED 2026-10-06 — Q1–Q6 모두 결정(Thomas). Q1: 코어 백업 age 암호화 가동(#1024, 2026-10-06; 첫 키 노출로 같은 날 키 교체). Q2 (a): 체인 `google_ai_studio,openrouter,groq`. Q3: §3 처리안 권고대로. Q4 (a): D8 범위에서 `general.specialist` 제외. Q5: 에포크 경계는 cohort 마감마다, 첫 경계 2027-03-22. Q6 (c): D5는 첫 cohort 판정 때 묻는다.
 
 **기준 시점:** origin/main `222b50a2`(#1128), 2026-10-05. 운영 상태는 호스트에서 읽기 전용으로 쟀다.
 **선례:** `SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md`(09-26 전수 점검, 점수 없음),
@@ -132,6 +132,13 @@ PR 하나를 약 5분 늦춘다. 수정은 테스트만 바꾼다(성능 단언�
 
 - **Q1. age 공개키를 넘기는가?** 결정은 09-29에 이미 났고, 남은 것은 키 전달과 롤아웃이다. 그때까지 매일 `.env`가
   평문으로 Mac에 간다. 권고: 이번 주.
+  - **완료 (2026-10-06).** Thomas가 Mac에서 키 쌍을 만들고 공개키를 넘겼다. 서버: `/root/backups/age-recipients.txt`(0600, 공개키만),
+    #1024 머지, `backup-governance-state.sh`·`backup-watch.sh` 설치(이전 판은 `.pre-age-20261006`), 수동 core 1회. Mac: 새 pull
+    스크립트, 기존 launchd 등록(`com.thomas.govstate-pull`) 확인, 새 키로 복호화·목록 읽기 `OK`.
+  - **키 교체.** 첫 키 쌍의 개인키가 설정 확인 중 스크린샷으로 대화에 노출됐다. 그 키로 잠긴 것은 시험 백업 1개(05:07Z)뿐이었고,
+    정기 백업이 처음 암호화되기 전에 새 키로 바꿨다. 노출된 공개키와 그 시험 백업은 서버·Mac 양쪽에서 지웠다. 지금 recipient는
+    `age1u7hf6hkw…`이고 첫 정기 암호화 백업은 2026-10-06 07:45Z다.
+  - **남은 평문:** 서버의 평문 core 7개는 암호화본 7개가 쌓이면 스크립트가 지운다. Mac에 이미 받은 평문 사본은 Thomas 판단이다.
 - **Q2. OpenRouter를 체인 맨 앞에서 빼는가?** 권고: (a) `google_ai_studio,openrouter,groq`.
   - **결정 (Thomas 2026-10-05): (a).** 같은 날 적용했다. 호스트 `.env` 한 줄을 바꿨고(백업
     `/root/backups/thomas-agent.env.pre-chain-order-20261005`), 이 변수를 읽는 두 서비스(pipeline-worker, operator)만
