@@ -27,5 +27,9 @@
   - The cron is the Tistory production path. Thomas had already decided this earlier that day and confirmed it here. The recommendation's "pick one at 10-31" would have reopened that decision, so it was corrected.
   - What remains for 10-31 is whether the runtime Tistory profile stays.
   - A read-only comparison script outside the repo runs both engines' drafts through the same `blog-preflight.py`. Baseline: cron 3/3 body-clean, runtime 0/8.
+- **Q4 decided the same day; it is built at P2.**
+  - The asset board sums inside `holdings/`. It reads the scheduler's Binance snapshot file (`crypto/account_snapshot.json`), and the two packages never import each other.
+  - P2 pins the fields it reads with a test.
+  - Premise checked: the file is refreshed every 15 minutes and was 0 minutes old when checked.
 - **This PR changes no code, schema or policy.** It adds the review, this entry and the
   regenerated `STATUS.md`.
