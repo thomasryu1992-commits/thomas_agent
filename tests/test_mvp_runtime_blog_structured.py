@@ -863,9 +863,32 @@ def test_a_value_after_the_last_close_brace_is_kept_when_closing_at_the_end():
     assert parsed["tags"] == draft["tags"]
 
 
-@pytest.mark.parametrize("cut", ['"tags": ["미리캔버스", ', '"tags": ', '"tags": ["미리'])
-def test_a_draft_cut_after_a_comma_a_colon_or_inside_a_string_is_not_closed(cut):
-    text = _stopped_after(_draft(), cut)
+@pytest.mark.parametrize("cut, tags", [('"tags": ["미리캔버스", ', ["미리캔버스"]), ('"tags": ', []),
+                                       ('"tags": ["미리', [])])
+def test_a_draft_cut_after_a_comma_a_colon_or_inside_a_string_is_cut_back_to_a_whole_value(cut, tags):
+    """Until .7 these fell to the prose parser. Cut back to the last whole value and closed, every
+    section is kept and the unfinished tail is dropped, never completed."""
+    draft = _draft()
+    parsed, reason = blog_draft.parse_structured(_stopped_after(draft, cut))
+    assert reason is None and parsed["brackets_inserted"] >= 1
+    assert [s["paragraphs"] for s in parsed["sections"]] == [s["paragraphs"] for s in draft["sections"]]
+    assert parsed["tags"] == tags
+
+
+def test_a_draft_cut_inside_a_section_keeps_the_whole_sections_and_paragraphs_before_the_cut():
+    # bcp_63185d84aceaf646ff6e: '…"}, {"heading": "개인용 무료 한도 …", "level": 3,' — after a comma.
+    draft = _draft()
+    text = json.dumps(draft, ensure_ascii=False)
+    last = draft["sections"][-1]
+    text = text[:text.index(json.dumps(last["paragraphs"][1], ensure_ascii=False)) + 5]   # mid-paragraph
+    parsed, reason = blog_draft.parse_structured(text)
+    assert reason is None
+    assert [s["heading"] for s in parsed["sections"]] == [s["heading"] for s in draft["sections"]]
+    assert parsed["sections"][-1]["paragraphs"] == [blog_draft.sanitize_paragraph(last["paragraphs"][0])]
+
+
+def test_a_complete_text_with_damage_in_the_middle_is_not_cut_back():
+    text = json.dumps(_draft(), ensure_ascii=False).replace('", "', '" "', 1)    # a missing comma
     assert blog_draft.parse_structured(text) == (None, "JSON_UNPARSEABLE")
 
 
