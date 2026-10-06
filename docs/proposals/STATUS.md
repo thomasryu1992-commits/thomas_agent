@@ -4,7 +4,7 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **52**건: `DRAFT` 1 · `PARTIALLY DECIDED` 6 · `DECIDED` 9 · `IMPLEMENTED` 33 · `SUPERSEDED` 1 · `RECORD` 2
+제안서 **52**건: `DRAFT` 1 · `PARTIALLY DECIDED` 6 · `DECIDED` 7 · `IMPLEMENTED` 35 · `SUPERSEDED` 1 · `RECORD` 2
 
 ## Thomas 결정 대기 (7)
 
@@ -15,12 +15,12 @@
 | [WALK_FORWARD_TEMPORAL_STABILITY_V0.1.md](WALK_FORWARD_TEMPORAL_STABILITY_V0.1.md) | `DRAFT` | 2026-08-12 | PR-2(판정 활성화)는 Thomas의 답이 아니라 §4 사전 등록 보고서를 기다린다 (`scripts/walk_forward_stability_report.py`, 읽기 전용, D3 측정 예외). 판별력이 없으면 PR-2 없이 닫는다(Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q3). PR-1(기록 전용)은 구현됐다. 날짜는 추정이다(FACTORY_ABLATION 결정 이후 작성). |
 | [RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md](RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | (c) 순서 결정: 슬리피지 실측이 먼저다. (a)(b)(d)는 결정 대기이고, 그때까지 현재 값을 유지하며 LIVE_AUTONOMOUS로 올리지 않는다(Thomas 2026-09-26, 시스템 점검 D5). **값은 하나도 바뀌지 않았다**. 다만 기다려서는 풀리지 않는다: 표본을 늘리는 프로브는 `LIVE_AUTONOMOUS`가 필요하고, D5는 그 전에 단계를 올리지 않게 한다. 순환을 끊는 결정은 `SYSTEM_SCORECARD_V0.1.md` Q6에서 대기한다(2026-10-06 정리). |
 | [SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md](SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md) | `PARTIALLY DECIDED` | 2026-09-26 | §5의 D1·D2·D3·D4·D7·D8 채택, D6 보류(현상 유지). D5는 `RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md`와 하나로 추적하고, 그 순환은 `SYSTEM_SCORECARD_V0.1.md` Q6에서 결정 대기(2026-10-06 정리). 단계 0은 #980, 단계 1의 선행 조건 없는 항목은 #982–#989로 구현됐다. D3의 범위와 종료 조건은 2026-10-01에 다시 정했다("결정 (Thomas 2026-10-01)" 절: 측정·표시 허용, 종료는 1차 cohort 마감 2027-03-22). |
-| [EVALUATION_CANNOT_ACT_PER_STRATEGY_V0.1.md](EVALUATION_CANNOT_ACT_PER_STRATEGY_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-06 | §5 계보별 LIVE 허용치는 구현(`crypto/live_allowance.py`), 셋째 기준(예산 1/4)은 폐기 (2026-09-26). §8 D는 (i)로 결정: 연속손실 브레이커의 래치는 의도이고 코드에 설명을 남긴다(Thomas 2026-10-06, 아래 결정 절; 남은 구현). §8 B(복귀 경로), R값 없는 라이브 손실, 허용치의 net R 정렬은 첫 LIVE 무장 때 다룬다(지금 무장 0, 단계 PAPER). |
+| [EVALUATION_CANNOT_ACT_PER_STRATEGY_V0.1.md](EVALUATION_CANNOT_ACT_PER_STRATEGY_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-06 | §5 계보별 LIVE 허용치는 구현(`crypto/live_allowance.py`), 셋째 기준(예산 1/4)은 폐기 (2026-09-26). §8 D는 (i)로 결정·구현: 연속손실 브레이커의 래치는 의도이고, `crypto/guards.py`의 판정 옆에 그 이유와 푸는 방법을 적었다(Thomas 2026-10-06, 아래 결정 절). §8 B(복귀 경로), R값 없는 라이브 손실, 허용치의 net R 정렬은 첫 LIVE 무장 때 다룬다(지금 무장 0, 단계 PAPER). |
 | [MULTI_ASSET_EXPANSION_V0.1.md](MULTI_ASSET_EXPANSION_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-06 | D1–D4 결정(2026-10-02): (A) 자산 관리 먼저, 옵션은 조건부, 첫 기록은 한국투자증권, 읽기 전용 보드는 연구 일시 중지 중 허용. 부록 A의 한국투자증권 규제 기록이 완성됐다(본인 계좌 조회 운영 가능, 강도 잠정, 외부 전송 경계 포함). P1-a(KIS 피드·두 렌더·`scripts/holdings_board.py`)와 P1-b(scheduler-maint 배선, KIS 키는 scheduler-maint에만)가 지어졌고, 켜는 것은 KIS 키 발급·`.env` 등록·배포·일정 등록(Thomas)을 기다린다. Hermes read(`holdings_status`)는 정책이 이름을 올리기 전까지 dormant다. §6 D2의 비교 기준 비준은 P4 때 한다(Thomas 2026-10-06, 아래 결정 절). 열린 것: 신청 화면의 권한 선택 확인(결정이 아니라 Thomas 로그인 확인), IV–RV 측정이 연구 일시 중지의 예외인지. |
 | [RESEARCH_EPOCH_V0.1.md](RESEARCH_EPOCH_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-06 | Q1·Q2는 #972·#976으로 구현. Q3는 B(2026-09-26)이고, 경계 주기는 `SYSTEM_SCORECARD_V0.1.md` Q5로 결정 대기. Q4는 C 적용으로 정리했다: 2차 cohort(10-01) 동결 기록부터 판정 지문이 찍힌다. 두 판정의 병렬 표시는 규칙이 처음 바뀌는 경계에서 짓는다(Thomas 2026-10-06, 아래 결정 절). |
 | [SYSTEM_SCORECARD_V0.1.md](SYSTEM_SCORECARD_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-06 | Q2 (a) 결정·적용(Thomas 2026-10-05): 체인 `google_ai_studio,openrouter,groq`. Q3 §3 처리안 권고대로(Thomas 2026-10-06), 13개 제안서에 반영했다. Q1, Q4–Q6 결정 대기. |
 
-## 결정됨 — 구현 남음 (9)
+## 결정됨 — 구현 남음 (7)
 
 결정은 끝났고 결정된 것이 아직 다 지어지지 않았다. 결정이 만든 구현 대기열이다.
 
@@ -32,11 +32,9 @@
 | [SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md](SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md) | `DECIDED` | 2026-09-30 | D1 C·D2·D3 B→A·D4 예(Thomas): LIVE는 FORWARD_CONFIRMED 필수, forward 기준을 `observed_lineages`로 보정, 재사용 홀드아웃 표시는 버그 수정으로 지금 구현, 검증 슬라이스는 에포크 경계. 남은 구현: ① 문 변경, ② B 표시. ② A는 `REMAINING_WORK.md` §L. |
 | [CRYPTO_STRATEGY_EDGE_ORDER_V0.1.md](CRYPTO_STRATEGY_EDGE_ORDER_V0.1.md) | `DECIDED` | 2026-10-01 | S1·S2·S3 권고대로(Thomas). S1: 첫 forward cohort 판정 때 factory mint 비중을 1d로 기울인다(손실을 줄이는 선택이지 엣지 주장이 아님). S2: 쌍둥이 기준 판정은 에포크 경계에서 `REMAINING_WORK.md` §L E1과 함께 다룬다. S3: maker 진입은 지금 다시 열지 않는다. 0단계(`report --arms`)는 #1088로 구현됐고, S1·S2의 실행은 각 관문(첫 판정, 에포크 경계)을 기다린다. 이 문서가 바꾼 판정 규칙·보드·상수는 없다. |
 | [CRYPTO_ARCHIVE_BACKFILL_V0.1.md](CRYPTO_ARCHIVE_BACKFILL_V0.1.md) | `DECIDED` | 2026-10-03 | R1–R4 권고대로(Thomas). R1: OI 측정·백필은 지금, 피처 전환은 첫 cohort 판정 때 S1과 함께. R2: 롱숏은 게이트를 명시적 결정으로 고정한 뒤 백필, 생성은 2027-03-22 이후. R3: 아카이브는 런타임 밖에서 받는다. R4: 호가 깊이는 D3 이후. 단계 1은 #1119로, R2의 게이트 고정(`positioning_store.MINTING_DECIDED`=False)은 이번 PR로 구현됐다. OI 백필 도구는 #1121(단계 2). 롱숏 백필은 저장 방식 때문에 보류(아래 2026-10-03 추가 결정). 남은 일: OI import 실행, 첫 판정 때 단계 3. |
-| [CONTROL_LANE_SEPARATION_V0.1.md](CONTROL_LANE_SEPARATION_V0.1.md) | `DECIDED` | 2026-10-06 | K2′는 결정·구현(2026-07-29, `operator.peek_for_halt`). K1 채택, K3 종결(K2′ 구현이 정함), K4는 사지 않음, K5 소멸(Thomas 2026-10-06, 아래 결정 절). 남은 구현: K1 — `/kill` 응답과 문서가 실행 중인 분석은 끝까지 돈다고 말한다. |
-| [COST_GATE_RESET_THE_RECORD_V0.1.md](COST_GATE_RESET_THE_RECORD_V0.1.md) | `DECIDED` | 2026-10-06 | §6-2(펀딩 게이팅)는 보고만 하는 현재 구현을 추인(2026-09-26). §6-1(오염된 폐기 판정 11개)은 그대로 둔다(Thomas 2026-10-06, 아래 결정 절). 남은 구현: §6-3 반사실 레지스트리 측정 — 판정을 바꾸지 않는 읽기 전용 측정이라 D3가 허용한다. |
-| [RESEARCH_FORWARD_THROUGHPUT_ANALYSIS_V0.1.md](RESEARCH_FORWARD_THROUGHPUT_ANALYSIS_V0.1.md) | `DECIDED` | 2026-10-06 | P0-1(D3 범위)은 결정(2026-10-01), P1-1(cohort 사이 형제 규칙)은 결정·구현(#1096·#1100). 나머지는 §마지막의 권고 순서대로 결정했다(Thomas 2026-10-06, 아래 결정 절). 남은 구현: P0-2(라벨 정정), P0-3(진입 거절 사유 카운터), P1-2(보고서 행 색인), P1-3(쌍 차이 표시) — 모두 D3가 허용하는 측정·표시. P1-4는 2027-03-22 전 제안서, P2는 판정 뒤. |
+| [RESEARCH_FORWARD_THROUGHPUT_ANALYSIS_V0.1.md](RESEARCH_FORWARD_THROUGHPUT_ANALYSIS_V0.1.md) | `DECIDED` | 2026-10-06 | P0-1(D3 범위)은 결정(2026-10-01), P1-1(cohort 사이 형제 규칙)은 결정·구현(#1096·#1100). 나머지는 §마지막의 권고 순서대로 결정했다(Thomas 2026-10-06, 아래 결정 절). P0-2(주석 정정)는 구현됐다. 남은 구현: P0-3(진입 거절 사유 카운터), P1-2(보고서 행 색인), P1-3(쌍 차이 표시) — 모두 D3가 허용하는 측정·표시. P1-4는 2027-03-22 전 제안서, P2는 판정 뒤. |
 
-## 구현됨 (33)
+## 구현됨 (35)
 
 결정되고 지어졌다. 문서는 결정의 근거 기록으로 남는다.
 
@@ -73,7 +71,9 @@
 | [PHASE_7_14_ALIGNMENT_AUDIT_V0.1.md](PHASE_7_14_ALIGNMENT_AUDIT_V0.1.md) | `IMPLEMENTED` | 2026-10-05 | Q1–Q4 모두 권고대로(Thomas): 카나리 rung 없음 유지, 코드 상수 2차 권위 없음, 어댑터 키 읽기 유지, D3 중 ResearchSignal v2·ID 체인 보류. §D의 P2 테스트 3건(paper 격리, 증거는 단계 증인이 아님, 안전 불변식 lane)을 같은 PR에서 지었다. 코드·스키마·정책 변경 없음. ResearchSignal·ID 체인은 첫 cohort 판정 뒤 이 문서를 근거로 다시 연다. |
 | [APPROVAL_CONVERSATION_V0.1.md](APPROVAL_CONVERSATION_V0.1.md) | `IMPLEMENTED` | 2026-10-06 | V1–V4 모두 하지 않기로 결정했다(Thomas 2026-10-06, 아래 결정 절). 전제가 바뀌었다: 대화 창은 Hermes로 옮겼고 프론트데스크는 관제봇 fallback이며, 승인 푸시는 이미 `/approve <id>`를 보여 준다. 지을 것은 남지 않았다. |
 | [AUTOMATIC_SELECTION_NEEDS_A_LIVE_DOOR_V0.1.md](AUTOMATIC_SELECTION_NEEDS_A_LIVE_DOOR_V0.1.md) | `IMPLEMENTED` | 2026-10-06 | Part 1(OBSERVATION/LIVE 티어)은 2026-08-09 구현(#648, `crypto/live_tier.py`). Part 2(관찰 티어 자동 설치)는 하지 않기로 결정했다(Thomas 2026-10-06, 아래 결정 절). 지을 것은 남지 않았다. |
+| [CONTROL_LANE_SEPARATION_V0.1.md](CONTROL_LANE_SEPARATION_V0.1.md) | `IMPLEMENTED` | 2026-10-06 | K2′ 결정·구현(2026-07-29, `operator.peek_for_halt`). K1 채택·구현: `/kill`·`/pause` 응답과 문서가 실행 중인 작업은 끊기지 않고 끝까지 돈다고 말한다. K3 종결, K4 사지 않음, K5 소멸(Thomas 2026-10-06, 아래 결정 절). |
 | [CONVERSATIONAL_ORCHESTRATION_FRONT_V0.1.md](CONVERSATIONAL_ORCHESTRATION_FRONT_V0.1.md) | `IMPLEMENTED` | 2026-10-06 | D1–D3 결정·구현(2026-07-25). D4(standing grant, `approval.v0.3`)는 "필요가 확인되기 전에는 하지 않는다"로 닫았고 D5는 함께 소멸했다(Thomas 2026-10-06, 아래 결정 절). 지을 것은 남지 않았다. |
+| [COST_GATE_RESET_THE_RECORD_V0.1.md](COST_GATE_RESET_THE_RECORD_V0.1.md) | `IMPLEMENTED` | 2026-10-06 | §6-2 추인(2026-09-26), §6-1 그대로 둠(Thomas 2026-10-06). §6-3 측정을 했다: 비용 게이트가 막은 22건은 모두 손절(가격 기준 −1R)이었고, 손절 폭 22–62 bps의 진입이다. `MAX_ENTRY_COST_R`을 완화할 근거는 없다(아래 "측정" 절). |
 | [TEMPLATE_RSI_DRAW_MASS_V0.1.md](TEMPLATE_RSI_DRAW_MASS_V0.1.md) | `IMPLEMENTED` | 2026-10-06 | 선택지 0(현상 유지)으로 결정했다(Thomas 2026-10-06, 아래 결정 절). §5 재독은 D3 종료(1차 cohort 마감 2027-03-22) 때 하고, 그 전에는 B(family 재배분)를 D3가 막는다. 지을 것은 남지 않았다. |
 
 ## 대체됨 (1)

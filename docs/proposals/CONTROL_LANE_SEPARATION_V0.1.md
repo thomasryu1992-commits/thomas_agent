@@ -1,7 +1,7 @@
 # 제안: Control Lane 분리 — `/kill`은 언제 런타임 안으로 들어오는가 (DRAFT v0.2)
 
-**상태:** DECIDED 2026-10-06 — K2′는 결정·구현(2026-07-29, `operator.peek_for_halt`). K1 채택, K3 종결(K2′ 구현이 정함), K4는
-사지 않음, K5 소멸(Thomas 2026-10-06, 아래 결정 절). 남은 구현: K1 — `/kill` 응답과 문서가 실행 중인 분석은 끝까지 돈다고 말한다.
+**상태:** IMPLEMENTED 2026-10-06 — K2′ 결정·구현(2026-07-29, `operator.peek_for_halt`). K1 채택·구현: `/kill`·`/pause` 응답과
+문서가 실행 중인 작업은 끊기지 않고 끝까지 돈다고 말한다. K3 종결, K4 사지 않음, K5 소멸(Thomas 2026-10-06, 아래 결정 절).
 
 > **작성 당시 상태: DRAFT — 결정을 위한 문서. 어떤 것도 활성화하지 않으며 구현 착수도 아니다.**
 > 요구되는 Thomas 결정은 §6에 있다.
@@ -293,3 +293,9 @@ drain 중 각 단계 경계에서(옵션 B와 같은 `on_progress` 자리) 논�
 - **K4 — 사지 않는다.** 실행 중인 분석을 중단할 사고 기록이 없다. 재개 신호(커서 유실·중복, 실제 사고)가 생기면 다시 연다.
   Hermes의 `switch_bridge` disable은 이미 `control.apply_command`로 직접 쓴다.
 - **K5 — 소멸.** K4에 종속된 항목이다.
+
+### 구현 (2026-10-06)
+
+- K1: `control.apply_command`의 `/kill`·`/pause` 응답에 "A task already running is not interrupted; it runs to its end"를
+  더했다. `docs/DEPLOYMENT.md`의 비상 콘솔 절과 `OPERATOR_CONTROL_CHANNEL_V0.1.md`의 명령 표도 같은 말을 한다. 테스트:
+  `test_a_halt_reply_says_a_running_task_is_not_interrupted`. 운영 봇의 응답은 다음 배포부터 바뀐다.
