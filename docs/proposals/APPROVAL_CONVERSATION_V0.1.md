@@ -1,7 +1,7 @@
 # 제안: 승인 대화 — "승인"이라고 말하면 승인될 것인가 (DRAFT)
 
-**상태:** DRAFT 2026-07-28 — §6의 V1–V4 결정 대기. 결정 기록도, 권고한 옵션 B(승인 명령을 제안하는 턴)의
-구현도 없다(2026-09-26 확인).
+**상태:** IMPLEMENTED 2026-10-06 — V1–V4 모두 하지 않기로 결정했다(Thomas 2026-10-06, 아래 결정 절). 전제가 바뀌었다: 대화
+창은 Hermes로 옮겼고 프론트데스크는 관제봇 fallback이며, 승인 푸시는 이미 `/approve <id>`를 보여 준다. 지을 것은 남지 않았다.
 
 > **작성 당시 상태: DRAFT — 결정을 위한 문서. 어떤 것도 활성화하지 않으며 구현 착수도 아니다.**
 > 요구되는 Thomas 결정은 §6에 있다.
@@ -161,3 +161,12 @@ Agent:  대기 중인 승인이 하나 있습니다.
 (`unsupported_capabilities`), `runtime/mvp_runtime/frontdesk.py` (`_propose_cancel` 선례),
 `runtime/mvp_runtime/approval.py`, `docs/proposals/CONVERSATIONAL_ORCHESTRATION_FRONT_V0.1.md`
 Part ③.*
+
+## 결정 (Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q3 — §3 처리안 권고대로)
+
+- **V1 — 짓지 않는다.** 옵션 B(승인 명령을 제안하는 턴)는 프론트데스크가 대화 창일 때의 개선이었다. 지금 대화 창은 Hermes이고,
+  프론트데스크는 관제봇 fallback이다(`docs/HERMES_ORCHESTRATOR_ARCHITECTURE_V0.2.md` 서비스 표). 승인 요청 푸시는 이미 칠 명령을
+  보여 준다(`approval.py`: `/approve <id> | /reject <id>`, `operator.py`의 관제봇 안내, `switch_bridge.py`의 `approve_with`).
+- **V2·V3 — 기각.** 자연어 승인은 정책 변경과 역할 계약 축소가 필요하고, V1 없이 물을 근거가 없다.
+- **V4 — `CONVERSATIONAL_ORCHESTRATION_FRONT_V0.1.md` D4로 합친다.** 그 문서에서 "필요가 확인되기 전에는 하지 않는다"로 닫았다.
+- **유지되는 것:** §6의 불변식(금융 실행 승인은 명시적 `approval_id`, 단발 사용, 실행 직전 재검증)은 그대로다.
