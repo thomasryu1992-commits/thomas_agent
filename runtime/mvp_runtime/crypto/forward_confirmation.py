@@ -50,7 +50,7 @@ from __future__ import annotations
 import math
 import statistics
 from datetime import datetime
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from .. import timeutil
 from ..errors import ToolError
@@ -237,6 +237,35 @@ def forward_outcomes_for(
         if opened is not None and opened >= cutoff:
             kept.append(o)
     return kept
+
+
+def index_outcomes(outcomes: Iterable[Mapping[str, Any]]) -> dict[str, list[tuple[int, Mapping[str, Any]]]]:
+    """The closed rows of ``outcomes`` grouped by attribution key, each with its store position.
+
+    A report that judges M lineages over R rows handed every lineage all R rows, and
+    :func:`forward_outcomes_for` walked them all to keep its own few: O(M·R), 2.7 s for 197
+    members over 1,077 rows on 2026-10-06, growing with both. Indexed once, each lineage reads
+    only its own rows (:func:`rows_for`). Only what :func:`forward_outcomes_for` would look at is
+    indexed — a closed Mapping row, the same test in the same order — so a row it skips is never
+    asked for its key here either."""
+    index: dict[str, list[tuple[int, Mapping[str, Any]]]] = {}
+    for position, o in enumerate(outcomes):
+        if isinstance(o, Mapping) and o.get("outcome_closed") is True:
+            index.setdefault(outcome_attribution_key(o), []).append((position, o))
+    return index
+
+
+def rows_for(
+    record: Mapping[str, Any], index: Mapping[str, Sequence[tuple[int, Mapping[str, Any]]]],
+) -> list[Mapping[str, Any]]:
+    """This lineage's closed rows from an :func:`index_outcomes` index, in store order.
+
+    The narrowing only: the selection cutoff, pricing and every rule stay with the reader it is
+    handed to (:func:`forward_outcomes_for`, :func:`judge_forward`), which see the same rows in
+    the same order as with the whole store — a lineage with both a ``cand:`` and a ``gen:`` key
+    gets its rows merged back by position."""
+    picked = [entry for key in lineage_keys(record) for entry in index.get(key, ())]
+    return [row for _, row in sorted(picked, key=lambda entry: entry[0])]
 
 
 def judge_forward(
