@@ -528,6 +528,83 @@ def test_a_sibling_timeframe_does_not_advance_the_clock():
     assert record["live_holding"]["holding_candles"] == 1  # reported, just not advanced
 
 
+# --- no confirmed bar, no time (2026-10-02) ---------------------------------------------------
+#
+# A degraded collection hands the leg an empty feature row, so `candle_ts` is None. The counter used
+# to advance on None, and the pipeline fires every 15 minutes: an outage on a position's own
+# timeframe aged it one bar per pass. Settlement and protection still run on such a pass.
+
+def test_an_owning_pass_with_no_confirmed_bar_leaves_the_clock_alone_and_says_why():
+    # Case C, at the leg
+    store = _Store()
+    record = _settle(_timed(holding_candles=1, last_counted_candle_ts=BAR_00), candle_ts=None, store=store)
+    assert record["live_settled"] is None
+    assert record["live_protection"] is not None, "protection was not inspected"
+    assert record["live_holding"]["holding_candles"] == 1
+    assert record["live_holding"]["timed_here"] is True
+    assert record["live_holding"]["advanced"] is False
+    assert record["live_holding"]["reason"] == "NO_CONFIRMED_BAR"
+    assert live_route.LIVE_HOLD_NO_CONFIRMED_BAR in record["live_reason_codes"]
+    assert all(saved["holding_candles"] == 1 for saved in store.saved)
+
+
+def test_a_counted_bar_is_reported_as_advanced_and_a_repeat_as_a_duplicate():
+    position = _timed(holding_candles=1, last_counted_candle_ts=BAR_00)
+    store = _Store()
+    fresh = _settle(position, candle_ts="2026-07-29T00:00:00Z", store=store)
+    assert fresh["live_holding"]["advanced"] is True and fresh["live_holding"]["reason"] == "NEW_BAR"
+    again = _settle(store.saved[-1], candle_ts="2026-07-29T00:00:00Z", store=_Store())
+    assert again["live_holding"]["advanced"] is False and again["live_holding"]["reason"] == "DUPLICATE_BAR"
+    assert live_route.LIVE_HOLD_NO_CONFIRMED_BAR not in again["live_reason_codes"]
+
+
+def test_a_non_owning_pass_reports_why_it_did_not_count():
+    # Case E: a 1h pass over a 4h position settles and protects, never counts.
+    record = _settle(_timed(timeframe="4h", holding_candles=4), context_timeframe="1h", candle_ts=None)
+    assert record["live_protection"] is not None
+    assert record["live_holding"]["timed_here"] is False
+    assert record["live_holding"]["advanced"] is False
+    assert record["live_holding"]["reason"] == "NOT_TIMED_HERE"
+    assert record["live_holding"]["holding_candles"] == 4
+
+
+def test_an_outage_then_a_bar_ages_the_position_one_bar():
+    # Case F: two passes without a bar, then the bar. No catch-up for the missed passes.
+    position = _timed(max_holding_bars=12, holding_candles=10, last_counted_candle_ts=BAR_00)
+    for candle_ts in (None, None, "2026-07-29T00:00:00Z"):
+        store = _Store()
+        _settle(position, candle_ts=candle_ts, store=store)
+        position = store.saved[-1]
+    assert position["holding_candles"] == 11
+
+
+def test_one_bar_short_of_the_limit_an_outage_does_not_time_the_position_out():
+    # Case G: 11 of 12. No bar: held at 11, nothing sent. The next real bar: 12, and the exit fires.
+    position = _timed(max_holding_bars=12, holding_candles=11, last_counted_candle_ts=BAR_00)
+    store = _Store()
+    held = _settle(position, candle_ts=None, store=store)
+    assert held["live_settled"] is None
+    assert held["live_holding"]["holding_candles"] == 11
+    store2, ledger = _Store(), _Ledger()
+    due = _settle(store.saved[-1] if store.saved else position, candle_ts="2026-07-29T00:00:00Z",
+                  store=store2, ledger=ledger)
+    assert due["live_holding"]["holding_candles"] == 12
+    assert due["live_settled"] is not None
+    assert due["live_settled"]["intent"]["close_reason"] == live_leg.CLOSE_REASON_TIME_EXIT
+
+
+def test_an_exit_already_due_is_still_retried_on_a_pass_with_no_bar():
+    """A position whose count reached its limit and whose close did not confirm stays due. The
+    retry is risk-reducing and was decided on confirmed bars, so a missing bar does not hold it."""
+    store, ledger = _Store(), _Ledger()
+    record = _settle(_timed(max_holding_bars=3, holding_candles=3, last_counted_candle_ts=BAR_00),
+                     candle_ts=None, store=store, ledger=ledger)
+    assert record["live_holding"]["holding_candles"] == 3
+    assert live_route.LIVE_HOLD_NO_CONFIRMED_BAR in record["live_reason_codes"]
+    assert record["live_settled"] is not None
+    assert record["live_settled"]["intent"]["reduce_only"] is True
+
+
 def test_one_fanout_over_four_timeframes_advances_the_clock_once():
     """The regression, at the resolution it actually bit: five symbols x four timeframes is the
     live pool shape, and one pass of it used to age a position by four bars."""
@@ -1367,10 +1444,11 @@ def _wire_whole_leg(tmp_path, monkeypatch, venue, *, approval=_ARM, armed_entry=
 
     def _pass(now, bar, *, wall=None):
         # The wall clock at a settlement: the pass's own `now` unless a test says otherwise.
+        # ``bar=None`` is a degraded collection's pass: the cycle hands the leg an empty row.
         clock["now"] = wall or now
         return live_route.run_live_leg(
             live_routable_strategy_ids={"S001"}, route={"status": "ENTRY_CANDIDATE"},
-            feature_row={"timestamp": bar},
+            feature_row={"timestamp": bar} if bar is not None else {},
             verdict={"allow_new_position": True, "problems": [],
                      "risk_guard": {"limits": {"source": "default"}}},
             symbol=SYMBOL, collector=_Collector(lambda: clock["now"]), now=now, timeframe="4h",
@@ -1396,7 +1474,7 @@ def _stop_fills(venue, tmp_path):
 
 
 def test_a_stop_inside_the_bar_does_not_buy_a_second_entry_on_that_bar(tmp_path, monkeypatch):
-    from runtime.mvp_runtime.crypto.live_order import (
+    from runtime.mvp_runtime.crypto.live_order_stores import (
         LIVE_ENTRY_BAR_ALREADY_ENTERED,
         LIVE_ENTRY_STOP_LOSS_COOLDOWN,
         count_today,
@@ -1447,6 +1525,70 @@ def test_a_stop_inside_the_bar_does_not_buy_a_second_entry_on_that_bar(tmp_path,
     assert count_today(tmp_path) == 2
 
 
+def test_a_degraded_pass_enters_nothing_ages_nothing_and_still_protects_and_settles(tmp_path, monkeypatch):
+    """Case D: market data unavailable on the position's own timeframe. New risk is refused, the clock
+    holds, and everything that manages the existing risk still runs: the bracket is read, the book is
+    reconciled against the venue, and a stop the venue filled meanwhile is settled."""
+    from runtime.mvp_runtime.crypto.live_position import list_open_live_positions
+
+    import dataclasses
+
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    opened = run("2026-07-28T04:05:00Z", BAR_00)
+    assert opened["live_route_status"] == live_route.ROUTE_OPENED, opened["live_reason_codes"]
+    [before] = list_open_live_positions(tmp_path)
+
+    # The venue holds what the book holds, until its stop fills below.
+    flat_read = live_route.read_account
+    held_at_venue = {"on": True}
+
+    def _account(**kw):
+        snapshot, extra = flat_read(**kw)
+        if not held_at_venue["on"]:
+            return snapshot, extra
+        position = AccountPosition(
+            symbol=SYMBOL, side="LONG", quantity=float(before["quantity"]),
+            entry_price=float(before["entry_price"]), mark_price=float(before["entry_price"]),
+            unrealized_pnl=0.0, leverage=1.0, notional=float(before["notional_usdt"]))
+        return dataclasses.replace(snapshot, positions=[position]), extra
+
+    monkeypatch.setattr(live_route, "read_account", _account)
+
+    held = run("2026-07-28T04:20:00Z", None)
+    assert held["live_reconcile_status"] == "RECONCILED", held["live_reason_codes"]
+    assert held["live_protection"] is not None, "the bracket was not inspected"
+    assert held["live_protection"]["status"] == live_leg.PROTECTED
+    assert held["live_holding"]["advanced"] is False
+    assert held["live_holding"]["reason"] == "NO_CONFIRMED_BAR"
+    assert live_route.LIVE_HOLD_NO_CONFIRMED_BAR in held["live_reason_codes"]
+    [after] = list_open_live_positions(tmp_path)
+    assert after["holding_candles"] == before["holding_candles"]
+    assert held["live_route_status"] != live_route.ROUTE_OPENED
+    assert len(venue.entries()) == 1, "a degraded pass sent an entry"
+
+    # The venue's stop fills during the outage: the degraded pass settles it all the same.
+    _stop_fills(venue, tmp_path)
+    held_at_venue["on"] = False
+    settled = run("2026-07-28T04:35:00Z", None)
+    assert settled["live_route_status"] == live_route.ROUTE_SETTLED, settled["live_reason_codes"]
+    assert settled["live_settled"]["outcome"]["close_reason"] == "stop_loss"
+    assert list_open_live_positions(tmp_path) == []
+    assert len(venue.entries()) == 1
+
+
+def test_a_degraded_pass_on_a_flat_book_enters_nothing(tmp_path, monkeypatch):
+    """No bar, no entry, even when the route says candidate: the entry door has no bar to claim."""
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    from runtime.mvp_runtime.crypto.live_order_stores import LIVE_ENTRY_BAR_UNKNOWN
+
+    record = run("2026-07-28T04:05:00Z", None)
+    assert record["live_route_status"] == live_route.ROUTE_HELD, record["live_reason_codes"]
+    assert record["live_decision"]["reasons"] == [LIVE_ENTRY_BAR_UNKNOWN]
+    assert venue.entries() == []
+
+
 def test_a_refusal_before_the_send_leaves_the_bar_open_for_the_next_tick(tmp_path, monkeypatch):
     """The mark is taken when an order is about to leave, not when the bar is evaluated — the
     one deliberate difference from paper. A transient refusal (here, the order book) sends
@@ -1473,7 +1615,8 @@ def test_a_refusal_before_the_send_leaves_the_bar_open_for_the_next_tick(tmp_pat
 
 
 def test_the_leg_hands_the_decision_the_bar_it_evaluated_and_the_marks_it_read(tmp_path, monkeypatch):
-    from runtime.mvp_runtime.crypto.live_order import LiveEntryMarks, read_live_entry_marks
+    from runtime.mvp_runtime.crypto.live_order import LiveEntryMarks
+    from runtime.mvp_runtime.crypto.live_order_stores import read_live_entry_marks
     from tests._helpers import make_gate_authorization
     from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_FLAGS, LIVE_TRADING_PROVIDER_ID
 
@@ -1490,7 +1633,7 @@ def test_the_leg_hands_the_decision_the_bar_it_evaluated_and_the_marks_it_read(t
 def test_unreadable_marks_hold_entries_and_still_manage_positions(tmp_path, monkeypatch):
     """The opposite of paper's marks on purpose: a corrupt live file refuses entries. It is read
     after settle/protect, so it can never hold a position open."""
-    from runtime.mvp_runtime.crypto.live_order import ENTRY_MARKS_FILENAME
+    from runtime.mvp_runtime.crypto.live_order_stores import ENTRY_MARKS_FILENAME
     from runtime.mvp_runtime.crypto.live_order_stores import LIVE_ENTRY_MARKS_UNREADABLE
     from runtime.mvp_runtime.crypto.state import venue_state_dir
 
@@ -1549,7 +1692,7 @@ def _settle_venue_stop(tmp_path, monkeypatch, *, position, filled_leg="sl-1", pr
 def test_a_venue_stop_cools_the_positions_own_context(tmp_path, monkeypatch, timeframe, until):
     """Settled at 05:10: the bound is two bars after the bar containing it, on every timeframe
     the runtime trades — the route passes paper's own bar count, not a number of its own."""
-    from runtime.mvp_runtime.crypto.live_order import read_live_entry_marks
+    from runtime.mvp_runtime.crypto.live_order_stores import read_live_entry_marks
 
     record = _settle_venue_stop(tmp_path, monkeypatch, position=_position(timeframe=timeframe))
     assert record["live_settled"]["status"] == live_leg.EXIT_CLOSED
@@ -1561,7 +1704,7 @@ def test_the_cooldown_is_anchored_no_earlier_than_the_read_that_saw_the_fill(tmp
     settled in the same pass. Here the pass started at 07:59:50 and the settlement was recorded at
     08:00:40 — the fill was in the 08:00 bar, so paper holds 08:00 and 12:00 and 16:00 is the
     first free bar. Anchoring on `now` would have freed 12:00."""
-    from runtime.mvp_runtime.crypto.live_order import read_live_entry_marks
+    from runtime.mvp_runtime.crypto.live_order_stores import read_live_entry_marks
 
     record = _settle_venue_stop(tmp_path, monkeypatch, position=_position(timeframe="4h"),
                                 now="2026-07-28T07:59:50Z", wall="2026-07-28T08:00:40Z")
@@ -1570,7 +1713,7 @@ def test_the_cooldown_is_anchored_no_earlier_than_the_read_that_saw_the_fill(tmp
 
 
 def test_a_wall_clock_behind_the_pass_never_shortens_the_cooldown(tmp_path, monkeypatch):
-    from runtime.mvp_runtime.crypto.live_order import read_live_entry_marks
+    from runtime.mvp_runtime.crypto.live_order_stores import read_live_entry_marks
 
     _settle_venue_stop(tmp_path, monkeypatch, position=_position(timeframe="4h"),
                        now="2026-07-28T08:00:10Z", wall="2026-07-28T07:59:00Z")
@@ -1583,7 +1726,7 @@ def test_a_wall_clock_behind_the_pass_never_shortens_the_cooldown(tmp_path, monk
     (_position(timeframe="2h"), "sl-1"),   # a timeframe this runtime has no bar length for
 ])
 def test_only_a_stop_on_a_routed_context_starts_a_cooldown(tmp_path, monkeypatch, position, leg):
-    from runtime.mvp_runtime.crypto.live_order import read_live_entry_marks
+    from runtime.mvp_runtime.crypto.live_order_stores import read_live_entry_marks
 
     record = _settle_venue_stop(tmp_path, monkeypatch, position=position, filled_leg=leg, price=60000.0)
     assert record["live_settled"]["status"] == live_leg.EXIT_CLOSED
@@ -1630,7 +1773,7 @@ def test_a_stop_settled_from_the_fill_history_still_starts_the_cooldown(tmp_path
     failed on the settling tick, so the settlement priced the exit from the fill history and
     labelled it `venue_external_close`. The cooldown started only on `stop_loss`, and the next bar
     entered again. The external label now holds the context like a stop."""
-    from runtime.mvp_runtime.crypto.live_order import (
+    from runtime.mvp_runtime.crypto.live_order_stores import (
         LIVE_ENTRY_STOP_LOSS_COOLDOWN,
         read_live_entry_marks,
     )
@@ -1701,7 +1844,7 @@ def test_a_strategy_without_its_arming_approval_is_held_before_anything_is_spent
     """Decision 17: the arming approval is part of the approved profile. An entry the decision
     found READY for a strategy that names none is held by the gate — no bar, no slot, no row."""
     from runtime.mvp_runtime.crypto import pre_order_gate
-    from runtime.mvp_runtime.crypto.live_order import count_today, read_live_entry_marks
+    from runtime.mvp_runtime.crypto.live_order_stores import count_today, read_live_entry_marks
 
     venue = _Venue()
     run = _wire_whole_leg(tmp_path, monkeypatch, venue)
@@ -1997,7 +2140,7 @@ def test_a_market_price_that_cannot_be_read_costs_the_entry_not_the_fan_out():
 
 def test_a_market_that_moved_from_the_bar_close_holds_the_entry_and_spends_nothing(tmp_path, monkeypatch):
     from runtime.mvp_runtime.crypto.live_entry import PRICE_DIVERGED
-    from runtime.mvp_runtime.crypto.live_order import count_today, read_live_entry_marks
+    from runtime.mvp_runtime.crypto.live_order_stores import count_today, read_live_entry_marks
 
     venue = _Venue()
     run = _wire_whole_leg(tmp_path, monkeypatch, venue)
@@ -2029,7 +2172,7 @@ def test_a_market_price_that_cannot_be_used_says_why_on_the_record(tmp_path, mon
 def test_a_decision_that_waited_over_a_minute_is_not_sent(tmp_path, monkeypatch):
     """The venue door judges the send at the wall clock: sixty-one seconds after the decision the
     leg refuses before it takes the symbol, the bar or the day's slot."""
-    from runtime.mvp_runtime.crypto.live_order import count_today, read_live_entry_marks
+    from runtime.mvp_runtime.crypto.live_order_stores import count_today, read_live_entry_marks
 
     venue = _Venue()
     run = _wire_whole_leg(tmp_path, monkeypatch, venue)
@@ -2081,7 +2224,7 @@ def test_the_decision_clock_is_read_after_every_fact_it_judges(tmp_path, monkeyp
 # --- the gate re-reads what another writer can move (PR2c-2a) ------------------------------------
 
 def _nothing_spent(venue, tmp_path):
-    from runtime.mvp_runtime.crypto.live_order import count_today, read_live_entry_marks
+    from runtime.mvp_runtime.crypto.live_order_stores import count_today, read_live_entry_marks
 
     marks = read_live_entry_marks(tmp_path)
     return venue.entries() == [] and count_today(tmp_path) == 0 and marks["entered"] == {} \
@@ -2477,7 +2620,7 @@ def _another_door_in_flight(tmp_path, *, notional):
 
 def test_an_entry_another_door_leaves_no_exposure_for_is_held_before_the_bar(tmp_path, monkeypatch):
     """Decision 26: the probe on SOL took 100 of the 120 cap after this leg read the account."""
-    from runtime.mvp_runtime.crypto.live_order import read_live_entry_marks
+    from runtime.mvp_runtime.crypto.live_order_stores import read_live_entry_marks
     from runtime.mvp_runtime.crypto.live_order_stores import LIVE_ENTRY_EXPOSURE_TAKEN
 
     venue = _Venue()
@@ -2502,7 +2645,7 @@ def test_an_entry_the_other_door_leaves_room_for_opens(tmp_path, monkeypatch):
 def test_a_stop_left_resting_on_the_symbol_holds_the_next_entry(tmp_path, monkeypatch):
     """Decision 25, end to end: a trade's stop that was never withdrawn is still at the venue when
     the next entry on the symbol comes; the entry is refused and nothing is withdrawn."""
-    from runtime.mvp_runtime.crypto.live_order import read_live_entry_marks
+    from runtime.mvp_runtime.crypto.live_order_stores import read_live_entry_marks
 
     venue = _Venue()
     run = _wire_whole_leg(tmp_path, monkeypatch, venue)
@@ -2576,7 +2719,7 @@ def test_a_tripped_api_breaker_holds_the_entry_and_spends_nothing(tmp_path, monk
 
 
 def test_a_latch_nobody_was_told_of_is_told_by_the_next_pass(tmp_path, monkeypatch):
-    from runtime.mvp_runtime.crypto.live_order import api_breaker_status
+    from runtime.mvp_runtime.crypto.live_order_stores import api_breaker_status
     from runtime.mvp_runtime.crypto.live_order_stores import MAX_CONSECUTIVE_API_ERRORS
 
     run = _wire_whole_leg(tmp_path, monkeypatch, _Venue())
@@ -2598,7 +2741,7 @@ class _SendFails(_Venue):
 
 def test_the_pass_whose_send_latches_the_breaker_tells_the_operator_once(tmp_path, monkeypatch):
     from runtime.mvp_runtime.crypto.live_entry import API_BREAKER_REFUSED
-    from runtime.mvp_runtime.crypto.live_order import api_breaker_status
+    from runtime.mvp_runtime.crypto.live_order_stores import api_breaker_status
     from runtime.mvp_runtime.crypto.live_order_stores import MAX_CONSECUTIVE_API_ERRORS
 
     venue = _SendFails()
@@ -2693,7 +2836,7 @@ def test_an_unreadable_api_breaker_holds_entries_and_still_manages_positions(tmp
 
 
 def test_an_api_breaker_that_trips_before_the_gate_holds_the_entry(tmp_path, monkeypatch):
-    from runtime.mvp_runtime.crypto.live_order import api_breaker_status
+    from runtime.mvp_runtime.crypto.live_order_stores import api_breaker_status
 
     venue = _Venue()
     run = _wire_whole_leg(tmp_path, monkeypatch, venue)
@@ -2714,7 +2857,7 @@ def test_a_failed_account_read_is_counted_by_the_feeds_own_code(tmp_path, monkey
     """`read_account` sums every failure up as one word, ACCOUNT_DATA_DEGRADED; the breaker has
     to read the feed's own code underneath it, or no account read would ever count."""
     from runtime.mvp_runtime.crypto import account
-    from runtime.mvp_runtime.crypto.live_order import api_breaker_status
+    from runtime.mvp_runtime.crypto.live_order_stores import api_breaker_status
 
     class _Down:
         feed_id, feed_version, network_egress = "binance", "test", True
@@ -2741,7 +2884,7 @@ def test_a_failed_account_read_is_counted_by_the_feeds_own_code(tmp_path, monkey
 def test_the_fill_history_a_settlement_falls_back_to_is_counted_with_the_pass(tmp_path, monkeypatch):
     """The settlement's fallback read goes through the account feed, not the adapter. It is a
     signed read of the pass all the same, and counts in the read class (PR2d-1)."""
-    from runtime.mvp_runtime.crypto.live_order import api_breaker_status
+    from runtime.mvp_runtime.crypto.live_order_stores import api_breaker_status
     from runtime.mvp_runtime.crypto.live_position import list_open_live_positions
 
     class _HistoryDown(_History):
@@ -2770,7 +2913,7 @@ def test_a_notice_that_did_not_get_through_is_tried_again_on_a_later_pass(tmp_pa
     again — on a pass the retry interval later, not on every context of the same fan-out, since
     each attempt can hold a pass for the channel's timeout (review of #889)."""
     from runtime.mvp_runtime import timeutil as tu
-    from runtime.mvp_runtime.crypto.live_order import api_breaker_status
+    from runtime.mvp_runtime.crypto.live_order_stores import api_breaker_status
     from runtime.mvp_runtime.crypto.live_order_stores import (
         API_BREAKER_NOTICE_RETRY_SECONDS,
         MAX_CONSECUTIVE_API_ERRORS,
@@ -2836,7 +2979,7 @@ class _SendDropped(_Venue):
 
 def test_a_dropped_send_counts_even_when_it_escapes_untyped(tmp_path, monkeypatch):
     from runtime.mvp_runtime.crypto.live_entry import API_BREAKER_REFUSED
-    from runtime.mvp_runtime.crypto.live_order import api_breaker_status
+    from runtime.mvp_runtime.crypto.live_order_stores import api_breaker_status
     from runtime.mvp_runtime.crypto.live_order_stores import MAX_CONSECUTIVE_API_ERRORS
 
     venue = _SendDropped()
@@ -2855,7 +2998,7 @@ def test_only_a_channel_that_reaches_someone_counts_as_told(tmp_path, monkeypatc
     """The inert channel takes every message and tells nobody: sending through it is no notice, so
     the latch stays untold and the next cycle tries again."""
     from runtime.mvp_runtime import operator as operator_mod
-    from runtime.mvp_runtime.crypto.live_order import api_breaker_status
+    from runtime.mvp_runtime.crypto.live_order_stores import api_breaker_status
     from runtime.mvp_runtime.crypto.live_order_stores import MAX_CONSECUTIVE_API_ERRORS
 
     class _Channel:

@@ -46,7 +46,6 @@ from .vocabulary import (  # noqa: E402,F401
     LIVE_TRADING_FLAGS,
     LIVE_TRADING_PROVIDER_ID,
     REAL_LIVE_TRADING,
-    STOP_EXIT_REASONS,
     utc_day,
 )
 
@@ -63,7 +62,6 @@ from .live_ledger import (  # noqa: E402,F401
     live_outcomes_for_analysis,
     read_live_outcomes,
     read_live_outcomes_raw,
-    stop_slippage_observations,
 )
 
 

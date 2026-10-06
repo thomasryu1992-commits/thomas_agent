@@ -69,9 +69,12 @@ core thin while lanes grow, stated as rules:
   - the PR7 split work;
   - measurement and display that change no judgement and that no door reads, e.g. entry-refusal
     counters or a member-minus-twin readout;
-  - tightening cohort membership, such as a cross-cohort sibling rule.
+  - tightening cohort membership, such as a cross-cohort sibling rule;
+  - the read-only multi-account board (P1 of `docs/proposals/MULTI_ASSET_EXPANSION_V0.1.md`, Thomas
+    2026-10-02 D4): no order path, no judgement changed, and no door reads it.
 
-  Judgement rules loosen only at a research-epoch boundary (`RESEARCH_EPOCH_V0.1.md` Q3). Record:
+  Judgement rules loosen only at a research-epoch boundary (`RESEARCH_EPOCH_V0.1.md` Q3): each cohort's close,
+  the first on 2027-03-22 (Thomas 2026-10-06). Record:
   `docs/proposals/SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md`, "결정 (Thomas 2026-09-26)" and
   "결정 (Thomas 2026-10-01)".
 - **Never run state-writing CLIs on the host as root.** Services run as uid 10001 and mount
@@ -229,9 +232,9 @@ First-time setup, local Core activation, and end-to-end verification: use the `v
 MVP use case = "analyze this business idea"; MVP role = `general.specialist`; the MVP runtime
 is a new module reusing kernel parts, not a kernel extension. Provider = free hosted APIs
 behind the Safety-Flag Gate as an **ordered failover chain**
-(`MVP_HOSTED_PROVIDER=openrouter,google_ai_studio,groq`; Thomas 2026-07-20; openrouter
-prepended Thomas 2026-07-24; grants retired Thomas 2026-08-10, the env
-names the chain): a chain with an unknown or duplicate member fails closed **entirely**
+(`MVP_HOSTED_PROVIDER=google_ai_studio,openrouter,groq`; Thomas 2026-07-20; openrouter
+prepended Thomas 2026-07-24, moved second Thomas 2026-10-05 after it failed over on 151 of 160
+runs — scorecard Q2; grants retired Thomas 2026-08-10, the env names the chain): a chain with an unknown or duplicate member fails closed **entirely**
 (never silently shrinks). Failover fires on a failure that belongs to the member — 429/503 after
 its own retry, a missing key, 401/403/404, 5xx, a timeout or dropped connection, a malformed answer
 (Thomas 2026-09-26, review D1; `providers.failover_kind`) — never on a request-shaped 4xx or a gate

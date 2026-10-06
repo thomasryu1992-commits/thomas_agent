@@ -7,7 +7,8 @@ Run it twice: before tagging anything, and again immediately before the promote:
 
 Each check prints ``[PASS]``, ``[WARN]`` or ``[STOP]``; any STOP exits 1. It changes nothing:
 the only commands it runs are ``gh pr view``, ``git fetch``/``rev-parse``/``merge-base``/``status``,
-``docker inspect``/``image inspect``/``images`` and ``docker compose … config``. Each check is a
+``docker inspect``/``image inspect``/``images``, ``docker compose … config``, and ``tail``/``cat`` of
+two scheduler state files. Each check is a
 mistake a session on this host has made or nearly made:
 
 - **The PR is merged and its merge commit is on origin/main.** A PR can sit OPEN with every check
@@ -27,6 +28,13 @@ mistake a session on this host has made or nearly made:
   compose file can roll back what is running (2026-08-21, 41 commits behind). The check reads the
   project and env file off the running containers' own compose labels, and with ``--tree`` it
   resolves that tree's compose file and checks every bind source.
+- **No scheduled fire is in flight, and no factory fire is about to start.** ``compose up`` recreates
+  the scheduler lanes, and a lane restart kills whatever fire it was running: the next process
+  writes ``abandoned_mid_run`` and the occurrence is not retried until its next interval
+  (2026-10-05: a deploy at 08:12 UTC cut the DOGEUSDT 1h factory fire 15 s in, and that day's
+  generation for it was lost). The check pairs recent ``started`` scheduler events against their
+  terminal events, and reads the factory schedules' ``next_run_at``. A fire in flight stops both
+  runs; a factory fire due within the margin stops the promote run and warns on the first.
 
 ``docker compose config`` interpolates ``.env``, so its output holds secret values. This script
 reads only service names, container names and bind sources from it, and never prints it.
@@ -39,6 +47,7 @@ import json
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
 from typing import Callable, Sequence
 
@@ -48,6 +57,19 @@ PROJECT = "thomas_agent"
 IMAGE = "thomas-agent-runtime"
 PROBE_CONTAINER = "thomas-scheduler"
 STATE_SOURCE = f"{PRIMARY}/.runtime_governance_state"
+SCHEDULER_EVENTS = f"{STATE_SOURCE}/runtime_ledger/scheduler_events.jsonl"
+SCHEDULES = f"{STATE_SOURCE}/schedules.jsonl"
+# The scheduler's own pairing (`scheduler.find_abandoned_runs`): a `started` with no terminal
+# event under the same `schedule_run_id`. Restated here because this script runs on the host with
+# no repo on its path.
+TERMINAL_ACTIONS = frozenset({"fired", "failed", "abandoned"})
+# A `started` older than this with no terminal is a dead run the next restart will close, not one a
+# deploy can still kill: the factory child's own timeout (`scheduler.FACTORY_CHILD_TIMEOUT_SECONDS`).
+IN_FLIGHT_SECONDS = 900
+# How far ahead a factory fire counts as about to start: a promote plus `compose up` takes a minute
+# or two, and a fire claimed in that gap dies with the old lane.
+FACTORY_DUE_MARGIN_SECONDS = 600
+EVENTS_TAIL = 400
 
 Runner = Callable[[Sequence[str]], "tuple[int, str]"]
 
@@ -224,14 +246,76 @@ def check_tree(run: Runner, tree: str) -> list[Result]:
     return results
 
 
-def preflight(run: Runner, pr: int, tree: str | None, promote: bool = False) -> list[Result]:
+def _parse_time(value: object) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _jsonl(text: str) -> list[dict]:
+    rows = []
+    for line in text.splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue  # a torn or partial line (tail can cut the first one) is not a fact
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def check_scheduled_fires(run: Runner, now: datetime, promote: bool) -> Result:
+    events = _out(run, ["tail", "-n", str(EVENTS_TAIL), SCHEDULER_EVENTS])
+    schedules = _out(run, ["cat", SCHEDULES])
+    if events is None or schedules is None:
+        return Result("WARN", "fires", "cannot read the scheduler state files; check by hand that no "
+                                       "scheduled fire is running before compose up")
+    started: dict[str, dict] = {}
+    closed: set[str] = set()
+    for event in _jsonl(events):
+        run_id = event.get("schedule_run_id")
+        if not isinstance(run_id, str) or not run_id:
+            continue
+        if event.get("action") == "started":
+            started.setdefault(run_id, event)
+        elif event.get("action") in TERMINAL_ACTIONS:
+            closed.add(run_id)
+    in_flight = []
+    for run_id, event in started.items():
+        at = _parse_time(event.get("created_at"))
+        if run_id not in closed and at is not None and (now - at).total_seconds() <= IN_FLIGHT_SECONDS:
+            in_flight.append(f"{event.get('kind')} {str(event.get('schedule_id'))[-8:]} since {event.get('created_at')}")
+    if in_flight:
+        return Result("STOP", "fires",
+                      f"a scheduled fire is running ({'; '.join(in_flight)}). compose up would kill it and it "
+                      f"is not retried until its next interval: wait for its fired/failed event, then re-run")
+    latest: dict[str, dict] = {}
+    for row in _jsonl(schedules):
+        if row.get("schedule_id"):
+            latest[str(row["schedule_id"])] = row
+    horizon = now + timedelta(seconds=FACTORY_DUE_MARGIN_SECONDS)
+    due = sorted(str(row.get("next_run_at")) for row in latest.values()
+                 if row.get("kind") == "crypto_factory" and row.get("enabled")
+                 and (at := _parse_time(row.get("next_run_at"))) is not None and at <= horizon)
+    if due:
+        return Result("STOP" if promote else "WARN", "fires",
+                      f"{len(due)} crypto_factory fire(s) due by {horizon:%H:%M}Z (first {due[0]}). A promote "
+                      f"now restarts the lane under them: promote after they have fired")
+    return Result("PASS", "fires", "no scheduled fire in flight and no factory fire due within "
+                                   f"{FACTORY_DUE_MARGIN_SECONDS // 60} minutes")
+
+
+def preflight(run: Runner, pr: int, tree: str | None, promote: bool = False,
+              now: datetime | None = None) -> list[Result]:
     run(["git", "-C", PRIMARY, "fetch", "-q", "origin", "main"])
     results = [check_pr_merged(run, pr)]
     if promote:
         results.append(check_promote_window(run, pr))
     else:
         results += [check_tags_free(run, pr), check_rollback_point(run, pr)]
-    results += [check_compose_labels(run), check_primary_checkout(run)]
+    results += [check_compose_labels(run), check_primary_checkout(run),
+                check_scheduled_fires(run, now or datetime.now(timezone.utc), promote)]
     if tree:
         results += check_tree(run, tree)
     return results

@@ -84,11 +84,9 @@ from . import pre_order_gate
 # keeps the egress and the send-and-reconcile loop, and re-exports, as the same objects, the names the
 # callers still read as `live_execution.<name>` (refactor plan PR-16 removed the rest).
 from .order_request import (  # noqa: F401
-    ALGO_TYPE_CONDITIONAL, CONDITIONAL_ORDER_TYPES, MALFORMED_INTENT, MISMATCH, NOT_FOUND,
-    ORDER_MALFORMED_RESULT, ORDER_TYPE_LIMIT, ORDER_TYPE_MARKET, ORDER_TYPE_STOP_MARKET,
-    RECONCILED, RESTING_ORDER_TYPES, TIME_IN_FORCE_GTC, UNRECONCILABLE, _intended_price,
-    _order_rows, build_order_request, fill_facts, is_algo_request, is_protective_request,
-    normalize_algo_order, reconcile_order,
+    MALFORMED_INTENT, ORDER_MALFORMED_RESULT, RESTING_ORDER_TYPES, UNRECONCILABLE,
+    _intended_price, _order_rows, build_order_request, fill_facts, is_algo_request,
+    is_protective_request, normalize_algo_order, reconcile_order,
 )
 from .state import VENUE_MAINNET
 

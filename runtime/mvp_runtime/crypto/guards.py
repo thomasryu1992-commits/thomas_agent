@@ -535,6 +535,15 @@ def run_risk_guard(
         problems.append("daily_loss_limit_breached")
     if weekly_pnl_r <= limits.weekly_max_loss_r:
         problems.append("weekly_loss_limit_breached")
+    # This one latches, and that is intended (Thomas 2026-10-06, EVALUATION_CANNOT_ACT_PER_STRATEGY
+    # §8 D (i)). The drawdown unlatches on recovery to a new peak and the daily and weekly sums on
+    # time, but a streak ends only on a closed strategy win, and a tripped breaker refuses the
+    # entries that could produce one. Nothing in the runtime clears it: a person does, by
+    # registering limits (`scripts/register_crypto_risk_limits.py`, within
+    # MAX_MAX_CONSECUTIVE_LOSSES). Unlatching it on its own — a rolling window, or a reduced-size
+    # probe to break the streak — would resume trading automatically, which widens the money door
+    # and needs its own approval; on a system with no proven edge, "stop and call a human" is the
+    # posture. Probe rows cannot trip or reset it (`_consecutive_losses`).
     if consecutive_losses >= limits.max_consecutive_losses:
         problems.append("max_consecutive_losses_breached")
     if current_drawdown_r <= -_drawdown_limit_r(limits):

@@ -526,7 +526,7 @@ def gate_testnet_order(
 
 def count_testnet_today(root: Any = None, *, day: str | None = None) -> int:
     """Testnet orders submitted today. An ungated read, like the live one."""
-    from .live_order import count_today
+    from .live_order_stores import count_today
 
     return count_today(root, day=day, venue=VENUE_TESTNET)
 

@@ -12,10 +12,8 @@ import pytest
 from tests._helpers import make_gate_authorization
 
 from runtime.mvp_runtime.crypto import live_leg
-from runtime.mvp_runtime.crypto.live_order import (
-    MAX_CONSECUTIVE_BRACKET_FAILURES,
-    LiveBracketFailureBreaker,
-)
+from runtime.mvp_runtime.crypto.live_order import LiveBracketFailureBreaker
+from runtime.mvp_runtime.crypto.live_order_stores import MAX_CONSECUTIVE_BRACKET_FAILURES
 from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_FLAGS, LIVE_TRADING_PROVIDER_ID
 from runtime.mvp_runtime.safety_gate import Authorization
 from scripts import clear_bracket_breaker as cbb

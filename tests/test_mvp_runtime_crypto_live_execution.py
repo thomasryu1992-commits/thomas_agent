@@ -29,7 +29,7 @@ from runtime.mvp_runtime.crypto.live_pnl import (
     LIVE_TRADING_PROVIDER_ID,
     REAL_LIVE_TRADING,
 )
-from runtime.mvp_runtime.crypto.live_evidence import RECONCILED
+from runtime.mvp_runtime.crypto.order_request import ALGO_TYPE_CONDITIONAL, MISMATCH, NOT_FOUND, RECONCILED
 from runtime.mvp_runtime.errors import SafetyGateBlocked, ToolError
 from runtime.mvp_runtime.safety_gate import Authorization
 
@@ -127,7 +127,7 @@ def test_reconcile_matching_order_is_reconciled():
 
 def test_reconcile_missing_order_is_not_found():
     status, problems = lx.reconcile_order(_intent(), None)
-    assert status == lx.NOT_FOUND and problems
+    assert status == NOT_FOUND and problems
 
 
 @pytest.mark.parametrize("override, needle", [
@@ -140,7 +140,7 @@ def test_reconcile_missing_order_is_not_found():
 def test_reconcile_names_every_divergence(override, needle):
     intent = _intent()
     status, problems = lx.reconcile_order(intent, _venue_order_from(intent, **override))
-    assert status == lx.MISMATCH and any(needle in p for p in problems)
+    assert status == MISMATCH and any(needle in p for p in problems)
 
 
 # --- submit_and_reconcile orchestration --------------------------------------
@@ -161,7 +161,7 @@ def test_refuses_an_unapproved_guard_verdict():
 def test_a_lost_submit_reconciles_to_not_found():
     intent = _intent()
     res = _submit(intent, adapter=_FakeAdapter(venue_order=None), guard_verdict=APPROVED, now=NOW)
-    assert res["reconcile_status"] == lx.NOT_FOUND
+    assert res["reconcile_status"] == NOT_FOUND
 
 
 def test_an_ambiguous_submit_that_landed_still_reconciles():
@@ -183,7 +183,7 @@ def test_a_mismatched_fill_is_surfaced():
     intent = _intent()
     adapter = _FakeAdapter(venue_order=_venue_order_from(intent, executedQty=0.002))
     res = _submit(intent, adapter=adapter, guard_verdict=APPROVED, now=NOW)
-    assert res["reconcile_status"] == lx.MISMATCH
+    assert res["reconcile_status"] == MISMATCH
 
 
 # --- the gate: inert by default, real path not implemented -------------------
@@ -518,7 +518,7 @@ def test_conditional_order_carries_the_stop_price(order_type):
     venue moved the door."""
     req = lx.build_order_request(_cond_intent(order_type, reduce_only=True))
     assert req["type"] == order_type and req["triggerPrice"] == 59000.0
-    assert req["algoType"] == lx.ALGO_TYPE_CONDITIONAL
+    assert req["algoType"] == ALGO_TYPE_CONDITIONAL
     assert req["clientAlgoId"].startswith("TAI_") and "newClientOrderId" not in req
     assert req["reduceOnly"] is True and req["quantity"] > 0
     assert lx.is_algo_request(req) is True

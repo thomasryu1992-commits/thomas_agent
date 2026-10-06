@@ -15,7 +15,7 @@ import json
 import pytest
 
 from runtime.mvp_runtime import safety_gate
-from runtime.mvp_runtime.crypto import execution_stage as es
+from runtime.mvp_runtime.crypto import execution_stage as es, live_order_stores
 from runtime.mvp_runtime.crypto import live_execution, testnet_evidence, testnet_execution
 from runtime.mvp_runtime.crypto.state import VENUE_MAINNET, VENUE_TESTNET
 from runtime.mvp_runtime.errors import ToolError
@@ -351,8 +351,8 @@ def test_the_door_records_one_cycle_and_counts_it_on_the_testnet_venue(tmp_path,
     assert "venue_positions" in rows[0]["position_reconciliation"], "the venue was never asked"
     assert rows[0]["operator"] == "thomas" and rows[0]["failure"] is None
     # The orders counted against the TESTNET venue's counter, never the live one.
-    assert live_order.count_today(tmp_path, venue=VENUE_TESTNET) >= 1
-    assert live_order.count_today(tmp_path) == 0
+    assert live_order_stores.count_today(tmp_path, venue=VENUE_TESTNET) >= 1
+    assert live_order_stores.count_today(tmp_path) == 0
     # PR2b: the entry left under a snapshot recorded on the TESTNET venue's store, and the row
     # names it; the mainnet store is untouched.
     from runtime.mvp_runtime.crypto import pre_order_gate
@@ -707,3 +707,119 @@ def test_the_testnet_adapter_tells_an_unknown_outcome_from_a_refusal(monkeypatch
     with pytest.raises(ToolError) as exc:
         adapter.submit(request)
     assert exc.value.reason_code == reason
+
+
+# --- the failure matrix, end to end (residual safety review PR-B, 2026-10-02) ------------------------
+#
+# `cycle_findings` is the one judge, and its parametrized test above breaks each half of a stored row.
+# These run the door itself against a scripted testnet venue that fails at one step, so what is pinned
+# is that the door RECORDS each failure truthfully: no failure, wherever it happens, leaves a complete
+# cycle, and so none can back the stage climb out of SIGNED_TESTNET.
+
+def _kind(request):
+    if request.get("algoType"):
+        return "SL"
+    if str(request.get("type") or "").upper() != "MARKET":
+        return "TP"
+    return "EXIT" if request.get("reduceOnly") else "ENTRY"
+
+
+class _FaultyVenue(testnet_execution.DryRunTestnetOrderAdapter):
+    """The dry-run venue, failing at exactly one named step."""
+
+    network_egress = True
+
+    def __init__(self, fault):
+        super().__init__()
+        self.fault = fault
+        self._authorization = _testnet_auth()
+
+    def submit(self, order_request, *, timeout_seconds=10):
+        kind = _kind(order_request)
+        if self.fault == f"{kind}_rejected":
+            raise ToolError(live_execution.ORDER_REJECTED, f"venue rejected the {kind} order (code -2010)")
+        if self.fault == f"{kind}_unknown":
+            raise ToolError(live_execution.ORDER_OUTCOME_UNKNOWN, f"the {kind} submit timed out")
+        return super().submit(order_request, timeout_seconds=timeout_seconds)
+
+    def fetch_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
+        row = super().fetch_order(symbol, client_order_id, timeout_seconds=timeout_seconds, algo=algo)
+        request = self._submitted.get(client_order_id) or {}
+        if row is not None and self.fault == "entry_mismatch" and _kind(request) == "ENTRY":
+            row = {**row, "executedQty": "0.0005"}
+        if self.fault == "SL_invisible" and _kind(request) == "SL":
+            return None
+        return row
+
+    def cancel_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
+        if self.fault == "cancel_rejected":
+            raise ToolError(live_execution.ORDER_REJECTED, "venue rejected the cancel (code -2011)")
+        if self.fault == "cancel_unknown":
+            raise ToolError(live_execution.ORDER_OUTCOME_UNKNOWN, "the cancel timed out")
+        if self.fault == "cancel_wrong_endpoint":
+            return None        # the venue's "unknown order": asked at the endpoint the leg is not on
+        return super().cancel_order(symbol, client_order_id, timeout_seconds=timeout_seconds, algo=algo)
+
+    def open_positions(self, symbol=None, *, timeout_seconds=10):
+        amounts = {"exit_filled_position_open": "0.001", "position_quantity_mismatch": "0.0005",
+                   "position_side_mismatch": "-0.001"}
+        if self.fault in amounts:
+            return [{"symbol": symbol or "BTCUSDT", "positionAmt": amounts[self.fault]}]
+        if self.fault == "final_reconciliation_unreadable":
+            raise ToolError("TOOL_TRANSPORT", "positionRisk did not answer")
+        return super().open_positions(symbol, timeout_seconds=timeout_seconds)
+
+
+def _run_door(tmp_path, monkeypatch, venue):
+    from scripts import run_signed_testnet_cycle as door
+
+    monkeypatch.setenv(testnet_execution.TESTNET_TRADING_ENV, testnet_execution.REAL_TESTNET_TRADING)
+    monkeypatch.setattr(door.testnet, "select_testnet_order_adapter", lambda **kw: venue)
+    monkeypatch.setattr(door, "_price", lambda symbol, **kw: 50000.0)
+    monkeypatch.setattr(door, "resolve_execution_stage", lambda root=None, **kw: _stage())
+    try:
+        return door.run_cycle(symbol="BTCUSDT", quantity=0.001, operator="t", reason="r",
+                              root=tmp_path, now=NOW)
+    except door._Refusal:
+        return None
+
+
+def test_the_scripted_venue_completes_a_cycle_when_nothing_fails(tmp_path, monkeypatch):
+    """The control for the matrix below: with no fault the same venue yields a complete cycle, so each
+    failing case fails because of its fault."""
+    out = _run_door(tmp_path, monkeypatch, _FaultyVenue(None))
+    assert out is not None and out["complete"] is True, out and out["findings"]
+    assert [r["cycle_id"] for r in testnet_evidence.complete_cycles(tmp_path)] == [out["cycle_id"]]
+
+
+@pytest.mark.parametrize("fault", [
+    "ENTRY_rejected", "ENTRY_unknown", "entry_mismatch",
+    "SL_rejected", "TP_rejected", "SL_unknown", "TP_unknown", "SL_invisible",
+    "cancel_wrong_endpoint", "cancel_rejected", "cancel_unknown",
+    "EXIT_rejected", "EXIT_unknown",
+    "exit_filled_position_open", "position_quantity_mismatch", "position_side_mismatch",
+    "final_reconciliation_unreadable",
+])
+def test_no_failure_anywhere_in_the_cycle_leaves_complete_evidence(tmp_path, monkeypatch, fault):
+    out = _run_door(tmp_path, monkeypatch, _FaultyVenue(fault))
+    if out is not None:
+        assert out["complete"] is False and out["findings"], fault
+    assert testnet_evidence.complete_cycles(tmp_path) == [], fault
+    # And so no stage climb can name it.
+    for row in testnet_evidence.read_cycles(tmp_path):
+        with pytest.raises(ToolError) as exc:
+            testnet_evidence.assert_complete_cycle(row["cycle_id"], tmp_path)
+        assert exc.value.reason_code == testnet_evidence.EVIDENCE_INCOMPLETE
+
+
+def test_a_cycle_whose_evidence_cannot_be_written_is_not_reported_complete(tmp_path, monkeypatch):
+    """Evidence persistence failure: the door must surface it, never return a complete cycle that
+    exists nowhere."""
+    def _unwritable(record, root=None):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(testnet_evidence, "append_cycle", _unwritable)
+    with pytest.raises(OSError):
+        _run_door(tmp_path, monkeypatch, _FaultyVenue(None))
+    assert not testnet_evidence.evidence_path(tmp_path).exists()
+    assert testnet_evidence.complete_cycles(tmp_path) == []

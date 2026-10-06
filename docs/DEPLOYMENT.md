@@ -150,7 +150,7 @@ TELEGRAM_BOT_TOKEN=...
 # calls getUpdates — never set this on the operator service, which does poll, or the two
 # pollers steal each other's messages. Unset falls back to TELEGRAM_BOT_TOKEN.
 HERMES_BOT_TOKEN=...            # the assistant's bot; lane notifications go there (renamed 2026-09-04)
-MVP_HOSTED_PROVIDER=openrouter,google_ai_studio,groq
+MVP_HOSTED_PROVIDER=google_ai_studio,openrouter,groq   # order: Thomas 2026-10-05 (scorecard Q2)
 OPENROUTER_API_KEY=...
 GOOGLE_AI_STUDIO_API_KEY=...
 GROQ_API_KEY=...
@@ -218,11 +218,12 @@ The compose operator runs with `--independent-validation auto` (review only
 important/high-risk requests — the R7.1 policy). To change that, edit the operator
 service's `command:` in `docker-compose.yml` — not a `docker run` flag.
 
-`MVP_HOSTED_PROVIDER` also accepts an ordered failover chain (`openrouter,google_ai_studio,groq`
+`MVP_HOSTED_PROVIDER` also accepts an ordered failover chain (`google_ai_studio,openrouter,groq`
 — put every member's API key in the `.env` too). The environment is the gate (2026-08-10):
 naming the chain IS the authorization, and a chain with an unknown or duplicate member fails
-closed at startup rather than silently shrinking. The next member is tried only when the previous
-one answers 503/429 even after its own retry. Set `MVP_VALIDATOR_PROVIDER` (e.g. `groq`)
+closed at startup rather than silently shrinking. The next member is tried on a failure that
+belongs to the previous one (429/503 after its own retry, a missing key, 401/403/404, 5xx, a timeout,
+a malformed answer — `providers.failover_kind`), never on a request-shaped 4xx. Set `MVP_VALIDATOR_PROVIDER` (e.g. `groq`)
 to run the R7.1 reviewer on its own gated provider/quota — same chain rules. **These env
 vars belong to the scheduler service too** (both `environment:` blocks list them); a key
 present for the operator but missing for the scheduler is the failure mode where scheduled
@@ -429,7 +430,10 @@ docker exec -u 10001 thomas-scheduler python -m scripts.emergency_close --confir
 ```
 
 A `KILLED` state blocks all new/pending execution; only `/status` and audit reads remain, and
-only the authenticated operator can `/resume`. A corrupt control file fails closed to `KILLED`.
+only the authenticated operator can `/resume`. **Neither `/kill` nor `/pause` interrupts a task that
+is already running** — the mid-run peek writes the halt state so nothing further starts, and the
+running task runs to its end (aborting it is decision K4, not bought:
+`docs/proposals/CONTROL_LANE_SEPARATION_V0.1.md`). A corrupt control file fails closed to `KILLED`.
 **A `KILLED` or `PAUSED` crypto runtime also stops managing open live positions** (no settlement,
 protection re-check, time exit or reconciliation until `/resume`; the brackets resting at the venue
 are what holds them). `halt_trading` is the halt that refuses new entries and keeps that management
@@ -484,6 +488,8 @@ Rows are keyed by the name in `.env` (what leaves the file), not by the containe
 | `GOOGLE_AI_STUDIO_API_KEY` | `operator`, `pipeline-worker` | same plane, second provider in the chain |
 | `GROQ_API_KEY` | `operator`, `pipeline-worker` | same plane, validator and front-desk provider |
 | `TAVILY_API_KEY` | `operator`, `pipeline-worker` | the read-only search tool, model plane only |
+| `KIS_APP_KEY` | `scheduler-maint` | the holdings board's KIS account read (2026-10-02) — a maintenance fire, kept off the risk lane that holds the order key |
+| `KIS_APP_SECRET` | `scheduler-maint` | same |
 | `NAVER_APIHUB_KEY` | `pipeline-worker` | Naver research runs on the engine and nowhere else |
 | `NAVER_APIHUB_KEY_ID` | `pipeline-worker` | same |
 | `NAVER_SEARCHAD_API_KEY` | `pipeline-worker` | same |

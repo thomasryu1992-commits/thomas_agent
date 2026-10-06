@@ -169,6 +169,9 @@ CHANNEL_VERB_AUTHORITY: dict[str, str] = {
     # third authority to name: the money path's permission is P5 FINANCIAL_APPROVED_TRADING_USE
     # and no verb on this channel is anywhere near it.
     "crypto": "policy:permission_model INTERNAL_READ (ALLOW) + kill_switch.kill_allows read_only_status",
+    # The holdings board (2026-10-02): the same two authorities as /crypto, for the same reason. It
+    # renders a file scheduler-maint wrote and holds no KIS key; nothing it reaches can place an order.
+    "holdings": "policy:permission_model INTERNAL_READ (ALLOW) + kill_switch.kill_allows read_only_status",
 }
 
 

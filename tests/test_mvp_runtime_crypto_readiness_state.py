@@ -554,7 +554,7 @@ def _write_fire(root, *, created_at, statuses=("HELD", "HELD"), gate=True, degra
     ``loss_refused`` those only the loss breakers refused (the live verdict, not the paper one);
     ``account_unreadable`` those whose leg could not read the account; ``blocked`` maps a context to the
     refusal its leg was BLOCKED on; ``held`` names the strategies the live allowance held back."""
-    from runtime.mvp_runtime.crypto.cycle import OPTIONAL_DATA_DEGRADED_CODES
+    from runtime.mvp_runtime.crypto.feed_assembly import OPTIONAL_DATA_DEGRADED_CODES
     from runtime.mvp_runtime.crypto.live_route import ACCOUNT_UNREADABLE, ROUTING_PRECONDITION
 
     records = []

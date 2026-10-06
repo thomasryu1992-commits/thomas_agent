@@ -270,7 +270,7 @@ def test_an_unreadable_paper_history_is_listed_before_an_unreadable_live_one(tmp
     """Both histories are read in the guard's stage, the paper one first. The paper leg still routes:
     its verdict is data health alone."""
     from runtime.mvp_runtime.crypto import paper
-    from runtime.mvp_runtime.crypto.live_pnl import state_dir as live_state_dir
+    from runtime.mvp_runtime.crypto.state import state_dir as live_state_dir
     from tests.test_mvp_runtime_crypto_cycle import FakeExchangeCollector
 
     _write_pool(tmp_path, {"strategy_id": "S1", "status": "PAPER_ACTIVE", "champion_score": 0.5,

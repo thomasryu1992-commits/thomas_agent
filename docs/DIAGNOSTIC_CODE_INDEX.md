@@ -4,10 +4,10 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **651** distinct codes across **1270** raise sites
+- **655** distinct codes across **1281** raise sites
 - **23** exception classes carry them
 - **75** codes are raised from more than one module (see below)
-- **137** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
+- **138** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
 - **29** raise sites carry a human-readable **message** where a code would go, so there is nothing to look up — a different gap from the line above, and counted apart from it
 
 ## Codes raised from more than one module
@@ -47,14 +47,14 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `LIVE_HISTORY_TAMPERED` | `live_ledger.py`, `live_pnl.py` |
 | `MALFORMED_DIRECTION` | `live_order.py`, `live_position.py` |
 | `MALFORMED_REQUEST` | `bridge_idempotency.py`, `dispatch_bridge.py`, `knowledge_bridge.py`, `pipeline_worker.py`, `read_bridge.py`, `socket_door.py`, `switch_bridge.py` |
-| `MALFORMED_RESULT` | `account.py`, `market_data.py`, `naver_research.py`, `tools.py` |
+| `MALFORMED_RESULT` | `account.py`, `market_data.py`, `kis_account.py`, `naver_research.py`, `tools.py` |
 | `MISSING_OPERATOR` | `memory.py`, `program_request.py`, `programization.py` |
 | `MISSING_REASON` | `memory.py`, `memory_console.py`, `program_request.py`, `programization.py` |
 | `MISSING_SYMBOL` | `live_order.py`, `live_position.py` |
 | `NOT_APPROVED` | `approval.py`, `switch_bridge.py` |
 | `NOT_A_CANDIDATE` | `memory.py`, `planner.py` |
 | `NOT_BOUND` | `assignment.py`, `permission.py`, `validator.py`, `worker.py` |
-| `NO_API_KEY` | `account.py`, `market_data.py`, `naver_research.py`, `providers.py`, `tools.py` |
+| `NO_API_KEY` | `account.py`, `market_data.py`, `kis_account.py`, `naver_research.py`, `providers.py`, `tools.py` |
 | `NO_MODEL_BUDGET` | `validator.py`, `worker.py` |
 | `NO_ORDER_API_KEY` | `live_execution.py`, `testnet_execution.py` |
 | `ORDER_HALTED` | `live_execution.py`, `testnet_execution.py` |
@@ -79,7 +79,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `SECRET_IN_CANDIDATE` | `memory.py`, `programization.py` |
 | `TOKEN_BUDGET_EXCEEDED` | `validator.py`, `worker.py` |
 | `TOOL_ERROR` | `market_data.py`, `naver_research.py`, `tools.py` |
-| `TOOL_TRANSPORT` | `market_data.py`, `naver_research.py`, `tools.py` |
+| `TOOL_TRANSPORT` | `market_data.py`, `kis_account.py`, `naver_research.py`, `tools.py` |
 | `TRANSITION_INVALID` | `task_registry.py`, `workflow.py`, `workflow_store.py` |
 | `UNKNOWN_APPROVAL` | `approval.py`, `switch_bridge.py` |
 | `UNKNOWN_CANDIDATE` | `approval_cli.py`, `pool.py` |
@@ -195,6 +195,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `BINDING_FAILED` | `PlannerBlocked` | `runtime/mvp_runtime/binding.py` | `bind_task_to_core` | `—` |
 | `BLOG_PACKAGE_SCHEMA_INVALID` | `ToolError` | `runtime/mvp_runtime/blog_content.py` | `package_schema_path` | `version not in PACKAGE_SCHEMA_VERSIONS` |
 | `BLOG_PACKAGE_SCHEMA_INVALID` | `ToolError` | `runtime/mvp_runtime/blog_content.py` | `run_content_ideation` | `—` |
+| `BLOG_PLATFORM_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/blog_platform.py` | `resolve` | `profile is None` |
 | `BRIDGE_ALREADY_RUNNING` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | `__init__` | `door_is_live(path)` |
 | `BRIDGE_CLIENT_GID_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | `resolve_client_gid` | `—` |
 | `BRIDGE_CLIENT_GID_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | `resolve_client_gid` | `gid < 0` |
@@ -447,6 +448,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `FRONTDESK_ROLE_UNRESOLVED` | `OperatorBlocked` | `runtime/mvp_runtime/frontdesk.py` | `_require_active_role` | `—` |
 | `FRONTDESK_ROLE_UNRESOLVED` | `OperatorBlocked` | `runtime/mvp_runtime/frontdesk.py` | `_require_active_role` | `len(entries) != 1` |
 | `GUARD_NOT_APPROVED` | `SubmitRefused` | `runtime/mvp_runtime/crypto/live_execution.py` | `submit_and_reconcile` | `not (isinstance(guard_verdict, Mapping) and guard_verdict.get('approved') is True)` |
+| `HOLDINGS_SNAPSHOT_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/holdings/store.py` | `_unreadable` | `—` |
 | `HOST_NOT_ALLOWED` | `ToolBlocked` | `runtime/mvp_runtime/crypto/account.py` | `__init__` | `host not in ALLOWED_ACCOUNT_HOSTS` |
 | `HYPOTHESIS_TRIAL_ALREADY_CLOSED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | `close_trial` | `candidate in closed_trial_ids(root)` |
 | `HYPOTHESIS_TRIAL_ALREADY_CLOSED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | `close_trial` | `line.get('close') is not None` |
@@ -550,6 +552,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `INVENTORY_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/pipeline_worker.py` | `_apply_job` | `not isinstance(inventory, dict) or not inventory` |
 | `JOB_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/pipeline_worker.py` | `_apply_job` | `not isinstance(job, str) or job.strip() not in _ALLOWED_JOBS` |
 | `KEYWORD_QUEUE_STALE` | `ToolError` | `runtime/mvp_runtime/blog_content.py` | `load` | `age > QUEUE_MAX_AGE_DAYS` |
+| `KEYWORD_QUEUE_UNAVAILABLE` | `ToolError` | `runtime/mvp_runtime/blog_content.py` | `_tistory_candidates` | `not candidates` |
 | `KEYWORD_QUEUE_UNAVAILABLE` | `ToolError` | `runtime/mvp_runtime/blog_content.py` | `load` | `not candidates` |
 | `KEYWORD_QUEUE_UNAVAILABLE` | `ToolError` | `runtime/mvp_runtime/blog_content.py` | `load` | `not path.is_file()` |
 | `KEYWORD_QUEUE_UNAVAILABLE` | `ToolError` | `runtime/mvp_runtime/blog_content.py` | `load` | `title is None` |
@@ -557,6 +560,9 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `KILL_STATE_UNAVAILABLE` | `OperatorBlocked` | `runtime/mvp_runtime/registry_console.py` | `apply_registry_command` | `control_store is None` |
 | `KIND_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | `apply_dispatch` | `kind not in _ALLOWED_KINDS` |
 | `KIND_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/pipeline_worker.py` | `apply_work` | `kind not in _ALLOWED_KINDS` |
+| `KIS_REJECTED` | `ToolError` | `runtime/mvp_runtime/holdings/kis_account.py` | `_inquire` | `str(body.get('rt_cd', '')).strip() != '0'` |
+| `KIS_REJECTED` | `ToolError` | `runtime/mvp_runtime/holdings/kis_account.py` | `_send` | `—` |
+| `KIS_SERVER_UNKNOWN` | `ToolBlocked` | `runtime/mvp_runtime/holdings/kis_account.py` | `_server` | `choice not in BASE_URLS` |
 | `KNOWLEDGE_CONTENT_AMBIGUOUS` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/service.py` | `add_document` | `(text is None) == (pdf_base64 is None)` |
 | `KNOWLEDGE_DOCUMENT_DATE_INVALID` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/store.py` | `_optional_timestamp` | `—` |
 | `KNOWLEDGE_DOCUMENT_DATE_INVALID` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/store.py` | `_optional_timestamp` | `not isinstance(value, str) or not value.strip()` |
@@ -785,6 +791,9 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | `live_symbols` | `not isinstance(listings, list) or not isinstance(metas, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | `order_book` | `—` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | `order_book` | `not isinstance(payload, dict)` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/kis_account.py` | `_access_token` | `not isinstance(token, str) or not token` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/kis_account.py` | `_send` | `—` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/kis_account.py` | `_send` | `not isinstance(body, dict)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | `_parse` | `—` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | `_parse` | `not isinstance(rows, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | `competition` | `—` |
@@ -854,6 +863,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | `_signed_get` | `not api_key or not api_secret` |
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | `liquidation_history` | `not api_key` |
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | `open_interest_history` | `not api_key` |
+| `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/holdings/kis_account.py` | `_env` | `missing` |
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | `_headers` | `missing` |
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | `_headers` | `missing` |
 | `NO_API_KEY` | `ProviderError` | `runtime/mvp_runtime/providers.py` | `generate` | `not api_key` |
@@ -1068,9 +1078,9 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `PROVIDER_TRANSPORT` | `ProviderError` | `runtime/mvp_runtime/providers.py` | `_read_within` | `worker.is_alive()` |
 | `PROVIDER_UNAVAILABLE` | `ProviderError` | `runtime/mvp_runtime/providers.py` | `_post_json_with_retry` | `exc.code in _RETRYABLE_HTTP` |
 | `PROVIDER_UNAVAILABLE` | `ProviderError` | `runtime/mvp_runtime/providers.py` | `generate` | `all((f['kind'] == FAILOVER_UNAVAILABLE for f in failovers))` |
+| `PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE` | `ToolError` | `runtime/mvp_runtime/blog_content.py` | `_load_published` | `required` |
+| `PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE` | `ToolError` | `runtime/mvp_runtime/blog_content.py` | `load` | `not posts` |
 | `PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE` | `ToolError` | `runtime/mvp_runtime/blog_content.py` | `load` | `not self.root.is_dir()` |
-| `PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE` | `ToolError` | `runtime/mvp_runtime/blog_content.py` | `load` | `posts == 0` |
-| `PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE` | `ToolError` | `runtime/mvp_runtime/blog_content.py` | `run_content_ideation` | `source is None` |
 | `QUERY_TOO_LONG` | `ToolBlocked` | `runtime/mvp_runtime/tools.py` | `_require_query` | `len(query) > MAX_QUERY_CHARS` |
 | `QUEUE_FULL` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | `submit_within_depth` | `depth >= limit` |
 | `REASON_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | `apply_dispatch` | `not isinstance(reason, str) or not reason.strip()` |
@@ -1249,6 +1259,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | `classify_transport_error` | `—` |
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | `derivative_price_klines` | `—` |
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | `positioning_history` | `—` |
+| `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/holdings/kis_account.py` | `_send` | `—` |
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | `_fetch` | `—` |
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | `keywords` | `—` |
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/tools.py` | `search` | `—` |

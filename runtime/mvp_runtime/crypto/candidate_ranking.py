@@ -473,7 +473,7 @@ def expected_replayed_bars(timeframe: str) -> int | None:
     # constants, and the ranking should not pull the whole miner into its import graph to read
     # one pure function. (Both are strategy; while this lived in the pool it was local by
     # layering too.)
-    from .factory import holdout_split_index
+    from .backtest import holdout_split_index
 
     return holdout_split_index(market_data.factory_candle_target(timeframe))
 
@@ -545,7 +545,7 @@ def search_context_key(spec: Mapping[str, Any]) -> tuple[Any, ...]:
 
     Coarser than :func:`promotion_backlog._lineage_key` on purpose, and the difference is the whole
     correction.
-    A lineage key includes the family, but which of the 20 templates to mint is itself a
+    A lineage key includes the family, but which of the factory's templates to mint is itself a
     searched degree of freedom — counting attempts per family would divide the multiple-testing
     burden by the very choice that creates it. Two candidates on BTCUSDT 1h were scored against
     the same bars whatever family they came from, so they are two draws from one distribution.

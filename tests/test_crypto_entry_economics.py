@@ -41,13 +41,13 @@ from runtime.mvp_runtime.crypto.lifecycle import (
 )
 from runtime.mvp_runtime.crypto.market_data import Candle, MarketSnapshot
 from runtime.mvp_runtime.crypto.paper import (
-    ENTRY_COST_UNECONOMIC,
     DryRunPaperStore,
     RealPaperStore,
     build_outcome_record,
     entry_cost_refusal,
     run_paper_update,
 )
+from runtime.mvp_runtime.crypto.trade_plan import ENTRY_COST_UNECONOMIC
 from runtime.mvp_runtime.safety_gate import FILESYSTEM_WRITE
 
 NOW = "2026-07-22T12:00:00Z"

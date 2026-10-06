@@ -260,6 +260,39 @@ def test_the_fetch_reaches_back_to_the_oldest_start_plus_the_warm_up():
     assert fco.bars_to_fetch([], timeframe="1d", now=_day(20)) is None
 
 
+def test_the_walk_counts_each_refused_entry_once_and_the_report_shows_it(tmp_path, capsys):
+    """THROUGHPUT P0-3: a matched signal a door refuses was invisible — the walk opened nothing and
+    said nothing. The regime door refuses every bar here; each is counted once, a re-walk of the
+    same bars adds nothing, and the report line and the script's cohort line carry the count."""
+    from scripts import forward_cohort as script
+
+    regime = {"trending_down": {"trades": 30, "total_r": -6.0}}
+    _install_cohort(tmp_path, _record("cand_a", regime=regime))
+    frame = _frame(range(1, 8), regime="trending_down")
+    assert _walk(tmp_path, frame)["opened"] == 0
+    _walk(tmp_path, frame)                                   # the same bars again
+    (entry,) = fco.load_positions(tmp_path)["entries"].values()
+    walked_bars = 7 - 2                                      # day 3 (the selecting row) through day 7
+    assert entry["entry_refusals"] == {"regime": walked_bars}
+    assert entry["entry_refusals_from"] == _day(3)
+    (line,) = fco.cohort_report(tmp_path)[0]["members"]
+    assert line["entry_refusals"] == {"counts": {"regime": walked_bars}, "from": _day(3)}
+    assert "entry_refusals" not in str(fco.board_summary(tmp_path))     # display only, off the board
+    script._report(tmp_path)
+    assert f"entry refusals since {_day(3)} (display only): regime {walked_bars} · distribution 0" in capsys.readouterr().out
+
+
+def test_a_bar_that_opens_counts_no_refusal_and_the_forward_book_counts_nothing(tmp_path):
+    _install_cohort(tmp_path, _record("cand_a"))
+    assert _walk(tmp_path, _frame(range(1, 8), stop_on={5}))["opened"] >= 1
+    (entry,) = fco.load_positions(tmp_path)["entries"].values()
+    assert entry["entry_refusals"] == {}
+    state: dict = {}            # a caller that passes no counter (the pool's forward book, the seeder)
+    fb.replay_entry_bar(state, fco.synthesize_entry(_record("cand_b")), StrategySpec.from_dict(
+        _spec_dict()), _row(_day(9)), _candle(_day(9)), 105.0, symbol="BTCUSDT", timeframe="1d", now=_day(9))
+    assert "entry_refusals" not in state
+
+
 # --- (3) the synthesized entry --------------------------------------------------------------
 
 def test_the_entry_carries_the_admission_evidence_a_promotion_would():
@@ -397,6 +430,55 @@ def test_a_lineage_the_pool_ever_clocked_is_not_frozen(tmp_path):
     assert [m["candidate_id"] for m in fco.freeze_cohort(tmp_path, now=NOW)["members"]] == ["cand_a"]
 
 
+# --- what an unjudged member is waiting on (residual safety review PR-E, 2026-10-02) --------------
+
+@pytest.mark.parametrize("line,walked,expected", [
+    ({"status": "FORWARD_INSUFFICIENT", "priceable_count": 0, "timeframe": "1d"}, False, fco.WAITING_NOT_YET_WALKED),
+    ({"status": "FORWARD_INSUFFICIENT", "priceable_count": 0, "timeframe": "1d"}, True, fco.WAITING_NO_SIGNAL),
+    ({"status": "FORWARD_INSUFFICIENT", "priceable_count": 0, "timeframe": "1d"}, None, fco.WAITING_UNKNOWN),
+    ({"status": "FORWARD_INSUFFICIENT", "priceable_count": 4, "timeframe": "1d", "trade_floor": 10}, True,
+     fco.WAITING_TRADE_FLOOR),
+    ({"status": "FORWARD_INSUFFICIENT", "priceable_count": 12, "timeframe": "1d", "trade_floor": 10}, True,
+     fco.WAITING_NO_SPREAD),
+    ({"status": "FORWARD_INSUFFICIENT", "priceable_count": 12, "timeframe": "1d", "trade_floor": 10,
+      "mean_net_r": 0.4, "active_slices": 3}, True, fco.WAITING_SLICE_FLOOR),
+    ({"status": "FORWARD_INSUFFICIENT", "priceable_count": 40, "timeframe": "4h", "trade_floor": 25,
+      "mean_net_r": 0.4, "active_slices": 9}, True, fco.WAITING_CONFIDENCE_BOUND),
+    ({"status": "FORWARD_UNDERPOWERED", "priceable_count": 11, "timeframe": "1d", "mean_net_r": 0.2}, True,
+     fco.WAITING_CONFIDENCE_BOUND),
+    ({"status": "FORWARD_CONTRADICTED", "priceable_count": 30, "timeframe": "4h"}, True, None),
+    ({"status": "FORWARD_CONFIRMED", "priceable_count": 30, "timeframe": "4h"}, True, None),
+    ({"status": "UNRESOLVED"}, True, None),
+])
+def test_waiting_on_names_what_stands_between_a_member_and_its_verdict(line, walked, expected):
+    assert fco.waiting_on(line, walked=walked) == expected
+
+
+def test_the_report_tells_a_member_never_walked_from_one_walked_with_no_trade(tmp_path):
+    _install_cohort(tmp_path, _record("cand_a"), _record("cand_b", family="other", adx=99.0))
+    (cohort,) = fco.cohort_report(tmp_path)
+    assert {m["candidate_id"]: m["waiting_on"] for m in cohort["members"]} == {
+        "cand_a": fco.WAITING_NOT_YET_WALKED, "cand_b": fco.WAITING_NOT_YET_WALKED}
+    # cand_a matches every bar and trades through a stop; cand_b (adx >= 99) never fires.
+    _walk(tmp_path, _frame(range(1, 8), stop_on={5}))
+    (cohort,) = fco.cohort_report(tmp_path)
+    waiting = {m["candidate_id"]: m["waiting_on"] for m in cohort["members"]}
+    assert waiting == {"cand_a": fco.WAITING_TRADE_FLOOR, "cand_b": fco.WAITING_NO_SIGNAL}
+    board = fco.board_summary(tmp_path)
+    assert board["waiting_counts"] == {fco.WAITING_NO_SIGNAL: 1, fco.WAITING_TRADE_FLOOR: 1}
+    # Display only: the maturity and the judge's status are what they were.
+    assert board["maturity_counts"] == {"EXPLORATORY": 2}
+    from runtime.mvp_runtime.crypto.dashboard import build_status, render_status_text
+    assert "대기 신호 없음 1 · 거래 하한 1" in render_status_text(build_status(tmp_path, now=NOW))
+
+
+def test_waiting_on_is_unknown_when_the_walkers_book_cannot_be_read(tmp_path):
+    _install_cohort(tmp_path, _record("cand_a"))
+    fco._positions_path(tmp_path).write_text("{not json", encoding="utf-8")
+    (cohort,) = fco.cohort_report(tmp_path)
+    assert cohort["members"][0]["waiting_on"] == fco.WAITING_UNKNOWN
+
+
 def test_the_report_judges_at_the_frozen_selection_time(tmp_path):
     _install_cohort(tmp_path, _record("cand_a"))
     _walk(tmp_path, _frame(range(1, 8), stop_on={5}))
@@ -409,6 +491,34 @@ def test_the_report_judges_at_the_frozen_selection_time(tmp_path):
     assert line["trade_mean_r"] == pytest.approx(net_result_r(row), abs=1e-6)
     assert line["trade_lower_bound_r"] is None  # one trade is never bounded
     assert line["trade_spread_floor_r"] is None  # nor pooled: one trade in the whole cohort
+
+
+def test_the_indexed_report_is_the_report_over_every_row(tmp_path, monkeypatch):
+    """P1-2 (RESEARCH_FORWARD_THROUGHPUT_ANALYSIS, Thomas 2026-10-06): each member reads its own rows
+    from an index instead of every row in the store. Nothing it reports may change — §22's named
+    risk is a pre-selection row slipping back in — so the same store is reported both ways."""
+    a, b = _record("cand_a"), _record("cand_b", family="trend_pullback")
+    _install_cohort(tmp_path, a, b)
+    _walk(tmp_path, _frame(range(1, 8), stop_on={5}))
+    base = next(r for r in fco.read_cohort_outcomes(tmp_path) if r["candidate_id"] == "cand_a")
+    rows: list = []
+    for i, net in enumerate([1.0, -0.5, 2.0, -1.0, 0.7, -0.3, 1.4, -1.0]):   # interleaved a, b, a, b, ...
+        rows.append({**base, "candidate_id": ("cand_a", "cand_b")[i % 2], "result_R": net,
+                     "holding_candles": 0, "opened_at_utc": _day(10 + i), "created_at_utc": _day(11 + i)})
+    rows.insert(3, {**base, "result_R": 9.0, "opened_at_utc": "2026-07-01T00:00:00Z"})  # before the cutoff
+    rows.insert(5, {**base, "candidate_id": "cand_b", "outcome_closed": False})          # still open
+    by_gen = {k: v for k, v in base.items() if k != "candidate_id"}                      # a's gen: key
+    rows.insert(6, {**by_gen, "result_R": 0.4, "holding_candles": 0,
+                    "opened_at_utc": _day(20), "created_at_utc": _day(21)})
+    rows.insert(1, "not a row")
+    monkeypatch.setattr(fco, "read_cohort_outcomes", lambda root=None: rows)
+
+    indexed = fco.cohort_report(tmp_path)
+    monkeypatch.setattr(fco, "rows_for", lambda judged, index: rows)                   # the old way
+    assert fco.cohort_report(tmp_path) == indexed
+    lines = {m["candidate_id"]: m for m in indexed[0]["members"]}
+    assert lines["cand_a"]["closed_count"] == 5     # four of its own and the gen: row, not the early one
+    assert lines["cand_b"]["closed_count"] == 4     # the open row is not evidence
 
 
 def test_the_trade_lower_bound_floors_the_spread_at_the_pooled_one():

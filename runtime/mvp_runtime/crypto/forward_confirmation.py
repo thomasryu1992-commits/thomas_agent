@@ -50,7 +50,7 @@ from __future__ import annotations
 import math
 import statistics
 from datetime import datetime
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from .. import timeutil
 from ..errors import ToolError
@@ -106,9 +106,10 @@ def min_forward_trades(timeframe: str | None) -> int:
 #
 # The estimates are noise-dominated (SE ~ 1/sqrt(K) = 0.13-0.26), so this is "nothing
 # measurable argues against 14d", not a proof of independence — stated plainly because the
-# number of PARALLEL forward clocks grew from one routed stream to one per lineage (#807),
-# and `assert_live_tier_confirmed`'s `observed_lineages` is informational, not a correction:
-# the multiple-testing burden stays on the operator reading the ask. What does NOT loosen:
+# number of PARALLEL forward clocks grew from one routed stream to one per lineage (#807).
+# That burden is charged at the door: `assert_live_tier_confirmed` judges at
+# `robustness.selection_adjusted_z(observed_lineages)`, not at 1.96 (#1047), so a first
+# confirmation out of many watched lines must clear a higher bar. What does NOT loosen:
 # the trade floors, the trade-level z-interval, the block-level t-interval itself, and
 # MIN_HOLDOUT_PERIODS=8 distinct periods.
 #
@@ -155,7 +156,7 @@ def slice_width_days(timeframe: str) -> float | None:
     ``None`` for a timeframe the factory does not target: a width invented here would be
     a threshold minted outside the judge it claims to mirror.
     """
-    from .factory import HOLDOUT_FRACTION, HOLDOUT_PERIODS  # local: heavy module
+    from .backtest import HOLDOUT_FRACTION, HOLDOUT_PERIODS  # local: heavy module
     from .market_data import (  # local: heavy module
         FACTORY_DEPTH_DAYS, TIMEFRAMES, factory_candle_target,
     )
@@ -237,6 +238,35 @@ def forward_outcomes_for(
         if opened is not None and opened >= cutoff:
             kept.append(o)
     return kept
+
+
+def index_outcomes(outcomes: Iterable[Mapping[str, Any]]) -> dict[str, list[tuple[int, Mapping[str, Any]]]]:
+    """The closed rows of ``outcomes`` grouped by attribution key, each with its store position.
+
+    A report that judges M lineages over R rows handed every lineage all R rows, and
+    :func:`forward_outcomes_for` walked them all to keep its own few: O(M·R), 2.7 s for 197
+    members over 1,077 rows on 2026-10-06, growing with both. Indexed once, each lineage reads
+    only its own rows (:func:`rows_for`). Only what :func:`forward_outcomes_for` would look at is
+    indexed — a closed Mapping row, the same test in the same order — so a row it skips is never
+    asked for its key here either."""
+    index: dict[str, list[tuple[int, Mapping[str, Any]]]] = {}
+    for position, o in enumerate(outcomes):
+        if isinstance(o, Mapping) and o.get("outcome_closed") is True:
+            index.setdefault(outcome_attribution_key(o), []).append((position, o))
+    return index
+
+
+def rows_for(
+    record: Mapping[str, Any], index: Mapping[str, Sequence[tuple[int, Mapping[str, Any]]]],
+) -> list[Mapping[str, Any]]:
+    """This lineage's closed rows from an :func:`index_outcomes` index, in store order.
+
+    The narrowing only: the selection cutoff, pricing and every rule stay with the reader it is
+    handed to (:func:`forward_outcomes_for`, :func:`judge_forward`), which see the same rows in
+    the same order as with the whole store — a lineage with both a ``cand:`` and a ``gen:`` key
+    gets its rows merged back by position."""
+    picked = [entry for key in lineage_keys(record) for entry in index.get(key, ())]
+    return [row for _, row in sorted(picked, key=lambda entry: entry[0])]
 
 
 def judge_forward(

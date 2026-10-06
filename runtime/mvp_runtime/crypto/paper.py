@@ -59,10 +59,7 @@ from .strategy_artifact import ARTIFACT_SHA256_FIELD
 # The trade-plan maths lives in `trade_plan` (strategy) and the record labels in `vocabulary` since
 # crypto PR7c; what this module's many importers still read here is re-exported as the same objects.
 from .trade_plan import (  # noqa: F401
-    ASSUMED_LEVERAGE,
     COOLDOWN_BARS_AFTER_STOPLOSS,
-    ENTRY_COST_UNECONOMIC,
-    advance_holding,
     build_entry_plan,
     build_outcome_record,
     entry_cost_refusal,

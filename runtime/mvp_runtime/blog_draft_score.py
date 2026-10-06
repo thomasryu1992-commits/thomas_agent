@@ -230,15 +230,17 @@ def measure_structured(
     }
 
 
-def shortfall(measured: dict[str, int]) -> float:
+def shortfall(measured: dict[str, int], standards: dict[str, Standard] | None = None) -> float:
     """How far a measurement is outside the critical standards: each missed standard's distance
     from its range, relative to the bound it missed, summed. 0.0 for a draft that passes.
 
     Relative so that 3 characters over a 150 average (0.02) and 579 short of a 1,800 body (0.32)
-    compare the way a reader would compare them."""
+    compare the way a reader would compare them. ``standards`` is the platform's table
+    (`blog_tistory.STANDARDS` for a Tistory draft); the Naver one by default."""
+    standards = STANDARDS if standards is None else standards
     total = 0.0
-    for key in critical_failures(measured):
-        standard, value = STANDARDS[key], measured[key]
+    for key in critical_failures(measured, standards):
+        standard, value = standards[key], measured[key]
         if value < standard.low:
             total += (standard.low - value) / standard.low
         elif standard.high is not None and value > standard.high:
@@ -246,18 +248,20 @@ def shortfall(measured: dict[str, int]) -> float:
     return total
 
 
-def critical_failures(measured: dict[str, int]) -> list[str]:
+def critical_failures(measured: dict[str, int], standards: dict[str, Standard] | None = None) -> list[str]:
     """The critical standards a measurement misses, by key — what a revision is asked to fix."""
-    return [key for key, standard in STANDARDS.items()
+    standards = STANDARDS if standards is None else standards
+    return [key for key, standard in standards.items()
             if standard.critical and measured.get(key, -1) >= 0
             and not standard.within(measured[key])]
 
 
-def scorecard(measured: dict[str, int]) -> tuple[list[str], bool]:
+def scorecard(measured: dict[str, int], standards: dict[str, Standard] | None = None) -> tuple[list[str], bool]:
     """``(lines, ok)`` — ok is False when any critical criterion is outside its range."""
+    standards = STANDARDS if standards is None else standards
     lines: list[str] = []
     ok = True
-    for key, standard in STANDARDS.items():
+    for key, standard in standards.items():
         value = measured[key]
         bound = standard.rendered_bound()
         note = f"  ({standard.note})" if standard.note else ""

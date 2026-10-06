@@ -19,7 +19,8 @@ import pytest
 from runtime.mvp_runtime.crypto import execution_stage as es, readiness_model
 from runtime.mvp_runtime.crypto import live_evidence, live_readiness, live_route
 from runtime.mvp_runtime.crypto import pool as pool_store
-from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_ENV, state_dir
+from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_ENV
+from runtime.mvp_runtime.crypto.state import state_dir
 from runtime.mvp_runtime.crypto.live_order import CONFIRMATION_ENV, LIVE_CONFIRMATION_PHRASE
 from runtime.mvp_runtime.errors import ToolError
 
@@ -100,7 +101,7 @@ def test_board_reports_every_gate(tmp_path, clean_env):
 def test_unreadable_entry_marks_turn_the_board_red_and_say_not_to_delete(tmp_path, clean_env):
     """PR2a: a corrupt marks file refuses every live entry, so the board must say so — and must
     not send the operator to the one repair that re-opens bars already sent on."""
-    from runtime.mvp_runtime.crypto.live_order import ENTRY_MARKS_FILENAME
+    from runtime.mvp_runtime.crypto.live_order_stores import ENTRY_MARKS_FILENAME
     from runtime.mvp_runtime.crypto.state import venue_state_dir
 
     path = venue_state_dir(tmp_path) / ENTRY_MARKS_FILENAME
@@ -118,7 +119,7 @@ def test_the_entry_marks_row_names_the_entries_in_flight_and_the_ones_left_behin
     import json
 
     from runtime.mvp_runtime import timeutil
-    from runtime.mvp_runtime.crypto.live_order import ENTRY_MARKS_FILENAME
+    from runtime.mvp_runtime.crypto.live_order_stores import ENTRY_MARKS_FILENAME
     from runtime.mvp_runtime.crypto.live_order_stores import ENTRY_MARKS_VERSION
     from runtime.mvp_runtime.crypto.state import venue_state_dir
 

@@ -23,17 +23,23 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 from urllib.parse import urlparse
 
 __all__ = [
     "DRAFT_FORMAT_LEGACY",
     "DRAFT_FORMAT_STRUCTURED",
     "MIN_TITLES",
+    "cited_refs",
+    "claim_key",
+    "ref_keys",
     "detect_fact_checks",
     "evidence_index",
     "fact_checks",
+    "load_object",
+    "parse_prose",
     "parse_structured",
+    "prose_title_candidates",
     "render_blocks",
     "resolve_sources",
     "sanitize_paragraph",
@@ -52,6 +58,11 @@ MAX_TAGS = 30
 MAX_IMAGE_SHOTS = 20
 MAX_FACT_CHECKS = 30
 MAX_SOURCES = 10
+# The package schema's ceiling on editor directions (`body_blocks`).
+MAX_BODY_BLOCKS = 100
+# How many whole values back a cut-off draft is tried (`_repairs`): the last one nearly always
+# parses; a few more cover a key string that only looked like a list element.
+MAX_TAIL_CUTS = 8
 # The table is its own field (2026-09-29). Asked to write it as ' | ' rows inside `paragraphs`,
 # a model broke the JSON exactly there: it replaced a section's `"heading": …` with the key
 # `": | : | :"`, and the draft lost every key after it (tags, image shots, fact checks, sources).
@@ -192,6 +203,54 @@ def repair_brackets(raw: str, *, close_at_end: bool = False) -> tuple[str, int] 
     return "".join(out), inserted
 
 
+def _complete_ends(raw: str) -> list[int]:
+    """Where a text that was CUT OFF could end on a whole value: just after each closer, and just
+    after each string inside a list — ``[]`` for a text that was not cut (nothing left open at
+    its end) or that closes a bracket it never opened.
+
+    `bcp_63185d84aceaf646ff6e` ('클로바노트 유료', 2026-10-06): the first draft stopped at
+    ``…, {"heading": "개인용 무료 한도 …", "level": 3,`` — after a comma, which closing at the end
+    cannot mend. Cut back to the last whole value, its four sections, citations and capture
+    directions were all there; it went to the prose parser instead, and the revision that
+    rebuilt the structure had no first-draft citations to carry back (every [S#] lost)."""
+    ends: list[int] = []
+    stack: list[str] = []
+    in_string = escaped = False
+    for pos, ch in enumerate(raw):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+                if stack and stack[-1] == "[":
+                    ends.append(pos + 1)
+        elif ch == '"':
+            in_string = True
+        elif ch in _CLOSER:
+            stack.append(ch)
+        elif ch in ("}", "]"):
+            while stack and _CLOSER[stack[-1]] != ch:      # a dropped closer: repair_brackets' gap
+                stack.pop()
+            if not stack:
+                return []
+            stack.pop()
+            ends.append(pos + 1)
+    return ends if (stack or in_string) else []
+
+
+def _repairs(raw: str, whole: str) -> Iterator[tuple[str, int] | None]:
+    """The repairs :func:`load_object` tries, in order: the outermost ``{...}``; the text to its
+    end with what it left open closed there; and, for a text cut mid-value, the text cut back to
+    each of its last whole values (:func:`_complete_ends`) and closed. The cut drops only the
+    unfinished tail — a half-written element is never completed, a missing key never filled."""
+    yield repair_brackets(raw)
+    yield repair_brackets(whole, close_at_end=True)
+    for end in reversed(_complete_ends(whole)[-MAX_TAIL_CUTS:]):
+        yield repair_brackets(whole[:end], close_at_end=True)
+
+
 def _loads(text: str) -> Any:
     """``json.loads`` that accepts a raw control character (a newline, a tab) inside a string.
 
@@ -202,7 +261,39 @@ def _loads(text: str) -> Any:
     return json.loads(text, strict=False)
 
 
-def parse_structured(text: str) -> tuple[dict[str, Any] | None, str | None]:
+def load_object(text: str) -> tuple[dict[str, Any] | None, int, str | None]:
+    """``(object, brackets_inserted, None)`` for text that holds one JSON object, ``(None, 0,
+    reason)`` otherwise — the tolerance half of :func:`parse_structured`, shared with a platform
+    that reads its own extra keys from the same object (`blog_tistory`)."""
+    raw = _FENCE_RE.sub("", str(text or "").strip())
+    start, end = raw.find("{"), raw.rfind("}")
+    if start < 0 or end <= start:
+        return None, 0, "NO_JSON_OBJECT"
+    whole = raw[start:].rstrip()
+    raw = raw[start:end + 1]
+    inserted = 0
+    try:
+        data = _loads(raw)
+    except ValueError:
+        # The outermost {...} first, as before; then the text to its end, closed there; then a
+        # text cut mid-value, cut back to a whole value and closed (`_repairs`).
+        for repaired in _repairs(raw, whole):
+            if repaired is None:
+                continue
+            try:
+                data = _loads(repaired[0])
+            except ValueError:
+                continue
+            inserted = repaired[1]
+            break
+        else:
+            return None, 0, "JSON_UNPARSEABLE"
+    if not isinstance(data, dict):
+        return None, 0, "JSON_NOT_OBJECT"
+    return data, inserted, None
+
+
+def parse_structured(text: str, *, extended: bool = False) -> tuple[dict[str, Any] | None, str | None]:
     """``(draft, None)`` for a usable structured draft, ``(None, reason)`` otherwise.
 
     Tolerates exactly two kinds of wrapping a model adds — a code fence, and prose before or
@@ -211,30 +302,14 @@ def parse_structured(text: str) -> tuple[dict[str, Any] | None, str | None]:
     raw control characters inside strings (:func:`_loads`). Anything that is not then a JSON object with at
     least one section holding prose is not a structured draft, and the caller falls back to the
     legacy parser and says so. A repaired draft says how many closers it needed in
-    ``brackets_inserted``; the key is 0 otherwise."""
-    raw = _FENCE_RE.sub("", str(text or "").strip())
-    start, end = raw.find("{"), raw.rfind("}")
-    if start < 0 or end <= start:
-        return None, "NO_JSON_OBJECT"
-    whole = raw[start:].rstrip()
-    raw = raw[start:end + 1]
-    inserted = 0
-    try:
-        data = _loads(raw)
-    except ValueError:
-        # The outermost {...} first, as before; only when that cannot be repaired is the text
-        # taken to its end with the brackets it left open closed there.
-        repaired = repair_brackets(raw) or repair_brackets(whole, close_at_end=True)
-        if repaired is None:
-            return None, "JSON_UNPARSEABLE"
-        try:
-            data = _loads(repaired[0])
-        except ValueError:
-            return None, "JSON_UNPARSEABLE"
-        inserted = repaired[1]
-    if not isinstance(data, dict):
-        return None, "JSON_NOT_OBJECT"
+    ``brackets_inserted``; the key is 0 otherwise.
 
+    ``extended`` keeps two fields only a markdown platform renders: a section's heading
+    ``level`` (2 or 3) and a capture direction's ``alt_text``. Off, the draft is exactly what it
+    always was — the Naver revision re-serializes it, so an extra key would change its request."""
+    data, inserted, reason = load_object(text)
+    if data is None:
+        return None, reason
     draft_captures: list[tuple[int, str]] = []
     intro: list[str] = []
     for paragraph in _str_list(data.get("intro"), limit=2000, cap=MAX_PARAGRAPHS_PER_SECTION):
@@ -258,7 +333,14 @@ def parse_structured(text: str) -> tuple[dict[str, Any] | None, str | None]:
             if body:
                 paragraphs.append(body)
         if heading and paragraphs:
-            sections.append({"heading": heading, "paragraphs": paragraphs})
+            section = {"heading": heading, "paragraphs": paragraphs}
+            if extended:
+                level = item.get("level")
+                section["level"] = level if level in (2, 3) and not isinstance(level, bool) else 2
+                key = sanitize_paragraph(_text(item.get("key_sentence"), 300))
+                if key:
+                    section["key_sentence"] = key
+            sections.append(section)
         if len(sections) >= MAX_SECTIONS:
             break
     if not sections:
@@ -276,6 +358,10 @@ def parse_structured(text: str) -> tuple[dict[str, Any] | None, str | None]:
         tool = _text(item.get("tool_name"), 100)
         if tool:
             shot["tool_name"] = tool
+        if extended:
+            alt = sanitize_paragraph(_text(item.get("alt_text"), 200))
+            if alt:
+                shot["alt_text"] = alt
         shots.append(shot)
     shots += [{"after_section": s, "what_to_capture": w} for s, w in draft_captures]
 
@@ -366,6 +452,91 @@ def render_blocks(draft: Mapping[str, Any]) -> dict[str, Any]:
             "image_shots": shots[:MAX_IMAGE_SHOTS], "paragraph_count": len(paragraphs)}
 
 
+# --- the legacy prose draft (a model that answered in prose anyway) ------------------------
+
+# The `\s+` after the hashes is load-bearing, not style. A Korean hashtag line —
+# `#미리캔버스 #포스터제작` — also begins with `#`, and without the required space this regex
+# claimed it as a heading, so every draft's tag line became a title and `tags` came back empty.
+_PROSE_HEADING_RE = re.compile(r"^\s{0,3}#{1,4}\s+(?P<text>.+?)\s*$")
+_PROSE_CAPTURE_RE = re.compile(r"\[캡처:\s*(?P<what>[^\]]+)\]")
+_PROSE_TAG_RE = re.compile(r"#([^\s#]{1,40})")
+
+
+def parse_prose(draft: str) -> dict[str, Any]:
+    """Split one plain-text draft into the package's paste body and its editor instructions.
+
+    The paste body is what goes into SmartEditor, so the markers the editor cannot interpret
+    are lifted out of it and become instructions beside it: a heading line becomes a
+    `body_blocks` entry, a `[캡처: …]` marker becomes an `image_shots` entry naming the
+    paragraph it followed, and trailing `#tags` become `tags`. Everything is truncated at the
+    schema's ceiling rather than allowed to fail validation — see the constants above.
+    """
+    tags: list[str] = []
+    blocks: list[dict[str, Any]] = []
+    shots: list[dict[str, Any]] = []
+    kept: list[str] = []
+
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", draft or "") if p.strip()]
+    for para in paragraphs:
+        captures = _PROSE_CAPTURE_RE.findall(para)
+        body = _PROSE_CAPTURE_RE.sub("", para).strip()
+        # Asked first: a paragraph that is only hashtags is the draft's tag line, not a
+        # paragraph and not a heading.
+        if body and not _PROSE_TAG_RE.sub("", body).strip() and _PROSE_TAG_RE.search(body):
+            tags.extend(_PROSE_TAG_RE.findall(body))
+            continue
+        heading = _PROSE_HEADING_RE.match(body)
+        if heading:
+            body = heading.group("text").strip()
+        if body:
+            kept.append(body)
+            index = len(kept) - 1
+            if heading:
+                blocks.append({"paragraph_index": index, "action": "heading"})
+            for what in captures:
+                shots.append({"after_paragraph": index, "what_to_capture": what.strip()})
+        elif captures:
+            index = max(len(kept) - 1, 0)
+            for what in captures:
+                shots.append({"after_paragraph": index, "what_to_capture": what.strip()})
+
+    # Tags may also trail the final paragraph rather than standing alone.
+    if kept:
+        trailing = _PROSE_TAG_RE.findall(kept[-1])
+        if trailing and not _PROSE_TAG_RE.sub("", kept[-1]).strip():
+            tags.extend(trailing)
+            kept.pop()
+
+    seen: set[str] = set()
+    unique_tags = [t for t in tags if not (t in seen or seen.add(t))]
+    return {
+        "body_paste": "\n\n".join(kept),
+        "body_blocks": blocks[:MAX_BODY_BLOCKS],
+        "image_shots": shots[:MAX_IMAGE_SHOTS],
+        "tags": unique_tags[:MAX_TAGS],
+        "paragraph_count": len(kept),
+    }
+
+
+_PROSE_TITLE_RE = re.compile(r"^\s{0,3}#\s+(?P<text>.+?)\s*$")
+
+
+def prose_title_candidates(draft: str) -> list[str]:
+    """Titles from a prose draft: its level-1 headings (``# …``) only.
+
+    Every heading used to qualify, so a section called '프롬프트 만들기' was offered as the post's
+    title. A section heading is a section; a draft with no ``#`` title line yields no candidate,
+    and the quality check names the gap rather than a heading standing in for one."""
+    titles: list[str] = []
+    for line in (draft or "").splitlines():
+        match = _PROSE_TITLE_RE.match(line)
+        if match:
+            text = match.group("text").strip()
+            if text and text not in titles:
+                titles.append(text[:100])
+    return titles[:MAX_TITLES]
+
+
 # --- evidence a draft may cite ----------------------------------------------------------
 
 # A page served in EUC-KR and read as something else arrives from the search tool with its
@@ -432,6 +603,17 @@ def _keys(ref: Any) -> list[str]:
 def _resolve(ref: Any, index: Mapping[str, Any]) -> str | None:
     """The first key of ``ref`` this run's evidence has, or None."""
     return next((key for key in _keys(ref) if key in index), None)
+
+
+def ref_keys(ref: Any) -> list[str]:
+    """Every evidence key one citation names: "[S1, 3]" -> ["S1", "S3"]."""
+    return _keys(ref)
+
+
+def cited_refs(text: str) -> list[str]:
+    """Every single or grouped ``[S#]``/``[K#]`` citation in ``text``, in order — for a draft
+    whose JSON could not be read, the citations it still carries."""
+    return _GROUP_REF_RE.findall(str(text or ""))
 
 
 def strip_evidence_refs(text: str) -> str:
@@ -537,7 +719,7 @@ def _states_nothing(sentence: str) -> bool:
     return not re.search(r"\d", sentence) and bool(_NOT_A_CLAIM_RE.search(sentence))
 
 
-def _claim_key(claim: str) -> str:
+def claim_key(claim: str) -> str:
     """A claim with spacing, punctuation and its sentence ending taken off, for telling that the
     model's "…제공한다." and the detector's "…제공합니다." are the same sentence."""
     text = re.sub(r"[\s.!?。,'\"]", "", claim)
@@ -647,10 +829,10 @@ def fact_checks(
     claims: set[str] = set()
     for check in model_checks:
         claim = str(check.get("claim") or "").strip()[:500]
-        if not claim or _claim_key(claim) in claims:
+        if not claim or claim_key(claim) in claims:
             continue
         key = _resolve(check.get("source_ref"), index)
-        claims.add(_claim_key(claim))
+        claims.add(claim_key(claim))
         out.append({
             "claim": claim,
             "why": str(check.get("why") or "")[:300] or "모델이 확인 필요로 표시한 문장",
@@ -660,7 +842,7 @@ def fact_checks(
             "verified_at": None,
         })
     for check in detect_fact_checks(paragraphs):
-        found = _claim_key(check["claim"])
+        found = claim_key(check["claim"])
         if found in claims or any(found in c or c in found for c in claims):
             continue
         claims.add(found)

@@ -165,7 +165,7 @@ def test_the_prompt_offers_only_features_the_venue_can_serve():
 def test_known_features_agrees_with_the_validator_per_venue():
     # It used to union the raw tables, which made it right only for binance_futures.
     for venue in (market_data.BINANCE_FUTURES, market_data.HYPERLIQUID):
-        numeric, categorical = factory.known_features(venue)
+        numeric, categorical = template_space.known_features(venue)
         assert proposer.known_features(venue) == numeric | frozenset(categorical)
 
 

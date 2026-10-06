@@ -406,6 +406,17 @@ def pool_context_set(pool: Mapping[str, Any]) -> set[tuple[str, str]]:
     return contexts
 
 
+# Why a matched signal did not become a position, as :func:`replay_entry_bar` counts it when its
+# caller asks (``refusals``). One name per door, in the order the doors run.
+REFUSAL_REGIME = "regime"
+REFUSAL_DISTRIBUTION = "distribution"
+REFUSAL_NO_PLAN = "no_plan"
+REFUSAL_ENTRY_COST = "entry_cost"
+REFUSAL_LIQUIDATION = "stop_beyond_liquidation"
+ENTRY_REFUSAL_KINDS = (REFUSAL_REGIME, REFUSAL_DISTRIBUTION, REFUSAL_NO_PLAN, REFUSAL_ENTRY_COST,
+                       REFUSAL_LIQUIDATION)
+
+
 def replay_entry_bar(
     state: dict[str, Any],
     pool_entry: Mapping[str, Any],
@@ -417,6 +428,7 @@ def replay_entry_bar(
     symbol: str,
     timeframe: str,
     now: str,
+    refusals: dict[str, int] | None = None,
 ) -> dict[str, Any] | None:
     """One bar of one lineage's virtual life — the transition the cycle and the seeder share.
 
@@ -436,7 +448,13 @@ def replay_entry_bar(
     At-most-once per closed candle: the bar is processed only when the candle's
     ``close_time`` is strictly newer than ``state['last_seen_candle']`` — the
     routing-marks comparison, kept inside the book because the paper store's marks are
-    context-keyed and already consumed by the routed book before this step runs."""
+    context-keyed and already consumed by the routed book before this step runs.
+
+    ``refusals``, when given, counts each matched signal a door refused, by
+    :data:`ENTRY_REFUSAL_KINDS` (the forward cohort's walker passes one; THROUGHPUT P0-3). A bar
+    in cooldown, with a position open or with no match was never a refused entry and is not
+    counted. Without it nothing is counted and nothing changes."""
+
     candle_time = candle.get("close_time") if isinstance(candle, Mapping) else None
     if not isinstance(candle_time, str) or not candle_time:
         return None
@@ -463,6 +481,11 @@ def replay_entry_bar(
         state["cooldown_remaining"] = cooldown - 1
         return settled_row
 
+    def refused(kind: str) -> dict[str, Any] | None:
+        if refusals is not None:
+            refusals[kind] = int(refusals.get(kind) or 0) + 1
+        return settled_row
+
     if state.get("position") or not feature_row:
         return settled_row
 
@@ -472,10 +495,10 @@ def replay_entry_bar(
     state["last_signal_at"] = now
     admitted, _reason = regime_admits(pool_entry, feature_row.get("market_regime"))
     if not admitted:
-        return settled_row
+        return refused(REFUSAL_REGIME)
     di_admitted, _di_reason, _di = distribution_admits(pool_entry, feature_row)
     if not di_admitted:
-        return settled_row
+        return refused(REFUSAL_DISTRIBUTION)
 
     plan = build_entry_plan({
         "status": STATUS_ENTRY_CANDIDATE,
@@ -491,9 +514,11 @@ def replay_entry_bar(
         "primary_strategy_artifact_sha256": pool_entry.get(ARTIFACT_SHA256_FIELD),
     }, feature_row, now=now)
     if plan is None:
-        return settled_row
-    if entry_cost_refusal(plan) is not None or stop_beyond_liquidation_refusal(plan) is not None:
-        return settled_row
+        return refused(REFUSAL_NO_PLAN)
+    if entry_cost_refusal(plan) is not None:
+        return refused(REFUSAL_ENTRY_COST)
+    if stop_beyond_liquidation_refusal(plan) is not None:
+        return refused(REFUSAL_LIQUIDATION)
 
     state["position"] = open_position(plan, now=now)
     state["opens_count"] = int(state.get("opens_count") or 0) + 1

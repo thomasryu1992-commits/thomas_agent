@@ -72,8 +72,8 @@ from . import forward_book
 from .candidate_identity import candidate_id
 from .candidate_ranking import candidate_quality, rank_candidates
 from .forward_confirmation import (
-    FORWARD_CONFIRMED, FORWARD_CONTRADICTED, forward_outcomes_for, judge_forward, min_forward_trades,
-    selection_cutoff,
+    FORWARD_CONFIRMED, FORWARD_CONTRADICTED, FORWARD_UNDERPOWERED, forward_outcomes_for, index_outcomes,
+    judge_forward, min_forward_trades, rows_for, selection_cutoff,
 )
 from .judgement_fingerprint import judgement_fingerprint, judgement_rules
 from .market_data import TIMEFRAMES
@@ -87,7 +87,7 @@ from .pool_admission import (
 )
 from .pool_state import load_active_pool, read_candidates
 from .promotion_backlog import _lineage_key
-from .robustness import CONFIDENCE_Z
+from .robustness import CONFIDENCE_Z, MIN_HOLDOUT_PERIODS
 from .state import state_dir
 from .strategy import StrategySpec
 from .strategy_artifact import admission_evidence
@@ -130,6 +130,20 @@ MATURITY_CONTRADICTED = "CONTRADICTED"    # FORWARD_CONTRADICTED
 MATURITY_UNRESOLVED = "UNRESOLVED"        # the member's candidate row cannot be found
 MATURITIES = (MATURITY_EXPLORATORY, MATURITY_MATURE, MATURITY_CONFIRMED, MATURITY_CONTRADICTED,
               MATURITY_UNRESOLVED)
+
+# What an unjudged member is waiting on (2026-10-02, residual safety review PR-E). Display only, beside
+# the maturity rather than inside it, so the board's maturity counts keep their meaning. EXPLORATORY
+# covered a member no walk had reached, one walked with no trade closed and one a few trades short;
+# MATURE covered both "too few slices" and "an interval that spans zero". Each is a different wait.
+WAITING_NOT_YET_WALKED = "NOT_YET_WALKED"      # frozen, and no walk has reached it yet
+WAITING_NO_SIGNAL = "NO_SIGNAL"                # walked, and no trade has closed
+WAITING_TRADE_FLOOR = "TRADE_FLOOR"            # trades closed, fewer than its timeframe's floor
+WAITING_SLICE_FLOOR = "SLICE_FLOOR"            # at the floor, fewer active slices than the judge needs
+WAITING_NO_SPREAD = "NO_SPREAD"                # at the floor, and the trades show no spread to judge
+WAITING_CONFIDENCE_BOUND = "CONFIDENCE_BOUND"  # judged far enough, and its interval still spans zero
+WAITING_UNKNOWN = "UNKNOWN"                    # the walker's book could not be read, or no slice width
+WAITING_REASONS = (WAITING_NOT_YET_WALKED, WAITING_NO_SIGNAL, WAITING_TRADE_FLOOR, WAITING_SLICE_FLOOR,
+                   WAITING_NO_SPREAD, WAITING_CONFIDENCE_BOUND, WAITING_UNKNOWN)
 
 # Pre-cutoff bars fetched so every indicator is warm by the first counted bar — the seeder's
 # figure, for the seeder's reason (the deepest consumer is a 100-bar percentile window).
@@ -397,15 +411,24 @@ def advance_member(
     ``state`` for the next run. Bars before ``start`` only warm the indicators; bars at or before
     ``state['last_seen_candle']`` are skipped by ``replay_entry_bar`` itself, which is what makes a
     re-run over an overlapping frame a no-op. Each bar is stamped with its own close time, so
-    settlement ids are deterministic. Mutates ``state``; returns the finalized settled rows."""
+    settlement ids are deterministic. Mutates ``state``; returns the finalized settled rows.
+
+    It also counts, per door, the matched signals refused an entry (``entry_refusals``,
+    THROUGHPUT P0-3) and the first bar it counted (``entry_refusals_from``): a slot walked before
+    the counter existed has bars nobody counted, and its counts start there. The book entry is an
+    open mapping, the way ``opens_count`` rides it; the outcome rows are not touched."""
     settled: list[dict[str, Any]] = []
+    refusals = state.setdefault("entry_refusals", {})
     for row, candle in zip(rows, candles):
         bar_now = str((candle or {}).get("close_time") or "")
         if not bar_now or bar_now < start:
             continue
+        seen_before = state.get("last_seen_candle")
         outcome = forward_book.replay_entry_bar(
             state, entry, spec, row, candle, row.get("close"),
-            symbol=symbol, timeframe=timeframe, now=bar_now)
+            symbol=symbol, timeframe=timeframe, now=bar_now, refusals=refusals)
+        if state.get("last_seen_candle") != seen_before and not state.get("entry_refusals_from"):
+            state["entry_refusals_from"] = bar_now
         if outcome is not None:
             settled.append(_finalize_row(outcome, provenance))
     return settled
@@ -879,6 +902,61 @@ def sibling_of(cohorts: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     return marked
 
 
+def waiting_on(line: Mapping[str, Any], *, walked: bool | None) -> str | None:
+    """Why this member's verdict is not in yet, from the judge's own numbers. None once it is
+    CONFIRMED or CONTRADICTED (or cannot be resolved). ``walked``: whether the walker's book holds a
+    candle mark for it, None when the book could not be read. Pure, and display only."""
+    status = line.get("status")
+    if status == FORWARD_UNDERPOWERED:
+        return WAITING_CONFIDENCE_BOUND
+    if status not in (None, "FORWARD_INSUFFICIENT"):
+        return None
+    priced = int(line.get("priceable_count") or 0)
+    if priced == 0:
+        if walked is None:
+            return WAITING_UNKNOWN
+        return WAITING_NO_SIGNAL if walked else WAITING_NOT_YET_WALKED
+    if priced < int(line.get("trade_floor") or min_forward_trades(line.get("timeframe"))):
+        return WAITING_TRADE_FLOOR
+    if line.get("mean_net_r") is None:
+        return WAITING_NO_SPREAD
+    slices = line.get("active_slices")
+    if slices is None:
+        return WAITING_UNKNOWN
+    return WAITING_SLICE_FLOOR if int(slices) < MIN_HOLDOUT_PERIODS else WAITING_CONFIDENCE_BOUND
+
+
+def entry_refusals_by_lineage(root: Path | None) -> dict[str, dict[str, Any]] | None:
+    """Per ``cand:<id>`` lineage, the refused entries its walked contexts counted, summed over its
+    symbols, with the earliest bar any of them started counting; None if the book is unreadable.
+    Display only: no verdict, board or ranking reads it."""
+    try:
+        entries = load_positions(root).get("entries") or {}
+    except MvpRuntimeError:
+        return None
+    out: dict[str, dict[str, Any]] = {}
+    for entry in entries.values():
+        if not (isinstance(entry, Mapping) and isinstance(entry.get("entry_refusals"), Mapping)):
+            continue
+        cell = out.setdefault(str(entry.get("lineage")), {"counts": {}, "from": None})
+        for kind, n in entry["entry_refusals"].items():
+            cell["counts"][kind] = cell["counts"].get(kind, 0) + int(n or 0)
+        since = entry.get("entry_refusals_from")
+        if isinstance(since, str) and since and (cell["from"] is None or since < cell["from"]):
+            cell["from"] = since
+    return out
+
+
+def _walked_lineages(root: Path | None) -> frozenset[str] | None:
+    """The ``cand:<id>`` lineages the walker's book holds a candle mark for; None if unreadable."""
+    try:
+        entries = load_positions(root).get("entries") or {}
+    except MvpRuntimeError:
+        return None
+    return frozenset(str(entry.get("lineage")) for entry in entries.values()
+                     if isinstance(entry, Mapping) and entry.get("last_seen_candle"))
+
+
 def cohort_report(root: Path | None = None) -> list[dict[str, Any]]:
     """Per cohort, each member's forward numbers over the cohort's own rows. Reads only.
 
@@ -891,23 +969,27 @@ def cohort_report(root: Path | None = None) -> list[dict[str, Any]]:
     latest: dict[str, dict[str, Any]] = {}
     for record in read_candidates(root):
         latest[candidate_id(record)] = record
-    rows = read_cohort_outcomes(root)
+    # Indexed once by lineage: each member reads its own rows, not the whole store (P1-2).
+    index = index_outcomes(read_cohort_outcomes(root))
     # Two passes: the floor pools every member's trades, so it exists only once all are priced.
-    priced: list[tuple[Mapping[str, Any], list[tuple[Mapping[str, Any], Any, list[float]]]]] = []
+    priced: list[tuple[Mapping[str, Any], list[tuple[Mapping[str, Any], Any, list[Mapping[str, Any]], list[float]]]]] = []
     cohorts = read_cohorts(root)
     siblings = sibling_of(cohorts)
+    walked = _walked_lineages(root)
+    refusals = entry_refusals_by_lineage(root) or {}
     for cohort in cohorts:
         members = []
         for member in cohort.get("members") or []:
             record = latest.get(str(member.get("candidate_id")))
             judged = None if record is None else {**record, "created_at_utc": member.get("selected_at_utc")}
-            members.append((member, judged, [] if judged is None else priced_nets(judged, rows)))
+            own = [] if judged is None else rows_for(judged, index)
+            members.append((member, judged, own, [] if judged is None else priced_nets(judged, own)))
         priced.append((cohort, members))
-    floor = pooled_spread(nets for _, members in priced for _, _, nets in members)
+    floor = pooled_spread(nets for _, members in priced for _, _, _, nets in members)
     report: list[dict[str, Any]] = []
     for cohort, members in priced:
         lines = []
-        for member, judged, nets in members:
+        for member, judged, own, nets in members:
             if judged is None:
                 lines.append({"candidate_id": member.get("candidate_id"), "status": "UNRESOLVED",
                               "maturity": MATURITY_UNRESOLVED})
@@ -918,13 +1000,16 @@ def cohort_report(root: Path | None = None) -> list[dict[str, Any]]:
                 "timeframe": member.get("timeframe"),
                 "context": _context_key(member),
                 "context_size": (cohort.get("context_sizes") or {}).get(_context_key(member)),
-                **judge_forward(judged, rows),
+                **judge_forward(judged, own),
                 **trade_bounds(nets, spread_floor=floor),
                 "trade_spread_floor_r": floor,
                 "trade_floor": min_forward_trades(member.get("timeframe")),
                 "sibling_of": siblings.get(str(member.get("candidate_id"))),
+                "entry_refusals": refusals.get(f"cand:{member.get('candidate_id')}"),
             }
             line["maturity"] = maturity_of(line)
+            line["waiting_on"] = waiting_on(
+                line, walked=None if walked is None else f"cand:{member.get('candidate_id')}" in walked)
             lines.append(line)
         report.append({
             "cohort_id": cohort.get("cohort_id"), "frozen_at_utc": cohort.get("frozen_at_utc"),
@@ -980,6 +1065,8 @@ def board_summary(root: Path | None = None) -> dict[str, Any] | None:
                         if (m.get("priceable_count") or 0) >= min_forward_trades(m.get("timeframe"))),
         "status_counts": dict(sorted(status_counts.items())),
         "siblings": sum(1 for m in members if m.get("sibling_of")),
+        "waiting_counts": {reason: n for reason in WAITING_REASONS
+                           if (n := sum(1 for m in members if m.get("waiting_on") == reason))},
         "maturity_counts": {maturity: n for maturity in MATURITIES
                             if (n := sum(1 for m in members if (m.get("maturity") or maturity_of(m)) == maturity))},
         "leaders": [{**{k: m.get(k) for k in ("candidate_id", "timeframe", "priceable_count",

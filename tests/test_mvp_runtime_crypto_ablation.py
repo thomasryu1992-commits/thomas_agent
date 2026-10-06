@@ -24,9 +24,9 @@ from runtime.mvp_runtime.crypto.factory import (
     ABLATION_MAX_CONDITIONS,
     ablate_hypothesis,
     build_replay_frame,
-    holdout_split_index,
     run_factory,
 )
+from runtime.mvp_runtime.crypto.backtest import holdout_split_index
 from runtime.mvp_runtime.crypto.strategy import StrategySpec
 
 NOW = "2026-07-22T12:00:00Z"

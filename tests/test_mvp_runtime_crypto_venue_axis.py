@@ -77,8 +77,8 @@ def test_the_default_is_mainnet_everywhere_so_an_existing_caller_moves_nothing()
     """Every venue argument defaults to mainnet: the callers written before this change keep
     reading and writing exactly what they did."""
     defaults = {
-        "count_today": inspect.signature(live_order.count_today).parameters["venue"],
-        "read_live_entry_marks": inspect.signature(live_order.read_live_entry_marks).parameters["venue"],
+        "count_today": inspect.signature(live_order_stores.count_today).parameters["venue"],
+        "read_live_entry_marks": inspect.signature(live_order_stores.read_live_entry_marks).parameters["venue"],
         "read_bracket_failures": inspect.signature(live_order_stores.read_bracket_failures).parameters["venue"],
         "live_positions_dir": inspect.signature(live_position.live_positions_dir).parameters["venue"],
         "live_position_path": inspect.signature(live_position.live_position_path).parameters["venue"],
@@ -104,11 +104,11 @@ def test_two_venues_count_their_own_orders(tmp_path, monkeypatch):
     testnet = live_order.LiveOrderCounter(root=tmp_path, authorization=auth, venue=VENUE_TESTNET)
     for _ in range(3):
         testnet.record_submission(day="2026-09-16")
-    assert live_order.count_today(tmp_path, day="2026-09-16") == 0
-    assert live_order.count_today(tmp_path, day="2026-09-16", venue=VENUE_TESTNET) == 3
+    assert live_order_stores.count_today(tmp_path, day="2026-09-16") == 0
+    assert live_order_stores.count_today(tmp_path, day="2026-09-16", venue=VENUE_TESTNET) == 3
     live.record_submission(day="2026-09-16")
-    assert live_order.count_today(tmp_path, day="2026-09-16") == 1
-    assert live_order.count_today(tmp_path, day="2026-09-16", venue=VENUE_TESTNET) == 3
+    assert live_order_stores.count_today(tmp_path, day="2026-09-16") == 1
+    assert live_order_stores.count_today(tmp_path, day="2026-09-16", venue=VENUE_TESTNET) == 3
 
 
 def test_two_venues_keep_their_own_books_and_breakers(tmp_path, monkeypatch):
@@ -131,7 +131,7 @@ def test_two_venues_keep_their_own_books_and_breakers(tmp_path, monkeypatch):
     breaker.record_failure(symbol="BTCUSDT", status="REJECTED", reason_codes=["X"], at="2026-09-16T00:10:00Z")
     assert live_order_stores.read_bracket_failures(tmp_path)["consecutive"] == 2, "the live streak moved"
     assert live_order_stores.read_bracket_failures(tmp_path, venue=VENUE_TESTNET)["consecutive"] == 1
-    assert live_order.bracket_breaker_status(tmp_path, venue=VENUE_TESTNET)["consecutive"] == 1
+    assert live_order_stores.bracket_breaker_status(tmp_path, venue=VENUE_TESTNET)["consecutive"] == 1
     # And the other way: a second live failure counts 3, not 1.
     live_breaker.record_failure(symbol="BTCUSDT", status="REJECTED", reason_codes=["X"],
                                 at="2026-09-16T00:20:00Z")

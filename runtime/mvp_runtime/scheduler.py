@@ -221,11 +221,16 @@ KIND_DISPATCH_SPEND = "dispatch_spend_watch"
 # that fires late costs freshness — the walker catches up over every bar it missed. Financial for
 # delegation by its `crypto_` prefix, so the assistant can never change it.
 KIND_FORWARD_COHORT = "crypto_forward_cohort"
+# The holdings board's refresh (P1-b of `docs/proposals/MULTI_ASSET_EXPANSION_V0.1.md`, Thomas
+# 2026-10-02): read the KIS account once and store the aggregate the doors render. Maintenance, not
+# risk: a late fire costs freshness, never money, and Thomas put the KIS key on scheduler-maint for
+# exactly that reason. Not `crypto_`-prefixed, so `schedule_delegation` names it as financial itself.
+KIND_HOLDINGS = "holdings_refresh"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
                    KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE,
                    KIND_BREAKER_WATCH, KIND_ROUTE_WATCH, KIND_CANDLE_ARCHIVE,
                    KIND_NULL_CONTROL, KIND_CONTENT_IDEATION, KIND_DISPATCH_SPEND, KIND_WORKFLOW,
-                   KIND_FORWARD_COHORT})
+                   KIND_FORWARD_COHORT, KIND_HOLDINGS})
 
 # The kinds whose lateness costs money rather than freshness.
 #
@@ -297,6 +302,7 @@ MAINTENANCE_KINDS: frozenset[str] = frozenset({
     KIND_TASK, KIND_PRUNE, KIND_FACTORY, KIND_REPORT, KIND_PROPOSER,
     KIND_DATA_REVIEW, KIND_ROTATE, KIND_CANDLE_ARCHIVE, KIND_NULL_CONTROL,
     KIND_CONTENT_IDEATION, KIND_DISPATCH_SPEND, KIND_WORKFLOW, KIND_FORWARD_COHORT,
+    KIND_HOLDINGS,
 })
 
 # How much of one pass the non-risk kinds may spend before it stops STARTING more of them.
@@ -538,7 +544,8 @@ def build_schedule(
             "MISSING_REQUEST",
             "a content_ideation schedule requires seed keywords in its request "
             "(comma separated; `source=queue` takes them from the vault keyword queue; "
-            "`target=<keyword>` overrides the week's selection)",
+            "`target=<keyword>` overrides the week's selection; `platform=tistory` drafts for "
+            "Tistory instead of Naver)",
         )
     if not (isinstance(created_by, str) and created_by.strip()):
         raise SchedulerBlocked("MISSING_CREATOR", "a schedule requires a created_by identity")
@@ -1116,20 +1123,25 @@ def format_ideation_sheet(reply: Mapping[str, Any]) -> str:
                           if evidence.get("blog_competing_posts") is not None else ""))
     else:
         target_line = f"no row for the target itself ({evidence.get('degraded_reason_code')})"
+    overlap = reply.get("overlap") or {}
     lines = [
         "=== blog package ===",
         "",
+        f"platform  : {reply.get('platform') or 'naver'}",
         f"keyword   : {reply.get('target_keyword')}",
         f"package   : {reply.get('package_id')}",
         f"evidence  : {target_line}",
         f"draft     : {measured.get('body_chars', '?')} chars, "
-        f"{measured.get('headings', '?')} headings, {measured.get('images', '?')} image cues",
+        f"{measured.get('headings', measured.get('h2_sections', '?'))} headings, "
+        f"{measured.get('images', '?')} image cues",
         f"standards : {'PASS' if score.get('critical_pass') else 'MISS'} "
         f"({score.get('standards_version')})",
     ]
     if score.get("quality_state"):
         lines.append(f"quality   : {score['quality_state']}"
                      " (a draft for review either way; nothing is published)")
+    if overlap.get("overlap_type"):
+        lines.append(f"overlap   : {overlap['overlap_type']} -> {overlap.get('action')}")
     if not score.get("critical_pass"):
         lines += ["", "critical criteria missed — the package is recorded, not discarded:"]
         lines += [f"  {line}" for line in (reply.get("scorecard_lines") or [])
@@ -1233,7 +1245,7 @@ def _execute(
         # ALLOW-tier read: collects the same fed frame the factory mines, replays each stored
         # spec on the bars minted AFTER it against seeded null entries, and appends one record.
         # Touches no pool, no candidates, no orders.
-        from .crypto import cycle as crypto_cycle
+        from .crypto import feed_assembly as crypto_feed_assembly
         from .crypto import null_control
         from .crypto.market_data import (
             collect_market_data,
@@ -1331,7 +1343,7 @@ def _execute(
         # selected specs (8.1%) read at least one such column, and they are the non-price
         # families the pool most needs judged. Invisible because `too_young` is checked first
         # and is still the answer for every cell; earliest measurable date ~2026-08-23.
-        crypto_cycle.attach_mining_legs(
+        crypto_feed_assembly.attach_mining_legs(
             snapshot, collector=collector, timeframe=timeframe, now=now, root=repo_root,
             liquidation_feed=select_liquidation_feed(now=now, root=repo_root),
             candle_target=factory_candle_target,
@@ -1426,6 +1438,13 @@ def _execute(
             return f"breaker_changed_not_sent:{type(exc).__name__}"
         breaker_watch.write_mark(result["state"], root=repo_root)
         return breaker_watch.status_line(result)
+    if schedule.kind == KIND_HOLDINGS:
+        # A read of the KIS account through the holdings lane's own gate; writes the aggregate
+        # snapshot and nothing else. `refresh_snapshot` never raises, so a KIS outage is a status
+        # line, never a failed fire: the last good figure stays and the board shows its age.
+        from .holdings import store as holdings_store
+
+        return holdings_store.refresh_snapshot(now=now, root=repo_root)
     if schedule.kind == KIND_FORWARD_COHORT:
         # ALLOW-tier venue read, and writes to the cohort's own store alone: no pool, no forward
         # book, no candidates, no orders. A context that fails costs that context (named in the
@@ -1658,7 +1677,7 @@ def _execute(
         # the factory can never touch the active pool (promotion is the operator
         # door). A degraded backend simply skips the run: candidates mined from no
         # data would be evidence-free noise.
-        from .crypto import cycle as crypto_cycle
+        from .crypto import feed_assembly as crypto_feed_assembly
         from .crypto import pool as crypto_pool
         from .crypto import positioning_store
         from .crypto.factory import run_factory
@@ -1698,7 +1717,7 @@ def _execute(
             # C9: the factory backtests on the same feed-enriched frame the router evaluates —
             # one feature source for backtest and live (the source rule). All five legs go
             # through `attach_mining_legs`, which is where that rule lives.
-            crypto_cycle.attach_mining_legs(
+            crypto_feed_assembly.attach_mining_legs(
                 built, collector=collector, timeframe=timeframe, now=now, root=repo_root,
                 liquidation_feed=liquidation_feed, candle_target=factory_candle_target,
                 candle_cache=candle_cache,
@@ -1723,9 +1742,10 @@ def _execute(
         # Every mined leg, not just the primary: a family gated on positioning must be
         # suppliable everywhere the pooled spec claims to trade, and `coverage_summary` already
         # takes the list.
-        positioning_eligible = bool(positioning_store.coverage_summary(
-            repo_root, symbols=symbols or [symbol],
-        )["eligible"])
+        # Since 2026-10-03 coverage is necessary and not sufficient: `mint_eligible` also needs the
+        # explicit decision (`positioning_store.MINTING_DECIDED`, R2 of the archive backfill), so a
+        # backfilled store cannot mint a family by itself.
+        positioning_eligible = positioning_store.mint_eligible(repo_root, symbols=symbols or [symbol])
         # The fetch above stayed in this process; the ~400s of pure compute leaves it (#705
         # remedy — see the factory-child section above `run_due`). The reads passed as inputs
         # (active pool, existing candidates) happen HERE, parent-side, so the child receives a
@@ -1795,7 +1815,7 @@ def _execute(
         # (MAX_PROPOSALS_PER_RUN) already bounds one fire. Two gated reads reuse existing
         # chokepoints (market data + the validator provider); a degraded backend skips the
         # fire rather than proposing over no candles. ALLOW-tier: the record installs nothing.
-        from .crypto import cycle as crypto_cycle
+        from .crypto import feed_assembly as crypto_feed_assembly
         from .crypto import factory as crypto_factory
         from .crypto import proposer as crypto_proposer
         from .crypto.market_data import (
@@ -1888,7 +1908,7 @@ def _execute(
         # away. That the proposal's backtest is therefore judged over a short window is a real
         # and separate question about the proposer's evidence depth; it is not this fix, and
         # widening it here would multiply the fire's request count for a reason nobody measured.
-        crypto_cycle.attach_mining_legs(
+        crypto_feed_assembly.attach_mining_legs(
             snapshot, collector=collector, timeframe=timeframe, now=now, root=repo_root,
             liquidation_feed=select_liquidation_feed(now=now, root=repo_root),
         )

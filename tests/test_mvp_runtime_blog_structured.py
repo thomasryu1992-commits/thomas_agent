@@ -18,14 +18,14 @@ import json
 
 import pytest
 
-from runtime.mvp_runtime import blog_content, blog_draft, blog_draft_score
+from runtime.mvp_runtime import blog_content, blog_draft, blog_draft_score, blog_naver, blog_prompt
 from runtime.mvp_runtime.errors import ToolError
 from runtime.mvp_runtime.paths import repo_root
 from runtime.read_only_kernel.schema_validation import validate_against_schema
 
 NOW = "2026-09-28T09:00:00Z"
 TARGET = "미리캔버스 포스터"
-SCHEMA = repo_root() / "schemas" / "blog_content_package.v0.2.schema.json"
+SCHEMA = repo_root() / "schemas" / "blog_content_package.v0.3.schema.json"
 
 _SENTENCE = ("미리캔버스 포스터를 만들 때는 템플릿을 고르고 글자를 바꾸고 색을 가게 분위기에 맞추는 "
              "순서로 진행하면 처음 쓰는 사장님도 삼십 분 안에 한 장을 끝낼 수 있습니다. 완성한 "
@@ -392,17 +392,17 @@ def test_the_length_plan_adds_up_to_every_standard():
     1,500 < 1,800); the model met the minimums and landed at 730. The plan is the one shape that
     clears every standard, checked here against the standards themselves."""
     S = blog_draft_score.STANDARDS
-    low, high = blog_content.PLAN_PARAGRAPH_CHARS
-    total_low, total_high = blog_content.plan_body_chars()
+    low, high = blog_naver.PLAN_PARAGRAPH_CHARS
+    total_low, total_high = blog_naver.plan_body_chars()
     assert S["body_chars"].within(total_low) and S["body_chars"].within(total_high)
-    assert S["paragraphs"].within(blog_content.plan_paragraphs())
+    assert S["paragraphs"].within(blog_naver.plan_paragraphs())
     assert S["para_chars"].within(low) and S["para_chars"].within(high)
-    assert S["headings"].within(blog_content.PLAN_SECTIONS)
+    assert S["headings"].within(blog_naver.PLAN_SECTIONS)
 
 
 def test_the_request_states_the_plan_not_only_the_totals():
-    request = blog_content.content_request(TARGET)
-    assert f"문단 {blog_content.plan_paragraphs()}개" in request
+    request = blog_naver.content_request(TARGET)
+    assert f"문단 {blog_naver.plan_paragraphs()}개" in request
     assert "120~140자" in request and "1,800자에 못 미치면 불합격" in request
     # The contradictory triple is gone from the first request.
     assert "문단 10~20개·문단당 70~150자" not in request
@@ -416,7 +416,7 @@ def test_a_length_revision_carries_the_plan_against_the_drafts_own_numbers(monke
     measured = parts["measured"]
     assert (f"현재 문단 {measured['paragraphs']}개·문단 평균 {measured['para_chars']}자·"
             f"합계 {measured['body_chars']}자") in request
-    assert f"문단 {blog_content.plan_paragraphs()}개" in request
+    assert f"문단 {blog_naver.plan_paragraphs()}개" in request
 
 
 def test_a_revision_for_titles_alone_does_not_carry_the_length_plan(monkeypatch):
@@ -442,7 +442,7 @@ def test_the_revision_request_carries_no_evidence_reference_and_says_why():
     first = blog_content.interpret_draft(json.dumps(_cited_draft(), ensure_ascii=False), TARGET,
                                          _records())
     assert first["sources"]                                        # the first draft did resolve [S1]
-    request = blog_content.revision_request(TARGET, first, "")
+    request = blog_naver.revision_request(TARGET, first, "")
     previous = request.split("이전 초안:\n", 1)[1]
     assert "[S1]" not in previous and "[S2]" not in previous and "[K1]" not in previous
     assert json.loads(previous)["sources"] == []
@@ -484,11 +484,11 @@ def test_a_reworded_claim_does_not_inherit_the_old_wordings_source():
 # --- the second length round (2026-09-29): averages 62 -> 76 -> 93 against a 110 floor ------
 
 def test_the_length_example_is_itself_a_paragraph_of_the_planned_length():
-    low, high = blog_content.PLAN_PARAGRAPH_CHARS
-    n = len("".join(blog_content.LENGTH_EXAMPLE_PARAGRAPH.split()))
+    low, high = blog_naver.PLAN_PARAGRAPH_CHARS
+    n = len("".join(blog_naver.LENGTH_EXAMPLE_PARAGRAPH.split()))
     assert low <= n <= high
-    request = blog_content.content_request(TARGET)
-    assert blog_content.LENGTH_EXAMPLE_PARAGRAPH in request and "내용은 따라 쓰지 마라" in request
+    request = blog_naver.content_request(TARGET)
+    assert blog_naver.LENGTH_EXAMPLE_PARAGRAPH in request and "내용은 따라 쓰지 마라" in request
 
 
 def _chars(text):
@@ -502,7 +502,7 @@ def _named_after(request: str, which: str) -> str:
 
 def test_a_length_revision_names_each_short_paragraph():
     draft = _draft()
-    long_para = blog_content.LENGTH_EXAMPLE_PARAGRAPH          # at the plan's length: not named
+    long_para = blog_naver.LENGTH_EXAMPLE_PARAGRAPH          # at the plan's length: not named
     draft["intro"] = [long_para, "짧은 도입입니다."]
     for section in draft["sections"]:
         section["paragraphs"] = [long_para] * 3
@@ -510,23 +510,23 @@ def test_a_length_revision_names_each_short_paragraph():
     draft["sections"][0]["paragraphs"][0] = "항목 | 무료 | 유료"          # a table is not lengthened
     first = dict(blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET),
                  failures=["body_chars"])
-    request = blog_content.revision_request(TARGET, first, "")
+    request = blog_naver.revision_request(TARGET, first, "")
     named = _named_after(request, "못 미치는 문단")
-    assert named == (f"도입 문단 1({blog_content._gap(_chars('짧은 도입입니다.'))}), "
-                     f"섹션 2의 문단 1({blog_content._gap(_chars('너무 짧은 문단입니다.'))})")
+    assert named == (f"도입 문단 1({blog_naver._gap(_chars('짧은 도입입니다.'))}), "
+                     f"섹션 2의 문단 1({blog_naver._gap(_chars('너무 짧은 문단입니다.'))})")
 
 
 def test_the_named_list_is_capped():
     draft = _draft()
-    draft["intro"] = [blog_content.LENGTH_EXAMPLE_PARAGRAPH] * 2
+    draft["intro"] = [blog_naver.LENGTH_EXAMPLE_PARAGRAPH] * 2
     for s_index, section in enumerate(draft["sections"]):            # 15 distinct short ones
         section["paragraphs"] = [f"짧은 문단 {s_index}-{p}입니다." for p in range(3)]
     first = dict(blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET),
                  failures=["body_chars"])
-    request = blog_content.revision_request(TARGET, first, "")
+    request = blog_naver.revision_request(TARGET, first, "")
     named = _named_after(request, "못 미치는 문단")
-    assert named.count("(현재 ") == blog_content.MAX_NAMED_SHORT_PARAGRAPHS
-    assert f"외 {15 - blog_content.MAX_NAMED_SHORT_PARAGRAPHS}개" in request
+    assert named.count("(현재 ") == blog_naver.MAX_NAMED_SHORT_PARAGRAPHS
+    assert f"외 {15 - blog_naver.MAX_NAMED_SHORT_PARAGRAPHS}개" in request
 
 
 # --- the third round (2026-09-29, bcp_e8571b880a95946c9103) -----------------------------------
@@ -537,7 +537,7 @@ def test_the_named_list_is_capped():
 # reference strip.
 
 def test_the_plan_leaves_the_paragraph_ceiling_headroom():
-    low, high = blog_content.PLAN_PARAGRAPH_CHARS
+    low, high = blog_naver.PLAN_PARAGRAPH_CHARS
     assert (low, high) == (120, 140) and high < blog_draft_score.STANDARDS["para_chars"].high
 
 
@@ -551,7 +551,7 @@ def test_the_table_is_its_own_field_rendered_after_its_section_and_not_a_prose_p
     assert parts["measured"]["tables"] == 1
     assert parts["measured"]["paragraphs"] == 17                 # the table is not counted
     assert [b["paragraph_index"] for b in parts["body_blocks"]] == [2, 6, 11, 15, 19]
-    request = blog_content.content_request(TARGET)
+    request = blog_naver.content_request(TARGET)
     assert '"table": {"after_section"' in request and "paragraphs 안에 ' | ' 행을 쓰지 마라" in request
 
 
@@ -582,7 +582,7 @@ def test_a_revision_that_drops_the_capture_directions_gets_the_first_drafts_back
 def test_the_revision_request_asks_to_keep_images_and_the_table():
     first = blog_content.interpret_draft(json.dumps(_draft(sections=5, per_section=1), ensure_ascii=False),
                                          TARGET)
-    assert "image_shots 4~8개와 table은 첫 초안의 것을 그대로 유지하라" in blog_content.revision_request(
+    assert "image_shots 4~8개와 table은 첫 초안의 것을 그대로 유지하라" in blog_naver.revision_request(
         TARGET, first, "")
 
 
@@ -656,7 +656,7 @@ def test_the_revision_sees_the_repaired_draft_not_the_broken_text():
     short = _draft(sections=2, per_section=1)
     first = blog_content.interpret_draft(_missing_paragraphs_closer(short), TARGET, _records())
     assert first["draft_format"] == "structured"
-    previous = blog_content.revision_request(TARGET, first, "").split("이전 초안:\n", 1)[1]
+    previous = blog_naver.revision_request(TARGET, first, "").split("이전 초안:\n", 1)[1]
     assert "brackets_inserted" not in json.loads(previous)
 
 
@@ -714,7 +714,7 @@ def test_both_measurements_count_the_keyword_the_same_way():
 
 
 def test_the_request_asks_for_the_keyword_in_the_body_in_the_scorers_numbers():
-    request = blog_content.content_request("소상공인 스마트상점")
+    request = blog_naver.content_request("소상공인 스마트상점")
     standard = blog_draft_score.STANDARDS["keyword_hits"]
     assert f"'소상공인 스마트상점'를 {standard.low}~{standard.high}회" in request
     assert "intro 첫 문단" in request and "줄여 쓴 것은 세지 않는다" in request
@@ -734,7 +734,7 @@ def _vary(text: str, tag: int) -> str:
 
 def _long(i: int) -> str:
     """A distinct paragraph over the plan (identical paragraphs are de-duplicated)."""
-    return f"{i}번 안내입니다. {_vary(blog_content.LENGTH_EXAMPLE_PARAGRAPH, i)} {i}번 제출 뒤 접수 번호를 적어 두세요."
+    return f"{i}번 안내입니다. {_vary(blog_naver.LENGTH_EXAMPLE_PARAGRAPH, i)} {i}번 제출 뒤 접수 번호를 적어 두세요."
 
 
 def test_an_over_long_revision_names_each_long_paragraph_and_asks_to_cut():
@@ -742,17 +742,17 @@ def test_an_over_long_revision_names_each_long_paragraph_and_asks_to_cut():
     draft["intro"] = [_long(0), _long(1)]
     for s_index, section in enumerate(draft["sections"]):
         section["paragraphs"] = [_long(10 * (s_index + 1) + p) for p in range(3)]
-    draft["sections"][1]["paragraphs"][2] = blog_content.LENGTH_EXAMPLE_PARAGRAPH   # on plan
+    draft["sections"][1]["paragraphs"][2] = blog_naver.LENGTH_EXAMPLE_PARAGRAPH   # on plan
     first = blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET)
     assert "para_chars" in first["failures"]
-    request = blog_content.revision_request(TARGET, first, "")
-    low, high = blog_content.PLAN_PARAGRAPH_CHARS
+    request = blog_naver.revision_request(TARGET, first, "")
+    low, high = blog_naver.PLAN_PARAGRAPH_CHARS
     named = _named_after(request, f"{high}자를 넘는 문단")
-    assert named.startswith(f"도입 문단 0({blog_content._gap(_chars(_long(0)))}), "
-                            f"도입 문단 1({blog_content._gap(_chars(_long(1)))}), 섹션 0의 문단 0(")
+    assert named.startswith(f"도입 문단 0({blog_naver._gap(_chars(_long(0)))}), "
+                            f"도입 문단 1({blog_naver._gap(_chars(_long(1)))}), 섹션 0의 문단 0(")
     assert "섹션 1의 문단 2" not in named
-    assert named.count("(현재 ") == blog_content.MAX_NAMED_SHORT_PARAGRAPHS
-    assert named.endswith(f"외 {16 - blog_content.MAX_NAMED_SHORT_PARAGRAPHS}개")
+    assert named.count("(현재 ") == blog_naver.MAX_NAMED_SHORT_PARAGRAPHS
+    assert named.endswith(f"외 {16 - blog_naver.MAX_NAMED_SHORT_PARAGRAPHS}개")
     assert f"{low}~{high}자로 줄여라" in request and "문장을 더 붙이지 마라" in request
     # the lengthening half of the plan is not sent the other way
     assert "짧은 문단에는 문장을 더 붙여라" not in request
@@ -764,14 +764,14 @@ def test_a_short_draft_still_gets_the_plan_and_the_short_list_not_the_cut():
     draft["sections"][2]["paragraphs"][1] = "너무 짧은 문단입니다."
     first = dict(blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET),
                  failures=["body_chars"])
-    request = blog_content.revision_request(TARGET, first, "")
+    request = blog_naver.revision_request(TARGET, first, "")
     assert "못 미치는 문단" in request and "미치는 문단은 더해서" in request
     assert "줄여라" not in request
 
 
 def test_the_para_chars_ask_does_not_contradict_the_cut():
     """'긴 문단은 나누고' told the model to split while the cut says keep the paragraph count."""
-    assert "나누" not in blog_content._FAILURE_ASKS["para_chars"]
+    assert "나누" not in blog_naver._FAILURE_ASKS["para_chars"]
 
 
 # --- the one revision never leaves the package worse ----------------------------------------
@@ -824,8 +824,8 @@ def test_a_failing_revision_that_is_closer_is_still_taken(monkeypatch):
 
 def test_the_cut_touches_only_the_named_paragraphs_and_states_both_floors():
     first = blog_content.interpret_draft(json.dumps(_all_long(), ensure_ascii=False), TARGET)
-    request = blog_content.revision_request(TARGET, first, "")
-    low, _high = blog_content.PLAN_PARAGRAPH_CHARS
+    request = blog_naver.revision_request(TARGET, first, "")
+    low, _high = blog_naver.PLAN_PARAGRAPH_CHARS
     assert "적힌 만큼만(대개 한 문장) 덜어내" in request and "나머지 문단은 손대지 마라" in request
     assert f"어떤 문단도 {low}자 아래로 줄이지 마라" in request
     assert "본문 합계가 1,800자 아래면 불합격이다" in request
@@ -863,9 +863,32 @@ def test_a_value_after_the_last_close_brace_is_kept_when_closing_at_the_end():
     assert parsed["tags"] == draft["tags"]
 
 
-@pytest.mark.parametrize("cut", ['"tags": ["미리캔버스", ', '"tags": ', '"tags": ["미리'])
-def test_a_draft_cut_after_a_comma_a_colon_or_inside_a_string_is_not_closed(cut):
-    text = _stopped_after(_draft(), cut)
+@pytest.mark.parametrize("cut, tags", [('"tags": ["미리캔버스", ', ["미리캔버스"]), ('"tags": ', []),
+                                       ('"tags": ["미리', [])])
+def test_a_draft_cut_after_a_comma_a_colon_or_inside_a_string_is_cut_back_to_a_whole_value(cut, tags):
+    """Until .7 these fell to the prose parser. Cut back to the last whole value and closed, every
+    section is kept and the unfinished tail is dropped, never completed."""
+    draft = _draft()
+    parsed, reason = blog_draft.parse_structured(_stopped_after(draft, cut))
+    assert reason is None and parsed["brackets_inserted"] >= 1
+    assert [s["paragraphs"] for s in parsed["sections"]] == [s["paragraphs"] for s in draft["sections"]]
+    assert parsed["tags"] == tags
+
+
+def test_a_draft_cut_inside_a_section_keeps_the_whole_sections_and_paragraphs_before_the_cut():
+    # bcp_63185d84aceaf646ff6e: '…"}, {"heading": "개인용 무료 한도 …", "level": 3,' — after a comma.
+    draft = _draft()
+    text = json.dumps(draft, ensure_ascii=False)
+    last = draft["sections"][-1]
+    text = text[:text.index(json.dumps(last["paragraphs"][1], ensure_ascii=False)) + 5]   # mid-paragraph
+    parsed, reason = blog_draft.parse_structured(text)
+    assert reason is None
+    assert [s["heading"] for s in parsed["sections"]] == [s["heading"] for s in draft["sections"]]
+    assert parsed["sections"][-1]["paragraphs"] == [blog_draft.sanitize_paragraph(last["paragraphs"][0])]
+
+
+def test_a_complete_text_with_damage_in_the_middle_is_not_cut_back():
+    text = json.dumps(_draft(), ensure_ascii=False).replace('", "', '" "', 1)    # a missing comma
     assert blog_draft.parse_structured(text) == (None, "JSON_UNPARSEABLE")
 
 
@@ -882,11 +905,11 @@ def test_closing_at_the_end_is_opt_in():
 # 136~184 against a 120~140 plan whose last words were "120자 이상 ... 짧은 문단에는 더 붙여라".
 
 def test_the_shape_puts_the_short_fields_first_and_the_prose_last():
-    shape = json.loads(blog_content._DRAFT_SHAPE)
-    assert tuple(shape) == blog_content.DRAFT_KEY_ORDER
-    assert blog_content.DRAFT_KEY_ORDER[-2:] == ("intro", "sections")
-    for request in (blog_content.content_request(TARGET),
-                    blog_content.revision_request(
+    shape = json.loads(blog_naver._DRAFT_SHAPE)
+    assert tuple(shape) == blog_naver.DRAFT_KEY_ORDER
+    assert blog_naver.DRAFT_KEY_ORDER[-2:] == ("intro", "sections")
+    for request in (blog_naver.content_request(TARGET),
+                    blog_naver.revision_request(
                         TARGET, blog_content.interpret_draft(
                             json.dumps(_draft(sections=2, per_section=1), ensure_ascii=False),
                             TARGET), "")):
@@ -896,21 +919,21 @@ def test_the_shape_puts_the_short_fields_first_and_the_prose_last():
 def test_the_revision_is_shown_the_previous_draft_in_the_shapes_order():
     first = blog_content.interpret_draft(
         json.dumps(_draft(sections=2, per_section=1), ensure_ascii=False), TARGET)
-    previous = blog_content.revision_request(TARGET, first, "").split("이전 초안:\n", 1)[1]
+    previous = blog_naver.revision_request(TARGET, first, "").split("이전 초안:\n", 1)[1]
     keys = list(json.loads(previous))
-    assert keys == [k for k in blog_content.DRAFT_KEY_ORDER if k in keys]
+    assert keys == [k for k in blog_naver.DRAFT_KEY_ORDER if k in keys]
     assert keys[-2:] == ["intro", "sections"]
 
 
 def test_the_plan_states_target_and_range_evenly_and_checks_both_ways():
     """Said first, the cap overshot the other way: averages 82 and 81 on the next two drafts."""
-    low, high = blog_content.PLAN_PARAGRAPH_CHARS
-    plan = blog_content._length_plan()
-    assert f"{blog_content.plan_target()}자 안팎({low}~{high}자)" in plan
+    low, high = blog_naver.PLAN_PARAGRAPH_CHARS
+    plan = blog_naver._length_plan()
+    assert f"{blog_naver.plan_target()}자 안팎({low}~{high}자)" in plan
     assert "넘기지 마라" not in plan
     assert "평균이 150자를 넘거나 합계가 1,800자에 못 미치면 불합격이다" in plan
     assert (f"{high}자를 넘는 문단은 덜어내고 {low}자에 못 미치는 문단은 더해서 "
-            f"{blog_content.plan_target()}자 안팎으로 맞춰라") in plan
+            f"{blog_naver.plan_target()}자 안팎으로 맞춰라") in plan
     assert "이상인지 세어" not in plan and "짧은 문단에는 문장을 더 붙여라" not in plan
 
 
@@ -952,8 +975,8 @@ def test_a_raw_tab_and_a_missing_closer_together_still_parse():
     (171, "현재 171자, 약 40자 덜"), (145, "현재 145자, 약 20자 덜"),
 ])
 def test_each_named_paragraph_carries_the_distance_to_the_target(n, label):
-    assert blog_content.plan_target() == 130
-    assert blog_content._gap(n) == label
+    assert blog_naver.plan_target() == 130
+    assert blog_naver._gap(n) == label
 
 
 def test_the_request_says_what_the_amount_in_brackets_means():
@@ -961,7 +984,7 @@ def test_the_request_says_what_the_amount_in_brackets_means():
     draft["sections"][2]["paragraphs"][1] = "너무 짧은 문단입니다."
     first = dict(blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET),
                  failures=["body_chars"])
-    request = blog_content.revision_request(TARGET, first, "")
+    request = blog_naver.revision_request(TARGET, first, "")
     assert "괄호는 130자까지 더할 양" in request and "적힌 만큼 늘려라" in request
 
 
@@ -972,8 +995,8 @@ def test_a_short_paragraph_grows_by_a_specific_not_by_a_closing_line():
     draft["sections"][2]["paragraphs"][1] = "너무 짧은 문단입니다."
     first = dict(blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET),
                  failures=["body_chars"])
-    request = blog_content.revision_request(TARGET, first, "")
-    assert blog_content.ADD_SUBSTANCE_ASK in request
+    request = blog_naver.revision_request(TARGET, first, "")
+    assert blog_prompt.ADD_SUBSTANCE_ASK in request
     assert "근거 메모에 있는 수치" in request and "'…지혜가 필요합니다'" in request
     assert "이유·예시·주의점을 더해" not in request
 
@@ -984,7 +1007,7 @@ def test_a_short_paragraph_grows_by_a_specific_not_by_a_closing_line():
 
 def _few_keywords() -> dict:
     draft = _draft(sections=5, per_section=3)
-    body = blog_content.LENGTH_EXAMPLE_PARAGRAPH
+    body = blog_naver.LENGTH_EXAMPLE_PARAGRAPH
     draft["intro"] = [f"{TARGET}를 처음 만드는 분을 위한 글입니다. {_vary(body, 90)}", f"도입 둘째. {_vary(body, 91)}"]
     for s_index, section in enumerate(draft["sections"]):
         section["heading"] = f"준비 {s_index}단계"
@@ -1001,7 +1024,7 @@ def test_a_keyword_under_its_floor_is_a_failure_and_over_its_ceiling_is_not():
 
 def test_the_revision_names_paragraphs_without_the_keyword_spread_over_the_post():
     first = blog_content.interpret_draft(json.dumps(_few_keywords(), ensure_ascii=False), TARGET)
-    request = blog_content.revision_request(TARGET, first, "")
+    request = blog_naver.revision_request(TARGET, first, "")
     assert f"'{TARGET}'를 소제목과 문단을 합쳐 3~6회" in request and "(현재 1회)" in request
     named = request.split("키워드를 넣을 문단(번호는 0부터): ", 1)[1].split(". 이 문단마다", 1)[0]
     # intro 0 already has it; 4 - 1 = 3 places, each section's first paragraph in order
@@ -1035,8 +1058,8 @@ def test_a_revision_that_breaks_the_body_for_the_keyword_is_not_taken(monkeypatc
 # named once, none of the menu names its own sources carried.
 
 def test_the_request_asks_for_the_evidences_specifics_by_name_per_section():
-    request = blog_content.content_request(TARGET)
-    assert blog_content.EVIDENCE_SPECIFICS_ASK in request
+    request = blog_naver.content_request(TARGET)
+    assert blog_prompt.EVIDENCE_SPECIFICS_ASK in request
     assert "섹션마다 최소 1개" in request and "그 이름 그대로" in request
     assert "지어내지는 마라" in request                     # the no-invention rule still stands
 
@@ -1044,15 +1067,15 @@ def test_the_request_asks_for_the_evidences_specifics_by_name_per_section():
 # --- each section on its own heading's subject (2026-09-30, bcp_c82a3c17ded878ca24ea) --------
 
 def test_the_request_keeps_each_section_on_its_heading():
-    request = blog_content.content_request(TARGET)
-    assert blog_content.SECTION_FOCUS_ASK in request
+    request = blog_naver.content_request(TARGET)
+    assert blog_prompt.SECTION_FOCUS_ASK in request
     assert "그 heading이 말하는 내용만" in request and "intro는 글 전체를 소개만" in request
 
 
 def test_the_revision_keeps_added_or_cut_text_inside_its_section():
     first = blog_content.interpret_draft(
         json.dumps(_draft(sections=2, per_section=1), ensure_ascii=False), TARGET)
-    request = blog_content.revision_request(TARGET, first, "")
+    request = blog_naver.revision_request(TARGET, first, "")
     assert "그 섹션 소제목의 내용 안에서만" in request
 
 
@@ -1069,10 +1092,10 @@ def test_keyword_hits_ignore_letter_case_as_well_as_spacing():
 
 def test_both_requests_allow_the_natural_form_and_forbid_the_glued_noun():
     first = blog_content.interpret_draft(json.dumps(_few_keywords(), ensure_ascii=False), TARGET)
-    for request in (blog_content.content_request(TARGET),
-                    blog_content.revision_request(TARGET, first, "")):
-        assert blog_content.KEYWORD_FORM_ASK in request
-    revision = blog_content.revision_request(TARGET, first, "")
+    for request in (blog_naver.content_request(TARGET),
+                    blog_naver.revision_request(TARGET, first, "")):
+        assert blog_prompt.KEYWORD_FORM_ASK in request
+    revision = blog_naver.revision_request(TARGET, first, "")
     assert "띄어쓰기와 표기 그대로" not in revision and "그대로 넣어라" not in revision
     assert "주어·목적어로 들어간 문장" in revision
 
@@ -1080,14 +1103,14 @@ def test_both_requests_allow_the_natural_form_and_forbid_the_glued_noun():
 def test_the_evidence_ask_forbids_lifting_phrases_and_unnamed_site_menus():
     """'명함만들기' walked one blog's menu path without naming the site and lifted its phrase
     "제작가이드도 참조도 하구요" (bcp_d3be61f8a0fa8b85c920)."""
-    request = blog_content.content_request(TARGET)
+    request = blog_naver.content_request(TARGET)
     assert "문장이나 어구는 옮기지 말고 네 말로 풀어 써라" in request
     assert "어느 앱의 메뉴인지 밝히고" in request and "여러 근거를 섞어라" in request
 
 
 def test_the_table_ask_wants_real_headers_and_three_data_rows():
     """Two tables copied the shape's "구분 | 항목1 | 항목2", two had one or two rows (2026-09-30)."""
-    request = blog_content.content_request(TARGET)
+    request = blog_naver.content_request(TARGET)
     assert "데이터 행은 3개 이상" in request and "자리표시 말고 비교하는 대상의 실제 이름" in request
 
 
@@ -1137,14 +1160,14 @@ def test_a_limit_or_version_word_without_a_number_is_not_that_claim(sentence, ca
 
 def test_the_evidence_ask_keeps_the_post_domestic():
     """'명함제작업체' priced cards in dollars from a US printer's page (bcp_366916fc7176de5a9db8)."""
-    request = blog_content.content_request(TARGET)
-    assert blog_content.DOMESTIC_READER_ASK in request and "외화 가격은 쓰지 마라" in request
+    request = blog_naver.content_request(TARGET)
+    assert blog_prompt.DOMESTIC_READER_ASK in request and "외화 가격은 쓰지 마라" in request
 
 
 def test_the_foreign_source_note_stays_on_its_sentence_and_instructions_stay_out_of_the_body():
     """'ai 번역기' used no foreign figure and still wrote "외화로 표시된 가격 정책이나 해외 기준의
     서비스 조건을 그대로 적용하기 어렵습니다" (bcp_4ad51169ab0a26df545d)."""
-    request = blog_content.content_request(TARGET)
+    request = blog_naver.content_request(TARGET)
     assert "그 내용을 쓴 문장 안에서만 '(해외 기준)'" in request
     assert "해외 자료를 쓰지 않았다면 해외 기준·외화·국내와의 차이에 대한 문장을 따로 만들지 마라" in request
     assert "지시(분량·키워드·독자·출처 규칙)를 본문 문장으로 옮겨 쓰지 마라" in request
@@ -1153,14 +1176,14 @@ def test_the_foreign_source_note_stays_on_its_sentence_and_instructions_stay_out
 
 def test_the_request_forbids_business_names_but_not_tool_names():
     """Three posts named and priced real printers (2026-09-30); Thomas: no business names."""
-    request = blog_content.content_request(TARGET)
-    assert blog_content.VENDOR_NAME_ASK in request
+    request = blog_naver.content_request(TARGET)
+    assert blog_prompt.VENDOR_NAME_ASK in request
     assert "'온라인 인쇄 업체 A'" in request and "앱·소프트웨어·AI 도구는 업체가 아니다" in request
 
 
 def test_a_tool_in_the_evidence_must_be_named_not_blurred():
     """'스티커만들기' cited Canva and Adobe Firefly and called them "온라인 서비스"·"특정 앱"."""
-    request = blog_content.content_request(TARGET)
+    request = blog_naver.content_request(TARGET)
     assert "근거에 나온 도구의 이름" in request and "반드시 그대로 밝혀라" in request
     assert "'온라인 서비스'·'특정 앱'·'편집 도구'처럼 흐리게 부르지 마라" in request
 
@@ -1206,19 +1229,19 @@ def _snippet_records(snippets, *, mock_first=False):
 def test_the_revision_carries_the_cited_evidence_as_unnumbered_notes():
     first = {"sources": [{"source_ref": "[S2]", "title": "자료 2"}]}
     records = _snippet_records(["첫 자료 [S1] 내용", "마술봉 허용치 32, [S2] 반전은 Shift+Ctrl+I", "셋째"])
-    notes = blog_content._evidence_notes(first, records)
+    notes = blog_prompt.evidence_notes(first, records)
     assert notes == "- 자료 2: 마술봉 허용치 32, 반전은 Shift+Ctrl+I"
     assert "https://" not in notes
 
 
 def test_with_no_cited_source_the_notes_are_every_real_hit_and_capped():
     records = _snippet_records(["모의 자료"] + ["가" * 900] * 8, mock_first=True)
-    notes = blog_content._evidence_notes({"sources": []}, records)
+    notes = blog_prompt.evidence_notes({"sources": []}, records)
     lines = notes.split("\n")
     assert "모의 자료" not in notes
-    assert all(len(line) <= blog_content.MAX_EVIDENCE_NOTE_CHARS + len("- 자료 9: ") for line in lines)
-    assert len(notes) <= blog_content.MAX_EVIDENCE_NOTES_CHARS + len(lines)
-    assert blog_content._evidence_notes({}, None) == "- (없음 — 이미 쓴 내용만으로 고쳐라)"
+    assert all(len(line) <= blog_prompt.MAX_EVIDENCE_NOTE_CHARS + len("- 자료 9: ") for line in lines)
+    assert len(notes) <= blog_prompt.MAX_EVIDENCE_NOTES_CHARS + len(lines)
+    assert blog_prompt.evidence_notes({}, None) == "- (없음 — 이미 쓴 내용만으로 고쳐라)"
 
 
 def test_the_revision_request_the_lane_sends_carries_the_content_runs_notes(monkeypatch):
@@ -1243,7 +1266,7 @@ def test_the_revision_request_the_lane_sends_carries_the_content_runs_notes(monk
 
 def test_a_carriers_offer_names_the_carrier():
     """'퍼플렉시티 무료' turned an SKT customers' offer into "특정 통신사 이용자라면"."""
-    request = blog_content.content_request(TARGET)
+    request = blog_naver.content_request(TARGET)
     assert "통신사 제휴 혜택(특정 통신사 고객만 받는 요금제·구독 혜택 등)은 그 통신사 이름을 밝혀라" in request
 
 
@@ -1268,7 +1291,7 @@ _NOTE_RECORDS = {"tool_use": {"hits": [{"title": "자료", "snippet": "허용치
     (["title_candidates"], 130, False),
 ])
 def test_the_evidence_notes_ride_only_an_ask_to_grow(failures, para_chars, carries):
-    request = blog_content.revision_request(TARGET, _first_with(failures, para_chars), "", _NOTE_RECORDS)
+    request = blog_naver.revision_request(TARGET, _first_with(failures, para_chars), "", _NOTE_RECORDS)
     assert ("- 자료: 허용치 기본값 32" in request) is carries
     assert ("새 사실은 아래 근거 메모에 있는 것만" in request) is carries
     assert ("새 사실이나 새 출처를 추가하지 마라" in request) is not carries
@@ -1297,7 +1320,7 @@ def test_a_draft_with_a_repeated_sentence_fails_and_the_revision_names_it():
     first = blog_content.interpret_draft(json.dumps(draft, ensure_ascii=False), TARGET)
     assert "repeated_sentences" in first["failures"]
     assert first["measured"]["repeated_sentences"] == 1
-    request = blog_content.revision_request(TARGET, first, "")
+    request = blog_naver.revision_request(TARGET, first, "")
     assert "같은 문장을 두 번 이상 쓰지 마라" in request and f"「{_COPIED[:60]}」" in request
     clean = blog_content.interpret_draft(json.dumps(_draft(), ensure_ascii=False), TARGET)
     assert "repeated_sentences" not in clean["failures"] and clean["measured"]["repeated_sentences"] == 0
@@ -1315,17 +1338,17 @@ def test_a_revision_that_pads_by_copying_loses_to_the_draft_it_copied_from(monke
 
 
 def test_the_grow_ask_forbids_padding_by_copying():
-    assert "다른 문단에 이미 있는 문장을 옮겨 오거나 되풀이해서 늘리지도 마라" in blog_content.ADD_SUBSTANCE_ASK
+    assert "다른 문단에 이미 있는 문장을 옮겨 오거나 되풀이해서 늘리지도 마라" in blog_prompt.ADD_SUBSTANCE_ASK
 
 
 def test_a_public_site_is_named_not_anonymized():
-    request = blog_content.content_request(TARGET)
+    request = blog_naver.content_request(TARGET)
     assert "정부·공공기관의 사이트와 서비스(정부24·홈택스·위택스·소상공인24·고용노동부 등)는 업체가 아니다" in request
 
 
 def test_a_shops_product_title_is_not_copied_into_the_post():
     """'배너입간판' carried the listings' "매장광고판 카페입간판" into its sentences."""
-    request = blog_content.content_request(TARGET)
+    request = blog_naver.content_request(TARGET)
     assert "쇼핑몰 상품명(검색용 단어를 이어 붙인 긴 이름" in request
     assert "'A형 철제 입간판'처럼 제품의 종류로 짧게 불러라" in request
 
@@ -1364,7 +1387,7 @@ def test_a_garbled_snippet_is_left_out_of_the_revisions_notes():
     records = {"tool_use": {"hits": [
         {"title": _GARBLED, "url": "https://www.gov.kr/x", "snippet": "ݱ Home ο ## ǰ û 방문, 우편", "source": "tavily"},
         {"title": "자료", "url": "https://example.org/b", "snippet": "위생교육 수료증이 필요하다", "source": "tavily"}]}}
-    assert blog_content._evidence_notes({"sources": []}, records) == "- 자료: 위생교육 수료증이 필요하다"
+    assert blog_prompt.evidence_notes({"sources": []}, records) == "- 자료: 위생교육 수료증이 필요하다"
 
 
 # --- the sentence count in the shape (2026-09-30) ------------------------------------------------
@@ -1373,16 +1396,16 @@ def test_a_garbled_snippet_is_left_out_of_the_revisions_notes():
 # "4문장" in prose only split them — about 3 sentences a paragraph fell under 1,800 (10 of 21).
 
 def test_the_shape_shows_every_planned_paragraph_with_its_sentence_count():
-    shape = json.loads(blog_content._DRAFT_SHAPE)
-    n = blog_content.PLAN_SENTENCES_PER_PARAGRAPH
+    shape = json.loads(blog_naver._DRAFT_SHAPE)
+    n = blog_naver.PLAN_SENTENCES_PER_PARAGRAPH
     assert shape["intro"] == [f"도입 문단 {i}({n}문장)" for i in (1, 2)]
     assert shape["sections"][0]["paragraphs"] == [f"문단 {i}({n}문장)" for i in (1, 2, 3)]
-    assert len(shape["intro"]) == blog_content.PLAN_INTRO_PARAGRAPHS
-    assert len(shape["sections"][0]["paragraphs"]) == blog_content.PLAN_PARAGRAPHS_PER_SECTION
+    assert len(shape["intro"]) == blog_naver.PLAN_INTRO_PARAGRAPHS
+    assert len(shape["sections"][0]["paragraphs"]) == blog_naver.PLAN_PARAGRAPHS_PER_SECTION
 
 
 def test_the_request_says_the_placeholders_are_not_prose():
-    request = blog_content.content_request(TARGET)
+    request = blog_naver.content_request(TARGET)
     assert "'문단 1(4문장)' 같은 자리표시는 글에 옮기지 말고, 문단마다 그 수만큼 실제 문장을 채워라" in request
 
 
@@ -1415,13 +1438,13 @@ def test_post_md_points_at_an_echo_without_failing_the_draft():
 
 
 def test_the_grow_ask_forbids_an_echo():
-    assert "바로 앞 문장을 다른 말로 다시 말하는 문장" in blog_content.ADD_SUBSTANCE_ASK
+    assert "바로 앞 문장을 다른 말로 다시 말하는 문장" in blog_prompt.ADD_SUBSTANCE_ASK
 
 
 
 def test_the_name_rule_tells_a_business_from_a_tool_by_what_the_reader_does_there():
     """'스티커소량제작' wrote "마플 같은 플랫폼" once tools had to be named (bcp_05eb135d21e34a31429a)."""
-    ask = blog_content.VENDOR_NAME_ASK
+    ask = blog_prompt.VENDOR_NAME_ASK
     assert "업체인지 도구인지는 독자가 그곳에서 하는 일로 가른다" in ask
     assert "예: 마플·레드프린팅·비즈하우스, 편집기가 딸린 인쇄 주문 사이트도 여기" in ask
     assert "캔바·어도비 파이어플라이·ChatGPT·당근·카카오톡" in ask
@@ -1464,23 +1487,23 @@ def test_post_md_points_at_a_cited_sites_name_in_the_body_without_failing():
 # '캔바 사용법' came in with the keyword once, and the revision that would have fixed it was blocked.
 
 def test_the_first_requests_shape_marks_where_the_keyword_goes():
-    shape = json.loads(blog_content._draft_shape(TARGET))
+    shape = json.loads(blog_naver._draft_shape(TARGET))
     assert shape["intro"] == [f"도입 문단 1(4문장, '{TARGET}' 1회)", "도입 문단 2(4문장)"]
     assert shape["sections"][0]["paragraphs"] == [
         "문단 1(4문장)", f"문단 2(4문장, 섹션 5개 중 3개에서만 '{TARGET}' 1회 — 문장 중간에)", "문단 3(4문장)"]
-    assert tuple(shape) == blog_content.DRAFT_KEY_ORDER
-    request = blog_content.content_request(TARGET)
-    assert blog_content._draft_shape(TARGET) in request
+    assert tuple(shape) == blog_naver.DRAFT_KEY_ORDER
+    request = blog_naver.content_request(TARGET)
+    assert blog_naver._draft_shape(TARGET) in request
     assert "섹션 5개 중 3개의 둘째 문단)에는 그 키워드를 한 번 자연스럽게 넣어라" in request
     assert "키워드로 문장이나 섹션을 시작하지 말고 문장 중간에 넣어라" in request
-    assert blog_content.KEYWORD_FORM_ASK in request
+    assert blog_prompt.KEYWORD_FORM_ASK in request
 
 
 def test_the_revision_keeps_the_target_free_shape():
     first = blog_content.interpret_draft(json.dumps(_draft(), ensure_ascii=False), TARGET)
     first = dict(first, failures=["headings"])
-    request = blog_content.revision_request(TARGET, first, "")
-    assert blog_content._DRAFT_SHAPE in request and "1회)" not in request.split("이전 초안:")[0]
+    request = blog_naver.revision_request(TARGET, first, "")
+    assert blog_naver._DRAFT_SHAPE in request and "1회)" not in request.split("이전 초안:")[0]
 
 
 

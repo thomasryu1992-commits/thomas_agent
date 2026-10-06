@@ -32,7 +32,7 @@ from runtime.read_only_kernel import integrity
 
 from .. import timeutil
 from ..policy_fingerprint import CHANGED, FIRST_SEEN, UNCHANGED, fingerprints_dir
-from . import cost, factory, forward_confirmation, market_data, pool_admission, robustness
+from . import backtest, cost, forward_confirmation, market_data, pool_admission, robustness
 
 JUDGEMENT_RULES_VERSION = "judgement_rules.v1"
 # The record's file name under the policy fingerprints directory, beside the per-service policy ones.
@@ -59,11 +59,11 @@ def judgement_rules() -> dict[str, Any]:
         "CRITICAL_TRADES_PER_PARAMETER": robustness.CRITICAL_TRADES_PER_PARAMETER,
         "MAX_FREE_PARAMETERS": robustness.MAX_FREE_PARAMETERS,
         "WEIGHTS": dict(sorted(robustness.WEIGHTS.items())),
-        "HOLDOUT_FRACTION": factory.HOLDOUT_FRACTION,
-        "MIN_BARS_FOR_HOLDOUT": factory.MIN_BARS_FOR_HOLDOUT,
-        "WALK_FORWARD_PERIODS": factory.WALK_FORWARD_PERIODS,
-        "WALK_FORWARD_MIN_PERIODS": factory.WALK_FORWARD_MIN_PERIODS,
-        "MIN_TRADES_PER_WINDOW": factory.MIN_TRADES_PER_WINDOW,
+        "HOLDOUT_FRACTION": backtest.HOLDOUT_FRACTION,
+        "MIN_BARS_FOR_HOLDOUT": backtest.MIN_BARS_FOR_HOLDOUT,
+        "WALK_FORWARD_PERIODS": backtest.WALK_FORWARD_PERIODS,
+        "WALK_FORWARD_MIN_PERIODS": backtest.WALK_FORWARD_MIN_PERIODS,
+        "MIN_TRADES_PER_WINDOW": backtest.MIN_TRADES_PER_WINDOW,
         "FACTORY_DEPTH_DAYS": market_data.FACTORY_DEPTH_DAYS,
         "MIN_FACTORY_BARS": market_data.MIN_FACTORY_BARS,
         # selection correction

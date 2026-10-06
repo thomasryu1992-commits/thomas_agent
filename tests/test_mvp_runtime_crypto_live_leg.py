@@ -610,8 +610,8 @@ def test_two_naked_closes_leave_a_live_history_that_still_reads(tmp_path):
     from runtime.mvp_runtime.crypto.live_pnl import (
         LIVE_OUTCOMES_FILENAME,
         read_live_outcomes,
-        state_dir,
     )
+    from runtime.mvp_runtime.crypto.state import state_dir
 
     rows = [
         _entry(adapter=FakeAdapter(missing={"TP"}))["outcome"],
@@ -1036,10 +1036,12 @@ def test_no_mark_store_or_no_counter_no_order(missing, reason):
 def test_the_real_stores_let_one_bar_send_once(tmp_path, monkeypatch):
     """End to end on the durable stores: the same decision executed twice is one order."""
     from runtime.mvp_runtime.crypto.live_order import (
-        count_today,
-        read_live_entry_marks,
         select_live_entry_marks,
         select_live_order_counter,
+    )
+    from runtime.mvp_runtime.crypto.live_order_stores import (
+        count_today,
+        read_live_entry_marks,
     )
 
     monkeypatch.setenv("MVP_LIVE_TRADING", "real")
@@ -1452,10 +1454,10 @@ def test_a_claim_that_cannot_be_given_back_is_reported_never_raised(error):
 
 def test_the_real_marks_give_the_symbol_back_and_the_book_refuses_the_next_entry(tmp_path, monkeypatch):
     from runtime.mvp_runtime.crypto.live_order import (
-        read_live_entry_marks,
         select_live_entry_marks,
         select_live_order_counter,
     )
+    from runtime.mvp_runtime.crypto.live_order_stores import read_live_entry_marks
     from runtime.mvp_runtime.crypto.live_order_stores import LIVE_ENTRY_SYMBOL_OCCUPIED
     from runtime.mvp_runtime.crypto.live_position import select_live_position_store
 
@@ -1752,7 +1754,8 @@ def test_the_claim_is_told_what_the_guard_judged_and_the_cap_the_gate_judged():
 
 
 def test_a_decision_that_does_not_say_what_it_judged_costs_nothing_on_the_real_marks(tmp_path, monkeypatch):
-    from runtime.mvp_runtime.crypto.live_order import read_live_entry_marks, select_live_entry_marks
+    from runtime.mvp_runtime.crypto.live_order import select_live_entry_marks
+    from runtime.mvp_runtime.crypto.live_order_stores import read_live_entry_marks
     from runtime.mvp_runtime.crypto.live_order_stores import LIVE_ENTRY_CLAIM_MALFORMED
 
     monkeypatch.setenv("MVP_LIVE_TRADING", "real")

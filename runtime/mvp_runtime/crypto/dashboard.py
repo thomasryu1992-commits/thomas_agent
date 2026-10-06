@@ -565,6 +565,10 @@ _TIMEFRAME_ORDER = {
 # is, so a three-trade lineage does not read as one waiting on a verdict.
 _COHORT_MATURITY_WORDS = {"EXPLORATORY": "탐색", "MATURE": "성숙", "CONFIRMED": "확정", "CONTRADICTED": "반박",
                           "UNRESOLVED": "미해석"}
+# `forward_cohort.waiting_on`, as the board says it.
+_COHORT_WAITING_WORDS = {"NOT_YET_WALKED": "워크 전", "NO_SIGNAL": "신호 없음", "TRADE_FLOOR": "거래 하한",
+                         "SLICE_FLOOR": "슬라이스 하한", "NO_SPREAD": "분산 없음",
+                         "CONFIDENCE_BOUND": "신뢰 하한", "UNKNOWN": "모름"}
 
 
 def _arm(cell: dict[str, Any] | None) -> str:
@@ -965,6 +969,12 @@ def render_status_text(status: dict[str, Any]) -> str:
                 f"평균 {_r(m.get('trade_mean_r'))}R 하한 {_r(m.get('trade_lower_bound_r'))}R "
                 f"{_cohort_mark(m)}"
                 for m in leaders))
+        # What the unjudged members are waiting on (display only): the maturity says how far a member
+        # has got, this says what stands between it and a verdict.
+        waiting = cohort.get("waiting_counts") or {}
+        if waiting:
+            lines.append("         대기 " + " · ".join(
+                f"{_COHORT_WAITING_WORDS.get(reason, reason)} {n}" for reason, n in waiting.items()))
     # Real members against their coin-flip twins, per timeframe: confirmed·contradicted / lineages.
     # The comparison is the reading; a null CONFIRMED is the judge passing noise.
     null_arm = status.get("forward_cohort_null") or {}
@@ -1002,7 +1012,13 @@ def render_status_text(status: dict[str, Any]) -> str:
         lines.append(f"       fusion 부모 {n}개 리니지 ({note})")
     positioning = status.get("positioning") or {}
     if positioning.get("cells"):
-        state = "적격" if positioning.get("eligible") else "축적 중"
+        # Covered is not open (R2, 2026-10-03): the families mint only on the explicit decision too.
+        if not positioning.get("eligible"):
+            state = "축적 중"
+        elif positioning_store.MINTING_DECIDED:
+            state = "적격·생성 열림"
+        else:
+            state = "커버 충족·생성 닫힘(결정 전)"
         lines.append(
             f"       포지셔닝 {positioning.get('min_covered_days')}/{positioning.get('required_days')}일 "
             f"({state}, 최소 커버 셀 기준 · 피처 미연결)"

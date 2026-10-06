@@ -1,7 +1,8 @@
 # 제안: 손실 브레이커 4개 — 사다리의 의미를 고정하고 단위를 갱신한다 (DRAFT v0.1)
 
-**상태:** PARTIALLY DECIDED 2026-09-26 — (c) 순서 결정: 슬리피지 실측이 먼저다. (a)(b)(d)는 실측 뒤에 정하고, 그때까지
-현재 값을 유지하며 LIVE_AUTONOMOUS로 올리지 않는다(Thomas 2026-09-26, 시스템 점검 D5). **값은 하나도 바뀌지 않았다**.
+**상태:** PARTIALLY DECIDED 2026-10-06 — (a)(b)(d)는 첫 forward cohort 판정(2027-03-22) 때 묻는다. 그때까지 크립토 라이브는
+LIVE_AUTONOMOUS로 올리지 않고 현재 값을 유지한다(Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q6). 관문이 "슬리피지 실측 뒤"에서
+"첫 판정 때"로 바뀌어 순환이 없어졌다. **값은 하나도 바뀌지 않았다.**
 **부모:** `docs/REMAINING_WORK.md` §G1 — 이 네 상수를 `INHERITED`(이전 시스템 `config/settings.py`에서
 넘어옴, 이 런타임에서 결정된 적 없음)로 색인하고, 2026-08-06에 자체 기록으로 측정한 절.
 **대상:** `runtime/mvp_runtime/crypto/guards.py` — `DAILY_MAX_LOSS_R`, `WEEKLY_MAX_LOSS_R`,
@@ -135,3 +136,22 @@ import statistics; print('stop unit:', abs(statistics.median(stops)))
 - **(c) 순서:** 슬리피지 실측(시스템 점검 C2)을 먼저 한다. 환산율 1.3576R이 검증되지 않은 3 bps 가정 위에 있기
   때문이다. (a)(b)(d)는 그 결과로 다시 계산해서 정한다.
 - 그때까지 `crypto/guards.py`의 네 값은 그대로 두고, 실행 단계를 LIVE_AUTONOMOUS로 올리지 않는다.
+
+## 결정 (Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q3 — §3 처리안 권고대로)
+
+- **결정 없음, 추적 정리.** (a)(b)(d)는 그대로 열려 있다. 표본은 stop n=12, 진입 n=3(2026-09-28 §F8 재실행)에서 멈춰 있다.
+  PAPER에서는 fill이 쌓이지 않고, 프로브는 `execution_stage._REQUIRED_STAGE`가 `LIVE_AUTONOMOUS`를 요구하며, 카나리 rung은 없다.
+  "실측 뒤에 정한다"는 그대로는 순환이다. 순환을 끊는 선택지와 권고는 `SYSTEM_SCORECARD_V0.1.md` Q6에 있다.
+- `SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md`의 D5는 이 문서와 같은 결정이다. 하나로 추적한다.
+
+## 결정 (Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q6 — (c) 권고대로)
+
+- **관문을 다시 적는다.** (a)(b)(d)는 "슬리피지 실측 뒤"가 아니라 **첫 forward cohort 판정(1차 cohort 마감 2027-03-22) 때** 묻는다.
+  실측을 늘리는 프로브가 `LIVE_AUTONOMOUS`를 요구하므로 옛 관문은 스스로 열릴 수 없었다.
+- **그때까지 크립토 라이브는 `LIVE_AUTONOMOUS`로 올리지 않는다.** 지금 잃는 것은 없다. LIVE 문은 FORWARD_CONFIRMED만 받고, 그런
+  계보는 0이다. 1차 cohort 판정 전의 판정은 Decision 2 B의 근거가 아니다(`FORWARD_COHORT_EXPANSION_V0.1.md` N4).
+  `SIGNED_TESTNET`(돈이 없는 테스트넷)은 이 결정의 대상이 아니다.
+- **그날의 질문은 미리 적어 둔다.** PAPER에서는 fill이 쌓이지 않으므로 2027-03-22에도 표본은 지금과 같을 것이다(손절 n=12,
+  진입 n=3, 2026-09-28 §F8). 그래서 그날 실제로 고를 것은 둘 중 하나다. 지금 표본으로 잠정값을 정하고 `LIVE_AUTONOMOUS` 뒤 표본이
+  차면 다시 정하거나(Q6의 (a)), 라이브를 계속 올리지 않는 것이다. 확정 계보가 생기지 않았다면 뒤쪽이 자연스럽다.
+- `SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md` D5는 이 결정과 같다.

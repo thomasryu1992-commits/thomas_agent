@@ -437,24 +437,39 @@ def _result_r(direction: str, entry: float, exit_price: float, risk: float) -> f
     return signed / risk
 
 
-def advance_holding(position: dict[str, Any], candle_ts: Any) -> None:
-    """Advance holding_candles once per DISTINCT candle, so a re-run within one interval
-    cannot accelerate time_exit (the source's fix).
+# What one call of :func:`advance_holding` did with the bar it was handed.
+HOLD_NEW_BAR = "NEW_BAR"                    # a bar not counted before: the counter moved by one
+HOLD_DUPLICATE_BAR = "DUPLICATE_BAR"        # the bar already counted: a re-run inside one interval
+HOLD_NO_CONFIRMED_BAR = "NO_CONFIRMED_BAR"  # no bar timestamp at all: nothing is known to have passed
+
+
+def advance_holding(position: dict[str, Any], candle_ts: Any) -> str:
+    """Advance holding_candles once per DISTINCT, CONFIRMED candle, and say what happened.
+
+    Returns :data:`HOLD_NEW_BAR`, :data:`HOLD_DUPLICATE_BAR` or :data:`HOLD_NO_CONFIRMED_BAR`.
 
     Takes the **timestamp**, not the candle, because the live leg counts the same bars from a
     different shape: paper dedups on a candle's ``close_time``, the live leg on the feature
     row's ``timestamp``, which is the bar's OPEN time — a different key for the same bar, and
     each leg only ever compares its own keys, so one key per bar is all the rule needs. One
     function so the two legs cannot drift on what "a bar has passed" means — the parity this
-    whole rule exists to hold. A ``None`` timestamp still advances (an uncounted bar would stall
-    the exit) but records nothing to dedup against, which is the pre-existing behaviour.
-    """
-    ts = candle_ts if candle_ts is not None else None
-    if ts is not None and str(ts) == str(position.get("last_counted_candle_ts") or ""):
-        return
+    whole rule exists to hold.
+
+    **No timestamp is not a bar** (2026-10-02). It used to advance anyway, on the argument that
+    an uncounted bar would stall the exit. But a missing timestamp is exactly what a degraded
+    collection produces (`cycle` builds an empty snapshot when the venue cannot be read, and its
+    feature row is ``{}``), and the cycle runs every 15 minutes: each failed collection on a
+    position's own timeframe spent one of its bars, so a 4h position allowed 12 bars could be
+    timed out after three hours of outage instead of two days. Unknown time evidence now spends
+    nothing. The exit is not stalled: the next confirmed bar is counted once — never one per missed
+    cycle — and a position already at its limit still gets its time exit retried by the caller."""
+    if candle_ts is None or not str(candle_ts).strip():
+        return HOLD_NO_CONFIRMED_BAR
+    if str(candle_ts) == str(position.get("last_counted_candle_ts") or ""):
+        return HOLD_DUPLICATE_BAR
     position["holding_candles"] = int(position.get("holding_candles", 0)) + 1
-    if ts is not None:
-        position["last_counted_candle_ts"] = str(ts)
+    position["last_counted_candle_ts"] = str(candle_ts)
+    return HOLD_NEW_BAR
 
 
 def _touches(direction: str, candle: Mapping[str, Any], sl: float, tp: float) -> tuple[bool, bool]:

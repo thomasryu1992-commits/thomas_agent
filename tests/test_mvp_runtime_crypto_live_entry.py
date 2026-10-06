@@ -19,7 +19,7 @@ import inspect
 
 import pytest
 
-from runtime.mvp_runtime.crypto import execution_stage as es
+from runtime.mvp_runtime.crypto import execution_stage as es, trade_plan
 from runtime.mvp_runtime.crypto import live_entry as le
 from runtime.mvp_runtime.crypto.account import AccountPosition, AccountSnapshot
 from runtime.mvp_runtime.crypto.live_order import (
@@ -648,7 +648,8 @@ def test_two_contexts_on_one_bar_instant_are_two_orders():
 
 def test_an_intent_without_a_timeframe_keeps_its_identity():
     """The probe's and the testnet cycle's plans carry no timeframe; their ids must not move."""
-    from runtime.mvp_runtime.crypto.live_order import build_live_order_intent, make_idempotency_key
+    from runtime.mvp_runtime.crypto.live_order import build_live_order_intent
+    from runtime.mvp_runtime.crypto.order_identity import make_idempotency_key
 
     plan = {"direction": "LONG", "entry_price": 100.0, "stop_loss": 99.0, "strategy_id": "PROBE-x"}
     intent = build_live_order_intent(plan, symbol="BTCUSDT", quantity=0.001, notional_usdt=100.0, now=NOW)
@@ -1020,11 +1021,11 @@ def test_the_unreadable_fallback_is_not_the_account_setting_constant():
     no evidence behind it."""
     from runtime.mvp_runtime.crypto import paper
 
-    assert le.UNREADABLE_ACCOUNT_LEVERAGE >= paper.ASSUMED_LEVERAGE, (
+    assert le.UNREADABLE_ACCOUNT_LEVERAGE >= trade_plan.ASSUMED_LEVERAGE, (
         "the degraded-read assumption must never be more permissive than the known setting"
     )
-    assert le.UNREADABLE_ACCOUNT_LEVERAGE is not paper.ASSUMED_LEVERAGE or (
-        le.UNREADABLE_ACCOUNT_LEVERAGE > paper.ASSUMED_LEVERAGE
+    assert le.UNREADABLE_ACCOUNT_LEVERAGE is not trade_plan.ASSUMED_LEVERAGE or (
+        le.UNREADABLE_ACCOUNT_LEVERAGE > trade_plan.ASSUMED_LEVERAGE
     ), "the split must be real, not two names for one value"
 
 

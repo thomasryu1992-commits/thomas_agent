@@ -1,7 +1,7 @@
 # 제안: Conversational Orchestration Front v0.1 — F1·F2 구현 완료, F3 미착수
 
-**상태:** PARTIALLY DECIDED 2026-07-25 — D1–D3 결정·구현(task registry, frontdesk, provider). D4(standing grant,
-`approval.v0.3`)는 결정 대기, D5는 D4를 기다린다.
+**상태:** IMPLEMENTED 2026-10-06 — D1–D3 결정·구현(2026-07-25). D4(standing grant, `approval.v0.3`)는 "필요가 확인되기 전에는
+하지 않는다"로 닫았고 D5는 함께 소멸했다(Thomas 2026-10-06, 아래 결정 절). 지을 것은 남지 않았다.
 
 > **상태 (2026-07-30 갱신): 더 이상 미착수 제안이 아니다.** §7의 D1–D3는 결정·구현되어
 > 프로덕션에서 가동 중이고, D4(standing grant)만 미결이다. 항목별 현재 상태는 §7의 표에,
@@ -382,3 +382,12 @@ standing_grant:
 
 *상태 갱신: 2026-07-30 (`main` = `a0f281c`) — 상단 상태 블록과 §7/§7.1만 현재 사실로 고쳤다.
 §1–§6은 제안 원문 그대로다.*
+
+## 결정 (Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q3 — §3 처리안 권고대로)
+
+- **D4 — 하지 않는다.** 원문의 권장 순서는 "필요가 확인되면 D4"였고, 그 필요를 확인한 기록이 없다. approval은 여전히
+  `approval.v0.2`(`consumption.one_time_use: const true`)이고 정책에 `standing_grant` 블록이 없다. `APPROVAL_CONVERSATION_V0.1.md`의
+  V4와 같은 결정이다.
+- **D5 — 소멸.** D4에 종속된 항목이다.
+- **다시 여는 조건:** 단발 승인 왕복이 실제 운영을 막았다는 기록이 생기면 새 제안서로 연다. 이 문서를 되살리지 않는다.
+- **§7 표의 정정:** D3 행의 "per-machine 그랜트"는 2026-08-10에 은퇴했다. 지금은 env가 게이트다(`MVP_FRONTDESK_PROVIDER`).
