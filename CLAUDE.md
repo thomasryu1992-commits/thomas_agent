@@ -73,7 +73,8 @@ core thin while lanes grow, stated as rules:
   - the read-only multi-account board (P1 of `docs/proposals/MULTI_ASSET_EXPANSION_V0.1.md`, Thomas
     2026-10-02 D4): no order path, no judgement changed, and no door reads it.
 
-  Judgement rules loosen only at a research-epoch boundary (`RESEARCH_EPOCH_V0.1.md` Q3). Record:
+  Judgement rules loosen only at a research-epoch boundary (`RESEARCH_EPOCH_V0.1.md` Q3): each cohort's close,
+  the first on 2027-03-22 (Thomas 2026-10-06). Record:
   `docs/proposals/SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md`, "결정 (Thomas 2026-09-26)" and
   "결정 (Thomas 2026-10-01)".
 - **Never run state-writing CLIs on the host as root.** Services run as uid 10001 and mount
