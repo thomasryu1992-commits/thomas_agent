@@ -24,7 +24,8 @@
   - The daily prompt keeps only the sequence, the invariants and the report shape (18,107 B → 6,003 B).
   - Its dated rules moved verbatim into the skills: `naver-blog-draft` '일일 작업' A–F and `naver-to-google-seo` 1-D.
 - **Q3 decided the same day.**
-  - The Tistory production path is chosen at the 10-31 verdict. Until then the runtime engine runs manual test fires only, and its schedule rows stay disabled.
+  - The cron is the Tistory production path. Thomas had already decided this earlier that day and confirmed it here. The recommendation's "pick one at 10-31" would have reopened that decision, so it was corrected.
+  - What remains for 10-31 is whether the runtime Tistory profile stays.
   - A read-only comparison script outside the repo runs both engines' drafts through the same `blog-preflight.py`. Baseline: cron 3/3 body-clean, runtime 0/8.
 - **This PR changes no code, schema or policy.** It adds the review, this entry and the
   regenerated `STATUS.md`.
