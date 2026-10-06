@@ -11,4 +11,5 @@
   that left the host in plain text. Product waits on the 10-31 Tistory verdict, and crypto edge on
   2027-03-22.
 - **Addendum (15:56Z re-measure).** Nothing moved. The skills folder is now under git, which closes one of the two process-to-9 items. The other is Thomas's answer on the IV–RV measurement exception.
+- **Addendum 2 (17:20Z).** Process went from 8 to 9 once the IV–RV exemption was decided (#1157). The queue went from 6 to 5. Correction: branding B2 and B3 are also answerable now, not only IV–RV.
 - **This PR changes no code, schema or policy.**

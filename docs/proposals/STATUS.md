@@ -96,4 +96,4 @@
 | [DIP_WATCH_D_RULE_V0.1.md](DIP_WATCH_D_RULE_V0.1.md) | `RECORD` | 2026-09-23 | 반박된 아이디어의 측정 기록. 효과가 남는 입력은 BitMEX XBTUSD뿐이었고 BitMEX는 2026-09-22에 거래를 끝냈다. 대체 후보 3곳(Coinbase, 바이낸스 무기한, Deribit)은 같은 보수 조건에서 효과가 없다. 결정할 것은 없다. |
 | [FORWARD_VERDICT_REGIME_EPISODES_V0.1.md](FORWARD_VERDICT_REGIME_EPISODES_V0.1.md) | `RECORD` | 2026-09-27 | 측정 기록. forward 판정 6건이 BTC 일봉 regime 구간 3–5개(하락 추세 0일)에서 나왔고, 반박·성숙 판정은 시간 분산 검사 없이 나온다. 에포크 경계에서 볼 결정 항목 2개(§5)를 함께 적는다. |
 | [SYSTEM_SCORECARD_V0.2.md](SYSTEM_SCORECARD_V0.2.md) | `RECORD` | 2026-10-06 | v0.1(2026-10-05, 6/10)의 질문 여섯 개가 모두 처리된 뒤 같은 기준으로 다시 잰 점수다. 종합 7/10. 결정할 것은 없고, 다음 점수를 움직일 지점을 적는다. |
-| [SYSTEM_SCORECARD_V0.3.md](SYSTEM_SCORECARD_V0.3.md) | `RECORD` | 2026-10-06 | v0.2(같은 날 05:30Z, 7/10) 뒤 같은 기준으로 다시 잰 점수다. 종합 7/10 그대로다(평균 7.0 → 7.1). 개발 프로세스가 7에서 8로 올랐다. 결정할 것은 없다. |
+| [SYSTEM_SCORECARD_V0.3.md](SYSTEM_SCORECARD_V0.3.md) | `RECORD` | 2026-10-06 | v0.2(같은 날 05:30Z, 7/10) 뒤 같은 기준으로 다시 잰 점수다. 종합 7/10 그대로다(평균 7.0 → 7.1, 추기 2에서 7.3). 개발 프로세스가 7에서 8로, 추기 2에서 9로 올랐다. 결정할 것은 없다. |
