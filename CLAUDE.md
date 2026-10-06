@@ -71,7 +71,11 @@ core thin while lanes grow, stated as rules:
     counters or a member-minus-twin readout;
   - tightening cohort membership, such as a cross-cohort sibling rule;
   - the read-only multi-account board (P1 of `docs/proposals/MULTI_ASSET_EXPANSION_V0.1.md`, Thomas
-    2026-10-02 D4): no order path, no judgement changed, and no door reads it.
+    2026-10-02 D4): no order path, no judgement changed, and no door reads it;
+  - the IV–RV measurement (§4.3 of that proposal, Thomas 2026-10-06): read-only observation of
+    implied minus realized volatility. It is not a hypothesis, template or trial, opens no option
+    position, changes no judgement, and no door reads it. Its data source is a new network read, so it
+    is named at the env-only gate when it is built; this exemption is not that approval.
 
   Judgement rules loosen only at a research-epoch boundary (`RESEARCH_EPOCH_V0.1.md` Q3): each cohort's close,
   the first on 2027-03-22 (Thomas 2026-10-06). Record:
