@@ -493,6 +493,34 @@ def test_the_report_judges_at_the_frozen_selection_time(tmp_path):
     assert line["trade_spread_floor_r"] is None  # nor pooled: one trade in the whole cohort
 
 
+def test_the_indexed_report_is_the_report_over_every_row(tmp_path, monkeypatch):
+    """P1-2 (RESEARCH_FORWARD_THROUGHPUT_ANALYSIS, Thomas 2026-10-06): each member reads its own rows
+    from an index instead of every row in the store. Nothing it reports may change — §22's named
+    risk is a pre-selection row slipping back in — so the same store is reported both ways."""
+    a, b = _record("cand_a"), _record("cand_b", family="trend_pullback")
+    _install_cohort(tmp_path, a, b)
+    _walk(tmp_path, _frame(range(1, 8), stop_on={5}))
+    base = next(r for r in fco.read_cohort_outcomes(tmp_path) if r["candidate_id"] == "cand_a")
+    rows: list = []
+    for i, net in enumerate([1.0, -0.5, 2.0, -1.0, 0.7, -0.3, 1.4, -1.0]):   # interleaved a, b, a, b, ...
+        rows.append({**base, "candidate_id": ("cand_a", "cand_b")[i % 2], "result_R": net,
+                     "holding_candles": 0, "opened_at_utc": _day(10 + i), "created_at_utc": _day(11 + i)})
+    rows.insert(3, {**base, "result_R": 9.0, "opened_at_utc": "2026-07-01T00:00:00Z"})  # before the cutoff
+    rows.insert(5, {**base, "candidate_id": "cand_b", "outcome_closed": False})          # still open
+    by_gen = {k: v for k, v in base.items() if k != "candidate_id"}                      # a's gen: key
+    rows.insert(6, {**by_gen, "result_R": 0.4, "holding_candles": 0,
+                    "opened_at_utc": _day(20), "created_at_utc": _day(21)})
+    rows.insert(1, "not a row")
+    monkeypatch.setattr(fco, "read_cohort_outcomes", lambda root=None: rows)
+
+    indexed = fco.cohort_report(tmp_path)
+    monkeypatch.setattr(fco, "rows_for", lambda judged, index: rows)                   # the old way
+    assert fco.cohort_report(tmp_path) == indexed
+    lines = {m["candidate_id"]: m for m in indexed[0]["members"]}
+    assert lines["cand_a"]["closed_count"] == 5     # four of its own and the gen: row, not the early one
+    assert lines["cand_b"]["closed_count"] == 4     # the open row is not evidence
+
+
 def test_the_trade_lower_bound_floors_the_spread_at_the_pooled_one():
     nets = (1.0, -0.5, 2.0, 0.5)  # stdev 1.0408
     bounds = fco.trade_bounds(nets, spread_floor=None)

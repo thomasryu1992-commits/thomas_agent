@@ -72,8 +72,8 @@ from . import forward_book
 from .candidate_identity import candidate_id
 from .candidate_ranking import candidate_quality, rank_candidates
 from .forward_confirmation import (
-    FORWARD_CONFIRMED, FORWARD_CONTRADICTED, FORWARD_UNDERPOWERED, forward_outcomes_for, judge_forward,
-    min_forward_trades, selection_cutoff,
+    FORWARD_CONFIRMED, FORWARD_CONTRADICTED, FORWARD_UNDERPOWERED, forward_outcomes_for, index_outcomes,
+    judge_forward, min_forward_trades, rows_for, selection_cutoff,
 )
 from .judgement_fingerprint import judgement_fingerprint, judgement_rules
 from .market_data import TIMEFRAMES
@@ -969,9 +969,10 @@ def cohort_report(root: Path | None = None) -> list[dict[str, Any]]:
     latest: dict[str, dict[str, Any]] = {}
     for record in read_candidates(root):
         latest[candidate_id(record)] = record
-    rows = read_cohort_outcomes(root)
+    # Indexed once by lineage: each member reads its own rows, not the whole store (P1-2).
+    index = index_outcomes(read_cohort_outcomes(root))
     # Two passes: the floor pools every member's trades, so it exists only once all are priced.
-    priced: list[tuple[Mapping[str, Any], list[tuple[Mapping[str, Any], Any, list[float]]]]] = []
+    priced: list[tuple[Mapping[str, Any], list[tuple[Mapping[str, Any], Any, list[Mapping[str, Any]], list[float]]]]] = []
     cohorts = read_cohorts(root)
     siblings = sibling_of(cohorts)
     walked = _walked_lineages(root)
@@ -981,13 +982,14 @@ def cohort_report(root: Path | None = None) -> list[dict[str, Any]]:
         for member in cohort.get("members") or []:
             record = latest.get(str(member.get("candidate_id")))
             judged = None if record is None else {**record, "created_at_utc": member.get("selected_at_utc")}
-            members.append((member, judged, [] if judged is None else priced_nets(judged, rows)))
+            own = [] if judged is None else rows_for(judged, index)
+            members.append((member, judged, own, [] if judged is None else priced_nets(judged, own)))
         priced.append((cohort, members))
-    floor = pooled_spread(nets for _, members in priced for _, _, nets in members)
+    floor = pooled_spread(nets for _, members in priced for _, _, _, nets in members)
     report: list[dict[str, Any]] = []
     for cohort, members in priced:
         lines = []
-        for member, judged, nets in members:
+        for member, judged, own, nets in members:
             if judged is None:
                 lines.append({"candidate_id": member.get("candidate_id"), "status": "UNRESOLVED",
                               "maturity": MATURITY_UNRESOLVED})
@@ -998,7 +1000,7 @@ def cohort_report(root: Path | None = None) -> list[dict[str, Any]]:
                 "timeframe": member.get("timeframe"),
                 "context": _context_key(member),
                 "context_size": (cohort.get("context_sizes") or {}).get(_context_key(member)),
-                **judge_forward(judged, rows),
+                **judge_forward(judged, own),
                 **trade_bounds(nets, spread_floor=floor),
                 "trade_spread_floor_r": floor,
                 "trade_floor": min_forward_trades(member.get("timeframe")),
