@@ -43,6 +43,12 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements-validation.lock pytest pytest-xdist
 
+      # The backup test's real age round trip (tests/test_ops_harness_backup.py) needs the binary;
+      # without it that test skips, and linux allows no skip. Windows skips the bash script whole.
+      - name: Install age for the backup encryption test
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends age
+
       - name: Activate an ephemeral Core for the test run
         shell: bash
         run: |

@@ -63,6 +63,12 @@ jobs:
           git config user.name "Thomas Agent CI"
           python scripts/ci_activate_core_for_tests.py
 
+      # The backup test's real age round trip (tests/test_ops_harness_backup.py) needs the binary;
+      # without it that test skips, and linux allows no skip. Windows skips the bash script whole.
+      - name: Install age for the backup encryption test
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends age
+
       - name: Run the MVP runtime test suite
         run: python -m pytest tests/ -q --junitxml=junit.xml
 

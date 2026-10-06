@@ -11,9 +11,31 @@ install -m 700 scripts/ops/backup_watch.sh /root/backups/backup-watch.sh
 install -m 700 scripts/ops/health_watch.sh /root/backups/health-watch.sh
 ```
 
+The core archive is encrypted (2026-09-29, below), so the host also needs `age` (`apt install age`)
+and `/root/backups/age-recipients.txt` (0600 root) holding the **public** key line `age1…` Thomas
+generated on the Mac. Install the backup script only once both exist: without them every core run
+fails (`stage=encrypt`), by design. Install `backup_watch.sh` in the same sitting, outside the
+07:45–08:00Z window, so the old watch never reads the new file name.
+
 ## 1. What is backed up
 
-One archive a day, `govstate-<UTC stamp>.tar.gz` under `/root/backups/governance-state/` (mode 0600, keep 7), plus the weekly candle archive (unchanged since 2026-08-31). Member paths are prefixed with the host directory they restore into.
+One archive a day, `govstate-<UTC stamp>.tar.gz.age` under `/root/backups/governance-state/` (mode 0600, keep 7), plus the weekly candle archive (unchanged since 2026-08-31, plaintext: public market data, no secret). Member paths are prefixed with the host directory they restore into.
+
+**The core archive is encrypted to an age public key (Thomas decision, 2026-09-29).** It carries
+`.env` and the assistant's credentials and leaves the host daily, so a gzip file readable by whoever
+holds a copy was not enough. `tar czf - … | age -R /root/backups/age-recipients.txt` streams: no
+plaintext archive is written to disk. The recipients file holds public keys only; the private key
+is on Thomas's Mac (`~/.config/thomas-govstate/age-key.txt`) with a copy outside the Mac, and **it
+never comes to this host** — the script refuses a recipients file that contains `AGE-SECRET-KEY`.
+Consequences to keep in mind:
+- **This host cannot read its own backups.** Listing and restoring start on the Mac (§2.0).
+- **Losing the private key loses every encrypted archive.** Its off-Mac copy is the backup of the backup.
+- A missing `age`, a missing/malformed recipients file, a tar failure, or an age failure leaves no
+  archive and a `FAILED mode=core stage=encrypt|archive …` line. The age output is checked for its
+  version header before it is renamed from `.part` into place.
+- Plaintext archives from before encryption match no prune glob; the script removes them once seven
+  encrypted archives exist (`legacy-plaintext-removed=N` on that line) — the same day the old
+  retention would have. Plaintext copies already pulled to the Mac are Thomas's to delete.
 
 | Root (member prefix) | Owner on disk | What it is | Excluded |
 |---|---|---|---|
@@ -24,25 +46,34 @@ One archive a day, `govstate-<UTC stamp>.tar.gz` under `/root/backups/governance
 | `thomas_agent/.env` | root, 0600 | the single secret source (see `DEPLOYMENT.md` → *Secret boundary*) | — |
 | `hermes-trial/data` | 10000:10000, 0700 | `SOUL.md`, `config.yaml`, `mcp/` shims, `skills/`, `cron/jobs.json`, `memories/`, `sessions/`, `auth.json`, and `state-snapshots/<stamp>-daily/` — a **consistent** `state.db` copy made by `hermes backup --quick` (sqlite backup API) moments before the tar | the live `state.db*`, `kanban.db*`, `cron/executions.db*` (WAL-mode databases copied mid-write are not backups — the snapshot directory carries them); `cache/`, `lazy-packages/`, `home/`, `bin/`, `.local/` (installed packages, recreated on boot); `logs/`, `sandboxes/`, `image_cache/`, `audio_cache/`, `models_dev_cache.json` |
 
-Measured 2026-09-04: **25 MB, 4.8 s** (the previous Thomas-only archive was 15 MB). Off-host: the Mac pull (`com.thomas.govstate-pull`, daily 18:00 KST, 90-day retention) globs `govstate-*.tar.gz`, so it picked the new shape up without reinstalling.
+Measured 2026-09-04: **25 MB, 4.8 s** (the previous Thomas-only archive was 15 MB). Off-host: the Mac pull (`com.thomas.govstate-pull`, daily 18:00 KST, 90-day retention) globs `govstate-*.tar.gz`, so it picked the new shape up without reinstalling. **The encrypted
+name does not match that glob**: the Mac pull script (vault `ops/mac-backup-pull/`) must be updated
+with the server script, or the Mac silently keeps only the candles. The updated pull checks each new
+core archive by decrypting it to `tar -tz` with the Mac's key — a daily proof the key still works.
 
 The snapshot step runs inside the container as uid 10000 (`docker exec -u 10000 hermes hermes backup --quick -l daily`). If the container is down the tar still runs and the log line ends in `hermes-snapshot=FAILED` — a visible hole rather than a silent one. Only the newest snapshot directory is kept on disk (33 MB each); older ones live in older archives.
 
 **Check the backup ran.** `backup_watch.sh` does this daily at 08:00Z, fifteen minutes after the core
 job, and messages the operator's registered control chat when a check fails — cron itself is silent
 and there is no MTA on this host, which is why four consecutive failures went unseen in 2026-09-04..07.
-It checks five things: the newest core archive is younger than 26 h, the last `mode=core` line in
-`backup.log` reads OK, that same line carries `workflow-snapshot=ok` or `=absent` (P10 — the workflow
-store's copy was made, or there was none to make), the newest candle archive is younger than 8 days,
+It checks six things: the newest **encrypted** core archive (`.tar.gz.age`) exists and is younger
+than 26 h (none and too old are two different messages), the last `mode=core` line in `backup.log`
+reads OK with `enc=age` (a FAILED line is reported as an archive (tar) or an encryption (age / key)
+failure, and an OK line without `enc=age` names a pre-encryption script), that same line carries `workflow-snapshot=ok` or `=absent` (P10 — the workflow
+store's copy was made, or there was none to make), an OK line carries `anchor=excluded` (the backup
+script found no execution stage anchor in tar's member list — the encrypted archive cannot be listed
+here, so that word is the evidence; a refusal reads `stage=archive reason=anchor-in-archive`), the newest candle archive is younger than 8 days,
 and `health-watch.log` has been written in the last 30 minutes (see *The two watches watch each other*
-below). It says nothing when all five pass, and appends one line per run to `watch.log` so its own silence stays distinguishable from
+below). It says nothing when all six pass, and appends one line per run to `watch.log` so its own silence stays distinguishable from
 its absence. `--dry-run` prints the message instead of sending it. The control-bot token comes from
 `.env` through a curl config on stdin (never argv, never a log) and the chat id from
 `operator_registration.json` rather than a second copy of it. By hand:
 
 ```bash
-tail -3 /root/backups/governance-state/backup.log          # OK mode=core govstate-… 25M kept=7 hermes-snapshot=ok
-tar tzf /root/backups/governance-state/govstate-$(date -u +%Y%m%d)-0745.tar.gz | awk -F/ '{print $1"/"$2}' | sort | uniq -c
+tail -3 /root/backups/governance-state/backup.log          # OK mode=core govstate-….tar.gz.age 25M kept=7 enc=age recipient=age1… hermes-snapshot=ok
+head -c 21 /root/backups/governance-state/govstate-$(date -u +%Y%m%d)-0745.tar.gz.age; echo   # age-encryption.org/v1
+# The member list can only be read where the key is — on the Mac:
+#   age -d -i ~/.config/thomas-govstate/age-key.txt govstate-<stamp>.tar.gz.age | tar tz | awk -F/ '{print $1"/"$2}' | sort | uniq -c
 # expect thomas_agent/.runtime_governance_state, thomas_agent/THOMAS_CORE, thomas_agent/workspace, thomas_agent/.env,
 #        hermes-trial/data
 ```
@@ -55,13 +86,32 @@ while it was still a member, and the daily archive failed silently until 2026-09
 
 ## 2. Restore
 
+### 2.0 Decrypt first — on the Mac, never on this host
+
+Archives from 2026-09-29 on are `govstate-<stamp>.tar.gz.age`. The private key stays on the Mac:
+decrypt there and send the plaintext archive up for the restore, then delete it on both sides.
+Archives before 2026-09-29 are plaintext `.tar.gz` and skip this step.
+
+```bash
+ssh root@<host> 'mkdir -m 700 -p /root/restore'
+# on the Mac
+age -d -i ~/.config/thomas-govstate/age-key.txt ~/Backups/thomas-govstate/govstate-<stamp>.tar.gz.age > /tmp/govstate-<stamp>.tar.gz
+scp /tmp/govstate-<stamp>.tar.gz root@<host>:/root/restore/ && rm -f /tmp/govstate-<stamp>.tar.gz
+# on the host, once the restore below is done
+rm -f /root/restore/govstate-<stamp>.tar.gz
+```
+
+Below, `govstate-<stamp>.tar.gz` means that decrypted copy (`/root/restore/…`), or a pre-2026-09-29
+plaintext archive under `/root/backups/governance-state/`. Without the private key there is no
+restore of an encrypted archive — no path on this host produces one.
+
 Ownership is the part people get wrong: three uids, none of them the one running the restore. Restore as root, then `chown` exactly as below. Archives dated **before 2026-09-04** have no `thomas_agent/` prefix — their members start at `.runtime_governance_state/`; extract them with `-C /root/thomas_agent`.
 
 ### 2.1 Thomas Agent state (`.runtime_governance_state`)
 
 ```bash
 cd /root && docker compose -p thomas_agent --env-file /root/thomas_agent/.env -f <clean-main-worktree>/docker-compose.yml stop
-tar xzf /root/backups/governance-state/govstate-<stamp>.tar.gz -C /root thomas_agent/.runtime_governance_state
+tar xzf /root/restore/govstate-<stamp>.tar.gz -C /root thomas_agent/.runtime_governance_state
 tar xzf /root/backups/governance-state/govstate-candles-<stamp>.tar.gz -C /root      # the weekly archive: candles are only here
 chown -R 10001:10001 /root/thomas_agent/.runtime_governance_state
 docker compose -p thomas_agent --env-file /root/thomas_agent/.env -f <clean-main-worktree>/docker-compose.yml up -d
@@ -82,9 +132,9 @@ put it at `workflow/workflow.db`, delete any `-wal`/`-shm` beside it, chown — 
 ### 2.2 Core activation, workspace, the secret file
 
 ```bash
-tar xzf govstate-<stamp>.tar.gz -C /root thomas_agent/THOMAS_CORE/activations thomas_agent/THOMAS_CORE/approvals   # stays root-owned
-tar xzf govstate-<stamp>.tar.gz -C /root thomas_agent/workspace && chown -R 10001:10001 /root/thomas_agent/workspace
-tar xzf govstate-<stamp>.tar.gz -C /root thomas_agent/.env && chown root:root /root/thomas_agent/.env && chmod 600 /root/thomas_agent/.env
+tar xzf /root/restore/govstate-<stamp>.tar.gz -C /root thomas_agent/THOMAS_CORE/activations thomas_agent/THOMAS_CORE/approvals   # stays root-owned
+tar xzf /root/restore/govstate-<stamp>.tar.gz -C /root thomas_agent/workspace && chown -R 10001:10001 /root/thomas_agent/workspace
+tar xzf /root/restore/govstate-<stamp>.tar.gz -C /root thomas_agent/.env && chown root:root /root/thomas_agent/.env && chmod 600 /root/thomas_agent/.env
 ```
 
 ### 2.3 Hermes
@@ -93,7 +143,7 @@ The archive holds the data directory **without** the live databases, and a snaps
 
 ```bash
 docker compose -p thomas_agent --env-file /root/thomas_agent/.env -f <clean-main-worktree>/docker-compose.yml stop hermes
-tar xzf /root/backups/governance-state/govstate-<stamp>.tar.gz -C /root hermes-trial/data
+tar xzf /root/restore/govstate-<stamp>.tar.gz -C /root hermes-trial/data
 SNAP=$(ls -1d /root/hermes-trial/data/state-snapshots/*/ | sort | tail -1)
 cp "$SNAP/state.db" /root/hermes-trial/data/state.db
 cp "$SNAP/kanban.db" /root/hermes-trial/data/kanban.db                   # if present
@@ -123,7 +173,8 @@ PY
 
 **The execution stage reads READ_ONLY after a restore, by design** (Thomas 2026-09-30,
 `docs/proposals/EXECUTION_STAGE_ANTI_ROLLBACK_V0.1.md` D4). The backup never carries the stage's anchor,
-`crypto/execution_stage_anchor.json`, so a restored state directory reads one of two things:
+`crypto/execution_stage_anchor.json` — the script excludes it and then refuses any archive whose tar
+member list still names it — so a restored state directory reads one of two things:
 - `EXECUTION_STAGE_ROLLED_BACK`: restored over the live directory, where the newer anchor survived.
 - `EXECUTION_STAGE_ANCHOR_MISSING`: wiped and restored.
 

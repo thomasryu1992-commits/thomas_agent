@@ -12,14 +12,22 @@
 # on runtime matters — naming the check that failed, the last log line, and the command that fixes it.
 #
 # What it checks:
-#   1. the newest core archive is younger than 26 h (the daily job plus an hour of slack)
-#   2. the last `mode=core` line in backup.log reads OK, not FAILED
+#   1. the newest ENCRYPTED core archive (`govstate-<stamp>.tar.gz.age`, 2026-09-29) exists and is
+#      younger than 26 h (the daily job plus an hour of slack) — none at all and too old are
+#      reported as two different things
+#   2. the last `mode=core` line in backup.log reads OK, not FAILED; a FAILED line says which half
+#      failed (`stage=archive` — tar, `stage=encrypt` — age or its public key), and so does the
+#      alert. An OK line without `enc=age` means the installed backup script predates encryption
 #   3. the newest candle archive is younger than 8 days
 #   4. health_watch.sh has written its log in the last 30 minutes — the two watches are each
 #      other's only observer, because the thing that notices a watch has stopped cannot be itself (the weekly job plus a day)
 #   5. that same core line carries `workflow-snapshot=ok` or `=absent` (P10): the workflow store's
 #      backup-API copy was made, or there was no store to copy; FAILED or a line without the
 #      marker means the archive holds no fresh copy of the one database the manager owns
+#   6. that same core line, when OK, carries `anchor=excluded`: the backup script checked tar's own
+#      member list and the execution stage anchor is not in the archive (EXECUTION_STAGE_ANTI_ROLLBACK
+#      D1 a). The archive is encrypted and cannot be listed here, so the script's word is the evidence;
+#      an OK line without it means the installed script predates the check
 #
 # Secrets: the control-bot token is read from the single secret source (/root/thomas_agent/.env,
 # 0600 root) and handed to curl through a config file on stdin, so it never reaches argv or the log.
@@ -55,14 +63,14 @@ BACKUP_PROBLEM=0   # a stale sibling watch is not fixed by re-running a backup; 
 log() { echo "$STAMP $*" >> "$WATCH_LOG"; }
 
 # 1. the newest core archive, by age on disk
-core=$(ls -1t "$DEST"/govstate-[0-9]*.tar.gz 2>/dev/null | head -1)
+core=$(ls -1t "$DEST"/govstate-[0-9]*.tar.gz.age 2>/dev/null | head -1)
 if [ -z "$core" ]; then
-  PROBLEMS+=("core 아카이브가 하나도 없습니다 ($DEST)")
+  PROBLEMS+=("암호화된 core 아카이브(.tar.gz.age)가 하나도 없습니다 ($DEST)")
   BACKUP_PROBLEM=1
 else
   age_h=$(( (NOW - $(stat -c %Y "$core")) / 3600 ))
   if [ "$age_h" -gt "$CORE_MAX_AGE_H" ]; then
-    PROBLEMS+=("core 아카이브가 ${age_h}시간 지났습니다 (한도 ${CORE_MAX_AGE_H}h) — $(basename "$core")")
+    PROBLEMS+=("암호화된 core 아카이브가 ${age_h}시간 지났습니다 (한도 ${CORE_MAX_AGE_H}h) — $(basename "$core")")
     BACKUP_PROBLEM=1
   fi
 fi
@@ -74,7 +82,15 @@ if [ -z "$last_core" ]; then
   BACKUP_PROBLEM=1
 else
   case "$last_core" in
-    *" OK mode=core "*) ;;   # the backup script's own word for a complete archive
+    *" OK mode=core "*" enc=age "*) ;;   # the backup script's own word for a complete, encrypted archive
+    *" OK mode=core "*)
+      PROBLEMS+=("마지막 core 기록에 enc=age 표기가 없습니다 — 설치된 백업 스크립트가 암호화 이전 판입니다: $last_core"); BACKUP_PROBLEM=1 ;;
+    *" reason=anchor-in-archive"*)
+      PROBLEMS+=("core 아카이브에 실행 단계 앵커가 들어가 백업이 거부되었습니다 — 복원하면 옛 단계를 보증하게 됩니다 (harness_backup.sh 의 --exclude 확인): $last_core"); BACKUP_PROBLEM=1 ;;
+    *" stage=encrypt "*)
+      PROBLEMS+=("core 백업이 암호화 단계에서 실패했습니다(age 또는 공개키 파일) — 아카이브는 만들지 않았습니다: $last_core"); BACKUP_PROBLEM=1 ;;
+    *" stage=archive "*)
+      PROBLEMS+=("core 백업이 아카이브 생성(tar) 단계에서 실패했습니다: $last_core"); BACKUP_PROBLEM=1 ;;
     *) PROBLEMS+=("마지막 core 실행이 실패로 끝났습니다: $last_core"); BACKUP_PROBLEM=1 ;;
   esac
   # 5. the workflow snapshot marker on that same line (P10)
@@ -84,6 +100,12 @@ else
       PROBLEMS+=("워크플로 저장소 스냅샷이 실패했습니다 — 아카이브에 workflow.db 사본이 없습니다: $last_core"); BACKUP_PROBLEM=1 ;;
     *)
       PROBLEMS+=("마지막 core 기록에 workflow-snapshot 표기가 없습니다 — 백업 스크립트가 P10 이전 판입니다: $last_core"); BACKUP_PROBLEM=1 ;;
+  esac
+  # 6. the anchor marker on an OK line (a FAILED line is already reported above)
+  case "$last_core" in
+    *" OK mode=core "*" anchor=excluded"*|*" FAILED "*) ;;
+    *" OK mode=core "*)
+      PROBLEMS+=("마지막 core 기록에 anchor=excluded 표기가 없습니다 — 설치된 백업 스크립트가 앵커 검사 이전 판입니다: $last_core"); BACKUP_PROBLEM=1 ;;
   esac
 fi
 
@@ -98,14 +120,6 @@ else
     PROBLEMS+=("candle 아카이브가 ${age_d}일 지났습니다 (한도 ${CANDLE_MAX_AGE_D}d) — $(basename "$candle")")
     BACKUP_PROBLEM=1
   fi
-fi
-
-# 6. the core archive must NOT carry the execution stage anchor (EXECUTION_STAGE_ANTI_ROLLBACK D1 a):
-# restored with the ledger it would vouch for an older stage, which is the rollback the anchor exists
-# to catch. Only an archive that lists it is a problem; one that cannot be listed is left to 1 and 2.
-if [ -n "$core" ] && tar -tzf "$core" 2>/dev/null | grep -q 'crypto/execution_stage_anchor\.json$'; then
-  PROBLEMS+=("core 아카이브에 실행 단계 앵커가 들어 있습니다 — 복원하면 옛 단계를 보증하게 됩니다: $(basename "$core") (harness_backup.sh 의 --exclude 확인)")
-  BACKUP_PROBLEM=1
 fi
 
 # 4. the other watch. Each of these two scripts is the only thing on this host that would notice
