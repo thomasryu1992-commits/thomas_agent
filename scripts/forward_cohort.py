@@ -19,7 +19,9 @@ Four subcommands, each dry unless it says otherwise:
   fees and slippage cost per trade, and the gap to the recorded backtest and holdout expectancy.
   These columns are computed here and nowhere else; no verdict, board or ranking reads them.
   ``--arms`` adds, per timeframe, the mean net R per trade of the members and of their coin-flip
-  twins (``crypto/forward_cohort_null.py``) side by side, also display only.
+  twins (``crypto/forward_cohort_null.py``) side by side, also display only. Each cohort ends with
+  one line counting the matched signals a door refused an entry, per door, since the walker began
+  counting (THROUGHPUT P0-3; display only).
 
 ``report --pairs`` adds the member-minus-twin difference per family × context (THROUGHPUT P1-3,
 display only): each member against its own coin-flip twin, which shares its bars, direction and
@@ -58,7 +60,7 @@ from runtime.mvp_runtime import timeutil  # noqa: E402
 from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
 from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run  # noqa: E402
-from runtime.mvp_runtime.crypto import forward_cohort, forward_cohort_null  # noqa: E402
+from runtime.mvp_runtime.crypto import forward_book, forward_cohort, forward_cohort_null  # noqa: E402
 from runtime.mvp_runtime.crypto.candidate_identity import candidate_id  # noqa: E402
 from runtime.mvp_runtime.crypto.forward_confirmation import forward_outcomes_for  # noqa: E402
 from runtime.mvp_runtime.crypto.outcome_math import net_result_r  # noqa: E402
@@ -405,6 +407,25 @@ def _print_detail(
             "-" if columns[key] is None else render(columns[key]) for _, key, render in _DETAIL_COLUMNS)))
 
 
+def _print_refusals(members: list[Mapping[str, Any]]) -> None:
+    """One line: the cohort's refused entries per door, summed over its members, and the earliest bar
+    any member started counting. Members walked before the counter existed lost the bars before it."""
+    totals: dict[str, int] = {}
+    since: str | None = None
+    for m in members:
+        cell = m.get("entry_refusals") or {}
+        for kind, n in (cell.get("counts") or {}).items():
+            totals[kind] = totals.get(kind, 0) + int(n)
+        start = cell.get("from")
+        if isinstance(start, str) and (since is None or start < since):
+            since = start
+    if since is None:
+        print("  entry refusals: not counted yet (the walker counts from its first walk on this version)")
+        return
+    shown = " · ".join(f"{kind} {totals.get(kind, 0)}" for kind in forward_book.ENTRY_REFUSAL_KINDS)
+    print(f"  entry refusals since {since} (display only): {shown}")
+
+
 def _report(root: Path, detail: bool = False, arms: bool = False, pairs: bool = False) -> int:
     columns = detail_report(root) if detail else {}
     for cohort in forward_cohort.cohort_report(root):
@@ -420,6 +441,7 @@ def _report(root: Path, detail: bool = False, arms: bool = False, pairs: bool = 
                 m.get("active_slices", ""),
                 m.get("status") + (f" ({m['waiting_on']})" if m.get("waiting_on") else "")
                 + (f"  sibling of {m['sibling_of']}" if m.get("sibling_of") else "")))
+        _print_refusals(members)
         if detail:
             _print_detail(cohort, members, columns)
     if arms:
