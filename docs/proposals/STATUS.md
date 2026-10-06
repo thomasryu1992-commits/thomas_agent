@@ -4,7 +4,7 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **52**건: `DRAFT` 1 · `PARTIALLY DECIDED` 4 · `DECIDED` 8 · `IMPLEMENTED` 36 · `SUPERSEDED` 1 · `RECORD` 2
+제안서 **53**건: `DRAFT` 1 · `PARTIALLY DECIDED` 4 · `DECIDED` 8 · `IMPLEMENTED` 36 · `SUPERSEDED` 1 · `RECORD` 3
 
 ## Thomas 결정 대기 (5)
 
@@ -84,7 +84,7 @@
 |---|---|---|---|
 | [LIVE_OUTCOME_CORRECTION_RECORD_V0.1.md](LIVE_OUTCOME_CORRECTION_RECORD_V0.1.md) | `SUPERSEDED` | 2026-08-23 | `LIVE_OUTCOME_CORRECTION_RECORD_V0.2.md`가 대신한다. 이 설계는 구현된 적 없다. |
 
-## 측정 기록 (2)
+## 측정 기록 (3)
 
 결정할 것이 없는 관측 기록.
 
@@ -92,3 +92,4 @@
 |---|---|---|---|
 | [EQUITY_PERP_S1_MEASUREMENTS_V0.1.md](EQUITY_PERP_S1_MEASUREMENTS_V0.1.md) | `RECORD` | 2026-08-05 | 2026-08-04~05 측정 기록. 설계 제안이 아니라 **관측값**이며, 재현 방법을 함께 적는다. |
 | [FORWARD_VERDICT_REGIME_EPISODES_V0.1.md](FORWARD_VERDICT_REGIME_EPISODES_V0.1.md) | `RECORD` | 2026-09-27 | 측정 기록. forward 판정 6건이 BTC 일봉 regime 구간 3–5개(하락 추세 0일)에서 나왔고, 반박·성숙 판정은 시간 분산 검사 없이 나온다. 에포크 경계에서 볼 결정 항목 2개(§5)를 함께 적는다. |
+| [SYSTEM_SCORECARD_V0.2.md](SYSTEM_SCORECARD_V0.2.md) | `RECORD` | 2026-10-06 | v0.1(2026-10-05, 6/10)의 질문 여섯 개가 모두 처리된 뒤 같은 기준으로 다시 잰 점수다. 종합 7/10. 결정할 것은 없고, 다음 점수를 움직일 지점을 적는다. |
