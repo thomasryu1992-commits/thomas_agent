@@ -419,9 +419,19 @@ def test_the_reading_file_keeps_blank_lines_between_markdown_blocks():
 
 
 def _broken(draft: dict) -> str:
-    """The third live fire's damage: a stray quote before the final brace (`…"]}"}`)."""
+    """Damage no repair mends: a comma missing between two paragraphs. (The third live fire's
+    stray quote before the final brace, `…"]}"}`, is cut back to a whole draft since .7.)"""
     text = json.dumps(draft, ensure_ascii=False)
-    return text[:-1] + '"}'
+    assert '." "' not in text
+    return text.replace('.", "', '." "', 1)
+
+
+def test_the_third_fires_stray_quote_now_reads_as_the_whole_structured_draft():
+    draft = _tdraft()
+    text = json.dumps(draft, ensure_ascii=False)
+    first = blog_tistory.interpret(text[:-1] + '"}', TARGET, _records())
+    assert first["draft_format"] == "structured"
+    assert first["measured"]["h2_sections"] == 5 and first["brackets_inserted"] >= 1
 
 
 def test_a_draft_whose_json_broke_still_hands_its_citations_to_the_package():
@@ -607,3 +617,57 @@ def test_an_intro_that_announces_the_post_is_counted_and_pointed_at():
     checks = {c["check"]: c["state"] for c in blog_tistory.platform_checks(first, TARGET)}
     assert checks["intro_tail"] == "warn"
     assert "알아보겠습니다" in blog_tistory.content_request(TARGET)
+
+
+# --- .7: a cut first draft, a prose draft's citations, the summary section ('클로바노트 유료',
+# bcp_63185d84aceaf646ff6e: first draft cut after a comma, every [S#] lost, five ' .' stops, and a
+# '자주 묻는 질문과 요금제 관련 최종 요약' H2) ------------------------------------------------------
+
+def test_a_first_draft_cut_mid_section_is_structured_and_its_citations_reach_the_revision():
+    cited = _cited(_tdraft())
+    text = json.dumps(cited, ensure_ascii=False)
+    cut = text[:text.rindex('"level": 2') + len('"level": 2,')]                  # '…, "level": 2,'
+    first = blog_tistory.interpret(cut, TARGET, _records())
+    assert first["draft_format"] == "structured"
+    assert "[S3]" in [s["source_ref"] for s in first["sources"]]
+    revised = _tdraft()
+    revised["sections"][0]["paragraphs"][0] += " 무료 계정의 파일 업로드는 한 번에 20개까지 가능합니다."
+    sheet, _ = _ideate([cut, revised])
+    assert "(https://support.claude.com/3))" in sheet["package"]["body_paste"]
+
+
+def test_a_prose_first_drafts_citations_are_carried_to_the_revision():
+    broken = _broken(_cited(_tdraft()))
+    assert blog_tistory.interpret(broken, TARGET, _records())["draft_format"] == "legacy_markdown"
+    revised = _tdraft()
+    revised["sections"][0]["paragraphs"][0] += " 무료 계정의 파일 업로드는 한 번에 20개까지 가능합니다."
+    sheet, _ = _ideate([broken, revised])
+    assert "가능합니다 ([Claude 도움말 3](https://support.claude.com/3))." in sheet["package"]["body_paste"]
+
+
+def test_a_space_left_before_a_stop_is_removed_but_a_decimal_is_not_touched():
+    assert blog_tistory.tidy_stops("유료로 제공됩니다 . 다음 문장 , 그리고 끝") == "유료로 제공됩니다. 다음 문장, 그리고 끝"
+    assert blog_tistory.tidy_stops("버전 2 .5 와 3.5") == "버전 2 .5 와 3.5"
+    draft = _tdraft()
+    draft["intro"][0] += " 무료 계정은 매월 600분이 제공됩니다 ."
+    draft["faq"][0]["answer"] += " 공식 안내에서 확인합니다 ."
+    body = blog_tistory.interpret(json.dumps(draft, ensure_ascii=False), TARGET, _records())["body_paste"]
+    assert " ." not in body
+
+
+@pytest.mark.parametrize("heading", ["자주 묻는 질문과 요금제 관련 최종 요약", "FAQ 정리", "마무리"])
+def test_a_faq_or_summary_section_fails_and_the_revision_is_told_to_use_the_forms_section(heading):
+    draft = _tdraft()
+    draft["sections"].append({"heading": heading, "level": 2, "paragraphs": [_para("요약", 0)]})
+    first = blog_tistory.interpret(json.dumps(draft, ensure_ascii=False), TARGET, _records())
+    assert "summary_sections" in first["failures"] and first["measured"]["summary_sections"] == 1
+    assert ("summary_section", "fail") in {(c["check"], c["state"]) for c in blog_tistory.platform_checks(first, TARGET)}
+    request = blog_tistory.revision_request(TARGET, first, json.dumps(draft, ensure_ascii=False), _records())
+    assert "FAQ·요약·마무리 섹션을 sections에서 지워라" in request
+
+
+def test_no_forms_layout_heading_reads_as_a_summary_section():
+    for form in blog_tistory.FORMS.values():
+        assert blog_tistory.summary_sections([{"heading": h} for _, h, _ in form["layout"]]) == 0
+    assert "summary_sections" not in blog_tistory.interpret(
+        json.dumps(_tdraft(), ensure_ascii=False), TARGET, _records())["failures"]

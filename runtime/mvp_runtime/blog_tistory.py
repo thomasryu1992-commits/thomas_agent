@@ -70,7 +70,12 @@ PLATFORM = "tistory"
 # "21 paragraphs" lost to the shape, the lesson Naver learned in September. The shape now lays out
 # each form's H2/H3 sections and their paragraph counts (summing to the plan), the brief is told
 # the keyword's intent, and a "오늘은 … 알아보겠습니다" intro tail is named and counted.
-PROMPT_VERSION = "tistory_prompt.2026-10-06.6"
+# .7 (2026-10-06): the revision asks once more — a FAQ or summary section ('자주 묻는 질문과 요금제
+# 관련 최종 요약', bcp_63185d84aceaf646ff6e) now fails `summary_sections` and is asked away. The
+# content request is unchanged; the rest of .7 is reading, not asking: a first draft cut off
+# mid-value is cut back to a whole value (`blog_draft._repairs`), a prose first draft's citations
+# carry to the revision, and a space left before a stop is removed.
+PROMPT_VERSION = "tistory_prompt.2026-10-06.7"
 PROFILE_VERSION = "tistory_profile.2026-10-05"
 STANDARDS_VERSION = "tistory_draft_standards.2026-10-05"
 PASTE_FILE = "PASTE.md"
@@ -455,6 +460,8 @@ _FAILURE_ASKS = {
                        "내용·수치·문장 순서는 그대로 두고 어미만 바꿔라"),
     "length_example_copied": ("요청의 길이 예시 문단을 본문에 옮겼다 — 그 문단을 지우고 그 자리에 이 글 주제의 "
                               "새 내용(근거에 나온 수치·조건·절차)을 같은 길이로 써라"),
+    "summary_sections": ("FAQ·요약·마무리 섹션을 sections에서 지워라 — 질문은 faq 필드에만 둔다. 그 자리에는 형식의 "
+                         "sections에 적힌 소제목 중 아직 쓰지 않은 것을 근거의 내용(수치·조건·절차)으로 써라"),
     **blog_prompt.COMMON_FAILURE_ASKS,
 }
 _GROW_FAILURES = frozenset({"body_chars", "intro_chars"})
@@ -737,6 +744,40 @@ def render_markdown(
             "bold_sections": bolded}
 
 
+# A section that only repeats the FAQ or sums the post up: '자주 묻는 질문과 요금제 관련 최종 요약'
+# (bcp_63185d84aceaf646ff6e) held two paragraphs of "정리해 드립니다 … 응원합니다" and pushed the
+# form's own fourth section out. No form's layout uses these words.
+_SUMMARY_HEADING_RE = re.compile(r"자주\s*묻는|FAQ|Q\s*&\s*A|요약|마무리|맺음말|총정리", re.IGNORECASE)
+
+
+def summary_sections(sections: Sequence[Mapping[str, Any]]) -> int:
+    """How many sections are a FAQ or a summary by their heading — the FAQ is the `faq` field's."""
+    return sum(1 for s in sections if _SUMMARY_HEADING_RE.search(str(s.get("heading") or "")))
+
+
+# '…제공됩니다 .' — a revision run with no evidence deletes the [S#] it was shown and keeps the
+# space in front of it (bcp_63185d84aceaf646ff6e: five such stops in the body, links lost).
+_SPACE_BEFORE_STOP_RE = re.compile(r"(?<=[^\s.!?,])[ \t]+(?=[.!?,](?!\d))")
+
+
+def tidy_stops(text: str) -> str:
+    """``text`` with the space before a sentence stop or comma removed."""
+    return _SPACE_BEFORE_STOP_RE.sub("", text)
+
+
+def _tidy(structured: dict[str, Any]) -> dict[str, Any]:
+    """The draft's prose with :func:`tidy_stops` applied — intro, paragraphs, key sentences."""
+    structured["intro"] = [tidy_stops(p) for p in structured["intro"]]
+    sections = []
+    for section in structured["sections"]:
+        section = dict(section, paragraphs=[tidy_stops(p) for p in section["paragraphs"]])
+        if section.get("key_sentence"):
+            section["key_sentence"] = tidy_stops(section["key_sentence"])
+        sections.append(section)
+    structured["sections"] = sections
+    return structured
+
+
 def _key(text: str) -> str:
     return re.sub(r"\s", "", str(text or ""))
 
@@ -892,7 +933,8 @@ def interpret(
     data, _inserted, _reason = blog_draft.load_object(text)
     data = data or {}
     brackets_inserted = int(structured.pop("brackets_inserted", 0) or 0)
-    faq = _faq(data.get("faq"))
+    structured = _tidy(structured)
+    faq = [dict(q, answer=tidy_stops(q["answer"])) for q in _faq(data.get("faq"))]
     raw_prose = list(structured["intro"]) + [p for s in structured["sections"] for p in s["paragraphs"]]
     raw_prose += [q["answer"] for q in faq]
     inline = [{"source_ref": ref} for p in raw_prose for ref in blog_draft.cited_refs(p)]
@@ -944,12 +986,15 @@ def interpret(
     measured["intro_tails"] = intro_tails(_clean(structured["intro"]))
     measured["faq_echoes"] = faq_echoes(faq_clean, prose)
     measured["plain_sentences"] = plain_sentences(prose + answers)[0]
+    measured["summary_sections"] = summary_sections(structured["sections"])
     if repeated:
         failures.append("repeated_sentences")
     if plain_register(prose + answers) is not None:
         failures.append("plain_register")
     if example_reused(prose + answers):
         failures.append("length_example_copied")
+    if measured["summary_sections"]:
+        failures.append("summary_sections")
     return {
         "draft_format": blog_draft.DRAFT_FORMAT_STRUCTURED,
         "title_candidates": titles[:blog_draft.MAX_TITLES],
@@ -1031,6 +1076,9 @@ def _interpret_prose(text: str, target: str, index: Mapping[str, Any], parse_rea
     }
 
 
+_JSON_STRING_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+
 def _carry_marks(old: Mapping[str, Any], patched: dict[str, Any]) -> None:
     """A revision runs with no evidence and drops every ``[S#]`` and, often, the key sentences.
     A revised sentence that is the first draft's sentence (endings aside — `blog_draft.claim_key`)
@@ -1079,7 +1127,13 @@ def carry_layout(first: Mapping[str, Any], carried: dict[str, Any], measured: di
         patched["image_shots"] = [dict(s, after_section=min(s["after_section"], last)) for s in old["image_shots"]]
     if new.get("table") is None and old.get("table") is not None:
         patched["table"] = dict(old["table"], after_section=min(old["table"]["after_section"], last))
-    _carry_marks(old, patched)
+    # A first draft read as prose (`_interpret_prose`) still cited its sources in its text; the
+    # citations come back from there, though it had no structure, table or captures to give. That
+    # text is usually the broken JSON itself, so its string values are paragraphs too.
+    body = str(first.get("body_paste") or "")
+    cited = old or {"intro": [p for p in body.split("\n\n") + _JSON_STRING_RE.findall(body) if p.strip()],
+                    "sections": []}
+    _carry_marks(cited, patched)
     metadata = dict(carried.get("platform_metadata") or {})
     first_meta = first.get("platform_metadata") or {}
     if not metadata.get("faq") and first_meta.get("faq"):
@@ -1146,5 +1200,7 @@ def platform_checks(parts: Mapping[str, Any], target: str) -> list[dict[str, Any
          "detail": f"{measured.get('plain_sentences', 0)} sentences end in 해라체; the blog writes 존댓말"},
         {"check": "length_example", "state": "fail" if "length_example_copied" in (parts.get("failures") or []) else "ok",
          "detail": "the request's length example is not in the body"},
+        {"check": "summary_section", "state": "fail" if "summary_sections" in (parts.get("failures") or []) else "ok",
+         "detail": f"{measured.get('summary_sections', 0)} sections are a FAQ or a summary by their heading"},
     ]
     return checks

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 from urllib.parse import urlparse
 
 __all__ = [
@@ -60,6 +60,9 @@ MAX_FACT_CHECKS = 30
 MAX_SOURCES = 10
 # The package schema's ceiling on editor directions (`body_blocks`).
 MAX_BODY_BLOCKS = 100
+# How many whole values back a cut-off draft is tried (`_repairs`): the last one nearly always
+# parses; a few more cover a key string that only looked like a list element.
+MAX_TAIL_CUTS = 8
 # The table is its own field (2026-09-29). Asked to write it as ' | ' rows inside `paragraphs`,
 # a model broke the JSON exactly there: it replaced a section's `"heading": …` with the key
 # `": | : | :"`, and the draft lost every key after it (tags, image shots, fact checks, sources).
@@ -200,6 +203,54 @@ def repair_brackets(raw: str, *, close_at_end: bool = False) -> tuple[str, int] 
     return "".join(out), inserted
 
 
+def _complete_ends(raw: str) -> list[int]:
+    """Where a text that was CUT OFF could end on a whole value: just after each closer, and just
+    after each string inside a list — ``[]`` for a text that was not cut (nothing left open at
+    its end) or that closes a bracket it never opened.
+
+    `bcp_63185d84aceaf646ff6e` ('클로바노트 유료', 2026-10-06): the first draft stopped at
+    ``…, {"heading": "개인용 무료 한도 …", "level": 3,`` — after a comma, which closing at the end
+    cannot mend. Cut back to the last whole value, its four sections, citations and capture
+    directions were all there; it went to the prose parser instead, and the revision that
+    rebuilt the structure had no first-draft citations to carry back (every [S#] lost)."""
+    ends: list[int] = []
+    stack: list[str] = []
+    in_string = escaped = False
+    for pos, ch in enumerate(raw):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+                if stack and stack[-1] == "[":
+                    ends.append(pos + 1)
+        elif ch == '"':
+            in_string = True
+        elif ch in _CLOSER:
+            stack.append(ch)
+        elif ch in ("}", "]"):
+            while stack and _CLOSER[stack[-1]] != ch:      # a dropped closer: repair_brackets' gap
+                stack.pop()
+            if not stack:
+                return []
+            stack.pop()
+            ends.append(pos + 1)
+    return ends if (stack or in_string) else []
+
+
+def _repairs(raw: str, whole: str) -> Iterator[tuple[str, int] | None]:
+    """The repairs :func:`load_object` tries, in order: the outermost ``{...}``; the text to its
+    end with what it left open closed there; and, for a text cut mid-value, the text cut back to
+    each of its last whole values (:func:`_complete_ends`) and closed. The cut drops only the
+    unfinished tail — a half-written element is never completed, a missing key never filled."""
+    yield repair_brackets(raw)
+    yield repair_brackets(whole, close_at_end=True)
+    for end in reversed(_complete_ends(whole)[-MAX_TAIL_CUTS:]):
+        yield repair_brackets(whole[:end], close_at_end=True)
+
+
 def _loads(text: str) -> Any:
     """``json.loads`` that accepts a raw control character (a newline, a tab) inside a string.
 
@@ -224,16 +275,19 @@ def load_object(text: str) -> tuple[dict[str, Any] | None, int, str | None]:
     try:
         data = _loads(raw)
     except ValueError:
-        # The outermost {...} first, as before; only when that cannot be repaired is the text
-        # taken to its end with the brackets it left open closed there.
-        repaired = repair_brackets(raw) or repair_brackets(whole, close_at_end=True)
-        if repaired is None:
+        # The outermost {...} first, as before; then the text to its end, closed there; then a
+        # text cut mid-value, cut back to a whole value and closed (`_repairs`).
+        for repaired in _repairs(raw, whole):
+            if repaired is None:
+                continue
+            try:
+                data = _loads(repaired[0])
+            except ValueError:
+                continue
+            inserted = repaired[1]
+            break
+        else:
             return None, 0, "JSON_UNPARSEABLE"
-        try:
-            data = _loads(repaired[0])
-        except ValueError:
-            return None, 0, "JSON_UNPARSEABLE"
-        inserted = repaired[1]
     if not isinstance(data, dict):
         return None, 0, "JSON_NOT_OBJECT"
     return data, inserted, None
