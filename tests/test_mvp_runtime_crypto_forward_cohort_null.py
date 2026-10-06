@@ -458,3 +458,40 @@ def test_an_arm_with_no_priced_row_reads_none_never_zero(tmp_path, monkeypatch, 
     assert with_arms[:len(plain)] == plain
     (line,) = [l for l in with_arms[len(plain):] if l.strip().startswith("1d")]
     assert line.split()[:2] == ["1d", "1"] and line.split()[3:] == ["0", "-", "-"]
+
+
+# --- the pair difference, display only (THROUGHPUT P1-3, Thomas 2026-10-06) ----------------------
+
+def test_the_pair_mean_and_its_day_clustered_interval_are_the_hand_computed_ones():
+    from scripts.forward_cohort import clustered_pair_mean
+
+    pairs = [([("d1", 1.0), ("d2", 0.0)], [("d1", 0.0)]),         # member 0.5, twin 0.0  -> +0.5
+             ([("d2", -1.0)], [("d1", 0.5), ("d3", -0.5)]),       # member -1.0, twin 0.0 -> -1.0
+             ([("d4", 3.0)], [])]                                 # no twin trade: no difference
+    g = clustered_pair_mean(pairs)
+    # per day: d1 +0.25 - 0.125, d2 -0.5, d3 +0.125 -> sums to the mean, -0.25
+    assert g["pairs"] == 2 and g["days"] == 3 and g["member_ahead"] == 1
+    assert g["mean_diff_r"] == pytest.approx(-0.25)
+    half = 1.96 * (1.5 * ((0.125 + 0.25 / 3) ** 2 + (-0.5 + 0.25 / 3) ** 2 + (0.125 + 0.25 / 3) ** 2)) ** 0.5
+    assert g["ci_low_r"] == pytest.approx(-0.25 - half) and g["ci_high_r"] == pytest.approx(-0.25 + half)
+    one_day = clustered_pair_mean([([("d1", 1.0)], [("d1", 0.5)])])
+    assert one_day["mean_diff_r"] == pytest.approx(0.5) and one_day["ci_low_r"] is None
+    assert clustered_pair_mean([([("d1", 1.0)], [])]) is None
+
+
+def test_the_report_pairs_each_member_with_its_own_twin(tmp_path, capsys):
+    from scripts import forward_cohort as script
+
+    _install_cohort(tmp_path, _eager("cand_a"), _eager("cand_b", family="trend_pullback"))
+    _freeze(tmp_path)
+    frame = _frame(range(1, 12), stop_on={5, 9})
+    _walk(tmp_path, frame)
+    _null_walk(tmp_path, frame)
+    total, *groups = script.pair_differences(tmp_path)
+    assert (total["family"], total["timeframe"], total["pairs"]) == ("(all)", "1d", 2)
+    assert sorted(g["family"] for g in groups) == ["breakout", "trend_pullback"]
+    assert all(g["pairs"] == 1 for g in groups)
+    script._report(tmp_path, pairs=True)
+    out = capsys.readouterr().out
+    assert "pairs (display only" in out and "trend_pullback" in out
+

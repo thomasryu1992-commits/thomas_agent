@@ -23,6 +23,11 @@ Four subcommands, each dry unless it says otherwise:
   one line counting the matched signals a door refused an entry, per door, since the walker began
   counting (THROUGHPUT P0-3; display only).
 
+``report --pairs`` adds the member-minus-twin difference per family × context (THROUGHPUT P1-3,
+display only): each member against its own coin-flip twin, which shares its bars, direction and
+exits, so the market's drift cancels inside the pair; pairs are averaged within a family and context
+and given a 95% interval clustered by settlement day.
+
 Nothing here reaches the pool, the arming door or an order: cohort rows live in their own
 store, which the arming door's reader refuses. Writes runtime state, so it runs in the container
 as uid 10001, in module form::
@@ -42,9 +47,10 @@ anything is fetched or written.
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -58,6 +64,7 @@ from runtime.mvp_runtime.crypto import forward_book, forward_cohort, forward_coh
 from runtime.mvp_runtime.crypto.candidate_identity import candidate_id  # noqa: E402
 from runtime.mvp_runtime.crypto.forward_confirmation import forward_outcomes_for  # noqa: E402
 from runtime.mvp_runtime.crypto.outcome_math import net_result_r  # noqa: E402
+from runtime.mvp_runtime.crypto.robustness import CONFIDENCE_Z  # noqa: E402
 from runtime.mvp_runtime.crypto.pool_state import read_candidates  # noqa: E402
 
 
@@ -270,6 +277,105 @@ def _print_arms(means: Mapping[str, Mapping[str, Any]]) -> None:
                         signed(arm["null_mean_r"]), signed(arm["real_minus_null_r"])))
 
 
+def clustered_pair_mean(pairs: Sequence[tuple[Sequence[tuple[str, float]], Sequence[tuple[str, float]]]],
+                        ) -> dict[str, Any] | None:
+    """The mean member-minus-twin difference over ``pairs`` with a 95% interval clustered by day.
+
+    Each pair is (member trades, twin trades), each trade (settlement day, net R); a pair missing
+    either side carries no difference and is left out (None when none is left). The pair's
+    difference is the member's mean net R per trade minus its twin's, and the group's is the plain
+    mean over pairs. That mean is a sum of per-trade contributions, ``±net / (pairs × trades on that
+    side)``, so it is also the sum over days of each day's contribution ``c_k``. Days are the units
+    treated as independent — pairs that trade on one day share its market, and a per-trade interval
+    is the over-confident one §11 measured 1.1–3× too narrow — so the variance is
+    ``G/(G−1) · Σ (c_k − mean/G)²`` over the G days. Under two days there is no interval."""
+    usable = [(m, t) for m, t in pairs if m and t]
+    if not usable:
+        return None
+    count = len(usable)
+    by_day: dict[str, float] = {}
+    diffs = []
+    for member, twin in usable:
+        member_mean = sum(net for _, net in member) / len(member)
+        twin_mean = sum(net for _, net in twin) / len(twin)
+        diffs.append(member_mean - twin_mean)
+        for day, net in member:
+            by_day[day] = by_day.get(day, 0.0) + net / (count * len(member))
+        for day, net in twin:
+            by_day[day] = by_day.get(day, 0.0) - net / (count * len(twin))
+    mean = sum(diffs) / count
+    days = len(by_day)
+    low = high = None
+    if days >= 2:
+        share = mean / days
+        variance = days / (days - 1) * sum((c - share) ** 2 for c in by_day.values())
+        half = CONFIDENCE_Z * math.sqrt(variance)
+        low, high = mean - half, mean + half
+    return {"pairs": count, "days": days, "mean_diff_r": mean, "ci_low_r": low, "ci_high_r": high,
+            "member_ahead": sum(1 for d in diffs if d > 0)}
+
+
+def pair_differences(root: Path) -> list[dict[str, Any]]:
+    """:func:`clustered_pair_mean` per (timeframe, family, context) over every member whose twin is
+    in the active null arm, largest group first, after one ``(all)`` line per timeframe over every
+    pair in it — a family × context holds one or two pairs today (85 groups for 108 pairs on
+    2026-10-06), and the timeframe line is where the count is. Never pooled across timeframes. The trades are the ones the judge prices on each
+    side (as :func:`arm_means` takes them). Display only: no verdict, board or ranking reads it, and
+    the board's verdict counts (``forward_cohort_null.arm_comparison``) stay the designed comparison."""
+    from runtime.mvp_runtime.crypto import forward_cohort_null
+
+    def trades(judged: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) -> list[tuple[str, float]]:
+        return [(str(row.get("created_at_utc") or "")[:10], net) for row, net in priced_rows(judged, rows)]
+
+    latest = {candidate_id(record): record for record in read_candidates(root)}
+    rows = forward_cohort.read_cohort_outcomes(root)
+    null_rows = forward_cohort_null.read_null_outcomes(root)
+    twins = {str(twin.get("parent_candidate_id")): twin
+             for arm in forward_cohort_null.active_null_records(root) for twin in arm.get("members") or []}
+    groups: dict[tuple[str, str, str], list[tuple[list[tuple[str, float]], list[tuple[str, float]]]]] = {}
+    for cohort in forward_cohort.read_cohorts(root):
+        for member in cohort.get("members") or []:
+            cid = str(member.get("candidate_id"))
+            record, twin = latest.get(cid), twins.get(cid)
+            if record is None or twin is None:
+                continue
+            judged = {**record, "created_at_utc": member.get("selected_at_utc")}
+            twin_judged = {"candidate_id": twin.get("null_id"), "created_at_utc": twin.get("selected_at_utc"),
+                           "strategy_spec": twin.get("null_spec") or {}}
+            key = (str(member.get("timeframe")), str(member.get("strategy_family")),
+                   ",".join(str(s) for s in member.get("symbol_scope") or []))
+            groups.setdefault(key, []).append((trades(judged, rows), trades(twin_judged, null_rows)))
+    out = []
+    by_timeframe: dict[str, list[Any]] = {}
+    for (timeframe, _, _), pairs in groups.items():
+        by_timeframe.setdefault(timeframe, []).extend(pairs)
+    for timeframe in sorted(by_timeframe):
+        summary = clustered_pair_mean(by_timeframe[timeframe])
+        if summary is not None:
+            out.append({"timeframe": timeframe, "family": "(all)", "symbol_scope": "(all)", **summary})
+    totals = len(out)
+    for (timeframe, family, scope), pairs in groups.items():
+        summary = clustered_pair_mean(pairs)
+        if summary is not None:
+            out.append({"timeframe": timeframe, "family": family, "symbol_scope": scope, **summary})
+    out[totals:] = sorted(out[totals:], key=lambda g: (-g["pairs"], g["timeframe"], g["family"], g["symbol_scope"]))
+    return out
+
+
+def _print_pairs(groups: Sequence[Mapping[str, Any]]) -> None:
+    print("pairs (display only; no verdict, board or ranking reads it). Member minus its own coin-flip twin, "
+          "mean net R per trade, averaged over the pairs of one timeframe × family × symbol scope; 95% "
+          "interval clustered by settlement day ('-' under two days). A pair with no priced trade on "
+          "either side is left out.")
+    layout = "  %-4s %-30s %-24s %5s %5s %9s %20s %6s"
+    print(layout % ("tf", "family", "symbols", "pairs", "days", "diff_R", "95% CI", "ahead"))
+    for g in groups:
+        interval = ("-" if g["ci_low_r"] is None
+                    else f"[{g['ci_low_r']:+.3f}, {g['ci_high_r']:+.3f}]")
+        print(layout % (g["timeframe"], g["family"], g["symbol_scope"], g["pairs"], g["days"],
+                        f"{g['mean_diff_r']:+.3f}", interval, f"{g['member_ahead']}/{g['pairs']}"))
+
+
 _DETAIL_COLUMNS = (
     ("win%", "win_rate", lambda v: f"{v * 100:.0f}"),
     ("PF", "profit_factor", lambda v: f"{v:.2f}"),
@@ -320,7 +426,7 @@ def _print_refusals(members: list[Mapping[str, Any]]) -> None:
     print(f"  entry refusals since {since} (display only): {shown}")
 
 
-def _report(root: Path, detail: bool = False, arms: bool = False) -> int:
+def _report(root: Path, detail: bool = False, arms: bool = False, pairs: bool = False) -> int:
     columns = detail_report(root) if detail else {}
     for cohort in forward_cohort.cohort_report(root):
         members = sorted(cohort["members"], key=lambda m: -(m.get("priceable_count") or 0))
@@ -340,6 +446,8 @@ def _report(root: Path, detail: bool = False, arms: bool = False) -> int:
             _print_detail(cohort, members, columns)
     if arms:
         _print_arms(arm_means(root))
+    if pairs:
+        _print_pairs(pair_differences(root))
     return EXIT_OK
 
 
@@ -354,6 +462,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="add the per-member detail table (display only)")
     report.add_argument("--arms", action="store_true",
                         help="add the members' and their twins' mean net R per timeframe (display only)")
+    report.add_argument("--pairs", action="store_true",
+                        help="add the member-minus-twin difference per family and context (display only)")
     args = parser.parse_args(argv)
 
     try:
@@ -370,7 +480,7 @@ def main(argv: list[str] | None = None) -> int:
             return _freeze_nulls(ROOT, now, args.apply)
         if args.command == "walk":
             return _walk(ROOT, now, args.apply)
-        return _report(ROOT, args.detail, args.arms)
+        return _report(ROOT, args.detail, args.arms, args.pairs)
     except MvpRuntimeError as exc:
         print(f"BLOCKED {exc.reason_code}: {exc.reason}", file=sys.stderr)
         return EXIT_BLOCKED
