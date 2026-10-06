@@ -64,7 +64,13 @@ PLATFORM = "tistory"
 # last Tistory posts (:func:`editorial_plan`); the key sentence of each H2 is bold; a cited
 # sentence links its source in place; and the paragraph count rose to 24 — four live drafts wrote
 # ~145 characters a paragraph against a 160 floor and three ended under 3,500.
-PROMPT_VERSION = "tistory_prompt.2026-10-05.5"
+# .6 (2026-10-06): the shape carries the form. Under .5 the skeleton named 4 H2s but the JSON shape
+# still showed one section of 3 paragraphs, and '제미나이 해지' (bcp_5be1dc3c22fb9b985b53) wrote
+# 4 × 3 + 3 = 15 paragraphs — 2,099 characters against 3,500 — with no H3 under its steps; the plan's
+# "21 paragraphs" lost to the shape, the lesson Naver learned in September. The shape now lays out
+# each form's H2/H3 sections and their paragraph counts (summing to the plan), the brief is told
+# the keyword's intent, and a "오늘은 … 알아보겠습니다" intro tail is named and counted.
+PROMPT_VERSION = "tistory_prompt.2026-10-06.6"
 PROFILE_VERSION = "tistory_profile.2026-10-05"
 STANDARDS_VERSION = "tistory_draft_standards.2026-10-05"
 PASTE_FILE = "PASTE.md"
@@ -153,7 +159,7 @@ _TITLE_SYMBOL_RE = re.compile(r"[^\x20-\x7eᄀ-ᇿ㄰-㆏가-힣一-鿿]")
 DRAFT_KEY_ORDER = ("brief", "seo_title", "title_candidates", "slug", "excerpt", "tags",
                    "image_shots", "table", "internal_links", "sources", "fact_checks", "faq",
                    "intro", "sections")
-_DRAFT_SHAPE = json.dumps({
+_SHAPE_BASE: dict[str, Any] = {
     "brief": {"search_intent": "how_to", "audience": "이 검색어를 치는 사람 한 문장",
               "article_angle": "이 글의 관점 한 문장", "secondary_keywords": ["소제목이 받아줄 롱테일"],
               "user_questions": ["검색자가 이어서 묻는 질문"], "differentiators": ["이 글에만 있는 것"],
@@ -172,11 +178,7 @@ _DRAFT_SHAPE = json.dumps({
     "faq": [{"question": "질문", "answer": "2~3문장 답"}],
     "intro": [f"도입 문단 1({PLAN_SENTENCES_PER_PARAGRAPH}문장 — 검색 질문의 답부터)"]
              + [f"도입 문단 {i}({PLAN_SENTENCES_PER_PARAGRAPH}문장)" for i in range(2, PLAN_INTRO_PARAGRAPHS + 1)],
-    "sections": [{"heading": "H2 소제목", "level": 2,
-                  "paragraphs": [f"문단 {i}({PLAN_SENTENCES_PER_PARAGRAPH}문장)"
-                                 for i in range(1, PLAN_PARAGRAPHS_PER_SECTION + 1)],
-                  "key_sentence": "이 섹션 paragraphs 안의 결론 문장 하나 그대로"}],
-}, ensure_ascii=False)
+}
 
 # --- the request ------------------------------------------------------------------------
 
@@ -191,9 +193,9 @@ BRIEF_RULE = (
 SLUG_RULE = "slug는 영문 소문자·숫자·하이픈으로 된 2~8단어다."
 EXCERPT_RULE = "excerpt는 120자 이내 1~2문장으로 이 글이 무엇에 답하는지 쓴다."
 STRUCTURE_RULE = (
-    "sections는 level 2(H2) 섹션 4~8개로 짓고, 한 H2를 나눠야 할 때만 바로 뒤에 level 3(H3) 섹션을 둔다 — "
-    "첫 섹션은 level 2다. 소제목은 설명이 아니라 검색할 수 있는 문구(예: '카페 소개글 예시')로 쓰고, "
-    "secondary_keywords를 소제목에 자연스럽게 싣되 키워드를 억지로 반복하지 마라."
+    "sections는 형식에 적힌 level·순서·문단 수 그대로 짓는다 — level 3(H3)은 바로 앞 level 2(H2)의 하위 "
+    "섹션이고, 첫 섹션은 level 2다. 형식의 소제목 자리는 안내일 뿐이니 설명이 아니라 검색할 수 있는 문구(예: "
+    "'카페 소개글 예시')로 바꿔 쓰고, secondary_keywords를 소제목에 자연스럽게 싣되 키워드를 억지로 반복하지 마라."
 )
 def _faq_rule(count: int) -> str:
     return (f"faq는 {count}문항이다 — 질문은 brief.user_questions에서 고르고, 답은 2~3문장으로 본문에 근거가 "
@@ -210,7 +212,7 @@ def length_plan(faq_count: int = PLAN_FAQ) -> str:
     total_low, total_high = plan_body_chars()
     return (
         f"분량 계획(이대로 써라): intro 문단 {PLAN_INTRO_PARAGRAPHS}개 + 섹션 문단 합 {PLAN_SECTION_PARAGRAPHS}개"
-        f"(아래 뼈대의 H2와 그 아래 H3에 나눠, 섹션마다 3~5개) = 문단 {plan_paragraphs()}개, 그리고 faq 답 "
+        f"(형식의 sections에 적힌 H2·H3별 문단 수 그대로) = 문단 {plan_paragraphs()}개, 그리고 faq 답 "
         f"{faq_count}개(각 2~3문장). 문단 하나는 {PLAN_SENTENCES_PER_PARAGRAPH}문장, 공백 빼고 "
         f"{plan_target()}자 안팎({low}~{high}자)이다. 합계 약 {total_low:,}~{total_high:,}자이고, 합계가 "
         f"{STANDARDS['body_chars'].low:,}자에 못 미치거나 intro 합이 {INTRO_SNIPPET_CHARS}자에 못 미치면 "
@@ -232,21 +234,29 @@ FORMS: dict[str, dict[str, str]] = {
         "asset": "판정트리",
         "skeleton": ("H2 ① 판정 기준 표(조건 | 결과 | 확인할 곳 — table 필드) ② 경우별 판정(H3 세 개: 조건 → "
                      "판정 → 다음에 할 일) ③ 해당되면 할 일과 기한 ④ 판정이 갈리는 경계 사례"),
+        "layout": ((2, "판정 기준", 4), (2, "경우별 판정", 2), (3, "경우 1", 3), (3, "경우 2", 3), (3, "경우 3", 3),
+                   (2, "해당되면 할 일과 기한", 3), (2, "판정이 갈리는 경계 사례", 3)),
     },
     "계산형": {
         "asset": "계산예제",
         "skeleton": ("H2 ① 항목과 계산식(표 — table 필드) ② 예제 세 가지(H3마다 입력값 → 단계 계산 → 결과, 근거에 "
                      "있는 수치로만) ③ 예제마다 빠지기 쉬운 함정 ④ 내 경우를 계산하는 순서"),
+        "layout": ((2, "항목과 계산식", 4), (2, "예제로 계산하기", 2), (3, "예제 1", 3), (3, "예제 2", 3),
+                   (3, "예제 3", 3), (2, "빠지기 쉬운 함정", 3), (2, "내 경우 계산 순서", 3)),
     },
     "절차형": {
         "asset": "화면절차",
         "skeleton": ("H2 ① 준비물과 조건(표 — table 필드) ② 단계별 진행(H3 단계마다: 화면 이름 → 누르는 것 → "
                      "막히는 지점) ③ 막혔을 때 확인할 것 ④ 끝난 뒤 확인하는 법"),
+        "layout": ((2, "준비물과 조건", 4), (2, "단계별 진행", 2), (3, "1단계", 3), (3, "2단계", 3), (3, "3단계", 3),
+                   (2, "막혔을 때 확인할 것", 3), (2, "끝난 뒤 확인하는 법", 3)),
     },
     "통설검증형": {
         "asset": "원문인용",
         "skeleton": ("H2 ① 통설별 판정(H3 통설마다: 통설 → 맞다·틀리다·조건부 → 근거 → 할 일) ② 정답표(통설 | "
                      "판정 | 근거 — table 필드) ③ 통설이 퍼진 이유 ④ 지금 할 일"),
+        "layout": ((2, "통설별 판정", 2), (3, "통설 1", 3), (3, "통설 2", 3), (3, "통설 3", 3), (2, "정답표", 4),
+                   (2, "통설이 퍼진 이유", 3), (2, "지금 할 일", 3)),
     },
 }
 INTRO_HOOKS: dict[str, str] = {
@@ -308,6 +318,27 @@ def editorial_plan(target: str, posts: Sequence[Mapping[str, Any]], now: str | N
     return plan
 
 
+def draft_shape(plan: Mapping[str, Any], target: str = "") -> str:
+    """The JSON shape for ``plan``'s form: its sections laid out in order, at their levels, each
+    with as many paragraph slots as it should hold — the plan in the one place the model follows.
+    The slots sum to :data:`PLAN_SECTION_PARAGRAPHS`, and an H2 carries a key-sentence slot."""
+    shape = json.loads(json.dumps(_SHAPE_BASE, ensure_ascii=False))
+    intent = blog_overlap.keyword_intent(target) if target else None
+    if intent and intent != "informational":
+        shape["brief"]["search_intent"] = intent
+    shape["faq"] = [{"question": f"질문 {i}", "answer": "2~3문장 답"} for i in range(1, int(plan["faq_count"]) + 1)]
+    sections = []
+    for level, heading, count in FORMS[plan["form"]]["layout"]:
+        section: dict[str, Any] = {
+            "heading": f"{'H2' if level == 2 else 'H3'} 소제목({heading})", "level": level,
+            "paragraphs": [f"문단 {i}({PLAN_SENTENCES_PER_PARAGRAPH}문장)" for i in range(1, count + 1)]}
+        if level == 2:
+            section["key_sentence"] = "이 섹션 paragraphs 안의 결론 문장 하나 그대로"
+        sections.append(section)
+    shape["sections"] = sections
+    return json.dumps(shape, ensure_ascii=False)
+
+
 def default_plan(target: str) -> dict[str, Any]:
     """The plan without the vault (an override fire with no published posts): the keyword's own
     first form, the first hook, four FAQs."""
@@ -362,7 +393,7 @@ def _title_rule(target: str) -> str:
 def _intro_rule(target: str) -> str:
     return (f"intro 첫 두 문장 안에 근거 블록에 나온 구체적 사실 하나(가격·한도·플랜 이름·조건 중 하나)를 넣고, "
             f"첫 두 문장으로 검색 질문에 바로 답하며 '{target}'를 넣어라 — '…이 중요합니다' 같은 일반론, 인사말·공감형 "
-            f"도입·'아래에서 정리했습니다' 꼬리는 쓰지 마라. intro 문단의 공백 제외 합은 {INTRO_SNIPPET_CHARS}자 "
+            f"도입, '오늘은 …을 알아보겠습니다'·'…살펴보겠습니다'·'아래에서 정리했습니다' 같은 예고 꼬리는 쓰지 마라. intro 문단의 공백 제외 합은 {INTRO_SNIPPET_CHARS}자 "
             "이상이다(티스토리는 메타 디스크립션 칸이 없어 본문 첫 400자가 검색 결과 요약이 된다).")
 
 
@@ -391,7 +422,7 @@ def content_request(target: str, context: blog_prompt.DraftContext | None = None
     plan = context.editorial or default_plan(target)
     return blog_prompt.compose(
         [f"'{target}'를 메인 키워드로 티스토리 블로그 글 초안을 작성해라. 독자는 구글·다음 검색으로 "
-         "들어와 검색어의 답을 찾는 사람이다.", blog_prompt.output_contract(_DRAFT_SHAPE)],
+         "들어와 검색어의 답을 찾는 사람이다.", blog_prompt.output_contract(draft_shape(plan, target))],
         [KEY_ORDER_RULE],
         [BRIEF_RULE],
         [REGISTER_RULE],
@@ -497,7 +528,8 @@ def revision_request(
         *([[ask] for ask in asks] or [[]]),
         [blog_prompt.revision_facts_rule(growing), blog_prompt.REVISION_SECTION_SCOPE_RULE,
          REVISION_KEEP_LAYOUT_RULE, REGISTER_RULE, blog_prompt.REVISION_NO_EVIDENCE_RULE,
-         blog_prompt.revision_output_contract(_DRAFT_SHAPE, last="faq, intro, sections")],
+         blog_prompt.revision_output_contract(
+             draft_shape(context.editorial or default_plan(target), target), last="faq, intro, sections")],
         *_links_lines(context),
         *blog_prompt.revision_tail(first, text, records, grows=growing, key_order=DRAFT_KEY_ORDER),
     )
@@ -758,6 +790,16 @@ def plain_register(paragraphs: Sequence[str]) -> int | None:
     return plain if plain > max(PLAIN_SENTENCES_ALLOWED, int(total * PLAIN_SENTENCES_SHARE)) else None
 
 
+# An intro sentence that only announces the post: "오늘은 … 알아보겠습니다", "아래에서 … 정리했습니다".
+_INTRO_TAIL_RE = re.compile(r"(알아보겠습니다|살펴보겠습니다|정리했습니다|정리해\s*드리겠습니다|소개하겠습니다|"
+                            r"알려\s*드리겠습니다|안내해\s*드리겠습니다)[.!]?$")
+
+
+def intro_tails(intro: Sequence[str]) -> int:
+    """How many intro sentences only announce what the post will do (vault 의례 문구 #2)."""
+    return sum(1 for p in intro for x in _sentences(p) if _INTRO_TAIL_RE.search(x))
+
+
 def generic_closers(paragraphs: Sequence[str]) -> int:
     """How many prose paragraphs end on a sentence that would fit any post."""
     count = 0
@@ -899,6 +941,7 @@ def interpret(
     repeated = blog_draft.repeated_sentences(prose + answers)
     measured["repeated_sentences"] = blog_draft.repeat_count(prose + answers)
     measured["generic_closers"] = generic_closers(prose)
+    measured["intro_tails"] = intro_tails(_clean(structured["intro"]))
     measured["faq_echoes"] = faq_echoes(faq_clean, prose)
     measured["plain_sentences"] = plain_sentences(prose + answers)[0]
     if repeated:
@@ -959,6 +1002,7 @@ def _interpret_prose(text: str, target: str, index: Mapping[str, Any], parse_rea
     repeated = blog_draft.repeated_sentences(prose)
     measured["repeated_sentences"] = blog_draft.repeat_count(prose)
     measured["generic_closers"] = generic_closers(prose)
+    measured["intro_tails"] = intro_tails(paragraphs[:first_heading])
     measured["faq_echoes"] = 0
     measured["plain_sentences"] = plain_sentences(prose)[0]
     if repeated:
@@ -1091,6 +1135,8 @@ def platform_checks(parts: Mapping[str, Any], target: str) -> list[dict[str, Any
         {"check": "excerpt", "state": "ok" if meta.get("excerpt") else "warn", "detail": "list/share summary"},
         {"check": "generic_closers", "state": "ok" if not measured.get("generic_closers") else "warn",
          "detail": f"{measured.get('generic_closers', 0)} paragraphs end on a sentence that fits any post"},
+        {"check": "intro_tail", "state": "ok" if not measured.get("intro_tails") else "warn",
+         "detail": f"{measured.get('intro_tails', 0)} intro sentences only announce the post ('…알아보겠습니다')"},
         {"check": "faq_echoes", "state": "ok" if not measured.get("faq_echoes") else "warn",
          "detail": f"{measured.get('faq_echoes', 0)} FAQ answer sentences repeat the body"},
         {"check": "bold_key_sentences",
