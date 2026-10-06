@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 NOW = "2026-07-15T09:00:00Z"
 REQUEST = "이 사업 아이디어를 분석해줘: 구독형 반려동물 사료 배송"
 
-from tests._helpers import requires_local_core
+from tests._helpers import ModelMock, requires_local_core
 
 
 def _read_jsonl(path: Path) -> list[dict]:
@@ -331,7 +331,7 @@ def test_out_of_scope_persists_block_entry(tmp_path):
 @requires_local_core
 def test_completed_run_persists_records_and_audit(tmp_path):
     store = LedgerStore(tmp_path / "ledger")
-    r = run_task(REQUEST, provider=MockProvider(), now=NOW, store=store)
+    r = run_task(REQUEST, provider=ModelMock(), now=NOW, store=store)
     assert r["status"] == "COMPLETED"
     audit = _read_jsonl(store.root / AUDIT_FILE)
     assert len(audit) == 7
@@ -344,8 +344,8 @@ def test_completed_run_persists_records_and_audit(tmp_path):
 @requires_local_core
 def test_audit_chain_spans_runs(tmp_path):
     store = LedgerStore(tmp_path / "ledger")
-    run_task(REQUEST, provider=MockProvider(), now=NOW, store=store)
-    run_task(REQUEST, provider=MockProvider(), now=NOW, store=store)
+    run_task(REQUEST, provider=ModelMock(), now=NOW, store=store)
+    run_task(REQUEST, provider=ModelMock(), now=NOW, store=store)
     audit = _read_jsonl(store.root / AUDIT_FILE)
     assert len(audit) == 14  # two 7-event runs
     # The second run's first event chains onto the first run's last event.

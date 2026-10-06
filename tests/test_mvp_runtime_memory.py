@@ -264,9 +264,12 @@ def test_worker_attaches_candidates_to_output():
     from runtime.mvp_runtime.prime import plan_task
     from runtime.mvp_runtime.worker import MockProvider, run_analysis_worker
 
+    class _AskedModel(MockProvider):          # a mock run proposes nothing (see below)
+        model_invocation = True
+
     task = build_task("이 사업 아이디어를 분석해줘: 구독형 반려동물 사료", now=NOW)
     plan = plan_task(task, now=NOW)
-    out, _ = run_analysis_worker(plan["task"], plan["role_assignment"], provider=MockProvider(), created_at=NOW)
+    out, _ = run_analysis_worker(plan["task"], plan["role_assignment"], provider=_AskedModel(), created_at=NOW)
     cands = out["memory_candidates"]
     assert cands and all(c["status"] == CANDIDATE_STATUS and c["validated"] is False for c in cands)
     # Candidates are proposals only — the assignment grants no validated/core write.
@@ -407,3 +410,24 @@ def test_invocation_metadata_says_whether_a_model_was_reached():
 
     _out, meta = run_analysis_worker(task, assignment, provider=_RealEnough(), created_at=NOW)
     assert meta["model_invocation"] is True
+
+
+@requires_local_core
+def test_a_run_that_reached_no_model_proposes_no_memory():
+    """A mock's findings are a constant, not knowledge: the same analysis that proposes candidates
+    when a model was asked proposes none when it was not (fix/a-mock-is-not-knowledge, Thomas
+    2026-10-06). The record still says why the list is empty — `model_invocation` is False."""
+    from runtime.mvp_runtime.intake import build_task
+    from runtime.mvp_runtime.prime import plan_task
+    from runtime.mvp_runtime.worker import MockProvider, run_analysis_worker
+
+    class _RealEnough(MockProvider):
+        model_invocation = True
+
+    plan = plan_task(build_task("이 사업 아이디어를 분석해줘: 구독형 반려동물 사료", now=NOW), now=NOW)
+    task, assignment = plan["task"], plan["role_assignment"]
+
+    asked, _ = run_analysis_worker(task, assignment, provider=_RealEnough(), created_at=NOW)
+    assert asked["memory_candidates"], "the control: the same fixture, from a model, proposes"
+    mocked, meta = run_analysis_worker(task, assignment, provider=MockProvider(), created_at=NOW)
+    assert mocked["memory_candidates"] == [] and meta["model_invocation"] is False

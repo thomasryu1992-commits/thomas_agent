@@ -16,7 +16,7 @@ from runtime.mvp_runtime.workspace import RealWorkspaceWriter
 NOW = "2026-07-15T09:00:00Z"
 REQUEST = "이 사업 아이디어를 분석해줘: 구독형 반려동물 사료 배송"
 
-from tests._helpers import requires_local_core, make_gate_authorization
+from tests._helpers import ModelMock, requires_local_core, make_gate_authorization
 
 
 class _ErrorProvider:
@@ -79,7 +79,7 @@ def test_out_of_scope_blocks_before_binding():
 
 @requires_local_core
 def test_normal_task_completes_and_delivers():
-    r = run_task(REQUEST, provider=MockProvider(), now=NOW)
+    r = run_task(REQUEST, provider=ModelMock(), now=NOW)
     assert r["status"] == "COMPLETED" and r["delivered"] is True
     assert isinstance(r["final_response"], str) and "Key findings" in r["final_response"]
     rec = r["records"]
@@ -219,7 +219,7 @@ def test_working_memory_accumulates_and_feeds_back(tmp_path):
     wm = WorkingMemoryStore(tmp_path / "wm")
 
     # First run: no prior memory to draw on; it stores its candidates.
-    first = run_task(REQUEST, provider=MockProvider(), working_memory=wm, now=NOW)
+    first = run_task(REQUEST, provider=ModelMock(), working_memory=wm, now=NOW)
     assert first["status"] == "COMPLETED"
     assert first["records"]["memory_retrieved"] == []
     assert wm.read_all()  # candidates were accumulated
@@ -228,14 +228,14 @@ def test_working_memory_accumulates_and_feeds_back(tmp_path):
     # is by relevance since 2026-09-25): retrieves the first run's candidates and records them as
     # working_memory evidence.
     related = REQUEST + " — recurring revenue, fulfilment logistics"
-    second = run_task(related, provider=MockProvider(), working_memory=wm, now="2026-07-16T10:00:00Z")
+    second = run_task(related, provider=ModelMock(), working_memory=wm, now="2026-07-16T10:00:00Z")
     assert second["status"] == "COMPLETED"
     assert second["records"]["memory_retrieved"]  # prior candidates surfaced as context
     ev_types = {e["type"] for e in second["records"]["agent_output"]["evidence"]}
     assert "working_memory" in ev_types
 
     # An unrelated request is handed none of them, rather than the newest five on any topic.
-    unrelated = run_task("이 사업 아이디어를 분석해줘: 치과 예약 SaaS", provider=MockProvider(),
+    unrelated = run_task("이 사업 아이디어를 분석해줘: 치과 예약 SaaS", provider=ModelMock(),
                          working_memory=wm, now="2026-07-16T11:00:00Z")
     assert unrelated["records"]["memory_retrieved"] == []
 
@@ -422,7 +422,7 @@ def test_promoted_memory_feeds_back_as_validated_context(tmp_path):
     from runtime.mvp_runtime.working_memory import WorkingMemoryStore
     wm = WorkingMemoryStore(tmp_path / "wm")
 
-    first = run_task(REQUEST, provider=MockProvider(), working_memory=wm, now=NOW)
+    first = run_task(REQUEST, provider=ModelMock(), working_memory=wm, now=NOW)
     assert first["status"] == "COMPLETED"
     assert first["records"]["validated_memory_retrieved"] == []  # nothing promoted yet
 
@@ -432,7 +432,7 @@ def test_promoted_memory_feeds_back_as_validated_context(tmp_path):
                                   now="2026-07-16T09:30:00Z")
     wm.append_validated([validated])
 
-    second = run_task(REQUEST, provider=MockProvider(), working_memory=wm, now="2026-07-16T10:00:00Z")
+    second = run_task(REQUEST, provider=ModelMock(), working_memory=wm, now="2026-07-16T10:00:00Z")
     assert second["status"] == "COMPLETED"
     retrieved = second["records"]["validated_memory_retrieved"]
     assert [e["validated_memory_id"] for e in retrieved] == [validated["validated_memory_id"]]

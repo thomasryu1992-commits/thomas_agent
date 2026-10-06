@@ -700,9 +700,20 @@ def run_analysis_worker(
         "model_id": result.model_id,
         "prompt_version": prompt_version,
     }
+    # Whether a model was actually asked — the fact `invocation_metadata` records below, and the one
+    # `gate_banners` announces on (`cli_common`).
+    invoked_model = bool(getattr(
+        provider, "model_invocation", getattr(provider, "model_id", None) is not None
+    ))
     # R5: propose working-memory candidates from the analysis, honoring the assignment's
     # memory scope (creation gate + allowed types). Proposals only — never promoted.
-    memory_candidates = build_memory_candidates(
+    #
+    # ...and only when a model was asked. A mock reaches no model and answers every prompt with
+    # the same fixture, so its findings are a constant, not knowledge: on 2026-08-24, 190 of this
+    # host's 316 candidate rows were five canned `MockProvider` strings, 38 copies each, written
+    # while `MVP_HOSTED_PROVIDER` was unset. The duplicate check stops 38 becoming 38; this stops
+    # the one. What was not announced as a model invocation does not become a memory candidate.
+    memory_candidates = [] if not invoked_model else build_memory_candidates(
         analysis, assignment, now=created_at,
         seed={"task_id": identity.get("task_id"), "task_revision": identity.get("task_revision"),
               "assignment_id": assignment.get("assignment_id")},
@@ -779,9 +790,7 @@ def run_analysis_worker(
         # the same shape `MVP_BRIDGE_CLIENT_UID` had before it got a default. This does not
         # re-close that gate; it makes the downgrade legible per run. The rule is the one
         # `gate_banners` announces on (`cli_common`), so one fact answers both.
-        "model_invocation": bool(getattr(
-            provider, "model_invocation", getattr(provider, "model_id", None) is not None
-        )),
+        "model_invocation": invoked_model,
     }
     # Review D1: which chain members this answer failed over past, and why. Only when there were
     # any, so an invocation served by its first member reads exactly as it always did.
