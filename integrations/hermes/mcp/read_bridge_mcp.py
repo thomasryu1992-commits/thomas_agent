@@ -52,6 +52,12 @@ v2.15 (2026-09-26, review D8): `lane_digest`, the weekly lane evidence — what 
 runs did over N days. The runtime carries the verb dormant until policy 1.6.1 lists it
 (`docs/runtime-contracts/POLICY_1_6_1_DRAFT.md`); before that the door refuses it by name as
 CONTROL_VERB_NOT_GRANTED, and this tool says so rather than guessing numbers.
+
+v2.16 (2026-10-07, MULTI_ASSET_EXPANSION P1): `holdings_status`, the brokerage account (Toss) as an
+aggregate — totals by asset class, cash, unrealized P&L, a count, the weights — from the snapshot
+scheduler-maint writes hourly. Never a symbol, a per-symbol number or an exchange rate: the broker's
+data may serve only the investor's own trading purpose (appendix B), and this reply reaches a hosted
+model. Carried dormant until policy 1.6.2 lists it, refused by name before that.
 """
 
 from __future__ import annotations
@@ -192,6 +198,16 @@ def lane_digest(days: str = "") -> str:
     failovers. Relay the counts as given. `REFUSED [CONTROL_VERB_NOT_GRANTED]` = not switched on yet
     (policy 1.6.1) — say that, never estimate."""
     return _ask("lane_digest", days or None, with_data=True)
+
+
+@mcp.tool()
+def holdings_status() -> str:
+    """The brokerage account (Toss) as totals: domestic and overseas stock, KRW and USD cash (cash
+    buying power, not the deposit), unrealized P&L, holding count, weights — an hourly snapshot,
+    never a live call. No stock names or per-stock numbers exist here; never invent them. Say the
+    `as of` time; `STALE` means say that first. `REFUSED [CONTROL_VERB_NOT_GRANTED]` = not switched
+    on yet (policy 1.6.2) — say that, never estimate."""
+    return _ask("holdings_status", with_data=True)
 
 
 if __name__ == "__main__":
