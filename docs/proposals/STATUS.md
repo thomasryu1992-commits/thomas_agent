@@ -4,7 +4,7 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **59**건: `DRAFT` 1 · `PARTIALLY DECIDED` 4 · `DECIDED` 12 · `IMPLEMENTED` 36 · `SUPERSEDED` 1 · `RECORD` 5
+제안서 **60**건: `DRAFT` 1 · `PARTIALLY DECIDED` 4 · `DECIDED` 12 · `IMPLEMENTED` 36 · `SUPERSEDED` 1 · `RECORD` 6
 
 ## Thomas 결정 대기 (5)
 
@@ -35,7 +35,7 @@
 | [RESEARCH_FORWARD_THROUGHPUT_ANALYSIS_V0.1.md](RESEARCH_FORWARD_THROUGHPUT_ANALYSIS_V0.1.md) | `DECIDED` | 2026-10-06 | P0-1(D3 범위) 결정(2026-10-01), P1-1(형제 규칙) 결정·구현(#1096·#1100). 나머지는 권고 순서대로 결정했고(Thomas 2026-10-06), D3가 허용하는 측정·표시 넷을 지었다: P0-2 주석 정정(#1137), P0-3 진입 거절 사유 카운터(#1139), P1-2 보고서 행 색인(#1138), P1-3 쌍 차이 표시(#1140). 남은 것은 관문이 있는 둘이다: P1-4 계층 판정 제안서(2027-03-22 전), P2(판정 뒤). |
 | [MULTI_ASSET_EXPANSION_V0.1.md](MULTI_ASSET_EXPANSION_V0.1.md) | `DECIDED` | 2026-10-07 | D1–D4 결정(2026-10-02): (A) 자산 관리 먼저, 옵션은 조건부, 읽기 전용 보드는 연구 일시 중지 중 허용. **2026-10-07 Thomas: 첫 계좌를 한국투자증권에서 토스증권으로 바꾼다(토스만 쓴다).** 부록 B(토스증권 규제 기록)가 완성됐다(본인 계좌 조회 운영 가능, 강도 잠정, 허용 IP 등록됨). 토스 피드(`holdings/toss_account.py`)가 지어졌고, KIS 피드와 compose의 KIS 변수는 같은 PR에서 통째로 제거됐다. 부록 A(KIS)는 결정 기록으로 남는다. P1-a·P1-b의 렌더·저장·`/holdings` verb·scheduler-maint 배선은 그대로 쓴다. 켜는 것은 배포와 `holdings_refresh` 일정 등록(Thomas)을 기다린다. 키는 `.env`에 들어갔다(2026-10-07). §6 D2 비교 기준 비준은 P4 때 한다. IV–RV 측정은 연구 일시 중지의 예외로 허용됐다 (2026-10-06, 아래 결정 절). |
 | [SELECTION_EVIDENCE_V0.1.md](SELECTION_EVIDENCE_V0.1.md) | `DECIDED` | 2026-10-07 | H1·H2 권고대로(Thomas). H1: S1은 첫 판정 때 `report --pairs`의 1d `(all)` 줄이 38쌍 이상이고 95% 구간 상한이 0 이상일 때만 실행하고, 실패하면 2차 cohort 마감(2027-03-30)에 한 번 다시 묻는다. H2: §4.2의 계층 판정 규칙(쌍 차이, 타임프레임 × 경제 family BH q = 0.10, 정산일 10일 하한, 교환 보정, family 안 Holm, 마감일 한 번, 분류 고정)이 2027-03-22 판정 규칙이다. 측정 근거: 생성 후 구간에서 계보 단위 1h −0.031R(18/40), 4h −0.044R(28/75), 1d 쌍 −0.711R [−1.282, −0.140], 1단계 시험 운전 통과 0. 남은 구현: 판정 코드(마감 전), S1·H1 실행(첫 판정 때). 지금 바뀐 판정·문·보드·상수·스케줄은 없다. |
-| [TOTAL_ASSET_ALLOCATION_V0.1.md](TOTAL_ASSET_ALLOCATION_V0.1.md) | `DECIDED` | 2026-10-07 | Q1·Q2·Q4 권고대로 채택(중립형 배분, 5/25 밴드 월 점검, BTC 위험 기여도 상한 25%). Q3은 권고와 달리 토스 하나로 유지한다(세금 마찰 +0.20%p를 받아들임, 토스 ISA 출시 때 재검토). 금은 토스증권의 금 ETF로 담는다(KRX 금현물 미제공, 2026-10-07). Q5는 엔진 비중 0%에서 시작해 고도화 후 증거에 따라 늘리는 방향이며, 연구 일시 중지(D3)는 풀지 않는다. 남은 것: 밴드·상한을 P2의 한도로 짓는 일, Q5의 첫 증액 질문(cohort 1 판정, 2027-03-22). 코드·스키마·상수·스케줄 변경 없음. |
+| [TOTAL_ASSET_ALLOCATION_V0.1.md](TOTAL_ASSET_ALLOCATION_V0.1.md) | `DECIDED` | 2026-10-07 | Q1–Q10 결정. Q1·Q2·Q4 권고대로(중립형 배분, 5/25 밴드 월 점검, BTC 위험 기여도 상한 25%). Q3은 권고와 달리 토스 하나로 유지하고, 금은 토스증권 금 ETF로 담는다. Q5는 엔진 비중 0%에서 시작해 증거에 따라 늘리며 연구 일시 중지(D3)는 풀지 않는다. 실데이터 검증(`TOTAL_ASSET_ALLOCATION_VALIDATION_V0.1.md`) 뒤 Q6–Q10도 권고대로 결정했다 (§11): BTC 5 → 2.5%(줄인 몫은 현금), 국내주식 10% 유지, 국고채 3년 중심, 목표 대비 이탈은 표시만(D4 안), BTC 현물은 수동 입력·바이낸스 잔고는 목표 0%의 "엔진 증거금". 현재 목표: 주식 40·국고채 37·금 13·BTC 2.5·현금 7.5. 남은 것: 이탈 표시를 짓는 일(§11.1), 밴드·상한을 P2의 한도로 짓는 일, Q5의 첫 증액 질문(cohort 1 판정, 2027-03-22). 코드·스키마·상수·스케줄 변경 없음. |
 
 ## 구현됨 (36)
 
@@ -88,7 +88,7 @@
 |---|---|---|---|
 | [LIVE_OUTCOME_CORRECTION_RECORD_V0.1.md](LIVE_OUTCOME_CORRECTION_RECORD_V0.1.md) | `SUPERSEDED` | 2026-08-23 | `LIVE_OUTCOME_CORRECTION_RECORD_V0.2.md`가 대신한다. 이 설계는 구현된 적 없다. |
 
-## 측정 기록 (5)
+## 측정 기록 (6)
 
 결정할 것이 없는 관측 기록.
 
@@ -99,3 +99,4 @@
 | [FORWARD_VERDICT_REGIME_EPISODES_V0.1.md](FORWARD_VERDICT_REGIME_EPISODES_V0.1.md) | `RECORD` | 2026-09-27 | 측정 기록. forward 판정 6건이 BTC 일봉 regime 구간 3–5개(하락 추세 0일)에서 나왔고, 반박·성숙 판정은 시간 분산 검사 없이 나온다. 에포크 경계에서 볼 결정 항목 2개(§5)를 함께 적는다. |
 | [SYSTEM_SCORECARD_V0.2.md](SYSTEM_SCORECARD_V0.2.md) | `RECORD` | 2026-10-06 | v0.1(2026-10-05, 6/10)의 질문 여섯 개가 모두 처리된 뒤 같은 기준으로 다시 잰 점수다. 종합 7/10. 결정할 것은 없고, 다음 점수를 움직일 지점을 적는다. |
 | [SYSTEM_SCORECARD_V0.3.md](SYSTEM_SCORECARD_V0.3.md) | `RECORD` | 2026-10-06 | v0.2(같은 날 05:30Z, 7/10) 뒤 같은 기준으로 다시 잰 점수다. 종합 7/10 그대로다(평균 7.0 → 7.1, 추기 2에서 7.3). 개발 프로세스가 7에서 8로, 추기 2에서 9로 올랐다. 결정할 것은 없다. |
+| [TOTAL_ASSET_ALLOCATION_VALIDATION_V0.1.md](TOTAL_ASSET_ALLOCATION_VALIDATION_V0.1.md) | `RECORD` | 2026-10-07 | 중립형 배분을 2005-01~2026-09 원화 월간 실데이터로 검증했다. 결론 다섯 가지가 2023년 이전 구간에서도 유지됐다: 환노출, 금 13, 5/25 밴드, 국고채 3년 중심이 낫다는 것, 그리고 BTC가 꼬리 위험을 가장 크게 키운다는 것이다. 이 결과로 생긴 질문 Q6–Q10은 `TOTAL_ASSET_ALLOCATION_V0.1.md` §11에 있다. |
