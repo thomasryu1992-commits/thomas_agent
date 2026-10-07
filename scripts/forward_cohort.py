@@ -315,15 +315,22 @@ def clustered_pair_mean(pairs: Sequence[tuple[Sequence[tuple[str, float]], Seque
             "member_ahead": sum(1 for d in diffs if d > 0)}
 
 
-def member_twin_pairs(root: Path) -> list[tuple[Mapping[str, Any], tuple[list[tuple[str, float]], list[tuple[str, float]]]]]:
+def member_twin_pairs(
+    root: Path, *, settled_by: str | None = None,
+) -> list[tuple[Mapping[str, Any], tuple[list[tuple[str, float]], list[tuple[str, float]]]]]:
     """Every frozen member whose twin is in the active null arm, beside its pair: (member trades, twin
     trades), each trade (settlement day, net R). The trades are the ones the judge prices on each side
     (as :func:`arm_means` takes them). A side with no priced trade is an empty list, kept, so the
-    grouping above it decides what a missing side means (:func:`clustered_pair_mean` drops it)."""
+    grouping above it decides what a missing side means (:func:`clustered_pair_mean` drops it).
+    ``settled_by``: keep only trades settled at or before that instant, so a reading pinned to a
+    boundary is the same whenever it is run after it (``selection_evidence verdict``)."""
     from runtime.mvp_runtime.crypto import forward_cohort_null
 
+    cutoff = None if settled_by is None else timeutil.parse_iso(settled_by)
+
     def trades(judged: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) -> list[tuple[str, float]]:
-        return [(str(row.get("created_at_utc") or "")[:10], net) for row, net in priced_rows(judged, rows)]
+        return [(str(row.get("created_at_utc") or "")[:10], net) for row, net in priced_rows(judged, rows)
+                if cutoff is None or timeutil.parse_iso(str(row.get("created_at_utc"))) <= cutoff]
 
     latest = {candidate_id(record): record for record in read_candidates(root)}
     rows = forward_cohort.read_cohort_outcomes(root)

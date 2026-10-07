@@ -569,7 +569,7 @@ C는 현재 one-way 전제의 브래킷과 PROTECTION 감시를 전부 다시 �
   P0-3은 #1114(미판정 멤버가 무엇을 기다리는지 표시)가 일부를 덮는지 확인하지 않았다. 구현할 때 먼저 확인한다.
 - **P1-1 — 이미 결정·구현.** `FORWARD_COHORT_SIBLING_RULE_V0.1.md`(#1096·#1100). 10-29 동결부터 적용된다.
 - **P1-4 — 관문 대기.** 계층 판정 제안서는 1차 cohort 마감(2027-03-22) 전에 쓴다.
-  규칙: `SELECTION_EVIDENCE_V0.1.md` §4.2, H2로 결정됨(Thomas 2026-10-07). 판정 코드는 마감 전에 짓는다. 1단계 시험 운전은 `scripts/selection_evidence.py families`.
+  규칙: `SELECTION_EVIDENCE_V0.1.md` §4.2, H2로 결정됨(Thomas 2026-10-07). 판정 코드: `scripts/selection_evidence.py verdict`(마감 전에는 거부, 빈틈 다섯은 2차 결정). 1단계 시험 운전은 `families`.
 - **P2 — 관문 대기.** 판정이 나온 뒤에 다룬다.
 
 ### 구현 — P0-2 (2026-10-06)
