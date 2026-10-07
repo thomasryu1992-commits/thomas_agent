@@ -315,13 +315,11 @@ def clustered_pair_mean(pairs: Sequence[tuple[Sequence[tuple[str, float]], Seque
             "member_ahead": sum(1 for d in diffs if d > 0)}
 
 
-def pair_differences(root: Path) -> list[dict[str, Any]]:
-    """:func:`clustered_pair_mean` per (timeframe, family, context) over every member whose twin is
-    in the active null arm, largest group first, after one ``(all)`` line per timeframe over every
-    pair in it — a family × context holds one or two pairs today (85 groups for 108 pairs on
-    2026-10-06), and the timeframe line is where the count is. Never pooled across timeframes. The trades are the ones the judge prices on each
-    side (as :func:`arm_means` takes them). Display only: no verdict, board or ranking reads it, and
-    the board's verdict counts (``forward_cohort_null.arm_comparison``) stay the designed comparison."""
+def member_twin_pairs(root: Path) -> list[tuple[Mapping[str, Any], tuple[list[tuple[str, float]], list[tuple[str, float]]]]]:
+    """Every frozen member whose twin is in the active null arm, beside its pair: (member trades, twin
+    trades), each trade (settlement day, net R). The trades are the ones the judge prices on each side
+    (as :func:`arm_means` takes them). A side with no priced trade is an empty list, kept, so the
+    grouping above it decides what a missing side means (:func:`clustered_pair_mean` drops it)."""
     from runtime.mvp_runtime.crypto import forward_cohort_null
 
     def trades(judged: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) -> list[tuple[str, float]]:
@@ -332,7 +330,7 @@ def pair_differences(root: Path) -> list[dict[str, Any]]:
     null_rows = forward_cohort_null.read_null_outcomes(root)
     twins = {str(twin.get("parent_candidate_id")): twin
              for arm in forward_cohort_null.active_null_records(root) for twin in arm.get("members") or []}
-    groups: dict[tuple[str, str, str], list[tuple[list[tuple[str, float]], list[tuple[str, float]]]]] = {}
+    out = []
     for cohort in forward_cohort.read_cohorts(root):
         for member in cohort.get("members") or []:
             cid = str(member.get("candidate_id"))
@@ -342,9 +340,22 @@ def pair_differences(root: Path) -> list[dict[str, Any]]:
             judged = {**record, "created_at_utc": member.get("selected_at_utc")}
             twin_judged = {"candidate_id": twin.get("null_id"), "created_at_utc": twin.get("selected_at_utc"),
                            "strategy_spec": twin.get("null_spec") or {}}
-            key = (str(member.get("timeframe")), str(member.get("strategy_family")),
-                   ",".join(str(s) for s in member.get("symbol_scope") or []))
-            groups.setdefault(key, []).append((trades(judged, rows), trades(twin_judged, null_rows)))
+            out.append((member, (trades(judged, rows), trades(twin_judged, null_rows))))
+    return out
+
+
+def pair_differences(root: Path) -> list[dict[str, Any]]:
+    """:func:`clustered_pair_mean` per (timeframe, family, context) over every member whose twin is
+    in the active null arm, largest group first, after one ``(all)`` line per timeframe over every
+    pair in it — a family × context holds one or two pairs today (85 groups for 108 pairs on
+    2026-10-06), and the timeframe line is where the count is. Never pooled across timeframes. The
+    pairs are :func:`member_twin_pairs`. Display only: no verdict, board or ranking reads it, and
+    the board's verdict counts (``forward_cohort_null.arm_comparison``) stay the designed comparison."""
+    groups: dict[tuple[str, str, str], list[tuple[list[tuple[str, float]], list[tuple[str, float]]]]] = {}
+    for member, pair in member_twin_pairs(root):
+        key = (str(member.get("timeframe")), str(member.get("strategy_family")),
+               ",".join(str(s) for s in member.get("symbol_scope") or []))
+        groups.setdefault(key, []).append(pair)
     out = []
     by_timeframe: dict[str, list[Any]] = {}
     for (timeframe, _, _), pairs in groups.items():

@@ -77,6 +77,7 @@ SCRIPTS: dict[str, str] = {
     "scripts/paired_family_window_check.py": READ,
     "scripts/pooled_mint_check.py": READ,
     "scripts/probe_signal_rate.py": READ,
+    "scripts/selection_evidence.py": READ,
     "scripts/strategy_funnel.py": READ,
     "scripts/verify_factory_tier_freeze.py": READ,
     "scripts/walk_forward_stability_report.py": READ,
