@@ -1,6 +1,6 @@
 schema_version: thomas_governance_policy.v1
 policy_id: thomas.governance.policy
-policy_version: 1.6.1
+policy_version: 1.6.2
 status: ACTIVE_POLICY_SOURCE
 owner: Thomas
 authoritative: true
@@ -366,6 +366,9 @@ control_channel:
       - lane_digest                       # 1.6.1, review D8 (Thomas 2026-09-26): per-lane run
                                           # counts over the run ledger, never a record — the
                                           # weekly lane evidence the assistant relays
+      - holdings_status                   # 1.6.2 (Thomas 2026-10-07): the brokerage account as an
+                                          # aggregate from the snapshot scheduler-maint writes —
+                                          # never a symbol, a per-symbol number or a rate
     mutation_allowed: false
     approval_status_exposes:              # never the action snapshot, never the fingerprint
       - approval_id

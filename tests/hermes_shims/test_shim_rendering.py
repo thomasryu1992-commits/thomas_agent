@@ -19,11 +19,12 @@ def _answer(name, frame=None, failure=None, sent=False, detail=""):
 
 # --- read ---------------------------------------------------------------------------------
 
-def test_read_tools_are_the_fourteen_read_verbs_and_nothing_mutating():
+def test_read_tools_are_the_fifteen_read_verbs_and_nothing_mutating():
     assert set(read_shim.mcp.tools) == {
         "trading_status", "trading_readiness", "paper_performance", "runtime_status", "task_list",
         "task_history", "task_result", "current_funds", "memory_candidates",
         "schedules", "scheduler_events", "heartbeat", "approval_status", "lane_digest",
+        "holdings_status",
     }
 
 
@@ -51,6 +52,22 @@ def test_lane_digest_forwards_the_window_and_relays_the_dormant_refusal(monkeypa
     assert out.startswith("REFUSED [CONTROL_VERB_NOT_GRANTED]") and "SNAPSHOT" not in out
     read_shim.lane_digest()
     assert seen[1] == {"command": "lane_digest"}
+
+
+def test_holdings_status_asks_the_dormant_read_and_relays_its_refusal(monkeypatch):
+    seen = []
+    refusal = {"ok": False, "reason_code": "CONTROL_VERB_NOT_GRANTED", "reason": "not granted"}
+    monkeypatch.setattr(door, "ask", lambda d, p, **kw: seen.append((d, p)) or _answer("read", refusal))
+    out = read_shim.holdings_status()
+    assert seen == [("read", {"command": "holdings_status"})]
+    assert out.startswith("REFUSED [CONTROL_VERB_NOT_GRANTED]") and "SNAPSHOT" not in out
+
+
+def test_holdings_status_carries_its_data_line(monkeypatch):
+    frame = {"ok": True, "reply": "=== holdings ****6091 (toss) ===", "data": {"stale": False, "as_of": "t"}}
+    monkeypatch.setattr(door, "ask", lambda d, p, **kw: _answer("read", frame))
+    out = read_shim.holdings_status()
+    assert out.startswith("[SNAPSHOT ") and "[data]" in out
 
 
 def test_read_stamps_a_success_and_renders_a_refusal_plainly():

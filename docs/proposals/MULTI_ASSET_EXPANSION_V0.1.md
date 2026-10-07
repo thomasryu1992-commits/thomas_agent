@@ -148,7 +148,7 @@ verb·scheduler-maint 배선은 그대로 쓴다. 켜는 것은 배포와 `holdi
 | 단계 | 일 | 관문 |
 |---|---|---|
 | P0 | 목적(D1·D2)과 규제 기록(D3). 형식은 `EQUITY_PERP_LANE_V0.1.md` 부록 A를 재사용한다(판단 주체·날짜·근거·재검토 조건) | Thomas 결정 |
-| P1 | 읽기 전용 통합 보드: 계좌별 잔고·노출·자산군 비중. 주문 경로 없음. **P1-a(코드: 두 렌더·스크립트) #1115. P1-b(scheduler-maint 배선·`holdings_refresh` 유지보수 kind·`/holdings` verb·Hermes read dormant) #1116. 계좌는 KIS에서 토스로 교체(Thomas 2026-10-07, 부록 B). 브로커 키는 scheduler-maint에만 둔다(Thomas 2026-10-02)** | P0 + D4 + 각 계좌 읽기 capability의 env opt-in |
+| P1 | 읽기 전용 통합 보드: 계좌별 잔고·노출·자산군 비중. 주문 경로 없음. **P1-a(코드: 두 렌더·스크립트) #1115. P1-b(scheduler-maint 배선·`holdings_refresh` 유지보수 kind·`/holdings` verb·Hermes read) #1116. Hermes read는 정책 1.6.2로 켬(Thomas 2026-10-07). 계좌는 KIS에서 토스로 교체(Thomas 2026-10-07, 부록 B). 브로커 키는 scheduler-maint에만 둔다(Thomas 2026-10-02)** | P0 + D4 + 각 계좌 읽기 capability의 env opt-in |
 | P2 | (A)의 한도: 계좌 전체 낙폭·자산군 비중 한도. 소유자는 `risk_limits.py`·`live_budget.py` | P1 운영 기록 |
 | P3 | (B) 알파 확장. 주식 퍼프는 §H의 S2 이후 순서를 그대로 따른다 | 연구 일시 중지 종료(2027-03-22), 크립토에서 FORWARD_CONFIRMED 1건 이상 |
 | P4 | 옵션 — 수익 목적, §6 D2의 비교 기준을 넘을 때만 채택 | P3 + 다중 레그 표현 결정 + 옵션 판정 규칙(에포크 경계) + 베뉴 S0 + D2 비교 기준 비준 |
