@@ -903,3 +903,17 @@ def test_a_band_outside_never_alerts(monkeypatch, gate_open, tmp_path):
     block = json.loads(store.snapshot_path(tmp_path).read_text(encoding="utf-8"))["allocation"]
     assert block["complete"] is True and block["outside_band"]
     assert result["alert"] is None
+
+
+def test_a_stored_block_renders_in_the_decided_order(monkeypatch, gate_open, tmp_path):
+    """The store sorts JSON keys; the board must not show the classes alphabetically (2026-10-07)."""
+    _classified(monkeypatch)
+    _binance_file(tmp_path, margin=100.0, monkeypatch=monkeypatch)
+    _toss(monkeypatch)
+    store.refresh(now=NOW, root=tmp_path)
+    text, _ = store.load_holdings_view(now=NOW, root=tmp_path)
+    rows = [line.split(":")[0].strip() for line in text.split("allocation vs target")[1].splitlines()[1:8]]
+    assert rows == [board._CLASS_LABELS[name] for name in allocation.CLASSES]
+    bands_line = next(line for line in text.splitlines() if line.startswith("bands"))
+    positions = [bands_line.index(f" {group} ") for group in allocation.BAND_GROUPS]
+    assert positions == sorted(positions)

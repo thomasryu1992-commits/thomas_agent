@@ -24,3 +24,6 @@
   `/new` or REBIND.
 - **What the board says today:** engine margin is about 99.9% against a 0% target, and every band is OUT.
   That is the Q10 decision made visible (Toss holds 145 KRW and nothing else). A note says so.
+- **Follow-up fix (same day):** the first live fire rendered the classes alphabetically. The store writes
+  JSON with `sort_keys=True`, so a stored block comes back sorted. The board now renders in the decided
+  order (`allocation.CLASSES`, `BAND_GROUPS`), and a test renders a stored block to pin that order.
