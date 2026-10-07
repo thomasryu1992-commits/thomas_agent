@@ -1,8 +1,9 @@
 # 제안: 다자산 확장 — 크립토 선물에서 전체 자산 관리로 (DRAFT v0.1)
 
 **상태:** PARTIALLY DECIDED 2026-10-07 — 열린 것: 부록 C(바이낸스 현물·Simple Earn 조회) 판단 문장의 Thomas 확인. 그 확인 전에는
-`MVP_BINANCE_WALLET`을 켜지 않는다. 피드는 2026-10-07에 지어졌다(`holdings/binance_wallet.py`, 계정 키를 scheduler-maint와 공유하는
-A안, P2 합산 블록에 합류). D1–D4 결정(2026-10-02): (A) 자산 관리 먼저, 옵션은 조건부, 읽기 전용 보드는 연구 일시
+`MVP_BINANCE_WALLET`을 켜지 않는다. 피드는 2026-10-07에 지어졌다(`holdings/binance_wallet.py`, P2 합산 블록에 합류). **BLOCKER
+(H1-a, 2026-10-07): 계정 키를 scheduler-maint와 공유하던 A안을 철회했다. 그 키는 주문 키와 같다. 전용 읽기 전용 키(H1-b)와 H2–H4가
+끝나기 전에는 지갑을 켜지 않는다.** D1–D4 결정(2026-10-02): (A) 자산 관리 먼저, 옵션은 조건부, 읽기 전용 보드는 연구 일시
 중지 중 허용. 2026-10-07 Thomas: 첫 계좌를 토스증권으로 바꿨다(부록 B, 잠정). P1(토스 보드·`/holdings`·Hermes `holdings_status`)이
 운영 중이다. **P2 결정(2026-10-07, 아래 결정 절): 알림만, 낙폭 한도 고점 대비 -20%, 바이낸스(엔진 증거금) 비중 한도 없음, USDT 환산은
 토스 매매기준율.** P2의 낙폭 한도가 `holdings/combined.py`로 지어졌다. `TOTAL_ASSET_ALLOCATION_V0.1.md`의 5/25 밴드(Q2)와 BTC
@@ -457,6 +458,13 @@ Claude는 어떤 베뉴의 키도 다루지 않고, 라이브를 켜지 않는�
     고점과 낙폭 판정은 움직이지 않는다(P2의 "완전하고 신선한 짝" 규칙을 그대로 넓힘). 게이트가 닫혀 있으면 P2 합계는 전과 같다.
   - 자산별 수량·가격은 프로세스 안에만 둔다. 저장되는 것은 원화 합계와 자산군(btc/eth/stable/other) 합계, 상태다.
 - **바뀌지 않은 것:** 켜는 것은 Thomas다(`.env`의 `MVP_BINANCE_WALLET=binance_wallet`, 배포). 부록 C 판단 확인이 먼저다.
+- **철회 (Thomas 2026-10-07, H1-a): A안의 키 공유를 되돌린다.** H0 점검에서 fingerprint 비교로, scheduler-maint의
+  `BINANCE_ACCOUNT_API_KEY`가 주문 키(`MVP_LIVE_ORDER_API_KEY`)와 같은 값임을 확인했다(값은 읽거나 출력하지 않았다). 읽기 전용
+  코드가 그 키를 읽기 전용으로 만들지 않는다. 지갑 게이트가 꺼져 있는 동안에도 주문 가능한 키가 유지보수 레인에 있었다.
+  - **바뀐 것:** scheduler-maint는 거래 가능한 Binance 자격증명(`BINANCE_ACCOUNT_*`, `MVP_LIVE_ORDER_*`, `MVP_TESTNET_ORDER_*`)을
+    받지 않는다. 테스트가 이름과 접두어 둘 다로 고정한다. 위험 레인(scheduler)은 그대로다.
+  - **지갑은 BLOCKER다.** 게이트를 켜도 키가 없어 `NO_API_KEY`로 읽지 않고, 합계는 불완전이 된다. 켜기 전 조건: 바이낸스에서
+    "Enable Reading"만 켠 전용 키를 Thomas가 발급(H1-b, IP 제한), 평가 완전성(H2), 반출 경계(H3), 출처 시점 정합(H4).
 
 ---
 
