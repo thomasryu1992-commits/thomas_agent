@@ -19,3 +19,7 @@
   the existing renders, store, `/holdings` verb and scheduler-maint wiring. The KIS feed and its six
   compose variables are removed whole in that same PR. Nothing KIS was ever enabled: no `.env`
   entry and no schedule.
+- **Appendix B completed in the same PR (Thomas 2026-10-07):** the judgement is "querying one's own
+  account through the Toss Securities Open API is something this project may operate". Its strength
+  is provisional, and the server's IP is on Toss's allowed list. The status is DECIDED, and the Toss
+  feed may start.
