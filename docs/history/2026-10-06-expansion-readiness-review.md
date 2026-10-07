@@ -31,5 +31,6 @@
   - The asset board sums inside `holdings/`. It reads the scheduler's Binance snapshot file (`crypto/account_snapshot.json`), and the two packages never import each other.
   - P2 pins the fields it reads with a test.
   - Premise checked: the file is refreshed every 15 minutes and was 0 minutes old when checked.
+- **Correction (2026-10-07).** The first holdings account moved from KIS to Toss Securities (#1160, #1161, Thomas 2026-10-07). The review's KIS mentions now carry dated corrections. Q4's content is unchanged: `holdings/` sums, and the two packages never import each other. Only its order changed: Toss refresh schedule → P1 record → P2. Q1 is marked finished.
 - **This PR changes no code, schema or policy.** It adds the review, this entry and the
   regenerated `STATUS.md`.
