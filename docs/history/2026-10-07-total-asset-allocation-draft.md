@@ -1,6 +1,6 @@
-# Total asset allocation drafted: a neutral target mix, a 5/25 band rebalance, and Korean tax placement
+# Total asset allocation decided: a neutral target mix, a 5/25 band rebalance, and Korean tax placement
 
-- **What this PR adds:** `docs/proposals/TOTAL_ASSET_ALLOCATION_V0.1.md` (DRAFT) and `STATUS.md`
+- **What this PR adds:** `docs/proposals/TOTAL_ASSET_ALLOCATION_V0.1.md` (drafted, then DECIDED below) and `STATUS.md`
   regenerated. No code, no schema, no constant, no schedule.
 - **Why it exists:** Thomas (2026-10-07) asked for a mathematically reviewed allocation for growing the
   crypto lane into whole-asset management, using equities, crypto spot, futures, options and dividends,
@@ -27,5 +27,16 @@
   carry-forward; KRX gold is exempt; Toss Securities has a pension-savings account but no ISA yet. A blog
   claiming the threshold had been restored to 10억 was wrong. The ISA expansion's status conflicts between
   sources and is modelled on current law.
-- **Open:** Q1–Q5. Q3 surfaces a real conflict with D3's "Toss only": without an ISA and KRX gold, the tax
-  drag is 0.20%p/yr higher.
+- **Decided in the same PR (Thomas 2026-10-07):**
+  - Q1, Q2 and Q4 were adopted as recommended: the neutral mix, the 5/25 monthly band, and the 25% BTC
+    risk-contribution cap as a P2 limit candidate.
+  - Q3 departs from the recommendation: Toss stays the only brokerage. The 0.20%p/yr tax drag is accepted,
+    and the question reopens when Toss ships an ISA, when the ISA expansion passes, or when taxable income
+    nears the 20M KRW comprehensive-taxation line.
+  - Q5: the engine starts at 0%, is improved, and grows on evidence. The decision does **not** lift the
+    research pause (D3 2026-09-26). Improvement before the cohort-1 verdict stays inside `CLAUDE.md`'s
+    exemption list.
+  - The derived increase path is not ratified: first FORWARD_CONFIRMED, then a 1–2% experiment budget, then
+    one step at a time; the engine and BTC spot share the 25% cap; the engine returns to 0 if it fails D2's
+    benchmark.
+  - The status moves from DRAFT to DECIDED. P2's limits and the first increase question remain.
