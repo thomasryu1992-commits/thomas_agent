@@ -79,6 +79,7 @@ from .vocabulary import (
     REAL_LIVE_TRADING,
 )
 from . import pre_order_gate
+from .execution_stage import PURPOSE_AUTONOMOUS, PURPOSE_PROBE, required_stage, resolve_execution_stage
 # The order's shape at the venue (the request built from an intent, the venue's answer normalised, the
 # verdict on it, and the vocabulary they share) is `order_request`'s since crypto PR7e-4. This module
 # keeps the egress and the send-and-reconcile loop, and re-exports, as the same objects, the names the
@@ -221,6 +222,10 @@ ORDER_TRANSPORT = "ORDER_TRANSPORT"
 # send (PR6b, Thomas decision 47): see `control_refusal`. Nothing left, so there is nothing to
 # reconcile, and it carries no venue code, so the API error breaker does not count it.
 ORDER_HALTED = "ORDER_HALTED"
+# The execution stage refused an order that could add exposure, at the adapter, before the send (R2,
+# Thomas 2026-10-07): see `stage_refusal`. Like ORDER_HALTED: nothing left, nothing to reconcile, no
+# venue code for the API error breaker to count.
+ORDER_STAGE_REFUSED = "ORDER_STAGE_REFUSED"
 
 # Venue error codes, verified from its error-code reference (2026-07-25).
 VENUE_ORDER_DOES_NOT_EXIST = -2013      # a queried order is genuinely absent => NOT_FOUND
@@ -230,7 +235,11 @@ VENUE_UNKNOWN_ORDER = -2011             # a cancelled/filled/never-placed order 
 # unknown; execution status unknown"): none of them says the order was not applied.
 VENUE_UNKNOWN_OUTCOME_CODES = frozenset({-1000, -1001, -1006, -1007})
 # Refusals that happen before anything is sent, whatever the adapter.
-NOTHING_SENT_ERRORS = frozenset({MALFORMED_INTENT, NO_ORDER_API_KEY, "ORDER_HOST_NOT_ALLOWED", ORDER_HALTED})
+NOTHING_SENT_ERRORS = frozenset({MALFORMED_INTENT, NO_ORDER_API_KEY, "ORDER_HOST_NOT_ALLOWED", ORDER_HALTED,
+                                 ORDER_STAGE_REFUSED})
+# The decision-layer purposes that put a mainnet order on the venue. Each needs LIVE_AUTONOMOUS today;
+# the egress check admits an exposure-adding order only at a stage that admits one of them.
+LIVE_ENTRY_PURPOSES = (PURPOSE_AUTONOMOUS, PURPOSE_PROBE)
 
 
 def control_refusal(order_request: Mapping[str, Any], *, root: Path | None = None) -> str | None:
@@ -265,6 +274,37 @@ def control_refusal(order_request: Mapping[str, Any], *, root: Path | None = Non
         return ("a HARD halt is in effect: only reduceOnly and closePosition orders may be sent "
                 f"(stated reason: {state.reason})")
     return None
+
+
+def stage_refusal(order_request: Mapping[str, Any], *, root: Path | None = None,
+                  now: str | None = None) -> str | None:
+    """Why the execution stage refuses this mainnet order at egress, or None (R2, Thomas 2026-10-07).
+
+    The decision layer already judges the stage (`live_order.evaluate_live_order_guard`,
+    `pre_order_gate.approved_profile`). This is the last line: a caller that reaches the adapter
+    without that guard — a new path or a regression — still cannot send an order that could add
+    exposure below the stage a live entry needs. It replaces no gate; the guard, the control state,
+    the budget, the breakers and the armed set still apply where they did.
+
+    **An exit or a protection is never refused here, and the stage is not even read for one.** The
+    close path is stage-free by design (EXECUTION_STAGE_V0.1: the close guard, settlement, protection
+    and the emergency close must not read the stage), so a position can always be reduced. What
+    counts as one is the request's own shape (`is_protective_request`: ``reduceOnly`` true, or a
+    Close-All ``closePosition``), which the venue enforces — never the caller's word. Every other
+    request, including one whose shape does not prove it reduces, needs a stage that admits a live
+    entry. ``resolve_execution_stage`` never raises: a missing, tampered or unreadable record reads
+    READ_ONLY, which refuses."""
+    if is_protective_request(order_request):
+        return None
+    try:
+        stage = resolve_execution_stage(root, now=now or timeutil.utc_now_iso())
+    except Exception as exc:  # noqa: BLE001 — uncertainty about a safety state is not permission
+        return f"the execution stage could not be read ({type(exc).__name__})"
+    if any(stage.allows(purpose) for purpose in LIVE_ENTRY_PURPOSES):
+        return None
+    reads = stage.stage if stage.valid else f"READ_ONLY ({stage.reason_code})"
+    return (f"the execution stage reads {reads}, which sends no order that could add exposure on mainnet "
+            f"(needs {required_stage(PURPOSE_AUTONOMOUS)})")
 
 
 def submit_refused_outright(error: Any, detail: Any) -> bool:
@@ -747,10 +787,16 @@ class BinanceFuturesOrderAdapter(BinanceFuturesVenueReader):
 
         Before anything is signed, the runtime control state is asked whether this order may leave
         (`control_refusal`): an order that could add exposure is refused with ``ORDER_HALTED`` while
-        entries are not allowed. Exits and protection are never refused there."""
+        entries are not allowed. Then the execution stage (`stage_refusal`, R2): such an order is
+        refused with ``ORDER_STAGE_REFUSED`` below LIVE_AUTONOMOUS. Exits and protection are never
+        refused by either."""
         refusal = control_refusal(order_request, root=self._root)
         if refusal is not None:
             raise ToolError(ORDER_HALTED, f"order not sent: {refusal}")
+        # R2: and the execution stage, read here too, so the stage holds at egress whoever the caller.
+        refusal = stage_refusal(order_request, root=self._root)
+        if refusal is not None:
+            raise ToolError(ORDER_STAGE_REFUSED, f"order not sent: {refusal}")
         body, code = answer = self._signed_request(
             "POST",
             ALGO_ORDER_PATH if is_algo_request(order_request) else ORDER_PATH,
@@ -937,11 +983,12 @@ def submit_and_reconcile(
     try:
         submit_response = adapter.submit(request, timeout_seconds=timeout_seconds)
     except ToolError as exc:
-        if exc.reason_code == ORDER_HALTED:
-            # The adapter refused before its send (PR6b): nothing left, so there is nothing to ask
-            # the venue about. The entry leg gives the symbol back; the day's slot, the bar claim and
-            # the pre-order snapshot stay spent, as for any refusal after they were taken (PR2a).
-            raise SubmitRefused(ORDER_HALTED, getattr(exc, "reason", str(exc))) from exc
+        if exc.reason_code in (ORDER_HALTED, ORDER_STAGE_REFUSED):
+            # The adapter refused before its send (PR6b; the stage since R2): nothing left, so there is
+            # nothing to ask the venue about. The entry leg gives the symbol back; the day's slot, the
+            # bar claim and the pre-order snapshot stay spent, as for any refusal after they were taken
+            # (PR2a).
+            raise SubmitRefused(exc.reason_code, getattr(exc, "reason", str(exc))) from exc
         # A rejected OR ambiguous submit: do not assume nothing landed and do not blind-retry.
         # Reconcile by client_order_id below to learn the truth from the venue.
         submit_error = exc.reason_code
