@@ -73,6 +73,7 @@ def test_the_null_control_command_reads_the_ledger_archive_included(tmp_path, ca
     assert se.main(["null-control"], root=tmp_path) == 0
     out = capsys.readouterr().out
     assert "direction only" in out and "open_interest" in out and "BTCUSDT 1h" in out
+    assert "(2 cells)" in out
     assert se.main(["null-control", "--json"], root=tmp_path) == 0
     evidence = json.loads(capsys.readouterr().out)
     assert {g["timeframe"]: g["ahead"] for g in evidence["by_timeframe_lineages"]} == {"1h": 1, "4h": 0}

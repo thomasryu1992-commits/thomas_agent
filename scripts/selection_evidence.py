@@ -279,7 +279,10 @@ def _signed(value: float | None, digits: int = 3) -> str:
 def _print_null_control(evidence: Mapping[str, Any]) -> None:
     print("null-control (display only; direction only — no interval: one post-mint market per cell). "
           "Selected specs' net R per trade minus the median of 12 coin-flip entries through the same exits.")
-    print("  newest fire per cell: " + ", ".join(f"{k} {v[:16]}" for k, v in evidence["cells"].items()))
+    # The count first: a cell whose last fire is older than LOOKBACK_DAYS is not read, and a shrinking
+    # denominator must be visible rather than look like a quieter store.
+    print(f"  newest fire per cell ({len(evidence['cells'])} cells): "
+          + ", ".join(f"{k} {v[:16]}" for k, v in evidence["cells"].items()))
     for title, key in (("specs", "by_timeframe_specs"), ("lineages", "by_timeframe_lineages")):
         print(f"  by timeframe, {title}:")
         for g in evidence[key]:
