@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .allocation import unclassified_symbols
+from .allocation import BAND_GROUPS, CLASSES, unclassified_symbols
 from .model import HoldingsSnapshot
 
 # The aggregate view's keys, exactly. A test pins this set: a key added here is a decision about
@@ -174,10 +174,17 @@ _CLASS_LABELS = {
 }
 
 
+def _in_order(rows: dict[str, Any], order: Any) -> list[tuple[str, Any]]:
+    """The decided order, whatever order the rows arrive in: the store writes JSON with sorted keys, so a
+    stored block comes back alphabetical. A key outside ``order`` (an older or newer file) goes last."""
+    known = [(name, rows[name]) for name in order if name in rows]
+    return known + [(name, row) for name, row in rows.items() if name not in order]
+
+
 def render_allocation(block: dict[str, Any]) -> list[str]:
     """Q9: each class against its target and the 5/25 band. Display only: nothing alerts on it."""
     lines = ["--- allocation vs target (display only) ---"]
-    for name, row in (block.get("classes") or {}).items():
+    for name, row in _in_order(block.get("classes") or {}, CLASSES):
         target = row.get("target_pct")
         target_text = f"target {target:g}%" if isinstance(target, (int, float)) else "target n/a"
         weight = row.get("weight_pct")
@@ -190,7 +197,7 @@ def render_allocation(block: dict[str, Any]) -> list[str]:
     bands = block.get("bands")
     if isinstance(bands, dict):
         parts = []
-        for group, row in bands.items():
+        for group, row in _in_order(bands, BAND_GROUPS):
             mark = "OUT" if row.get("outside") else "ok"
             parts.append(f"{group} {row.get('target_pct'):g}+/-{row.get('band_pp'):g} {mark}")
         lines.append(f"{'bands':12}: " + "; ".join(parts))
