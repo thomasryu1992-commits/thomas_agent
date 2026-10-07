@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **57**건: `DRAFT` 1 · `PARTIALLY DECIDED` 4 · `DECIDED` 10 · `IMPLEMENTED` 36 · `SUPERSEDED` 1 · `RECORD` 5
+제안서 **58**건: `DRAFT` 2 · `PARTIALLY DECIDED` 4 · `DECIDED` 10 · `IMPLEMENTED` 36 · `SUPERSEDED` 1 · `RECORD` 5
 
-## Thomas 결정 대기 (5)
+## Thomas 결정 대기 (6)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -17,6 +17,7 @@
 | [EVALUATION_CANNOT_ACT_PER_STRATEGY_V0.1.md](EVALUATION_CANNOT_ACT_PER_STRATEGY_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-06 | §5 계보별 LIVE 허용치는 구현(`crypto/live_allowance.py`), 셋째 기준(예산 1/4)은 폐기 (2026-09-26). §8 D는 (i)로 결정·구현: 연속손실 브레이커의 래치는 의도이고, `crypto/guards.py`의 판정 옆에 그 이유와 푸는 방법을 적었다(Thomas 2026-10-06, 아래 결정 절). §8 B(복귀 경로), R값 없는 라이브 손실, 허용치의 net R 정렬은 첫 LIVE 무장 때 다룬다(지금 무장 0, 단계 PAPER). |
 | [PERSONAL_BRANDING_EXPANSION_HYPOTHESIS_V0.1.md](PERSONAL_BRANDING_EXPANSION_HYPOTHESIS_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-06 | B1(0단계 측정)은 결정되어 지어졌다: 10-11 주(10-12 보고)부터 주간 리뷰가 잰다. B2(1단계 시작 조건)·B3(관문 수치)은 §4 그대로 결정됐고(Thomas 2026-10-06), 주간 리뷰가 시작 조건 충족 여부를 계산해 보인다. 열린 항목은 B4 수익 기준이며, 2단계 관문을 넘은 시점에 정한다. |
 | [RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md](RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-06 | (a)(b)(d)는 첫 forward cohort 판정(2027-03-22) 때 묻는다. 그때까지 크립토 라이브는 LIVE_AUTONOMOUS로 올리지 않고 현재 값을 유지한다(Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q6). 관문이 "슬리피지 실측 뒤"에서 "첫 판정 때"로 바뀌어 순환이 없어졌다. **값은 하나도 바뀌지 않았다.** |
+| [TOTAL_ASSET_ALLOCATION_V0.1.md](TOTAL_ASSET_ALLOCATION_V0.1.md) | `DRAFT` | 2026-10-07 | 중립형 목표 비중(주식 40·채권 37·금 13·BTC 5·현금 5), 5/25 밴드 월 점검 리밸런싱, 계좌 배치를 제안한다. Q1–Q5 미결. 코드·스키마·상수·스케줄 변경 없음. |
 
 ## 결정됨 — 구현 남음 (10)
 
