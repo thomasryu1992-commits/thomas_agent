@@ -143,12 +143,10 @@ _GATE_ENV_VARS = (
     # explicit opt-in list, replacing their per-tier grants (without it, retiring grants
     # would have silently armed all three tiers — their fallback is degrade, not block).
     "MVP_OPENROUTER_TIERS",
-    # 2026-10-02: the holdings lane's KIS account read (P1 of MULTI_ASSET_EXPANSION_V0.1.md). Read-only,
-    # but inheriting it would build the real feed on the machine that holds the KIS key.
-    "MVP_KIS_ACCOUNT",
-    # Not an opt-in but its host selector (real/demo): stripped so an operator's `demo` cannot flip the
-    # host a test expects. A non-gate entry is a harmless no-op delenv, per the floor test's docstring.
-    "KIS_SERVER",
+    # 2026-10-02: the holdings lane's broker account read (P1 of MULTI_ASSET_EXPANSION_V0.1.md; KIS until
+    # Thomas moved it to Toss on 2026-10-07). Read-only, but inheriting it would build the real feed on
+    # the machine that holds the key — and a test that then issued a token would revoke the lane's.
+    "MVP_TOSS_ACCOUNT",
 )
 
 

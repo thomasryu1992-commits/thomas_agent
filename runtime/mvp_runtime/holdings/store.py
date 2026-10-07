@@ -1,28 +1,27 @@
-"""The holdings snapshot the doors serve — written by the lane that holds the KIS key.
+"""The holdings snapshot the doors serve — written by the lane that holds the broker key.
 
-P1-b of ``docs/proposals/MULTI_ASSET_EXPANSION_V0.1.md``. ``crypto/account_store.py``'s shape, for
-its reason: the doors (the operator's Telegram verb, the assistant's read bridge) hold no KIS key and
-must not, so they never call KIS. ``scheduler-maint`` holds the key (Thomas 2026-10-02: a holdings
-read is maintenance — late costs freshness, never money — and keeping the key there keeps it out of
-the container that holds the Binance order key). Its ``holdings_refresh`` fire reads the account and
-writes what it saw here, and the doors render this file. The figure is therefore as old as the last
-fire, and every render says how old.
+P1-b of ``docs/proposals/MULTI_ASSET_EXPANSION_V0.1.md``, ``crypto/account_store.py``'s shape for its
+reason: the doors (the operator's Telegram verb, the assistant's read bridge) hold no broker key and
+must not, so they never call the broker. ``scheduler-maint`` holds the key (Thomas 2026-10-02: a
+holdings read is maintenance — late costs freshness, never money — and keeping the key there keeps it
+out of the container that holds the Binance order key). Its ``holdings_refresh`` fire reads the Toss
+account (appendix B, 2026-10-07) and writes what it saw here, and the doors render this file. The
+figure is therefore as old as the last fire, and every render says how old.
 
 **Only the aggregate is ever written.** The file holds :func:`board.aggregate_view` and three stamps,
-nothing else. So no symbol, name or per-symbol number exists on disk, and any door that renders this
-file is inside the external-send boundary (appendix A, art. 5(3) of the KIS terms) without having to
-prove it reader by reader. The terminal's full board stays a live read through
-``scripts/holdings_board.py --full``.
+nothing else. So no symbol, name, per-symbol number or exchange rate exists on disk, and any door that
+renders this file is inside the external-send boundary by construction. The terminal's full board is
+a live read (``scripts/holdings_board.py --full``).
 
 **Two files, as ``account_store`` keeps them.** The snapshot is the last SUCCESSFUL read, and the mark
-is the last ATTEMPT. A failed read moves the mark and leaves the last good figure in place, so the
-board does not get worse in exactly the minute KIS is having a bad one.
+is the last ATTEMPT. A failed read moves the mark and leaves the last good figure in place.
 
-**One token per process, not per fire.** KIS sends the account holder a KakaoTalk notice on every
-token issuance. The scheduler runs this kind in its own process (only factory fires fork), so the
-capable feed is kept here between fires and its in-memory token serves every fire until it nears
-expiry: about one notice a day at any cadence. The cache is dropped the moment the gate no longer
-selects the capable feed. Revocation is unchanged: unset the variable and restart the container.
+**This lane is the one token issuer.** Toss allows one valid token per client, and issuing one revokes
+the previous one. The scheduler runs this kind in its own process (only factory fires fork), so the
+capable feed — and its in-memory token — is kept here between fires and serves until the token nears
+expiry. If something else issued a token for the same client meanwhile, the feed reissues once and
+retries once (``toss_account``). The cache is dropped the moment the gate no longer selects the
+capable feed. Revocation is unchanged: unset the variable and restart the container.
 
 A state file on ``account_store``'s precedent, not a ledger record: no closed schema is owed, and
 nothing judges by it.
@@ -38,13 +37,13 @@ from .. import timeutil
 from ..errors import ToolError
 from ..filelock import locked
 from ..paths import repo_root as _repo_root
-from .board import aggregate_view
-from .kis_account import KisHoldingsFeed, read_holdings, select_holdings_feed
+from .board import aggregate_view, render_view
+from .toss_account import TossHoldingsFeed, read_holdings, select_holdings_feed
 
 STATE_REL = ".runtime_governance_state/holdings"
 SNAPSHOT_FILENAME = "holdings_snapshot.json"
 REFRESH_MARK_FILENAME = "holdings_refresh.json"
-RECORD_TYPE = "holdings_snapshot.v0"
+RECORD_TYPE = "holdings_snapshot.v1"
 
 # When a rendered figure stops being a statement about now. Three hourly fires missed in a row.
 STALE_AFTER_SECONDS = 3 * 60 * 60
@@ -53,7 +52,7 @@ HOLDINGS_SNAPSHOT_MISSING = "HOLDINGS_SNAPSHOT_MISSING"
 HOLDINGS_SNAPSHOT_UNREADABLE = "HOLDINGS_SNAPSHOT_UNREADABLE"
 
 # The capable feed, kept between fires so its token is too (module docstring).
-_cached_feed: KisHoldingsFeed | None = None
+_cached_feed: TossHoldingsFeed | None = None
 
 
 def state_dir(root: Path | None = None) -> Path:
@@ -80,7 +79,7 @@ def _feed() -> Any:
     """The feed this fire reads through: the cached capable one while the gate still selects it."""
     global _cached_feed
     selected = select_holdings_feed()
-    if not isinstance(selected, KisHoldingsFeed):
+    if not isinstance(selected, TossHoldingsFeed):
         _cached_feed = None
         return selected
     if _cached_feed is None:
@@ -89,7 +88,7 @@ def _feed() -> Any:
 
 
 def refresh_snapshot(*, now: str, root: Path | None = None, timeout_seconds: int = 10) -> str:
-    """Read KIS once and store the aggregate. Returns a one-line status for the fire.
+    """Read the broker once and store the aggregate. Returns a one-line status for the fire.
 
     Never raises: a holdings read is bookkeeping, and a failure becomes a status string and a moved
     mark. A failed read keeps the previous snapshot."""
@@ -104,7 +103,7 @@ def refresh_snapshot(*, now: str, root: Path | None = None, timeout_seconds: int
         return f"holdings snapshot: read failed ({type(exc).__name__})"
     if snapshot is None:
         if reason == "NOT_CONFIGURED":
-            return "holdings snapshot: no KIS account configured"
+            return "holdings snapshot: no broker account configured"
         return f"holdings snapshot: degraded ({reason}); kept the previous one"
     body = dict(aggregate_view(snapshot))
     body["record_type"] = RECORD_TYPE
@@ -140,10 +139,6 @@ def _age_seconds(stamp: Any, now: str) -> float | None:
         return None
 
 
-def _krw(value: Any) -> str:
-    return "n/a" if not isinstance(value, (int, float)) else f"{value:,.0f} KRW"
-
-
 def load_holdings_view(*, now: str, root: Path | None = None) -> tuple[str, dict[str, Any]]:
     """The board the doors render, and its data. Opens no socket: it reads a file.
 
@@ -162,24 +157,8 @@ def load_holdings_view(*, now: str, root: Path | None = None) -> tuple[str, dict
                       "last_attempt": attempted}
     age = _age_seconds(body.get("as_of"), now)
     stale = age is None or age > STALE_AFTER_SECONDS
-    weights = body.get("weights") or {}
-
-    def line(label: str, key: str, weight_key: str) -> str:
-        weight = weights.get(weight_key)
-        share = f" ({weight:.1f}%)" if isinstance(weight, (int, float)) else ""
-        return f"{label:12}: {_krw(body.get(key))}{share}"
-
     age_text = "unknown age" if age is None else f"{int(age // 60)} min old"
-    lines = [
-        f"=== holdings {body.get('account', '****')} ({body.get('server', '?')}) ===",
-        line("domestic", "domestic_stock_krw", "domestic_stock"),
-        line("overseas", "overseas_stock_krw", "overseas_stock"),
-        line("krw cash", "krw_cash", "krw_cash"),
-        f"{'known total':12}: {_krw(body.get('known_total_krw'))}",
-        f"{'unrealized':12}: {_krw(body.get('unrealized_pnl_krw'))}",
-        f"{'holdings':12}: {body.get('holding_count', 'n/a')}",
-        f"{'as of':12}: {body.get('as_of')} ({age_text})",
-    ]
+    lines = render_view(body, stamp_line=f"{'as of':12}: {body.get('as_of')} ({age_text})")
     if stale:
         lines.append(f"{'STALE':12}: older than {STALE_AFTER_SECONDS // 3600} h; not a statement about now")
     lines.extend(f"{'note':12}: {note}" for note in body.get("notes") or [])

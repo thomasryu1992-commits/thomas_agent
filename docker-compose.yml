@@ -383,17 +383,16 @@ services:
       # is honest: two loops, two restarts, two diagnoses.
       MVP_OPERATOR_CHANNEL: ${MVP_OPERATOR_CHANNEL:-}
       TELEGRAM_BOT_TOKEN: ${HERMES_BOT_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}
-      # The holdings board's KIS account read (P1-b of MULTI_ASSET_EXPANSION_V0.1.md, Thomas
-      # 2026-10-02). The `holdings_refresh` fire is a maintenance kind, and this lane — not the
-      # risk lane — holds the key, so a brokerage key never sits next to the Binance order key.
-      # The key can also order (KIS has no read-only scope); the feed has no order method and
-      # reaches only the token endpoint and two balance inquiries. Unset = the inert feed.
-      MVP_KIS_ACCOUNT: ${MVP_KIS_ACCOUNT:-}
-      KIS_SERVER: ${KIS_SERVER:-}
-      KIS_APP_KEY: ${KIS_APP_KEY:-}
-      KIS_APP_SECRET: ${KIS_APP_SECRET:-}
-      KIS_ACCOUNT_NO: ${KIS_ACCOUNT_NO:-}
-      KIS_ACCOUNT_PRODUCT_CODE: ${KIS_ACCOUNT_PRODUCT_CODE:-}
+      # The holdings board's Toss Securities account read (P1-b of MULTI_ASSET_EXPANSION_V0.1.md;
+      # KIS replaced by Toss, Thomas 2026-10-07). The `holdings_refresh` fire is a maintenance kind,
+      # and this lane — not the risk lane — holds the key, so a brokerage key never sits next to the
+      # Binance order key. The client can also order (Toss has no read-only scope); the feed has no
+      # order method and reaches only the token endpoint and four reads. This lane is the client's
+      # one token issuer (Toss revokes the previous token on every issuance). Unset = the inert feed.
+      MVP_TOSS_ACCOUNT: ${MVP_TOSS_ACCOUNT:-}
+      TOSS_CLIENT_ID: ${TOSS_CLIENT_ID:-}
+      TOSS_CLIENT_SECRET: ${TOSS_CLIENT_SECRET:-}
+      TOSS_ACCOUNT_SEQ: ${TOSS_ACCOUNT_SEQ:-}
 
   # The read-only door. Same shape as `switch-bridge` and deliberately a second service:
   # different authority (INTERNAL_READ + kill_allows read_only_status, not the emergency

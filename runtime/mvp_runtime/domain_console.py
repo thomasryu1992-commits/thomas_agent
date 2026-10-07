@@ -59,7 +59,7 @@ from .errors import MvpRuntimeError, OperatorBlocked, ToolError
 # A ``pred`` verb (the PM1 observation report) stood beside this one until 2026-08-02,
 # when the prediction-market lane was removed — see ``docs/BUILD_HISTORY.md``.
 CRYPTO_COMMAND = "crypto"
-# The holdings board (P1-b of MULTI_ASSET_EXPANSION_V0.1.md, 2026-10-02): a KIS account's aggregate,
+# The holdings board (P1-b of MULTI_ASSET_EXPANSION_V0.1.md, 2026-10-02): the broker account's aggregate (Toss since 2026-10-07),
 # from the snapshot scheduler-maint wrote. Not a `/crypto` subcommand — it is not the crypto lane.
 HOLDINGS_COMMAND = "holdings"
 COMMANDS = frozenset({CRYPTO_COMMAND, HOLDINGS_COMMAND})
@@ -152,7 +152,7 @@ def _crypto_funds(*, now: str, root: Path | None) -> tuple[str, dict[str, Any]]:
 
 
 def _holdings_status(*, now: str, root: Path | None) -> tuple[str, dict[str, Any]]:
-    """The KIS account's aggregate, from the snapshot scheduler-maint wrote. Opens no socket.
+    """The broker account's aggregate, from the snapshot scheduler-maint wrote. Opens no socket.
 
     The file holds the aggregate alone — no symbol, no per-symbol number — so this reply is inside
     the external-send boundary by construction, which matters here: the read bridge hands it to the
