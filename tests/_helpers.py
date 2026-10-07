@@ -150,6 +150,18 @@ def record_venue_contract(root, symbols=("BTCUSDT",), *, verified_at, failed=())
     return record
 
 
+def live_stage_at_egress(monkeypatch):
+    """Read the execution stage as LIVE_AUTONOMOUS at the mainnet adapter's egress (R2, 2026-10-07).
+
+    The adapter reads the stage at every submit and refuses an exposure-adding order below
+    LIVE_AUTONOMOUS. A test about the adapter's transport, signing, breaker or halt uses this so it
+    tests what it names; the stage refusal itself is tested in
+    ``tests/test_mvp_runtime_crypto_egress_stage.py``, which never uses it."""
+    from runtime.mvp_runtime.crypto import live_execution
+
+    monkeypatch.setattr(live_execution, "resolve_execution_stage", lambda root=None, **_kw: gate_stage())
+
+
 def gate_stage():
     """A binding stage record at the live rung, with the approval the gate's profile requires."""
     from runtime.mvp_runtime.crypto.execution_stage import StageStatus

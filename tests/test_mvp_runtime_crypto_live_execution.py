@@ -16,7 +16,7 @@ import io
 import json
 
 import pytest
-from tests._helpers import FakeSnapshotStore, approved_snapshot, make_gate_authorization
+from tests._helpers import approved_snapshot, FakeSnapshotStore, live_stage_at_egress, make_gate_authorization
 
 from runtime.mvp_runtime.crypto import live_execution as lx
 from runtime.mvp_runtime.crypto.live_order import (
@@ -32,6 +32,14 @@ from runtime.mvp_runtime.crypto.live_pnl import (
 from runtime.mvp_runtime.crypto.order_request import ALGO_TYPE_CONDITIONAL, MISMATCH, NOT_FOUND, RECONCILED
 from runtime.mvp_runtime.errors import SafetyGateBlocked, ToolError
 from runtime.mvp_runtime.safety_gate import Authorization
+
+
+@pytest.fixture(autouse=True)
+def _live_stage_at_egress(monkeypatch):
+    """R2 (2026-10-07): the adapter reads the stage at egress. This file tests something else, so the
+    stage reads LIVE_AUTONOMOUS here; the stage refusal is tested in test_mvp_runtime_crypto_egress_stage.py."""
+    live_stage_at_egress(monkeypatch)
+
 
 NOW = "2026-07-25T00:00:00Z"
 APPROVED = {"approved": True}
