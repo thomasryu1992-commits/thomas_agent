@@ -477,8 +477,8 @@ Rows are keyed by the name in `.env` (what leaves the file), not by the containe
 
 | Secret in `.env` | Services in this compose file | Why there and nowhere else |
 |---|---|---|
-| `BINANCE_ACCOUNT_API_KEY` | `scheduler` | account snapshot for the readiness board — the risk lane only |
-| `BINANCE_ACCOUNT_API_SECRET` | `scheduler` | same |
+| `BINANCE_ACCOUNT_API_KEY` | `scheduler`, `scheduler-maint` | the risk lane's account snapshot for the readiness board; since 2026-10-07 also the holdings board's Binance spot + Simple Earn read on the maintenance lane (Thomas, option A — the key may carry futures permission at the venue, so the maintenance lane still gets no order key, no live switch and not the risk lane's account-feed selector) |
+| `BINANCE_ACCOUNT_API_SECRET` | `scheduler`, `scheduler-maint` | same |
 | `MVP_LIVE_ORDER_API_KEY` | `scheduler` | the live order path — the one service that may place an order |
 | `MVP_LIVE_ORDER_API_SECRET` | `scheduler` | same |
 | `MVP_TESTNET_ORDER_API_KEY` | `scheduler` | the signed testnet path (PR1d-1) — no real money, its own venue and its own key |

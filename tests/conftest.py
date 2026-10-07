@@ -147,6 +147,9 @@ _GATE_ENV_VARS = (
     # Thomas moved it to Toss on 2026-10-07). Read-only, but inheriting it would build the real feed on
     # the machine that holds the key — and a test that then issued a token would revoke the lane's.
     "MVP_TOSS_ACCOUNT",
+    # 2026-10-07: the holdings lane's Binance spot + Simple Earn read (appendix C). Read-only, but
+    # inheriting it would sign real requests with the venue key on the machine that holds it.
+    "MVP_BINANCE_WALLET",
 )
 
 

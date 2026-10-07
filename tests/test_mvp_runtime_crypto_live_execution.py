@@ -427,6 +427,8 @@ SIGNING_MODULES = {
     "runtime/mvp_runtime/crypto/testnet_execution.py": "the signed testnet adapter",
     "runtime/mvp_runtime/crypto/account.py": "the account feed, GET only (test_account_feed_has_no_order_capability)",
     "runtime/mvp_runtime/naver_research.py": "the Naver search API, not a venue",
+    # 2026-10-07 (Thomas, option A): the holdings lane's Binance wallet read — the account key pair, GET only.
+    "runtime/mvp_runtime/holdings/binance_wallet.py": "the holdings wallet read, GET only",
 }
 # Of those, the ones that send a write. Every other signer sends only GETs.
 VENUE_WRITERS = {

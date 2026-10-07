@@ -37,7 +37,7 @@ from .. import timeutil
 from ..errors import ToolError
 from ..filelock import locked
 from ..paths import repo_root as _repo_root
-from . import combined
+from . import binance_wallet, combined
 from .board import aggregate_view, render_view
 from .toss_account import TossHoldingsFeed, read_holdings, select_holdings_feed
 
@@ -115,9 +115,17 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
     body["as_of"] = snapshot.collected_at or now
     body["written_at"] = now
     base = root if root is not None else _repo_root()
+    # The Binance spot wallet and Simple Earn (appendix C), behind their own gate. A failure here costs
+    # the combined total its completeness, never the Toss snapshot.
+    try:
+        wallet, wallet_reason = binance_wallet.read_wallet()
+    except Exception as exc:  # noqa: BLE001 — see the docstring
+        wallet, wallet_reason = None, type(exc).__name__
+    wallet_status = (combined.WALLET_NOT_CONFIGURED if wallet is None and wallet_reason == "NOT_CONFIGURED"
+                     else f"failed ({wallet_reason})" if wallet is None else combined.WALLET_OK)
     try:
         block = combined.combine(body, usd_krw_rate=snapshot.usd_krw_rate, root=base, now=now,
-                                 state_dir=state_dir(root))
+                                 state_dir=state_dir(root), wallet=wallet, wallet_status=wallet_status)
     except Exception as exc:  # noqa: BLE001 — the combined total must not cost the Toss snapshot
         block = None
         combined_note = f"combined not computed ({type(exc).__name__})"
