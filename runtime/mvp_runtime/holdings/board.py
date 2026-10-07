@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .allocation import unclassified_symbols
 from .model import HoldingsSnapshot
 
 # The aggregate view's keys, exactly. A test pins this set: a key added here is a decision about
@@ -120,6 +121,11 @@ def render_view(view: dict[str, Any], *, stamp_line: str) -> list[str]:
     block = view.get("combined")
     if isinstance(block, dict):
         lines.extend(render_combined(block))
+    allocation = view.get("allocation")
+    if isinstance(allocation, dict):
+        lines.extend(render_allocation(allocation))
+    elif "allocation" in view:
+        lines.append(f"{'allocation':12}: not computed this fire (see the scheduler log)")
     return lines
 
 
@@ -157,6 +163,43 @@ def render_combined(block: dict[str, Any]) -> list[str]:
     ]
 
 
+_CLASS_LABELS = {
+    "global_equity": "global eq",
+    "domestic_equity": "domestic eq",
+    "bonds": "bonds",
+    "gold": "gold",
+    "coin": "coin spot",
+    "cash": "cash",
+    "engine_margin": "engine mgn",
+}
+
+
+def render_allocation(block: dict[str, Any]) -> list[str]:
+    """Q9: each class against its target and the 5/25 band. Display only: nothing alerts on it."""
+    lines = ["--- allocation vs target (display only) ---"]
+    for name, row in (block.get("classes") or {}).items():
+        target = row.get("target_pct")
+        target_text = f"target {target:g}%" if isinstance(target, (int, float)) else "target n/a"
+        weight = row.get("weight_pct")
+        share = (f"{weight:.1f}% / {target_text}, {row.get('drift_pp'):+.1f}pp"
+                 if isinstance(weight, (int, float)) else f"{target_text}")
+        lines.append(f"{_CLASS_LABELS.get(name, name):12}: {krw(row.get('krw'))} ({share})")
+    if block.get("unclassified_count"):
+        lines.append(f"{'unclassified':12}: {krw(block.get('unclassified_krw'))} "
+                     f"({block.get('unclassified_count')}; codes on the full board)")
+    bands = block.get("bands")
+    if isinstance(bands, dict):
+        parts = []
+        for group, row in bands.items():
+            mark = "OUT" if row.get("outside") else "ok"
+            parts.append(f"{group} {row.get('target_pct'):g}+/-{row.get('band_pp'):g} {mark}")
+        lines.append(f"{'bands':12}: " + "; ".join(parts))
+    if block.get("cash_stablecoin_krw"):
+        lines.append(f"{'cash note':12}: includes exchange stablecoins {krw(block.get('cash_stablecoin_krw'))}")
+    lines.extend(f"{'note':12}: {note}" for note in block.get("notes") or [])
+    return lines
+
+
 def render_aggregate(snapshot: HoldingsSnapshot | None, *, reason_code: str | None = None) -> str:
     """The board that may leave the process. Built only from :func:`aggregate_view`."""
     if snapshot is None:
@@ -182,5 +225,8 @@ def render_full(snapshot: HoldingsSnapshot | None, *, reason_code: str | None = 
             f"{holding.market:9} {holding.symbol:12} {holding.name} qty {quantity} "
             f"value {value} {holding.currency} upnl {pnl}"
         )
+    missing = unclassified_symbols(snapshot)
+    if missing:
+        lines.append(f"{'unclassified':12}: {', '.join(missing)} (add to holdings/allocation.py CLASSIFICATION)")
     lines.extend(f"WARNING     : {warning}" for warning in snapshot.warnings)
     return "\n".join(lines)

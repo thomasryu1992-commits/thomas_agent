@@ -37,7 +37,7 @@ from .. import timeutil
 from ..errors import ToolError
 from ..filelock import locked
 from ..paths import repo_root as _repo_root
-from . import binance_wallet, combined
+from . import allocation, binance_wallet, combined
 from .board import aggregate_view, render_view
 from .toss_account import TossHoldingsFeed, read_holdings, select_holdings_feed
 
@@ -132,6 +132,13 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
     else:
         combined_note = f"combined {block['drawdown_state']}"
     body["combined"] = block
+    # Q9 (TOTAL_ASSET_ALLOCATION §11.1): class totals against the target, display only. Same rule as
+    # the combined total: a failure costs the board this block, never the Toss snapshot.
+    try:
+        body["allocation"] = allocation.allocate(snapshot, body, block)
+    except Exception as exc:  # noqa: BLE001 — see the comment above
+        body["allocation"] = None
+        combined_note += f"; allocation not computed ({type(exc).__name__})"
     try:
         _write_json(snapshot_path(root), body, code="HOLDINGS_SNAPSHOT_LOCKED", label="holdings snapshot")
     except Exception as exc:  # noqa: BLE001 — see the docstring

@@ -31,7 +31,7 @@ import pytest
 
 from runtime.mvp_runtime import domain_console, read_bridge, schedule_delegation, scheduler
 from runtime.mvp_runtime.errors import SafetyGateBlocked, ToolError
-from runtime.mvp_runtime.holdings import board, combined, store, toss_account
+from runtime.mvp_runtime.holdings import allocation, board, combined, store, toss_account
 from runtime.mvp_runtime.holdings.model import NoHoldingsFeed
 from runtime.mvp_runtime.holdings.toss_account import (
     ACCOUNTS_PATH,
@@ -469,8 +469,11 @@ def test_the_snapshot_holds_the_aggregate_and_nothing_else(monkeypatch, gate_ope
     assert store.refresh_snapshot(now=NOW, root=tmp_path).startswith("holdings snapshot: refreshed")
     raw = store.snapshot_path(tmp_path).read_text(encoding="utf-8")
     body = json.loads(raw)
-    assert set(body) == board.AGGREGATE_KEYS | {"record_type", "as_of", "written_at", "combined"}
+    assert set(body) == board.AGGREGATE_KEYS | {"record_type", "as_of", "written_at", "combined", "allocation"}
     assert set(body["combined"]) == combined.COMBINED_KEYS
+    assert set(body["allocation"]) == allocation.ALLOCATION_KEYS
+    for row in body["allocation"]["classes"].values():
+        assert set(row) == allocation.CLASS_ROW_KEYS
     assert _revealed(raw) == []
     assert _leaks(raw) == []
 
@@ -796,3 +799,107 @@ def test_reset_peak_refuses_a_foreign_root_run(monkeypatch, tmp_path):
     monkeypatch.setattr(store, "_repo_root", lambda: tmp_path)
     from runtime.mvp_runtime.cli_common import EXIT_BLOCKED
     assert holdings_board.main(["--reset-peak"]) == EXIT_BLOCKED
+
+
+# --- Q9: allocation against the target, display only (TOTAL_ASSET_ALLOCATION §11.1) ----------------
+
+from runtime.mvp_runtime.holdings import binance_wallet  # noqa: E402
+
+FUTURES_OK = {"crypto_status": "ok", "crypto_futures_krw": 0.0, "crypto_wallet_status": "not_configured",
+              "crypto_classes_krw": None}
+
+
+def test_the_targets_and_bands_are_the_decided_ones():
+    assert sum(allocation.TARGET_PCT.values()) == 100.0
+    assert set(allocation.TARGET_PCT) == set(allocation.CLASSES)
+    assert {g: allocation.band_pp(sum(allocation.TARGET_PCT[c] for c in m))
+            for g, m in allocation.BAND_GROUPS.items()} == {
+        "equity": 5.0, "bonds": 5.0, "gold": 3.25, "coin": 0.625, "engine_margin": 0.0}
+    assert allocation.CASH not in {c for m in allocation.BAND_GROUPS.values() for c in m}  # §6: no cash band
+
+
+def test_the_table_ships_empty_and_maps_only_known_classes():
+    assert dict(allocation.CLASSIFICATION) == {}                       # Thomas 2026-10-07
+    assert set(allocation.WALLET_CLASS_MAP) == set(binance_wallet.CLASSES) - {binance_wallet.CLASS_OTHER}
+    assert allocation.WALLET_CLASS_MAP[binance_wallet.CLASS_STABLE] == allocation.CASH   # Thomas 2026-10-07
+
+
+def test_an_unclassified_symbol_gives_a_partial_total_and_no_verdict(monkeypatch, gate_open):
+    snapshot = _snapshot(monkeypatch)
+    block = allocation.allocate(snapshot, board.aggregate_view(snapshot), FUTURES_OK)
+    assert set(block) == allocation.ALLOCATION_KEYS
+    assert block["complete"] is False and block["bands"] is None and block["outside_band"] is None
+    assert block["unclassified_count"] == 2
+    assert block["unclassified_krw"] == 7_200_000 + 1785 * 1375
+    assert block["classes"]["cash"]["krw"] == 5_000_000 + 100 * 1375
+    assert all(row["weight_pct"] is None for row in block["classes"].values())
+    assert "no band verdict" in block["notes"][0]
+    assert any("gate off" in note for note in block["notes"])
+
+
+def _classified(monkeypatch):
+    monkeypatch.setattr(allocation, "CLASSIFICATION",
+                        {"005930": allocation.DOMESTIC_EQUITY, "AAPL": allocation.GLOBAL_EQUITY})
+
+
+def test_a_complete_total_judges_each_band(monkeypatch, gate_open):
+    _classified(monkeypatch)
+    snapshot = _snapshot(monkeypatch)
+    wallet = {"crypto_status": "ok", "crypto_futures_krw": 1_000_000.0, "crypto_wallet_status": "ok",
+              "crypto_classes_krw": {"btc": 300_000.0, "eth": 100_000.0, "stable": 200_000.0, "other": 0.0}}
+    block = allocation.allocate(snapshot, board.aggregate_view(snapshot), wallet)
+    total = TOSS_TOTAL + 1_000_000 + 600_000
+    assert block["complete"] is True and block["total_krw"] == total
+    assert block["classes"]["coin"]["krw"] == 400_000                  # BTC and ETH
+    assert block["classes"]["cash"]["krw"] == 5_000_000 + 100 * 1375 + 200_000
+    assert block["cash_stablecoin_krw"] == 200_000
+    assert round(sum(r["weight_pct"] for r in block["classes"].values())) == 100
+    bands = block["bands"]
+    assert set(bands["equity"]) == allocation.BAND_ROW_KEYS
+    assert bands["engine_margin"]["outside"] is True                   # target 0: any margin is drift (Q10)
+    assert any("target is 0% by decision" in note for note in block["notes"])
+    assert bands["bonds"]["outside"] is True and bands["bonds"]["drift_pp"] == -37.0
+    assert block["outside_band"] == [g for g, r in bands.items() if r["outside"]]
+
+
+@pytest.mark.parametrize("change, gap", [
+    ({"crypto_status": "stale"}, "binance futures stale"),
+    ({"crypto_wallet_status": "failed (BINANCE_REJECTED)"}, "binance wallet failed"),
+    ({"crypto_wallet_status": "ok", "crypto_classes_krw": {"other": 5.0}}, "1 unclassified"),
+])
+def test_any_missing_part_withholds_the_verdict(monkeypatch, gate_open, change, gap):
+    _classified(monkeypatch)
+    snapshot = _snapshot(monkeypatch)
+    block = allocation.allocate(snapshot, board.aggregate_view(snapshot), {**FUTURES_OK, **change})
+    assert block["complete"] is False and block["outside_band"] is None
+    assert gap in block["notes"][0]
+
+
+def test_a_usd_holding_without_a_rate_withholds_the_verdict(monkeypatch, gate_open):
+    import dataclasses
+
+    _classified(monkeypatch)
+    snapshot = dataclasses.replace(_snapshot(monkeypatch), usd_krw_rate=None)
+    block = allocation.allocate(snapshot, board.aggregate_view(snapshot), FUTURES_OK)
+    assert block["complete"] is False and "rate unread" in block["notes"][0]
+
+
+def test_the_codes_to_classify_are_named_on_the_terminal_board_only(monkeypatch, gate_open, tmp_path):
+    snapshot = _snapshot(monkeypatch)
+    assert "005930, AAPL (add to holdings/allocation.py CLASSIFICATION)" in board.render_full(snapshot)
+    _binance_file(tmp_path, margin=100.0, monkeypatch=monkeypatch)
+    store.refresh(now=NOW, root=tmp_path)
+    text, data = store.load_holdings_view(now=NOW, root=tmp_path)
+    assert "allocation vs target (display only)" in text and "codes on the full board" in text
+    assert _revealed(text + json.dumps(data, ensure_ascii=False)) == []
+
+
+def test_a_band_outside_never_alerts(monkeypatch, gate_open, tmp_path):
+    """Q2 and Q4 were dropped as limits (2026-10-07): an outside band is a board fact, not a message."""
+    _classified(monkeypatch)
+    _binance_file(tmp_path, margin=100.0, monkeypatch=monkeypatch)
+    _toss(monkeypatch)
+    result = store.refresh(now=NOW, root=tmp_path)
+    block = json.loads(store.snapshot_path(tmp_path).read_text(encoding="utf-8"))["allocation"]
+    assert block["complete"] is True and block["outside_band"]
+    assert result["alert"] is None
