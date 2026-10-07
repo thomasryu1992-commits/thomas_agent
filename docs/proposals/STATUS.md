@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **60**건: `DRAFT` 2 · `PARTIALLY DECIDED` 5 · `DECIDED` 10 · `IMPLEMENTED` 36 · `SUPERSEDED` 1 · `RECORD` 6
+제안서 **60**건: `DRAFT` 2 · `PARTIALLY DECIDED` 4 · `DECIDED` 11 · `IMPLEMENTED` 36 · `SUPERSEDED` 1 · `RECORD` 6
 
-## Thomas 결정 대기 (7)
+## Thomas 결정 대기 (6)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -18,9 +18,8 @@
 | [PERSONAL_BRANDING_EXPANSION_HYPOTHESIS_V0.1.md](PERSONAL_BRANDING_EXPANSION_HYPOTHESIS_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-06 | B1(0단계 측정)은 결정되어 지어졌다: 10-11 주(10-12 보고)부터 주간 리뷰가 잰다. B2(1단계 시작 조건)·B3(관문 수치)은 §4 그대로 결정됐고(Thomas 2026-10-06), 주간 리뷰가 시작 조건 충족 여부를 계산해 보인다. 열린 항목은 B4 수익 기준이며, 2단계 관문을 넘은 시점에 정한다. |
 | [RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md](RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-06 | (a)(b)(d)는 첫 forward cohort 판정(2027-03-22) 때 묻는다. 그때까지 크립토 라이브는 LIVE_AUTONOMOUS로 올리지 않고 현재 값을 유지한다(Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q6). 관문이 "슬리피지 실측 뒤"에서 "첫 판정 때"로 바뀌어 순환이 없어졌다. **값은 하나도 바뀌지 않았다.** |
 | [SELECTION_EVIDENCE_V0.1.md](SELECTION_EVIDENCE_V0.1.md) | `DRAFT` | 2026-10-07 | 이미 쌓인 기록 두 가지(`crypto_null_control`의 생성 후 구간, cohort 멤버와 쌍둥이의 쌍)로 선정이 동전 던지기를 이기는지 쟀다. 계보 단위로 1h는 동전 던지기 수준(−0.031R, 40계보 중 18개 우위), 4h는 조금 아래(−0.044R, 75계보 중 28개)다. 1d 쌍 차이는 −0.711R [−1.282, −0.140]다. 계층 판정 1단계를 미리 돌려 보니 어느 타임프레임에서도 통과한 family가 없고, 보정 시험의 거짓 통과율은 q 이하였다. 결정 대기: H1(S1 실행 조건), H2(계층 판정 1단계와 family 분류를 1차 cohort 마감 판정의 규칙으로 미리 정하는가). 판정·문·보드·순위·상수·스케줄은 바꾸지 않았다. |
-| [TOTAL_ASSET_ALLOCATION_V0.1.md](TOTAL_ASSET_ALLOCATION_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-07 | Q1·Q2·Q4 권고대로 채택(중립형 배분, 5/25 밴드 월 점검, BTC 위험 기여도 상한 25%). Q3은 권고와 달리 토스 하나로 유지한다(세금 마찰 +0.20%p를 받아들임, 토스 ISA 출시 때 재검토). 금은 토스증권의 금 ETF로 담는다(KRX 금현물 미제공, 2026-10-07). Q5는 엔진 비중 0%에서 시작해 고도화 후 증거에 따라 늘리는 방향이며, 연구 일시 중지(D3)는 풀지 않는다. 실데이터 검증(`TOTAL_ASSET_ALLOCATION_VALIDATION_V0.1.md`) 뒤 Q6–Q10이 열렸다(§11): BTC 비중, 국내주식 비중, 국고채 만기, 목표 대비 이탈 표시의 범위, BTC 현물·바이낸스 잔고를 보드 어디에 둘지. 남은 것: 밴드·상한을 P2의 한도로 짓는 일, Q5의 첫 증액 질문(cohort 1 판정, 2027-03-22). 코드·스키마·상수·스케줄 변경 없음. |
 
-## 결정됨 — 구현 남음 (10)
+## 결정됨 — 구현 남음 (11)
 
 결정은 끝났고 결정된 것이 아직 다 지어지지 않았다. 결정이 만든 구현 대기열이다.
 
@@ -36,6 +35,7 @@
 | [RESEARCH_EPOCH_V0.1.md](RESEARCH_EPOCH_V0.1.md) | `DECIDED` | 2026-10-06 | Q1·Q2 구현(#972·#976). Q3 B(2026-09-26), 경계는 cohort 마감마다: 첫 경계는 1차 cohort 마감 2027-03-22, 이후 각 cohort의 마감(동결 + 180일)이다(Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q5). Q4는 C로 정리됐다. 남은 구현: 두 판정의 병렬 표시 — 규칙이 처음 바뀌는 경계에서 짓는다. |
 | [RESEARCH_FORWARD_THROUGHPUT_ANALYSIS_V0.1.md](RESEARCH_FORWARD_THROUGHPUT_ANALYSIS_V0.1.md) | `DECIDED` | 2026-10-06 | P0-1(D3 범위) 결정(2026-10-01), P1-1(형제 규칙) 결정·구현(#1096·#1100). 나머지는 권고 순서대로 결정했고(Thomas 2026-10-06), D3가 허용하는 측정·표시 넷을 지었다: P0-2 주석 정정(#1137), P0-3 진입 거절 사유 카운터(#1139), P1-2 보고서 행 색인(#1138), P1-3 쌍 차이 표시(#1140). 남은 것은 관문이 있는 둘이다: P1-4 계층 판정 제안서(2027-03-22 전), P2(판정 뒤). |
 | [MULTI_ASSET_EXPANSION_V0.1.md](MULTI_ASSET_EXPANSION_V0.1.md) | `DECIDED` | 2026-10-07 | D1–D4 결정(2026-10-02): (A) 자산 관리 먼저, 옵션은 조건부, 읽기 전용 보드는 연구 일시 중지 중 허용. **2026-10-07 Thomas: 첫 계좌를 한국투자증권에서 토스증권으로 바꾼다(토스만 쓴다).** 부록 B(토스증권 규제 기록)가 완성됐다(본인 계좌 조회 운영 가능, 강도 잠정, 허용 IP 등록됨). 토스 피드(`holdings/toss_account.py`)가 지어졌고, KIS 피드와 compose의 KIS 변수는 같은 PR에서 통째로 제거됐다. 부록 A(KIS)는 결정 기록으로 남는다. P1-a·P1-b의 렌더·저장·`/holdings` verb·scheduler-maint 배선은 그대로 쓴다. 켜는 것은 배포와 `holdings_refresh` 일정 등록(Thomas)을 기다린다. 키는 `.env`에 들어갔다(2026-10-07). §6 D2 비교 기준 비준은 P4 때 한다. IV–RV 측정은 연구 일시 중지의 예외로 허용됐다 (2026-10-06, 아래 결정 절). |
+| [TOTAL_ASSET_ALLOCATION_V0.1.md](TOTAL_ASSET_ALLOCATION_V0.1.md) | `DECIDED` | 2026-10-07 | Q1–Q10 결정. Q1·Q2·Q4 권고대로(중립형 배분, 5/25 밴드 월 점검, BTC 위험 기여도 상한 25%). Q3은 권고와 달리 토스 하나로 유지하고, 금은 토스증권 금 ETF로 담는다. Q5는 엔진 비중 0%에서 시작해 증거에 따라 늘리며 연구 일시 중지(D3)는 풀지 않는다. 실데이터 검증(`TOTAL_ASSET_ALLOCATION_VALIDATION_V0.1.md`) 뒤 Q6–Q10도 권고대로 결정했다 (§11): BTC 5 → 2.5%(줄인 몫은 현금), 국내주식 10% 유지, 국고채 3년 중심, 목표 대비 이탈은 표시만(D4 안), BTC 현물은 수동 입력·바이낸스 잔고는 목표 0%의 "엔진 증거금". 현재 목표: 주식 40·국고채 37·금 13·BTC 2.5·현금 7.5. 남은 것: 이탈 표시를 짓는 일(§11.1), 밴드·상한을 P2의 한도로 짓는 일, Q5의 첫 증액 질문(cohort 1 판정, 2027-03-22). 코드·스키마·상수·스케줄 변경 없음. |
 
 ## 구현됨 (36)
 

@@ -34,3 +34,12 @@
   - Q9, drift display: display only, inside D4.
   - Q10, where BTC spot and the Binance balance sit on the board: manual entry first; Binance as an "engine margin" class with a
     0% target.
+- **Decided in the same PR (Thomas 2026-10-07): Q6–Q10 as recommended.**
+  - BTC goes from 5% to 2.5%, and the freed 2.5% goes to cash.
+  - Korean equity stays at 10% until the annual review.
+  - KTBs move to 3-year.
+  - The drift display is display-only, inside D4; it is built in a separate PR.
+  - BTC spot is entered by hand, and the Binance balance shows as "engine margin" against a 0% target.
+  - The target is now equities 30/10, KTB 37, gold 13, BTC 2.5, cash 7.5. The allocation doc moves to DECIDED.
+  - On the historical path the decided mix returned 8.85%/yr against 9.90%, with a 9.3% max drawdown against 11.1%. The gap is this
+    sample's 60%/yr BTC. Trades stay at 2.2 a year even though BTC's band narrows to ±0.625%p.
