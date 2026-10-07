@@ -422,3 +422,22 @@ def test_the_holdings_lane_imports_nothing_from_crypto():
 
 def test_the_repeated_names_agree_with_crypto():
     assert (API_KEY_ENV, API_SECRET_ENV) == (crypto_account.ACCOUNT_API_KEY_ENV, crypto_account.ACCOUNT_API_SECRET_ENV)
+
+
+def test_the_gate_on_without_the_key_reads_nothing_and_the_total_is_incomplete(monkeypatch, tmp_path):
+    """H1-a (2026-10-07): scheduler-maint no longer receives the account key pair. Switching the wallet
+    gate on there before a dedicated read-only key exists (H1-b) must read nothing — no socket — and
+    cost the combined total its completeness, never move the peak."""
+    monkeypatch.setenv(BINANCE_WALLET_ENV, BINANCE_WALLET_ON)
+    monkeypatch.delenv(API_KEY_ENV, raising=False)
+    monkeypatch.delenv(API_SECRET_ENV, raising=False)
+
+    def _no_socket(*_a, **_k):
+        raise AssertionError("a socket was opened without a key")
+
+    monkeypatch.setattr(binance_wallet.urllib.request, "urlopen", _no_socket)
+    assert binance_wallet.read_wallet() == (None, "NO_API_KEY")
+    _futures_file(tmp_path)
+    block = _combine(tmp_path, None, "failed (NO_API_KEY)")
+    assert block["complete"] is False and block["drawdown_state"] == combined.STATE_UNKNOWN
+    assert not (tmp_path / "h" / combined.PEAK_FILENAME).exists()
