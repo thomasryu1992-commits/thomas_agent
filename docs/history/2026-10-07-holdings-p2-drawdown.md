@@ -1,7 +1,10 @@
 # P2: the Toss and Binance accounts as one KRW total, with an alert-only drawdown line at -20% from peak
 
 - **The decision (Thomas 2026-10-07):** alert only. The drawdown limit is -20% from peak, there is no
-  asset-class weight cap, and USDT is converted at Toss's display mid-rate (USDT taken as 1 USD). The
+  weight cap on the Binance futures balance, and USDT is converted at Toss's display mid-rate (USDT
+  taken as 1 USD). The same day's `TOTAL_ASSET_ALLOCATION_V0.1.md` keeps its 5/25 bands (Q2) and BTC
+  risk-contribution cap (Q4) as P2's other limit candidates, awaiting their own approval. This PR
+  builds neither, and does not build the drift display (its Q9). The
   P2 gate "P1 operation record" was waived, because P1 had run about an hour when Thomas asked for it.
 - **What this delivers:** `holdings/combined.py`.
   - The `holdings_refresh` fire reads the Binance futures snapshot file
