@@ -94,6 +94,11 @@
 - **Q4. 자산 통합 보드의 합산 위치.** 권고: `holdings/`가 스케줄러가 이미 쓰는 `crypto_funds` 스냅샷 **파일**을 읽는다. 패키지 import가 아니므로 D4(`crypto/`는 `holdings/`를 import하지 않는다)와 격리 시험이 그대로다. KIS 보드를 켠 뒤 P2 설계 때 정한다.
   → **결정 (Thomas 2026-10-06): 권고대로. 짓는 것은 P2 때.**
   - **방향:** 통합 보드의 합산은 `holdings/`가 한다. 바이낸스 쪽은 스케줄러가 이미 쓰는 스냅샷 **파일**로 읽는다. `holdings/`와 `crypto/`는 서로를 import하지 않는다. `crypto/`→`holdings/`는 D4가 이미 막고 있고, 반대 방향도 이 결정으로 열지 않는다. 그래서 통합 보드는 실거래 경로의 어떤 모듈도 로드하지 않는다. 바이낸스 키를 가진 프로세스와 KIS 키를 가진 프로세스도 섞이지 않는다.
+  - **정정 (Thomas 2026-10-07, A안):** "바이낸스 키를 가진 프로세스와 KIS 키를 가진 프로세스도 섞이지 않는다"는 문장은 더는 사실이 아니다.
+    바이낸스 현물·Simple Earn 합산(`MULTI_ASSET_EXPANSION_V0.1.md` 부록 C)을 위해 계정 키 쌍(`BINANCE_ACCOUNT_API_KEY` / `_SECRET`)이
+    scheduler-maint에도 간다. 이 문장이 실제로 지키던 것, 곧 **주문 키와 실거래 스위치는 위험 레인에만 둔다**는 성질은 그대로이고
+    배포 테스트가 고정한다. 대가는 그 키가 거래소에서 선물 권한을 가질 수 있다는 점이며, 부록 C 결정 절에 적었다.
+    패키지 방향(`holdings/`↔`crypto/` import 없음)과 파일로 합산하는 방식은 바뀌지 않았다.
   - **전제 확인 [확인] 2026-10-06:**
     - 파일은 `.runtime_governance_state/crypto/account_snapshot.json`(`account_snapshot.v0`)이다.
     - 스케줄러가 15분마다 쓰고(`account_store.REFRESH_AFTER_SECONDS`), 확인 시점에 갱신 0분 전이었다.

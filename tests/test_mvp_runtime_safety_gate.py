@@ -243,6 +243,10 @@ def test_the_env_only_gate_has_exactly_the_capabilities_thomas_named():
         # account read — KIS, replaced by Toss on 2026-10-07. Its own opt-in and provider id,
         # deliberately NOT behind MVP_ACCOUNT_FEED — that seam is the live money path's account.
         "runtime/mvp_runtime/holdings/toss_account.py",  # the Toss holdings feed (KIS until 2026-10-07)
+        # Added 2026-10-07 (Thomas, appendix C of MULTI_ASSET_EXPANSION_V0.1.md): the holdings lane's Binance
+        # spot + Simple Earn read and the public price list. Its own opt-in and provider id; the key
+        # pair is shared with the account feed by decision (option A), the order surface is not.
+        "runtime/mvp_runtime/holdings/binance_wallet.py",  # the Binance wallet feed
     }, callers
 
 

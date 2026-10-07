@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **657** distinct codes across **1285** raise sites
+- **658** distinct codes across **1291** raise sites
 - **23** exception classes carry them
 - **75** codes are raised from more than one module (see below)
 - **138** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -47,14 +47,14 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `LIVE_HISTORY_TAMPERED` | `live_ledger.py`, `live_pnl.py` |
 | `MALFORMED_DIRECTION` | `live_order.py`, `live_position.py` |
 | `MALFORMED_REQUEST` | `bridge_idempotency.py`, `dispatch_bridge.py`, `knowledge_bridge.py`, `pipeline_worker.py`, `read_bridge.py`, `socket_door.py`, `switch_bridge.py` |
-| `MALFORMED_RESULT` | `account.py`, `market_data.py`, `toss_account.py`, `naver_research.py`, `tools.py` |
+| `MALFORMED_RESULT` | `account.py`, `market_data.py`, `binance_wallet.py`, `toss_account.py`, `naver_research.py`, `tools.py` |
 | `MISSING_OPERATOR` | `memory.py`, `program_request.py`, `programization.py` |
 | `MISSING_REASON` | `memory.py`, `memory_console.py`, `program_request.py`, `programization.py` |
 | `MISSING_SYMBOL` | `live_order.py`, `live_position.py` |
 | `NOT_APPROVED` | `approval.py`, `switch_bridge.py` |
 | `NOT_A_CANDIDATE` | `memory.py`, `planner.py` |
 | `NOT_BOUND` | `assignment.py`, `permission.py`, `validator.py`, `worker.py` |
-| `NO_API_KEY` | `account.py`, `market_data.py`, `toss_account.py`, `naver_research.py`, `providers.py`, `tools.py` |
+| `NO_API_KEY` | `account.py`, `market_data.py`, `binance_wallet.py`, `toss_account.py`, `naver_research.py`, `providers.py`, `tools.py` |
 | `NO_MODEL_BUDGET` | `validator.py`, `worker.py` |
 | `NO_ORDER_API_KEY` | `live_execution.py`, `testnet_execution.py` |
 | `ORDER_HALTED` | `live_execution.py`, `testnet_execution.py` |
@@ -79,7 +79,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `SECRET_IN_CANDIDATE` | `memory.py`, `programization.py` |
 | `TOKEN_BUDGET_EXCEEDED` | `validator.py`, `worker.py` |
 | `TOOL_ERROR` | `market_data.py`, `naver_research.py`, `tools.py` |
-| `TOOL_TRANSPORT` | `market_data.py`, `toss_account.py`, `naver_research.py`, `tools.py` |
+| `TOOL_TRANSPORT` | `market_data.py`, `binance_wallet.py`, `toss_account.py`, `naver_research.py`, `tools.py` |
 | `TRANSITION_INVALID` | `task_registry.py`, `workflow.py`, `workflow_store.py` |
 | `UNKNOWN_APPROVAL` | `approval.py`, `switch_bridge.py` |
 | `UNKNOWN_CANDIDATE` | `approval_cli.py`, `pool.py` |
@@ -192,6 +192,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `AUTHORITY_INVARIANT` | `PlannerBlocked` | `runtime/mvp_runtime/assignment.py` | `build_role_assignment` | `not invariant_holds` |
 | `AUTHORITY_RECORD_INVALID` | `KernelBlocked` | `runtime/read_only_kernel/policy.py` | `adapt_policy` | `authority.get('effective_permission_level') is None` |
 | `AUTHORITY_RECORD_INVALID` | `KernelBlocked` | `runtime/read_only_kernel/preflight.py` | `run_preflight` | `—` |
+| `BINANCE_WALLET_PATH_REFUSED` | `ToolBlocked` | `runtime/mvp_runtime/holdings/binance_wallet.py` | `_get` | `(base, path) not in ALLOWED_REQUESTS` |
 | `BINDING_FAILED` | `PlannerBlocked` | `runtime/mvp_runtime/binding.py` | `bind_task_to_core` | `—` |
 | `BLOG_PACKAGE_SCHEMA_INVALID` | `ToolError` | `runtime/mvp_runtime/blog_content.py` | `package_schema_path` | `version not in PACKAGE_SCHEMA_VERSIONS` |
 | `BLOG_PACKAGE_SCHEMA_INVALID` | `ToolError` | `runtime/mvp_runtime/blog_content.py` | `run_content_ideation` | `—` |
@@ -788,6 +789,9 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | `live_symbols` | `not isinstance(listings, list) or not isinstance(metas, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | `order_book` | `—` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | `order_book` | `not isinstance(payload, dict)` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/binance_wallet.py` | `_earn` | `not isinstance(rows, list)` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/binance_wallet.py` | `_get` | `—` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/binance_wallet.py` | `_spot` | `not isinstance(body, dict) or not isinstance(body.get('balances'), list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `_get_once` | `'result' not in body` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `_issue_token` | `not isinstance(token, str) or not token` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `_parse` | `—` |
@@ -862,6 +866,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | `_signed_get` | `not api_key or not api_secret` |
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | `liquidation_history` | `not api_key` |
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | `open_interest_history` | `not api_key` |
+| `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/holdings/binance_wallet.py` | `_credentials` | `missing` |
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `_credentials` | `missing` |
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | `_headers` | `missing` |
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | `_headers` | `missing` |
@@ -1258,6 +1263,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | `classify_transport_error` | `—` |
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | `derivative_price_klines` | `—` |
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | `positioning_history` | `—` |
+| `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/holdings/binance_wallet.py` | `_get` | `—` |
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `_get_once` | `—` |
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `_issue_token` | `—` |
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | `_fetch` | `—` |

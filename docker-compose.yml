@@ -393,6 +393,16 @@ services:
       TOSS_CLIENT_ID: ${TOSS_CLIENT_ID:-}
       TOSS_CLIENT_SECRET: ${TOSS_CLIENT_SECRET:-}
       TOSS_ACCOUNT_SEQ: ${TOSS_ACCOUNT_SEQ:-}
+      # The holdings board's Binance spot + Simple Earn read (appendix C of MULTI_ASSET_EXPANSION_V0.1.md,
+      # Thomas 2026-10-07). It rides the same `holdings_refresh` fire. The key is the SAME pair the risk
+      # lane's account feed reads (option A, chosen over a new read-only key), and docs/BUILD_HISTORY.md
+      # (2026-07-28) records it may carry futures-trading permission at the venue. That cost is accepted:
+      # this lane still receives none of what would let the image use it — no MVP_LIVE_TRADING, no
+      # order key, no confirmation phrase, no MVP_ACCOUNT_FEED. The feed is read-only by construction
+      # (one host, four GET paths, no order method). Unset MVP_BINANCE_WALLET = the inert feed.
+      MVP_BINANCE_WALLET: ${MVP_BINANCE_WALLET:-}
+      BINANCE_ACCOUNT_API_KEY: ${BINANCE_ACCOUNT_API_KEY:-}
+      BINANCE_ACCOUNT_API_SECRET: ${BINANCE_ACCOUNT_API_SECRET:-}
 
   # The read-only door. Same shape as `switch-bridge` and deliberately a second service:
   # different authority (INTERNAL_READ + kill_allows read_only_status, not the emergency

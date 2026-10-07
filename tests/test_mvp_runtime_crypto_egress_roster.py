@@ -157,6 +157,10 @@ KEY_ENV_READERS = frozenset({
     "runtime/mvp_runtime/crypto/testnet_execution.py",
     "runtime/mvp_runtime/crypto/account.py",
     "runtime/mvp_runtime/crypto/live_readiness.py",     # whether the read key is set, never its value
+    # Added 2026-10-07 (Thomas, option A; appendix C of MULTI_ASSET_EXPANSION_V0.1.md): the holdings lane's
+    # Binance spot + Simple Earn read signs GETs with the account key pair, on scheduler-maint. Four GET
+    # paths by constant, no write (pinned in tests/test_mvp_runtime_holdings_binance_wallet.py).
+    "runtime/mvp_runtime/holdings/binance_wallet.py",
 })
 
 

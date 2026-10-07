@@ -137,9 +137,19 @@ def render_combined(block: dict[str, Any]) -> list[str]:
         dd = "peak initialized; no verdict yet"
     else:
         dd = f"{drawdown:+.1f}% (limit {limit:.0f}%){'  !! BREACHED (alert only)' if state == 'breached' else ''}"
+    wallet = []
+    status = block.get("crypto_wallet_status")
+    if status and status != "not_configured":
+        def part(key: str) -> str:
+            return krw(block.get(key)) if block.get(key) is not None else f"n/a ({status})"
+        wallet = [f"{'crypto spot':12}: {part('crypto_spot_krw')}", f"{'crypto earn':12}: {part('crypto_earn_krw')}"]
+        classes = block.get("crypto_classes_krw")
+        if isinstance(classes, dict):
+            wallet.append(f"{'crypto mix':12}: " + " / ".join(f"{name} {krw(value)}" for name, value in classes.items()))
     return [
         "--- all accounts ---",
         f"{'binance':12}: {crypto}" + (f" (as of {block.get('crypto_as_of')})" if block.get("crypto_as_of") else ""),
+        *wallet,
         f"{'combined':12}: {krw(block.get('combined_total_krw'))}",
         f"{'peak':12}: {krw(block.get('peak_total_krw'))}" + (f" ({block.get('peak_at')})" if block.get("peak_at") else ""),
         f"{'drawdown':12}: {dd}",

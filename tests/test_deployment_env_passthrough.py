@@ -54,7 +54,7 @@ from runtime.mvp_runtime.crypto import (
     live_pnl,
     testnet_execution,
 )
-from runtime.mvp_runtime.holdings import toss_account
+from runtime.mvp_runtime.holdings import binance_wallet, toss_account
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_PATH = ROOT / "docker-compose.yml"
@@ -512,6 +512,11 @@ MAINTENANCE_LANE_SELECTORS = {
     toss_account.TOSS_CLIENT_ID_ENV: "the Toss OAuth client id",
     toss_account.TOSS_CLIENT_SECRET_ENV: "the Toss OAuth client secret",
     toss_account.TOSS_ACCOUNT_SEQ_ENV: "which brokerage account, when the client sees more than one",
+    # The holdings board's Binance spot + Simple Earn read (Thomas 2026-10-07, appendix C): the same
+    # `holdings_refresh` fire. Its gate, and the account key pair it shares with the risk lane.
+    binance_wallet.BINANCE_WALLET_ENV: "the holdings lane's Binance wallet gate",
+    binance_wallet.API_KEY_ENV: "the Binance account key, shared with the risk lane (option A)",
+    binance_wallet.API_SECRET_ENV: "the Binance account secret, shared with the risk lane (option A)",
 }
 
 BROKER_SURFACE = tuple(name for name in MAINTENANCE_LANE_SELECTORS if name.startswith(("TOSS_", "MVP_TOSS_")))
@@ -528,6 +533,31 @@ def test_no_other_service_receives_the_broker_surface(service, env_var):
 
 def test_the_broker_surface_is_the_whole_holdings_env():
     assert len(BROKER_SURFACE) == 4
+
+
+@pytest.mark.parametrize("service", [s for s in _ALL_SERVICES if s != "scheduler-maint"])
+def test_no_other_service_receives_the_binance_wallet_gate(service):
+    """The wallet read rides the holdings fire, which runs on scheduler-maint only. The gate anywhere
+    else would read as configured and read nothing."""
+    assert binance_wallet.BINANCE_WALLET_ENV not in _service_environment(service)
+
+
+# The two live-surface names the maintenance lane DOES receive, and nothing else of that surface
+# (Thomas 2026-10-07, option A over a new read-only key). The cost, stated where the boundary is
+# pinned: docs/BUILD_HISTORY.md (2026-07-28) records this pair as the venue key the order credentials
+# are derived from, so it may carry futures-trading permission. Accepted because nothing that would
+# let the image USE that permission reaches the lane — the switch, the order key, the phrases and
+# the account-feed selector all stay withheld, per variable, below.
+MAINTENANCE_SHARED_ACCOUNT_KEY = frozenset({account.ACCOUNT_API_KEY_ENV, account.ACCOUNT_API_SECRET_ENV})
+
+
+def test_the_maintenance_lane_shares_exactly_the_account_key_pair():
+    environment = _service_environment("scheduler-maint")
+    shared = {name for name in LIVE_TRADING_SURFACE if name in environment}
+    assert shared == MAINTENANCE_SHARED_ACCOUNT_KEY
+    # The wallet feed reads the same names the account feed does: holdings/ repeats them rather than
+    # importing crypto/, so the agreement is pinned here.
+    assert {binance_wallet.API_KEY_ENV, binance_wallet.API_SECRET_ENV} == MAINTENANCE_SHARED_ACCOUNT_KEY
 
 
 def test_no_service_still_carries_the_retired_kis_surface():
@@ -560,7 +590,8 @@ def test_the_maintenance_lane_notifies_on_the_schedulers_bot():
     assert environment["TELEGRAM_BOT_TOKEN"] == _service_environment("scheduler")["TELEGRAM_BOT_TOKEN"]
 
 
-@pytest.mark.parametrize("env_var, what", sorted(LIVE_TRADING_SURFACE.items()))
+@pytest.mark.parametrize("env_var, what", sorted(
+    (name, what) for name, what in LIVE_TRADING_SURFACE.items() if name not in MAINTENANCE_SHARED_ACCOUNT_KEY))
 def test_the_maintenance_lane_receives_none_of_the_live_surface(env_var, what):
     """The split's credential point, pinned per variable: the service that runs 6-minute
     fires does not sit next to money. Every maintenance consumer of these is zero — the
@@ -624,8 +655,9 @@ SECRET_NAME = re.compile(r"(KEY|SECRET|TOKEN)")
 _ENV_REFERENCE = re.compile(r"\$\{([A-Z0-9_]+)")
 
 SECRET_OWNERSHIP: dict[str, frozenset[str]] = {
-    "BINANCE_ACCOUNT_API_KEY": frozenset({"scheduler"}),
-    "BINANCE_ACCOUNT_API_SECRET": frozenset({"scheduler"}),
+    # scheduler-maint since 2026-10-07: the holdings board's Binance wallet read (option A, above).
+    "BINANCE_ACCOUNT_API_KEY": frozenset({"scheduler", "scheduler-maint"}),
+    "BINANCE_ACCOUNT_API_SECRET": frozenset({"scheduler", "scheduler-maint"}),
     "COINALYZE_API_KEY": frozenset({"scheduler", "scheduler-maint"}),
     "GOOGLE_AI_STUDIO_API_KEY": frozenset({"operator", "pipeline-worker"}),
     "GROQ_API_KEY": frozenset({"operator", "pipeline-worker"}),

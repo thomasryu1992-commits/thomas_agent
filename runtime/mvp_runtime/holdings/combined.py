@@ -8,13 +8,20 @@ per edge. No door reads it, so it stays inside the research pause's "measurement
 **The Binance side is a file, not an import** (`EXPANSION_READINESS_REVIEW_V0.1.md` Q4, Thomas
 2026-10-06). The scheduler's crypto fire writes ``crypto/account_snapshot.json`` every 15 minutes
 (``crypto/account_store.py``, the format's authority); this module reads it by path and never imports
-``crypto/``, so the board loads no live-path module and the Binance key and the Toss key stay in
-different processes. The fields read are :data:`BINANCE_SNAPSHOT_FIELDS`, pinned by a test against the
+``crypto/``, so the board loads no live-path module. (This sentence used to end "and the Binance key and
+the Toss key stay in different processes". Since 2026-10-07 they do not: the wallet read below shares the
+account key pair with the risk lane — Thomas, option A, appendix C of ``MULTI_ASSET_EXPANSION_V0.1.md``.
+The order key and the live switch still stay on the risk lane.) The fields read are :data:`BINANCE_SNAPSHOT_FIELDS`, pinned by a test against the
 authority, as are the stale window and the record type.
 
 **USDT is taken as one US dollar** and converted with the same Toss mid-rate the Toss side used in the
 same read — one rate per fire, so the two KRW figures on one board never rest on two rates. The rate
 itself is never stored.
+
+**The Binance spot wallet and Simple Earn join the total when their gate is open** (Thomas 2026-10-07,
+appendix C; ``binance_wallet``). They are valued at the same Toss mid-rate, USDT as one US dollar. With
+the gate open, the wallet is a required part: a failed read, an unread Earn or no rate makes the total
+incomplete, exactly as a missing futures file does. With the gate closed, the total is what it was.
 
 **Peak and drawdown are judged only on a complete, fresh pair.** A Toss read that is partial, or a
 Binance file that is absent, unreadable, not USDT, unconfigured or older than the stale window, makes
@@ -57,6 +64,12 @@ STATE_UNKNOWN = "unknown"
 # The combined block's keys, exactly — it rides the stored snapshot, so a key here is a decision about
 # what may leave the process (the same rule as board.AGGREGATE_KEYS).
 COMBINED_KEYS = frozenset({
+    # The wallet side (Thomas 2026-10-07, appendix C): KRW only; ``crypto_wallet_status`` says why a value
+    # is absent. No USDT figure, asset, quantity or price is stored.
+    "crypto_spot_krw",
+    "crypto_earn_krw",
+    "crypto_classes_krw",
+    "crypto_wallet_status",
     "crypto_futures_krw",
     "crypto_as_of",
     "crypto_status",
@@ -108,18 +121,51 @@ def read_binance(root: Path, *, now: str) -> tuple[float | None, str | None, str
     return balance, as_of, "ok"
 
 
+WALLET_NOT_CONFIGURED = "not_configured"
+WALLET_OK = "ok"
+
+
+def wallet_part(wallet: Any, *, wallet_status: str, usd_krw_rate: float | None) -> dict[str, Any]:
+    """The wallet's KRW figures and status. ``wallet`` is a ``binance_wallet.WalletSnapshot`` or ``None``;
+    ``wallet_status`` is what the read said when it is ``None`` (``not_configured`` or ``failed (CODE)``)."""
+    part: dict[str, Any] = {"crypto_spot_krw": None, "crypto_earn_krw": None, "crypto_classes_krw": None,
+                            "crypto_wallet_status": wallet_status}
+    if wallet is None:
+        return part
+    if usd_krw_rate is None:
+        part["crypto_wallet_status"] = "no_rate"
+        return part
+    part["crypto_spot_krw"] = sum(wallet.spot_usdt.values()) * usd_krw_rate
+    if wallet.earn_usdt is None:
+        part["crypto_wallet_status"] = "earn_unread"
+        return part
+    part["crypto_earn_krw"] = sum(wallet.earn_usdt.values()) * usd_krw_rate
+    part["crypto_classes_krw"] = {
+        name: (wallet.spot_usdt.get(name, 0.0) + wallet.earn_usdt.get(name, 0.0)) * usd_krw_rate
+        for name in sorted(set(wallet.spot_usdt) | set(wallet.earn_usdt))
+    }
+    part["crypto_wallet_status"] = WALLET_OK
+    return part
+
+
 def combine(toss_view: dict[str, Any], *, usd_krw_rate: float | None, root: Path, now: str,
-            state_dir: Path) -> dict[str, Any]:
-    """The combined block, and the peak file moved when (and only when) the pair is complete."""
+            state_dir: Path, wallet: Any = None,
+            wallet_status: str = WALLET_NOT_CONFIGURED) -> dict[str, Any]:
+    """The combined block, and the peak file moved when (and only when) every configured part is complete."""
     usdt, crypto_as_of, crypto_status = read_binance(root, now=now)
     crypto_krw = None if usdt is None or usd_krw_rate is None else usdt * usd_krw_rate
     if usdt is not None and usd_krw_rate is None:
         crypto_status = "no_rate"
+    wallet_block = wallet_part(wallet, wallet_status=wallet_status, usd_krw_rate=usd_krw_rate)
+    wallet_status = wallet_block["crypto_wallet_status"]
+    wallet_krw = (wallet_block["crypto_spot_krw"] or 0) + (wallet_block["crypto_earn_krw"] or 0)
     toss_total = toss_view.get("known_total_krw")
-    complete = (not toss_view.get("partial")) and crypto_krw is not None and toss_total is not None
-    total = (toss_total or 0) + crypto_krw if complete else None
+    complete = ((not toss_view.get("partial")) and crypto_krw is not None and toss_total is not None
+                and wallet_status in (WALLET_OK, WALLET_NOT_CONFIGURED))
+    total = (toss_total or 0) + crypto_krw + wallet_krw if complete else None
 
     block: dict[str, Any] = {
+        **wallet_block,
         "crypto_futures_krw": crypto_krw,
         "crypto_as_of": crypto_as_of,
         "crypto_status": crypto_status,
