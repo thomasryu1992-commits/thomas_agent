@@ -222,8 +222,8 @@ KIND_DISPATCH_SPEND = "dispatch_spend_watch"
 # delegation by its `crypto_` prefix, so the assistant can never change it.
 KIND_FORWARD_COHORT = "crypto_forward_cohort"
 # The holdings board's refresh (P1-b of `docs/proposals/MULTI_ASSET_EXPANSION_V0.1.md`, Thomas
-# 2026-10-02): read the KIS account once and store the aggregate the doors render. Maintenance, not
-# risk: a late fire costs freshness, never money, and Thomas put the KIS key on scheduler-maint for
+# 2026-10-02): read the broker account (Toss since 2026-10-07) once and store the aggregate the doors render. Maintenance, not
+# risk: a late fire costs freshness, never money, and Thomas put the broker key on scheduler-maint for
 # exactly that reason. Not `crypto_`-prefixed, so `schedule_delegation` names it as financial itself.
 KIND_HOLDINGS = "holdings_refresh"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
@@ -1439,8 +1439,8 @@ def _execute(
         breaker_watch.write_mark(result["state"], root=repo_root)
         return breaker_watch.status_line(result)
     if schedule.kind == KIND_HOLDINGS:
-        # A read of the KIS account through the holdings lane's own gate; writes the aggregate
-        # snapshot and nothing else. `refresh_snapshot` never raises, so a KIS outage is a status
+        # A read of the broker account through the holdings lane's own gate; writes the aggregate
+        # snapshot and nothing else. `refresh_snapshot` never raises, so a broker outage is a status
         # line, never a failed fire: the last good figure stays and the board shows its age.
         from .holdings import store as holdings_store
 

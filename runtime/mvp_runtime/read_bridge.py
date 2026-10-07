@@ -84,8 +84,8 @@ _READS: dict[str, tuple[str, Any]] = {
     # ledger — never a record — so the assistant can hand Thomas the weekly lane evidence. Dormant:
     # refused by name until the committed policy lists it (POLICY_GATED_READS below).
     "lane_digest":      (_STORES, store_reads.LANE_DIGEST),
-    # P1-b of MULTI_ASSET_EXPANSION_V0.1.md (2026-10-02): the KIS account's aggregate, from the
-    # snapshot scheduler-maint wrote — never a KIS call, never a symbol. Dormant like lane_digest:
+    # P1-b of MULTI_ASSET_EXPANSION_V0.1.md (2026-10-02): the broker account's aggregate, from the
+    # snapshot scheduler-maint wrote — never a broker call, never a symbol. Dormant like lane_digest:
     # refused by name until the committed policy lists it.
     "holdings_status":  (_DOMAIN, ("HOLDINGS", "status")),
 }
@@ -119,7 +119,7 @@ READ_VERB_AUTHORITY: dict[str, str] = {
     "heartbeat": "policy:kill_switch.kill_allows read_only_status",
     "approval_status": _AUDIT_READ + " (summary only; approvals/ records never exposed)",
     "lane_digest": _AUDIT_READ + " (per-lane counts over the run ledger; dormant until policy 1.6.1)",
-    "holdings_status": _INTERNAL_READ + " (aggregate snapshot scheduler-maint wrote; no KIS key here; dormant until the policy lists it)",
+    "holdings_status": _INTERNAL_READ + " (aggregate snapshot scheduler-maint wrote; no broker key here; dormant until the policy lists it)",
 }
 
 # The reads that mean anything with an argument (a count, an id, a window in days). Everything

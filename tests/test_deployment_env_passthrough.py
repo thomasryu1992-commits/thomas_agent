@@ -54,7 +54,7 @@ from runtime.mvp_runtime.crypto import (
     live_pnl,
     testnet_execution,
 )
-from runtime.mvp_runtime.holdings import kis_account
+from runtime.mvp_runtime.holdings import toss_account
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_PATH = ROOT / "docker-compose.yml"
@@ -507,29 +507,34 @@ MAINTENANCE_LANE_SELECTORS = {
     "MVP_LIQUIDATION_FEED": "their liquidation feed leg",
     "COINALYZE_API_KEY": "the liquidation feed's key",
     operator.OPERATOR_CHANNEL_ENV: "outbound-only failure/recovery notification",
-    # The holdings board's KIS read (P1-b, Thomas 2026-10-02): the `holdings_refresh` fire runs here.
-    kis_account.KIS_ACCOUNT_ENV: "the holdings lane's gate",
-    kis_account.KIS_SERVER_ENV: "real or demo",
-    kis_account.KIS_APP_KEY_ENV: "the KIS app key",
-    kis_account.KIS_APP_SECRET_ENV: "the KIS app secret",
-    kis_account.KIS_ACCOUNT_NO_ENV: "the account number (masked in every render)",
-    kis_account.KIS_ACCOUNT_PRODUCT_CODE_ENV: "the account product code",
+    # The holdings board's broker read (P1-b, Thomas 2026-10-02; Toss since 2026-10-07): the `holdings_refresh` fire runs here.
+    toss_account.TOSS_ACCOUNT_ENV: "the holdings lane's gate",
+    toss_account.TOSS_CLIENT_ID_ENV: "the Toss OAuth client id",
+    toss_account.TOSS_CLIENT_SECRET_ENV: "the Toss OAuth client secret",
+    toss_account.TOSS_ACCOUNT_SEQ_ENV: "which brokerage account, when the client sees more than one",
 }
 
-KIS_SURFACE = tuple(name for name in MAINTENANCE_LANE_SELECTORS if name.startswith(("KIS_", "MVP_KIS_")))
+BROKER_SURFACE = tuple(name for name in MAINTENANCE_LANE_SELECTORS if name.startswith(("TOSS_", "MVP_TOSS_")))
 
 
 @pytest.mark.parametrize("service", [s for s in _ALL_SERVICES if s != "scheduler-maint"])
-@pytest.mark.parametrize("env_var", KIS_SURFACE)
-def test_no_other_service_receives_the_kis_surface(service, env_var):
-    """Thomas put the KIS key on scheduler-maint (2026-10-02) and nowhere else: not the risk lane,
+@pytest.mark.parametrize("env_var", BROKER_SURFACE)
+def test_no_other_service_receives_the_broker_surface(service, env_var):
+    """Thomas put the broker key on scheduler-maint (2026-10-02) and nowhere else: not the risk lane,
     which holds the Binance order key, and not a door, which the assistant can reach. The doors
     render the snapshot the lane wrote and need nothing from this surface."""
     assert env_var not in _service_environment(service)
 
 
-def test_the_kis_surface_is_the_whole_holdings_env():
-    assert len(KIS_SURFACE) == 6
+def test_the_broker_surface_is_the_whole_holdings_env():
+    assert len(BROKER_SURFACE) == 4
+
+
+def test_no_service_still_carries_the_retired_kis_surface():
+    """KIS was the holdings account until Thomas moved it to Toss (2026-10-07) and was removed whole:
+    a KIS name still forwarded would be a credential slot with no consumer."""
+    for service in _ALL_SERVICES:
+        assert not [name for name in _service_environment(service) if name.startswith(("KIS_", "MVP_KIS_"))]
 
 
 @pytest.mark.parametrize("env_var, what", sorted(MAINTENANCE_LANE_SELECTORS.items()))
@@ -634,8 +639,7 @@ SECRET_OWNERSHIP: dict[str, frozenset[str]] = {
     # in the one container that trades.
     "MVP_TESTNET_ORDER_API_KEY": frozenset({"scheduler"}),
     "MVP_TESTNET_ORDER_API_SECRET": frozenset({"scheduler"}),
-    "KIS_APP_KEY": frozenset({"scheduler-maint"}),
-    "KIS_APP_SECRET": frozenset({"scheduler-maint"}),
+    "TOSS_CLIENT_SECRET": frozenset({"scheduler-maint"}),
     "NAVER_APIHUB_KEY": frozenset({"pipeline-worker"}),
     "NAVER_APIHUB_KEY_ID": frozenset({"pipeline-worker"}),
     "NAVER_SEARCHAD_API_KEY": frozenset({"pipeline-worker"}),
