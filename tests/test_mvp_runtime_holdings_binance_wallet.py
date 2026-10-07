@@ -353,6 +353,18 @@ def test_the_block_carries_no_usdt_figure_and_no_asset(monkeypatch, gate_open, t
         assert asset not in text, asset
 
 
+def test_every_wallet_figure_is_krw_not_usdt(monkeypatch, gate_open, tmp_path):
+    """The string check above passes whatever the unit; this one fails if a refactor forgets the multiply:
+    every non-zero wallet figure must be the USDT amount times the rate, never the USDT amount itself."""
+    snapshot, _, _ = _read(monkeypatch)
+    block = _combine(tmp_path, snapshot, combined.WALLET_OK)
+    figures = [block["crypto_spot_krw"], block["crypto_earn_krw"], *block["crypto_classes_krw"].values()]
+    usdt = [sum(snapshot.spot_usdt.values()), sum(snapshot.earn_usdt.values()),
+            *(snapshot.spot_usdt[k] + snapshot.earn_usdt[k] for k in block["crypto_classes_krw"])]
+    for krw_value, usdt_value in zip(figures, usdt):
+        assert krw_value == pytest.approx(usdt_value * RATE)
+
+
 def test_the_refresh_reads_the_wallet_and_stores_only_krw(monkeypatch, gate_open, tmp_path):
     from runtime.mvp_runtime.holdings import store
     from runtime.mvp_runtime.holdings.model import HoldingsSnapshot, MarketTotals
