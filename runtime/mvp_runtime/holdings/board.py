@@ -106,7 +106,7 @@ def render_view(view: dict[str, Any], *, stamp_line: str) -> list[str]:
         share = f" ({weight:.1f}%)" if isinstance(weight, (int, float)) else ""
         return f"{label:12}: {krw(view.get(key))}{share}"
 
-    return [
+    lines = [
         f"=== holdings {view.get('account', '****')} ({view.get('broker', '?')}) ===",
         line("domestic", "domestic_stock_krw", "domestic_stock"),
         line("overseas", "overseas_stock_krw", "overseas_stock"),
@@ -116,6 +116,34 @@ def render_view(view: dict[str, Any], *, stamp_line: str) -> list[str]:
         f"{'unrealized':12}: {krw(view.get('unrealized_pnl_krw'))}",
         f"{'holdings':12}: {view.get('holding_count', 'n/a')}",
         stamp_line,
+    ]
+    block = view.get("combined")
+    if isinstance(block, dict):
+        lines.extend(render_combined(block))
+    return lines
+
+
+def render_combined(block: dict[str, Any]) -> list[str]:
+    """P2: the Toss total plus the Binance futures account, and the drawdown from peak (alert only)."""
+    crypto = krw(block.get("crypto_futures_krw"))
+    if block.get("crypto_status") != "ok":
+        crypto = f"n/a ({block.get('crypto_status')})"
+    state = block.get("drawdown_state")
+    drawdown = block.get("drawdown_pct")
+    limit = block.get("drawdown_limit_pct")
+    if state == "unknown":
+        dd = "unknown (a part is missing or stale; peak untouched)"
+    elif state == "initialized":
+        dd = "peak initialized; no verdict yet"
+    else:
+        dd = f"{drawdown:+.1f}% (limit {limit:.0f}%){'  !! BREACHED (alert only)' if state == 'breached' else ''}"
+    return [
+        "--- all accounts ---",
+        f"{'binance':12}: {crypto}" + (f" (as of {block.get('crypto_as_of')})" if block.get("crypto_as_of") else ""),
+        f"{'combined':12}: {krw(block.get('combined_total_krw'))}",
+        f"{'peak':12}: {krw(block.get('peak_total_krw'))}" + (f" ({block.get('peak_at')})" if block.get("peak_at") else ""),
+        f"{'drawdown':12}: {dd}",
+        f"{'note':12}: USDT counted as 1 USD at the Toss mid-rate; deposits/withdrawals read as drawdown",
     ]
 
 

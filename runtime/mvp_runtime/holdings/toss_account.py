@@ -337,12 +337,10 @@ class TossHoldingsFeed:
         usd_value = subtotal("marketValue", "amount", "usd")
         usd_pnl = subtotal("profitLoss", "amount", "usd")
         usd_cash = self._cash("USD", warnings, timeout_seconds=timeout_seconds)
-        # The rate is asked for only when there is a dollar to convert. With nothing in USD the
-        # overseas side is a true zero, and no exchange-rate call is spent proving it.
-        if all(value == 0 for value in (usd_value, usd_pnl, usd_cash)):
-            rate: float | None = 0.0
-        else:
-            rate = self._usd_krw_rate(warnings, timeout_seconds=timeout_seconds)
+        # One rate per read, asked for every read: P2 converts the Binance USDT balance with the same
+        # rate (holdings.combined), so the two KRW figures on one board rest on one rate. Until P2 it
+        # was skipped when nothing was in USD; one call an hour is the cost of the shared rate.
+        rate = self._usd_krw_rate(warnings, timeout_seconds=timeout_seconds)
 
         domestic = MarketTotals(
             market=MARKET_DOMESTIC,
@@ -365,6 +363,7 @@ class TossHoldingsFeed:
             collected_at=timeutil.utc_now_iso(),
             latency_ms=int((time.monotonic() - started) * 1000),
             warnings=tuple(warnings),
+            usd_krw_rate=rate,
         )
 
 

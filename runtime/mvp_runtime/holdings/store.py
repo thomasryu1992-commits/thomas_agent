@@ -37,6 +37,7 @@ from .. import timeutil
 from ..errors import ToolError
 from ..filelock import locked
 from ..paths import repo_root as _repo_root
+from . import combined
 from .board import aggregate_view, render_view
 from .toss_account import TossHoldingsFeed, read_holdings, select_holdings_feed
 
@@ -87,8 +88,12 @@ def _feed() -> Any:
     return _cached_feed
 
 
-def refresh_snapshot(*, now: str, root: Path | None = None, timeout_seconds: int = 10) -> str:
-    """Read the broker once and store the aggregate. Returns a one-line status for the fire.
+def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) -> dict[str, Any]:
+    """Read the broker once, combine it with the Binance snapshot file (P2), store the aggregate.
+
+    Returns ``{"status": <one line>, "alert": (state, text) | None}``. The alert is the drawdown edge
+    since the last DELIVERED message (``combined.alert``); the caller sends it and only then records it
+    with :func:`mark_told`, so a message the channel did not take is offered again next fire.
 
     Never raises: a holdings read is bookkeeping, and a failure becomes a status string and a moved
     mark. A failed read keeps the previous snapshot."""
@@ -96,24 +101,47 @@ def refresh_snapshot(*, now: str, root: Path | None = None, timeout_seconds: int
         _write_json(refresh_mark_path(root), {"attempted_at": now},
                     code="HOLDINGS_REFRESH_MARK_LOCKED", label="holdings refresh mark")
     except Exception as exc:  # noqa: BLE001 — see the docstring
-        return f"holdings snapshot: mark not written ({type(exc).__name__})"
+        return {"status": f"holdings snapshot: mark not written ({type(exc).__name__})", "alert": None}
     try:
         snapshot, reason = read_holdings(timeout_seconds=timeout_seconds, feed=_feed())
     except Exception as exc:  # noqa: BLE001 — see the docstring
-        return f"holdings snapshot: read failed ({type(exc).__name__})"
+        return {"status": f"holdings snapshot: read failed ({type(exc).__name__})", "alert": None}
     if snapshot is None:
         if reason == "NOT_CONFIGURED":
-            return "holdings snapshot: no broker account configured"
-        return f"holdings snapshot: degraded ({reason}); kept the previous one"
+            return {"status": "holdings snapshot: no broker account configured", "alert": None}
+        return {"status": f"holdings snapshot: degraded ({reason}); kept the previous one", "alert": None}
     body = dict(aggregate_view(snapshot))
     body["record_type"] = RECORD_TYPE
     body["as_of"] = snapshot.collected_at or now
     body["written_at"] = now
+    base = root if root is not None else _repo_root()
+    try:
+        block = combined.combine(body, usd_krw_rate=snapshot.usd_krw_rate, root=base, now=now,
+                                 state_dir=state_dir(root))
+    except Exception as exc:  # noqa: BLE001 — the combined total must not cost the Toss snapshot
+        block = None
+        combined_note = f"combined not computed ({type(exc).__name__})"
+    else:
+        combined_note = f"combined {block['drawdown_state']}"
+    body["combined"] = block
     try:
         _write_json(snapshot_path(root), body, code="HOLDINGS_SNAPSHOT_LOCKED", label="holdings snapshot")
     except Exception as exc:  # noqa: BLE001 — see the docstring
-        return f"holdings snapshot: not persisted ({type(exc).__name__})"
-    return "holdings snapshot: refreshed"
+        return {"status": f"holdings snapshot: not persisted ({type(exc).__name__})", "alert": None}
+    edge = None
+    if block is not None:
+        edge = combined.alert(block, told=combined.read_told(state_dir(root)), as_of=body["as_of"])
+    return {"status": f"holdings snapshot: refreshed; {combined_note}", "alert": edge}
+
+
+def mark_told(state: str, *, now: str, root: Path | None = None) -> None:
+    """Record the drawdown state Thomas was told — called only after the message was delivered."""
+    combined.write_told(state_dir(root), state, now=now)
+
+
+def refresh_snapshot(*, now: str, root: Path | None = None, timeout_seconds: int = 10) -> str:
+    """:func:`refresh`'s status line alone, for callers that send no alert."""
+    return refresh(now=now, root=root, timeout_seconds=timeout_seconds)["status"]
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:

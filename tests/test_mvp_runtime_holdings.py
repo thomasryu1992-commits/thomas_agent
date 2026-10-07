@@ -31,7 +31,7 @@ import pytest
 
 from runtime.mvp_runtime import domain_console, read_bridge, schedule_delegation, scheduler
 from runtime.mvp_runtime.errors import SafetyGateBlocked, ToolError
-from runtime.mvp_runtime.holdings import board, store, toss_account
+from runtime.mvp_runtime.holdings import board, combined, store, toss_account
 from runtime.mvp_runtime.holdings.model import NoHoldingsFeed
 from runtime.mvp_runtime.holdings.toss_account import (
     ACCOUNTS_PATH,
@@ -383,17 +383,20 @@ def test_overseas_amounts_are_converted_with_the_mid_rate(monkeypatch, gate_open
     assert snapshot.warnings == ()
 
 
-def test_no_dollar_means_no_exchange_rate_call(monkeypatch, gate_open):
+def test_one_rate_per_read_even_with_no_dollar(monkeypatch, gate_open):
+    """P2 converts the Binance USDT balance with the rate this read used, so the rate is read every
+    time — once, never twice — and rides the snapshot in-process only."""
     domestic_only = json.loads(json.dumps(HOLDINGS))
-    for block in ("totalPurchaseAmount",):
-        domestic_only[block]["usd"] = None
+    domestic_only["totalPurchaseAmount"]["usd"] = None
     domestic_only["marketValue"]["amount"]["usd"] = None
     domestic_only["profitLoss"]["amount"]["usd"] = None
     domestic_only["items"] = domestic_only["items"][:1]
     fake = _toss(monkeypatch, holdings=domestic_only, cash={"KRW": "5000000", "USD": "0"})
     snapshot, _ = read_holdings()
-    assert EXCHANGE_RATE_PATH not in fake.paths()
+    assert fake.paths().count(EXCHANGE_RATE_PATH) == 1
     assert snapshot.overseas.holdings_value_krw == 0
+    assert snapshot.usd_krw_rate == 1375
+    assert "usd_krw_rate" not in board.aggregate_view(snapshot)
 
 
 def test_an_unreadable_rate_leaves_the_overseas_side_absent_not_guessed(monkeypatch, gate_open):
@@ -463,9 +466,11 @@ def test_an_unavailable_board_says_why():
 
 def test_the_snapshot_holds_the_aggregate_and_nothing_else(monkeypatch, gate_open, tmp_path):
     _toss(monkeypatch)
-    assert store.refresh_snapshot(now=NOW, root=tmp_path) == "holdings snapshot: refreshed"
+    assert store.refresh_snapshot(now=NOW, root=tmp_path).startswith("holdings snapshot: refreshed")
     raw = store.snapshot_path(tmp_path).read_text(encoding="utf-8")
-    assert set(json.loads(raw)) == board.AGGREGATE_KEYS | {"record_type", "as_of", "written_at"}
+    body = json.loads(raw)
+    assert set(body) == board.AGGREGATE_KEYS | {"record_type", "as_of", "written_at", "combined"}
+    assert set(body["combined"]) == combined.COMBINED_KEYS
     assert _revealed(raw) == []
     assert _leaks(raw) == []
 
@@ -546,7 +551,7 @@ def _fire(tmp_path):
 
 def test_the_maintenance_fire_writes_the_snapshot(monkeypatch, gate_open, tmp_path):
     _toss(monkeypatch)
-    assert _fire(tmp_path) == "holdings snapshot: refreshed"
+    assert _fire(tmp_path).startswith("holdings snapshot: refreshed")
     assert store.snapshot_path(tmp_path).exists()
 
 
@@ -609,3 +614,185 @@ def test_the_scripts_live_read_blocks_on_a_failure(monkeypatch, gate_open, capsy
     _toss(monkeypatch, fail={TOKEN_PATH: [urllib.error.URLError("down")]})
     assert holdings_board.main(["--full"]) == EXIT_BLOCKED
     assert "TOOL_TRANSPORT" in capsys.readouterr().out
+
+
+
+# --- P2: the combined total and the drawdown (alert only) --------------------------------
+
+from runtime.mvp_runtime import operator as operator_mod  # noqa: E402
+from runtime.mvp_runtime.crypto import account as crypto_account  # noqa: E402
+from runtime.mvp_runtime.crypto import account_store  # noqa: E402
+from runtime.mvp_runtime.crypto import state as crypto_state  # noqa: E402
+
+# Toss's example at 1375: 7,200,000 + 1785*1375 + 5,000,000 + 100*1375 KRW.
+TOSS_TOTAL = 7_200_000 + 1785 * 1375 + 5_000_000 + 100 * 1375
+
+
+def _binance_file(root, *, margin=1000.0, as_of=NOW, asset="USDT", configured=True, monkeypatch=None):
+    """Write the Binance snapshot the way its authority does: account_store.refresh_snapshot over a
+    real AccountSnapshot — so a format change in crypto/ breaks these tests, not the board silently."""
+    snap = crypto_account.AccountSnapshot(
+        asset=asset, wallet_balance=margin, margin_balance=margin, available_balance=margin,
+        unrealized_pnl=0.0, positions=[], realized_windows={}, source="test", collected_at=as_of)
+    record = crypto_account.snapshot_record(snap, feed=crypto_account.NoAccountFeed(), now=as_of)
+    record["configured"] = configured
+    monkeypatch.setattr(crypto_account, "read_account", lambda **_kw: (snap, record))
+    assert account_store.refresh_snapshot(now=as_of, root=root) == "account snapshot: refreshed"
+
+
+def _toss_view(partial=False, total=TOSS_TOTAL):
+    return {"known_total_krw": total, "partial": partial}
+
+
+def test_the_binance_side_mirrors_its_format_authority():
+    assert combined.BINANCE_RECORD_TYPE == account_store.RECORD_TYPE
+    assert combined.BINANCE_STALE_SECONDS == account_store.STALE_AFTER_SECONDS
+    assert combined.BINANCE_SNAPSHOT_REL == f"{crypto_state.STATE_REL}/{account_store.SNAPSHOT_FILENAME}"
+
+
+def test_the_fields_read_are_exactly_these_and_the_authority_writes_them(monkeypatch, tmp_path):
+    assert combined.BINANCE_SNAPSHOT_FIELDS == {"record_type", "configured", "asset", "margin_balance", "as_of"}
+    _binance_file(tmp_path, margin=1234.5, monkeypatch=monkeypatch)
+    written = json.loads((tmp_path / combined.BINANCE_SNAPSHOT_REL).read_text())
+    assert combined.BINANCE_SNAPSHOT_FIELDS <= set(written)
+    assert combined.read_binance(tmp_path, now=NOW) == (1234.5, NOW, "ok")
+
+
+@pytest.mark.parametrize("kwargs, status", [
+    ({"as_of": "2026-10-07T05:00:00Z"}, "stale"),
+    ({"asset": "BUSD"}, "not_usdt"),
+    ({"configured": False}, "not_configured"),
+])
+def test_an_unusable_binance_file_says_why(monkeypatch, tmp_path, kwargs, status):
+    _binance_file(tmp_path, monkeypatch=monkeypatch, **kwargs)
+    assert combined.read_binance(tmp_path, now=NOW)[2] == status
+
+
+def test_an_absent_binance_file_is_absent(tmp_path):
+    assert combined.read_binance(tmp_path, now=NOW) == (None, None, "absent")
+
+
+def test_the_first_complete_total_initializes_the_peak_with_no_verdict(monkeypatch, tmp_path):
+    _binance_file(tmp_path, margin=1000.0, monkeypatch=monkeypatch)
+    block = combined.combine(_toss_view(), usd_krw_rate=1375, root=tmp_path, now=NOW, state_dir=tmp_path / "h")
+    assert set(block) == combined.COMBINED_KEYS
+    assert block["combined_total_krw"] == TOSS_TOTAL + 1000 * 1375
+    assert block["drawdown_state"] == combined.STATE_INITIALIZED
+    assert combined.alert(block, told=combined.STATE_CLEAR, as_of=NOW) is None
+
+
+def test_a_rise_moves_the_peak_and_a_fall_past_the_limit_breaches(monkeypatch, tmp_path):
+    hdir = tmp_path / "h"
+    _binance_file(tmp_path, margin=1000.0, monkeypatch=monkeypatch)
+    combined.combine(_toss_view(), usd_krw_rate=1000, root=tmp_path, now=NOW, state_dir=hdir)
+    up = combined.combine(_toss_view(total=20_000_000), usd_krw_rate=1000, root=tmp_path, now=NOW, state_dir=hdir)
+    assert up["peak_total_krw"] == 21_000_000 and up["drawdown_state"] == combined.STATE_CLEAR
+    down = combined.combine(_toss_view(total=15_000_000), usd_krw_rate=1000, root=tmp_path, now=NOW, state_dir=hdir)
+    assert down["peak_total_krw"] == 21_000_000          # a fall never lowers the peak
+    assert down["drawdown_pct"] == round((16_000_000 / 21_000_000 - 1) * 100, 2)
+    assert down["drawdown_state"] == combined.STATE_BREACHED
+    state, text = combined.alert(down, told=combined.STATE_CLEAR, as_of=NOW)
+    assert state == combined.STATE_BREACHED and "-23.8%" in text and "--reset-peak" in text
+    assert combined.alert(down, told=combined.STATE_BREACHED, as_of=NOW) is None   # told once
+
+
+def test_a_partial_or_stale_pair_is_unknown_and_leaves_the_peak_alone(monkeypatch, tmp_path):
+    hdir = tmp_path / "h"
+    _binance_file(tmp_path, margin=1000.0, monkeypatch=monkeypatch)
+    combined.combine(_toss_view(), usd_krw_rate=1000, root=tmp_path, now=NOW, state_dir=hdir)
+    peak_before = json.loads((hdir / combined.PEAK_FILENAME).read_text())
+    partial = combined.combine(_toss_view(partial=True, total=1), usd_krw_rate=1000, root=tmp_path, now=NOW, state_dir=hdir)
+    assert partial["drawdown_state"] == combined.STATE_UNKNOWN and partial["combined_total_krw"] is None
+    late = "2026-10-07T12:00:00Z"                           # the Binance file is now 3 h old
+    stale = combined.combine(_toss_view(total=1), usd_krw_rate=1000, root=tmp_path, now=late, state_dir=hdir)
+    assert stale["drawdown_state"] == combined.STATE_UNKNOWN and stale["crypto_status"] == "stale"
+    no_rate = combined.combine(_toss_view(), usd_krw_rate=None, root=tmp_path, now=NOW, state_dir=hdir)
+    assert no_rate["drawdown_state"] == combined.STATE_UNKNOWN and no_rate["crypto_status"] == "no_rate"
+    assert json.loads((hdir / combined.PEAK_FILENAME).read_text()) == peak_before
+    assert combined.alert(stale, told=combined.STATE_BREACHED, as_of=NOW) is None  # unknown never tells
+
+
+def test_recovery_is_told_once_after_a_breach(monkeypatch, tmp_path):
+    hdir = tmp_path / "h"
+    _binance_file(tmp_path, margin=0.0, monkeypatch=monkeypatch)
+    combined.combine(_toss_view(total=10_000_000), usd_krw_rate=1000, root=tmp_path, now=NOW, state_dir=hdir)
+    back = combined.combine(_toss_view(total=9_000_000), usd_krw_rate=1000, root=tmp_path, now=NOW, state_dir=hdir)
+    state, text = combined.alert(back, told=combined.STATE_BREACHED, as_of=NOW)
+    assert state == combined.STATE_CLEAR and "한도 안으로" in text
+
+
+def test_refresh_stores_the_combined_block_without_the_rate(monkeypatch, gate_open, tmp_path):
+    _binance_file(tmp_path, margin=100.0, monkeypatch=monkeypatch)
+    _toss(monkeypatch)
+    result = store.refresh(now=NOW, root=tmp_path)
+    assert result["status"] == "holdings snapshot: refreshed; combined initialized"
+    raw = store.snapshot_path(tmp_path).read_text(encoding="utf-8")
+    block = json.loads(raw)["combined"]
+    assert block["crypto_futures_krw"] == 100 * 1375 and block["crypto_status"] == "ok"
+    assert block["combined_total_krw"] == TOSS_TOTAL + 100 * 1375
+    assert _revealed(raw) == []
+    text, data = store.load_holdings_view(now=NOW, root=tmp_path)
+    assert "--- all accounts ---" in text and "peak initialized" in text
+    assert data["combined"]["drawdown_state"] == combined.STATE_INITIALIZED
+
+
+def _breach_setup(monkeypatch, tmp_path):
+    """A stored peak far above what the fake Toss account and a zero Binance balance now add up to."""
+    hdir = store.state_dir(tmp_path)
+    hdir.mkdir(parents=True, exist_ok=True)
+    (hdir / combined.PEAK_FILENAME).write_text(json.dumps({"peak_total_krw": TOSS_TOTAL * 2, "peak_at": NOW}))
+    _binance_file(tmp_path, margin=0.0, monkeypatch=monkeypatch)
+    _toss(monkeypatch)
+    return hdir
+
+
+def test_the_fire_tells_a_breach_once_and_marks_it_after_delivery(monkeypatch, gate_open, tmp_path):
+    hdir = _breach_setup(monkeypatch, tmp_path)
+    sent = []
+    monkeypatch.setattr(operator_mod, "select_operator_channel", lambda **_kw: "channel")
+    monkeypatch.setattr(operator_mod, "notify_operator", lambda channel, text, **_kw: sent.append(text))
+    assert _fire(tmp_path).endswith("drawdown breached told")
+    assert len(sent) == 1 and "-50.0%" in sent[0]
+    assert combined.read_told(hdir) == combined.STATE_BREACHED
+    assert not _fire(tmp_path).endswith("told") and len(sent) == 1        # not told twice
+
+
+def test_an_undelivered_alert_is_offered_again(monkeypatch, gate_open, tmp_path):
+    hdir = _breach_setup(monkeypatch, tmp_path)
+    from runtime.mvp_runtime.errors import OperatorBlocked
+
+    def _down(channel, text, **_kw):
+        raise OperatorBlocked("CHANNEL_DOWN", "down")
+
+    monkeypatch.setattr(operator_mod, "select_operator_channel", lambda **_kw: "channel")
+    monkeypatch.setattr(operator_mod, "notify_operator", _down)
+    assert _fire(tmp_path).endswith("drawdown breached not sent:CHANNEL_DOWN")
+    assert combined.read_told(hdir) == combined.STATE_CLEAR                 # the mark did not move
+
+
+def test_reset_peak_forgets_the_peak_and_the_told_state(monkeypatch, tmp_path, capsys):
+    from scripts import holdings_board
+
+    hdir = store.state_dir(tmp_path)
+    hdir.mkdir(parents=True)
+    (hdir / combined.PEAK_FILENAME).write_text("{}")
+    combined.write_told(hdir, combined.STATE_BREACHED, now=NOW)
+    monkeypatch.setattr(store, "_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(holdings_board, "assert_not_foreign_root_run", lambda *a, **k: None)
+    assert holdings_board.main(["--reset-peak"]) == 0
+    assert not (hdir / combined.PEAK_FILENAME).exists()
+    assert combined.read_told(hdir) == combined.STATE_CLEAR
+    assert "holdings_peak.json" in capsys.readouterr().out
+
+
+def test_reset_peak_refuses_a_foreign_root_run(monkeypatch, tmp_path):
+    from runtime.mvp_runtime.errors import MvpRuntimeError
+    from scripts import holdings_board
+
+    def _refuse(*_a, **_k):
+        raise MvpRuntimeError("STATE_FOREIGN_ROOT_RUN", "run it in the container")
+
+    monkeypatch.setattr(holdings_board, "assert_not_foreign_root_run", _refuse)
+    monkeypatch.setattr(store, "_repo_root", lambda: tmp_path)
+    from runtime.mvp_runtime.cli_common import EXIT_BLOCKED
+    assert holdings_board.main(["--reset-peak"]) == EXIT_BLOCKED

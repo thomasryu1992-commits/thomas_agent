@@ -71,7 +71,8 @@ core thin while lanes grow, stated as rules:
     counters or a member-minus-twin readout;
   - tightening cohort membership, such as a cross-cohort sibling rule;
   - the read-only multi-account board (P1 of `docs/proposals/MULTI_ASSET_EXPANSION_V0.1.md`, Thomas
-    2026-10-02 D4): no order path, no judgement changed, and no door reads it;
+    2026-10-02 D4) and its alert-only P2 drawdown line (Thomas 2026-10-07): no order path, no judgement
+    changed, and no door reads it;
   - the IV–RV measurement (§4.3 of that proposal, Thomas 2026-10-06): read-only observation of
     implied minus realized volatility. It is not a hypothesis, template or trial, opens no option
     position, changes no judgement, and no door reads it. Its data source is a new network read, so it
