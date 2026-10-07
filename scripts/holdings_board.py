@@ -3,6 +3,7 @@
     python -m scripts.holdings_board            # the stored aggregate (no call to Toss)
     python -m scripts.holdings_board --json     # the same, as JSON
     python -m scripts.holdings_board --full     # a LIVE read with every holding, terminal only
+    python -m scripts.holdings_board --reset-peak   # forget the combined peak (after a deposit/withdrawal)
 
 Read-only. It places nothing and has no flag that would let it.
 
@@ -20,6 +21,12 @@ run it where they are (``docker exec thomas-scheduler-maint python -m scripts.ho
 Without the gate it prints that it is not configured and exits 0. A failed read exits
 ``EXIT_BLOCKED`` with the error's reason code.
 
+**``--reset-peak``** (P2) forgets the combined total's peak and the drawdown alert's told state; the
+next complete ``holdings_refresh`` fire starts a new peak. The drawdown metric cannot tell a withdrawal
+from a loss, so this is the answer after any deposit or withdrawal. It writes governed state, so it runs
+in the lane as the service user (``docker exec -u 10001 thomas-scheduler-maint python -m
+scripts.holdings_board --reset-peak``) and refuses a host-side root run.
+
 Claude does not run the live read and does not handle the keys.
 """
 
@@ -36,9 +43,11 @@ if str(ROOT) not in sys.path:
 
 from runtime.mvp_runtime import timeutil  # noqa: E402
 from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, force_utf8_io  # noqa: E402
-from runtime.mvp_runtime.errors import ToolError  # noqa: E402
+from runtime.mvp_runtime.errors import MvpRuntimeError, ToolError  # noqa: E402
+from runtime.mvp_runtime.holdings import combined  # noqa: E402
 from runtime.mvp_runtime.holdings.board import render_full  # noqa: E402
-from runtime.mvp_runtime.holdings.store import load_holdings_view  # noqa: E402
+from runtime.mvp_runtime.holdings.store import load_holdings_view, state_dir  # noqa: E402
+from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run  # noqa: E402
 from runtime.mvp_runtime.holdings.toss_account import read_holdings  # noqa: E402
 
 LIVE_READ_NOTICE = (
@@ -53,8 +62,21 @@ def main(argv: list[str] | None = None) -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--json", action="store_true", help="the stored aggregate as JSON")
     mode.add_argument("--full", action="store_true", help="a live read with every holding (terminal only)")
+    mode.add_argument("--reset-peak", action="store_true",
+                      help="forget the combined peak and the drawdown told-state (after a deposit/withdrawal)")
     parser.add_argument("--timeout", type=int, default=10, help="seconds per request (--full)")
     args = parser.parse_args(argv)
+
+    if args.reset_peak:
+        try:
+            assert_not_foreign_root_run()
+        except MvpRuntimeError as exc:
+            print(f"refused ({exc.reason_code}): {exc}")
+            return EXIT_BLOCKED
+        removed = combined.reset_peak(state_dir())
+        print("reset: " + (", ".join(removed) if removed else "nothing to reset")
+              + " — the next complete holdings_refresh fire starts a new peak")
+        return EXIT_OK
 
     if args.full:
         snapshot, reason_code = read_holdings(timeout_seconds=args.timeout)

@@ -48,6 +48,9 @@ class HoldingsSnapshot:
     collected_at: str
     latency_ms: int
     warnings: tuple[str, ...] = field(default_factory=tuple)
+    # The USD->KRW mid-rate this read used, for the P2 combined total in the same process. In-process
+    # only: board.aggregate_view does not carry it, so it is never stored, rendered or sent.
+    usd_krw_rate: float | None = None
 
 
 class HoldingsFeed(Protocol):

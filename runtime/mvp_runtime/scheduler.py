@@ -1442,9 +1442,26 @@ def _execute(
         # A read of the broker account through the holdings lane's own gate; writes the aggregate
         # snapshot and nothing else. `refresh_snapshot` never raises, so a broker outage is a status
         # line, never a failed fire: the last good figure stays and the board shows its age.
+        # P2 (Thomas 2026-10-07): the same fire combines the Binance snapshot file and judges the
+        # drawdown from peak — alert only. An edge is told once on the operator channel (outbound, the
+        # lane already holds it); the told state moves only after delivery, so an undelivered message
+        # is offered again next fire, and a transport failure is a status line, never a failed fire.
+        from . import operator as operator_mod
         from .holdings import store as holdings_store
 
-        return holdings_store.refresh_snapshot(now=now, root=repo_root)
+        result = holdings_store.refresh(now=now, root=repo_root)
+        if result["alert"] is None:
+            return result["status"]
+        state, text = result["alert"]
+        try:
+            channel = operator_mod.select_operator_channel(now=now, root=repo_root)
+            operator_mod.notify_operator(channel, text, repo_root=repo_root)
+        except MvpRuntimeError as exc:
+            return f"{result['status']}; drawdown {state} not sent:{exc.reason_code}"
+        except Exception as exc:  # noqa: BLE001 — transport must not stop scheduling
+            return f"{result['status']}; drawdown {state} not sent:{type(exc).__name__}"
+        holdings_store.mark_told(state, now=now, root=repo_root)
+        return f"{result['status']}; drawdown {state} told"
     if schedule.kind == KIND_FORWARD_COHORT:
         # ALLOW-tier venue read, and writes to the cohort's own store alone: no pool, no forward
         # book, no candidates, no orders. A context that fails costs that context (named in the
