@@ -136,11 +136,18 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
         wallet, wallet_reason = None, type(exc).__name__
     wallet_status = (combined.WALLET_NOT_CONFIGURED if wallet is None and wallet_reason == "NOT_CONFIGURED"
                      else f"failed ({wallet_reason})" if wallet is None else combined.WALLET_OK)
+    # H5a entries, read once per fire: the allocation places by them, and a new baseline records their
+    # version (H5b).
+    try:
+        entries, entries_error = classification.load(state_dir(root)), None
+    except ToolError as exc:
+        entries, entries_error = None, exc.reason_code
     try:
         block = combined.combine(body, usd_krw_rate=snapshot.usd_krw_rate, root=base, now=now,
                                  state_dir=state_dir(root), wallet=wallet, wallet_status=wallet_status,
                                  toss_warnings=len(snapshot.warnings), toss_as_of=snapshot.collected_at,
-                                 toss_reconciliation_failures=combined.toss_reconciliation(snapshot))
+                                 toss_reconciliation_failures=combined.toss_reconciliation(snapshot),
+                                 mapping_version=entries.mapping_version if entries else None)
     except Exception as exc:  # noqa: BLE001 — the combined total must not cost the Toss snapshot
         block = None
         combined_note = f"combined not computed ({type(exc).__name__})"
@@ -152,10 +159,6 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
     # the combined total: a failure costs the board this block, never the Toss snapshot.
     parts: dict[str, Any] = {}
     try:
-        try:
-            entries, entries_error = classification.load(state_dir(root)), None
-        except ToolError as exc:
-            entries, entries_error = None, exc.reason_code
         body["allocation"], parts = allocation.allocate_with_parts(
             snapshot, body, block, wallet, entries, classification_error=entries_error)
     except Exception as exc:  # noqa: BLE001 — see the comment above
