@@ -3,6 +3,7 @@
     python -m scripts.holdings_board            # the stored aggregate (no call to Toss)
     python -m scripts.holdings_board --json     # the same, as JSON
     python -m scripts.holdings_board --full     # a LIVE read with every holding, terminal only
+    python -m scripts.holdings_board --local    # the last fire in full (by market, wallet, class), terminal only
     python -m scripts.holdings_board --reset-peak   # forget the combined peak (after a deposit/withdrawal)
 
 Read-only. It places nothing and has no flag that would let it.
@@ -21,13 +22,18 @@ run it where they are (``docker exec thomas-scheduler-maint python -m scripts.ho
 Without the gate it prints that it is not configured and exits 0. A failed read exits
 ``EXIT_BLOCKED`` with the error's reason code.
 
+**``--local``** (H3, Thomas 2026-10-08) renders the last fire's local file: the Toss account by market,
+Binance by wallet and sub-class and every class amount, which the stored snapshot leaves out under the
+single-holding rule (``holdings/disclosure.py``). No network. Terminal only, like ``--full``.
+
 **``--reset-peak``** (P2) forgets the combined total's peak and the drawdown alert's told state; the
 next complete ``holdings_refresh`` fire starts a new peak. The drawdown metric cannot tell a withdrawal
 from a loss, so this is the answer after any deposit or withdrawal. It writes governed state, so it runs
 in the lane as the service user (``docker exec -u 10001 thomas-scheduler-maint python -m
 scripts.holdings_board --reset-peak``) and refuses a host-side root run.
 
-Claude does not run the live read and does not handle the keys.
+Claude does not run the live read or ``--local`` (its output would reach a model provider), and does not
+handle the keys.
 """
 
 from __future__ import annotations
@@ -46,7 +52,7 @@ from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, force_utf8_io 
 from runtime.mvp_runtime.errors import MvpRuntimeError, ToolError  # noqa: E402
 from runtime.mvp_runtime.holdings import combined  # noqa: E402
 from runtime.mvp_runtime.holdings.board import render_full  # noqa: E402
-from runtime.mvp_runtime.holdings.store import load_holdings_view, state_dir  # noqa: E402
+from runtime.mvp_runtime.holdings.store import load_holdings_view, load_local_view, state_dir  # noqa: E402
 from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run  # noqa: E402
 from runtime.mvp_runtime.holdings.toss_account import read_holdings  # noqa: E402
 
@@ -62,6 +68,8 @@ def main(argv: list[str] | None = None) -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--json", action="store_true", help="the stored aggregate as JSON")
     mode.add_argument("--full", action="store_true", help="a live read with every holding (terminal only)")
+    mode.add_argument("--local", action="store_true",
+                      help="the last fire in full, from the local file (terminal only; no network)")
     mode.add_argument("--reset-peak", action="store_true",
                       help="forget the combined peak and the drawdown told-state (after a deposit/withdrawal)")
     parser.add_argument("--timeout", type=int, default=10, help="seconds per request (--full)")
@@ -84,6 +92,14 @@ def main(argv: list[str] | None = None) -> int:
         if snapshot is not None:
             print(LIVE_READ_NOTICE)
         if snapshot is None and reason_code != "NOT_CONFIGURED":
+            return EXIT_BLOCKED
+        return EXIT_OK
+
+    if args.local:
+        try:
+            print(load_local_view(now=timeutil.utc_now_iso()))
+        except ToolError as exc:
+            print(f"holdings    : local board unreadable ({exc.reason_code})")
             return EXIT_BLOCKED
         return EXIT_OK
 

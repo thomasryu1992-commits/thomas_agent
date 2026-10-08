@@ -8,10 +8,17 @@ out of the container that holds the Binance order key). Its ``holdings_refresh``
 account (appendix B, 2026-10-07) and writes what it saw here, and the doors render this file. The
 figure is therefore as old as the last fire, and every render says how old.
 
-**Only the aggregate is ever written.** The file holds :func:`board.aggregate_view` and three stamps,
-nothing else. So no symbol, name, per-symbol number or exchange rate exists on disk, and any door that
-renders this file is inside the external-send boundary by construction. The terminal's full board is
-a live read (``scripts/holdings_board.py --full``).
+**Only aggregates are ever written, in two files split by who reads them** (H3, Thomas 2026-10-08,
+``disclosure``). No symbol, name, per-symbol number or exchange rate exists on disk in either.
+
+- ``holdings_snapshot.json`` — what the doors render. One table (the allocation's asset classes against
+  the NAV) with the single-holding rule applied, and the status words. :func:`disclosure.external_view`
+  makes it; :data:`disclosure.LOCAL_ONLY_TOP_KEYS` and its siblings name what it leaves out.
+- ``holdings_local.json`` (:data:`LOCAL_FILENAME`) — the whole fire: Toss by market, Binance by wallet
+  and sub-class, every class amount. Read by ``scripts/holdings_board.py --local`` on the account
+  holder's terminal and by nothing else; a test pins that no door module names it.
+
+The terminal's per-symbol board is a live read (``scripts/holdings_board.py --full``).
 
 **Two files, as ``account_store`` keeps them.** The snapshot is the last SUCCESSFUL read, and the mark
 is the last ATTEMPT. A failed read moves the mark and leaves the last good figure in place.
@@ -37,12 +44,14 @@ from .. import timeutil
 from ..errors import ToolError
 from ..filelock import locked
 from ..paths import repo_root as _repo_root
-from . import allocation, binance_wallet, combined
+from . import allocation, binance_wallet, combined, disclosure
 from .board import aggregate_view, render_view
 from .toss_account import TossHoldingsFeed, read_holdings, select_holdings_feed
 
 STATE_REL = ".runtime_governance_state/holdings"
 SNAPSHOT_FILENAME = "holdings_snapshot.json"
+LOCAL_FILENAME = "holdings_local.json"
+LOCAL_RECORD_TYPE = "holdings_local.v1"
 REFRESH_MARK_FILENAME = "holdings_refresh.json"
 RECORD_TYPE = "holdings_snapshot.v1"
 
@@ -62,6 +71,10 @@ def state_dir(root: Path | None = None) -> Path:
 
 def snapshot_path(root: Path | None = None) -> Path:
     return state_dir(root) / SNAPSHOT_FILENAME
+
+
+def local_path(root: Path | None = None) -> Path:
+    return state_dir(root) / LOCAL_FILENAME
 
 
 def refresh_mark_path(root: Path | None = None) -> Path:
@@ -136,18 +149,30 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
     body["combined"] = block
     # Q9 (TOTAL_ASSET_ALLOCATION §11.1): class totals against the target, display only. Same rule as
     # the combined total: a failure costs the board this block, never the Toss snapshot.
+    parts: dict[str, Any] = {}
     try:
-        body["allocation"] = allocation.allocate(snapshot, body, block)
+        body["allocation"], parts = allocation.allocate_with_parts(snapshot, body, block, wallet)
     except Exception as exc:  # noqa: BLE001 — see the comment above
         body["allocation"] = None
         combined_note += f"; allocation not computed ({type(exc).__name__})"
+    # H3: the doors get one table under the single-holding rule; the whole fire goes to the local file.
+    # Without the allocation's makeup there is no table to judge, so nothing leaves but status words.
     try:
-        _write_json(snapshot_path(root), body, code="HOLDINGS_SNAPSHOT_LOCKED", label="holdings snapshot")
+        outward = disclosure.external_view(body, parts)
+        if body.get("allocation") is None and isinstance(outward.get("combined"), dict):
+            outward["combined"].update({"combined_total_krw": None, "peak_total_krw": None})
+    except Exception as exc:  # noqa: BLE001 — see the docstring
+        return {"status": f"holdings snapshot: not disclosed ({type(exc).__name__})", "alert": None}
+    try:
+        _write_json(local_path(root), {**body, "record_type": LOCAL_RECORD_TYPE},
+                    code="HOLDINGS_LOCAL_LOCKED", label="holdings local board")
+        _write_json(snapshot_path(root), outward, code="HOLDINGS_SNAPSHOT_LOCKED", label="holdings snapshot")
     except Exception as exc:  # noqa: BLE001 — see the docstring
         return {"status": f"holdings snapshot: not persisted ({type(exc).__name__})", "alert": None}
     edge = None
     if block is not None:
-        edge = combined.alert(block, told=combined.read_told(state_dir(root)), as_of=body["as_of"])
+        # The alert is a Telegram message, so it is built from what may leave.
+        edge = combined.alert(outward["combined"], told=combined.read_told(state_dir(root)), as_of=body["as_of"])
     return {"status": f"holdings snapshot: refreshed; {combined_note}", "alert": edge}
 
 
@@ -182,6 +207,20 @@ def _age_seconds(stamp: Any, now: str) -> float | None:
         return (timeutil.parse_iso(now) - timeutil.parse_iso(str(stamp))).total_seconds()
     except (TypeError, ValueError):
         return None
+
+
+def load_local_view(*, now: str, root: Path | None = None) -> str:
+    """The whole last fire, for the account holder's terminal only (``holdings_board --local``). Never
+    route this text to a door, a channel or a model prompt: that is what the stored snapshot is for."""
+    body = _read_json(local_path(root))
+    if body is None:
+        return "holdings    : no local board yet (written by the next holdings_refresh fire)"
+    age = _age_seconds(body.get("as_of"), now)
+    age_text = "unknown age" if age is None else f"{int(age // 60)} min old"
+    lines = ["LOCAL BOARD - terminal only; do not paste into a chat, a model prompt or a channel",
+             *render_view(body, stamp_line=f"{'as of':12}: {body.get('as_of')} ({age_text})")]
+    lines.extend(f"{'note':12}: {note}" for note in body.get("notes") or [])
+    return "\n".join(lines)
 
 
 def load_holdings_view(*, now: str, root: Path | None = None) -> tuple[str, dict[str, Any]]:

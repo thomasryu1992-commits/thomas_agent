@@ -406,15 +406,17 @@ def test_the_refresh_reads_the_wallet_and_stores_only_krw(monkeypatch, gate_open
     _venue(monkeypatch)
     _futures_file(tmp_path)
     assert store.refresh(now=NOW, root=tmp_path)["status"].startswith("holdings snapshot: refreshed")
-    body = json.loads(store.snapshot_path(tmp_path).read_text(encoding="utf-8"))
+    body = json.loads(store.local_path(tmp_path).read_text(encoding="utf-8"))
     # The fixture holds one coin with no USDT price: read, shown, and never called a complete NAV (H2).
     assert body["combined"]["crypto_wallet_status"] == combined.WALLET_UNPRICED
     assert body["combined"]["checks"]["valuation"] == combined.FAIL
     assert body["combined"]["portfolio_nav_complete"] is False
     assert body["combined"]["crypto_spot_krw"] == pytest.approx(920.0 * RATE)
     assert str(RATE) not in json.dumps(body)
-    text, _ = store.load_holdings_view(now=NOW, root=tmp_path)
-    assert "crypto spot" in text and "crypto mix" in text
+    assert "crypto spot" in store.load_local_view(now=NOW, root=tmp_path)
+    text, data = store.load_holdings_view(now=NOW, root=tmp_path)    # H3: the doors see no wallet figure
+    assert "crypto spot" not in text and "crypto mix" not in text
+    assert "crypto_spot_krw" not in data["combined"] and "crypto_classes_krw" not in data["combined"]
 
 
 def test_a_wallet_failure_still_lands_the_toss_snapshot(monkeypatch, gate_open, tmp_path):
@@ -428,7 +430,7 @@ def test_a_wallet_failure_still_lands_the_toss_snapshot(monkeypatch, gate_open, 
     monkeypatch.setattr(store, "read_holdings", lambda **_: (toss, None))
     monkeypatch.setattr(store, "_feed", lambda: None)
     assert store.refresh(now=NOW, root=tmp_path)["status"].startswith("holdings snapshot: refreshed")
-    body = json.loads(store.snapshot_path(tmp_path).read_text(encoding="utf-8"))
+    body = json.loads(store.local_path(tmp_path).read_text(encoding="utf-8"))
     assert body["combined"]["crypto_wallet_status"] == "failed (RuntimeError)"
     assert body["domestic_stock_krw"] == 1.0 and body["combined"]["complete"] is False
 

@@ -28,8 +28,9 @@ names are repeated below rather than imported.
 dollar (Thomas 2026-10-07, the P2 decision): one rate per fire, so every KRW figure on one board rests
 on the same rate, and the rate itself is never stored.
 
-**What leaves.** Per-asset quantities and prices stay in this process. Only KRW class totals reach the
-stored snapshot.
+**What leaves.** Per-asset quantities, prices and names stay in this process. The KRW class totals reach
+the terminal-only local file; the stored snapshot the doors read carries none of them (H3,
+``holdings.disclosure``).
 
 **Unverified until the first live read.** Binance has no testnet for ``/sapi``. Three things rest on
 the official docs alone:
@@ -143,6 +144,9 @@ class WalletSnapshot:
     warnings: tuple[str, ...] = field(default_factory=tuple)
     earn_truncated: bool = False
     invalid_rows: int = 0
+    # H3 (Thomas 2026-10-08): which assets make up each class, for the single-holding rule
+    # (``holdings.disclosure``). In-process only: no stored block carries it.
+    class_assets: Mapping[str, frozenset[str]] = field(default_factory=dict)
 
 
 class WalletFeed(Protocol):
@@ -350,6 +354,7 @@ class BinanceWalletFeed:
         needs_price = any(asset != QUOTE for asset in list(spot) + list(earn or {}))
         prices = self._prices(timeout_seconds=timeout_seconds) if needs_price else {}
         unpriced: set[str] = set()
+        members: dict[str, set[str]] = {name: set() for name in CLASSES}
 
         def by_class(holdings: Mapping[str, float]) -> dict[str, float]:
             totals = {name: 0.0 for name in CLASSES}
@@ -359,6 +364,8 @@ class BinanceWalletFeed:
                     unpriced.add(asset)
                     continue
                 totals[asset_class(asset)] += value
+                if value:
+                    members[asset_class(asset)].add(asset)
             return totals
 
         spot_usdt = by_class(spot)
@@ -375,6 +382,7 @@ class BinanceWalletFeed:
             warnings=tuple(warnings),
             earn_truncated=bool(truncated),
             invalid_rows=len(invalid),
+            class_assets={name: frozenset(assets) for name, assets in members.items() if assets},
         )
 
 
