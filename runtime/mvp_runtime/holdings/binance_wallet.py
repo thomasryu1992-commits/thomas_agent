@@ -147,6 +147,9 @@ class WalletSnapshot:
     # H3 (Thomas 2026-10-08): which assets make up each class, for the single-holding rule
     # (``holdings.disclosure``). In-process only: no stored block carries it.
     class_assets: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    # H5a (Thomas 2026-10-08): each priced asset's USDT value (spot plus Earn), so the allocation can
+    # place an asset the classification file names. In-process only, like ``class_assets``.
+    asset_usdt: Mapping[str, float] = field(default_factory=dict)
 
 
 class WalletFeed(Protocol):
@@ -355,6 +358,7 @@ class BinanceWalletFeed:
         prices = self._prices(timeout_seconds=timeout_seconds) if needs_price else {}
         unpriced: set[str] = set()
         members: dict[str, set[str]] = {name: set() for name in CLASSES}
+        per_asset: dict[str, float] = {}
 
         def by_class(holdings: Mapping[str, float]) -> dict[str, float]:
             totals = {name: 0.0 for name in CLASSES}
@@ -366,6 +370,7 @@ class BinanceWalletFeed:
                 totals[asset_class(asset)] += value
                 if value:
                     members[asset_class(asset)].add(asset)
+                    per_asset[asset] = per_asset.get(asset, 0.0) + value
             return totals
 
         spot_usdt = by_class(spot)
@@ -383,6 +388,7 @@ class BinanceWalletFeed:
             earn_truncated=bool(truncated),
             invalid_rows=len(invalid),
             class_assets={name: frozenset(assets) for name, assets in members.items() if assets},
+            asset_usdt=dict(per_asset),
         )
 
 
