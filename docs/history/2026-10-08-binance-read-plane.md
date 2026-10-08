@@ -71,3 +71,27 @@
   credential: Thomas revokes it in Binance and removes its two lines from `.env`.
 - **Not done here:** H1-c (the testnet egress stage guard) and H2 (valuation completeness). The first
   live read-only probe is recorded after the deploy.
+- **First live read-only probe (2026-10-08, after deploying `candidate-1178`):**
+  - Machine state: execution stage `PAPER`, live gate `CLOSED` (`MVP_LIVE_TRADING` empty; the write plane
+    selects `DryRunOrderAdapter`), armed strategies 0.
+  - The read plane read the venue with the key Thomas issued ("Enable Reading" only). The table records
+    the plane, the method and the outcome only; no symbol, quantity, balance or price was recorded.
+
+    | Endpoint | Key | Method | Result |
+    |---|---|---|---|
+    | futures account `/fapi/v2/account` (income windows read) | READ_KEY | GET | PASS |
+    | positions (same response) | READ_KEY | GET | PASS (open positions 0) |
+    | resting orders `/fapi/v1/openOrders` | READ_KEY | GET | PASS (0) |
+    | resting algo orders `/fapi/v1/openAlgoOrders` | READ_KEY | GET | PASS (0) |
+    | spot account `/api/v3/account` | READ_KEY | GET | PASS |
+    | Simple Earn flexible `/sapi/v1/simple-earn/flexible/position` | READ_KEY | GET | PASS |
+    | Simple Earn locked `/sapi/v1/simple-earn/locked/position` | READ_KEY | GET | PASS |
+
+  - `list_resting_orders --json` answered `asked_the_venue: true` with the live gate closed.
+  - The trading credential plane is configured (`<set>`). Its probe was NOT_ATTEMPTED because the live
+    gate is closed: the board signs with the trading key only in a process that holds the live opt-in.
+  - The spot and Earn reads ran in one `docker exec -e MVP_BINANCE_WALLET=binance_wallet` process. The
+    wallet gate was empty in both services' environments and absent from `.env`, before and after.
+  - A successful probe is not an activation. The wallet is not in the combined NAV; that belongs to H2.
+    The spot wallet and flexible Earn hold assets the board does not yet count, so H2's completeness
+    rules (unpriced assets, truncation) apply to a non-empty wallet.
