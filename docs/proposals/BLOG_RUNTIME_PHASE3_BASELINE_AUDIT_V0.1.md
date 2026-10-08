@@ -185,7 +185,7 @@
 
 | 범위 | 명령 | 결과 |
 |---|---|---|
-| Runtime 블로그 (14개 파일: `test_blog_content_package_schema`, `test_mvp_runtime_blog_{budget,content,draft_model,overlap,platform,queue_seeds,rank,selection,structured,tistory}`, `test_mvp_runtime_naver_research`, `test_record_published_url`, `test_score_blog_draft`) | worktree에서 `/root/thomas_agent/.venv/bin/python -m pytest -q -p no:cacheprovider --basetemp=<scratch> <파일들>` | **463 passed, 5 skipped** (skip 5 = `no local Core activation`, 기존 Core-gated). 명세의 참고값 365보다 많다 — 이후 테스트가 늘었다 |
+| Runtime 블로그 (14개 파일: `test_blog_content_package_schema`, `test_mvp_runtime_blog_{budget,content,draft_model,overlap,platform,queue_seeds,rank,selection,structured,tistory}`, `test_mvp_runtime_naver_research`, `test_record_published_url`, `test_score_blog_draft`) | worktree에서 `/root/thomas_agent/.venv/bin/python -m pytest -q -p no:cacheprovider --basetemp=<scratch> <파일들>` | **463 passed, 5 skipped** (skip 5 = `no local Core activation`, 기존 Core-gated). 명세의 참고값 365와 같은 커밋이며, 차이는 파일 선택 범위다(명세 §10.2의 9개 vs 여기 14개) |
 | 외부 7종 (`blog-affiliate`, `blog-preflight`, `blog-taxonomy`, `blog-weekly`, `decision-gold`, `kw-decision`, `travel-preflight` `.test.py`) | `python3 ~/.claude/scripts/<t>.test.py` | **7/7 ALL PASS**, Vault 미커밋 0→0 |
 | CI | 이 PR은 문서만 바꾼다 | 필수 5개 체크로 확인 |
 
