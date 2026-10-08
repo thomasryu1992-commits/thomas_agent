@@ -139,7 +139,8 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
     try:
         block = combined.combine(body, usd_krw_rate=snapshot.usd_krw_rate, root=base, now=now,
                                  state_dir=state_dir(root), wallet=wallet, wallet_status=wallet_status,
-                                 toss_warnings=len(snapshot.warnings))
+                                 toss_warnings=len(snapshot.warnings), toss_as_of=snapshot.collected_at,
+                                 toss_reconciliation_failures=combined.toss_reconciliation(snapshot))
     except Exception as exc:  # noqa: BLE001 — the combined total must not cost the Toss snapshot
         block = None
         combined_note = f"combined not computed ({type(exc).__name__})"

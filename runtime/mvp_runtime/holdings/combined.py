@@ -44,8 +44,17 @@ are on. So one ``complete`` is split in four, and the old key stays as an alias 
   inside its stale window. Toss and the wallet are read live by this fire, so they have no window.
 
 ``portfolio_nav_complete`` is the AND of :data:`REQUIRED_CHECKS`, and ``checks`` lists every check with
-``PASS``/``FAIL``/``NOT_EVALUATED``. Snapshot coherence and reconciliation are H4's; they show
-``NOT_EVALUATED`` and are not required until H4 adds them to :data:`REQUIRED_CHECKS` (D-H2-6). While the
+``PASS``/``FAIL``/``NOT_EVALUATED``. Since H4-min (Thomas 2026-10-08, D-H2-5) all five are required:
+
+- ``coherence``: the included sources describe one moment. Each included source's own time
+  (``source_as_of``: the Toss read, the futures snapshot file, the wallet read) is known, and the
+  spread between the earliest and the latest (``snapshot_skew_seconds``) is at most
+  :data:`MAX_SNAPSHOT_SKEW_SECONDS`. The futures file is written every 15 minutes, so a normal fire
+  sees up to about 15; the limit allows one missed write. A time that is missing or unreadable fails.
+- ``reconciliation``: where a source gives both an aggregate and its items, they agree. That is Toss:
+  each market's overview subtotal against the sum of its holdings (:func:`toss_reconciliation`), within
+  :data:`RECONCILE_RELATIVE` or one minor unit. The futures margin and the wallet are not totals of
+  items this lane reads, so they have nothing to reconcile. Not computed reads as a failure. While the
 NAV is incomplete, ``combined_total_krw`` is ``None``, the peak does not move and there is no drawdown
 verdict (D-H2-8). No summed partial figure is produced: the parts are each on the board already, and a
 sum of some of them is the number most easily mistaken for the whole (D-H2-7).
@@ -93,8 +102,12 @@ CHECK_FRESHNESS = "freshness"
 CHECK_COHERENCE = "coherence"
 CHECK_RECONCILIATION = "reconciliation"
 CHECKS = (CHECK_COVERAGE, CHECK_VALUATION, CHECK_FRESHNESS, CHECK_COHERENCE, CHECK_RECONCILIATION)
-# D-H2-4/5: H4 appends coherence and reconciliation here, and implements them.
-REQUIRED_CHECKS = (CHECK_COVERAGE, CHECK_VALUATION, CHECK_FRESHNESS)
+# D-H2-4/5: H4-min (Thomas 2026-10-08) appended coherence and reconciliation.
+REQUIRED_CHECKS = (CHECK_COVERAGE, CHECK_VALUATION, CHECK_FRESHNESS, CHECK_COHERENCE, CHECK_RECONCILIATION)
+# H4-min: the widest spread of source times one NAV may rest on (module docstring).
+MAX_SNAPSHOT_SKEW_SECONDS = 30 * 60
+# H4-min: aggregate vs items, relative tolerance; one minor unit (1 KRW, 0.01 USD) is always allowed.
+RECONCILE_RELATIVE = 0.0005
 PASS = "PASS"
 FAIL = "FAIL"
 NOT_EVALUATED = "NOT_EVALUATED"
@@ -135,6 +148,11 @@ COMBINED_KEYS = frozenset({
     "valuation_complete",
     "freshness_complete",
     "portfolio_nav_complete",
+    # H4-min: times and failure codes, no amount.
+    "source_as_of",
+    "snapshot_skew_seconds",
+    "max_snapshot_skew_seconds",
+    "reconciliation_failures",
     "peak_total_krw",
     "peak_at",
     "drawdown_pct",
@@ -224,8 +242,51 @@ def _source(included: bool, reason: str | None = None) -> dict[str, Any]:
     return {"included": included, "reason": None if included else reason}
 
 
+def toss_reconciliation(snapshot: Any) -> list[str]:
+    """Failure codes for Toss's aggregate against its items, per market; empty when they agree.
+
+    Domestic: the overview's KRW subtotal against the KRW items. Overseas: the converted USD subtotal
+    against the USD items at the same rate. An item with no value, or in the other currency, fails."""
+    failures: list[str] = []
+    rate = getattr(snapshot, "usd_krw_rate", None)
+    for market, totals, currency, factor, floor in (
+            ("domestic", snapshot.domestic, "KRW", 1.0, 1.0),
+            ("overseas", snapshot.overseas, "USD", rate, 0.01 * (rate or 0.0))):
+        items = [h for h in snapshot.holdings if h.market == market]
+        total = getattr(totals, "holdings_value_krw", None)
+        if total is None:
+            failures.append(f"{market}_total_unread")
+            continue
+        if any(h.value is None or str(h.currency).upper() != currency for h in items):
+            failures.append(f"{market}_item_unreadable")
+            continue
+        if items and factor is None:
+            failures.append(f"{market}_rate_unread")
+            continue
+        summed = sum(h.value for h in items) * (factor or 0.0)
+        if abs(summed - total) > max(floor, RECONCILE_RELATIVE * abs(total)):
+            failures.append(f"{market}_mismatch")
+    return failures
+
+
+def _coherence(times: dict[str, Any], now: str) -> tuple[bool, float | None]:
+    """(PASS, spread in seconds) over the included sources' own times."""
+    stamps = []
+    for stamp in times.values():
+        age = _age_seconds(stamp, now)
+        if age is None:
+            return False, None
+        stamps.append(age)
+    if not stamps:
+        return False, None
+    skew = max(stamps) - min(stamps)
+    return skew <= MAX_SNAPSHOT_SKEW_SECONDS, skew
+
+
 def judge(toss_view: dict[str, Any], *, crypto_status: str, crypto_krw: float | None,
-          wallet_block: dict[str, Any], toss_warnings: int = 0) -> dict[str, Any]:
+          wallet_block: dict[str, Any], toss_warnings: int = 0, now: str = "",
+          source_times: dict[str, Any] | None = None,
+          toss_reconciliation_failures: list[str] | None = None) -> dict[str, Any]:
     """H2's verdict over the declared scope: ``sources``, ``checks`` and the five flags. Amount-free."""
     wallet_status = wallet_block["crypto_wallet_status"]
     toss_total = toss_view.get("known_total_krw")
@@ -248,10 +309,15 @@ def judge(toss_view: dict[str, Any], *, crypto_status: str, crypto_krw: float | 
     valuation = (toss_read and not toss_warnings and crypto_status not in ("no_rate", "not_usdt")
                  and (not wallet_read or wallet_status == WALLET_OK))
     freshness = crypto_status != "stale"
+    times = {name: (source_times or {}).get(name) for name, row in sources.items() if row["included"]}
+    coherent, skew = _coherence(times, now)
+    recon = ["not_computed"] if toss_reconciliation_failures is None else list(toss_reconciliation_failures)
     checks = {name: NOT_EVALUATED for name in CHECKS}
     checks.update({CHECK_COVERAGE: PASS if coverage else FAIL,
                    CHECK_VALUATION: PASS if valuation else FAIL,
-                   CHECK_FRESHNESS: PASS if freshness else FAIL})
+                   CHECK_FRESHNESS: PASS if freshness else FAIL,
+                   CHECK_COHERENCE: PASS if coherent else FAIL,
+                   CHECK_RECONCILIATION: FAIL if recon else PASS})
     nav = all(checks[name] == PASS for name in REQUIRED_CHECKS)
     return {
         "scope_version": PORTFOLIO_SCOPE_VERSION,
@@ -263,16 +329,24 @@ def judge(toss_view: dict[str, Any], *, crypto_status: str, crypto_krw: float | 
         "freshness_complete": freshness,
         "portfolio_nav_complete": nav,
         "complete": nav,
+        "source_as_of": times,
+        "snapshot_skew_seconds": None if skew is None else round(skew, 1),
+        "max_snapshot_skew_seconds": MAX_SNAPSHOT_SKEW_SECONDS,
+        "reconciliation_failures": recon,
     }
 
 
 def combine(toss_view: dict[str, Any], *, usd_krw_rate: float | None, root: Path, now: str,
             state_dir: Path, wallet: Any = None,
-            wallet_status: str = WALLET_NOT_CONFIGURED, toss_warnings: int = 0) -> dict[str, Any]:
+            wallet_status: str = WALLET_NOT_CONFIGURED, toss_warnings: int = 0,
+            toss_as_of: str | None = None,
+            toss_reconciliation_failures: list[str] | None = None) -> dict[str, Any]:
     """The combined block, and the peak file moved when (and only when) the portfolio NAV is complete (H2).
 
     ``toss_warnings`` is the Toss read's parse-warning count: a field the Toss total rests on was missing
-    or not numeric, so the total is a lower bound."""
+    or not numeric, so the total is a lower bound. ``toss_as_of`` is the Toss read's time and
+    ``toss_reconciliation_failures`` :func:`toss_reconciliation`'s answer (H4-min); either missing fails
+    its check."""
     usdt, crypto_as_of, crypto_status = read_binance(root, now=now)
     crypto_krw = None if usdt is None or usd_krw_rate is None else usdt * usd_krw_rate
     if usdt is not None and usd_krw_rate is None:
@@ -281,8 +355,12 @@ def combine(toss_view: dict[str, Any], *, usd_krw_rate: float | None, root: Path
     wallet_status = wallet_block["crypto_wallet_status"]
     wallet_krw = (wallet_block["crypto_spot_krw"] or 0) + (wallet_block["crypto_earn_krw"] or 0)
     toss_total = toss_view.get("known_total_krw")
+    wallet_as_of = getattr(wallet, "collected_at", None)
+    source_times = {SOURCE_TOSS: toss_as_of, SOURCE_FUTURES: crypto_as_of,
+                    SOURCE_SPOT: wallet_as_of, SOURCE_EARN: wallet_as_of}
     verdict = judge(toss_view, crypto_status=crypto_status, crypto_krw=crypto_krw, wallet_block=wallet_block,
-                    toss_warnings=toss_warnings)
+                    toss_warnings=toss_warnings, now=now, source_times=source_times,
+                    toss_reconciliation_failures=toss_reconciliation_failures)
     complete = verdict["portfolio_nav_complete"]
     total = (toss_total or 0) + (crypto_krw or 0) + wallet_krw if complete else None
 
