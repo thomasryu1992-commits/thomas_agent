@@ -302,8 +302,8 @@ services:
       # This lane therefore holds the read key AND the trading keys, because the snapshot refresh rides a
       # risk-lane fire. Separation candidate (recorded, not done): move the snapshot refresh and the
       # resting-orders read to a maintenance kind on scheduler-maint (or a reader service), leaving this
-      # lane with the trading keys only. scheduler-maint gets this pair only when its wallet read is
-      # switched on (after H2-H4); until then no other service receives it.
+      # lane with the trading keys only. scheduler-maint also receives this pair since the wallet
+      # activation (Thomas 2026-10-08, after H2-H4); no other service does.
       BINANCE_READ_API_KEY: ${BINANCE_READ_API_KEY:-}
       BINANCE_READ_API_SECRET: ${BINANCE_READ_API_SECRET:-}
       MVP_LIVE_TRADING: ${MVP_LIVE_TRADING:-}
@@ -414,6 +414,11 @@ services:
       # dedicated venue read-only key exists (H1-b); with the gate on and no key it fails closed
       # (NO_API_KEY), which the combined total reads as incomplete.
       MVP_BINANCE_WALLET: ${MVP_BINANCE_WALLET:-}
+      # Wallet activation (Thomas 2026-10-08, after H2-H4): the dedicated read-only pair (H1-b, "Enable
+      # Reading" only, IP-restricted) — the only Binance credential this lane holds. Nothing falls back
+      # from it to a trading key; the feed reaches four GET paths and has no order method.
+      BINANCE_READ_API_KEY: ${BINANCE_READ_API_KEY:-}
+      BINANCE_READ_API_SECRET: ${BINANCE_READ_API_SECRET:-}
 
   # The read-only door. Same shape as `switch-bridge` and deliberately a second service:
   # different authority (INTERNAL_READ + kill_allows read_only_status, not the emergency
