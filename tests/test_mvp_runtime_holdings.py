@@ -158,6 +158,8 @@ def gate_open(monkeypatch, creds):
 
 
 def _toss(monkeypatch, **kwargs) -> _Toss:
+    # The read is stamped at the test's clock, as a fire's read is at the fire's (H4-min coherence).
+    monkeypatch.setattr(toss_account.timeutil, "utc_now_iso", lambda: NOW)
     fake = _Toss(**kwargs)
     monkeypatch.setattr(toss_account.urllib.request, "urlopen", fake)
     return fake
@@ -665,6 +667,10 @@ def _clean_wallet():
 
 
 def _combine(toss_view, **kwargs):
+    """A complete scope that also agrees with itself (H4-min): the Toss read at the fire's time, its
+    aggregate matching its items."""
+    kwargs.setdefault("toss_as_of", kwargs.get("now", NOW))
+    kwargs.setdefault("toss_reconciliation_failures", [])
     return combined.combine(toss_view, wallet=_clean_wallet(), wallet_status=combined.WALLET_OK, **kwargs)
 
 

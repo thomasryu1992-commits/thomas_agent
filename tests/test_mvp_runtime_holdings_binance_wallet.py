@@ -316,8 +316,11 @@ def _futures_file(root: pathlib.Path, margin: float = 76.0, as_of: str = NOW) ->
 
 
 def _combine(tmp_path, wallet, status, rate=RATE):
+    import dataclasses
+    if wallet is not None:   # read at the fire's time, as the Toss side is (H4-min coherence)
+        wallet = dataclasses.replace(wallet, collected_at=NOW)
     return combined.combine(TOSS_VIEW, usd_krw_rate=rate, root=tmp_path, now=NOW, state_dir=tmp_path / "h",
-                            wallet=wallet, wallet_status=status)
+                            wallet=wallet, wallet_status=status, toss_as_of=NOW, toss_reconciliation_failures=[])
 
 
 def test_the_wallet_joins_the_total_at_the_toss_rate(monkeypatch, gate_open, tmp_path):

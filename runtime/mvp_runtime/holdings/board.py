@@ -186,6 +186,12 @@ def render_nav(block: dict[str, Any]) -> list[str]:
     lines = [f"{'portfolio NAV':12}: n/a -- INCOMPLETE ({scope}; failed: {', '.join(failed) or 'none'})"]
     if excluded:
         lines.append(f"{'excluded':12}: {', '.join(excluded)}")
+    if checks.get("coherence") == "FAIL":
+        skew = block.get("snapshot_skew_seconds")
+        lines.append(f"{'source skew':12}: {'unknown' if skew is None else f'{skew:.0f}s'} "
+                     f"(max {block.get('max_snapshot_skew_seconds')}s)")
+    if checks.get("reconciliation") == "FAIL":
+        lines.append(f"{'reconcile':12}: {', '.join(block.get('reconciliation_failures') or ['failed'])}")
     lines.append(f"{'note':12}: no peak update, no drawdown or allocation verdict until the NAV is complete")
     return lines
 

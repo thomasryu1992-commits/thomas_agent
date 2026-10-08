@@ -35,17 +35,19 @@ def _wallet(**changes) -> binance_wallet.WalletSnapshot:
 
 
 def _combine(tmp_path, *, toss=TOSS, wallet=None, wallet_status=combined.WALLET_OK, rate=RATE, now=NOW,
-             toss_warnings=0):
+             toss_warnings=0, toss_as_of=NOW, recon=()):
     return combined.combine(toss, usd_krw_rate=rate, root=tmp_path, now=now, state_dir=tmp_path / "h",
                             wallet=_wallet() if wallet is None and wallet_status == combined.WALLET_OK else wallet,
-                            wallet_status=wallet_status, toss_warnings=toss_warnings)
+                            wallet_status=wallet_status, toss_warnings=toss_warnings, toss_as_of=toss_as_of,
+                            toss_reconciliation_failures=list(recon))
 
 
 def test_the_declared_scope_and_the_required_checks_are_the_decided_ones():
     assert combined.PORTFOLIO_SCOPE_VERSION == "v1"
     assert combined.PORTFOLIO_SCOPE == ("toss", "binance_futures", "binance_spot", "binance_earn")   # D-H2-2
-    assert combined.REQUIRED_CHECKS == ("coverage", "valuation", "freshness")                      # D-H2-4
-    assert set(combined.CHECKS) - set(combined.REQUIRED_CHECKS) == {"coherence", "reconciliation"}  # D-H2-5
+    assert combined.REQUIRED_CHECKS[:3] == ("coverage", "valuation", "freshness")                  # D-H2-4
+    assert combined.REQUIRED_CHECKS[3:] == ("coherence", "reconciliation")                         # D-H2-5, H4-min
+    assert set(combined.CHECKS) == set(combined.REQUIRED_CHECKS)
 
 
 def test_a_complete_scope_is_a_nav_and_starts_a_scoped_peak(tmp_path):
@@ -56,7 +58,7 @@ def test_a_complete_scope_is_a_nav_and_starts_a_scoped_peak(tmp_path):
     assert all(block[key] is True for key in ("source_fetch_complete", "coverage_complete",
                                               "valuation_complete", "freshness_complete"))
     assert block["checks"] == {"coverage": "PASS", "valuation": "PASS", "freshness": "PASS",
-                               "coherence": "NOT_EVALUATED", "reconciliation": "NOT_EVALUATED"}   # D-H2-6
+                               "coherence": "PASS", "reconciliation": "PASS"}
     assert block["combined_total_krw"] == pytest.approx(10_000_000.0 + (100.0 + 50.0 + 25.0) * RATE)
     assert all(row == {"included": True, "reason": None} for row in block["sources"].values())
     assert block["drawdown_state"] == combined.STATE_INITIALIZED
