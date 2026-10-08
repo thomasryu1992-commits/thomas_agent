@@ -78,7 +78,7 @@
 | 품질 평가 | `blog-preflight.py` FAIL 0 필수, `blog-variety.py` (V11 FAIL·V13/V14/V15 WARN 해소, V16 WARN) | ACTIVE |
 | 보관 | Vault `content/naver/NN편-*.md`, `status: draft`, `scheduled:` = 올릴 날 | ACTIVE |
 | 검토·발행 | Thomas가 직접 업로드 | ACTIVE (사람) |
-| URL 기록 | Vault 프론트매터 `url:` (98편 중 97편 채워짐); effective published는 RSS 대조로 승격만 | ACTIVE |
+| URL 기록 | Vault 프론트매터 `url:` — published 72편 모두 채워짐, draft 26편은 빈칸(2026-10-08 정정: 처음 적은 '98편 중 97편'은 집계 정규식 오류); effective published는 RSS 대조로 승격만 | ACTIVE |
 | 성과 | `rank_track`(실제 블로그 탭), `blog-weekly.py`(RSS·공감·댓글), 조회수는 사람이 옮김 | ACTIVE |
 | Slot C | 원고 작업 앞뒤 스냅샷 → `slotc --before … --run-source cron` 그림자 기록 | ACTIVE (shadow) |
 
@@ -141,7 +141,7 @@
 | 식별자 | 어디에 | 상태 |
 |---|---|---|
 | Vault Article ID | 파일 경로 `content/naver/NN편-slug.md`(제휴 배치본은 `제휴/NN편-…`, 같은 번호 체계), `content/tistory/NN-slug.md` + `episode` | 존재 |
-| Published URL | Vault 프론트매터 `url:` — Naver 98편 중 97, Tistory 91편 중 91 | 존재 (강한 식별자: Naver logNo, Tistory `/N`) |
+| Published URL | Vault 프론트매터 `url:` — Naver 98편 중 72(published 전부, draft 26편은 빈칸), Tistory 91편 중 91(예약 22편도 주소가 정해져 있음). 2026-10-08 정정: 처음 적은 'Naver 97'은 집계 정규식 오류 | 존재 (강한 식별자: Naver logNo, Tistory `/N`) |
 | Tistory ↔ Naver | Tistory `source: "[[NN편-…]]"` | 존재 |
 | Runtime Package ID | `bcp_*` 57개 (Ledger) | **57/57 UNLINKED** — Vault 원고에 `bcp_` 언급 0, Runtime에 published_url 0 |
 | Rank Snapshot | Vault `history/*.json` (키: 원고 파일 + 키워드, 실제 블로그 탭) / Runtime `blog_rank_snapshot` | Vault 존재 · Runtime 0행 |
