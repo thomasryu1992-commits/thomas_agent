@@ -65,7 +65,7 @@ from ..paths import repo_root as _repo_root
 from . import account_store, breaker_watch, pool, pre_order_gate
 from .account import (
     ACCOUNT_API_KEY_ENV, ACCOUNT_API_SECRET_ENV, ACCOUNT_FEED_ENV, BINANCE_ACCOUNT, PLANE_READ,
-    READ_API_KEY_ENV, READ_API_SECRET_ENV, read_account,
+    PLANE_TRADING, READ_API_KEY_ENV, READ_API_SECRET_ENV, read_account,
 )
 from .cycle import LIVE_ALLOWANCE_SPENT
 from .feed_assembly import OPTIONAL_DATA_DEGRADED_CODES
@@ -807,11 +807,27 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
                 account_error = "account read returned no realized figure"
         except MvpRuntimeError as exc:      # degrade, never block — the R3 posture
             account_error = exc.reason_code
+    # The write plane's own account, validated by a READ with its key (H1-b). Only in the process that
+    # holds the live opt-in — the trading process, where the leg reads on PLANE_TRADING before it enters —
+    # so account readiness there rests on the plane the leg uses, never on the read plane's health or on a
+    # credential merely being set. Anywhere else (the live gate closed, a console) the board never signs
+    # with the trading key. A GET, like every account read; it grants nothing.
+    trading_readable: bool | None = None
+    trading_error: str | None = None
+    if opted_in and trading_account_configured:
+        try:
+            trading_snapshot, trading_record = read_account(plane=PLANE_TRADING, root=root)
+            trading_readable = trading_snapshot is not None
+            if not trading_readable:
+                trading_error = (trading_record or {}).get("error_reason_code")
+        except MvpRuntimeError as exc:      # degrade, never block
+            trading_readable, trading_error = False, exc.reason_code
     # The account for the readiness state (PR5a): this process's own read where it has a feed,
     # otherwise the trading process's stored snapshot.
     account_fact = (
         {"source": SOURCE_THIS_PROCESS, "configured": True, "readable": snapshot is not None,
-         "error": account_error, "trading_configured": trading_account_configured}
+         "error": account_error, "trading_configured": trading_account_configured,
+         "trading_readable": trading_readable, "trading_error": trading_error}
         if account_configured else
         _recorded_account(root, now=now, limit_usdt=limits.daily_loss_limit_usdt)
     )
@@ -1013,8 +1029,10 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         "trading_account_credentials",
         trading_account_configured,
         f"write-plane account read: {ACCOUNT_FEED_ENV}={'on' if os.environ.get(ACCOUNT_FEED_ENV, '').strip().lower() == BINANCE_ACCOUNT else 'off'}, "
-        f"{ACCOUNT_API_KEY_ENV}={_set(ACCOUNT_API_KEY_ENV)}, {ACCOUNT_API_SECRET_ENV}={_set(ACCOUNT_API_SECRET_ENV)} "
-        "- credentials present is not execution permission",
+        f"{ACCOUNT_API_KEY_ENV}={_set(ACCOUNT_API_KEY_ENV)}, {ACCOUNT_API_SECRET_ENV}={_set(ACCOUNT_API_SECRET_ENV)}; "
+        + ("trading-plane read: " + ("ok" if trading_readable else f"FAILED ({trading_error})")
+           if trading_readable is not None else "trading-plane read: not run (live trading not opted in here)")
+        + " - credentials present is not execution permission",
     ))
 
     # 8b. Market data — a live PRECONDITION, not a nicety. Without the opt-in the collector is

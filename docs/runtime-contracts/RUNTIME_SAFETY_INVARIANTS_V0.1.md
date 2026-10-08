@@ -44,20 +44,33 @@ the test that pins it. A flag that is not in the code is not safety evidence.
 
 | Separation | Status |
 |---|---|
-| Credential plane (read key vs trading key, no fallback) | **COMPLETE** |
-| Code path (observation on `PLANE_READ`, the write plane's own reads on `PLANE_TRADING`, pinned per caller) | **COMPLETE** |
-| Process / container isolation | **NOT COMPLETE**: `scheduler` still owns both the read-only key and the trading credentials |
+| Credential namespace (`BINANCE_READ_API_*` vs the trading pair and the order key) | **COMPLETE** |
+| Fallback removal (no plane signs with another plane's key) | **COMPLETE** |
+| Read/write interface (observation on `PLANE_READ`; the write plane's own reads on `PLANE_TRADING`, pinned per caller; the read feed has no write method) | **COMPLETE** |
+| Process / container isolation | **DEFERRED**: `scheduler` still owns both the read-only key and the trading credentials (temporary architecture) |
 
-The future separation candidate is to move the account snapshot refresh and the resting-orders read to a
-maintenance kind on `scheduler-maint`, or to a dedicated reader service, leaving the scheduler with the
-trading keys only. No service split was made in H1-b.
+The future separation candidate is a dedicated `portfolio-reader` service, or a maintenance kind on
+`scheduler-maint`, that takes the account snapshot refresh and the resting-orders read and leaves the
+scheduler with the trading keys only. No service split was made in H1-b.
 
 **The readiness board says which plane it means.** `venue_read_visibility` is the READ plane and is for
 observation only. **READ visibility PASS does not mean the trading account plane is ready.**
 `trading_account_credentials` shows the write plane's account pair as `<set>`/`<unset>` (names only,
-never a value). In the trading process, a missing trading pair fails the account component
-(`TRADING_ACCOUNT_NOT_CONFIGURED`) even when the read plane is healthy. Neither row, and no credential,
-grants execution permission.
+never a value). In the process that holds the live opt-in, it also reports an actual GET with that pair's
+key.
+
+In that process, account readiness requires both:
+
+- the trading pair configured, or the component fails `TRADING_ACCOUNT_NOT_CONFIGURED`;
+- the trading-plane read succeeding, or the component fails `TRADING_ACCOUNT_UNREADABLE`.
+
+A healthy read plane, or a trading key that is merely set, never makes `account_ready` true. With the
+live gate closed, the board never signs with the trading key. Neither row, and no credential, grants
+execution permission.
+
+**Follow-up debt:** the Hermes operator skill (`integrations/hermes/config/skills/thomas-ops/SKILL.md`)
+still names the old `account_visibility` row. Renaming it there is a separate change, because it needs a
+MANIFEST update, a host install and `/new`.
 
 ## At `PAPER`
 

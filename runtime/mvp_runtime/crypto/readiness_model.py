@@ -349,10 +349,14 @@ def _account_component(inputs: Mapping[str, Any], *, opted: bool) -> dict[str, A
     if opted and not account.get("configured"):
         # The leg reads the account before it enters and refuses without it.
         return _component(False, "ACCOUNT_FEED_NOT_CONFIGURED", source=SOURCE_THIS_PROCESS)
-    if opted and account.get("source") == SOURCE_THIS_PROCESS and account.get("trading_configured") is False:
-        # H1-b: this process's own read is the READ plane; the leg reads on the TRADING plane. A healthy
-        # read plane does not make the trading account plane ready.
-        return _component(False, "TRADING_ACCOUNT_NOT_CONFIGURED", source=SOURCE_THIS_PROCESS)
+    if opted and account.get("source") == SOURCE_THIS_PROCESS:
+        # H1-b: this process's own board read is the READ plane; the leg reads on the TRADING plane. In the
+        # trading process account readiness needs that plane configured AND read successfully with its
+        # own key. A healthy read plane, or a trading key that is merely set, is not enough.
+        if account.get("trading_configured") is not True:
+            return _component(False, "TRADING_ACCOUNT_NOT_CONFIGURED", source=SOURCE_THIS_PROCESS)
+        if account.get("trading_readable") is not True:
+            return _component(False, "TRADING_ACCOUNT_UNREADABLE", source=SOURCE_THIS_PROCESS)
     if account.get("source") == SOURCE_THIS_PROCESS:
         if account.get("readable"):
             return _component(True, "READ", source=SOURCE_THIS_PROCESS)

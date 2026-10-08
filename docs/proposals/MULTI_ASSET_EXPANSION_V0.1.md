@@ -477,11 +477,17 @@ Claude는 어떤 베뉴의 키도 다루지 않고, 라이브를 켜지 않는�
     `MVP_BINANCE_WALLET`을 임시로 켜서 읽는다. 서비스 설정과 `.env`의 지갑 게이트는 꺼진 채다. **probe 성공은 운영 활성화 승인이 아니다.**
   - **경계:** 읽기 가능은 실행 허가가 아니고, 읽기 전용 자격증명은 거래 권한을 주지 못한다. live 쓰기 게이트가 닫혀 있어도 venue
     관찰은 가능하다.
-  - **분리 상태:** 자격증명 평면 분리 COMPLETE, 코드 경로 읽기/쓰기 분리 COMPLETE, 프로세스·컨테이너 격리 NOT COMPLETE.
-    scheduler가 읽기 키와 거래 자격증명을 함께 가진다. 다음 분리 후보는 scheduler-maint의 유지보수 작업이나 전용 reader 서비스다.
-    이번에 서비스는 나누지 않았다.
+  - **분리 상태:**
+    - COMPLETE: 자격증명 이름 분리, fallback 제거, 읽기/쓰기 인터페이스 분리
+    - DEFERRED: 프로세스·컨테이너 격리. scheduler가 읽기 키와 거래 자격증명을 함께 가진다(임시 구조).
+    - 다음 분리 후보는 전용 `portfolio-reader` 서비스나 scheduler-maint의 유지보수 작업이다. 이번에 서비스는 나누지 않았다.
   - **readiness 보드:** `venue_read_visibility`는 관찰 전용이다. READ visibility PASS는 거래 계정 평면이 준비됐다는 뜻이 아니다.
-    `trading_account_credentials`가 쓰기 평면의 계정 키를 `<set>/<unset>`으로만 따로 보인다. 어느 행도 실행 허가가 아니다.
+    `trading_account_credentials`가 쓰기 평면의 계정 키를 `<set>/<unset>`으로 따로 보인다.
+    live opt-in을 가진 프로세스에서는 그 키로 실제 GET을 한 결과도 보이고, `account_ready`는 그 읽기가 성공해야 참이다.
+    키가 `<set>`인 것만으로는 준비가 아니다. 어느 행도 실행 허가가 아니다.
+  - **첫 조회의 범위:** 읽기 키만, GET만, 거래 키 대체 없음, `MVP_BINANCE_WALLET`은 OFF 유지. 구독·환매·이체·주문·취소는 없다.
+    종목별 수량·금액은 터미널에서만 보고 저장하거나 Hermes에 넘기지 않는다. 결과는 엔드포인트별 성공/오류 코드만 기록한다.
+    조회 결과를 이유로 지갑을 합산(NAV)에 넣지 않는다. 그것은 H2 뒤다.
 
 ---
 

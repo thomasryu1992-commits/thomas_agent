@@ -88,7 +88,9 @@ def _status(*, opted=False, **overrides):
             "allowance_held": [], "error": None,
         },
         "position_book": {"readable": True, "open": 0, "error": None},
-        "account": ({"source": "this_process", "configured": True, "readable": True, "error": None}
+        "account": ({"source": "this_process", "configured": True, "readable": True, "error": None,
+                     # H1-b: the trading process validates the write plane's own account with its key
+                     "trading_configured": True, "trading_readable": True, "trading_error": None}
                     if opted else
                     {"source": "recorded", "configured": False, "recorded": True,
                      "as_of": FIVE_MINUTES_AGO, "age_seconds": 300.0, "stale": False,
@@ -911,6 +913,8 @@ def test_a_failed_account_read_in_the_trading_process_refuses(tmp_path, clean_en
     monkeypatch.setenv(account.ACCOUNT_API_SECRET_ENV, "ts")
 
     def _fail(**kw):
+        if kw.get("plane") == account.PLANE_TRADING:
+            return object(), {}                  # the write plane's own read works here
         raise ToolError("ACCOUNT_READ_TIMEOUT", "no answer")
 
     monkeypatch.setattr(live_readiness, "read_account", _fail)
@@ -970,6 +974,45 @@ def test_both_planes_present_reads_ready_and_shows_no_value(tmp_path, monkeypatc
     blob = repr(status) + repr(data) + live_readiness.render_readiness_text(status)
     for value in ("read-value-1", "read-value-2", "trading-value-1", "trading-value-2"):
         assert value not in blob, "a credential value reached the board"
+
+
+def test_a_set_trading_key_that_cannot_read_is_not_ready(tmp_path, monkeypatch):
+    """`<set>` is not enough: in the trading process account readiness needs an actual read with the
+    trading plane's key. The read plane is healthy here and the trading-plane read fails."""
+    from runtime.mvp_runtime.crypto import account
+    from runtime.mvp_runtime.crypto.account import AccountSnapshot
+
+    _two_planes(tmp_path, monkeypatch, read=True, trading=True)
+    healthy = AccountSnapshot(asset="USDT", wallet_balance=1.0, margin_balance=1.0, available_balance=1.0,
+                              unrealized_pnl=0.0, positions=[], realized_windows={"today": 0.0},
+                              source="fake", collected_at=NOW)
+
+    def _by_plane(**kw):
+        if kw["plane"] == account.PLANE_TRADING:
+            return None, {"error_reason_code": "NO_API_KEY"}
+        return healthy, {}
+
+    monkeypatch.setattr(live_readiness, "read_account", _by_plane)
+    status, data = _board(tmp_path)
+    rows = _rows(status)
+    assert rows["venue_read_visibility"]["ok"] is True
+    assert "trading-plane read: FAILED (NO_API_KEY)" in rows["trading_account_credentials"]["detail"]
+    assert data["readiness"]["components"]["account_ready"] == {
+        "ok": False, "reason": "TRADING_ACCOUNT_UNREADABLE", "source": "this_process"}
+
+
+def test_with_the_live_gate_closed_the_board_never_signs_with_the_trading_key(tmp_path, monkeypatch):
+    """This machine's state after R1: not opted in. The board reads on the READ plane only."""
+    planes: list[str] = []
+    _two_planes(tmp_path, monkeypatch, read=True, trading=True, opted=False)
+    def _spy(**kw):
+        planes.append(kw["plane"])
+        return None, {}
+
+    monkeypatch.setattr(live_readiness, "read_account", _spy)
+    status, _ = _board(tmp_path)
+    assert planes == ["read"]
+    assert "not run (live trading not opted in here)" in _rows(status)["trading_account_credentials"]["detail"]
 
 
 def test_the_trading_row_grants_nothing(tmp_path, monkeypatch):

@@ -238,7 +238,9 @@ EXPECTED_PLANES = {
     ("runtime/mvp_runtime/crypto/account.py", "read_fee_rates"): "PLANE_READ",
     ("runtime/mvp_runtime/crypto/account_store.py", "refresh_snapshot"): "PLANE_READ",
     ("runtime/mvp_runtime/crypto/dashboard.py", "main"): "PLANE_READ",
-    ("runtime/mvp_runtime/crypto/live_readiness.py", "build_readiness"): "PLANE_READ",
+    # the board reads on the READ plane; in the trading process only, it also validates the write plane's
+    # own account with a TRADING-plane read (H1-b readiness semantics)
+    ("runtime/mvp_runtime/crypto/live_readiness.py", "build_readiness"): "PLANE_READ,PLANE_TRADING",
     ("scripts/list_resting_orders.py", "main"): "PLANE_READ",
     # the write plane's own reads
     ("runtime/mvp_runtime/crypto/live_route.py", "_read_leg_facts"): "PLANE_TRADING",
