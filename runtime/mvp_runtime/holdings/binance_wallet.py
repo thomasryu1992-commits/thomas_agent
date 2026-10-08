@@ -14,9 +14,10 @@ scheduler-maint the same day, and this pair replaced it. Which service receives 
 ``tests/test_deployment_env_passthrough.py``; the wallet gate stays off until H2–H4 (appendix C; H3 and
 H4 kept as preconditions by Thomas 2026-10-08), and a one-off probe that reads with it is not an activation.
 
-**Read-only by construction.** One host (``api.binance.com``), four GET paths, by constant: the spot
-account and the two Simple Earn position lists (signed), and the public price list (no key). There is no
-order, transfer, subscribe or redeem method, and a path outside the list is refused before a socket opens.
+**Read-only by construction.** One host (``api.binance.com``), GET paths by constant: the spot account and
+the two Simple Earn position lists (signed), the public price list (no key) and, since H6a, the cash-flow
+histories in :data:`FLOW_SOURCES` (signed; records of money that already moved). There is no order,
+transfer, subscribe or redeem method, and a path outside the list is refused before a socket opens.
 
 **Why not ``crypto/account.py``.** That seam is the live money path's account: the risk lane reads it
 and the daily-loss breaker meters it. Nothing in ``holdings/`` imports ``crypto/`` and nothing in
@@ -81,12 +82,36 @@ FLEXIBLE_PATH = "/sapi/v1/simple-earn/flexible/position"
 LOCKED_PATH = "/sapi/v1/simple-earn/locked/position"
 PRICES_PATH = "/api/v3/ticker/price"
 
+# H6a (Thomas 2026-10-08, PORTFOLIO_CASH_FLOW_LEDGER_V0.1.md D-H6-3): the cash-flow histories, every one
+# a signed GET (USER_DATA), checked against Binance's own connector source on 2026-10-08. Each is a
+# record of money that already moved; none moves money. Name -> (path, fixed params, the window
+# parameter names, the documented longest window in days).
+DEPOSIT_HISTORY_PATH = "/sapi/v1/capital/deposit/hisrec"
+WITHDRAW_HISTORY_PATH = "/sapi/v1/capital/withdraw/history"
+FIAT_ORDERS_PATH = "/sapi/v1/fiat/orders"
+FIAT_PAYMENTS_PATH = "/sapi/v1/fiat/payments"
+PAY_TRANSACTIONS_PATH = "/sapi/v1/pay/transactions"
+UNIVERSAL_TRANSFER_PATH = "/sapi/v1/asset/transfer"
+FLOW_SOURCES: dict[str, tuple[str, dict[str, Any], tuple[str, str], int]] = {
+    "crypto_deposit": (DEPOSIT_HISTORY_PATH, {}, ("startTime", "endTime"), 89),
+    "crypto_withdraw": (WITHDRAW_HISTORY_PATH, {}, ("startTime", "endTime"), 89),
+    "fiat_deposit": (FIAT_ORDERS_PATH, {"transactionType": 0}, ("beginTime", "endTime"), 89),
+    "fiat_withdraw": (FIAT_ORDERS_PATH, {"transactionType": 1}, ("beginTime", "endTime"), 89),
+    "fiat_buy": (FIAT_PAYMENTS_PATH, {"transactionType": 0}, ("beginTime", "endTime"), 89),
+    "fiat_sell": (FIAT_PAYMENTS_PATH, {"transactionType": 1}, ("beginTime", "endTime"), 89),
+    "pay": (PAY_TRANSACTIONS_PATH, {}, ("startTime", "endTime"), 89),
+    # Internal moves (D-H6-1 §5: double counting across the skew window), spot <-> USD-M futures.
+    "transfer_spot_to_futures": (UNIVERSAL_TRANSFER_PATH, {"type": "MAIN_UMFUTURE"}, ("startTime", "endTime"), 7),
+    "transfer_futures_to_spot": (UNIVERSAL_TRANSFER_PATH, {"type": "UMFUTURE_MAIN"}, ("startTime", "endTime"), 7),
+}
+
 # The whole egress surface, (base, path) by constant. Anything else is refused before a socket opens.
 ALLOWED_REQUESTS = frozenset({
     (BINANCE_BASE_URL, SPOT_ACCOUNT_PATH),
     (BINANCE_BASE_URL, FLEXIBLE_PATH),
     (BINANCE_BASE_URL, LOCKED_PATH),
     (BINANCE_BASE_URL, PRICES_PATH),
+    *((BINANCE_BASE_URL, path) for path, _params, _window, _days in FLOW_SOURCES.values()),
 })
 
 RECV_WINDOW_MS = 5000
@@ -329,6 +354,26 @@ class BinanceWalletFeed:
         if f"{QUOTE}{asset}" in prices:
             return quantity / prices[f"{QUOTE}{asset}"]
         return None
+
+    def flow_history(self, source: str, *, start_ms: int, end_ms: int,
+                     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) -> list[dict[str, Any]]:
+        """One cash-flow history read (H6a). The raw rows, in this process only: they carry amounts and
+        assets. Refuses a source it does not know and a window longer than the venue documents."""
+        if source not in FLOW_SOURCES:
+            raise ToolBlocked("BINANCE_WALLET_PATH_REFUSED", f"{source}: not a history this feed reads")
+        path, fixed, (start_name, end_name), days = FLOW_SOURCES[source]
+        if end_ms <= start_ms or end_ms - start_ms > days * 86_400_000:
+            raise ToolError("MALFORMED_REQUEST", f"{source}: window must be within {days} days")
+        body = self._get(BINANCE_BASE_URL, path, {**fixed, start_name: start_ms, end_name: end_ms},
+                         signed=True, what=f"{source} history", timeout_seconds=timeout_seconds)
+        rows = body if isinstance(body, list) else (
+            (body.get("data") if isinstance(body.get("data"), list) else body.get("rows"))
+            if isinstance(body, dict) else None)
+        if rows is None and isinstance(body, dict) and body.get("total") == 0:
+            rows = []
+        if not isinstance(rows, list):
+            raise ToolError("MALFORMED_RESULT", f"{source} history carried no rows")
+        return [row for row in rows if isinstance(row, dict)]
 
     def wallet_snapshot(self, *, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) -> WalletSnapshot:
         self._check_gate()

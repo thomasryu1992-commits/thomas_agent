@@ -373,6 +373,10 @@ Claude는 어떤 베뉴의 키도 다루지 않고, 라이브를 켜지 않는�
 부록 A와 같다. 본인 명의 계좌의 보유 종목·평가금액·손익 **조회**만 덮는다. 주문·정정·취소·조건주문은 덮지 않는다.
 타인 자금·권유·자문도 덮지 않는다. 주문을 여는 일은 강도를 올리는 것이 아니라 새 판단이다.
 
+- **넓힘 (H6a, Thomas 2026-10-08, `PORTFOLIO_CASH_FLOW_LEDGER_V0.1.md` D-H6-3):** 종료된 주문 목록 조회
+  (`GET /api/v1/orders?status=CLOSED`)를 더한다. 이미 낸 주문의 체결·수수료·세금·결제일을 현금 변화와 대조하기 위한
+  조회다. 주문을 내거나 고치거나 취소하는 메서드는 여전히 없다. 행에는 종목과 금액이 있으므로 프로세스 안에만 둔다.
+
 ### 질문의 모양
 
 - **상대방은 국내 인가 금융투자업자(토스증권)다.** 부록 A의 한국투자증권과 같은 층이다.
@@ -678,6 +682,15 @@ Claude는 어떤 베뉴의 키도 다루지 않고, 라이브를 켜지 않는�
   (`GET /sapi/v1/simple-earn/flexible/position`, `.../locked/position`), 공개 시세(`GET /api/v3/ticker/price`).
   호스트는 `api.binance.com` 하나다.
 - **덮지 않는 것:** 주문, 이체, 출금, Earn 가입·상환, 스테이킹 등 다른 Earn 상품. 이것들을 여는 일은 강도를 올리는 것이 아니라 새 판단이다.
+- **넓힘 (H6a, Thomas 2026-10-08, `PORTFOLIO_CASH_FLOW_LEDGER_V0.1.md` D-H6-3):** 이미 움직인 돈의 기록 조회를 더한다.
+  모두 서명된 GET(USER_DATA)이다. 경로는 2026-10-08에 바이낸스 공식 커넥터 소스(`binance-connector-python`)로 대조했다.
+  - 암호화폐 입금 내역 `/sapi/v1/capital/deposit/hisrec`
+  - 출금 내역 `/sapi/v1/capital/withdraw/history`
+  - 법정화폐 입출금 `/sapi/v1/fiat/orders`
+  - 카드·은행 코인 구매·판매 `/sapi/v1/fiat/payments`
+  - Pay `/sapi/v1/pay/transactions`
+  - 현물↔선물 내부 이체 `/sapi/v1/asset/transfer`
+  - 출금·이체·주문·Earn 가입 기능을 여는 것은 아니다. 열리지 않는 경로를 키 권한으로 해결하지 않는다(D-H6-10).
 
 ### 질문의 모양
 

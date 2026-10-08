@@ -167,7 +167,7 @@ def test_withdrawing_the_env_var_stops_egress(monkeypatch, gate_open):
 
 # --- read-only by construction ----------------------------------------------------------
 
-def test_the_feed_makes_only_the_four_get_requests_to_one_host(monkeypatch, gate_open):
+def test_the_snapshot_makes_only_the_four_get_requests_to_one_host(monkeypatch, gate_open):
     _, _, fake = _read(monkeypatch)
     assert {(m, base, path) for m, base, path in fake.requests()} == {
         ("GET", BINANCE_BASE_URL, SPOT_ACCOUNT_PATH),
@@ -175,8 +175,13 @@ def test_the_feed_makes_only_the_four_get_requests_to_one_host(monkeypatch, gate
         ("GET", BINANCE_BASE_URL, LOCKED_PATH),
         ("GET", BINANCE_BASE_URL, PRICES_PATH),
     }
+    # The allowlist is those four plus, since H6a, the cash-flow histories (one host, every one a GET of
+    # money that already moved; tests/test_mvp_runtime_holdings_cash_flow_sources.py).
+    histories = {"/sapi/v1/capital/deposit/hisrec", "/sapi/v1/capital/withdraw/history", "/sapi/v1/fiat/orders",
+                 "/sapi/v1/fiat/payments", "/sapi/v1/pay/transactions", "/sapi/v1/asset/transfer"}
     assert binance_wallet.ALLOWED_REQUESTS == {(BINANCE_BASE_URL, p) for p in
-                                               (SPOT_ACCOUNT_PATH, FLEXIBLE_PATH, LOCKED_PATH, PRICES_PATH)}
+                                               (SPOT_ACCOUNT_PATH, FLEXIBLE_PATH, LOCKED_PATH, PRICES_PATH,
+                                                *histories)}
 
 
 def test_a_path_outside_the_list_is_refused_before_a_socket(monkeypatch, gate_open):

@@ -239,8 +239,10 @@ def test_account_reads_carry_the_account_seq_not_the_account_number(monkeypatch,
 
 def test_the_feed_has_no_order_capability():
     forbidden = ("order", "submit", "cancel", "trade", "buy", "sell", "place")
+    # The one read whose name says "order" (H6a): it lists orders already closed and has no write path.
+    reads = {"closed_orders"}
     for cls in (TossHoldingsFeed, NoHoldingsFeed):
-        public = [name for name in dir(cls) if not name.startswith("_")]
+        public = [name for name in dir(cls) if not name.startswith("_") and name not in reads]
         assert not [n for n in public if any(word in n.lower() for word in forbidden)], cls
 
 
