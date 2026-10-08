@@ -697,6 +697,8 @@ def test_the_testnet_adapter_tells_an_unknown_outcome_from_a_refusal(monkeypatch
     monkeypatch.setenv(testnet_execution.TESTNET_API_KEY_ENV, "tn-key")
     monkeypatch.setenv(testnet_execution.TESTNET_API_SECRET_ENV, "tn-secret")
     monkeypatch.setenv(testnet_execution.TESTNET_TRADING_ENV, testnet_execution.REAL_TESTNET_TRADING)
+    # The stage at egress (H1-c) admits a testnet entry, so the venue's own answer is what is judged.
+    monkeypatch.setattr(live_execution, "resolve_execution_stage", lambda root=None, **kw: _stage("SIGNED_TESTNET"))
     adapter = testnet_execution.select_testnet_order_adapter(now=NOW)
     body = json.dumps({"code": code, "msg": "scripted"}).encode("utf-8")
     monkeypatch.setattr(testnet_execution.urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(
