@@ -4836,8 +4836,23 @@ I1 argues is not what is blocking.
 
 ## J. Naver blog content lane — Phase 1 built, the cadence was not
 
+**Correction 2026-10-08 (Thomas) — the revived row is disabled, and it never fired.** The paragraph
+below says `schedule_876d53b39de29b2af417` is enabled. The live state says otherwise:
+
+- The scheduler ledger has a `disabled` event for that row at 2026-09-30T17:40:31Z.
+- `schedules.jsonl` shows it `enabled: false` with `last_run_at: null`, so the 2026-10-05 first
+  fire never happened.
+- The reason for disabling it is **NOT_RECORDED**. `scheduler_cli disable` writes no reason of its
+  own, and the event carries the row's 09-28 creation reason. No other record names one.
+
+All three `content_ideation` rows are disabled as of 2026-10-08: `schedule_1d25e2cef74b8a48adec`,
+this row, and the Tistory row `schedule_d7972fb2ea02529f73ba` (disabled 2026-10-06). This
+correction changes no schedule; it brings the text in line with the state the PR 3.0 blog audit
+read (`docs/proposals/BLOG_RUNTIME_PHASE3_BASELINE_AUDIT_V0.1.md`, §B).
+
 **Revived 2026-09-28 (Thomas) — a new weekly row, `schedule_876d53b39de29b2af417`, enabled with
-request `source=queue`, first fire 2026-10-05T13:19:36Z.** The seeds now come from the vault
+request `source=queue`, first fire 2026-10-05T13:19:36Z** (disabled 2026-09-30 and never fired;
+see the correction above). The seeds now come from the vault
 keyword queue (#1014) and the vault's published posts are excluded (#1012, #1013). The old
 fixed-seed row below stays disabled and is kept for its history, because `scheduler_cli` has no
 edit command. The runtime still never publishes: a fire ends in a draft package for a
