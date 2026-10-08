@@ -1,11 +1,29 @@
 # 블로그 Runtime Phase 3 — PR 3.0 Baseline & Ownership Audit (V0.1)
 
-**상태:** DRAFT 2026-10-08 — PR 3.0 읽기 전용 감사. 블로그 실생산 경로는 Vault 크론이며 Runtime 블로그 레인은 생산에 쓰이지 않는다는 근거와, PR 3.1~3.5 권고(3.1 DEFER · 3.2 NOT_NEEDED · 3.3 DESIGN_ONLY · 3.4 DESIGN_ONLY · 3.5 DEFER)가 Thomas 결정을 기다린다. 코드·스키마·크론·프롬프트·설정 변경 0건.
+**상태:** DECIDED 2026-10-08 — 감사 결과 승인(Thomas 2026-10-08): 블로그 실생산과 발행·성과 데이터의 Source of Truth는 Vault이고, Runtime에 Vault 기능을 중복 구현하지 않는다. PR 3.1 DEFER · 3.2 NOT_NEEDED(Runtime) · 3.3 DESIGN_ONLY · 3.4 DESIGN_ONLY · 3.5 DEFER. 남은 것: 3.3·3.4 설계 문서(구현·배포는 미승인), `REMAINING_WORK.md` §J 정정(별도 PR). GSC 자동 수집은 10-31 Tistory 평가 뒤 재검토.
 
 **요청:** "Blog Runtime Quality & Outcome Phase 3" 명세(Thomas 2026-10-08)의 PR 3.0만 — 소유권·실행 경로·준비 상태 어휘·ID 연결·운영 Freeze를 확인하고 후속 PR별 권고를 낸다. 이 Phase 3는 Vault 운영의 *Affiliate Phase 3 (Topic-aware Placement)* 와 다른 작업이다.
 **기준 시점:** 2026-10-08 04:30Z 무렵. `origin/main` = `0ce86493` (#1180, 명세의 리뷰 기준 커밋과 같다). 운영 이미지 `candidate-1180`(`thomas-scheduler`).
 **표기:** **[확인]** 이 문서를 쓰며 코드·상태·로그를 직접 읽거나 실행함. **[문서]** 저장소·Vault 기록. **[미확인]** 근거를 찾지 못함.
 **한계:** 라이브 돈 경로·키는 열지 않았다. 외부 플랫폼(네이버·티스토리·GSC)에 로그인하거나 새로 수집하지 않았다. 2026-10-09 Canary는 아직 실행 전이다.
+
+---
+
+## 결정 (Thomas 2026-10-08)
+
+감사 결과를 승인했다. 결정은 아래와 같고, 이 문서의 나머지는 감사 당시 그대로 둔다.
+
+| 항목 | 결정 |
+|---|---|
+| PR 3.1 Review Gate v2 | **DEFER** |
+| PR 3.2 Editorial Priority | **NOT_NEEDED in Runtime** |
+| PR 3.3 Outcome Foundation | **DESIGN_ONLY 승인** — 설계 문서만. 코드·Runtime 변경·배포는 미승인 |
+| PR 3.4 Read-only Status | **DESIGN_ONLY 승인** — 같은 조건 |
+| PR 3.5 Platform Search Signal | **DEFER** |
+| 3.3 설계 위치 | `thomas_agent/docs/proposals/`. 실제 Outcome 데이터는 Vault가 소유한다. 기본 식별자: Vault Article ID · Published URL · Platform · Observation Date · Data Source · Prompt Version(확인 가능한 경우). Runtime Package ID는 대응이 확인되지 않으면 UNLINKED이며, 키워드 유사성만으로 연결하지 않는다 |
+| GSC 자동 수집 | **보류.** OAuth·API 자격증명·스케줄·자동 수집을 만들지 않는다. 기존 수동 경로 유지, 2026-10-31 Tistory 평가 뒤 재검토 |
+| `REMAINING_WORK.md` §J | "enabled" 서술을 확인된 disabled 상태로 정정. 비활성화 사유는 NOT_RECORDED로 적고 추측하지 않는다. 스케줄은 바꾸지 않는다. 변경 범위를 분리한 별도 PR |
+| 운영 Freeze | Vault Keyword Pipeline · V16 canary · covered_by · Slot C Shadow · Tistory Pattern 15 Variant B · Affiliate READY Gate · 제휴 배치 크론 · 일일 발행 수 · Naver/Tistory 발행 흐름 — 변경 없음. 2026-10-09 Affiliate Canary는 실제 결과 확인 전까지 PENDING |
 
 ---
 
@@ -152,7 +170,7 @@
 
 ---
 
-## G. PR Recommendation (PROPOSED / NOT_APPROVED)
+## G. PR Recommendation (감사 당시 권고 — 결정은 위 '결정' 절)
 
 모든 후속 PR을 가르는 조건은 하나다: **Runtime은 생산 콘텐츠 경로가 아니다.** Tistory 경로는 10-06에 크론으로 확정됐고, Naver 행은 꺼져 있으며, `blog_*`의 존폐는 D8(11-25)에서 정한다.
 
@@ -215,7 +233,7 @@ Python 3.14(호스트) 결과이며 CI 3.12와 동등성은 PR 체크가 확인�
 - **Remaining Risks:** 위 '발견한 문제·위험' 1~6.
 - **Expected Benefits:** Runtime에 중복 엔진을 만들지 않는다. 실제 개선 대상(Vault 쪽 성과·프롬프트 판 연결)을 짚었다.
 - **Next Recommended Phase:** ① 10-09 Canary 확인 → ② Thomas가 G표 결정 → ③ 승인되면 3.3 설계 문서(Vault 키 기준)부터.
-- **Operator Approval Required (명시):**
+- **Operator Approval Required (명시) — 2026-10-08 모두 답을 받음, 위 '결정' 절:**
   1. G표의 PR별 권고 수락/수정.
   2. 3.3을 설계로 진행할 때 설계 문서를 둘 곳 — Vault(성과 데이터 소유자) 또는 이 저장소 proposals.
   3. GSC 자동 수집(새 자격증명·네트워크 읽기)을 검토 대상으로 둘지 여부 — 둔다면 env-only gate의 별도 승인 항목이다.
