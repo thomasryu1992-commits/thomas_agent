@@ -816,7 +816,8 @@ def test_reset_peak_forgets_the_peak_and_the_told_state(monkeypatch, tmp_path, c
     combined.write_told(hdir, combined.STATE_BREACHED, now=NOW)
     monkeypatch.setattr(store, "_repo_root", lambda: tmp_path)
     monkeypatch.setattr(holdings_board, "assert_not_foreign_root_run", lambda *a, **k: None)
-    assert holdings_board.main(["--reset-peak"]) == 0
+    assert holdings_board.main(["--reset-peak"]) != 0                    # H5b: no reason, no reset
+    assert holdings_board.main(["--reset-peak", "--reason", "withdrawal"]) == 0
     assert not (hdir / combined.PEAK_FILENAME).exists()
     assert combined.read_told(hdir) == combined.STATE_CLEAR
     assert "holdings_peak.json" in capsys.readouterr().out

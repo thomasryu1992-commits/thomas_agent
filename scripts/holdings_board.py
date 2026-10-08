@@ -4,7 +4,7 @@
     python -m scripts.holdings_board --json     # the same, as JSON
     python -m scripts.holdings_board --full     # a LIVE read with every holding, terminal only
     python -m scripts.holdings_board --local    # the last fire in full (by market, wallet, class), terminal only
-    python -m scripts.holdings_board --reset-peak   # forget the combined peak (after a deposit/withdrawal)
+    python -m scripts.holdings_board --reset-peak --reason "withdrew 5M KRW"   # after a deposit/withdrawal
     python -m scripts.holdings_board --unclassified                 # wallet assets no class places (terminal only)
     python -m scripts.holdings_board --classify binance:SOL=coin    # Thomas's entry (H5a), as the service user
     python -m scripts.holdings_board --unclassify binance:SOL
@@ -39,7 +39,9 @@ write governed state, so they run as the service user (``docker exec -u 10001 th
 ...``) and refuse a host-side root run. The ids are holdings: these commands are Thomas's, on his
 terminal. Claude does not run them and does not see their output.
 
-**``--reset-peak``** (P2) forgets the combined total's peak and the drawdown alert's told state; the
+**``--reset-peak --reason TEXT``** (P2; reason required since H5b, Thomas 2026-10-08) logs the request
+with the peak it forgets in the host-local baseline log (``holdings/baseline_log.py``), then forgets the
+combined total's peak and the drawdown alert's told state; the
 next complete ``holdings_refresh`` fire starts a new peak. The drawdown metric cannot tell a withdrawal
 from a loss, so this is the answer after any deposit or withdrawal. It writes governed state, so it runs
 in the lane as the service user (``docker exec -u 10001 thomas-scheduler-maint python -m
@@ -90,6 +92,8 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--classify", nargs="+", metavar="ID=CLASS",
                       help="add or change classification entries (Thomas, as the service user)")
     mode.add_argument("--unclassify", nargs="+", metavar="ID", help="remove classification entries")
+    parser.add_argument("--reason", help="why the peak is reset (--reset-peak; required, logged)")
+    parser.add_argument("--by", default="thomas", help="who asks for the reset (--reset-peak; logged)")
     parser.add_argument("--timeout", type=int, default=10, help="seconds per request (--full)")
     args = parser.parse_args(argv)
 
@@ -119,7 +123,11 @@ def main(argv: list[str] | None = None) -> int:
         except MvpRuntimeError as exc:
             print(f"refused ({exc.reason_code}): {exc}")
             return EXIT_BLOCKED
-        removed = combined.reset_peak(state_dir())
+        try:
+            removed = combined.reset_peak(state_dir(), reason=args.reason or "", requested_by=args.by)
+        except MvpRuntimeError as exc:
+            print(f"refused ({exc.reason_code}): {exc}")
+            return EXIT_BLOCKED
         print("reset: " + (", ".join(removed) if removed else "nothing to reset")
               + " — the next complete holdings_refresh fire starts a new peak")
         return EXIT_OK

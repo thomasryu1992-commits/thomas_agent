@@ -75,6 +75,8 @@ from pathlib import Path
 from typing import Any
 
 from .. import timeutil
+from ..errors import ToolError
+from . import baseline_log
 
 # The Binance snapshot's format authority is crypto/account_store.py; these mirror it by value, and
 # tests/test_mvp_runtime_holdings.py asserts each one equals the authority's.
@@ -153,6 +155,8 @@ COMBINED_KEYS = frozenset({
     "snapshot_skew_seconds",
     "max_snapshot_skew_seconds",
     "reconciliation_failures",
+    # H5b: the id of the baseline the peak stands on (``baseline_log``); no amount.
+    "baseline_id",
     "peak_total_krw",
     "peak_at",
     "drawdown_pct",
@@ -340,7 +344,8 @@ def combine(toss_view: dict[str, Any], *, usd_krw_rate: float | None, root: Path
             state_dir: Path, wallet: Any = None,
             wallet_status: str = WALLET_NOT_CONFIGURED, toss_warnings: int = 0,
             toss_as_of: str | None = None,
-            toss_reconciliation_failures: list[str] | None = None) -> dict[str, Any]:
+            toss_reconciliation_failures: list[str] | None = None,
+            mapping_version: int | None = None) -> dict[str, Any]:
     """The combined block, and the peak file moved when (and only when) the portfolio NAV is complete (H2).
 
     ``toss_warnings`` is the Toss read's parse-warning count: a field the Toss total rests on was missing
@@ -378,14 +383,38 @@ def combine(toss_view: dict[str, Any], *, usd_krw_rate: float | None, root: Path
         "drawdown_state": STATE_UNKNOWN,
     }
     peak_path = state_dir / PEAK_FILENAME
-    peak = _read_json(peak_path) or {}
+    standing = _read_json(peak_path) or {}
+    peak = standing
     if peak.get("scope_version") != PORTFOLIO_SCOPE_VERSION:
         peak = {}   # a peak from another scope is not this portfolio's peak (module docstring)
     peak_total = peak.get("peak_total_krw") if isinstance(peak.get("peak_total_krw"), (int, float)) else None
     block["peak_total_krw"], block["peak_at"] = peak_total, peak.get("peak_at")
+    # H5b: the standing baseline is recorded once, never reset, when the log begins.
+    latest = baseline_log.last(state_dir)
+    if latest is None and peak_total:
+        latest = baseline_log.append(state_dir, baseline_log.EVENT_BASELINE_SET, at=now, fields={
+            "cause": baseline_log.CAUSE_BOOTSTRAP, "baseline_at": peak.get("peak_at"),
+            "new_baseline_krw": int(round(peak_total)), "scope_version": PORTFOLIO_SCOPE_VERSION,
+            "mapping_version": mapping_version})
+    block["baseline_id"] = _baseline_id(state_dir)
     if not complete or total is None or total <= 0:
         return block
     if peak_total is None or peak_total <= 0:
+        pending = baseline_log.pending_reset(state_dir)
+        other_scope = bool(standing) and standing.get("scope_version") != PORTFOLIO_SCOPE_VERSION
+        previous = standing.get("peak_total_krw") if other_scope else (pending or {}).get("previous_peak_krw")
+        # The line before the change: a baseline is never replaced without its line (baseline_log).
+        row = baseline_log.append(state_dir, baseline_log.EVENT_BASELINE_SET, at=now, fields={
+            "cause": (baseline_log.CAUSE_AFTER_RESET if pending
+                      else baseline_log.CAUSE_SCOPE_CHANGE if other_scope else baseline_log.CAUSE_FIRST_COMPLETE),
+            "answers": (pending or {}).get("baseline_id"),
+            "baseline_at": now,
+            "new_baseline_krw": int(round(total)),
+            "previous_peak_krw": int(round(previous)) if isinstance(previous, (int, float)) else None,
+            "previous_scope_version": standing.get("scope_version") if other_scope else None,
+            "scope_version": PORTFOLIO_SCOPE_VERSION,
+            "mapping_version": mapping_version})
+        block["baseline_id"] = row["baseline_id"]
         _write_peak(peak_path, total, now)
         block.update({"peak_total_krw": total, "peak_at": now, "drawdown_pct": 0.0,
                       "drawdown_state": STATE_INITIALIZED})
@@ -398,6 +427,14 @@ def combine(toss_view: dict[str, Any], *, usd_krw_rate: float | None, root: Path
     block["drawdown_pct"] = drawdown
     block["drawdown_state"] = STATE_BREACHED if drawdown <= DRAWDOWN_LIMIT_PCT else STATE_CLEAR
     return block
+
+
+def _baseline_id(state_dir: Path) -> str | None:
+    """The newest ``baseline_set`` id: the baseline the standing peak was started from."""
+    for row in reversed(baseline_log.verify(state_dir)):
+        if row.get("event") == baseline_log.EVENT_BASELINE_SET:
+            return row["baseline_id"]
+    return None
 
 
 def _write_peak(path: Path, total: float, now: str) -> None:
@@ -436,15 +473,26 @@ def alert(block: dict[str, Any], *, told: str, as_of: str) -> tuple[str, str] | 
         text = (f"[보유 자산] 계좌 전체가 고점 대비 {block['drawdown_pct']:+.1f}% "
                 f"(한도 {DRAWDOWN_LIMIT_PCT:.0f}%) — 합계 {_krw(block['combined_total_krw'])}, "
                 f"고점 {_krw(block['peak_total_krw'])} ({as_of} 기준). 알림만이며 아무것도 막지 않습니다. "
-                "고점은 입출금을 구분하지 못합니다 — 입출금 뒤라면 holdings_board --reset-peak로 다시 잡으세요.")
+                "고점은 입출금을 구분하지 못합니다 — 입출금 뒤라면 holdings_board --reset-peak --reason <사유>로 다시 잡으세요.")
     else:
         text = (f"[보유 자산] 계좌 전체 낙폭이 한도 안으로 돌아왔습니다: 고점 대비 {block['drawdown_pct']:+.1f}% "
                 f"(한도 {DRAWDOWN_LIMIT_PCT:.0f}%), 합계 {_krw(block['combined_total_krw'])} ({as_of} 기준).")
     return state, text
 
 
-def reset_peak(state_dir: Path) -> list[str]:
-    """Forget the peak and the told mark; the next complete fire starts a new peak. Returns what went."""
+def reset_peak(state_dir: Path, *, reason: str, requested_by: str, now: str | None = None) -> list[str]:
+    """Forget the peak and the told mark; the next complete fire starts a new peak. Returns what went.
+
+    H5b (Thomas 2026-10-08): a reason is required, and the request is logged (``baseline_log``) with the
+    peak it forgets before anything is removed. The fire that starts the new peak answers it."""
+    if not (reason or "").strip():
+        raise ToolError(baseline_log.BASELINE_RESET_REFUSED, "a reset needs a reason (--reason)")
+    standing = _read_json(state_dir / PEAK_FILENAME) or {}
+    previous = standing.get("peak_total_krw")
+    baseline_log.append(state_dir, baseline_log.EVENT_RESET_REQUESTED, at=now or timeutil.utc_now_iso(), fields={
+        "reason": reason.strip(), "requested_by": requested_by,
+        "previous_peak_krw": int(round(previous)) if isinstance(previous, (int, float)) else None,
+        "previous_peak_at": standing.get("peak_at"), "scope_version": standing.get("scope_version")})
     removed = []
     for name in (PEAK_FILENAME, ALERT_MARK_FILENAME):
         path = state_dir / name
