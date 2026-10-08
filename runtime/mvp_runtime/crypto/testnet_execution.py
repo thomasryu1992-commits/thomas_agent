@@ -53,6 +53,7 @@ from .live_execution import (
     ORDER_OUTCOME_UNKNOWN,
     ORDER_PATH,
     ORDER_REJECTED,
+    ORDER_STAGE_REFUSED,
     ORDER_TRANSPORT,
     RECV_WINDOW_MS,
     VENUE_DUPLICATE_CLIENT_ORDER_ID,
@@ -62,10 +63,15 @@ from .live_execution import (
     control_refusal,
     is_algo_request,
     normalize_algo_order,
+    stage_refusal,
 )
+from .execution_stage import PURPOSE_TESTNET
 from .live_order import LiveOrderCounter as _LiveOrderCounter
 from .state import VENUE_TESTNET
 from .testnet_evidence import TESTNET_MAX_DAILY_ORDERS, TESTNET_MAX_ORDER_NOTIONAL_USDT
+
+# The purposes whose stage a testnet entry needs at egress (H1-c): the testnet guard's own.
+TESTNET_ENTRY_PURPOSES = (PURPOSE_TESTNET,)
 
 TESTNET_ADAPTER_TOOL_ID = "crypto.testnet.order_adapter"
 TESTNET_ADAPTER_TOOL_VERSION = "0.1.0"
@@ -239,6 +245,13 @@ class BinanceTestnetOrderAdapter:
         refusal = control_refusal(order_request, root=self._root)
         if refusal is not None:
             raise ToolError(ORDER_HALTED, f"testnet order not sent: {refusal}")
+        # The execution stage at egress (H1-c, Thomas 2026-10-08; R2's rule for the testnet venue). The
+        # guard (`evaluate_testnet_order_guard`) already judges the stage; this is the last line for a
+        # caller that reaches the adapter without it. An order that could add exposure needs a stage
+        # that admits a signed testnet order; an exit or a protection never reads the stage.
+        refusal = stage_refusal(order_request, root=self._root, purposes=TESTNET_ENTRY_PURPOSES, venue="testnet")
+        if refusal is not None:
+            raise ToolError(ORDER_STAGE_REFUSED, f"testnet order not sent: {refusal}")
         body, code = self._signed_request(
             "POST",
             ALGO_ORDER_PATH if is_algo_request(order_request) else ORDER_PATH,

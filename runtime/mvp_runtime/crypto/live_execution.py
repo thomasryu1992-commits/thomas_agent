@@ -277,8 +277,13 @@ def control_refusal(order_request: Mapping[str, Any], *, root: Path | None = Non
 
 
 def stage_refusal(order_request: Mapping[str, Any], *, root: Path | None = None,
-                  now: str | None = None) -> str | None:
-    """Why the execution stage refuses this mainnet order at egress, or None (R2, Thomas 2026-10-07).
+                  now: str | None = None, purposes: tuple[str, ...] = LIVE_ENTRY_PURPOSES,
+                  venue: str = "mainnet") -> str | None:
+    """Why the execution stage refuses this order at egress, or None (R2, Thomas 2026-10-07).
+
+    ``purposes`` are the decision-layer purposes whose stage the venue's entries need: the live entry
+    purposes for mainnet (the default), ``PURPOSE_TESTNET`` for the testnet adapter (H1-c, Thomas
+    2026-10-08). The threshold is always the decision layer's own, never a second copy of it.
 
     The decision layer already judges the stage (`live_order.evaluate_live_order_guard`,
     `pre_order_gate.approved_profile`). This is the last line: a caller that reaches the adapter
@@ -300,11 +305,11 @@ def stage_refusal(order_request: Mapping[str, Any], *, root: Path | None = None,
         stage = resolve_execution_stage(root, now=now or timeutil.utc_now_iso())
     except Exception as exc:  # noqa: BLE001 — uncertainty about a safety state is not permission
         return f"the execution stage could not be read ({type(exc).__name__})"
-    if any(stage.allows(purpose) for purpose in LIVE_ENTRY_PURPOSES):
+    if any(stage.allows(purpose) for purpose in purposes):
         return None
     reads = stage.stage if stage.valid else f"READ_ONLY ({stage.reason_code})"
-    return (f"the execution stage reads {reads}, which sends no order that could add exposure on mainnet "
-            f"(needs {required_stage(PURPOSE_AUTONOMOUS)})")
+    return (f"the execution stage reads {reads}, which sends no order that could add exposure on {venue} "
+            f"(needs {required_stage(purposes[0])})")
 
 
 def submit_refused_outright(error: Any, detail: Any) -> bool:

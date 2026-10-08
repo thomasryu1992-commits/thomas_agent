@@ -271,3 +271,87 @@ def test_the_live_entry_purposes_need_live_autonomous():
 
 def test_the_stage_refusal_is_a_nothing_sent_error():
     assert lx.ORDER_STAGE_REFUSED in lx.NOTHING_SENT_ERRORS
+
+
+# --- H1-c: the same last line at the testnet adapter's egress (Thomas 2026-10-08) ------------------
+
+from runtime.mvp_runtime.crypto import testnet_execution as tx  # noqa: E402
+
+_TESTNET_AUTH = make_gate_authorization(flags=tx.TESTNET_TRADING_FLAGS, provider_id=tx.TESTNET_PROVIDER_ID)
+
+
+@pytest.fixture
+def testnet_sent(monkeypatch, sent):
+    """The same interceptor as ``sent`` (one ``urllib.request``), with the testnet key pair set."""
+    monkeypatch.setenv(tx.TESTNET_API_KEY_ENV, "tn-key")
+    monkeypatch.setenv(tx.TESTNET_API_SECRET_ENV, "tn-secret")
+    return sent
+
+
+def _testnet(tmp_path):
+    return tx.BinanceTestnetOrderAdapter(authorization=_TESTNET_AUTH, root=tmp_path)
+
+
+@pytest.mark.parametrize("request_", [ENTRY, LIMIT_ENTRY], ids=["market-entry", "limit-entry"])
+def test_a_testnet_entry_below_signed_testnet_is_refused_and_nothing_is_sent(
+        tmp_path, testnet_sent, stage_reads, request_):
+    _active(tmp_path)
+    stage_reads(PAPER)
+    with pytest.raises(ToolError) as exc:
+        _testnet(tmp_path).submit(request_)
+    assert exc.value.reason_code == lx.ORDER_STAGE_REFUSED
+    assert "on testnet" in str(exc.value) and "needs SIGNED_TESTNET" in str(exc.value)
+    assert testnet_sent == []
+
+
+def test_the_real_resolver_without_a_record_refuses_a_testnet_entry(tmp_path, testnet_sent):
+    _active(tmp_path)
+    with pytest.raises(ToolError) as exc:
+        _testnet(tmp_path).submit(ENTRY)
+    assert exc.value.reason_code == lx.ORDER_STAGE_REFUSED and es.STAGE_RECORD_MISSING in str(exc.value)
+    assert testnet_sent == []
+
+
+def test_a_testnet_guard_bypass_is_a_refusal_before_the_send(tmp_path, testnet_sent, stage_reads):
+    _active(tmp_path)
+    stage_reads(PAPER)
+    intent, snapshot = approved_snapshot(_intent())
+    with pytest.raises(lx.SubmitRefused) as exc:
+        lx.submit_and_reconcile(intent, adapter=_testnet(tmp_path), guard_verdict={"approved": True}, now=NOW,
+                                risk_snapshot=snapshot, snapshot_store=FakeSnapshotStore())
+    assert exc.value.reason_code == lx.ORDER_STAGE_REFUSED
+    assert testnet_sent == []
+
+
+@pytest.mark.parametrize("status", [SIGNED_TESTNET, gate_stage()], ids=["signed-testnet", "live"])
+def test_a_testnet_entry_passes_the_stage_layer_from_signed_testnet_up(tmp_path, testnet_sent, stage_reads,
+                                                                       status):
+    _active(tmp_path)
+    stage_reads(status)
+    _testnet(tmp_path).submit(ENTRY)
+    assert len(testnet_sent) == 1 and "testnet" in testnet_sent[0][1]
+
+
+def test_a_testnet_exit_never_reads_the_stage(tmp_path, testnet_sent, monkeypatch):
+    _active(tmp_path)
+    monkeypatch.setattr(lx, "resolve_execution_stage",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("stage read for a testnet exit")))
+    adapter = _testnet(tmp_path)
+    adapter.submit(CLOSE)
+    adapter.submit(STOP)
+    assert len(testnet_sent) == 2
+
+
+def test_a_halt_still_refuses_a_testnet_entry_first(tmp_path, testnet_sent, stage_reads):
+    """The stage layer is added after the control state, which keeps its own code."""
+    _active(tmp_path, mode=KILLED)
+    stage_reads(SIGNED_TESTNET)
+    with pytest.raises(ToolError) as exc:
+        _testnet(tmp_path).submit(ENTRY)
+    assert exc.value.reason_code == lx.ORDER_HALTED
+    assert testnet_sent == []
+
+
+def test_the_testnet_threshold_is_the_testnet_guards_own():
+    assert tx.TESTNET_ENTRY_PURPOSES == (es.PURPOSE_TESTNET,)
+    assert es.required_stage(es.PURPOSE_TESTNET) == "SIGNED_TESTNET"
