@@ -31,7 +31,7 @@ import pytest
 
 from runtime.mvp_runtime import domain_console, read_bridge, schedule_delegation, scheduler
 from runtime.mvp_runtime.errors import SafetyGateBlocked, ToolError
-from runtime.mvp_runtime.holdings import allocation, board, combined, store, toss_account
+from runtime.mvp_runtime.holdings import allocation, board, combined, disclosure, store, toss_account
 from runtime.mvp_runtime.holdings.model import NoHoldingsFeed
 from runtime.mvp_runtime.holdings.toss_account import (
     ACCOUNTS_PATH,
@@ -469,13 +469,21 @@ def test_the_snapshot_holds_the_aggregate_and_nothing_else(monkeypatch, gate_ope
     assert store.refresh_snapshot(now=NOW, root=tmp_path).startswith("holdings snapshot: refreshed")
     raw = store.snapshot_path(tmp_path).read_text(encoding="utf-8")
     body = json.loads(raw)
-    assert set(body) == board.AGGREGATE_KEYS | {"record_type", "as_of", "written_at", "combined", "allocation"}
-    assert set(body["combined"]) == combined.COMBINED_KEYS
-    assert set(body["allocation"]) == allocation.ALLOCATION_KEYS
+    # H3: the doors' file carries one table; the Toss and per-venue breakdowns are local only.
+    stamps = {"record_type", "as_of", "written_at", "combined", "allocation"}
+    assert set(body) == (board.AGGREGATE_KEYS - disclosure.LOCAL_ONLY_TOP_KEYS) | stamps
+    assert set(body["combined"]) == combined.COMBINED_KEYS - disclosure.LOCAL_ONLY_COMBINED_KEYS
+    assert set(body["allocation"]) == (allocation.ALLOCATION_KEYS - disclosure.LOCAL_ONLY_ALLOCATION_KEYS
+                                       | {disclosure.WITHHELD_KEY})
     for row in body["allocation"]["classes"].values():
         assert set(row) == allocation.CLASS_ROW_KEYS
-    assert _revealed(raw) == []
-    assert _leaks(raw) == []
+    local_raw = store.local_path(tmp_path).read_text(encoding="utf-8")
+    local = json.loads(local_raw)
+    assert set(local) == board.AGGREGATE_KEYS | stamps
+    assert set(local["combined"]) == combined.COMBINED_KEYS
+    for text in (raw, local_raw):
+        assert _revealed(text) == []
+        assert _leaks(text) == []
 
 
 def test_fires_share_one_token_while_the_gate_stays_open(monkeypatch, gate_open, tmp_path):
@@ -521,7 +529,7 @@ def test_an_old_snapshot_shows_its_number_and_says_it_is_stale(monkeypatch, gate
     as_of = json.loads(store.snapshot_path(tmp_path).read_text())["as_of"]
     text, data = store.load_holdings_view(now="2099-01-01T00:00:00Z", root=tmp_path)
     assert data["stale"] is True and "STALE" in text
-    assert "7,200,000 KRW" in text and "(toss)" in text
+    assert "5,137,500 KRW" in text and "(toss)" in text          # the cash class: two balances
     fresh_text, fresh = store.load_holdings_view(now=as_of, root=tmp_path)
     assert fresh["stale"] is False and "STALE" not in fresh_text
 
@@ -596,7 +604,7 @@ def test_the_script_renders_the_stored_snapshot_without_a_call(monkeypatch, gate
     fake = _toss(monkeypatch)
     assert holdings_board.main([]) == 0
     out = capsys.readouterr().out
-    assert "known total" in out and "005930" not in out
+    assert "allocation vs target" in out and "known total" not in out and "005930" not in out
     assert fake.sent == []
 
 
@@ -748,7 +756,7 @@ def test_refresh_stores_the_combined_block_without_the_rate(monkeypatch, gate_op
     _toss(monkeypatch)
     result = store.refresh(now=NOW, root=tmp_path)
     assert result["status"] == "holdings snapshot: refreshed; combined initialized"
-    raw = store.snapshot_path(tmp_path).read_text(encoding="utf-8")
+    raw = store.local_path(tmp_path).read_text(encoding="utf-8")
     block = json.loads(raw)["combined"]
     assert block["crypto_futures_krw"] == 100 * 1375 and block["crypto_status"] == "ok"
     assert block["combined_total_krw"] == TOSS_TOTAL + 100 * 1375
@@ -932,7 +940,7 @@ def test_a_stored_block_renders_in_the_decided_order(monkeypatch, gate_open, tmp
     _binance_file(tmp_path, margin=100.0, monkeypatch=monkeypatch)
     _toss(monkeypatch)
     store.refresh(now=NOW, root=tmp_path)
-    text, _ = store.load_holdings_view(now=NOW, root=tmp_path)
+    text = store.load_local_view(now=NOW, root=tmp_path)     # every band row is on the local board
     rows = [line.split(":")[0].strip() for line in text.split("allocation vs target")[1].splitlines()[1:8]]
     assert rows == [board._CLASS_LABELS[name] for name in allocation.CLASSES]
     bands_line = next(line for line in text.splitlines() if line.startswith("bands"))

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from .disclosure import Part
 from .model import HoldingsSnapshot
 
 GLOBAL_EQUITY = "global_equity"
@@ -38,6 +39,8 @@ COIN = "coin"
 CASH = "cash"
 ENGINE_MARGIN = "engine_margin"
 CLASSES = (GLOBAL_EQUITY, DOMESTIC_EQUITY, BONDS, GOLD, COIN, CASH, ENGINE_MARGIN)
+# The table's other row: what the table cannot place (H3 treats it as a row like any class).
+UNCLASSIFIED = "unclassified"
 
 # §4 after Q6 and Q8 (2026-10-07). The engine is 0% (Q5), so any margin shows as drift (Q10).
 TARGET_PCT: Mapping[str, float] = {
@@ -104,10 +107,24 @@ def unclassified_symbols(snapshot: HoldingsSnapshot) -> list[str]:
 
 
 def allocate(snapshot: HoldingsSnapshot, toss_view: Mapping[str, Any],
-             combined_block: Mapping[str, Any] | None) -> dict[str, Any]:
+             combined_block: Mapping[str, Any] | None, wallet: Any = None) -> dict[str, Any]:
     """Class totals, weights against target and the band facts. Never raises on missing data: a
     missing part makes the block partial, and a partial block gives no band verdict."""
+    return allocate_with_parts(snapshot, toss_view, combined_block, wallet)[0]
+
+
+def allocate_with_parts(snapshot: HoldingsSnapshot, toss_view: Mapping[str, Any],
+                        combined_block: Mapping[str, Any] | None,
+                        wallet: Any = None) -> tuple[dict[str, Any], dict[str, Part]]:
+    """:func:`allocate`, and each row's makeup for the single-holding rule (H3, ``disclosure``): which
+    instruments it holds and how many cash balances. The makeup stays in this process.
+
+    ``wallet`` is the ``binance_wallet.WalletSnapshot`` the fire read, for its ``class_assets``. A wallet
+    class with value but no makeup (no snapshot, or one without it) counts as one instrument, so it is
+    withheld rather than guessed safe."""
     krw = {name: 0.0 for name in CLASSES}
+    instruments: dict[str, set[str]] = {name: set() for name in (*CLASSES, UNCLASSIFIED)}
+    cash_parts: dict[str, int] = {name: 0 for name in (*CLASSES, UNCLASSIFIED)}
     gaps: list[str] = []
     notes: list[str] = []
     unclassified_count = 0
@@ -122,6 +139,8 @@ def allocate(snapshot: HoldingsSnapshot, toss_view: Mapping[str, Any],
             gaps.append("a holding's value or rate unread")
             continue
         name = CLASSIFICATION.get(holding.symbol)
+        if value:
+            instruments[name or UNCLASSIFIED].add(f"toss:{holding.market}:{holding.symbol}")
         if name is None:
             unclassified_count += 1
             unclassified_krw += value
@@ -131,20 +150,25 @@ def allocate(snapshot: HoldingsSnapshot, toss_view: Mapping[str, Any],
         cash = toss_view.get(key)
         if isinstance(cash, (int, float)):
             krw[CASH] += cash
+            cash_parts[CASH] += 1 if cash else 0
 
     block = combined_block or {}
     futures = block.get("crypto_futures_krw")
     if block.get("crypto_status") == "ok" and isinstance(futures, (int, float)):
         krw[ENGINE_MARGIN] += futures
+        cash_parts[ENGINE_MARGIN] += 1 if futures else 0   # a USDT margin balance, not an instrument
     else:
         gaps.append(f"binance futures {block.get('crypto_status') or 'not combined'}")
     wallet_status = block.get("crypto_wallet_status")
     wallet_classes = block.get("crypto_classes_krw")
     if wallet_status == "ok" and isinstance(wallet_classes, dict):
+        makeup = getattr(wallet, "class_assets", None) or {}
         for wallet_class, value in wallet_classes.items():
             if not isinstance(value, (int, float)) or value == 0:
                 continue
             name = WALLET_CLASS_MAP.get(wallet_class)
+            assets = makeup.get(wallet_class) or {f"?{wallet_class}"}
+            instruments[name or UNCLASSIFIED].update(f"binance:{asset}" for asset in assets)
             if name is None:
                 unclassified_count += 1
                 unclassified_krw += value
@@ -192,6 +216,8 @@ def allocate(snapshot: HoldingsSnapshot, toss_view: Mapping[str, Any],
             bands[group] = {"weight_pct": w, "target_pct": target, "band_pp": band_pp(target),
                             "drift_pp": drift, "outside": abs(drift) > band_pp(target)}
         outside = [group for group, row in bands.items() if row["outside"]]
+    parts = {name: Part(krw[name], frozenset(instruments[name]), cash_parts[name]) for name in CLASSES}
+    parts[UNCLASSIFIED] = Part(unclassified_krw, frozenset(instruments[UNCLASSIFIED]), 0)
     return {
         "complete": complete,
         "total_krw": total if total > 0 else None,
@@ -202,4 +228,4 @@ def allocate(snapshot: HoldingsSnapshot, toss_view: Mapping[str, Any],
         "unclassified_count": unclassified_count,
         "unclassified_krw": unclassified_krw,
         "notes": notes,
-    }
+    }, parts

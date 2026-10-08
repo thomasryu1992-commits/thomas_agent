@@ -107,14 +107,19 @@ def render_view(view: dict[str, Any], *, stamp_line: str) -> list[str]:
         share = f" ({weight:.1f}%)" if isinstance(weight, (int, float)) else ""
         return f"{label:12}: {krw(view.get(key))}{share}"
 
+    # The stored snapshot carries none of the Toss breakdown (H3, ``disclosure``): a line is drawn only
+    # for a key the view has, so the doors' board and the local board share this one renderer.
+    toss = [line("domestic", "domestic_stock_krw", "domestic_stock"),
+            line("overseas", "overseas_stock_krw", "overseas_stock"),
+            line("krw cash", "krw_cash", "krw_cash"),
+            line("usd cash", "usd_cash_krw", "usd_cash"),
+            f"{'known total':12}: {krw(view.get('known_total_krw'))}",
+            f"{'unrealized':12}: {krw(view.get('unrealized_pnl_krw'))}"]
+    keys = ("domestic_stock_krw", "overseas_stock_krw", "krw_cash", "usd_cash_krw", "known_total_krw",
+            "unrealized_pnl_krw")
     lines = [
         f"=== holdings {view.get('account', '****')} ({view.get('broker', '?')}) ===",
-        line("domestic", "domestic_stock_krw", "domestic_stock"),
-        line("overseas", "overseas_stock_krw", "overseas_stock"),
-        line("krw cash", "krw_cash", "krw_cash"),
-        line("usd cash", "usd_cash_krw", "usd_cash"),
-        f"{'known total':12}: {krw(view.get('known_total_krw'))}",
-        f"{'unrealized':12}: {krw(view.get('unrealized_pnl_krw'))}",
+        *(text for text, key in zip(toss, keys) if key in view),
         f"{'holdings':12}: {view.get('holding_count', 'n/a')}",
         stamp_line,
     ]
@@ -134,6 +139,8 @@ def render_combined(block: dict[str, Any]) -> list[str]:
     crypto = krw(block.get("crypto_futures_krw"))
     if block.get("crypto_status") != "ok":
         crypto = f"n/a ({block.get('crypto_status')})"
+    elif "crypto_futures_krw" not in block:
+        crypto = "read"          # the stored snapshot carries no per-venue amount (H3)
     state = block.get("drawdown_state")
     drawdown = block.get("drawdown_pct")
     limit = block.get("drawdown_limit_pct")
@@ -145,7 +152,7 @@ def render_combined(block: dict[str, Any]) -> list[str]:
         dd = f"{drawdown:+.1f}% (limit {limit:.0f}%){'  !! BREACHED (alert only)' if state == 'breached' else ''}"
     wallet = []
     status = block.get("crypto_wallet_status")
-    if status and status != "not_configured":
+    if status and status != "not_configured" and "crypto_spot_krw" in block:
         def part(key: str) -> str:
             return krw(block.get(key)) if block.get(key) is not None else f"n/a ({status})"
         wallet = [f"{'crypto spot':12}: {part('crypto_spot_krw')}", f"{'crypto earn':12}: {part('crypto_earn_krw')}"]
@@ -204,15 +211,20 @@ def _in_order(rows: dict[str, Any], order: Any) -> list[tuple[str, Any]]:
 def render_allocation(block: dict[str, Any]) -> list[str]:
     """Q9: each class against its target and the 5/25 band. Display only: nothing alerts on it."""
     lines = ["--- allocation vs target (display only) ---"]
+    hidden = set(block.get("withheld") or [])
+
+    def amount(name: str, value: Any) -> str:
+        return "withheld" if name in hidden else krw(value)
+
     for name, row in _in_order(block.get("classes") or {}, CLASSES):
         target = row.get("target_pct")
         target_text = f"target {target:g}%" if isinstance(target, (int, float)) else "target n/a"
         weight = row.get("weight_pct")
         share = (f"{weight:.1f}% / {target_text}, {row.get('drift_pp'):+.1f}pp"
                  if isinstance(weight, (int, float)) else f"{target_text}")
-        lines.append(f"{_CLASS_LABELS.get(name, name):12}: {krw(row.get('krw'))} ({share})")
+        lines.append(f"{_CLASS_LABELS.get(name, name):12}: {amount(name, row.get('krw'))} ({share})")
     if block.get("unclassified_count"):
-        lines.append(f"{'unclassified':12}: {krw(block.get('unclassified_krw'))} "
+        lines.append(f"{'unclassified':12}: {amount('unclassified', block.get('unclassified_krw'))} "
                      f"({block.get('unclassified_count')}; codes on the full board)")
     bands = block.get("bands")
     if isinstance(bands, dict):
@@ -221,6 +233,8 @@ def render_allocation(block: dict[str, Any]) -> list[str]:
             mark = "OUT" if row.get("outside") else "ok"
             parts.append(f"{group} {row.get('target_pct'):g}+/-{row.get('band_pp'):g} {mark}")
         lines.append(f"{'bands':12}: " + "; ".join(parts))
+    if block.get("withheld"):
+        lines.append(f"{'withheld':12}: {', '.join(block['withheld'])} (single-holding rule)")
     if block.get("cash_stablecoin_krw"):
         lines.append(f"{'cash note':12}: includes exchange stablecoins {krw(block.get('cash_stablecoin_krw'))}")
     lines.extend(f"{'note':12}: {note}" for note in block.get("notes") or [])
