@@ -4,7 +4,7 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **60**건: `DRAFT` 1 · `PARTIALLY DECIDED` 5 · `DECIDED` 11 · `IMPLEMENTED` 36 · `SUPERSEDED` 1 · `RECORD` 6
+제안서 **61**건: `DRAFT` 1 · `PARTIALLY DECIDED` 5 · `DECIDED` 12 · `IMPLEMENTED` 36 · `SUPERSEDED` 1 · `RECORD` 6
 
 ## Thomas 결정 대기 (6)
 
@@ -19,7 +19,7 @@
 | [RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md](RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-06 | (a)(b)(d)는 첫 forward cohort 판정(2027-03-22) 때 묻는다. 그때까지 크립토 라이브는 LIVE_AUTONOMOUS로 올리지 않고 현재 값을 유지한다(Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q6). 관문이 "슬리피지 실측 뒤"에서 "첫 판정 때"로 바뀌어 순환이 없어졌다. **값은 하나도 바뀌지 않았다.** |
 | [MULTI_ASSET_EXPANSION_V0.1.md](MULTI_ASSET_EXPANSION_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-08 | 열린 것: §6 D2 비교 기준 비준(P4 때). 부록 C(바이낸스 현물·Simple Earn 조회) 판단 문장은 Thomas가 2026-10-08에 확인했다(강도 잠정). **H2(평가 완전성, 2026-10-08, 아래 결정 절)가 지어졌다: 보드의 합계는 선언 범위 v1(토스·바이낸스 선물·현물·Simple Earn)이 모두 들어가고 평가·신선도 검사를 통과할 때만 portfolio NAV다. 지갑이 꺼진 지금은 INCOMPLETE이고, 고점·낙폭 알림·비중 판정이 멈춘다(Thomas가 알고 고름). 지갑은 H3·H4 뒤에 켠다.** 피드는 2026-10-07에 지어졌다(`holdings/binance_wallet.py`, P2 합산 블록에 합류). **BLOCKER (H1-a, 2026-10-07): 계정 키를 scheduler-maint와 공유하던 A안을 철회했다. 그 키는 주문 키와 같다. H1-b(2026-10-08)로 전용 읽기 전용 키(`BINANCE_READ_API_*`)를 들였고 지갑도 그 키만 읽는다. H2–H4가 끝나기 전에는 지갑을 켜지 않는다.** D1–D4 결정(2026-10-02): (A) 자산 관리 먼저, 옵션은 조건부, 읽기 전용 보드는 연구 일시 중지 중 허용. 2026-10-07 Thomas: 첫 계좌를 토스증권으로 바꿨다(부록 B, 잠정). P1(토스 보드·`/holdings`·Hermes `holdings_status`)이 운영 중이다. **P2 결정(2026-10-07, 아래 결정 절): 알림만, 낙폭 한도 고점 대비 -20%, 바이낸스(엔진 증거금) 비중 한도 없음, USDT 환산은 토스 매매기준율.** P2의 낙폭 한도가 `holdings/combined.py`로 지어졌다. `TOTAL_ASSET_ALLOCATION_V0.1.md`의 5/25 밴드(Q2)와 BTC 위험 기여도 상한(Q4)은 P2의 한도 후보에서 뺐다(Thomas 2026-10-07): 시스템은 비중 한도를 두지 않는다. 목표 대비 이탈 표시(그 문서 Q9·§11.1)가 보드에 지어졌다(2026-10-07, 표시만). §6 D2 비교 기준 비준은 P4 때 한다. IV–RV 측정은 연구 일시 중지의 예외로 허용됐다(2026-10-06, 아래 결정 절). |
 
-## 결정됨 — 구현 남음 (11)
+## 결정됨 — 구현 남음 (12)
 
 결정은 끝났고 결정된 것이 아직 다 지어지지 않았다. 결정이 만든 구현 대기열이다.
 
@@ -36,6 +36,7 @@
 | [RESEARCH_FORWARD_THROUGHPUT_ANALYSIS_V0.1.md](RESEARCH_FORWARD_THROUGHPUT_ANALYSIS_V0.1.md) | `DECIDED` | 2026-10-06 | P0-1(D3 범위) 결정(2026-10-01), P1-1(형제 규칙) 결정·구현(#1096·#1100). 나머지는 권고 순서대로 결정했고(Thomas 2026-10-06), D3가 허용하는 측정·표시 넷을 지었다: P0-2 주석 정정(#1137), P0-3 진입 거절 사유 카운터(#1139), P1-2 보고서 행 색인(#1138), P1-3 쌍 차이 표시(#1140). 남은 것은 관문이 있는 둘이다: P1-4 계층 판정 제안서(2027-03-22 전), P2(판정 뒤). |
 | [SELECTION_EVIDENCE_V0.1.md](SELECTION_EVIDENCE_V0.1.md) | `DECIDED` | 2026-10-07 | H1·H2 권고대로(Thomas). H1: S1은 첫 판정 때 `report --pairs`의 1d `(all)` 줄이 38쌍 이상이고 95% 구간 상한이 0 이상일 때만 실행하고, 실패하면 2차 cohort 마감(2027-03-30)에 한 번 다시 묻는다. H2: §4.2의 계층 판정 규칙(쌍 차이, 타임프레임 × 경제 family BH q = 0.10, 정산일 10일 하한, 교환 보정, family 안 Holm, 마감일 한 번, 분류 고정)이 2027-03-22 판정 규칙이다. 측정 근거: 생성 후 구간에서 계보 단위 1h −0.031R(18/40), 4h −0.044R(28/75), 1d 쌍 −0.711R [−1.282, −0.140], 1단계 시험 운전 통과 0. 판정 코드는 `selection_evidence verdict`로 지었다(2026-10-07). 짓다가 찾은 빈틈 다섯도 같은 날 권고대로 정했다(2차 결정): Holm α 0.10, 계보에도 10일 하한, 모든 동결 cohort를 마감 시각까지, 평균을 뺀 뒤 교환하는 보정, 앞설 때만 PASS. 남은 구현: S1·H1 실행(첫 판정 때). 지금 바뀐 문·보드·상수·스케줄은 없다. |
 | [TOTAL_ASSET_ALLOCATION_V0.1.md](TOTAL_ASSET_ALLOCATION_V0.1.md) | `DECIDED` | 2026-10-07 | Q1–Q10 결정. Q1·Q2·Q4 권고대로(중립형 배분, 5/25 밴드 월 점검, BTC 위험 기여도 상한 25%). Q3은 권고와 달리 토스 하나로 유지하고, 금은 토스증권 금 ETF로 담는다. Q5는 엔진 비중 0%에서 시작해 증거에 따라 늘리며 연구 일시 중지(D3)는 풀지 않는다. 실데이터 검증(`TOTAL_ASSET_ALLOCATION_VALIDATION_V0.1.md`) 뒤 Q6–Q10도 권고대로 결정했다 (§11): BTC 5 → 2.5%(줄인 몫은 현금), 국내주식 10% 유지, 국고채 3년 중심, 목표 대비 이탈은 표시만(D4 안), BTC 현물은 수동 입력·바이낸스 잔고는 목표 0%의 "엔진 증거금". 현재 목표: 주식 40·국고채 37·금 13·BTC 2.5·현금 7.5. 이탈 표시는 지어졌다 (§11.1, `holdings/allocation.py`, 2026-10-07). 남은 것: Q5의 첫 증액 질문(cohort 1 판정, 2027-03-22). 밴드(Q2)와 BTC 상한(Q4)은 P2의 한도 후보에서 뺐다(Thomas 2026-10-07, Q4 아래): 시스템은 비중 한도를 짓지 않는다. |
+| [BLOG_OUTCOME_INTEGRATION_DESIGN_V0.1.md](BLOG_OUTCOME_INTEGRATION_DESIGN_V0.1.md) | `DECIDED` | 2026-10-08 | Design Complete(Thomas 2026-10-08 최종 정합성 확인까지 반영). Q1 ±3일(목표 체크포인트·실제 관측일·오프셋 구분, 실제 관측일을 모르면 관측일·오프셋 모두 `null`, `run_date`는 별도 필드), Q2 비교군당 5편·결측률 30% 이하는 후보 제안의 최소선(인과 확정 아님), Q3 I2 → 독립 검증 → I5, Q4 PR 3.4는 이 조인 뷰 재사용, 과거 UNVERIFIED 순위는 개별 글 성과로 쓰지 않고 잠식 판단은 검증된 `post_rank`만. 남은 것: 구현 항목 I1~I5 — 각각 별도 승인 전에는 만들지 않는다. 코드·데이터 파일·스케줄 변경 0건. |
 
 ## 구현됨 (36)
 
