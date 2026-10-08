@@ -1,6 +1,6 @@
 # 블로그 Outcome Integration 설계 — PR 3.3 (V0.1)
 
-**상태:** PARTIALLY DECIDED 2026-10-08 — 설계 검토 결정(Thomas 2026-10-08) 반영: Q1 ±3일 승인(목표 체크포인트·실제 관측일·오프셋 구분), Q2 비교군당 5편·결측률 30% 이하를 후보 제안의 최소선으로 조건부 승인(인과 확정 아님), Q3 순서를 I2 → 독립 검증·정확도 확인 → I5로 수정(한 묶음 아님), Q4 3.4 Status Board는 이 조인 뷰를 재사용. 열린 것: 구현 항목 I1~I5 — 각각 별도 승인 전에는 만들지 않는다. 설계 문서만이며 코드·데이터 파일·스케줄 변경 0건.
+**상태:** DECIDED 2026-10-08 — Design Complete(Thomas 2026-10-08 최종 정합성 확인까지 반영). Q1 ±3일(목표 체크포인트·실제 관측일·오프셋 구분, 실제 관측일을 모르면 관측일·오프셋 모두 `null`, `run_date`는 별도 필드), Q2 비교군당 5편·결측률 30% 이하는 후보 제안의 최소선(인과 확정 아님), Q3 I2 → 독립 검증 → I5, Q4 PR 3.4는 이 조인 뷰 재사용, 과거 UNVERIFIED 순위는 개별 글 성과로 쓰지 않고 잠식 판단은 검증된 `post_rank`만. 남은 것: 구현 항목 I1~I5 — 각각 별도 승인 전에는 만들지 않는다. 코드·데이터 파일·스케줄 변경 0건.
 
 **요청:** PR 3.0 감사 결정(Thomas 2026-10-08, `BLOG_RUNTIME_PHASE3_BASELINE_AUDIT_V0.1.md`의 '결정' 절)의 PR 3.3 — 아래 여섯 가지만 설계한다: ① Vault Article ID·Published URL 기반 연결, ② 실제 Naver 순위 연결, ③ Tistory GSC 수동 데이터 연결, ④ Prompt Version 추적, ⑤ Missing Data 처리, ⑥ Weekly Feedback Candidate 구조.
 **기준 시점:** 2026-10-08. Vault `725f639`, scripts `974b5a0`, skills `53aafcd`.
@@ -18,6 +18,8 @@
 | Q3 첫 구현 | **수정 — I2(조인 뷰) → 독립 검증·정확도 확인 → I5(주간 보고서 통합).** 한 묶음이 아니다. I1~I5 모두 실제 구현은 각각 별도 승인 | §9 |
 | Q4 Status Board | **승인 — PR 3.4는 이 조인 뷰를 재사용하도록 설계한다.** 별도 Outcome 파싱 엔진을 만들지 않는다. 3.4 구현은 미승인 | §8 |
 | 순위 귀속 (I1 요구사항) | 대상 원고 URL의 logNo를 SERP 전체 결과와 비교해 `post_rank`를 계산하고, `blog_best_rank`는 따로 둔다. 첫 번째 내 블로그 결과의 logNo만 저장하는 수정으로 끝내지 않는다. 대상 글이 결과에 없으면 순위를 추측하지 않는다. 과거 데이터는 원본 증거 없이 VERIFIED로 올리지 않는다 | §3 |
+| 최종 정합성 확인 — 관측일 | I1 이전 데이터처럼 실제 관측일을 확인할 수 없으면 `actual_observation_date`는 `null`이다. `run_date`는 별도 필드에 적고 관측일로 대신 쓰지 않는다. 실제 관측일이 불명확하면 `checkpoint_offset_days`도 추측하지 않는다(`null`) | §3.3 |
+| 최종 정합성 확인 — 과거 귀속 | UNVERIFIED 순위는 개별 글의 확정 성과로 쓰지 않는다. 결측률과 순위 귀속 검증률을 따로 낸다. 잠식 판단에는 귀속이 검증된(`VERIFIED`) `post_rank`만 쓴다 | §3.4, §6, §7 |
 | Prompt Version 확실성 | EXACT는 생성 시점에 쓴 판이 **직접** 확인될 때만. 커밋 시각·원고 생성일로 추정한 판은 APPROX, 근거가 없으면 UNKNOWN. 실험 Cutover 기록은 보존하되 실제 적용 증거와 날짜 추정을 구분한다 | §5 |
 
 ---
@@ -114,8 +116,8 @@
 | `platform` | `naver` |
 | `keyword` | 원고 `keywords` 앞 2개(현재 `rank_track`과 같다) |
 | `data_source` | `naver_blog_tab_serp` (실측. Runtime `blog_rank`의 API HUB `sort=sim`은 Proxy이며 이 흐름에 넣지 않는다) |
-| `actual_observation_at` | SERP를 실제로 가져온 시각(I1 이후: 캐시의 저장 시각을 행에 저장). I1 이전 행은 `null` |
-| `run_date` | 그 행을 쓴 실행의 이력 파일 날짜 — **관측 시각이 아니다** |
+| `actual_observation_at` | SERP를 실제로 가져온 시각(I1 이후: 캐시의 저장 시각을 행에 저장). 확인할 수 없으면(I1 이전 행 전부) `null` — 다른 날짜로 채우지 않는다 |
+| `run_date` | 그 행을 쓴 실행의 이력 파일 날짜. **별도 필드이며 관측 시각이 아니다** — `actual_observation_at`이 `null`이어도 그 자리를 대신하지 않는다 |
 | `observation_date_basis` | `serp_fetch_time`(I1 이후) 또는 `run_date_only`(I1 이전: 실제 관측은 `run_date` 이전 최대 1일, 정확한 시각 모름) |
 | `post_rank`, `blog_best_rank`, `attribution`, `state` | §3.2, §6 |
 
@@ -126,16 +128,19 @@
 | 필드 | 뜻 |
 |---|---|
 | `target_checkpoint` | `D+7` / `D+14` / `D+28`과 그 목표 날짜(발행일 + N일) |
-| `actual_observation_date` | 쓴 관측의 실제 날짜. I1 이전 행은 `run_date`이고 `observation_date_basis: run_date_only`를 함께 적는다 |
-| `checkpoint_offset_days` | 실제 관측일 − 목표 날짜 (부호 포함, 예: `-2`, `+1`) |
+| `actual_observation_date` | 쓴 관측의 실제 날짜(`actual_observation_at`의 날짜). 실제 관측일을 확인할 수 없으면 **`null`** — `run_date`로 바꿔 넣지 않는다 |
+| `checkpoint_offset_days` | 실제 관측일 − 목표 날짜 (부호 포함, 예: `-2`, `+1`). `actual_observation_date`가 `null`이면 **`null`** — 추측하지 않는다 |
+| `run_date` | 참고용 별도 필드(§3.3 관측 행과 같은 뜻). 체크포인트 오프셋 계산에 쓰지 않는다 |
 
-- ±3일 안의 가장 가까운 관측을 쓴다. 없으면 `MISSING`이며 다른 날의 값을 끌어오지 않는다.
+- ±3일 안의 가장 가까운 관측을 쓴다. 이 거리는 `actual_observation_date`로만 잰다. 없으면 `MISSING`이며 다른 날의 값을 끌어오지 않는다.
+- 실제 관측일이 `null`인 행(I1 이전 전부)은 체크포인트를 채우지 못한다. 그 체크포인트는 `MISSING`(사유 `observation_date_unknown`)이고, 행 자체는 `run_date`와 함께 참고로만 보인다.
 - 오프셋이 다른 값끼리 비교할 때는 오프셋을 함께 보인다. "D+14 순위 7"이 아니라 "D+14 목표, 실제 D+12 관측(−2), 순위 7"처럼 적는다.
 - 판정은 기존 인사이트 3을 따른다. 새 글은 D+14부터 보고, 첫 주에는 판정하지 않는다.
 
 ### 3.4 과거 데이터
 
-- 10-08 이전을 포함한 기존 이력 11개 파일의 순위 행은 모두 `attribution: UNVERIFIED`, `observation_date_basis: run_date_only`로 둔다.
+- 10-08 이전을 포함한 기존 이력 11개 파일의 순위 행은 모두 `attribution: UNVERIFIED`, `observation_date_basis: run_date_only`, `actual_observation_at: null`로 둔다.
+- **UNVERIFIED 순위는 개별 글의 확정된 성과로 쓰지 않는다.** 그 글의 순위 표·체크포인트·후보 근거에 들어가지 않는다. 보이더라도 "내 블로그 최고 순위(귀속 미확인)"인 `blog_best_rank`로만 보인다.
 - 이 문서의 80/3/4 대조는 한 번 해 본 측정이며, 과거 행을 VERIFIED로 올리는 근거가 아니다. 캐시는 덮어쓰이는 임시 파일이라 보존된 원본 증거가 아니다.
 - 기존 이력 파일은 다시 쓰지 않는다.
 
@@ -199,7 +204,10 @@ GSC 자동 수집은 보류다(Thomas 2026-10-08, 10-31 Tistory 평가 뒤 재�
 
 - `NOT_IN_FIRST_PAGE`는 "0위"도 "모름"도 아니다. 평균을 낼 때 빼고, 개수는 따로 센다.
 - I1 이전 행에서 "순위 없음"(10-08: 61행)은 **내 블로그 결과가 하나도 없었다**는 뜻이라 `NOT_IN_FIRST_PAGE`로 볼 수 있다. 반면 "순위 있음"은 `attribution: UNVERIFIED`라 그 글의 순위로 확정하지 않는다.
-- 집계마다 **결측률**을 함께 낸다: (`MISSING`+`UNKNOWN`+`UNLINKED`) / 전체.
+- 집계마다 두 비율을 **따로** 낸다. 하나로 합치지 않는다.
+  - **결측률** = (`MISSING`+`UNKNOWN`+`UNLINKED`) / 전체 — 값이 없는 비율.
+  - **순위 귀속 검증률** = `attribution: VERIFIED`인 순위 행 / 순위가 잡힌 행 전체 — 값은 있지만 그 글의 것인지 확인된 비율. I1 이전 데이터는 0%다.
+  - 결측이 0%여도 귀속 검증률이 낮으면, 그 순위는 개별 글 성과로 쓰지 못한다.
 
 ---
 
@@ -218,6 +226,7 @@ GSC 자동 수집은 보류다(Thomas 2026-10-08, 10-31 Tistory 평가 뒤 재�
 | `n` | 비교군별 글 수 |
 | `window` | 관측 창 |
 | `missing_rate` | §6 |
+| `attribution_verified_rate` | §6 — 순위를 쓰는 후보라면 필수 |
 | `confounders` | 키워드 수요 차이(월 검색량), 경쟁도, 발행 시기, 프롬프트 판 차이, 플랫폼 차이, 체크포인트 오프셋 차이 |
 | `verdict` | `CANDIDATE` 또는 `INSUFFICIENT_EVIDENCE` |
 | `proposed_action` | 사람이 할 일(제안문). 실행 경로는 없다 |
@@ -239,7 +248,7 @@ GSC 자동 수집은 보류다(Thomas 2026-10-08, 10-31 Tistory 평가 뒤 재�
 
 **후보를 만드는 질문 (처음엔 이 셋만):**
 
-1. 같은 클러스터의 새 글이 기존 글의 순위·유입을 깎았나 (잠식). §3.2의 `post_rank`가 있어야 판단할 수 있으며, I1 이전 데이터로는 판단하지 않는다.
+1. 같은 클러스터의 새 글이 기존 글의 순위·유입을 깎았나 (잠식). **귀속이 검증된(`VERIFIED`) `post_rank`만 쓴다.** UNVERIFIED 순위와 `blog_best_rank`는 쓰지 않으므로, I1 이전 데이터로는 판단하지 않는다.
 2. 프롬프트 판이 바뀐 앞뒤로 D+14 성과가 달라졌나. 판 확실성이 대부분 `APPROX`이므로 결과는 "관찰"로만 적는다.
 3. 보강(`updated:`) 앞뒤로 순위가 움직였나. 기존 '보강 전후' 절을 그대로 쓴다.
 
@@ -271,7 +280,8 @@ GSC 자동 수집은 보류다(Thomas 2026-10-08, 10-31 Tistory 평가 뒤 재�
 
 - **Article Key 정확도:** 무작위 20편의 조인 결과(URL·짝·effective status)를 원고 프론트매터와 라이브 URL로 손으로 대조한다. 불일치 0건이어야 한다.
 - **결측 상태:** 6상태별로 최소 1건씩 원천 행을 짚어 상태가 맞는지 확인한다. 0으로 바뀐 결측이 0건이어야 한다.
-- **날짜:** 체크포인트 행 전부에서 `actual_observation_date`와 `checkpoint_offset_days`가 원천과 일치해야 한다. `run_date_only` 행이 관측일로 표기된 경우가 0건이어야 한다.
+- **날짜:** 체크포인트 행 전부에서 `actual_observation_date`와 `checkpoint_offset_days`가 원천과 일치해야 한다. 실제 관측일을 모르는 행에서 두 값 중 하나라도 채워진 경우가 0건이어야 한다(`run_date`로 채운 경우 포함).
+- **귀속:** UNVERIFIED 순위가 개별 글의 성과·체크포인트·잠식 근거로 쓰인 경우가 0건이어야 한다. 결측률과 귀속 검증률이 따로 나와야 한다.
 - **UNLINKED:** 키워드·제목만으로 연결된 행이 0건이어야 한다.
 - **재현성:** 같은 입력으로 두 번 돌린 출력이 같아야 하고, 실행 전후 Vault `git status`가 같아야 한다(쓰기 0).
 
