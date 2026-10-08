@@ -21,13 +21,38 @@ itself is never stored.
 **The Binance spot wallet and Simple Earn join the total when their gate is open** (Thomas 2026-10-07,
 appendix C; ``binance_wallet``). They are valued at the same Toss mid-rate, USDT as one US dollar. With
 the gate open, the wallet is a required part: a failed read, an unread Earn or no rate makes the total
-incomplete, exactly as a missing futures file does. With the gate closed, the total is what it was.
+incomplete, exactly as a missing futures file does. With the gate closed the wallet is a declared source
+left out, so since H2 the total is not a portfolio NAV either (below).
 
 **Peak and drawdown are judged only on a complete, fresh pair.** A Toss read that is partial, or a
 Binance file that is absent, unreadable, not USDT, unconfigured or older than the stale window, makes
 the state ``unknown`` and leaves the peak alone: a missing part would otherwise read as a drop, and a
 peak raised on a partial total would hide a real drop later. The first complete total initializes the
 peak with no verdict.
+
+**H2: the total is a portfolio NAV only when the declared scope is all in it** (Thomas 2026-10-08,
+``MULTI_ASSET_EXPANSION_V0.1.md`` H2, D-H2-1…8). Completeness is judged against
+:data:`PORTFOLIO_SCOPE` — the sources Thomas declared — never against which readers exist or which gates
+are on. So one ``complete`` is split in four, and the old key stays as an alias of the last:
+
+- ``source_fetch_complete``: every source whose gate is on answered. This is what ``complete`` used to mean.
+- ``coverage_complete``: every declared source is in the total. A declared source whose gate is off is
+  *excluded*, with its reason under ``sources``.
+- ``valuation_complete``: every included source is fully valued — no partial Toss read or parse warning,
+  a rate, USDT margin, and a wallet with no unpriced asset, no truncated Earn list and no invalid row.
+- ``freshness_complete``: the one input that is not this fire's own read — the futures snapshot file — is
+  inside its stale window. Toss and the wallet are read live by this fire, so they have no window.
+
+``portfolio_nav_complete`` is the AND of :data:`REQUIRED_CHECKS`, and ``checks`` lists every check with
+``PASS``/``FAIL``/``NOT_EVALUATED``. Snapshot coherence and reconciliation are H4's; they show
+``NOT_EVALUATED`` and are not required until H4 adds them to :data:`REQUIRED_CHECKS` (D-H2-6). While the
+NAV is incomplete, ``combined_total_krw`` is ``None``, the peak does not move and there is no drawdown
+verdict (D-H2-8). No summed partial figure is produced: the parts are each on the board already, and a
+sum of some of them is the number most easily mistaken for the whole (D-H2-7).
+
+**The peak belongs to a scope.** ``holdings_peak.json`` carries :data:`PORTFOLIO_SCOPE_VERSION`. A peak
+from another scope (or from before H2, which has none) is not compared against: the next complete
+total initializes a new one, so a change of scope never reads as a gain or a drop.
 
 **Deposits and withdrawals are drawdowns to this metric.** These two snapshots carry no cash flows,
 so a withdrawal reads as a fall from peak. The documented answer is ``scripts/holdings_board.py
@@ -53,6 +78,31 @@ BINANCE_SNAPSHOT_FIELDS = frozenset({"record_type", "configured", "asset", "marg
 
 DRAWDOWN_LIMIT_PCT = -20.0
 
+# H2 (Thomas 2026-10-08, D-H2-1/2): the declared portfolio scope. A reader existing in the code does not
+# put its source here; Thomas's scope change does, with a new version.
+SOURCE_TOSS = "toss"
+SOURCE_FUTURES = "binance_futures"
+SOURCE_SPOT = "binance_spot"
+SOURCE_EARN = "binance_earn"
+PORTFOLIO_SCOPE_VERSION = "v1"
+PORTFOLIO_SCOPE = (SOURCE_TOSS, SOURCE_FUTURES, SOURCE_SPOT, SOURCE_EARN)
+
+CHECK_COVERAGE = "coverage"
+CHECK_VALUATION = "valuation"
+CHECK_FRESHNESS = "freshness"
+CHECK_COHERENCE = "coherence"
+CHECK_RECONCILIATION = "reconciliation"
+CHECKS = (CHECK_COVERAGE, CHECK_VALUATION, CHECK_FRESHNESS, CHECK_COHERENCE, CHECK_RECONCILIATION)
+# D-H2-4/5: H4 appends coherence and reconciliation here, and implements them.
+REQUIRED_CHECKS = (CHECK_COVERAGE, CHECK_VALUATION, CHECK_FRESHNESS)
+PASS = "PASS"
+FAIL = "FAIL"
+NOT_EVALUATED = "NOT_EVALUATED"
+
+# Why a declared source is not in the total (``sources[<id>]["reason"]``).
+EXCLUDED_GATE_OFF = "gate_off"
+EXCLUDED_READ_FAILED = "read_failed"
+
 PEAK_FILENAME = "holdings_peak.json"
 ALERT_MARK_FILENAME = "holdings_drawdown_told.json"
 
@@ -74,7 +124,17 @@ COMBINED_KEYS = frozenset({
     "crypto_as_of",
     "crypto_status",
     "combined_total_krw",
+    # H2 (Thomas 2026-10-08): status words only, no amount. ``complete`` is ``portfolio_nav_complete``,
+    # kept so a reader of an older shape still reads the strict meaning.
     "complete",
+    "scope_version",
+    "sources",
+    "checks",
+    "source_fetch_complete",
+    "coverage_complete",
+    "valuation_complete",
+    "freshness_complete",
+    "portfolio_nav_complete",
     "peak_total_krw",
     "peak_at",
     "drawdown_pct",
@@ -123,6 +183,11 @@ def read_binance(root: Path, *, now: str) -> tuple[float | None, str | None, str
 
 WALLET_NOT_CONFIGURED = "not_configured"
 WALLET_OK = "ok"
+# Read, but its value is a lower bound (H2). The KRW parts are still computed, for the board's lines.
+WALLET_UNPRICED = "unpriced"
+WALLET_TRUNCATED = "earn_truncated"
+WALLET_INVALID_ROWS = "invalid_rows"
+WALLET_UNDERVALUED = (WALLET_UNPRICED, WALLET_TRUNCATED, WALLET_INVALID_ROWS)
 
 
 def wallet_part(wallet: Any, *, wallet_status: str, usd_krw_rate: float | None) -> dict[str, Any]:
@@ -144,14 +209,70 @@ def wallet_part(wallet: Any, *, wallet_status: str, usd_krw_rate: float | None) 
         name: (wallet.spot_usdt.get(name, 0.0) + wallet.earn_usdt.get(name, 0.0)) * usd_krw_rate
         for name in sorted(set(wallet.spot_usdt) | set(wallet.earn_usdt))
     }
-    part["crypto_wallet_status"] = WALLET_OK
+    if getattr(wallet, "invalid_rows", 0):
+        part["crypto_wallet_status"] = WALLET_INVALID_ROWS
+    elif getattr(wallet, "earn_truncated", False):
+        part["crypto_wallet_status"] = WALLET_TRUNCATED
+    elif getattr(wallet, "unpriced_assets", 0):
+        part["crypto_wallet_status"] = WALLET_UNPRICED
+    else:
+        part["crypto_wallet_status"] = WALLET_OK
     return part
+
+
+def _source(included: bool, reason: str | None = None) -> dict[str, Any]:
+    return {"included": included, "reason": None if included else reason}
+
+
+def judge(toss_view: dict[str, Any], *, crypto_status: str, crypto_krw: float | None,
+          wallet_block: dict[str, Any], toss_warnings: int = 0) -> dict[str, Any]:
+    """H2's verdict over the declared scope: ``sources``, ``checks`` and the five flags. Amount-free."""
+    wallet_status = wallet_block["crypto_wallet_status"]
+    toss_total = toss_view.get("known_total_krw")
+    toss_read = toss_total is not None and not toss_view.get("partial")
+    futures_read = crypto_status in ("ok", "no_rate", "not_usdt")
+    wallet_read = wallet_status not in (WALLET_NOT_CONFIGURED,) and not wallet_status.startswith("failed")
+    spot_counted = wallet_read and wallet_block["crypto_spot_krw"] is not None
+    earn_counted = wallet_read and wallet_block["crypto_earn_krw"] is not None
+    wallet_off_reason = EXCLUDED_GATE_OFF if wallet_status == WALLET_NOT_CONFIGURED else EXCLUDED_READ_FAILED
+
+    sources = {
+        SOURCE_TOSS: _source(toss_total is not None, EXCLUDED_READ_FAILED),
+        SOURCE_FUTURES: _source(crypto_krw is not None, crypto_status),
+        SOURCE_SPOT: _source(spot_counted, wallet_off_reason if not wallet_read else wallet_status),
+        SOURCE_EARN: _source(earn_counted, wallet_off_reason if not wallet_read else wallet_status),
+    }
+    fetch = toss_read and futures_read and (wallet_status == WALLET_NOT_CONFIGURED or wallet_read) \
+        and wallet_status != "earn_unread"
+    coverage = all(row["included"] for row in sources.values())
+    valuation = (toss_read and not toss_warnings and crypto_status not in ("no_rate", "not_usdt")
+                 and (not wallet_read or wallet_status == WALLET_OK))
+    freshness = crypto_status != "stale"
+    checks = {name: NOT_EVALUATED for name in CHECKS}
+    checks.update({CHECK_COVERAGE: PASS if coverage else FAIL,
+                   CHECK_VALUATION: PASS if valuation else FAIL,
+                   CHECK_FRESHNESS: PASS if freshness else FAIL})
+    nav = all(checks[name] == PASS for name in REQUIRED_CHECKS)
+    return {
+        "scope_version": PORTFOLIO_SCOPE_VERSION,
+        "sources": sources,
+        "checks": checks,
+        "source_fetch_complete": fetch,
+        "coverage_complete": coverage,
+        "valuation_complete": valuation,
+        "freshness_complete": freshness,
+        "portfolio_nav_complete": nav,
+        "complete": nav,
+    }
 
 
 def combine(toss_view: dict[str, Any], *, usd_krw_rate: float | None, root: Path, now: str,
             state_dir: Path, wallet: Any = None,
-            wallet_status: str = WALLET_NOT_CONFIGURED) -> dict[str, Any]:
-    """The combined block, and the peak file moved when (and only when) every configured part is complete."""
+            wallet_status: str = WALLET_NOT_CONFIGURED, toss_warnings: int = 0) -> dict[str, Any]:
+    """The combined block, and the peak file moved when (and only when) the portfolio NAV is complete (H2).
+
+    ``toss_warnings`` is the Toss read's parse-warning count: a field the Toss total rests on was missing
+    or not numeric, so the total is a lower bound."""
     usdt, crypto_as_of, crypto_status = read_binance(root, now=now)
     crypto_krw = None if usdt is None or usd_krw_rate is None else usdt * usd_krw_rate
     if usdt is not None and usd_krw_rate is None:
@@ -160,17 +281,18 @@ def combine(toss_view: dict[str, Any], *, usd_krw_rate: float | None, root: Path
     wallet_status = wallet_block["crypto_wallet_status"]
     wallet_krw = (wallet_block["crypto_spot_krw"] or 0) + (wallet_block["crypto_earn_krw"] or 0)
     toss_total = toss_view.get("known_total_krw")
-    complete = ((not toss_view.get("partial")) and crypto_krw is not None and toss_total is not None
-                and wallet_status in (WALLET_OK, WALLET_NOT_CONFIGURED))
-    total = (toss_total or 0) + crypto_krw + wallet_krw if complete else None
+    verdict = judge(toss_view, crypto_status=crypto_status, crypto_krw=crypto_krw, wallet_block=wallet_block,
+                    toss_warnings=toss_warnings)
+    complete = verdict["portfolio_nav_complete"]
+    total = (toss_total or 0) + (crypto_krw or 0) + wallet_krw if complete else None
 
     block: dict[str, Any] = {
         **wallet_block,
+        **verdict,
         "crypto_futures_krw": crypto_krw,
         "crypto_as_of": crypto_as_of,
         "crypto_status": crypto_status,
         "combined_total_krw": total,
-        "complete": complete,
         "peak_total_krw": None,
         "peak_at": None,
         "drawdown_pct": None,
@@ -179,6 +301,8 @@ def combine(toss_view: dict[str, Any], *, usd_krw_rate: float | None, root: Path
     }
     peak_path = state_dir / PEAK_FILENAME
     peak = _read_json(peak_path) or {}
+    if peak.get("scope_version") != PORTFOLIO_SCOPE_VERSION:
+        peak = {}   # a peak from another scope is not this portfolio's peak (module docstring)
     peak_total = peak.get("peak_total_krw") if isinstance(peak.get("peak_total_krw"), (int, float)) else None
     block["peak_total_krw"], block["peak_at"] = peak_total, peak.get("peak_at")
     if not complete or total is None or total <= 0:
@@ -201,7 +325,8 @@ def combine(toss_view: dict[str, Any], *, usd_krw_rate: float | None, root: Path
 def _write_peak(path: Path, total: float, now: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"peak_total_krw": total, "peak_at": now}, sort_keys=True), encoding="utf-8")
+    tmp.write_text(json.dumps({"peak_total_krw": total, "peak_at": now, "scope_version": PORTFOLIO_SCOPE_VERSION},
+                              sort_keys=True), encoding="utf-8")
     tmp.replace(path)
 
 

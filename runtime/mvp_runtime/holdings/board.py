@@ -156,11 +156,31 @@ def render_combined(block: dict[str, Any]) -> list[str]:
         "--- all accounts ---",
         f"{'binance':12}: {crypto}" + (f" (as of {block.get('crypto_as_of')})" if block.get("crypto_as_of") else ""),
         *wallet,
-        f"{'combined':12}: {krw(block.get('combined_total_krw'))}",
+        *render_nav(block),
         f"{'peak':12}: {krw(block.get('peak_total_krw'))}" + (f" ({block.get('peak_at')})" if block.get("peak_at") else ""),
         f"{'drawdown':12}: {dd}",
         f"{'note':12}: USDT counted as 1 USD at the Toss mid-rate; deposits/withdrawals read as drawdown",
     ]
+
+
+def render_nav(block: dict[str, Any]) -> list[str]:
+    """H2: the portfolio NAV only when the declared scope is complete; otherwise why not. No partial sum
+    is shown under any name (D-H2-7): the parts above are each labelled, and their sum is not the NAV."""
+    nav = block.get("portfolio_nav_complete")
+    if nav is None:
+        return [f"{'portfolio':12}: not judged (snapshot predates the H2 scope check)"]
+    scope = f"scope {block.get('scope_version')}"
+    if nav:
+        return [f"{'portfolio NAV':12}: {krw(block.get('combined_total_krw'))} (COMPLETE, {scope})"]
+    checks = block.get("checks") or {}
+    failed = [name for name, state in checks.items() if state == "FAIL"]
+    excluded = [f"{name} ({row.get('reason')})" for name, row in (block.get("sources") or {}).items()
+                if isinstance(row, dict) and not row.get("included")]
+    lines = [f"{'portfolio NAV':12}: n/a -- INCOMPLETE ({scope}; failed: {', '.join(failed) or 'none'})"]
+    if excluded:
+        lines.append(f"{'excluded':12}: {', '.join(excluded)}")
+    lines.append(f"{'note':12}: no peak update, no drawdown or allocation verdict until the NAV is complete")
+    return lines
 
 
 _CLASS_LABELS = {

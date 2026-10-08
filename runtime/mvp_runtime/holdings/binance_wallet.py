@@ -11,8 +11,8 @@ key Thomas issued with "Enable Reading" only (``BINANCE_READ_API_KEY`` / ``_SECR
 order key, and there is no fallback: without the read pair the feed fails closed with ``NO_API_KEY``.
 History: option A (2026-10-07) had shared the account key, which is the order key; H1-a removed it from
 scheduler-maint the same day, and this pair replaced it. Which service receives the read pair is pinned in
-``tests/test_deployment_env_passthrough.py``; the wallet gate stays off until H2–H4 (appendix C), and a
-one-off probe that reads with it is not an activation.
+``tests/test_deployment_env_passthrough.py``; the wallet gate stays off until H2–H4 (appendix C; H3 and
+H4 kept as preconditions by Thomas 2026-10-08), and a one-off probe that reads with it is not an activation.
 
 **Read-only by construction.** One host (``api.binance.com``), four GET paths, by constant: the spot
 account and the two Simple Earn position lists (signed), and the public price list (no key). There is no
@@ -39,7 +39,8 @@ the official docs alone:
   ``<asset>`` is in the flexible rows, because ``LDO`` is a real coin;
 - ``omitZeroBalances``. Zero rows are also dropped here regardless.
 
-A missing or non-numeric field is ``None`` plus a warning, never zero.
+A missing or non-numeric field is ``None`` plus a warning, never zero, and the row is counted in
+``invalid_rows`` so the board can refuse to call the total complete (H2).
 """
 
 from __future__ import annotations
@@ -128,7 +129,11 @@ def _number(value: Any, warnings: list[str], where: str) -> float | None:
 class WalletSnapshot:
     """Class totals in USDT. No asset, no quantity, no price.
 
-    ``earn_usdt`` is ``None`` when the Earn read failed, never an empty zero."""
+    ``earn_usdt`` is ``None`` when the Earn read failed, never an empty zero. The three valuation facts
+    H2 judges by (Thomas 2026-10-08, ``holdings.combined``) are fields, not warning text: ``unpriced_assets``
+    (held, no USDT price, left out), ``earn_truncated`` (more Earn pages than read) and ``invalid_rows``
+    (a balance row whose asset or amount was missing or not numeric, skipped). Any of them makes the
+    wallet's value a lower bound, never a total."""
 
     spot_usdt: Mapping[str, float]
     earn_usdt: Mapping[str, float] | None
@@ -136,6 +141,8 @@ class WalletSnapshot:
     collected_at: str
     latency_ms: int
     warnings: tuple[str, ...] = field(default_factory=tuple)
+    earn_truncated: bool = False
+    invalid_rows: int = 0
 
 
 class WalletFeed(Protocol):
@@ -243,7 +250,7 @@ class BinanceWalletFeed:
 
     # -- the reads -------------------------------------------------------------------------
 
-    def _spot(self, warnings: list[str], *, timeout_seconds: int) -> dict[str, float]:
+    def _spot(self, warnings: list[str], invalid: list[str], *, timeout_seconds: int) -> dict[str, float]:
         body = self._get(BINANCE_BASE_URL, SPOT_ACCOUNT_PATH, {"omitZeroBalances": "true"},
                          signed=True, what="spot account", timeout_seconds=timeout_seconds)
         if not isinstance(body, dict) or not isinstance(body.get("balances"), list):
@@ -251,18 +258,20 @@ class BinanceWalletFeed:
         out: dict[str, float] = {}
         for row in body["balances"]:
             if not isinstance(row, dict):
+                invalid.append("spot")
                 continue
             asset = str(row.get("asset") or "").strip()
             free = _number(row.get("free"), warnings, f"spot {asset} free")
             locked = _number(row.get("locked"), warnings, f"spot {asset} locked")
             if not asset or free is None or locked is None:
+                invalid.append("spot")
                 continue
             if free + locked > 0:
                 out[asset] = out.get(asset, 0.0) + free + locked
         return out
 
-    def _earn(self, path: str, amount_field: str, what: str, warnings: list[str], *,
-              timeout_seconds: int) -> dict[str, float]:
+    def _earn(self, path: str, amount_field: str, what: str, warnings: list[str], invalid: list[str],
+              truncated: list[str], *, timeout_seconds: int) -> dict[str, float]:
         out: dict[str, float] = {}
         seen = 0
         for page in range(1, EARN_MAX_PAGES + 1):
@@ -273,16 +282,21 @@ class BinanceWalletFeed:
                 raise ToolError("MALFORMED_RESULT", f"{what} carried no rows")
             for row in rows:
                 if not isinstance(row, dict):
+                    invalid.append(what)
                     continue
                 asset = str(row.get("asset") or "").strip()
                 amount = _number(row.get(amount_field), warnings, f"{what} {asset} {amount_field}")
-                if asset and amount is not None and amount > 0:
+                if not asset or amount is None:
+                    invalid.append(what)
+                    continue
+                if amount > 0:
                     out[asset] = out.get(asset, 0.0) + amount
             seen += len(rows)
             total = body.get("total")
             if not rows or len(rows) < EARN_PAGE_SIZE or (isinstance(total, int) and seen >= total):
                 return out
         warnings.append(f"{what}: more than {EARN_MAX_PAGES} pages; the rest not read")
+        truncated.append(what)
         return out
 
     def _prices(self, *, timeout_seconds: int) -> dict[str, float]:
@@ -313,12 +327,15 @@ class BinanceWalletFeed:
         self._check_gate()
         started = time.monotonic()
         warnings: list[str] = []
-        spot = self._spot(warnings, timeout_seconds=timeout_seconds)   # a failure here fails the read
+        invalid: list[str] = []
+        truncated: list[str] = []
+        spot = self._spot(warnings, invalid, timeout_seconds=timeout_seconds)   # a failure here fails the read
         earn: dict[str, float] | None
         try:
-            flexible = self._earn(FLEXIBLE_PATH, "totalAmount", "flexible earn", warnings,
+            flexible = self._earn(FLEXIBLE_PATH, "totalAmount", "flexible earn", warnings, invalid, truncated,
                                   timeout_seconds=timeout_seconds)
-            locked = self._earn(LOCKED_PATH, "amount", "locked earn", warnings, timeout_seconds=timeout_seconds)
+            locked = self._earn(LOCKED_PATH, "amount", "locked earn", warnings, invalid, truncated,
+                                timeout_seconds=timeout_seconds)
         except ToolError as exc:
             warnings.append(f"earn positions unavailable ({exc.reason_code}); earn not counted")
             flexible, earn = {}, None
@@ -356,6 +373,8 @@ class BinanceWalletFeed:
             collected_at=timeutil.utc_now_iso(),
             latency_ms=int((time.monotonic() - started) * 1000),
             warnings=tuple(warnings),
+            earn_truncated=bool(truncated),
+            invalid_rows=len(invalid),
         )
 
 

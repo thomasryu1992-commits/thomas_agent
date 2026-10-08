@@ -16,8 +16,12 @@ and no band verdict is given (§11.1 point 5).
 **Inputs, all from the same fire.** Toss holdings and cash (overseas values at the read's own mid-rate),
 the P2 combined block for the Binance futures margin (target 0%: the engine) and, when its gate is on,
 the Binance wallet's class totals: BTC and ETH are coin spot, stablecoins are cash (Thomas 2026-10-07),
-anything else is unclassified. A wallet whose gate is off is not an account on this board, the same rule
-the P2 total follows; it is said in a note.
+anything else is unclassified.
+
+**No band verdict without a portfolio NAV** (H2, Thomas 2026-10-08, D-H2-8). The weights are judged on the
+same declared scope as the P2 total: when ``combined.portfolio_nav_complete`` is not true — a declared
+source left out (the wallet's gate off included), a part not fully valued, a stale futures file — the
+block is partial and gives no weight and no band.
 """
 
 from __future__ import annotations
@@ -149,9 +153,11 @@ def allocate(snapshot: HoldingsSnapshot, toss_view: Mapping[str, Any],
             if wallet_class == "stable":
                 stable_krw += value
     elif wallet_status in (None, "not_configured"):
-        notes.append("binance spot/earn not read (gate off); not on this board")
+        gaps.append("binance spot/earn not read (gate off)")
     else:
         gaps.append(f"binance wallet {wallet_status}")
+    if block and block.get("portfolio_nav_complete") is not True and not gaps:
+        gaps.append("portfolio NAV incomplete")
 
     if krw[ENGINE_MARGIN] > 0:
         notes.append("engine margin target is 0% by decision (Q5, Q10): its balance shows as drift")
