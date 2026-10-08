@@ -5,7 +5,8 @@
 범위 v1(토스·바이낸스 선물·현물·Simple Earn)이 모두 들어가고 평가·신선도 검사를 통과할 때만 portfolio NAV다. 지갑이 꺼진 지금은
 INCOMPLETE이고, 고점·낙폭 알림·비중 판정이 멈춘다(Thomas가 알고 고름). 지갑은 H3·H4 뒤에 켠다. H1-c(2026-10-08) 끝.
 H3-min(반출 경계, 2026-10-08, 아래 결정 절): 저장 스냅샷에는 단일 종목 금액을 숨긴 자산군 표 하나만 남는다.
-H4-min(2026-10-08): coherence와 reconciliation이 필수 검사가 됐다. 남은 것은 지갑 활성화이고, 별도 승인 단계다.** 피드는 2026-10-07에 지어졌다(`holdings/binance_wallet.py`, P2 합산 블록에 합류). **BLOCKER
+H4-min(2026-10-08): coherence와 reconciliation이 필수 검사가 됐다. 지갑 활성화(2026-10-08 08:18Z): 첫 실행(08:33Z)에서
+다섯 검사 모두 PASS, `portfolio_nav_complete=true`, 범위 v1 고점이 새로 잡혔다.** 피드는 2026-10-07에 지어졌다(`holdings/binance_wallet.py`, P2 합산 블록에 합류). **BLOCKER
 (H1-a, 2026-10-07): 계정 키를 scheduler-maint와 공유하던 A안을 철회했다. 그 키는 주문 키와 같다. H1-b(2026-10-08)로 전용 읽기 전용
 키(`BINANCE_READ_API_*`)를 들였고 지갑도 그 키만 읽는다. H2–H4가 끝나기 전에는 지갑을 켜지 않는다.** D1–D4 결정(2026-10-02): (A) 자산 관리 먼저, 옵션은 조건부, 읽기 전용 보드는 연구 일시
 중지 중 허용. 2026-10-07 Thomas: 첫 계좌를 토스증권으로 바꿨다(부록 B, 잠정). P1(토스 보드·`/holdings`·Hermes `holdings_status`)이
@@ -597,6 +598,20 @@ Claude는 어떤 베뉴의 키도 다루지 않고, 라이브를 켜지 않는�
   4. 지갑 gate ON
   5. 첫 완전 NAV 확인
   6. 새 고점 기준선
+- **활성화 결과 (2026-10-08, #1187 배포 뒤):**
+  - **사전 검증:** scheduler와 scheduler-maint에서 각각 일회성으로 읽었다. 가격 없는 자산 0, 잘못된 행 0, Earn 잘림 없음,
+    Earn 조회 성공, 경고 0이었다. 개수와 플래그만 출력했다.
+  - **gate:** `.env`를 백업한 뒤 `MVP_BINANCE_WALLET=binance_wallet` 한 줄을 추가했다. scheduler-maint만 다시 만들어졌다.
+    live gate는 비어 있다.
+  - **첫 실행 (08:33:54Z):**
+    - 검사: coverage·valuation·freshness·coherence·reconciliation 모두 PASS다. 출처 시각 차이는 1,161초다.
+    - NAV: `portfolio_nav_complete=true`다. 고점 파일은 범위 v1로 새로 시작했다. 낙폭은 initialized이고, 판정은 다음
+      실행부터다.
+    - 표: 숨겨진 자산군은 없다.
+  - **남은 것:**
+    - 비중 밴드 판정은 여전히 보류다. 지갑의 `other` 자산군(알트코인 8개)이 결정대로 미분류로 들어가기 때문이다.
+      이 자산들을 어느 자산군으로 볼지는 Thomas가 정한다.
+    - 시각 차이가 기준(1,800초)에 가깝다. 이번 실행은 배포 직후라 선물 파일이 한 번 덜 쓰였다. 정상 실행은 약 250초다.
 
 ---
 
