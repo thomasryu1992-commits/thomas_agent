@@ -661,6 +661,7 @@ Claude는 어떤 베뉴의 키도 다루지 않고, 라이브를 켜지 않는�
 - **명령:** `holdings_board --reset-peak --reason <사유>`이다. 사유가 없으면 거부한다. `--by`는 기본값이 thomas다.
   요청 기록이 먼저 남고, 그 뒤에 고점 파일을 지운다.
 - **남은 것:** H6(입출금 원장 + unitized NAV)이다. 그때 입출금 뒤의 재설정은 대부분 unit 회계로 대체된다.
+  설계는 `PORTFOLIO_CASH_FLOW_LEDGER_V0.1.md`(2026-10-08, D-H6-1–4)에 있다.
 
 ---
 
