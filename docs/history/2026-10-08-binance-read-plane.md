@@ -27,6 +27,19 @@
 - **Why the write plane keeps its own reads:** the emergency close and the live leg read the account
   through the same feed. Moving them to the read key would make an emergency close depend on a key the
   write plane does not own. H1-b changes no write-plane behaviour.
+- **Readiness semantics (added before merge, Thomas 2026-10-08):**
+  - The board's `account_visibility` row became `venue_read_visibility`, observation only. Its detail
+    says that READ visibility PASS does not mean the trading account plane is ready.
+  - A new `trading_account_credentials` row shows the write plane's account pair as `<set>`/`<unset>`.
+  - In the trading process, the readiness model's account component fails with
+    `TRADING_ACCOUNT_NOT_CONFIGURED` when that pair is missing, so a healthy read plane cannot stand in
+    for it.
+  - No row grants execution permission.
+  - `account.py` keeps the venue's raw algo rows rather than importing the execution layer's
+    translation: the layer test forbids market → execution, and the one reader of those rows reads both
+    vocabularies.
+- **Separation status:** credential plane COMPLETE; code-path read/write COMPLETE; process/container
+  isolation NOT COMPLETE (the scheduler owns both the read-only key and the trading credentials).
 - **Placement:** the read pair reaches `scheduler` only. The snapshot refresh rides a risk-lane fire;
   the resting-orders script runs by `docker exec` there. `scheduler-maint` needs the pair only for the
   wallet read, which stays off until H2–H4. The scheduler therefore holds the read key and the trading

@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **661** distinct codes across **1294** raise sites
+- **661** distinct codes across **1295** raise sites
 - **23** exception classes carry them
 - **75** codes are raised from more than one module (see below)
 - **139** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -756,6 +756,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MALFORMED_RESPONSE` | `ProviderError` | `runtime/mvp_runtime/providers.py` | `_parse_hosted_response` | `not isinstance(analysis, dict) or any((k not in analysis for k in _REQUIRED_ANALYSIS_KEYS))` |
 | `MALFORMED_RESPONSE` | `ProviderError` | `runtime/mvp_runtime/providers.py` | `_post_json_with_retry` | `—` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | `_build` | `not isinstance(account, dict)` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | `_order_list` | `not (isinstance(body, list) and all((isinstance(row, dict) for row in body)))` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | `_signed_get` | `—` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | `fill_history` | `not isinstance(rows, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | `_info` | `—` |

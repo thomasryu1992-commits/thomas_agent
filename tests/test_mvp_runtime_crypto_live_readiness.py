@@ -94,7 +94,7 @@ def test_board_reports_every_gate(tmp_path, clean_env):
         "live_trading_opt_in", "confirmation_phrase", "registered_budget", "risk_limits_record",
         "manual_kill_switch", "runtime_active", "trading_armed", "live_armed_strategies",
         "daily_loss_breaker", "bracket_breaker", "api_breaker", "entry_marks", "pre_order_snapshots",
-        "account_visibility", "market_data_visibility", "order_path_implemented",
+        "venue_read_visibility", "trading_account_credentials", "market_data_visibility", "order_path_implemented",
         "autonomous_routing_wired", "execution_stage", "venue_contract",
     }
 

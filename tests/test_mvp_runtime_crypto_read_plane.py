@@ -175,7 +175,7 @@ def test_with_the_write_gate_closed_the_read_plane_reads_and_the_write_plane_can
     plain = feed.open_orders(timeout_seconds=1)
     algo = feed.algo_open_orders(timeout_seconds=1)
     assert [o["clientOrderId"] for o in plain] == ["c1"]
-    assert len(algo) == 1 and algo[0]["symbol"] == "BTCUSDT"
+    assert len(algo) == 1 and algo[0]["symbol"] == "BTCUSDT" and algo[0]["clientAlgoId"] == "a1"
 
     assert {method for method, _, _ in venue} == {"GET"}
     assert {path for _, path, _ in venue} <= account.READ_PATHS

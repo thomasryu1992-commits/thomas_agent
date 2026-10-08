@@ -40,9 +40,24 @@ the test that pins it. A flag that is not in the code is not safety evidence.
 | Read-only credential exposure | `scheduler` only, since the account snapshot refresh rides a risk-lane fire. `scheduler-maint` gets it only when its wallet read is switched on (after H2-H4) |
 | Armed strategies | `live_readiness`'s `live_armed_strategies` row |
 
-**Known coupling (recorded, not fixed):** the scheduler holds the read-only key and the trading keys
-together. The separation candidate is to move the account snapshot refresh and the resting-orders read to
-a maintenance kind on `scheduler-maint` (or a reader service), leaving the scheduler with trading keys only.
+**H1-b separation status (2026-10-08):**
+
+| Separation | Status |
+|---|---|
+| Credential plane (read key vs trading key, no fallback) | **COMPLETE** |
+| Code path (observation on `PLANE_READ`, the write plane's own reads on `PLANE_TRADING`, pinned per caller) | **COMPLETE** |
+| Process / container isolation | **NOT COMPLETE**: `scheduler` still owns both the read-only key and the trading credentials |
+
+The future separation candidate is to move the account snapshot refresh and the resting-orders read to a
+maintenance kind on `scheduler-maint`, or to a dedicated reader service, leaving the scheduler with the
+trading keys only. No service split was made in H1-b.
+
+**The readiness board says which plane it means.** `venue_read_visibility` is the READ plane and is for
+observation only. **READ visibility PASS does not mean the trading account plane is ready.**
+`trading_account_credentials` shows the write plane's account pair as `<set>`/`<unset>` (names only,
+never a value). In the trading process, a missing trading pair fails the account component
+(`TRADING_ACCOUNT_NOT_CONFIGURED`) even when the read plane is healthy. Neither row, and no credential,
+grants execution permission.
 
 ## At `PAPER`
 

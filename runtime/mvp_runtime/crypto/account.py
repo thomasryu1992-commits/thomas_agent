@@ -45,9 +45,6 @@ from ..errors import ToolBlocked, ToolError
 from ..safety_gate import NETWORK_ACCESS, Authorization
 from ..coerce import as_float as _f
 from .market_data import classify_transport_error
-# The venue's order-list shapes only (pure functions, no adapter): the resting-orders reads answer
-# in the same vocabulary as `live_execution.BinanceFuturesVenueReader`.
-from .order_request import _order_rows, normalize_algo_order
 
 ACCOUNT_TOOL_ID = "crypto.account.readonly"
 ACCOUNT_TOOL_VERSION = "0.1.0"
@@ -260,6 +257,15 @@ def _transport_error(exc: BaseException) -> ToolError:
     return ToolError(error.reason_code, error.reason, data=data or None)
 
 
+def _order_list(body: Any, label: str) -> list[dict[str, Any]]:
+    """A venue order list, or ``MALFORMED_RESULT``. A body that is not a list of objects is not
+    "nothing is resting" (the same rule as ``order_request._order_rows``, kept here because this
+    market-layer module does not import the execution layer)."""
+    if not (isinstance(body, list) and all(isinstance(row, dict) for row in body)):
+        raise ToolError("MALFORMED_RESULT", f"live account returned an unparseable {label} list")
+    return list(body)
+
+
 class BinanceFuturesAccountFeed:
     """Signed read of a real Binance USD-M Futures account.
 
@@ -388,19 +394,21 @@ class BinanceFuturesAccountFeed:
         )
         body = self._signed_get(OPEN_ORDERS_PATH, {} if symbol is None else {"symbol": symbol},
                                 timeout_seconds=timeout_seconds)
-        return _order_rows(body, "open-orders")
+        return _order_list(body, "open-orders")
 
     def algo_open_orders(self, symbol: str | None = None, *, timeout_seconds: int = 10) -> list[dict[str, Any]]:
-        """Every conditional order resting at the venue (H1-b), in the plain order vocabulary
-        (``order_request.normalize_algo_order``). A GET; the venue takes no symbol filter, so the
-        filter is applied after the read."""
+        """Every conditional order resting at the venue (H1-b), as the venue's own algo rows
+        (``clientAlgoId``, ``orderType``, ``triggerPrice``, ``algoStatus``). A GET; the venue takes no
+        symbol filter, so the filter is applied after the read. Not translated to the plain order
+        vocabulary here: that translation is the execution layer's (``order_request``), which this
+        market-layer module does not import, and the one reader of these rows reads both vocabularies."""
         safety_gate.assert_authorization(
             self._authorization, required_flags=_NETWORK_FLAGS, provider_id=self.provider_id,
             now=timeutil.utc_now_iso(),
         )
         body = self._signed_get(ALGO_OPEN_ORDERS_PATH, {}, timeout_seconds=timeout_seconds)
-        rows = [normalize_algo_order(o) for o in _order_rows(body, "algo open-orders")]
-        return [r for r in rows if r is not None and (symbol is None or r.get("symbol") == symbol)]
+        rows = _order_list(body, "algo open-orders")
+        return [r for r in rows if symbol is None or r.get("symbol") == symbol]
 
     def _signed_get(
         self, path: str, params: dict[str, Any], *, timeout_seconds: int

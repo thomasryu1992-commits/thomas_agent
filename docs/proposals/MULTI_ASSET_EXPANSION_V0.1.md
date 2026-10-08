@@ -477,6 +477,11 @@ Claude는 어떤 베뉴의 키도 다루지 않고, 라이브를 켜지 않는�
     `MVP_BINANCE_WALLET`을 임시로 켜서 읽는다. 서비스 설정과 `.env`의 지갑 게이트는 꺼진 채다. **probe 성공은 운영 활성화 승인이 아니다.**
   - **경계:** 읽기 가능은 실행 허가가 아니고, 읽기 전용 자격증명은 거래 권한을 주지 못한다. live 쓰기 게이트가 닫혀 있어도 venue
     관찰은 가능하다.
+  - **분리 상태:** 자격증명 평면 분리 COMPLETE, 코드 경로 읽기/쓰기 분리 COMPLETE, 프로세스·컨테이너 격리 NOT COMPLETE.
+    scheduler가 읽기 키와 거래 자격증명을 함께 가진다. 다음 분리 후보는 scheduler-maint의 유지보수 작업이나 전용 reader 서비스다.
+    이번에 서비스는 나누지 않았다.
+  - **readiness 보드:** `venue_read_visibility`는 관찰 전용이다. READ visibility PASS는 거래 계정 평면이 준비됐다는 뜻이 아니다.
+    `trading_account_credentials`가 쓰기 평면의 계정 키를 `<set>/<unset>`으로만 따로 보인다. 어느 행도 실행 허가가 아니다.
 
 ---
 
