@@ -269,7 +269,7 @@ def _plane_calls() -> dict[tuple[str, str], set[str]]:
                     plane = next((kw.value for kw in node.keywords if kw.arg == "plane"), None)
                     label = (plane.attr if isinstance(plane, ast.Attribute)
                              else getattr(plane, "id", repr(plane)))
-                    key = (str(path.relative_to(REPO)), func.name)
+                    key = (path.relative_to(REPO).as_posix(), func.name)
                     found.setdefault(key, set()).add(label)
     return found
 
