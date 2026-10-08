@@ -13,6 +13,11 @@ targets and drift reach the stored snapshot. Unclassified symbols are named on t
 "unclassified" and is never guessed into a class. While anything is unclassified, the total is partial
 and no band verdict is given (§11.1 point 5).
 
+**Thomas's entries place the rest** (H5a, Thomas 2026-10-08, ``classification``): a host-local file,
+written from his terminal, names a class for an instrument the code table and the wallet sub-class map
+do not place. The entries name holdings, so they live on this host only; the block carries only the
+file's ``mapping_version``.
+
 **Inputs, all from the same fire.** Toss holdings and cash (overseas values at the read's own mid-rate),
 the P2 combined block for the Binance futures margin (target 0%: the engine) and, when its gate is on,
 the Binance wallet's class totals: BTC and ETH are coin spot, stablecoins are cash (Thomas 2026-10-07),
@@ -28,6 +33,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from .classification import Classification, toss_id, wallet_id
 from .disclosure import Part
 from .model import HoldingsSnapshot
 
@@ -82,6 +88,8 @@ ALLOCATION_KEYS = frozenset({
     "unclassified_count",
     "unclassified_krw",
     "notes",
+    # H5a: the classification file's version this block was placed with (a number, no entry).
+    "mapping_version",
 })
 CLASS_ROW_KEYS = frozenset({"krw", "weight_pct", "target_pct", "drift_pp"})
 BAND_ROW_KEYS = frozenset({"weight_pct", "target_pct", "band_pp", "drift_pp", "outside"})
@@ -107,21 +115,29 @@ def unclassified_symbols(snapshot: HoldingsSnapshot) -> list[str]:
 
 
 def allocate(snapshot: HoldingsSnapshot, toss_view: Mapping[str, Any],
-             combined_block: Mapping[str, Any] | None, wallet: Any = None) -> dict[str, Any]:
+             combined_block: Mapping[str, Any] | None, wallet: Any = None,
+             classification: Classification | None = None) -> dict[str, Any]:
     """Class totals, weights against target and the band facts. Never raises on missing data: a
     missing part makes the block partial, and a partial block gives no band verdict."""
-    return allocate_with_parts(snapshot, toss_view, combined_block, wallet)[0]
+    return allocate_with_parts(snapshot, toss_view, combined_block, wallet, classification)[0]
 
 
 def allocate_with_parts(snapshot: HoldingsSnapshot, toss_view: Mapping[str, Any],
                         combined_block: Mapping[str, Any] | None,
-                        wallet: Any = None) -> tuple[dict[str, Any], dict[str, Part]]:
+                        wallet: Any = None, classification: Classification | None = None,
+                        classification_error: str | None = None) -> tuple[dict[str, Any], dict[str, Part]]:
     """:func:`allocate`, and each row's makeup for the single-holding rule (H3, ``disclosure``): which
     instruments it holds and how many cash balances. The makeup stays in this process.
 
     ``wallet`` is the ``binance_wallet.WalletSnapshot`` the fire read, for its ``class_assets``. A wallet
     class with value but no makeup (no snapshot, or one without it) counts as one instrument, so it is
-    withheld rather than guessed safe."""
+    withheld rather than guessed safe.
+
+    ``classification`` is Thomas's entries (H5a, ``classification``). An entry places a Toss symbol the
+    code table does not, or a wallet asset outside BTC, ETH and the stablecoins; an entry that contradicts
+    the built-in placement is a conflict, and the block is partial. ``classification_error`` is the
+    reason the file could not be read: every entry is then absent and the block partial."""
+    entries = dict(classification.entries) if classification else {}
     krw = {name: 0.0 for name in CLASSES}
     instruments: dict[str, set[str]] = {name: set() for name in (*CLASSES, UNCLASSIFIED)}
     cash_parts: dict[str, int] = {name: 0 for name in (*CLASSES, UNCLASSIFIED)}
@@ -131,6 +147,18 @@ def allocate_with_parts(snapshot: HoldingsSnapshot, toss_view: Mapping[str, Any]
     unclassified_krw = 0.0
     stable_krw = 0.0
 
+    if classification_error:
+        gaps.append(f"classification file unreadable ({classification_error})")
+    conflicts = 0
+
+    def place(built_in: str | None, instrument: str) -> str | None:
+        nonlocal conflicts
+        entry = entries.get(instrument)
+        if built_in and entry and entry != built_in:
+            conflicts += 1
+            return None
+        return built_in or entry
+
     if toss_view.get("partial"):
         gaps.append("toss partial")
     for holding in snapshot.holdings:
@@ -138,7 +166,7 @@ def allocate_with_parts(snapshot: HoldingsSnapshot, toss_view: Mapping[str, Any]
         if value is None:
             gaps.append("a holding's value or rate unread")
             continue
-        name = CLASSIFICATION.get(holding.symbol)
+        name = place(CLASSIFICATION.get(holding.symbol), toss_id(holding.market, holding.symbol))
         if value:
             instruments[name or UNCLASSIFIED].add(f"toss:{holding.market}:{holding.symbol}")
         if name is None:
@@ -161,7 +189,27 @@ def allocate_with_parts(snapshot: HoldingsSnapshot, toss_view: Mapping[str, Any]
         gaps.append(f"binance futures {block.get('crypto_status') or 'not combined'}")
     wallet_status = block.get("crypto_wallet_status")
     wallet_classes = block.get("crypto_classes_krw")
-    if wallet_status == "ok" and isinstance(wallet_classes, dict):
+    per_asset = getattr(wallet, "asset_usdt", None) or {}
+    rate = snapshot.usd_krw_rate
+    if wallet_status == "ok" and isinstance(wallet_classes, dict) and per_asset and rate is not None:
+        # H5a: asset by asset, so an entry can place what the sub-class map leaves out. The same USDT
+        # values the class totals were summed from, at the same rate (``combined.wallet_part``).
+        from .binance_wallet import asset_class
+        for asset, usdt in sorted(per_asset.items()):
+            value = usdt * rate
+            if not value:
+                continue
+            wallet_class = asset_class(asset)
+            name = place(WALLET_CLASS_MAP.get(wallet_class), wallet_id(asset))
+            instruments[name or UNCLASSIFIED].add(wallet_id(asset))
+            if name is None:
+                unclassified_count += 1
+                unclassified_krw += value
+                continue
+            krw[name] += value
+            if wallet_class == "stable":
+                stable_krw += value
+    elif wallet_status == "ok" and isinstance(wallet_classes, dict):
         makeup = getattr(wallet, "class_assets", None) or {}
         for wallet_class, value in wallet_classes.items():
             if not isinstance(value, (int, float)) or value == 0:
@@ -185,6 +233,8 @@ def allocate_with_parts(snapshot: HoldingsSnapshot, toss_view: Mapping[str, Any]
 
     if krw[ENGINE_MARGIN] > 0:
         notes.append("engine margin target is 0% by decision (Q5, Q10): its balance shows as drift")
+    if conflicts:
+        gaps.append(f"{conflicts} classification conflict(s)")
     if unclassified_count:
         gaps.append(f"{unclassified_count} unclassified")
     total = sum(krw.values()) + unclassified_krw
@@ -228,4 +278,5 @@ def allocate_with_parts(snapshot: HoldingsSnapshot, toss_view: Mapping[str, Any]
         "unclassified_count": unclassified_count,
         "unclassified_krw": unclassified_krw,
         "notes": notes,
+        "mapping_version": classification.mapping_version if classification else 0,
     }, parts

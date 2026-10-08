@@ -44,7 +44,7 @@ from .. import timeutil
 from ..errors import ToolError
 from ..filelock import locked
 from ..paths import repo_root as _repo_root
-from . import allocation, binance_wallet, combined, disclosure
+from . import allocation, binance_wallet, classification, combined, disclosure
 from .board import aggregate_view, render_view
 from .toss_account import TossHoldingsFeed, read_holdings, select_holdings_feed
 
@@ -152,7 +152,12 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
     # the combined total: a failure costs the board this block, never the Toss snapshot.
     parts: dict[str, Any] = {}
     try:
-        body["allocation"], parts = allocation.allocate_with_parts(snapshot, body, block, wallet)
+        try:
+            entries, entries_error = classification.load(state_dir(root)), None
+        except ToolError as exc:
+            entries, entries_error = None, exc.reason_code
+        body["allocation"], parts = allocation.allocate_with_parts(
+            snapshot, body, block, wallet, entries, classification_error=entries_error)
     except Exception as exc:  # noqa: BLE001 — see the comment above
         body["allocation"] = None
         combined_note += f"; allocation not computed ({type(exc).__name__})"
