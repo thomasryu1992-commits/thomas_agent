@@ -118,6 +118,8 @@ SHARED_ACROSS_MODULES = frozenset({
     # raises them for the same failures at another venue: one vocabulary, two venues.
     "NO_ORDER_API_KEY", "ORDER_HALTED", "ORDER_MALFORMED_RESULT", "ORDER_OUTCOME_UNKNOWN",
     "ORDER_REJECTED", "ORDER_TRANSPORT",
+    # The stage refusal at egress: R2 on mainnet, H1-c (2026-10-08) on testnet, one rule (`stage_refusal`).
+    "ORDER_STAGE_REFUSED",
     # And the live history's own tamper code. `live_ledger`'s verified read raises it on a row whose
     # self-hash fails, and `live_pnl`'s P&L sum raises it on a hash-valid row whose amount is not a
     # number. Both mean that the history cannot be trusted as money, so the loss breaker trips.
