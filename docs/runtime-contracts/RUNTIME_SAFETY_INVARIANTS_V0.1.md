@@ -37,7 +37,7 @@ the test that pins it. A flag that is not in the code is not safety evidence.
 | Live write capability (OPEN / CLOSED) | `MVP_LIVE_TRADING` on the scheduler; `live_readiness`'s `live_gate_recorded` row |
 | Venue read capability (AVAILABLE / UNAVAILABLE, per endpoint) | `MVP_ACCOUNT_FEED` plus `BINANCE_READ_API_*` set on the scheduler; `list_resting_orders --json` (`asked_the_venue`) |
 | Trading credential exposure | `scheduler` only (the account pair, the order key, the testnet pair) |
-| Read-only credential exposure | `scheduler` only, since the account snapshot refresh rides a risk-lane fire. `scheduler-maint` gets it only when its wallet read is switched on (after H2-H4) |
+| Read-only credential exposure | `scheduler` (the account snapshot refresh rides a risk-lane fire) and, since the wallet activation (Thomas 2026-10-08), `scheduler-maint` (the holdings wallet read). It is the only Binance credential `scheduler-maint` holds |
 | Armed strategies | `live_readiness`'s `live_armed_strategies` row |
 
 **H1-b separation status (2026-10-08):**

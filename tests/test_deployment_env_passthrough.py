@@ -579,14 +579,22 @@ def test_the_wallet_feed_reads_the_read_only_pair_not_a_trading_name():
                                      live_execution.ORDER_API_KEY_ENV, live_execution.ORDER_API_SECRET_ENV}
 
 
-def test_the_read_only_pair_reaches_the_one_service_that_reads_with_it():
-    """Least placement: the account snapshot refresh rides a risk-lane fire, so the scheduler is the
-    service that reads with this pair. scheduler-maint receives it only when its wallet read is switched
-    on (after H2-H4), so not now; no other service ever does."""
+def test_the_read_only_pair_reaches_the_two_services_that_read_with_it():
+    """Least placement: the account snapshot refresh rides a risk-lane fire (scheduler), and the wallet
+    read rides the holdings fire (scheduler-maint, since the wallet activation, Thomas 2026-10-08). No
+    other service ever receives it, and each draws it from its own name, not through an alias."""
     for name in READ_KEY_PAIR:
-        assert _service_environment("scheduler")[name] == "${%s:-}" % name
+        for service in ("scheduler", "scheduler-maint"):
+            assert _service_environment(service)[name] == "${%s:-}" % name
         holders = sorted(svc for svc in _ALL_SERVICES if name in _service_environment(svc))
-        assert holders == ["scheduler"], f"{name} reaches {holders}"
+        assert holders == ["scheduler", "scheduler-maint"], f"{name} reaches {holders}"
+
+
+def test_the_maintenance_lanes_only_binance_credential_is_the_read_pair():
+    """The wallet activation adds the read pair and nothing else from the venue to scheduler-maint."""
+    environment = _service_environment("scheduler-maint")
+    venue = sorted(n for n in environment if n.startswith("BINANCE_") and SECRET_NAME.search(n))
+    assert venue == sorted(READ_KEY_PAIR)
 
 
 @pytest.mark.parametrize("service", [s for s in _ALL_SERVICES if s not in ("scheduler", "scheduler-maint")])
@@ -698,9 +706,10 @@ SECRET_OWNERSHIP: dict[str, frozenset[str]] = {
     # The risk lane only: scheduler-maint held it 2026-10-07 (option A) until H1-a removed it.
     "BINANCE_ACCOUNT_API_KEY": frozenset({"scheduler"}),
     "BINANCE_ACCOUNT_API_SECRET": frozenset({"scheduler"}),
-    # H1-b (2026-10-08): the dedicated read-only pair, where the observation that uses it runs.
-    "BINANCE_READ_API_KEY": frozenset({"scheduler"}),
-    "BINANCE_READ_API_SECRET": frozenset({"scheduler"}),
+    # H1-b (2026-10-08): the dedicated read-only pair, where the observation that uses it runs: the
+    # risk lane's account snapshot, and since the wallet activation (2026-10-08) the holdings wallet read.
+    "BINANCE_READ_API_KEY": frozenset({"scheduler", "scheduler-maint"}),
+    "BINANCE_READ_API_SECRET": frozenset({"scheduler", "scheduler-maint"}),
     "COINALYZE_API_KEY": frozenset({"scheduler", "scheduler-maint"}),
     "GOOGLE_AI_STUDIO_API_KEY": frozenset({"operator", "pipeline-worker"}),
     "GROQ_API_KEY": frozenset({"operator", "pipeline-worker"}),
