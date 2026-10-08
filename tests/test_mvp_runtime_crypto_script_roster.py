@@ -49,7 +49,6 @@ SCRIPTS: dict[str, str] = {
     "scripts/emergency_close.py": EXCHANGE_WRITE,             # --confirm: reduce-only closes
     # the venue: the order key, no send
     "scripts/diagnose_bracket_leg.py": ORDER_KEY_READ,        # /order/test
-    "scripts/list_resting_orders.py": ORDER_KEY_READ,         # open orders
     "scripts/venue_contract.py": ORDER_KEY_READ,              # --run: /order/test and reads, writes its record
     # governed and live state
     "scripts/clear_api_breaker.py": STATE_WRITE,
@@ -72,6 +71,8 @@ SCRIPTS: dict[str, str] = {
     "scripts/seed_forward_book.py": RESEARCH_WRITE,
     # reads and reports
     "scripts/condition_effectiveness_report.py": READ,
+    # H1-b: open orders on the READ plane's account feed (the read-only key), no order key, no adapter.
+    "scripts/list_resting_orders.py": READ,
     "scripts/family_period_test.py": READ,
     "scripts/measure_live_slippage.py": READ,
     "scripts/paired_family_window_check.py": READ,

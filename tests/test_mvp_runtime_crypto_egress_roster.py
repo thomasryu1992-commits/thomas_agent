@@ -119,7 +119,6 @@ ROSTER: dict[tuple[str, str, str], tuple[int, str]] = {
     ("scripts/emergency_close.py", "run_confirm", "live_route.run_emergency_close"): (1, "the approved emergency close"),
     ("scripts/diagnose_bracket_leg.py", "main", "live_execution.select_venue_reader"): (1, "validation only; no submit or cancel"),
     ("scripts/diagnose_bracket_leg.py", "main", "adapter.validate_order"): (1, "/order/test only; creates nothing"),
-    ("scripts/list_resting_orders.py", "main", "live_execution.select_venue_reader"): (1, "reads resting orders only; no submit or cancel"),
     # --- not exchange calls: the same method name on other objects ----------------------------------------
     ("runtime/mvp_runtime/dispatch_bridge.py", "apply_workflow_command", "workflow_store.submit"): (1, "not an exchange call"),
     ("runtime/mvp_runtime/scheduler.py", "_execute", "workflow_store.submit"): (1, "not an exchange call"),
@@ -156,11 +155,9 @@ KEY_ENV_READERS = frozenset({
     _EXEC,
     "runtime/mvp_runtime/crypto/testnet_execution.py",
     "runtime/mvp_runtime/crypto/account.py",
-    "runtime/mvp_runtime/crypto/live_readiness.py",     # whether the read key is set, never its value
-    # Added 2026-10-07 (Thomas, option A; appendix C of MULTI_ASSET_EXPANSION_V0.1.md): the holdings lane's
-    # Binance spot + Simple Earn read signs GETs with the account key pair, on scheduler-maint. Four GET
-    # paths by constant, no write (pinned in tests/test_mvp_runtime_holdings_binance_wallet.py).
-    "runtime/mvp_runtime/holdings/binance_wallet.py",
+    # Left this set with H1-b (Thomas 2026-10-08): the readiness board and the holdings wallet read now
+    # read only the dedicated read-only pair (BINANCE_READ_API_KEY/_SECRET), never a trading-key name.
+    # account.py stays: it maps both planes, and its TRADING plane is the write plane's own account read.
 })
 
 

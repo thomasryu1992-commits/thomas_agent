@@ -22,6 +22,7 @@ from tests._helpers import FakeResp as _FakeResp, make_gate_authorization
 from runtime.mvp_runtime.crypto import account as account_mod
 from runtime.mvp_runtime.crypto.account import (
     ACCOUNT_API_KEY_ENV,
+    PLANE_TRADING,
     ACCOUNT_API_SECRET_ENV,
     ACCOUNT_DATA_DEGRADED,
     ACCOUNT_FEED_ENV,
@@ -90,10 +91,14 @@ def test_account_feed_has_no_order_capability():
     If someone later adds `submit_order` here, this test fails and they must instead put
     it behind the live-order gate where the guards live.
     """
-    forbidden = ("order", "submit", "cancel", "close", "trade", "transfer", "withdraw")
+    forbidden = ("order", "submit", "cancel", "close", "trade", "transfer", "withdraw", "leverage",
+                 "margin", "subscribe", "redeem")
+    # H1-b: the two resting-order READS are the only names allowed to say "order". Each is a GET on a
+    # path in READ_PATHS (pinned below), so the word names what is read, never what is done.
+    reads = {"open_orders", "algo_open_orders"}
     for cls in (BinanceFuturesAccountFeed, NoAccountFeed):
         for name in dir(cls):
-            if name.startswith("_"):
+            if name.startswith("_") or name in reads:
                 continue
             assert not any(word in name.lower() for word in forbidden), (
                 f"{cls.__name__}.{name} looks like an execution capability; "
@@ -105,7 +110,7 @@ def test_account_feed_has_no_order_capability():
 
 def test_env_unset_returns_inert_feed(tmp_path, monkeypatch):
     monkeypatch.delenv(ACCOUNT_FEED_ENV, raising=False)
-    feed = select_account_feed(now=NOW, root=tmp_path)
+    feed = select_account_feed(plane=PLANE_TRADING, now=NOW, root=tmp_path)
     assert isinstance(feed, NoAccountFeed)
     assert feed.network_egress is False
     assert feed.account_snapshot(timeout_seconds=1) is None
@@ -117,13 +122,13 @@ def test_env_alone_opens_the_feed(tmp_path, monkeypatch):
     The fail-closed direction that remains is the test below: anything that is not the
     opt-in reaches only the inert feed."""
     monkeypatch.setenv(ACCOUNT_FEED_ENV, BINANCE_ACCOUNT)
-    feed = select_account_feed(now=NOW, root=tmp_path)
+    feed = select_account_feed(plane=PLANE_TRADING, now=NOW, root=tmp_path)
     assert isinstance(feed, account_mod.BinanceFuturesAccountFeed)
 
 
 def test_unrelated_env_value_stays_inert(tmp_path, monkeypatch):
     monkeypatch.setenv(ACCOUNT_FEED_ENV, "something_else")
-    assert isinstance(select_account_feed(now=NOW, root=tmp_path), NoAccountFeed)
+    assert isinstance(select_account_feed(plane=PLANE_TRADING, now=NOW, root=tmp_path), NoAccountFeed)
 
 
 def test_the_docs_name_the_opt_in_value_the_code_actually_compares():
@@ -164,7 +169,7 @@ def test_the_docs_name_the_opt_in_value_the_code_actually_compares():
 def test_egress_refused_without_authorization(monkeypatch):
     """A directly constructed feed cannot bypass the gate: egress re-verifies."""
     _creds(monkeypatch)
-    feed = BinanceFuturesAccountFeed(authorization=None)
+    feed = BinanceFuturesAccountFeed(plane=PLANE_TRADING, authorization=None)
     with pytest.raises(SafetyGateBlocked) as exc:
         feed.account_snapshot(timeout_seconds=1)
     assert exc.value.reason_code == "NOT_AUTHORIZED"
@@ -172,7 +177,7 @@ def test_egress_refused_without_authorization(monkeypatch):
 
 def test_non_live_host_refused_at_construction():
     with pytest.raises(ToolBlocked) as exc:
-        BinanceFuturesAccountFeed(authorization=_ACCOUNT_AUTH, base_url="https://evil.example.com")
+        BinanceFuturesAccountFeed(plane=PLANE_TRADING, authorization=_ACCOUNT_AUTH, base_url="https://evil.example.com")
     assert exc.value.reason_code == "HOST_NOT_ALLOWED"
 
 
@@ -181,7 +186,7 @@ def test_non_live_host_refused_at_construction():
 def test_missing_credentials_names_the_env_var_not_a_value(monkeypatch):
     monkeypatch.delenv(ACCOUNT_API_KEY_ENV, raising=False)
     monkeypatch.delenv(ACCOUNT_API_SECRET_ENV, raising=False)
-    feed = BinanceFuturesAccountFeed(authorization=_ACCOUNT_AUTH)
+    feed = BinanceFuturesAccountFeed(plane=PLANE_TRADING, authorization=_ACCOUNT_AUTH)
     with pytest.raises(ToolError) as exc:
         feed.account_snapshot(timeout_seconds=1)
     assert exc.value.reason_code == "NO_API_KEY"
@@ -192,7 +197,7 @@ def test_transport_failure_never_echoes_the_signed_url(monkeypatch):
     """The query string carries the HMAC signature, so it must not reach any message."""
     _creds(monkeypatch)
     _patch_urlopen(monkeypatch, [urllib.error.URLError("boom https://fapi.binance.com/x?signature=deadbeef")])
-    feed = BinanceFuturesAccountFeed(authorization=_ACCOUNT_AUTH)
+    feed = BinanceFuturesAccountFeed(plane=PLANE_TRADING, authorization=_ACCOUNT_AUTH)
     with pytest.raises(ToolError) as exc:
         feed.account_snapshot(timeout_seconds=1)
     assert exc.value.reason_code == "TOOL_TRANSPORT"
@@ -203,7 +208,7 @@ def test_transport_failure_never_echoes_the_signed_url(monkeypatch):
 def test_request_is_signed_and_carries_the_key_header(monkeypatch):
     _creds(monkeypatch)
     calls = _patch_urlopen(monkeypatch, [_account_payload(), "[]"])
-    feed = BinanceFuturesAccountFeed(authorization=_ACCOUNT_AUTH)
+    feed = BinanceFuturesAccountFeed(plane=PLANE_TRADING, authorization=_ACCOUNT_AUTH)
     feed.account_snapshot(timeout_seconds=1)
 
     request = calls[0]
@@ -220,7 +225,7 @@ def test_request_is_signed_and_carries_the_key_header(monkeypatch):
 def test_snapshot_record_carries_no_credentials(monkeypatch):
     _creds(monkeypatch)
     _patch_urlopen(monkeypatch, [_account_payload(), "[]"])
-    feed = BinanceFuturesAccountFeed(authorization=_ACCOUNT_AUTH)
+    feed = BinanceFuturesAccountFeed(plane=PLANE_TRADING, authorization=_ACCOUNT_AUTH)
     snapshot = feed.account_snapshot(timeout_seconds=1)
     record = snapshot_record(snapshot, feed=feed, now=NOW)
     blob = json.dumps(record)
@@ -242,7 +247,7 @@ def test_failed_pnl_read_keeps_balances_and_withholds_windows(monkeypatch):
     """
     _creds(monkeypatch)
     _patch_urlopen(monkeypatch, [_account_payload(), urllib.error.URLError("down")])
-    feed = BinanceFuturesAccountFeed(authorization=_ACCOUNT_AUTH)
+    feed = BinanceFuturesAccountFeed(plane=PLANE_TRADING, authorization=_ACCOUNT_AUTH)
     snapshot = feed.account_snapshot(timeout_seconds=1)
     assert snapshot.wallet_balance == pytest.approx(1000.50)
     assert snapshot.realized_windows == {}
@@ -267,7 +272,7 @@ def test_full_income_page_withholds_windows_instead_of_reading_zero(monkeypatch)
     the page were the whole story."""
     _creds(monkeypatch)
     _patch_urlopen(monkeypatch, [_account_payload(), _income_rows(INCOME_PAGE_LIMIT)])
-    feed = BinanceFuturesAccountFeed(authorization=_ACCOUNT_AUTH)
+    feed = BinanceFuturesAccountFeed(plane=PLANE_TRADING, authorization=_ACCOUNT_AUTH)
     snapshot = feed.account_snapshot(timeout_seconds=1)
     assert snapshot.wallet_balance == pytest.approx(1000.50)
     assert snapshot.realized_windows == {}
@@ -279,7 +284,7 @@ def test_partial_income_page_still_builds_windows(monkeypatch):
     """One row under the cap is a complete answer and must keep working as before."""
     _creds(monkeypatch)
     _patch_urlopen(monkeypatch, [_account_payload(), _income_rows(INCOME_PAGE_LIMIT - 1)])
-    feed = BinanceFuturesAccountFeed(authorization=_ACCOUNT_AUTH)
+    feed = BinanceFuturesAccountFeed(plane=PLANE_TRADING, authorization=_ACCOUNT_AUTH)
     snapshot = feed.account_snapshot(timeout_seconds=1)
     assert set(snapshot.realized_windows) == {"1d", "7d", "30d", "today"}
     assert snapshot.warnings == []
@@ -302,11 +307,11 @@ def test_read_account_degrades_instead_of_raising(tmp_path, monkeypatch):
     monkeypatch.setenv(ACCOUNT_FEED_ENV, BINANCE_ACCOUNT)
     monkeypatch.setattr(
         account_mod, "select_account_feed",
-        lambda **_: BinanceFuturesAccountFeed(authorization=_ACCOUNT_AUTH),
+        lambda **_: BinanceFuturesAccountFeed(plane=PLANE_TRADING, authorization=_ACCOUNT_AUTH),
     )
     monkeypatch.delenv(ACCOUNT_API_KEY_ENV, raising=False)
     monkeypatch.delenv(ACCOUNT_API_SECRET_ENV, raising=False)
-    snapshot, record = read_account(timeout_seconds=1)
+    snapshot, record = read_account(plane=PLANE_TRADING, timeout_seconds=1)
     assert snapshot is None
     assert record["degraded"] is True
     assert record["degraded_reason_code"] == ACCOUNT_DATA_DEGRADED
@@ -323,7 +328,7 @@ def test_read_account_without_a_root_still_uses_the_repo_default(tmp_path, monke
     seen: list[object] = []
     monkeypatch.setattr(account_mod, "select_account_feed",
                         lambda **kw: seen.append(kw.get("root")) or NoAccountFeed())
-    snapshot, _ = read_account(timeout_seconds=1)
+    snapshot, _ = read_account(plane=PLANE_TRADING, timeout_seconds=1)
     assert snapshot is None
     assert seen == [None]
 
@@ -331,7 +336,7 @@ def test_read_account_without_a_root_still_uses_the_repo_default(tmp_path, monke
 def test_malformed_body_is_typed(monkeypatch):
     _creds(monkeypatch)
     _patch_urlopen(monkeypatch, ["not json at all"])
-    feed = BinanceFuturesAccountFeed(authorization=_ACCOUNT_AUTH)
+    feed = BinanceFuturesAccountFeed(plane=PLANE_TRADING, authorization=_ACCOUNT_AUTH)
     with pytest.raises(ToolError) as exc:
         feed.account_snapshot(timeout_seconds=1)
     assert exc.value.reason_code == "MALFORMED_RESULT"
@@ -450,7 +455,7 @@ def test_the_snapshot_record_carries_the_settings_not_just_the_holdings(monkeypa
     (venue response -> snapshot -> record), not just the dataclass field."""
     _creds(monkeypatch)
     _patch_urlopen(monkeypatch, [_account_payload(), "[]"])
-    feed = BinanceFuturesAccountFeed(authorization=_ACCOUNT_AUTH)
+    feed = BinanceFuturesAccountFeed(plane=PLANE_TRADING, authorization=_ACCOUNT_AUTH)
     snapshot = feed.account_snapshot(timeout_seconds=1)
     record = snapshot_record(snapshot, feed=feed, now=NOW)
     assert record["configured_leverage"] == snapshot.configured_leverage

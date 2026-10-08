@@ -64,7 +64,7 @@ from ..errors import MvpRuntimeError
 from ..paths import repo_root as _repo_root
 from . import account_store, breaker_watch, pool, pre_order_gate
 from .account import (
-    ACCOUNT_API_KEY_ENV, ACCOUNT_API_SECRET_ENV, ACCOUNT_FEED_ENV, BINANCE_ACCOUNT,
+    ACCOUNT_FEED_ENV, BINANCE_ACCOUNT, PLANE_READ, READ_API_KEY_ENV, READ_API_SECRET_ENV,
     read_account,
 )
 from .cycle import LIVE_ALLOWANCE_SPENT
@@ -767,10 +767,13 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     # Whether an account feed is configured at all. Computed here rather than at row 8 because
     # row 6's loss breaker needs the same answer first: it is what decides whether this board
     # reads the venue or stays offline.
+    # The board observes, so it reads with the READ plane's key (H1-b): closing the live write gate
+    # must not blind it, and it never needs the trading key. The write plane's own account read is
+    # judged by the live route at decision time, with its own key.
     account_configured = (
         os.environ.get(ACCOUNT_FEED_ENV, "").strip().lower() == BINANCE_ACCOUNT
-        and bool(os.environ.get(ACCOUNT_API_KEY_ENV, "").strip())
-        and bool(os.environ.get(ACCOUNT_API_SECRET_ENV, "").strip())
+        and bool(os.environ.get(READ_API_KEY_ENV, "").strip())
+        and bool(os.environ.get(READ_API_SECRET_ENV, "").strip())
     )
 
     # 6. Today's realized loss.
@@ -787,7 +790,7 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     snapshot = None
     if account_configured:
         try:
-            snapshot, _ = read_account(root=root)
+            snapshot, _ = read_account(plane=PLANE_READ, root=root)
             venue_realized = (
                 venue_daily_realized_net(snapshot.realized_windows) if snapshot else None
             )
@@ -986,7 +989,7 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         "account_visibility",
         account_configured,
         "live account read configured" if account_configured
-        else f"{ACCOUNT_FEED_ENV} / {ACCOUNT_API_KEY_ENV} / {ACCOUNT_API_SECRET_ENV} not all set",
+        else f"{ACCOUNT_FEED_ENV} / {READ_API_KEY_ENV} / {READ_API_SECRET_ENV} not all set",
     ))
 
     # 8b. Market data — a live PRECONDITION, not a nicety. Without the opt-in the collector is

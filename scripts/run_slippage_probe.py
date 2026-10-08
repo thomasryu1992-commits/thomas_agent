@@ -68,7 +68,7 @@ from runtime.mvp_runtime.cli_common import (  # noqa: E402
 from runtime.mvp_runtime.control import ControlStore  # noqa: E402
 from runtime.mvp_runtime.crypto import live_execution, live_governance, live_leg, probe  # noqa: E402
 from runtime.mvp_runtime.crypto import order_request, pre_order_gate  # noqa: E402
-from runtime.mvp_runtime.crypto.account import read_account, select_account_feed  # noqa: E402
+from runtime.mvp_runtime.crypto.account import PLANE_TRADING, read_account, select_account_feed  # noqa: E402
 from runtime.mvp_runtime.crypto.features import latest_feature_row  # noqa: E402
 from runtime.mvp_runtime.crypto.guards import DEFAULT_RISK_LIMITS, run_risk_guard  # noqa: E402
 from runtime.mvp_runtime.crypto.live_entry import BRACKET_WORKING_TYPE, narrow_guard_facts  # noqa: E402
@@ -627,7 +627,7 @@ def run_fire(
     # must hold probes too — a probe is an entry, not a close.
     runtime_active = control_state.trading_allowed
 
-    snapshot, account_use = read_account(timeout_seconds=timeout_seconds, root=root)
+    snapshot, account_use = read_account(plane=PLANE_TRADING, timeout_seconds=timeout_seconds, root=root)
     # The account is a signed read; the breaker counts it with the adapter's own (PR2d-1). By
     # the feed's own code: `degraded_reason_code` is one word for every way the read can fail.
     adapter.record_account(readable=snapshot is not None,
@@ -1105,7 +1105,7 @@ def run_fire(
     # 5. Wait for the venue: stop fill -> settle through #683; timeout -> market close.
     deadline = clock() + float(plan["params"]["timeout_minutes"]) * 60.0
     # The fill history a settlement may fall back to is a signed read of this fire too (PR2d-1).
-    account_feed = adapter.recording(select_account_feed(now=now, root=root))
+    account_feed = adapter.recording(select_account_feed(plane=PLANE_TRADING, now=now, root=root))
 
     def _settled_elsewhere() -> int:
         """The live cycle settled the probe first — the ledger says how."""

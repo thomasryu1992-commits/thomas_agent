@@ -5,14 +5,14 @@ Thomas 2026-10-07 (appendix C of ``docs/proposals/MULTI_ASSET_EXPANSION_V0.1.md`
 wallet and Simple Earn next to the Toss account and the futures margin (P2, ``holdings/combined.py``),
 so the target allocation and the drawdown line are read against the whole of what is held.
 
-**Which key, and what that cost — decided knowingly.** This module reads with the two variables
-``crypto/account.py`` already reads (``BINANCE_ACCOUNT_API_KEY`` / ``_SECRET``), forwarded to
-scheduler-maint as well (Thomas 2026-10-07, option A over a new read-only key). The recorded cost:
-``docs/BUILD_HISTORY.md`` (2026-07-28) holds that this is the same venue key the order credentials
-are derived from, so it may carry futures-trading permission at the venue — read-only here is a
-property of this code, not of the key. What stays off this lane is everything that would let the
-image use that permission: the live-trading switch, the order-key variables, the confirmation
-phrases and ``MVP_ACCOUNT_FEED`` (``tests/test_deployment_env_passthrough.py``).
+**Which key: the read-only one (H1-b, Thomas 2026-10-08).** This module reads with the dedicated venue
+key Thomas issued with "Enable Reading" only (``BINANCE_READ_API_KEY`` / ``_SECRET``), the same pair
+``crypto/account.py`` reads on its READ plane. It never reads the trading pair (``BINANCE_ACCOUNT_*``) or the
+order key, and there is no fallback: without the read pair the feed fails closed with ``NO_API_KEY``.
+History: option A (2026-10-07) had shared the account key, which is the order key; H1-a removed it from
+scheduler-maint the same day, and this pair replaced it. Which service receives the read pair is pinned in
+``tests/test_deployment_env_passthrough.py``; the wallet gate stays off until H2–H4 (appendix C), and a
+one-off probe that reads with it is not an activation.
 
 **Read-only by construction.** One host (``api.binance.com``), four GET paths, by constant: the spot
 account and the two Simple Earn position lists (signed), and the public price list (no key). There is no
@@ -68,10 +68,10 @@ BINANCE_WALLET_ON = "binance_wallet"
 BINANCE_WALLET_PROVIDER = "binance_wallet"
 _NETWORK_FLAGS = (NETWORK_ACCESS,)
 
-# The same two variables crypto/account.py reads (Thomas 2026-10-07, option A). Repeated, not
-# imported: holdings/ does not import crypto/. A test pins that the names agree.
-API_KEY_ENV = "BINANCE_ACCOUNT_API_KEY"
-API_SECRET_ENV = "BINANCE_ACCOUNT_API_SECRET"
+# The read-only pair crypto/account.py reads on its READ plane (H1-b). Repeated, not imported:
+# holdings/ does not import crypto/. A test pins that the names agree.
+API_KEY_ENV = "BINANCE_READ_API_KEY"
+API_SECRET_ENV = "BINANCE_READ_API_SECRET"
 
 BINANCE_BASE_URL = "https://api.binance.com"
 SPOT_ACCOUNT_PATH = "/api/v3/account"

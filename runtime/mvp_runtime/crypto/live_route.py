@@ -80,7 +80,7 @@ from ..errors import MvpRuntimeError, ToolError
 from ..state_guard import assert_not_foreign_root_run
 from ..store import LedgerStore
 from . import live_execution, live_governance, live_leg, pool, pre_order_gate, protection_watch
-from .account import read_account, select_account_feed
+from .account import PLANE_TRADING, read_account, select_account_feed
 from .execution_stage import PURPOSE_AUTONOMOUS
 from .live_entry import (
     STATUS_NO_ROUTE,
@@ -759,7 +759,7 @@ def _read_leg_facts(
     # fire — which is why the soft halt, `control.CMD_HALT_TRADING`, exists.)
     runtime_active = control.load().trading_allowed
 
-    snapshot, account_use = read_account(timeout_seconds=timeout_seconds, root=root)
+    snapshot, account_use = read_account(plane=PLANE_TRADING, timeout_seconds=timeout_seconds, root=root)
     if snapshot is None:
         record["live_reason_codes"].append(ACCOUNT_UNREADABLE)
         record["account_degraded_reason_code"] = account_use.get("degraded_reason_code")
@@ -981,7 +981,7 @@ def _settle_or_protect(
             position, adapter=adapter, position_store=position_store, ledger=ledger,
             # The fill history is a signed read of this pass too: the API error breaker counts it
             # with the adapter's own (PR2d-1).
-            account_feed=recorded_like(adapter, select_account_feed(now=now, root=root)),
+            account_feed=recorded_like(adapter, select_account_feed(plane=PLANE_TRADING, now=now, root=root)),
             now=now, timeout_seconds=timeout_seconds,
         )
         record["live_settled"] = settled
@@ -1888,7 +1888,7 @@ def run_emergency_close(
         on_unrecorded=lambda code: _note_codes(record, API_BREAKER_UNRECORDED, code),
     )
     try:
-        snapshot, account_use = read_account(timeout_seconds=timeout_seconds, root=root)
+        snapshot, account_use = read_account(plane=PLANE_TRADING, timeout_seconds=timeout_seconds, root=root)
         recorder.record_account(readable=snapshot is not None, reason_code=account_use.get("error_reason_code"))
         if snapshot is None:
             raise ToolError(EMERGENCY_CLOSE_ACCOUNT_UNREADABLE,

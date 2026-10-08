@@ -45,6 +45,9 @@ from ..errors import ToolBlocked, ToolError
 from ..safety_gate import NETWORK_ACCESS, Authorization
 from ..coerce import as_float as _f
 from .market_data import classify_transport_error
+# The venue's order-list shapes only (pure functions, no adapter): the resting-orders reads answer
+# in the same vocabulary as `live_execution.BinanceFuturesVenueReader`.
+from .order_request import _order_rows, normalize_algo_order
 
 ACCOUNT_TOOL_ID = "crypto.account.readonly"
 ACCOUNT_TOOL_VERSION = "0.1.0"
@@ -64,6 +67,28 @@ _NETWORK_FLAGS = (NETWORK_ACCESS,)
 ACCOUNT_API_KEY_ENV = "BINANCE_ACCOUNT_API_KEY"
 ACCOUNT_API_SECRET_ENV = "BINANCE_ACCOUNT_API_SECRET"
 
+# H1-b (Thomas 2026-10-08): two credential planes behind the one account-feed gate.
+#
+# - READ: a dedicated venue key Thomas issued with "Enable Reading" only. Observation uses it —
+#   the scheduled account snapshot, the dashboard, the readiness board, the fee measurement, the
+#   resting-orders board — so closing the live write gate (`MVP_LIVE_TRADING`) does not blind them.
+# - TRADING: the account pair above, which is the same venue key the order credentials are set
+#   from. Only the write plane reads with it: the live leg, the emergency close and the slippage
+#   probe, whose behaviour H1-b does not change (an emergency close must not start depending on a
+#   key the write plane does not own).
+#
+# Every caller names its plane; there is no default. And there is no fallback: a READ feed whose
+# key is missing fails with NO_API_KEY even when the trading pair is set. A read key cannot grant
+# trading permission, and read availability is not execution permission.
+READ_API_KEY_ENV = "BINANCE_READ_API_KEY"
+READ_API_SECRET_ENV = "BINANCE_READ_API_SECRET"
+PLANE_READ = "read"
+PLANE_TRADING = "trading"
+PLANE_CREDENTIALS: dict[str, tuple[str, str]] = {
+    PLANE_READ: (READ_API_KEY_ENV, READ_API_SECRET_ENV),
+    PLANE_TRADING: (ACCOUNT_API_KEY_ENV, ACCOUNT_API_SECRET_ENV),
+}
+
 # Degraded-run reason code: a live account read failed and the caller continues without it.
 ACCOUNT_DATA_DEGRADED = "ACCOUNT_DATA_DEGRADED"
 
@@ -82,6 +107,16 @@ INCOME_PATH = "/fapi/v1/income"
 # taker entry's fee land in the same bucket. This endpoint returns `commission`,
 # `commissionAsset`, `quoteQty` and a `maker` boolean per fill, which is exactly the split.
 USER_TRADES_PATH = "/fapi/v1/userTrades"
+
+# What is resting at the venue (H1-b). The same two reads `live_execution.BinanceFuturesVenueReader`
+# makes, here so they need neither the live write gate nor the order key. Both are GETs.
+OPEN_ORDERS_PATH = "/fapi/v1/openOrders"
+ALGO_OPEN_ORDERS_PATH = "/fapi/v1/openAlgoOrders"
+
+# Every path this feed may sign, by constant. It signs GETs only, and a path outside this set is
+# refused before a socket opens, so no future method can turn the read feed into a writer by
+# naming an order, cancel, leverage, margin or transfer endpoint.
+READ_PATHS = frozenset({ACCOUNT_PATH, INCOME_PATH, USER_TRADES_PATH, OPEN_ORDERS_PATH, ALGO_OPEN_ORDERS_PATH})
 
 RECV_WINDOW_MS = 5000
 INCOME_PAGE_LIMIT = 1000  # venue cap per /fapi/v1/income call
@@ -242,9 +277,15 @@ class BinanceFuturesAccountFeed:
     def __init__(
         self,
         *,
+        plane: str,
         authorization: Authorization | None = None,
         base_url: str = DEFAULT_ACCOUNT_BASE_URL,
     ) -> None:
+        if plane not in PLANE_CREDENTIALS:
+            # Fail closed on an unknown plane: no guessing which key a caller meant.
+            raise ToolBlocked("ACCOUNT_PLANE_UNKNOWN", f"unknown account credential plane: {plane!r}")
+        self.plane = plane
+        self._key_env, self._secret_env = PLANE_CREDENTIALS[plane]
         host = (urllib.parse.urlparse(base_url).hostname or "").lower()
         if host not in ALLOWED_ACCOUNT_HOSTS:
             # Refuse at construction: a signed key must never be pointed at an unexpected
@@ -336,17 +377,45 @@ class BinanceFuturesAccountFeed:
             raise ToolError("MALFORMED_RESULT", "live account returned an unparseable fill history")
         return [row for row in rows if isinstance(row, dict)]
 
+    def open_orders(self, symbol: str | None = None, *, timeout_seconds: int = 10) -> list[dict[str, Any]]:
+        """Every plain order resting at the venue (H1-b). A GET; places and cancels nothing.
+
+        Raises rather than returning ``[]`` on a refusal: "nothing is resting" and "could not find
+        out" must never arrive as the same answer about live exposure."""
+        safety_gate.assert_authorization(
+            self._authorization, required_flags=_NETWORK_FLAGS, provider_id=self.provider_id,
+            now=timeutil.utc_now_iso(),
+        )
+        body = self._signed_get(OPEN_ORDERS_PATH, {} if symbol is None else {"symbol": symbol},
+                                timeout_seconds=timeout_seconds)
+        return _order_rows(body, "open-orders")
+
+    def algo_open_orders(self, symbol: str | None = None, *, timeout_seconds: int = 10) -> list[dict[str, Any]]:
+        """Every conditional order resting at the venue (H1-b), in the plain order vocabulary
+        (``order_request.normalize_algo_order``). A GET; the venue takes no symbol filter, so the
+        filter is applied after the read."""
+        safety_gate.assert_authorization(
+            self._authorization, required_flags=_NETWORK_FLAGS, provider_id=self.provider_id,
+            now=timeutil.utc_now_iso(),
+        )
+        body = self._signed_get(ALGO_OPEN_ORDERS_PATH, {}, timeout_seconds=timeout_seconds)
+        rows = [normalize_algo_order(o) for o in _order_rows(body, "algo open-orders")]
+        return [r for r in rows if r is not None and (symbol is None or r.get("symbol") == symbol)]
+
     def _signed_get(
         self, path: str, params: dict[str, Any], *, timeout_seconds: int
     ) -> Any:
-        api_key = os.environ.get(ACCOUNT_API_KEY_ENV, "").strip()
-        api_secret = os.environ.get(ACCOUNT_API_SECRET_ENV, "").strip()
+        if path not in READ_PATHS:
+            raise ToolBlocked("ACCOUNT_PATH_REFUSED", f"{path} is not a read this feed makes")
+        # This plane's own pair and nothing else: no fallback to another plane's key (H1-b).
+        api_key = os.environ.get(self._key_env, "").strip()
+        api_secret = os.environ.get(self._secret_env, "").strip()
         if not api_key or not api_secret:
             # Names only — the absence of a credential is reportable, its value never is.
             raise ToolError(
                 "NO_API_KEY",
                 f"live account credentials are not configured "
-                f"({ACCOUNT_API_KEY_ENV}/{ACCOUNT_API_SECRET_ENV})",
+                f"({self._key_env}/{self._secret_env}; plane {self.plane})",
             )
         query = dict(params)
         query.setdefault("recvWindow", RECV_WINDOW_MS)
@@ -608,22 +677,28 @@ def measure_fee_rates(trades: Any) -> dict[str, MeasuredFeeRate]:
 
 
 def select_account_feed(
-    *, now: str | None = None, root: Any | None = None
+    *, plane: str, now: str | None = None, root: Any | None = None
 ) -> AccountFeed:
     """Return the live account feed if the gate is open for it, else the inert one.
 
     The capable feed is constructed **by** the gate, so it cannot exist before the
     authorization does. The environment is the gate (Thomas 2026-08-10): an unset or
     different ``MVP_ACCOUNT_FEED`` selects the inert feed, never a network path.
+
+    ``plane`` (H1-b) is required and names which credential the feed signs with:
+    ``PLANE_READ`` for observation, ``PLANE_TRADING`` for the write plane's own reads. An unknown
+    plane is refused, also when the gate is closed, so a typo cannot hide until the gate opens.
     """
     del now, root  # the environment is the gate (Thomas 2026-08-10)
+    if plane not in PLANE_CREDENTIALS:
+        raise ToolBlocked("ACCOUNT_PLANE_UNKNOWN", f"unknown account credential plane: {plane!r}")
     return safety_gate.select_env_gated(
         env_var=ACCOUNT_FEED_ENV,
         opt_in_value=BINANCE_ACCOUNT,
         flags=_NETWORK_FLAGS,
         provider_id=BINANCE_ACCOUNT,
         default_factory=NoAccountFeed,
-        gated_factory=lambda authorization: BinanceFuturesAccountFeed(authorization=authorization),
+        gated_factory=lambda authorization: BinanceFuturesAccountFeed(plane=plane, authorization=authorization),
     )
 
 
@@ -715,7 +790,7 @@ def render_account_text(snapshot: AccountSnapshot | None) -> str:
 
 
 def read_account(
-    *, timeout_seconds: int = 10, root: Any | None = None
+    *, plane: str, timeout_seconds: int = 10, root: Any | None = None
 ) -> tuple[AccountSnapshot | None, dict[str, Any]]:
     """Read the live account once, returning the snapshot and its evidence record.
 
@@ -729,8 +804,10 @@ def read_account(
     resolved from the running code's repo instead, so a run whose other state came from
     ``--root`` refused with ``ACTIVATION_MISSING`` while a valid grant sat in the directory
     it was told to use. ``None`` keeps the repo-local default, which is every normal run.
+
+    ``plane`` (H1-b) is passed through to :func:`select_account_feed`; there is no default.
     """
-    feed = select_account_feed(root=root)
+    feed = select_account_feed(plane=plane, root=root)
     now = timeutil.utc_now_iso()
     try:
         snapshot = feed.account_snapshot(timeout_seconds=timeout_seconds)
@@ -758,7 +835,7 @@ def read_fee_rates(
     between "could not look" and "looked, and there is nothing there" is the difference between
     retrying and accepting an answer.
     """
-    feed = select_account_feed(root=root)
+    feed = select_account_feed(plane=PLANE_READ, root=root)   # a diagnostic: observation (H1-b)
     now = timeutil.utc_now_iso()
     start_ms = (now_ms if now_ms is not None else int(time.time() * 1000)) - days * 86_400_000
     record: dict[str, Any] = {
@@ -843,7 +920,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         return 1 if record.get("degraded") else 0
 
-    snapshot, record = read_account(timeout_seconds=args.timeout)
+    snapshot, record = read_account(plane=PLANE_READ, timeout_seconds=args.timeout)
     if args.json:
         payload: dict[str, Any] = {"record": record}
         if snapshot is not None:

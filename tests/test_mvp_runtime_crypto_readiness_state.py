@@ -38,6 +38,7 @@ _LIVE_ENVS = (
     "MVP_LIVE_MAX_DAILY_ORDER_COUNT", "MVP_LIVE_MAX_OPEN_NOTIONAL_USDT",
     "MVP_LIVE_DAILY_LOSS_LIMIT_USDT",
     "MVP_ACCOUNT_FEED", "BINANCE_ACCOUNT_API_KEY", "BINANCE_ACCOUNT_API_SECRET",
+    "BINANCE_READ_API_KEY", "BINANCE_READ_API_SECRET",
     "MVP_MARKET_DATA",
 )
 
@@ -904,8 +905,8 @@ def test_a_failed_account_read_in_the_trading_process_refuses(tmp_path, clean_en
     _ready_console_machine(tmp_path, monkeypatch)
     monkeypatch.setenv(LIVE_TRADING_ENV, "real")
     monkeypatch.setenv(account.ACCOUNT_FEED_ENV, account.BINANCE_ACCOUNT)
-    monkeypatch.setenv(account.ACCOUNT_API_KEY_ENV, "k")
-    monkeypatch.setenv(account.ACCOUNT_API_SECRET_ENV, "s")
+    monkeypatch.setenv(account.READ_API_KEY_ENV, "k")
+    monkeypatch.setenv(account.READ_API_SECRET_ENV, "s")
 
     def _fail(**kw):
         raise ToolError("ACCOUNT_READ_TIMEOUT", "no answer")
