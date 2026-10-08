@@ -125,12 +125,14 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
                      else f"failed ({wallet_reason})" if wallet is None else combined.WALLET_OK)
     try:
         block = combined.combine(body, usd_krw_rate=snapshot.usd_krw_rate, root=base, now=now,
-                                 state_dir=state_dir(root), wallet=wallet, wallet_status=wallet_status)
+                                 state_dir=state_dir(root), wallet=wallet, wallet_status=wallet_status,
+                                 toss_warnings=len(snapshot.warnings))
     except Exception as exc:  # noqa: BLE001 — the combined total must not cost the Toss snapshot
         block = None
         combined_note = f"combined not computed ({type(exc).__name__})"
     else:
-        combined_note = f"combined {block['drawdown_state']}"
+        combined_note = (f"combined {block['drawdown_state']}"
+                         + ("" if block["portfolio_nav_complete"] else "; portfolio NAV incomplete"))
     body["combined"] = block
     # Q9 (TOTAL_ASSET_ALLOCATION §11.1): class totals against the target, display only. Same rule as
     # the combined total: a failure costs the board this block, never the Toss snapshot.

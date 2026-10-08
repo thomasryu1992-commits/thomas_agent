@@ -239,6 +239,20 @@ def test_an_unpriced_asset_is_warned_by_count_never_by_name(monkeypatch, gate_op
     assert not any("ZZZ" in w for w in snapshot.warnings)
 
 
+def test_a_bad_row_is_counted_and_never_read_as_zero(monkeypatch, gate_open):
+    spot = {"balances": [*SPOT["balances"], {"asset": "SOL", "free": "x", "locked": "0"}, "not a row"]}
+    locked = {"rows": [{"asset": "ETH", "amount": "1"}, {"asset": "", "amount": "2"}], "total": 2}
+    snapshot, _, _ = _read(monkeypatch, spot=spot, locked=locked)
+    assert snapshot.invalid_rows == 3 and snapshot.earn_truncated is False
+
+
+def test_an_earn_list_longer_than_the_page_budget_is_truncated(monkeypatch, gate_open):
+    rows = [{"asset": "USDT", "totalAmount": "1"}] * binance_wallet.EARN_PAGE_SIZE
+    snapshot, _, _ = _read(monkeypatch, flexible={"rows": rows})   # no total, always a full page
+    assert snapshot.earn_truncated is True
+    assert snapshot.earn_usdt["stable"] == binance_wallet.EARN_PAGE_SIZE * binance_wallet.EARN_MAX_PAGES
+
+
 def test_earn_pages_until_the_total(monkeypatch, gate_open):
     rows = [{"asset": "USDT", "totalAmount": "1"}] * binance_wallet.EARN_PAGE_SIZE
     pages = iter([{"rows": rows, "total": 150}, {"rows": rows[:50], "total": 150}])
@@ -307,7 +321,8 @@ def _combine(tmp_path, wallet, status, rate=RATE):
 
 
 def test_the_wallet_joins_the_total_at_the_toss_rate(monkeypatch, gate_open, tmp_path):
-    snapshot, _, _ = _read(monkeypatch)
+    snapshot, _, _ = _read(monkeypatch, spot={"balances": [r for r in SPOT["balances"] if r["asset"] != "ZZZ"]})
+    assert snapshot.unpriced_assets == 0
     _futures_file(tmp_path)
     block = _combine(tmp_path, snapshot, combined.WALLET_OK)
     assert set(block) == combined.COMBINED_KEYS
@@ -318,12 +333,24 @@ def test_the_wallet_joins_the_total_at_the_toss_rate(monkeypatch, gate_open, tmp
     assert block["combined_total_krw"] == pytest.approx(1_000_000.0 + (76.0 + 920.0 + 4650.0) * RATE)
 
 
-def test_a_closed_wallet_gate_leaves_the_p2_total_as_it_was(tmp_path):
+def test_a_closed_wallet_gate_leaves_the_declared_scope_incomplete(tmp_path):
+    """H2 (Thomas 2026-10-08): the gate off no longer means "not part of the portfolio". Spot and Earn are
+    declared, so they are excluded, the NAV is incomplete and the peak is not touched — though every
+    source whose gate is on answered."""
     _futures_file(tmp_path)
     block = _combine(tmp_path, None, combined.WALLET_NOT_CONFIGURED)
-    assert block["complete"] is True and block["crypto_spot_krw"] is None
-    assert block["combined_total_krw"] == pytest.approx(1_000_000.0 + 76.0 * RATE)
-    assert not [line for line in board.render_combined(block) if "crypto spot" in line]
+    assert block["source_fetch_complete"] is True
+    assert block["coverage_complete"] is False and block["checks"]["coverage"] == combined.FAIL
+    assert block["portfolio_nav_complete"] is False and block["complete"] is False
+    assert block["combined_total_krw"] is None and block["crypto_spot_krw"] is None
+    assert block["sources"][combined.SOURCE_SPOT] == {"included": False, "reason": combined.EXCLUDED_GATE_OFF}
+    assert block["sources"][combined.SOURCE_EARN] == {"included": False, "reason": combined.EXCLUDED_GATE_OFF}
+    assert block["drawdown_state"] == combined.STATE_UNKNOWN
+    assert not (tmp_path / "h" / combined.PEAK_FILENAME).exists()
+    lines = board.render_combined(block)
+    assert not [line for line in lines if "crypto spot" in line]
+    assert any("INCOMPLETE" in line and "coverage" in line for line in lines)
+    assert any("binance_spot (gate_off)" in line for line in lines)
 
 
 @pytest.mark.parametrize("wallet_kind, status", [("none", "failed (BINANCE_WALLET_FORBIDDEN)"),
@@ -380,7 +407,10 @@ def test_the_refresh_reads_the_wallet_and_stores_only_krw(monkeypatch, gate_open
     _futures_file(tmp_path)
     assert store.refresh(now=NOW, root=tmp_path)["status"].startswith("holdings snapshot: refreshed")
     body = json.loads(store.snapshot_path(tmp_path).read_text(encoding="utf-8"))
-    assert body["combined"]["crypto_wallet_status"] == "ok"
+    # The fixture holds one coin with no USDT price: read, shown, and never called a complete NAV (H2).
+    assert body["combined"]["crypto_wallet_status"] == combined.WALLET_UNPRICED
+    assert body["combined"]["checks"]["valuation"] == combined.FAIL
+    assert body["combined"]["portfolio_nav_complete"] is False
     assert body["combined"]["crypto_spot_krw"] == pytest.approx(920.0 * RATE)
     assert str(RATE) not in json.dumps(body)
     text, _ = store.load_holdings_view(now=NOW, root=tmp_path)
