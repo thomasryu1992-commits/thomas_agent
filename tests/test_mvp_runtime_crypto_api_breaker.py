@@ -803,7 +803,7 @@ def test_a_rate_limited_account_read_says_so(monkeypatch):
                                      {"Retry-After": "120"}, io.BytesIO(b""))
 
     monkeypatch.setattr(account_mod.urllib.request, "urlopen", _limited)
-    feed = account_mod.BinanceFuturesAccountFeed(authorization=make_gate_authorization(
+    feed = account_mod.BinanceFuturesAccountFeed(plane=account_mod.PLANE_TRADING, authorization=make_gate_authorization(
         flags=account_mod._NETWORK_FLAGS, provider_id=account_mod.BINANCE_ACCOUNT))
     with pytest.raises(ToolError) as exc:
         feed.account_snapshot(timeout_seconds=1)
@@ -941,7 +941,7 @@ def test_an_undecodable_answer_is_a_malformed_one(monkeypatch, order_adapter):
 def _account_feed(monkeypatch):
     monkeypatch.setenv(account_mod.ACCOUNT_API_KEY_ENV, "test-key")
     monkeypatch.setenv(account_mod.ACCOUNT_API_SECRET_ENV, "test-secret")
-    return account_mod.BinanceFuturesAccountFeed(authorization=make_gate_authorization(
+    return account_mod.BinanceFuturesAccountFeed(plane=account_mod.PLANE_TRADING, authorization=make_gate_authorization(
         flags=account_mod._NETWORK_FLAGS, provider_id=account_mod.BINANCE_ACCOUNT))
 
 
@@ -955,7 +955,7 @@ def test_a_dropped_account_read_degrades_instead_of_escaping(monkeypatch, error)
     feed = _account_feed(monkeypatch)
     _raising_account(monkeypatch, error)
     monkeypatch.setattr(account_mod, "select_account_feed", lambda **kw: feed)
-    snapshot, record = account_mod.read_account(timeout_seconds=1)
+    snapshot, record = account_mod.read_account(plane=account_mod.PLANE_TRADING, timeout_seconds=1)
     assert snapshot is None and record["error_reason_code"] == "TOOL_TRANSPORT"
 
 

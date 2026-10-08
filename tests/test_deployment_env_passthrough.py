@@ -567,14 +567,38 @@ def test_the_risk_lane_keeps_its_account_and_order_credentials():
         assert name in environment
 
 
-def test_the_wallet_feed_still_reads_names_the_maintenance_lane_does_not_get():
-    """The wallet feed reads the account key names (holdings/ repeats them rather than importing
-    crypto/). Since H1-a no service that runs the feed receives them, so switching its gate on
-    without H1-b reads nothing: the feed fails closed with NO_API_KEY."""
-    assert {binance_wallet.API_KEY_ENV, binance_wallet.API_SECRET_ENV} == {
-        account.ACCOUNT_API_KEY_ENV, account.ACCOUNT_API_SECRET_ENV}
-    environment = _service_environment("scheduler-maint")
-    assert binance_wallet.API_KEY_ENV not in environment and binance_wallet.API_SECRET_ENV not in environment
+# H1-b (Thomas 2026-10-08): the dedicated venue read-only key, by the code's own constants.
+READ_KEY_PAIR = (account.READ_API_KEY_ENV, account.READ_API_SECRET_ENV)
+
+
+def test_the_wallet_feed_reads_the_read_only_pair_not_a_trading_name():
+    """The wallet feed repeats the read plane's names (holdings/ does not import crypto/). Since H1-b it
+    reads the dedicated read-only pair; it never names the trading pair or the order key."""
+    assert (binance_wallet.API_KEY_ENV, binance_wallet.API_SECRET_ENV) == READ_KEY_PAIR
+    assert not set(READ_KEY_PAIR) & {account.ACCOUNT_API_KEY_ENV, account.ACCOUNT_API_SECRET_ENV,
+                                     live_execution.ORDER_API_KEY_ENV, live_execution.ORDER_API_SECRET_ENV}
+
+
+def test_the_read_only_pair_reaches_the_one_service_that_reads_with_it():
+    """Least placement: the account snapshot refresh rides a risk-lane fire, so the scheduler is the
+    service that reads with this pair. scheduler-maint receives it only when its wallet read is switched
+    on (after H2-H4), so not now; no other service ever does."""
+    for name in READ_KEY_PAIR:
+        assert _service_environment("scheduler")[name] == "${%s:-}" % name
+        holders = sorted(svc for svc in _ALL_SERVICES if name in _service_environment(svc))
+        assert holders == ["scheduler"], f"{name} reaches {holders}"
+
+
+@pytest.mark.parametrize("service", [s for s in _ALL_SERVICES if s not in ("scheduler", "scheduler-maint")])
+def test_no_door_assistant_or_worker_receives_any_binance_credential(service):
+    """Hermes, the bridges, the operator and the pipeline worker hold no venue credential of any plane,
+    by name or by a value drawn from one."""
+    environment = _service_environment(service)
+    families = ("BINANCE_", "MVP_LIVE_ORDER_", "MVP_TESTNET_ORDER_")
+    assert sorted(n for n in environment if n.startswith(families)) == []
+    drawn = sorted({ref for value in environment.values() for ref in _ENV_REFERENCE.findall(str(value))
+                    if ref.startswith(families)})
+    assert drawn == []
 
 
 def test_no_service_still_carries_the_retired_kis_surface():
@@ -674,6 +698,9 @@ SECRET_OWNERSHIP: dict[str, frozenset[str]] = {
     # The risk lane only: scheduler-maint held it 2026-10-07 (option A) until H1-a removed it.
     "BINANCE_ACCOUNT_API_KEY": frozenset({"scheduler"}),
     "BINANCE_ACCOUNT_API_SECRET": frozenset({"scheduler"}),
+    # H1-b (2026-10-08): the dedicated read-only pair, where the observation that uses it runs.
+    "BINANCE_READ_API_KEY": frozenset({"scheduler"}),
+    "BINANCE_READ_API_SECRET": frozenset({"scheduler"}),
     "COINALYZE_API_KEY": frozenset({"scheduler", "scheduler-maint"}),
     "GOOGLE_AI_STUDIO_API_KEY": frozenset({"operator", "pipeline-worker"}),
     "GROQ_API_KEY": frozenset({"operator", "pipeline-worker"}),

@@ -32,6 +32,7 @@ _LIVE_ENVS = (
     "MVP_LIVE_MAX_DAILY_ORDER_COUNT", "MVP_LIVE_MAX_OPEN_NOTIONAL_USDT",
     "MVP_LIVE_DAILY_LOSS_LIMIT_USDT",
     "MVP_ACCOUNT_FEED", "BINANCE_ACCOUNT_API_KEY", "BINANCE_ACCOUNT_API_SECRET",
+    "BINANCE_READ_API_KEY", "BINANCE_READ_API_SECRET",
     "MVP_MARKET_DATA",
 )
 
@@ -93,7 +94,7 @@ def test_board_reports_every_gate(tmp_path, clean_env):
         "live_trading_opt_in", "confirmation_phrase", "registered_budget", "risk_limits_record",
         "manual_kill_switch", "runtime_active", "trading_armed", "live_armed_strategies",
         "daily_loss_breaker", "bracket_breaker", "api_breaker", "entry_marks", "pre_order_snapshots",
-        "account_visibility", "market_data_visibility", "order_path_implemented",
+        "venue_read_visibility", "trading_account_credentials", "market_data_visibility", "order_path_implemented",
         "autonomous_routing_wired", "execution_stage", "venue_contract",
     }
 
@@ -678,8 +679,8 @@ def test_a_board_that_read_the_account_trips_on_a_missing_figure(tmp_path, monke
     from runtime.mvp_runtime.crypto.live_pnl import LIVE_PNL_VENUE_FIGURE_MISSING
 
     monkeypatch.setenv(account.ACCOUNT_FEED_ENV, account.BINANCE_ACCOUNT)
-    monkeypatch.setenv(account.ACCOUNT_API_KEY_ENV, "k")
-    monkeypatch.setenv(account.ACCOUNT_API_SECRET_ENV, "s")
+    monkeypatch.setenv(account.READ_API_KEY_ENV, "k")
+    monkeypatch.setenv(account.READ_API_SECRET_ENV, "s")
     snapshot = AccountSnapshot(
         asset="USDT", wallet_balance=500.0, margin_balance=500.0, available_balance=400.0,
         unrealized_pnl=0.0, positions=[], realized_windows={}, source="fake", collected_at=NOW,
@@ -698,8 +699,8 @@ def test_an_unconfigured_board_opens_no_socket_and_still_fails_the_row(tmp_path,
     outbound call, and the breaker row fails for want of a source rather than passing."""
     from runtime.mvp_runtime.crypto import account, live_readiness
 
-    for var in (account.ACCOUNT_FEED_ENV, account.ACCOUNT_API_KEY_ENV,
-                account.ACCOUNT_API_SECRET_ENV):
+    for var in (account.ACCOUNT_FEED_ENV, account.READ_API_KEY_ENV,
+                account.READ_API_SECRET_ENV):
         monkeypatch.delenv(var, raising=False)
 
     def _explode(**kwargs):                      # pragma: no cover - must not be reached
@@ -719,8 +720,8 @@ def test_a_failing_account_read_leaves_the_row_failing(tmp_path, monkeypatch):
     from runtime.mvp_runtime.errors import ToolError
 
     monkeypatch.setenv(account.ACCOUNT_FEED_ENV, account.BINANCE_ACCOUNT)
-    monkeypatch.setenv(account.ACCOUNT_API_KEY_ENV, "k")
-    monkeypatch.setenv(account.ACCOUNT_API_SECRET_ENV, "s")
+    monkeypatch.setenv(account.READ_API_KEY_ENV, "k")
+    monkeypatch.setenv(account.READ_API_SECRET_ENV, "s")
     monkeypatch.setattr(
         live_readiness, "read_account",
         lambda **kw: (_ for _ in ()).throw(ToolError("ACCOUNT_DATA_DEGRADED", "down")),
@@ -1012,8 +1013,8 @@ def test_a_loss_breaker_with_an_account_feed_is_never_scoped(tmp_path, clean_env
 
     _register_budget(tmp_path)
     monkeypatch.setenv(account.ACCOUNT_FEED_ENV, account.BINANCE_ACCOUNT)
-    monkeypatch.setenv(account.ACCOUNT_API_KEY_ENV, "k")
-    monkeypatch.setenv(account.ACCOUNT_API_SECRET_ENV, "s")
+    monkeypatch.setenv(account.READ_API_KEY_ENV, "k")
+    monkeypatch.setenv(account.READ_API_SECRET_ENV, "s")
     monkeypatch.setattr(
         live_readiness, "read_account",
         lambda **kw: (_ for _ in ()).throw(ToolError("ACCOUNT_DATA_DEGRADED", "down")),

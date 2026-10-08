@@ -305,6 +305,14 @@ export BINANCE_ACCOUNT_API_KEY='...'
 export BINANCE_ACCOUNT_API_SECRET='...'
 export MVP_ACCOUNT_FEED=binance_futures_account
 
+# The READ-ONLY key (H1-b, 2026-10-08): a SEPARATE Binance API key with "Enable Reading"
+# only (Futures, Spot/Margin trading, transfer and withdrawals all OFF), IP-restricted.
+# Observation reads with it, so it keeps working while MVP_LIVE_TRADING is closed. Never
+# set it to the trading key: the two must be different keys (check it in Binance API
+# Management), and nothing in the runtime substitutes one for the other.
+export BINANCE_READ_API_KEY='...'
+export BINANCE_READ_API_SECRET='...'
+
 # The order-capable key. Kept as its OWN variables even when the same key fills both,
 # so splitting them into two keys later is an edit here and nothing else.
 export MVP_LIVE_ORDER_API_KEY="$BINANCE_ACCOUNT_API_KEY"
@@ -477,7 +485,9 @@ Rows are keyed by the name in `.env` (what leaves the file), not by the containe
 
 | Secret in `.env` | Services in this compose file | Why there and nowhere else |
 |---|---|---|
-| `BINANCE_ACCOUNT_API_KEY` | `scheduler` | the risk lane's account snapshot for the readiness board. It is the same key the order credentials are set from, so it may trade at the venue. `scheduler-maint` held it from 2026-10-07 (option A, for the Binance wallet read) until H1-a removed it the same day: the maintenance lane receives no trading-capable credential, and the wallet read waits for a dedicated read-only key (H1-b) |
+| `BINANCE_ACCOUNT_API_KEY` | `scheduler` | the WRITE plane's own account read (live leg, emergency close, slippage probe). It is the same key the order credentials are set from, so it may trade at the venue. Since H1-b (2026-10-08) observation no longer reads with it. `scheduler-maint` held it on 2026-10-07 (option A) until H1-a removed it the same day |
+| `BINANCE_READ_API_KEY` | `scheduler` | H1-b (Thomas 2026-10-08): the dedicated venue read-only key ("Enable Reading" only, IP-restricted). The account feed's READ plane signs observation with it: the scheduled account snapshot, the dashboard, the readiness board, the resting-orders board. It works while `MVP_LIVE_TRADING` is closed. Read availability is not execution permission, and nothing falls back from it to a trading key or the other way. Here because the snapshot refresh rides a risk-lane fire; `scheduler-maint` receives it only when its wallet read is switched on (after H2-H4) |
+| `BINANCE_READ_API_SECRET` | `scheduler` | same |
 | `BINANCE_ACCOUNT_API_SECRET` | `scheduler` | same |
 | `MVP_LIVE_ORDER_API_KEY` | `scheduler` | the live order path — the one service that may place an order |
 | `MVP_LIVE_ORDER_API_SECRET` | `scheduler` | same |

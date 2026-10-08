@@ -51,8 +51,15 @@ A_TARGET = {"symbol": "ETHUSDT", "side": "BUY", "type": "LIMIT",
             "price": "1791.55", "status": "NEW"}
 
 
+PLANES_ASKED: list[str] = []
+
+
 def _run(monkeypatch, *, adapter, positions=(), argv=None):
-    monkeypatch.setattr(lister, "select_venue_reader", lambda: adapter)
+    def _select(*, plane, **_kw):
+        PLANES_ASKED.append(plane)
+        return adapter
+
+    monkeypatch.setattr(lister, "select_account_feed", _select)
     monkeypatch.setattr(lister, "list_open_live_positions", lambda root=None: list(positions))
     return lister.main(argv or [])
 
@@ -136,7 +143,20 @@ def test_the_dry_run_says_it_asked_nothing(monkeypatch, capsys):
         network_egress = False
 
     _run(monkeypatch, adapter=_Inert())
-    assert "DRY RUN" in capsys.readouterr().out
+    assert "NOT ASKED" in capsys.readouterr().out
+
+
+def test_it_reads_on_the_read_plane_only(monkeypatch):
+    """H1-b: the board observes, so it asks for the READ plane's feed (the read-only key), never
+    the trading pair and never the live write gate's venue reader."""
+    PLANES_ASKED.clear()
+    _run(monkeypatch, adapter=_Adapter())
+    assert PLANES_ASKED == ["read"]
+    import inspect
+
+    source = inspect.getsource(lister)
+    assert "select_venue_reader" not in source and "live_execution" not in source
+    assert "PLANE_TRADING" not in source
 
 
 # --- the path itself ------------------------------------------------------------
@@ -148,9 +168,10 @@ def test_the_list_path_is_the_read_one_not_the_mass_cancel_one():
     This constant pointed at the second one and 404'd on the live account 2026-08-03, because
     the verb was GET. Pinned literally, because the two names are one transposition apart and
     only one of them is a read."""
-    from runtime.mvp_runtime.crypto import live_execution as lx
+    from runtime.mvp_runtime.crypto import account, live_execution as lx
 
     assert lx.ALGO_OPEN_ORDERS_PATH == "/fapi/v1/openAlgoOrders"
+    assert account.ALGO_OPEN_ORDERS_PATH == "/fapi/v1/openAlgoOrders"   # the read plane's copy (H1-b)
 
 
 def test_no_bulk_cancel_path_exists_in_the_module():
@@ -163,3 +184,6 @@ def test_no_bulk_cancel_path_exists_in_the_module():
     assert source.count("/fapi/v1/algoOpenOrders") == 1, (
         "the mass-cancel path may appear only in the comment that warns about it"
     )
+    from runtime.mvp_runtime.crypto import account
+
+    assert "/fapi/v1/algoOpenOrders" not in open(account.__file__, encoding="utf-8").read()

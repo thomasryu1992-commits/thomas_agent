@@ -1962,7 +1962,7 @@ def test_fire_says_so_when_the_settle_after_a_stop_fill_leaves_a_leg(tmp_path, m
 
     events: list[str] = []
     _wire_claimed_fire(tmp_path, monkeypatch, _FillsThenCancelFails(), _RecordingMarks(events), events)
-    monkeypatch.setattr(cli, "select_account_feed", lambda now=None, root=None: None)
+    monkeypatch.setattr(cli, "select_account_feed", lambda plane, now=None, root=None: None)
     cli.run_fire(root=tmp_path, symbol="BTCUSDT", poll_seconds=0.0, sleep=lambda s: None)
     err = capsys.readouterr().err
     assert "ORPHAN    : protective orders may still rest at the venue for BTCUSDT" in err
@@ -2730,7 +2730,7 @@ def test_the_fire_s_settlement_counts_its_fill_history_read(tmp_path, monkeypatc
     _wire_claimed_fire(tmp_path, monkeypatch, _HappyPathAdapter(), _RecordingMarks(events), events)
     breaker = _durable_api_breaker(tmp_path)
     monkeypatch.setattr(cli, "select_live_api_breaker", lambda now=None, root=None: breaker)
-    monkeypatch.setattr(cli, "select_account_feed", lambda now=None, root=None: _Feed())
+    monkeypatch.setattr(cli, "select_account_feed", lambda plane, now=None, root=None: _Feed())
     real_settle = cli.live_leg.settle_venue_closed_position
 
     def _settle(position, *, account_feed, **kw):

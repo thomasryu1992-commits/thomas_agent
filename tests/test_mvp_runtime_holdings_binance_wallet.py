@@ -421,7 +421,7 @@ def test_the_holdings_lane_imports_nothing_from_crypto():
 
 
 def test_the_repeated_names_agree_with_crypto():
-    assert (API_KEY_ENV, API_SECRET_ENV) == (crypto_account.ACCOUNT_API_KEY_ENV, crypto_account.ACCOUNT_API_SECRET_ENV)
+    assert (API_KEY_ENV, API_SECRET_ENV) == (crypto_account.READ_API_KEY_ENV, crypto_account.READ_API_SECRET_ENV)
 
 
 def test_the_gate_on_without_the_key_reads_nothing_and_the_total_is_incomplete(monkeypatch, tmp_path):

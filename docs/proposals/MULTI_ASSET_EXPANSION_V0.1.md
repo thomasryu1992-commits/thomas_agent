@@ -2,8 +2,8 @@
 
 **상태:** PARTIALLY DECIDED 2026-10-07 — 열린 것: 부록 C(바이낸스 현물·Simple Earn 조회) 판단 문장의 Thomas 확인. 그 확인 전에는
 `MVP_BINANCE_WALLET`을 켜지 않는다. 피드는 2026-10-07에 지어졌다(`holdings/binance_wallet.py`, P2 합산 블록에 합류). **BLOCKER
-(H1-a, 2026-10-07): 계정 키를 scheduler-maint와 공유하던 A안을 철회했다. 그 키는 주문 키와 같다. 전용 읽기 전용 키(H1-b)와 H2–H4가
-끝나기 전에는 지갑을 켜지 않는다.** D1–D4 결정(2026-10-02): (A) 자산 관리 먼저, 옵션은 조건부, 읽기 전용 보드는 연구 일시
+(H1-a, 2026-10-07): 계정 키를 scheduler-maint와 공유하던 A안을 철회했다. 그 키는 주문 키와 같다. H1-b(2026-10-08)로 전용 읽기 전용
+키(`BINANCE_READ_API_*`)를 들였고 지갑도 그 키만 읽는다. H2–H4가 끝나기 전에는 지갑을 켜지 않는다.** D1–D4 결정(2026-10-02): (A) 자산 관리 먼저, 옵션은 조건부, 읽기 전용 보드는 연구 일시
 중지 중 허용. 2026-10-07 Thomas: 첫 계좌를 토스증권으로 바꿨다(부록 B, 잠정). P1(토스 보드·`/holdings`·Hermes `holdings_status`)이
 운영 중이다. **P2 결정(2026-10-07, 아래 결정 절): 알림만, 낙폭 한도 고점 대비 -20%, 바이낸스(엔진 증거금) 비중 한도 없음, USDT 환산은
 토스 매매기준율.** P2의 낙폭 한도가 `holdings/combined.py`로 지어졌다. `TOTAL_ASSET_ALLOCATION_V0.1.md`의 5/25 밴드(Q2)와 BTC
@@ -465,6 +465,29 @@ Claude는 어떤 베뉴의 키도 다루지 않고, 라이브를 켜지 않는�
     받지 않는다. 테스트가 이름과 접두어 둘 다로 고정한다. 위험 레인(scheduler)은 그대로다.
   - **지갑은 BLOCKER다.** 게이트를 켜도 키가 없어 `NO_API_KEY`로 읽지 않고, 합계는 불완전이 된다. 켜기 전 조건: 바이낸스에서
     "Enable Reading"만 켠 전용 키를 Thomas가 발급(H1-b, IP 제한), 평가 완전성(H2), 반출 경계(H3), 출처 시점 정합(H4).
+- **H1-b (Thomas 2026-10-08): 읽기 평면과 쓰기 평면을 자격증명 단위로 나눈다.**
+  - **키:** Thomas가 "Enable Reading"만 켠 별도 키를 발급해 `.env`에 `BINANCE_READ_API_KEY` / `_SECRET`으로 넣었다. 기존 거래
+    키와 다른 키인지는 Thomas가 Binance API Management에서 확인한다. Claude는 값을 읽거나 비교하지 않고 `<set>/<unset>`만 본다.
+  - **계정 피드:** `select_account_feed(plane=…)`가 필수 인자다. 관찰(계정 스냅샷, 대시보드, readiness 보드, 수수료 측정,
+    `list_resting_orders`)은 `PLANE_READ`, 쓰기 평면의 자체 읽기(live 레그, 비상 청산, probe)는 `PLANE_TRADING`으로 그대로다.
+    읽기 키가 없으면 `NO_API_KEY`이고 거래 키로 대체하지 않는다. 읽기 피드는 GET만, 고정 경로만 서명하고 주문·취소·이체 메서드가 없다.
+  - **지갑:** `binance_wallet`도 `BINANCE_READ_*`만 읽는다. 읽기 키는 지금 scheduler에만 간다(스냅샷 갱신이 위험 레인에서 돈다).
+    scheduler-maint는 지갑을 켤 때(H2–H4 뒤) 받는다.
+  - **첫 조회:** 배포 뒤 읽기 전용 probe로 엔드포인트별 성공·실패(-2015 등)를 기록한다. 현물·Earn은 그 `docker exec` 프로세스에서만
+    `MVP_BINANCE_WALLET`을 임시로 켜서 읽는다. 서비스 설정과 `.env`의 지갑 게이트는 꺼진 채다. **probe 성공은 운영 활성화 승인이 아니다.**
+  - **경계:** 읽기 가능은 실행 허가가 아니고, 읽기 전용 자격증명은 거래 권한을 주지 못한다. live 쓰기 게이트가 닫혀 있어도 venue
+    관찰은 가능하다.
+  - **분리 상태:**
+    - COMPLETE: 자격증명 이름 분리, fallback 제거, 읽기/쓰기 인터페이스 분리
+    - DEFERRED: 프로세스·컨테이너 격리. scheduler가 읽기 키와 거래 자격증명을 함께 가진다(임시 구조).
+    - 다음 분리 후보는 전용 `portfolio-reader` 서비스나 scheduler-maint의 유지보수 작업이다. 이번에 서비스는 나누지 않았다.
+  - **readiness 보드:** `venue_read_visibility`는 관찰 전용이다. READ visibility PASS는 거래 계정 평면이 준비됐다는 뜻이 아니다.
+    `trading_account_credentials`가 쓰기 평면의 계정 키를 `<set>/<unset>`으로 따로 보인다.
+    live opt-in을 가진 프로세스에서는 그 키로 실제 GET을 한 결과도 보이고, `account_ready`는 그 읽기가 성공해야 참이다.
+    키가 `<set>`인 것만으로는 준비가 아니다. 어느 행도 실행 허가가 아니다.
+  - **첫 조회의 범위:** 읽기 키만, GET만, 거래 키 대체 없음, `MVP_BINANCE_WALLET`은 OFF 유지. 구독·환매·이체·주문·취소는 없다.
+    종목별 수량·금액은 터미널에서만 보고 저장하거나 Hermes에 넘기지 않는다. 결과는 엔드포인트별 성공/오류 코드만 기록한다.
+    조회 결과를 이유로 지갑을 합산(NAV)에 넣지 않는다. 그것은 H2 뒤다.
 
 ---
 

@@ -1143,7 +1143,7 @@ def main(argv: list[str] | None = None) -> int:
     # separately-gated capability, so asking for it has to be deliberate.
     account_snapshot = None
     if args.account:
-        account_snapshot, account_record = account.read_account()
+        account_snapshot, account_record = account.read_account(plane=account.PLANE_READ)
         status["account"] = account_record
 
     if args.json:

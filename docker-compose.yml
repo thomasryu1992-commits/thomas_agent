@@ -293,6 +293,19 @@ services:
       MVP_ACCOUNT_FEED: ${MVP_ACCOUNT_FEED:-}
       BINANCE_ACCOUNT_API_KEY: ${BINANCE_ACCOUNT_API_KEY:-}
       BINANCE_ACCOUNT_API_SECRET: ${BINANCE_ACCOUNT_API_SECRET:-}
+      # H1-b (Thomas 2026-10-08): the dedicated venue READ-ONLY key ("Enable Reading" only). The account
+      # feed signs observation with it — the scheduled account snapshot, the dashboard, the readiness
+      # board, the resting-orders board — so closing MVP_LIVE_TRADING does not blind them. The pair
+      # above stays for the write plane's own reads (live leg, emergency close, probe). Read availability
+      # is not execution permission, and nothing falls back from this pair to that one.
+      #
+      # This lane therefore holds the read key AND the trading keys, because the snapshot refresh rides a
+      # risk-lane fire. Separation candidate (recorded, not done): move the snapshot refresh and the
+      # resting-orders read to a maintenance kind on scheduler-maint (or a reader service), leaving this
+      # lane with the trading keys only. scheduler-maint gets this pair only when its wallet read is
+      # switched on (after H2-H4); until then no other service receives it.
+      BINANCE_READ_API_KEY: ${BINANCE_READ_API_KEY:-}
+      BINANCE_READ_API_SECRET: ${BINANCE_READ_API_SECRET:-}
       MVP_LIVE_TRADING: ${MVP_LIVE_TRADING:-}
       MVP_LIVE_ORDER_API_KEY: ${MVP_LIVE_ORDER_API_KEY:-}
       MVP_LIVE_ORDER_API_SECRET: ${MVP_LIVE_ORDER_API_SECRET:-}

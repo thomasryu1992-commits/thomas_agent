@@ -24,6 +24,53 @@ the test that pins it. A flag that is not in the code is not safety evidence.
 | **Cancel** | Its own operation: it removes a resting order and adds no exposure. It is called only to withdraw a closed position's bracket legs (`live_leg.cancel_bracket_legs`) and by the testnet cycle. It reads no stage. | egress-stage tests |
 | **Any mainnet write at all** | `MVP_LIVE_TRADING=real` selects the write-capable adapter (`live_execution.select_order_adapter`, env-only gate). Unset, it selects the dry-run adapter, which opens no socket. | `tests/test_mvp_runtime_safety_gate.py` |
 | **Credential placement** | The order key and the account key (one venue key) reach `scheduler` only. Since H1-a, `scheduler-maint` receives nothing named `BINANCE_ACCOUNT_*`, `MVP_LIVE_ORDER_*` or `MVP_TESTNET_ORDER_*`. | `tests/test_deployment_env_passthrough.py` |
+| **Venue observation (READ plane, H1-b)** | Not an operation that can be refused into an order: the account feed's READ plane (`account.select_account_feed(plane=PLANE_READ)`) signs GETs only, on a fixed path allowlist (`READ_PATHS`: account, income, user trades, open orders, open algo orders), with the dedicated read-only key `BINANCE_READ_API_*` ("Enable Reading" only). It has no order, cancel, close, transfer, leverage or margin method. A missing read key fails `NO_API_KEY` and never falls back to a trading key. It is gated by `MVP_ACCOUNT_FEED`, not by `MVP_LIVE_TRADING`, so a closed write gate does not blind it. **Read availability is not execution permission**, and a read-only credential cannot grant trading permission. | `tests/test_mvp_runtime_crypto_read_plane.py`, `tests/test_list_resting_orders.py` |
+| **The write plane's own reads** | The live leg, the emergency close and the slippage probe read the account on `PLANE_TRADING` (the account pair, the same venue key as the order key), unchanged by H1-b, so the close path does not depend on a key the write plane does not own. Which caller reads on which plane is pinned by an AST walk. | `tests/test_mvp_runtime_crypto_read_plane.py` |
+
+## State, one axis at a time
+
+"PAPER" alone does not describe the machine. Each axis below is read on its own:
+
+| Axis | Read it from |
+|---|---|
+| Execution stage | `scripts.register_execution_stage --show` |
+| Live write capability (OPEN / CLOSED) | `MVP_LIVE_TRADING` on the scheduler; `live_readiness`'s `live_gate_recorded` row |
+| Venue read capability (AVAILABLE / UNAVAILABLE, per endpoint) | `MVP_ACCOUNT_FEED` plus `BINANCE_READ_API_*` set on the scheduler; `list_resting_orders --json` (`asked_the_venue`) |
+| Trading credential exposure | `scheduler` only (the account pair, the order key, the testnet pair) |
+| Read-only credential exposure | `scheduler` only, since the account snapshot refresh rides a risk-lane fire. `scheduler-maint` gets it only when its wallet read is switched on (after H2-H4) |
+| Armed strategies | `live_readiness`'s `live_armed_strategies` row |
+
+**H1-b separation status (2026-10-08):**
+
+| Separation | Status |
+|---|---|
+| Credential namespace (`BINANCE_READ_API_*` vs the trading pair and the order key) | **COMPLETE** |
+| Fallback removal (no plane signs with another plane's key) | **COMPLETE** |
+| Read/write interface (observation on `PLANE_READ`; the write plane's own reads on `PLANE_TRADING`, pinned per caller; the read feed has no write method) | **COMPLETE** |
+| Process / container isolation | **DEFERRED**: `scheduler` still owns both the read-only key and the trading credentials (temporary architecture) |
+
+The future separation candidate is a dedicated `portfolio-reader` service, or a maintenance kind on
+`scheduler-maint`, that takes the account snapshot refresh and the resting-orders read and leaves the
+scheduler with the trading keys only. No service split was made in H1-b.
+
+**The readiness board says which plane it means.** `venue_read_visibility` is the READ plane and is for
+observation only. **READ visibility PASS does not mean the trading account plane is ready.**
+`trading_account_credentials` shows the write plane's account pair as `<set>`/`<unset>` (names only,
+never a value). In the process that holds the live opt-in, it also reports an actual GET with that pair's
+key.
+
+In that process, account readiness requires both:
+
+- the trading pair configured, or the component fails `TRADING_ACCOUNT_NOT_CONFIGURED`;
+- the trading-plane read succeeding, or the component fails `TRADING_ACCOUNT_UNREADABLE`.
+
+A healthy read plane, or a trading key that is merely set, never makes `account_ready` true. With the
+live gate closed, the board never signs with the trading key. Neither row, and no credential, grants
+execution permission.
+
+**Follow-up debt:** the Hermes operator skill (`integrations/hermes/config/skills/thomas-ops/SKILL.md`)
+still names the old `account_visibility` row. Renaming it there is a separate change, because it needs a
+MANIFEST update, a host install and `/new`.
 
 ## At `PAPER`
 
@@ -40,7 +87,9 @@ On 2026-10-07 (R1), Thomas closed the live gate on this machine (`MVP_LIVE_TRADI
 recreated). Before the change there were no open positions and no resting orders, read from the
 venue. The trading process recorded the gate `CLOSED` at 2026-10-07T16:58:52Z.
 
-Closing the gate also turns off the venue reader. `list_resting_orders` and the venue-contract check
-are behind the same switch, so resting orders can no longer be read from the venue on this machine.
-Re-opening the gate is Thomas's act and needs a restart. Read `live_readiness` and check positions
-first, because the close path needs the gate.
+Closing the gate also turned off the venue reader, which put `list_resting_orders` and the venue-contract
+check behind the same switch. H1-b (2026-10-08) moved `list_resting_orders` and the account observation to
+the READ plane, so they read the venue again with the gate closed. The venue-contract check and
+`diagnose_bracket_leg` stay on the write plane: they are pre-trade checks (`/order/test`) and are meant to be
+off while the gate is. Re-opening the gate is Thomas's act and needs a restart. Read `live_readiness` and
+check positions first, because the close path needs the gate.

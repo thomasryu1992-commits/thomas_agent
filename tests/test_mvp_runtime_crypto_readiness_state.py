@@ -38,6 +38,7 @@ _LIVE_ENVS = (
     "MVP_LIVE_MAX_DAILY_ORDER_COUNT", "MVP_LIVE_MAX_OPEN_NOTIONAL_USDT",
     "MVP_LIVE_DAILY_LOSS_LIMIT_USDT",
     "MVP_ACCOUNT_FEED", "BINANCE_ACCOUNT_API_KEY", "BINANCE_ACCOUNT_API_SECRET",
+    "BINANCE_READ_API_KEY", "BINANCE_READ_API_SECRET",
     "MVP_MARKET_DATA",
 )
 
@@ -55,7 +56,7 @@ def clean_env(monkeypatch):
 _CHECKS_CONSOLE = {
     # The env rows as a process without the live-trading environment computes them.
     "live_trading_opt_in": False, "confirmation_phrase": False, "manual_kill_switch": True,
-    "account_visibility": False, "market_data_visibility": False, "daily_loss_breaker": False,
+    "venue_read_visibility": False, "market_data_visibility": False, "daily_loss_breaker": False,
     # Every row read from state files, passing.
     "registered_budget": True, "risk_limits_record": True, "runtime_active": True,
     "trading_armed": True, "live_armed_strategies": True, "bracket_breaker": True,
@@ -63,7 +64,7 @@ _CHECKS_CONSOLE = {
     "execution_stage": True, "venue_contract": True, "order_path_implemented": True,
     "autonomous_routing_wired": True,
 }
-_ENV_ROWS = ("live_trading_opt_in", "confirmation_phrase", "account_visibility",
+_ENV_ROWS = ("live_trading_opt_in", "confirmation_phrase", "venue_read_visibility",
              "market_data_visibility", "daily_loss_breaker")
 
 
@@ -87,7 +88,9 @@ def _status(*, opted=False, **overrides):
             "allowance_held": [], "error": None,
         },
         "position_book": {"readable": True, "open": 0, "error": None},
-        "account": ({"source": "this_process", "configured": True, "readable": True, "error": None}
+        "account": ({"source": "this_process", "configured": True, "readable": True, "error": None,
+                     # H1-b: the trading process validates the write plane's own account with its key
+                     "trading_configured": True, "trading_readable": True, "trading_error": None}
                     if opted else
                     {"source": "recorded", "configured": False, "recorded": True,
                      "as_of": FIVE_MINUTES_AGO, "age_seconds": 300.0, "stale": False,
@@ -429,7 +432,7 @@ _OPTED_FLIPS = {
     "manual_kill": (dict(checks={"manual_kill_switch": False}), "live_gate_open", "MANUAL_KILL_ENGAGED"),
     "market_data_env": (dict(checks={"market_data_visibility": False}), "market_data_ready",
                         "MARKET_DATA_NOT_CONFIGURED"),
-    "account_feed": (dict(checks={"account_visibility": False},
+    "account_feed": (dict(checks={"venue_read_visibility": False},
                           inputs={"account": {"configured": False, "readable": False}}),
                      "account_ready", "ACCOUNT_FEED_NOT_CONFIGURED"),
     "account_read": (dict(inputs={"account": {"readable": False, "error": "ACCOUNT_TIMEOUT"}}),
@@ -904,16 +907,121 @@ def test_a_failed_account_read_in_the_trading_process_refuses(tmp_path, clean_en
     _ready_console_machine(tmp_path, monkeypatch)
     monkeypatch.setenv(LIVE_TRADING_ENV, "real")
     monkeypatch.setenv(account.ACCOUNT_FEED_ENV, account.BINANCE_ACCOUNT)
-    monkeypatch.setenv(account.ACCOUNT_API_KEY_ENV, "k")
-    monkeypatch.setenv(account.ACCOUNT_API_SECRET_ENV, "s")
+    monkeypatch.setenv(account.READ_API_KEY_ENV, "k")
+    monkeypatch.setenv(account.READ_API_SECRET_ENV, "s")
+    monkeypatch.setenv(account.ACCOUNT_API_KEY_ENV, "tk")       # the trading pair is present here
+    monkeypatch.setenv(account.ACCOUNT_API_SECRET_ENV, "ts")
 
     def _fail(**kw):
+        if kw.get("plane") == account.PLANE_TRADING:
+            return object(), {}                  # the write plane's own read works here
         raise ToolError("ACCOUNT_READ_TIMEOUT", "no answer")
 
     monkeypatch.setattr(live_readiness, "read_account", _fail)
     _, data = _board(tmp_path)
     assert data["readiness"]["components"]["account_ready"] == {
         "ok": False, "reason": "ACCOUNT_UNREADABLE", "source": "this_process"}
+
+
+# === H1-b: the READ plane's visibility is not the TRADING plane's readiness =========================
+
+def _two_planes(tmp_path, monkeypatch, *, read: bool, trading: bool, opted: bool = True):
+    from runtime.mvp_runtime.crypto import account
+    from runtime.mvp_runtime.crypto.account import AccountSnapshot
+
+    _ready_console_machine(tmp_path, monkeypatch)
+    if opted:
+        monkeypatch.setenv(LIVE_TRADING_ENV, "real")
+    monkeypatch.setenv(account.ACCOUNT_FEED_ENV, account.BINANCE_ACCOUNT)
+    for name, value, on in ((account.READ_API_KEY_ENV, "read-value-1", read),
+                            (account.READ_API_SECRET_ENV, "read-value-2", read),
+                            (account.ACCOUNT_API_KEY_ENV, "trading-value-1", trading),
+                            (account.ACCOUNT_API_SECRET_ENV, "trading-value-2", trading)):
+        if on:
+            monkeypatch.setenv(name, value)
+        else:
+            monkeypatch.delenv(name, raising=False)
+    snapshot = AccountSnapshot(asset="USDT", wallet_balance=1.0, margin_balance=1.0, available_balance=1.0,
+                               unrealized_pnl=0.0, positions=[], realized_windows={"today": 0.0},
+                               source="fake", collected_at=NOW)
+    monkeypatch.setattr(live_readiness, "read_account", lambda **kw: (snapshot, {}))
+    return _board(tmp_path)
+
+
+def _rows(status):
+    return {c["check"]: c for c in status["checks"]}
+
+
+def test_a_healthy_read_plane_does_not_make_the_trading_plane_ready(tmp_path, monkeypatch):
+    """READ = healthy, TRADING = missing: the read row passes, the trading row fails, and the trading
+    process's account component refuses with its own reason instead of reading the read plane as ready."""
+    status, data = _two_planes(tmp_path, monkeypatch, read=True, trading=False)
+    rows = _rows(status)
+    assert rows["venue_read_visibility"]["ok"] is True
+    assert "does not mean the trading account plane is ready" in rows["venue_read_visibility"]["detail"]
+    assert rows["trading_account_credentials"]["ok"] is False
+    assert "BINANCE_ACCOUNT_API_KEY=<unset>" in rows["trading_account_credentials"]["detail"]
+    assert data["readiness"]["components"]["account_ready"] == {
+        "ok": False, "reason": "TRADING_ACCOUNT_NOT_CONFIGURED", "source": "this_process"}
+
+
+def test_both_planes_present_reads_ready_and_shows_no_value(tmp_path, monkeypatch):
+    status, data = _two_planes(tmp_path, monkeypatch, read=True, trading=True)
+    rows = _rows(status)
+    assert rows["venue_read_visibility"]["ok"] is True and rows["trading_account_credentials"]["ok"] is True
+    assert "BINANCE_ACCOUNT_API_KEY=<set>" in rows["trading_account_credentials"]["detail"]
+    assert data["readiness"]["components"]["account_ready"]["ok"] is True
+    blob = repr(status) + repr(data) + live_readiness.render_readiness_text(status)
+    for value in ("read-value-1", "read-value-2", "trading-value-1", "trading-value-2"):
+        assert value not in blob, "a credential value reached the board"
+
+
+def test_a_set_trading_key_that_cannot_read_is_not_ready(tmp_path, monkeypatch):
+    """`<set>` is not enough: in the trading process account readiness needs an actual read with the
+    trading plane's key. The read plane is healthy here and the trading-plane read fails."""
+    from runtime.mvp_runtime.crypto import account
+    from runtime.mvp_runtime.crypto.account import AccountSnapshot
+
+    _two_planes(tmp_path, monkeypatch, read=True, trading=True)
+    healthy = AccountSnapshot(asset="USDT", wallet_balance=1.0, margin_balance=1.0, available_balance=1.0,
+                              unrealized_pnl=0.0, positions=[], realized_windows={"today": 0.0},
+                              source="fake", collected_at=NOW)
+
+    def _by_plane(**kw):
+        if kw["plane"] == account.PLANE_TRADING:
+            return None, {"error_reason_code": "NO_API_KEY"}
+        return healthy, {}
+
+    monkeypatch.setattr(live_readiness, "read_account", _by_plane)
+    status, data = _board(tmp_path)
+    rows = _rows(status)
+    assert rows["venue_read_visibility"]["ok"] is True
+    assert "trading-plane read: FAILED (NO_API_KEY)" in rows["trading_account_credentials"]["detail"]
+    assert data["readiness"]["components"]["account_ready"] == {
+        "ok": False, "reason": "TRADING_ACCOUNT_UNREADABLE", "source": "this_process"}
+
+
+def test_with_the_live_gate_closed_the_board_never_signs_with_the_trading_key(tmp_path, monkeypatch):
+    """This machine's state after R1: not opted in. The board reads on the READ plane only."""
+    planes: list[str] = []
+    _two_planes(tmp_path, monkeypatch, read=True, trading=True, opted=False)
+    def _spy(**kw):
+        planes.append(kw["plane"])
+        return None, {}
+
+    monkeypatch.setattr(live_readiness, "read_account", _spy)
+    status, _ = _board(tmp_path)
+    assert planes == ["read"]
+    assert "not run (live trading not opted in here)" in _rows(status)["trading_account_credentials"]["detail"]
+
+
+def test_the_trading_row_grants_nothing(tmp_path, monkeypatch):
+    """Trading credentials present on a PAPER machine: the row passes and no entry becomes possible —
+    a credential is not execution permission."""
+    status, data = _two_planes(tmp_path, monkeypatch, read=True, trading=True)
+    assert _rows(status)["trading_account_credentials"]["ok"] is True
+    assert "not execution permission" in _rows(status)["trading_account_credentials"]["detail"]
+    assert data["live_entry_possible"] is False
 
 
 # === the review of #906: what the board read as possible while the doors refused ================

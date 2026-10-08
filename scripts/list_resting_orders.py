@@ -3,8 +3,9 @@
     python -m scripts.list_resting_orders
     python -m scripts.list_resting_orders --symbol ETHUSDT --json
 
-Read-only. It places nothing, cancels nothing, and has no flag that would let it. It holds the venue
-reader (``live_execution.select_venue_reader``), which has no method that sends or cancels.
+Read-only. It places nothing, cancels nothing, and has no flag that would let it. It holds the
+read-plane account feed (``account.select_account_feed(plane=PLANE_READ)``), which has no method that
+sends or cancels.
 
 **Why it exists.** On 2026-08-03T04:28:58Z a ``closePosition`` STOP_MARKET was accepted by the
 venue, could not be found by the query that followed, was therefore recorded as ``placed:
@@ -25,9 +26,12 @@ leg, a hand-placed order, or an orphan all land there, and only a person can tel
 The runtime holding no open positions makes every resting order unowned by definition, which is
 exactly the state that matters after a naked close.
 
-Reaching the venue needs the order key, so without ``MVP_LIVE_TRADING=real`` the reader's selector
-hands back the inert adapter and says plainly that it asked nothing. Claude does not run this and does not
-handle the keys.
+**It reads on the read plane (H1-b, Thomas 2026-10-08).** The account feed signs these two GETs with
+the dedicated read-only key (``BINANCE_READ_API_KEY``/``_SECRET``) behind ``MVP_ACCOUNT_FEED``, so closing
+the live write gate (``MVP_LIVE_TRADING``) no longer blinds it. It holds no order key and no adapter, and
+the feed has no method that places, cancels, transfers or changes leverage. Without the account-feed gate
+it reads nothing and says so; without the read key it refuses (``NO_API_KEY``) and never borrows the
+trading key. Claude does not handle the keys.
 """
 
 from __future__ import annotations
@@ -41,7 +45,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from runtime.mvp_runtime.crypto.live_execution import select_venue_reader  # noqa: E402
+from runtime.mvp_runtime.crypto.account import PLANE_READ, select_account_feed  # noqa: E402
 from runtime.mvp_runtime.crypto.live_position import list_open_live_positions  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
 
@@ -95,15 +99,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        adapter = select_venue_reader()
+        feed = select_account_feed(plane=PLANE_READ)
     except MvpRuntimeError as exc:
-        print(f"BLOCKED: could not select the venue reader ({exc.reason_code})")
+        print(f"BLOCKED: could not select the read-plane account feed ({exc.reason_code})")
         return EXIT_BLOCKED
-    live = bool(getattr(adapter, "network_egress", False))
+    live = bool(getattr(feed, "network_egress", False))
 
     try:
-        plain = adapter.open_orders(args.symbol, timeout_seconds=args.timeout_seconds)
-        algo = adapter.algo_open_orders(args.symbol, timeout_seconds=args.timeout_seconds)
+        if live:
+            plain = feed.open_orders(args.symbol, timeout_seconds=args.timeout_seconds)
+            algo = feed.algo_open_orders(args.symbol, timeout_seconds=args.timeout_seconds)
+        else:
+            plain, algo = [], []   # the inert feed: nothing was asked, and the output says so
     except MvpRuntimeError as exc:
         # An unreadable venue is not "nothing is resting". Refuse rather than report an
         # emptiness that was never observed — the whole failure this tool exists to end.
@@ -119,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
                           "owned_ids": sorted(owned)}, indent=2, sort_keys=True))
     else:
         if not live:
-            print("DRY RUN — MVP_LIVE_TRADING is not 'real'; the venue was not asked.\n")
+            print("NOT ASKED — MVP_ACCOUNT_FEED is not set; the venue was not asked.\n")
         print(f"open live positions the runtime knows: {len(owned)//2 if owned else 0} "
               f"(bracket ids: {len(owned)})")
         if not rows:

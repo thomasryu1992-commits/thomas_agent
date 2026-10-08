@@ -162,9 +162,9 @@ def refresh_snapshot(*, now: str, root: Path | None = None, timeout_seconds: int
         return f"account snapshot: mark not written ({type(exc).__name__})"
 
     try:
-        from .account import read_account
+        from .account import PLANE_READ, read_account
 
-        snapshot, record = read_account(timeout_seconds=timeout_seconds, root=root)
+        snapshot, record = read_account(plane=PLANE_READ, timeout_seconds=timeout_seconds, root=root)
     except Exception as exc:  # noqa: BLE001 — see the docstring
         return f"account snapshot: read failed ({type(exc).__name__})"
 

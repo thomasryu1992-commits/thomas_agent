@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **659** distinct codes across **1291** raise sites
+- **661** distinct codes across **1295** raise sites
 - **23** exception classes carry them
 - **75** codes are raised from more than one module (see below)
 - **139** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -99,6 +99,9 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `ABSOLUTE_PATH` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | `resolve_target` | `candidate.is_absolute() or candidate.drive or relative_path.startswith(('/', '\\'))` |
 | `ACCEPT_REQUIRES_SHADOW_PASS` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | `transition_candidate` | `action == 'accept' and shadow.get('status') != 'PASS'` |
 | `ACCOUNT_FEED_NOT_CONFIGURED` | `ToolError` | `runtime/mvp_runtime/crypto/account_store.py` | `load_funds_view` | `not body.get('configured', False)` |
+| `ACCOUNT_PATH_REFUSED` | `ToolBlocked` | `runtime/mvp_runtime/crypto/account.py` | `_signed_get` | `path not in READ_PATHS` |
+| `ACCOUNT_PLANE_UNKNOWN` | `ToolBlocked` | `runtime/mvp_runtime/crypto/account.py` | `__init__` | `plane not in PLANE_CREDENTIALS` |
+| `ACCOUNT_PLANE_UNKNOWN` | `ToolBlocked` | `runtime/mvp_runtime/crypto/account.py` | `select_account_feed` | `plane not in PLANE_CREDENTIALS` |
 | `ACCOUNT_SNAPSHOT_DEGRADED` | `ToolError` | `runtime/mvp_runtime/crypto/account_store.py` | `load_funds_view` | `body.get('degraded')` |
 | `ACCOUNT_SNAPSHOT_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/account_store.py` | `load_funds_view` | `body is None` |
 | `ACCOUNT_SNAPSHOT_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/account_store.py` | `load_funds_view` | `snapshot_path(root).is_file()` |
@@ -753,6 +756,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MALFORMED_RESPONSE` | `ProviderError` | `runtime/mvp_runtime/providers.py` | `_parse_hosted_response` | `not isinstance(analysis, dict) or any((k not in analysis for k in _REQUIRED_ANALYSIS_KEYS))` |
 | `MALFORMED_RESPONSE` | `ProviderError` | `runtime/mvp_runtime/providers.py` | `_post_json_with_retry` | `—` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | `_build` | `not isinstance(account, dict)` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | `_order_list` | `not (isinstance(body, list) and all((isinstance(row, dict) for row in body)))` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | `_signed_get` | `—` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | `fill_history` | `not isinstance(rows, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | `_info` | `—` |
