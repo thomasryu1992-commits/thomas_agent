@@ -12,9 +12,9 @@ meters it). This capability has its own opt-in, its own provider id and its own 
 the tests).
 
 **Read-only by construction.** Toss's OAuth scopes are empty (``openapi.json``), so the same client
-opens order APIs. Read-only is therefore enforced here: the feed reaches the token endpoint and four
-reads (accounts, holdings, cash buying power, the exchange rate), by path constants, and has no order
-method.
+opens order APIs. Read-only is therefore enforced here: the feed reaches the token endpoint and five
+reads (accounts, holdings, cash buying power, the exchange rate and, since H6a, the closed-order list),
+by path constants, every one a GET, and has no method that places, modifies or cancels an order.
 
 **What the official docs put on this module** (read 2026-10-07):
 
@@ -90,6 +90,10 @@ ACCOUNTS_PATH = "/api/v1/accounts"
 HOLDINGS_PATH = "/api/v1/holdings"
 BUYING_POWER_PATH = "/api/v1/buying-power"
 EXCHANGE_RATE_PATH = "/api/v1/exchange-rate"
+# H6a (Thomas 2026-10-08, D-H6-3): the closed-order list, for matching cash changes to fills. A GET of
+# orders already placed; the feed has no method that places, modifies or cancels one.
+ORDERS_PATH = "/api/v1/orders"
+ORDERS_PAGE_LIMIT = 100
 ACCOUNT_HEADER = "X-Tossinvest-Account"
 BROKERAGE = "BROKERAGE"
 
@@ -255,6 +259,29 @@ class TossHoldingsFeed:
                               timeout_seconds=timeout_seconds)
 
     # -- the reads -------------------------------------------------------------------------
+
+    def closed_orders(self, *, date_from: str, date_to: str, max_pages: int = 10,
+                      timeout_seconds: int = 10) -> tuple[list[dict[str, Any]], bool]:
+        """Closed orders whose ``orderedAt`` falls in ``date_from``..``date_to`` (KST dates, inclusive),
+        and whether the pages ran out before the list did. The rows carry symbols and amounts: in this
+        process only (H6a; the ledger that uses them is H6b)."""
+        self._resolve_account(timeout_seconds=timeout_seconds)
+        rows: list[dict[str, Any]] = []
+        cursor: str | None = None
+        for _ in range(max_pages):
+            params = {"status": "CLOSED", "from": date_from, "to": date_to, "limit": str(ORDERS_PAGE_LIMIT)}
+            if cursor:
+                params["cursor"] = cursor
+            result = self._get(ORDERS_PATH, params, account=True, what="closed orders",
+                               timeout_seconds=timeout_seconds)
+            orders = result.get("orders") if isinstance(result, dict) else None
+            if not isinstance(orders, list):
+                raise ToolError("MALFORMED_RESULT", "closed orders carried no list")
+            rows.extend(order for order in orders if isinstance(order, dict))
+            cursor = result.get("nextCursor") if result.get("hasNext") else None
+            if not cursor:
+                return rows, False
+        return rows, True
 
     def _resolve_account(self, *, timeout_seconds: int) -> tuple[int, str]:
         if self._account is not None:
