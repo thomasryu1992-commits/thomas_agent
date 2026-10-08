@@ -155,9 +155,11 @@ KEY_ENV_READERS = frozenset({
     _EXEC,
     "runtime/mvp_runtime/crypto/testnet_execution.py",
     "runtime/mvp_runtime/crypto/account.py",
-    # Left this set with H1-b (Thomas 2026-10-08): the readiness board and the holdings wallet read now
-    # read only the dedicated read-only pair (BINANCE_READ_API_KEY/_SECRET), never a trading-key name.
-    # account.py stays: it maps both planes, and its TRADING plane is the write plane's own account read.
+    # The readiness board reads whether the write plane's account pair is SET (`trading_account_credentials`,
+    # H1-b readiness semantics, Thomas 2026-10-08), never its value; its own account read is the READ plane.
+    "runtime/mvp_runtime/crypto/live_readiness.py",
+    # Left this set with H1-b: the holdings wallet read reads only the dedicated read-only pair
+    # (BINANCE_READ_API_KEY/_SECRET), never a trading-key name. account.py stays: it maps both planes.
 })
 
 
