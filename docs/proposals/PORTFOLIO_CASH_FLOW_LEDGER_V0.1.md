@@ -195,6 +195,26 @@
      - 내부 이체가 선물 파일 시각과 지갑 읽기 시각 사이에 있으면 coherence FAIL이다. 이체 내역을 읽지 못해도 FAIL이다.
      - 토스 잔차와 환전 짝은 SHADOW_ONLY로 남는다.
      - 외부 스냅샷에는 건수와 상태만 나간다. unit은 없다.
+   - **H6b-hardening (Thomas 2026-10-09):**
+     - **전환 시각 (Thomas 2026-10-09 정정):** 실행이 정하지 않는다.
+       - 배포 직후 `holdings_board --cash-flow-cutover AT`로 한 번만 기록한다. 상태 파일과 원장의 `cutover_set`
+         줄에 남는다.
+       - 이미 있으면 거부한다. 옮기려면 `--migrate --reason`이 필요하고, `cutover_migrated` 줄에 직전·새 값이 남는다.
+       - 재시작과 재배포는 값을 바꾸지 않는다.
+       - 그 뒤 첫 정상 실행이 `first_verified_fire_at`이다. 첫 shadow 실행(03:33:54Z)은 `shadow_started_at`이다.
+       - cutover 전 사건은 `PRE_CUTOVER`, cutover가 없을 때의 사건은 `NO_CUTOVER`이고, 둘 다 `OBSERVED_ONLY`다.
+       - H6c는 `ELIGIBLE`만 회계에 쓴다.
+     - **중복 의심 처리:** 새 행을 HELD로 두고, 둘을 잇는 `duplicate_linked` 줄을 덧붙인다. `effective_status`가
+       기존 READY 행도 HELD로 본다. 원장 줄은 고치지 않는다.
+     - **금액 비교:** 원문 문자열은 그대로 두고, 비교만 Decimal 정규형으로 한다.
+     - **이체 내역 우선:** 이체 내역 두 개는 NAV coherence가 의존하므로 먼저 읽는다. 다른 내역의 20초 예산과 별개다.
+     - **H6 readiness:** 매 실행 계산한다. 원장 사슬, 전환 시각, 접근, 실제 행 schema, 토스 현금 의미, 중복 규칙,
+       이체 감시, shadow 7일을 본다.
+       - 토스 현금 의미는 자연스러운 매매로 쌓인 증거로 PASS가 된다. 설명된 매수, 설명된 매도, 모든 창이 설명된
+         결제일이 필요하다. 잔차가 남은 매매 창이 있으면 MIXED(FAIL)다.
+       - 준비되면(false→true) 텔레그램이 한 번 간다. 전달된 뒤에만 표시를 남기고, 실패하면 다음 실행에서 다시 보낸다.
+       - 준비가 깨졌다가 다시 갖춰지면 새 epoch이고, 다시 한 번 알린다.
+       - 다음 단계는 자동으로 켜지지 않는다. Thomas 승인이 필요하다.
 3. **H6b-shadow:** unitized NAV를 옆에서만 계산한다. 기존 낙폭 판정은 그대로이고, 외부 성과 판정에는 쓰지 않는다.
 4. **H6c:** 첫 완전 NAV에서 NAV/unit = 100으로 시작하고 unit 회계를 권위로 삼는다. 낙폭은 NAV/unit 고점 대비가 된다.
    `--reset-peak`는 복구 전용으로 내린다.

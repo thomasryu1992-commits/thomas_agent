@@ -113,8 +113,9 @@ def test_a_cross_source_look_alike_is_held_never_merged(tmp_path):
     pay = {"transactionId": "p1", "amount": "100.5", "currency": "USDT", "transactionTime": NOW_MS - 300_000}
     _collect(tmp_path, Feed(crypto_deposit=[DEPOSIT], pay=[pay]))
     rows = {r["source_event_key"]: r for r in cash_flows.verify(tmp_path)}
-    assert set(rows) == {"crypto_deposit:d1", "pay:p1"}
-    assert any(r.get("held_reason") == "possible_duplicate" for r in rows.values())
+    assert set(rows) == {"crypto_deposit:d1", "pay:p1", "link:crypto_deposit:d1|pay:p1"}
+    effective = cash_flows.effective_status(list(rows.values()))
+    assert effective == {"crypto_deposit:d1": "HELD", "pay:p1": "HELD"}
 
 
 @pytest.mark.parametrize("source, row, reason", [
@@ -155,10 +156,14 @@ def test_a_failing_source_keeps_its_cursor_and_the_rest_go_on(tmp_path):
     assert state["crypto_deposit"]["cursor_ms"] == LATER_MS and result["written"] == 1
 
 
-def test_the_read_budget_stops_the_pass_and_keeps_the_cursors(tmp_path):
-    ticks = iter([0.0, 0.0, 100.0] + [100.0] * 50)
-    result = cash_flows.collect_binance(Feed(), tmp_path, now=NOW, now_ms=NOW_MS, clock=lambda: next(ticks))
-    assert result["errors"] and set(result["errors"].values()) == {"READ_BUDGET"}
+def test_the_transfers_are_read_first_and_outside_the_shadow_budget(tmp_path):
+    """They gate coherence (H6b-hardening): a slow day spends the budget on the shadow histories only."""
+    ticks = iter([0.0, 0.0, 0.0] + [100.0] * 50)
+    feed = Feed()
+    result = cash_flows.collect_binance(feed, tmp_path, now=NOW, now_ms=NOW_MS, clock=lambda: next(ticks))
+    assert [s for s, _a, _b in feed.reads] == list(cash_flows.CRITICAL_SOURCES)
+    assert set(result["errors"]) == set(binance_wallet.FLOW_SOURCES) - set(cash_flows.CRITICAL_SOURCES)
+    assert set(result["errors"].values()) == {"READ_BUDGET"}
 
 
 def test_a_broken_chain_refuses_and_writes_nothing(tmp_path):
@@ -227,7 +232,8 @@ def test_nothing_is_applied_and_no_unit_exists(tmp_path):
 
 
 def test_no_door_module_reads_the_ledger():
-    allowed = {ROOT / "runtime" / "mvp_runtime" / "holdings" / n for n in ("cash_flows.py", "store.py")}
+    allowed = ({ROOT / "runtime" / "mvp_runtime" / "holdings" / n for n in ("cash_flows.py", "store.py")}
+               | {ROOT / "scripts" / "holdings_board.py"})      # the terminal's cutover command, not a door
     offenders = []
     for path in [*(ROOT / "runtime").rglob("*.py"), *(ROOT / "scripts").rglob("*.py")]:
         if path in allowed:
@@ -264,3 +270,143 @@ def test_a_transfer_in_the_window_withholds_the_nav_through_combine(tmp_path):
     assert crossed["checks"]["coherence"] == combined.FAIL and crossed["internal_transfer_in_window"] is True
     assert crossed["portfolio_nav_complete"] is False and crossed["drawdown_state"] == combined.STATE_UNKNOWN
     assert fire(None, "c")["checks"]["coherence"] == combined.FAIL                  # transfers unknown
+
+
+# --- H6b-hardening (Thomas 2026-10-09) -------------------------------------------------------------
+
+def test_without_a_cutover_every_event_is_observed_only(tmp_path):
+    _collect(tmp_path, Feed(crypto_deposit=[DEPOSIT]))
+    (row,) = cash_flows.verify(tmp_path)
+    assert row["cutover_phase"] == "NO_CUTOVER" and row["accounting_eligibility"] == "OBSERVED_ONLY"
+    assert not cash_flows.load_state(tmp_path).get("cutover_at")                 # a fire never sets it
+
+
+def test_the_cutover_is_set_once_and_splits_events_by_their_own_time(tmp_path):
+    cash_flows.set_cutover(tmp_path, at=NOW, requested_by="claude", shadow_started_at="2026-10-09T03:33:54Z")
+    before = {**DEPOSIT, "id": "before", "insertTime": NOW_MS - 60_000}
+    after = {**DEPOSIT, "id": "after", "insertTime": NOW_MS + 60_000}
+    _collect(tmp_path, Feed(crypto_deposit=[before, after]), now=LATER, now_ms=LATER_MS)
+    rows = {r["source_event_key"]: r for r in cash_flows.verify(tmp_path)}
+    assert rows["cutover_set:" + NOW]["cutover_at"] == NOW
+    assert rows["crypto_deposit:before"]["accounting_eligibility"] == "OBSERVED_ONLY"
+    assert rows["crypto_deposit:after"]["cutover_phase"] == "POST_CUTOVER"
+    assert rows["crypto_deposit:after"]["accounting_eligibility"] == "ELIGIBLE"
+    state = cash_flows.load_state(tmp_path)
+    assert state["first_verified_fire_at"] == LATER and state["shadow_started_at"] == "2026-10-09T03:33:54Z"
+    _collect(tmp_path, Feed(), now="2026-10-09T05:00:00Z", now_ms=LATER_MS + 3_600_000)   # a restart, a redeploy
+    assert cash_flows.load_state(tmp_path)["cutover_at"] == NOW
+
+
+def test_moving_the_cutover_is_a_migration_with_a_reason(tmp_path):
+    cash_flows.set_cutover(tmp_path, at=NOW, requested_by="claude")
+    with pytest.raises(ToolError) as exc:
+        cash_flows.set_cutover(tmp_path, at=LATER, requested_by="claude")
+    assert exc.value.reason_code == cash_flows.CUTOVER_REFUSED
+    with pytest.raises(ToolError):
+        cash_flows.set_cutover(tmp_path, at=LATER, requested_by="thomas", migrate=True)
+    cash_flows.set_cutover(tmp_path, at=LATER, requested_by="thomas", migrate=True, reason="ledger repair")
+    last = cash_flows.verify(tmp_path)[-1]
+    assert last["event"] == "cutover_migrated" and last["previous_cutover_at"] == NOW
+    assert last["reason"] == "ledger repair" and cash_flows.load_state(tmp_path)["cutover_at"] == LATER
+
+
+def test_a_look_alike_holds_the_older_ready_event_too(tmp_path):
+    _collect(tmp_path, Feed(crypto_deposit=[DEPOSIT]))
+    (first,) = cash_flows.verify(tmp_path)
+    assert first["accounting_status"] == "READY"
+    pay = {"transactionId": "p9", "amount": "100.50000000", "currency": "USDT", "transactionTime": NOW_MS - 300_000}
+    _collect(tmp_path, Feed(pay=[pay]), now=LATER, now_ms=LATER_MS)
+    rows = cash_flows.verify(tmp_path)
+    assert rows[0] == first                                                  # never edited
+    assert cash_flows.effective_status(rows)["crypto_deposit:d1"] == "HELD"  # but held by the link line
+    assert cash_flows.summary(tmp_path)["held"] == 2
+
+
+def test_amounts_compare_as_numbers():
+    assert cash_flows._canon("1") == cash_flows._canon("1.00000000") == cash_flows._canon("1.0")
+    assert cash_flows._canon("1.1") != cash_flows._canon("1.01")
+
+
+def _toss_window(tmp_path, *, side, residual_krw=0):
+    cash_flows.collect_toss(Toss(), _snap(1_000_000, 0.0), tmp_path, now=NOW)
+    sign = -1 if side == "BUY" else 1
+    fill = {"side": side, "currency": "KRW", "execution": {"filledAmount": "100000", "commission": "0", "tax": "0",
+                                                           "filledAt": "2026-10-09T03:30:00Z"}}
+    cash_flows.collect_toss(Toss([fill]), _snap(1_000_000 + sign * 100_000 + residual_krw, 0.0), tmp_path, now=LATER)
+    return cash_flows.load_state(tmp_path)["toss_evidence"]
+
+
+def test_an_explained_fill_is_toss_evidence(tmp_path):
+    assert _toss_window(tmp_path, side="BUY")["buy_explained"] == 1
+
+
+def test_a_fill_that_leaves_a_residual_makes_the_toss_semantics_mixed(tmp_path):
+    evidence = _toss_window(tmp_path, side="SELL", residual_krw=5_000)
+    assert evidence["activity_unexplained"] == 1
+    state, _why = cash_flows.toss_semantics(cash_flows.load_state(tmp_path), today_kst="2026-10-10")
+    assert state == "MIXED"
+
+
+def test_readiness_waits_and_enables_nothing(tmp_path):
+    _collect(tmp_path, Feed())
+    ready = cash_flows.readiness(tmp_path, now=LATER)
+    assert ready["ready"] is False
+    assert ready["checks"]["binance_real_schema"] == "WAITING" and ready["checks"]["toss_cash_semantics"] == "WAITING"
+    assert ready["checks"]["shadow_observation"] == "RUNNING" and ready["checks"]["internal_transfer_guard"] == "PASS"
+
+
+def test_readiness_is_ready_only_when_every_piece_is_in(tmp_path):
+    cash_flows.set_cutover(tmp_path, at=NOW, requested_by="claude")
+    _collect(tmp_path, Feed(crypto_deposit=[DEPOSIT]))
+    state = cash_flows.load_state(tmp_path)
+    state["toss_evidence"] = {"buy_explained": 1, "sell_explained": 1, "activity_unexplained": 0,
+                              "settlement_days": {"2026-10-10": {"windows": 20, "unexplained": 0}}}
+    cash_flows._save_state(tmp_path, state)
+    assert cash_flows.readiness(tmp_path, now="2026-10-12T00:00:00Z")["ready"] is False   # 3 days of shadow
+    ready = cash_flows.readiness(tmp_path, now="2026-10-17T00:00:00Z")
+    assert ready["ready"] is True and set(ready["checks"].values()) == {"PASS"}
+
+
+def test_readiness_tells_once_per_epoch_and_again_after_it_breaks(tmp_path, monkeypatch):
+    sequence = iter([True, True, False, True])
+    monkeypatch.setattr(cash_flows, "readiness",
+                        lambda _d, *, now: {"ready": next(sequence), "checks": {}, "shadow_days": 7, "toss_note": "",
+                                            "next_step": "x"})
+    first = cash_flows.update_readiness(tmp_path, now=NOW)
+    assert first["ready"] and first["epoch"] == 1 and not first["told"]
+    cash_flows.mark_readiness_told(tmp_path, now=NOW)
+    assert cash_flows.update_readiness(tmp_path, now=NOW)["told"] is True          # still ready: not again
+    assert cash_flows.update_readiness(tmp_path, now=NOW)["ready"] is False        # it broke
+    again = cash_flows.update_readiness(tmp_path, now=NOW)
+    assert again["ready"] and again["epoch"] == 2 and not again["told"]           # back: told again
+
+
+def test_a_failed_transfer_read_fails_this_fires_coherence(monkeypatch, tmp_path):
+    """Through the store: the transfers are unknown, so the fire cannot rule out double counting."""
+    from runtime.mvp_runtime.holdings import store
+    from runtime.mvp_runtime.holdings.model import HoldingsSnapshot, MarketTotals
+
+    futures = tmp_path / combined.BINANCE_SNAPSHOT_REL
+    futures.parent.mkdir(parents=True, exist_ok=True)
+    futures.write_text(json.dumps({"record_type": combined.BINANCE_RECORD_TYPE, "configured": True, "asset": "USDT",
+                                   "margin_balance": 100.0, "as_of": NOW}), encoding="utf-8")
+    zero = {name: 0.0 for name in binance_wallet.CLASSES}
+    wallet = binance_wallet.WalletSnapshot(spot_usdt=zero, earn_usdt=dict(zero), unpriced_assets=0,
+                                           collected_at=NOW, latency_ms=0)
+    toss = HoldingsSnapshot(account="****", broker="toss",
+                            domestic=MarketTotals(market="domestic", holdings_value_krw=0.0, unrealized_pnl_krw=0.0,
+                                                  cash_krw=1_000_000.0),
+                            overseas=MarketTotals(market="overseas", holdings_value_krw=0.0, unrealized_pnl_krw=0.0,
+                                                  cash_krw=0.0),
+                            holdings=(), collected_at=NOW, latency_ms=1, usd_krw_rate=1400.0)
+    monkeypatch.setattr(store, "read_holdings", lambda **_: (toss, None))
+    monkeypatch.setattr(store, "_feed", lambda: None)
+    monkeypatch.setattr(binance_wallet, "read_wallet", lambda **_: (wallet, None))
+    capable = binance_wallet.BinanceWalletFeed()
+    failing = Feed(transfer_futures_to_spot=ToolError("TOOL_TRANSPORT", "x"))
+    monkeypatch.setattr(capable, "flow_history", failing.flow_history)
+    monkeypatch.setattr(binance_wallet, "select_wallet_feed", lambda: capable)
+    store.refresh(now=NOW, root=tmp_path)
+    block = json.loads(store.snapshot_path(tmp_path).read_text(encoding="utf-8"))["combined"]
+    assert block["checks"]["coherence"] == "FAIL" and block["internal_transfer_in_window"] is True
+    assert block["portfolio_nav_complete"] is False

@@ -8,6 +8,7 @@
     python -m scripts.holdings_board --unclassified                 # wallet assets no class places (terminal only)
     python -m scripts.holdings_board --classify binance:SOL=coin    # Thomas's entry (H5a), as the service user
     python -m scripts.holdings_board --unclassify binance:SOL
+    python -m scripts.holdings_board --cash-flow-cutover 2026-10-09T04:30:00Z   # once, at H6b activation
 
 Read-only. It places nothing and has no flag that would let it.
 
@@ -38,6 +39,11 @@ removes them; each moves ``mapping_version`` once, and the next ``holdings_refre
 write governed state, so they run as the service user (``docker exec -u 10001 thomas-scheduler-maint
 ...``) and refuse a host-side root run. The ids are holdings: these commands are Thomas's, on his
 terminal. Claude does not run them and does not see their output.
+
+**``--cash-flow-cutover AT``** (H6b-hardening, Thomas 2026-10-09) records the cash-flow ledger's accounting
+boundary once, at activation: events before it are observed only. A second call is refused; moving it
+needs ``--migrate --reason TEXT`` and writes a ``cutover_migrated`` line. Service user only, like the
+other writes. It names no holding, so Claude may run it at a deploy.
 
 **``--reset-peak --reason TEXT``** (P2; reason required since H5b, Thomas 2026-10-08) logs the request
 with the peak it forgets in the host-local baseline log (``holdings/baseline_log.py``), then forgets the
@@ -92,6 +98,9 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--classify", nargs="+", metavar="ID=CLASS",
                       help="add or change classification entries (Thomas, as the service user)")
     mode.add_argument("--unclassify", nargs="+", metavar="ID", help="remove classification entries")
+    mode.add_argument("--cash-flow-cutover", metavar="AT", help="record the cash-flow ledger's boundary (once)")
+    parser.add_argument("--migrate", action="store_true", help="move an existing cutover (--cash-flow-cutover)")
+    parser.add_argument("--shadow-started", metavar="AT", help="when the shadow ledger first ran (recorded once)")
     parser.add_argument("--reason", help="why the peak is reset (--reset-peak; required, logged)")
     parser.add_argument("--by", default="thomas", help="who asks for the reset (--reset-peak; logged)")
     parser.add_argument("--timeout", type=int, default=10, help="seconds per request (--full)")
@@ -116,6 +125,19 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.unclassified:
         return _unclassified()
+
+    if args.cash_flow_cutover:
+        from runtime.mvp_runtime.holdings import cash_flows
+        try:
+            assert_not_foreign_root_run()
+            state = cash_flows.set_cutover(state_dir(), at=args.cash_flow_cutover, requested_by=args.by,
+                                           reason=args.reason, migrate=args.migrate,
+                                           shadow_started_at=args.shadow_started)
+        except MvpRuntimeError as exc:
+            print(f"refused ({exc.reason_code}): {exc}")
+            return EXIT_BLOCKED
+        print(f"cash-flow cutover: {state['cutover_at']} (shadow started {state.get('shadow_started_at')})")
+        return EXIT_OK
 
     if args.reset_peak:
         try:

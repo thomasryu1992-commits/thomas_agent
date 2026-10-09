@@ -955,3 +955,32 @@ def test_a_stored_block_renders_in_the_decided_order(monkeypatch, gate_open, tmp
     bands_line = next(line for line in text.splitlines() if line.startswith("bands"))
     positions = [bands_line.index(f" {group} ") for group in allocation.BAND_GROUPS]
     assert positions == sorted(positions)
+
+
+def test_h6_readiness_is_told_once_and_only_after_delivery(monkeypatch, gate_open, tmp_path, clean_wallet):
+    """H6b-hardening (Thomas 2026-10-09): when the evidence first suffices, one message; an undelivered
+    one is offered again; a delivered one is never repeated. It enables nothing."""
+    from runtime.mvp_runtime.errors import OperatorBlocked
+    from runtime.mvp_runtime.holdings import cash_flows
+
+    _binance_file(tmp_path, margin=100.0, monkeypatch=monkeypatch)
+    _toss(monkeypatch)
+
+    def fake_readiness(state_dir, *, now):
+        told = bool(cash_flows.load_state(state_dir).get("readiness_told_at"))
+        return {"checks": {"ledger_chain": "PASS"}, "ready": True, "shadow_days": 7.0, "toss_note": "ok",
+                "next_step": "H6b-shadow", "told": told}
+
+    monkeypatch.setattr(cash_flows, "readiness", fake_readiness)
+    monkeypatch.setattr(operator_mod, "select_operator_channel", lambda **_kw: "channel")
+
+    def down(channel, text, **_kw):
+        raise OperatorBlocked("CHANNEL_DOWN", "down")
+
+    monkeypatch.setattr(operator_mod, "notify_operator", down)
+    assert _fire(tmp_path).endswith("h6 readiness not sent:CHANNEL_DOWN")
+    sent = []
+    monkeypatch.setattr(operator_mod, "notify_operator", lambda channel, text, **_kw: sent.append(text))
+    assert _fire(tmp_path).endswith("h6 readiness told")
+    assert len(sent) == 1 and "H6 준비 완료" in sent[0] and "자동으로 켜지지 않습니다" in sent[0]
+    assert "h6 readiness" not in _fire(tmp_path) and len(sent) == 1
