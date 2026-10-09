@@ -24,11 +24,18 @@
 #       a restored file not listed and not newer than t0 → deleted before that backup — removed again
 #     Size and mtime, not checksums: a same-second rewrite to the same size would pass. The
 #     transcripts are append-only logs, so that case is not expected.
+#   - Content. The core assets (the prompt collector's state and the per-project memory) carry a sha256
+#     in the manifest (2026-10-09 final review). Each restored one is hashed and compared; a copy that
+#     changed while the backup ran (newer mtime) is skipped, not failed. A mismatch → BROKEN, exit 8.
+#     The conversation logs are not hashed (GBs a day): for them size + mtime + the chain is the proof.
 #   - Archives from before the chain headers (2026-10-09 08:20 and earlier) restore, but the run ends
 #     with exit 7 (restored, not verifiable) unless a later failure says more.
+# Verdicts (exit 0 for both verified ones, so existing callers keep working):
+#   CONTENT_VERIFIED  chain walked, tail ok if asked, nothing missing or stale, every core-asset hash matched
+#   CHAIN_VERIFIED    the same, but no core-asset hash to check (none in scope or a manifest without them)
 # Exit: 0 verified · 2 no usable full · 3 decrypt/decompress/untar failed · 4 missing · 5 chain broken ·
-#       6 stale · 7 restored but not verifiable · 64 usage. With several problems the first in this
-#       order wins: 3, 5, 6, 4, 7.
+#       6 stale · 7 restored but not verifiable · 8 core-asset content mismatch · 64 usage. With several
+#       problems the first in this order wins: 3, 5, 8, 6, 4, 7.
 set -u
 AGE="${AGE_BIN:-age}"
 [ $# -ge 2 ] || { echo "usage: $0 <archive-dir> <target-dir> [--until S] [--identity K] [--set transcripts|trialzst] [--expect-head S]" >&2; exit 64; }
@@ -107,7 +114,7 @@ if [ -n "$HEAD_WANT" ]; then
 fi
 
 MANIFEST="$TARGET/TRANSCRIPTS_MANIFEST.txt"
-DELETED=0; MISSING=0; STALE=0; CHANGED=0
+DELETED=0; MISSING=0; STALE=0; CHANGED=0; HASH_OK=0; HASH_BAD=0; HASH_SKIP=0
 if [ -f "$MANIFEST" ]; then
   T0=$(header t0)
   TZ=UTC touch -t "$T0" "$TARGET/.t0"
@@ -117,22 +124,27 @@ if [ -f "$MANIFEST" ]; then
   while IFS= read -r f; do
     rm -f "$TARGET/$f" && DELETED=$((DELETED + 1))
   done < "$TARGET/.gone"
-  COUNTS=$(grep -v '^#' "$MANIFEST" | T="$TARGET" perl -ne '
-      chomp; my ($p, $s, $m) = split /\t/;
+  COUNTS=$(grep -v '^#' "$MANIFEST" | T="$TARGET" perl -MDigest::SHA -ne '
+      chomp; my ($p, $s, $m, $h) = split /\t/;
       my @st = stat("$ENV{T}/$p");
-      if (!@st) { $miss++ } elsif (defined $m && $st[9] < $m) { $stale++ } elsif (defined $m && $st[9] > $m) { $chg++ }
-      END { printf "%d %d %d\n", $miss, $stale, $chg }')
+      if (!@st) { $miss++; next }
+      if (defined $m && $st[9] < $m) { $stale++ } elsif (defined $m && $st[9] > $m) { $chg++; $hskip++ if $h; next }
+      if ($h) { my $got = Digest::SHA->new(256)->addfile("$ENV{T}/$p")->hexdigest; if ($got eq $h) { $hok++ } else { $hbad++ } }
+      END { printf "%d %d %d %d %d %d\n", $miss, $stale, $chg, $hok, $hbad, $hskip }')
   MISSING=$(echo "$COUNTS" | cut -d' ' -f1); STALE=$(echo "$COUNTS" | cut -d' ' -f2); CHANGED=$(echo "$COUNTS" | cut -d' ' -f3)
+  HASH_OK=$(echo "$COUNTS" | cut -d' ' -f4); HASH_BAD=$(echo "$COUNTS" | cut -d' ' -f5); HASH_SKIP=$(echo "$COUNTS" | cut -d' ' -f6)
   rm -f "$TARGET/.t0" "$TARGET/.listed" "$TARGET/.old" "$TARGET/.gone"
 else
   LEGACY=1
 fi
 
 if [ -n "$BROKEN" ]; then STATUS=BROKEN; CODE=5
+elif [ "$HASH_BAD" -gt 0 ]; then STATUS=BROKEN; CODE=8; BROKEN="content: $HASH_BAD core-asset file(s) do not match their sha256"
 elif [ "$STALE" -gt 0 ]; then STATUS=STALE; CODE=6
 elif [ "$MISSING" -gt 0 ]; then STATUS=INCOMPLETE; CODE=4
 elif [ "$LEGACY" -eq 1 ]; then STATUS=UNVERIFIED; CODE=7
-else STATUS=VERIFIED; CODE=0
+elif [ "$HASH_OK" -gt 0 ]; then STATUS=CONTENT_VERIFIED; CODE=0
+else STATUS=CHAIN_VERIFIED; CODE=0
 fi
-echo "$STATUS set=$SET until=$UNTIL full=$FULL_STAMP archives=$APPLIED skipped-older-incs=$SKIPPED last=$LAST $HEAD_NOTE deleted=$DELETED missing=$MISSING stale=$STALE changed-during-backup=$CHANGED${BROKEN:+ chain: $BROKEN}"
+echo "$STATUS set=$SET until=$UNTIL full=$FULL_STAMP archives=$APPLIED skipped-older-incs=$SKIPPED last=$LAST $HEAD_NOTE deleted=$DELETED missing=$MISSING stale=$STALE changed-during-backup=$CHANGED core-hash=ok:$HASH_OK,bad:$HASH_BAD,skipped:$HASH_SKIP${BROKEN:+ ($BROKEN)}"
 exit $CODE
