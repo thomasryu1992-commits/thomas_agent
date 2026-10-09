@@ -190,7 +190,13 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
         flows_note = flows_note or f"toss {type(exc).__name__}"
     try:
         flows = cash_flows.summary(state_dir(root))
-        ready = cash_flows.update_readiness(state_dir(root), now=now)
+        # H6d-min §11: readiness judges this fire's health, never a past PASS — every history read, the
+        # Toss pass ended, and the combined NAV's own freshness and coherence held.
+        nav_checks = (block or {}).get("checks") or {}
+        current = {"binance": binance_ok, "toss": toss_ok,
+                   "freshness": nav_checks.get(combined.CHECK_FRESHNESS) == combined.PASS,
+                   "coherence": nav_checks.get(combined.CHECK_COHERENCE) == combined.PASS}
+        ready = cash_flows.update_readiness(state_dir(root), now=now, current=current)
         flows["readiness"] = {key: ready[key] for key in ("checks", "ready", "shadow_days", "shadow_success_dates",
                                                           "exceptions", "next_step")}
         body["cash_flows"] = flows
@@ -201,10 +207,12 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
                 f"{ready['shadow_success_dates']}일, 미해소 예외 0건. 다음 단계: {ready['next_step']}. "
                 "자동으로 켜지지 않습니다. 진행하려면 승인해 주세요.")
         if ready["exceptions_untold"]:
-            # Counts only: which event, what asset and how much stay in the local ledger.
-            exception_alert = (ready["exceptions"], (
-                f"[보유 자산] H6 예외 {ready['exceptions']}건 — cutover 이후 설명되지 않은 입출금이 있어 "
-                f"{cash_flows.READY_NAME}가 막혀 있습니다. 해소 도구는 아직 없으며 다음 단계로 남아 있습니다."))
+            # Counts only: which event, what asset and how much stay in the local ledger. The token names
+            # the set this message covers; the scheduler hands it back once the message was delivered.
+            exception_alert = (ready["exceptions_token"], (
+                f"[보유 자산] H6 예외 {ready['exceptions']}건(새 {ready['exceptions_new']}건) — cutover 이후 "
+                f"설명되지 않은 입출금이 있어 {cash_flows.READY_NAME}가 막혀 있습니다. Thomas 터미널에서 "
+                "확인(--flows) 후 해소(--resolve)할 수 있습니다."))
         if binance_ok and toss_ok:
             # Last, so only a fire whose histories, ledger, Toss pass and readiness all ended counts.
             cash_flows.mark_fire_verified(state_dir(root), now=now)
@@ -239,9 +247,10 @@ def mark_readiness_told(*, now: str, root: Path | None = None) -> None:
     cash_flows.mark_readiness_told(state_dir(root), now=now)
 
 
-def mark_exceptions_told(count: int, *, now: str, root: Path | None = None) -> None:
-    """Record that Thomas was told of ``count`` H6 exceptions — only after the message was delivered."""
-    cash_flows.mark_exceptions_told(state_dir(root), count=count, now=now)
+def mark_exceptions_told(token: str | None, *, now: str, root: Path | None = None) -> None:
+    """Record that Thomas was told of the H6 exceptions ``token`` names — only after delivery (H6d-min:
+    by exception, so one found while the message was in flight is still told)."""
+    cash_flows.mark_exceptions_told(state_dir(root), token=token, now=now)
 
 
 def mark_told(state: str, *, now: str, root: Path | None = None) -> None:

@@ -966,7 +966,7 @@ def test_h6_readiness_is_told_once_and_only_after_delivery(monkeypatch, gate_ope
     _binance_file(tmp_path, margin=100.0, monkeypatch=monkeypatch)
     _toss(monkeypatch)
 
-    def fake_readiness(state_dir, *, now):
+    def fake_readiness(state_dir, *, now, current=None):
         told = bool(cash_flows.load_state(state_dir).get("readiness_told_at"))
         return {"checks": {"ledger_chain": "PASS"}, "ready": True, "shadow_days": 7.0, "toss_note": "ok",
                 "shadow_success_dates": 7, "exceptions": 0, "next_step": "H6b-shadow", "told": told}
