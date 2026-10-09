@@ -141,15 +141,22 @@ transcripts_run() {  # mode set ext compressor selection
   local t0
   t0=$(date -u +%Y%m%d%H%M.%S)
   (cd "$HOST_ROOT" && select_files "$sel") | LC_ALL=C sort -u > "$mfdir/files.txt"
-  { printf '# t0=%s\n# set=%s\n# kind=%s\n# stamp=%s\n# chain=%s\n# prev=%s\n' "$t0" "$set" "$kind" "$STAMP" "$chain" "$prev"
-    (cd "$HOST_ROOT" && tr '\n' '\0' < "$mfdir/files.txt" | xargs -0 -r stat -c $'%n\t%s\t%Y' 2>/dev/null)
+  # Core assets — the prompt collector's state and the per-project memory, ~15 MB — also get a sha256
+  # (4th column), so a restore can prove their content, not only their size and mtime. The
+  # conversation logs themselves (GBs) are not hashed: size + mtime + the chain stand for them.
+  (cd "$HOST_ROOT" && grep -E '^\.claude/prompt-collector/|^\.claude/projects/[^/]+/memory/' "$mfdir/files.txt" \
+     | tr '\n' '\0' | xargs -0 -r sha256sum 2>/dev/null | sed -E 's/^([0-9a-f]{64})  (.*)$/\2\t\1/') > "$mfdir/hashes.tsv"
+  { printf '# t0=%s\n# set=%s\n# kind=%s\n# stamp=%s\n# chain=%s\n# prev=%s\n# hashed=collector-state,memory\n' \
+        "$t0" "$set" "$kind" "$STAMP" "$chain" "$prev"
+    (cd "$HOST_ROOT" && tr '\n' '\0' < "$mfdir/files.txt" | xargs -0 -r stat -c $'%n\t%s\t%Y' 2>/dev/null) \
+      | awk -F'\t' 'NR == FNR { h[$1] = $2; next } { print $0 (($1 in h) ? "\t" h[$1] : "") }' "$mfdir/hashes.tsv" -
   } > "$mfdir/TRANSCRIPTS_MANIFEST.txt"
   # no-file-unchanged: an inc otherwise prints "file is unchanged; not dumped" once per skipped file.
   tar cvf - --index-file="$index" --warning=no-file-changed --warning=no-file-unchanged "${newer[@]}" \
       -C "$HOST_ROOT" -T "$mfdir/files.txt" -C "$mfdir" TRANSCRIPTS_MANIFEST.txt \
     | $comp | "$AGE" -R "$RECIPIENTS" -o "$part"
   local pipe=("${PIPESTATUS[@]}")
-  rm -f "$mfdir/TRANSCRIPTS_MANIFEST.txt" "$mfdir/files.txt"
+  rm -f "$mfdir/TRANSCRIPTS_MANIFEST.txt" "$mfdir/files.txt" "$mfdir/hashes.tsv"
   rmdir "$mfdir" 2>/dev/null
   # A session being written while tar reads it makes tar exit 1 (file changed as we read it);
   # that copy is a valid snapshot of the lines written so far. Only 2 and above is a failure.

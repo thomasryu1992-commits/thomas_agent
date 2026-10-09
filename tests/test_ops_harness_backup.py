@@ -495,7 +495,8 @@ def test_a_complete_chain_with_the_logged_head_is_verified(tmp_path):
     _chain_of_three(tmp_path)
     out = _restore(tmp_path, tmp_path / "t", "--expect-head", "20261004-0755")
     assert out.returncode == 0, out.stdout + out.stderr
-    assert out.stdout.startswith("VERIFIED") and "tail=ok" in out.stdout and "missing=0 stale=0" in out.stdout
+    assert out.stdout.startswith("CONTENT_VERIFIED") and "tail=ok" in out.stdout and "missing=0 stale=0" in out.stdout
+    assert "core-hash=ok:1,bad:0" in out.stdout                     # the collector's state.json
 
 
 def test_a_missing_middle_inc_is_refused_even_though_every_file_is_present(tmp_path):
@@ -599,7 +600,7 @@ def test_the_trial_keeps_only_human_sessions_compressed_with_zstd_and_restores(t
     assert " OK mode=transcripts-trial kind=full " in log and " sel=human " in log
     assert not list(dest.glob("govstate-transcripts-*"))                             # the real set is untouched
     r = _restore(tmp_path, tmp_path / "t", "--set", "trialzst", "--expect-head", "20261009-0805")
-    assert r.returncode == 0 and r.stdout.startswith("VERIFIED set=trialzst"), r.stdout + r.stderr
+    assert r.returncode == 0 and r.stdout.startswith("CONTENT_VERIFIED set=trialzst"), r.stdout + r.stderr
 
 
 def test_the_trial_is_skipped_not_failed_when_the_disk_is_short(tmp_path):
@@ -607,3 +608,48 @@ def test_the_trial_is_skipped_not_failed_when_the_disk_is_short(tmp_path):
     assert out.returncode == 0
     assert "SKIPPED mode=transcripts-trial reason=disk" in log
     assert not list(dest.glob("govstate-trialzst-*"))
+
+
+
+# Core-asset content (2026-10-09 final review): the collector state and memory carry a sha256.
+
+def test_only_core_assets_carry_a_sha256_in_the_manifest(tmp_path):
+    host = _human_and_headless(tmp_path)
+    _backup(tmp_path, host, "20261009-0100", full=True)
+    (archive,) = (tmp_path / "dest").glob("govstate-transcripts-full-*")
+    with tarfile.open(fileobj=io.BytesIO(gzip.decompress(archive.read_bytes()[len(HEADER):]))) as tar:
+        body = tar.extractfile("TRANSCRIPTS_MANIFEST.txt").read().decode()
+    rows = {l.split("\t")[0]: l.split("\t") for l in body.splitlines() if not l.startswith("#")}
+    assert "# hashed=collector-state,memory" in body
+    assert len(rows[".claude/prompt-collector/state.json"]) == 4 and len(rows[".claude/prompt-collector/state.json"][3]) == 64
+    assert len(rows[".claude/projects/-root-thomas-agent/memory/MEMORY.md"]) == 4
+    assert len(rows[".claude/projects/-root-thomas-agent/human.jsonl"]) == 3          # conversation logs: no hash
+
+
+def test_a_core_asset_whose_content_does_not_match_is_broken_not_verified(tmp_path):
+    host = _transcripts_host(tmp_path)
+    _backup(tmp_path, host, "20261001-0755", full=True)
+    full = next((tmp_path / "dest").glob("govstate-transcripts-full-*"))
+    _edit_manifest(full, lambda body: "\n".join(
+        (l.rsplit("\t", 1)[0] + "\t" + "0" * 64) if l.startswith(".claude/prompt-collector/state.json\t") else l
+        for l in body.splitlines()) + "\n")
+    out = _restore(tmp_path, tmp_path / "t")
+    assert out.returncode == 8 and out.stdout.startswith("BROKEN") and "core-hash=ok:0,bad:1" in out.stdout
+
+
+def test_without_core_assets_the_verdict_is_chain_verified(tmp_path):
+    host = _transcripts_host(tmp_path, collector=False)
+    _backup(tmp_path, host, "20261001-0755", full=True)
+    out = _restore(tmp_path, tmp_path / "t")
+    assert out.returncode == 0 and out.stdout.startswith("CHAIN_VERIFIED") and "core-hash=ok:0,bad:0" in out.stdout
+
+
+def test_a_core_asset_that_changed_during_the_backup_is_skipped_not_failed(tmp_path):
+    host = _transcripts_host(tmp_path)
+    _backup(tmp_path, host, "20261001-0755", full=True)
+    full = next((tmp_path / "dest").glob("govstate-transcripts-full-*"))
+    _edit_manifest(full, lambda body: "\n".join(       # the line predates the copy, and its hash is of an older content
+        (".claude/prompt-collector/state.json\t2\t1000000000\t" + "0" * 64) if l.startswith(".claude/prompt-collector/state.json\t") else l
+        for l in body.splitlines()) + "\n")
+    out = _restore(tmp_path, tmp_path / "t")
+    assert out.returncode == 0 and "core-hash=ok:0,bad:0,skipped:1" in out.stdout and "changed-during-backup=1" in out.stdout
