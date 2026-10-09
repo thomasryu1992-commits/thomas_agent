@@ -201,32 +201,52 @@ pull fetches them through the same `govstate-*` glob. The members are `.claude/p
 `.jsonl`, subagents and the per-project memory) and `.claude/prompt-collector` (the prompt collector's
 local state and review queue) when it exists. Member paths are relative to `/root`.
 
-Restore on the Mac with `scripts/ops/restore_transcripts.sh`, then copy back. Do not apply the archives
-by hand: the order matters.
+Restore on the Mac with `scripts/ops/restore_transcripts.sh`, then copy back. Do not apply archives by hand.
 
-1. Choose the point to restore to (`--until YYYYmmdd-HHMM`; default: the newest archive).
-2. The script takes the newest **full** at or before that point,
-3. restores it,
-4. then applies only the **incs after that full** (and at or before the point), oldest first. An inc
-   older than the chosen full is skipped: applied after the full it would put older copies over newer
-   ones. The first version of this section did exactly that (corrected 2026-10-09).
-5. Last, it checks against the final archive's `TRANSCRIPTS_MANIFEST.txt`:
-   - a restored file that the manifest does not list, and that is not newer than its `# t0=`, was
-     deleted before that backup, so it is removed again (an inc carries no deletions);
-   - every file the manifest lists must exist in the target.
+1. **Point.** Choose it with `--until YYYYmmdd-HHMM`; the default is the newest archive. The script then:
+   - takes the newest **full** at or before the point,
+   - applies only the **incs after that full**, oldest first. An older inc is skipped: it would put older
+     copies over newer ones.
+2. **Chain.** Each archive's `TRANSCRIPTS_MANIFEST.txt` names its full (`# chain=`) and the archive before
+   it (`# prev=`, since 2026-10-09 09:xx). A missing middle inc or an out-of-order set → **BROKEN, exit 5**,
+   even when every file is present.
+3. **Tail.** The archives cannot show that a newer inc exists and did not reach the Mac. Pass the newest
+   stamp the host logged as `--expect-head`. Without it the summary says `tail=unchecked`.
+4. **Files.** The final manifest has a size and mtime for every file.
+   - A listed file that is absent → **INCOMPLETE, exit 4**.
+   - A restored copy older than its line → **STALE, exit 6**.
+   - A copy newer than its line changed while the backup ran. It is counted, not failed.
+   - A restored file the manifest does not list, and not newer than its `t0`, was deleted before that
+     backup. It is removed again.
+   - Size and mtime only, not checksums.
+5. **Legacy archives.** Archives without the chain headers (2026-10-09 08:20 and earlier) still restore.
+   The run ends **UNVERIFIED, exit 7**.
 
-   Exit codes: 0 restored and complete, 2 no usable full, 3 decrypt or untar failed, 4 the manifest lists
-   files the archives did not carry. Archives from before the manifest (2026-10-09 07:32 and earlier)
-   restore without step 5's deletion and integrity check, and the summary line says so.
+Exit 0 (**VERIFIED**) means: the chain walked, the tail matched `--expect-head`, nothing was missing or stale.
 
 ```bash
-# on the Mac (the script is plain bash 3.2; fetch it from the repository)
+# on the host: the newest stamp to expect
+grep ' mode=transcripts ' /root/backups/governance-state/backup.log | tail -1     # …-inc-<stamp>.tar.gz.age
+# on the Mac (plain bash 3.2; fetch the script from the repository)
 curl -fsSLO https://raw.githubusercontent.com/thomasryu1992-commits/thomas_agent/main/scripts/ops/restore_transcripts.sh
-bash restore_transcripts.sh ~/Backups/thomas-govstate ~/restore-transcripts            # newest point
+bash restore_transcripts.sh ~/Backups/thomas-govstate ~/restore-transcripts --expect-head <stamp>
 bash restore_transcripts.sh ~/Backups/thomas-govstate ~/restore-20261008 --until 20261008-2359
-# → restored until=… full=… archives=N skipped-older-incs=M deleted=D missing=0
+# → VERIFIED set=transcripts … full=… archives=N … tail=ok deleted=D missing=0 stale=0 changed-during-backup=C
 # then rsync ~/restore-transcripts/.claude/ to root@host:/root/.claude/ (no sessions running)
 ```
+
+**The trial set.** `transcripts-trial` runs daily at 08:05Z, in parallel and approved for trial only
+(Thomas 2026-10-09).
+- **Contents.** Only sessions a person wrote in, plus their subagents and tool-result files, the memory
+  and the collector state.
+- **Format.** zstd -3 + age, `govstate-trialzst-{full,inc}-<stamp>.tar.zst.age`, with the same chain and
+  manifest.
+- **Disk.** Skipped (`SKIPPED … reason=disk`) under 10 GB free.
+- **Restore.** Needs `zstd` on the Mac (`brew install zstd`) and `--set trialzst`.
+- **Mac pull.** The Mac fetches the trial files only once its pull script includes `govstate-*.tar.zst.age`
+  (vault `ops/mac-backup-pull/pull-govstate-backup.sh`, 2026-10-09).
+- **Status.** The real `transcripts` run, the watch and core are unchanged. Switching to it, deleting the
+  old set and changing retention all wait for Thomas.
 
 Only the member list can be checked on the host side. The run logs `files=<n>` from tar's own index,
 and the backup watch (§3, checks 7 and 8) reads the log line, not the archive.
@@ -338,7 +358,7 @@ docker inspect hermes --format '{{.State.Health.Status}} {{json .Config.Healthch
 docker exec hermes sh -c 'ps -o args | grep shutdownd' | grep -o '\-g [0-9]*'        # -g 25000
 grep restart_drain_timeout /root/hermes-trial/data/config.yaml
 tail -1 /root/hermes-trial/data/logs/container-boot.log | grep -o 'prior_exit=[a-z]*' # clean after any stop
-crontab -l | grep backups/                            # 07:40 rotate, 07:45 core, 07:55 transcripts, 08:00 backup watch, */10 health, Sun 08:15 candles
+crontab -l | grep backups/                            # 07:40 rotate, 07:45 core, 07:55 transcripts, 08:00 backup watch, 08:05 transcripts-trial, */10 health, Sun 08:15 candles
 /root/backups/backup-watch.sh --dry-run                        # OK — 백업 최신 …, or the message it would send
 ```
 

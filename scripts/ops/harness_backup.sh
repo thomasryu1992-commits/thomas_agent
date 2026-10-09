@@ -79,6 +79,106 @@ age_ready() {
   [ "$bad" -eq 0 ] || { echo "reason=malformed-recipient"; return 1; }
 }
 
+# --- transcripts / transcripts-trial (Thomas 2026-10-09) -----------------------------------------
+# Every archive carries TRANSCRIPTS_MANIFEST.txt, headed by
+#   # t0=<UTC, touch -t form>   taken before the file list, so a file made while tar runs is newer
+#   # set=  # kind=full|inc  # stamp=  # chain=<stamp of the full this archive builds on>
+#   # prev=<stamp of the archive immediately before it, or none>
+# then one line per file: path<TAB>size<TAB>mtime (seconds). restore_transcripts.sh walks chain and
+# prev to refuse a gap (a missing inc) or an out-of-order set, and compares each restored file's
+# mtime with its line to tell a stale copy from one that changed while the backup ran.
+stamp_of() { basename "$1" | sed -E 's/.*-(full|inc)-([0-9]{8}-[0-9]{4})\..*/\2/'; }
+
+select_files() {  # $1 = all|human; run inside HOST_ROOT
+  if [ "$1" = all ]; then
+    find .claude/projects -type f
+    [ -d .claude/prompt-collector ] && find .claude/prompt-collector -type f
+    return 0
+  fi
+  find .claude/projects -mindepth 2 -maxdepth 2 -name '*.jsonl' -type f | while IFS= read -r f; do
+    if grep -q -F -e '"kind":"human"' -e '"answers"' "$f"; then
+      echo "$f"
+      [ -d "${f%.jsonl}" ] && find "${f%.jsonl}" -type f
+    fi
+  done
+  find .claude/projects -path '*/memory/*' -type f
+  [ -d .claude/prompt-collector ] && find .claude/prompt-collector -type f
+  return 0
+}
+
+transcripts_run() {  # mode set ext compressor selection
+  local mode=$1 set=$2 ext=$3 comp=$4 sel=$5
+  if ! AGE_REASON=$(age_ready); then log "FAILED mode=$mode stage=encrypt $AGE_REASON"; exit 3; fi
+  local recipient_note
+  recipient_note="enc=age recipient=$(grep -m1 -E '^age1' "$RECIPIENTS" | cut -c1-12)"
+  if [ ! -d "$HOST_ROOT/.claude/projects" ]; then
+    log "FAILED mode=$mode stage=archive rc=2 missing=.claude/projects"; exit 2
+  fi
+  if [ "$sel" = human ]; then
+    local min_gb="${HARNESS_TRIAL_MIN_FREE_GB:-10}" free_kb
+    free_kb=$(df -Pk "$DEST" | awk 'NR==2 {print $4}')
+    if [ "$free_kb" -lt $(( min_gb * 1024 * 1024 )) ]; then
+      log "SKIPPED mode=$mode reason=disk free_gb=$(( free_kb / 1024 / 1024 )) min_gb=$min_gb"; exit 0
+    fi
+  fi
+  local collector_note="collector-state=absent"
+  [ -d "$HOST_ROOT/.claude/prompt-collector" ] && collector_note="collector-state=included"
+  local full_days="${HARNESS_TRANSCRIPTS_FULL_DAYS:-7}" last_full last_any kind=full chain="$STAMP" prev=none
+  local newer=()
+  last_full=$(ls -1t "$DEST"/govstate-$set-full-*.$ext.age 2>/dev/null | head -1)
+  last_any=$(ls -1t "$DEST"/govstate-$set-*.$ext.age 2>/dev/null | head -1)
+  if [ -n "$last_full" ] && [ $(( $(date +%s) - $(stat -c %Y "$last_full") )) -lt $(( full_days * 86400 - 3600 )) ]; then
+    kind=inc
+    # One hour of overlap with the archive before: a file appended while that one was written
+    # is carried again rather than missed.
+    newer=(--newer-mtime="@$(( $(stat -c %Y "$last_any") - 3600 ))")
+    chain=$(stamp_of "$last_full")
+    prev=$(stamp_of "$last_any")
+  fi
+  local out="$DEST/govstate-$set-$kind-$STAMP.$ext.age"
+  local part="$out.part" index="$out.part.index" mfdir="$DEST/.manifest-$set-$STAMP"
+  mkdir -p "$mfdir"
+  local t0
+  t0=$(date -u +%Y%m%d%H%M.%S)
+  (cd "$HOST_ROOT" && select_files "$sel") | LC_ALL=C sort -u > "$mfdir/files.txt"
+  { printf '# t0=%s\n# set=%s\n# kind=%s\n# stamp=%s\n# chain=%s\n# prev=%s\n' "$t0" "$set" "$kind" "$STAMP" "$chain" "$prev"
+    (cd "$HOST_ROOT" && tr '\n' '\0' < "$mfdir/files.txt" | xargs -0 -r stat -c $'%n\t%s\t%Y' 2>/dev/null)
+  } > "$mfdir/TRANSCRIPTS_MANIFEST.txt"
+  # no-file-unchanged: an inc otherwise prints "file is unchanged; not dumped" once per skipped file.
+  tar cvf - --index-file="$index" --warning=no-file-changed --warning=no-file-unchanged "${newer[@]}" \
+      -C "$HOST_ROOT" -T "$mfdir/files.txt" -C "$mfdir" TRANSCRIPTS_MANIFEST.txt \
+    | $comp | "$AGE" -R "$RECIPIENTS" -o "$part"
+  local pipe=("${PIPESTATUS[@]}")
+  rm -f "$mfdir/TRANSCRIPTS_MANIFEST.txt" "$mfdir/files.txt"
+  rmdir "$mfdir" 2>/dev/null
+  # A session being written while tar reads it makes tar exit 1 (file changed as we read it);
+  # that copy is a valid snapshot of the lines written so far. Only 2 and above is a failure.
+  if [ "${pipe[0]}" -gt 1 ] || [ "${pipe[1]}" -ne 0 ] || [ ! -s "$index" ]; then
+    rm -f "$part" "$index"
+    log "FAILED mode=$mode stage=archive rc=${pipe[0]}/${pipe[1]} kind=$kind"; exit 2
+  fi
+  local files
+  files=$(grep -vc -e '/$' -e '^TRANSCRIPTS_MANIFEST.txt$' "$index")
+  rm -f "$index"
+  if [ "${pipe[2]}" -ne 0 ] || [ "$(head -c 21 "$part" 2>/dev/null)" != "age-encryption.org/v1" ]; then
+    rm -f "$part"
+    log "FAILED mode=$mode stage=encrypt rc=${pipe[2]} kind=$kind"; exit 3
+  fi
+  mv -f "$part" "$out"
+  chmod 600 "$out"
+  # Two fulls and the incs since the older of them: every kept inc has a full to sit on.
+  ls -1t "$DEST"/govstate-$set-full-*.$ext.age 2>/dev/null | tail -n +3 | xargs -r rm -f
+  local oldest_full f
+  oldest_full=$(ls -1t "$DEST"/govstate-$set-full-*.$ext.age 2>/dev/null | tail -1)
+  if [ -n "$oldest_full" ]; then
+    for f in "$DEST"/govstate-$set-inc-*.$ext.age; do
+      if [ -e "$f" ] && [ "$f" -ot "$oldest_full" ]; then rm -f "$f"; fi
+    done
+  fi
+  log "OK mode=$mode kind=$kind $(basename "$out") $(du -h "$out" | cut -f1) files=$files chain=$chain prev=$prev sel=$sel $recipient_note $collector_note"
+  exit 0
+}
+
 case "$MODE" in
   core)
     OUT="$DEST/govstate-$STAMP.tar.gz.age"
@@ -187,86 +287,14 @@ case "$MODE" in
     RC=0
     ;;
   transcripts)
-    # Claude Code conversation transcripts (Thomas 2026-10-09): the only copy of every prompt typed
-    # or pasted into a session lived on this disk. Same age recipients as core — no new key — and the
-    # same `govstate-` prefix, so the Mac pull already fetches it. A full archive weekly, and on the
-    # other days only the files changed since the newest transcripts archive (one hour of overlap).
-    # Restore with scripts/ops/restore_transcripts.sh: the newest full at or before the chosen point,
-    # then only the incs after that full, in stamp order — never an inc older than its full, which
-    # would put older content back over newer (RUNBOOK §2.5). Every archive carries
-    # TRANSCRIPTS_MANIFEST.txt: the files that existed when it was made, headed by `# t0=` (UTC,
-    # touch -t form), so a restore can drop what was deleted since the full and keep what appeared
-    # after t0.
-    # `.claude/prompt-collector` (the collector's local state and its review queue, which hold prompt
-    # text that never goes to the vault) rides along when it exists; `.claude/projects` must exist.
-    if ! AGE_REASON=$(age_ready); then
-      log "FAILED mode=transcripts stage=encrypt $AGE_REASON"
-      exit 3
-    fi
-    RECIPIENT_NOTE="enc=age recipient=$(grep -m1 -E '^age1' "$RECIPIENTS" | cut -c1-12)"
-    if [ ! -d "$HOST_ROOT/.claude/projects" ]; then
-      log "FAILED mode=transcripts stage=archive rc=2 missing=.claude/projects"
-      exit 2
-    fi
-    T_MEMBERS=(".claude/projects")
-    COLLECTOR_NOTE="collector-state=absent"
-    if [ -d "$HOST_ROOT/.claude/prompt-collector" ]; then
-      T_MEMBERS+=(".claude/prompt-collector")
-      COLLECTOR_NOTE="collector-state=included"
-    fi
-    FULL_DAYS="${HARNESS_TRANSCRIPTS_FULL_DAYS:-7}"
-    last_full=$(ls -1t "$DEST"/govstate-transcripts-full-*.tar.gz.age 2>/dev/null | head -1)
-    last_any=$(ls -1t "$DEST"/govstate-transcripts-*.tar.gz.age 2>/dev/null | head -1)
-    KIND=full
-    NEWER=()
-    if [ -n "$last_full" ] && [ $(( $(date +%s) - $(stat -c %Y "$last_full") )) -lt $(( FULL_DAYS * 86400 - 3600 )) ]; then
-      KIND=inc
-      # One hour of overlap with the archive before: a file appended while that one was written
-      # is carried again rather than missed.
-      NEWER=(--newer-mtime="@$(( $(stat -c %Y "$last_any") - 3600 ))")
-    fi
-    OUT="$DEST/govstate-transcripts-$KIND-$STAMP.tar.gz.age"
-    PART="$OUT.part"
-    INDEX="$PART.index"
-    MFDIR="$DEST/.manifest-$STAMP"
-    mkdir -p "$MFDIR"
-    { echo "# t0=$(date -u +%Y%m%d%H%M.%S)"
-      (cd "$HOST_ROOT" && find "${T_MEMBERS[@]}" -type f | LC_ALL=C sort); } > "$MFDIR/TRANSCRIPTS_MANIFEST.txt"
-    # no-file-unchanged: an inc otherwise prints "file is unchanged; not dumped" once per skipped file —
-    # about fourteen thousand lines a day into cron's discarded mail on 2026-10-09.
-    tar czvf - --index-file="$INDEX" --warning=no-file-changed --warning=no-file-unchanged "${NEWER[@]}" -C "$HOST_ROOT" \
-        "${T_MEMBERS[@]}" -C "$MFDIR" TRANSCRIPTS_MANIFEST.txt | "$AGE" -R "$RECIPIENTS" -o "$PART"
-    PIPE=("${PIPESTATUS[@]}")
-    TAR_RC=${PIPE[0]}
-    AGE_RC=${PIPE[1]}
-    rm -f "$MFDIR/TRANSCRIPTS_MANIFEST.txt"
-    rmdir "$MFDIR" 2>/dev/null
-    # A session being written while tar reads it makes tar exit 1 (file changed as we read it);
-    # that copy is a valid snapshot of the lines written so far. Only 2 and above is a failure.
-    if [ "$TAR_RC" -gt 1 ] || [ ! -s "$INDEX" ]; then
-      rm -f "$PART" "$INDEX"
-      log "FAILED mode=transcripts stage=archive rc=$TAR_RC kind=$KIND"
-      exit 2
-    fi
-    FILES=$(grep -vc -e '/$' -e '^TRANSCRIPTS_MANIFEST.txt$' "$INDEX")
-    rm -f "$INDEX"
-    if [ "$AGE_RC" -ne 0 ] || [ "$(head -c 21 "$PART" 2>/dev/null)" != "age-encryption.org/v1" ]; then
-      rm -f "$PART"
-      log "FAILED mode=transcripts stage=encrypt rc=$AGE_RC kind=$KIND"
-      exit 3
-    fi
-    mv -f "$PART" "$OUT"
-    chmod 600 "$OUT"
-    # Two fulls and the incs since the older of them: every kept inc has a full to sit on.
-    ls -1t "$DEST"/govstate-transcripts-full-*.tar.gz.age 2>/dev/null | tail -n +3 | xargs -r rm -f
-    oldest_full=$(ls -1t "$DEST"/govstate-transcripts-full-*.tar.gz.age 2>/dev/null | tail -1)
-    if [ -n "$oldest_full" ]; then
-      for f in "$DEST"/govstate-transcripts-inc-*.tar.gz.age; do
-        if [ -e "$f" ] && [ "$f" -ot "$oldest_full" ]; then rm -f "$f"; fi
-      done
-    fi
-    log "OK mode=transcripts kind=$KIND $(basename "$OUT") $(du -h "$OUT" | cut -f1) files=$FILES $RECIPIENT_NOTE $COLLECTOR_NOTE"
-    exit 0
+    transcripts_run transcripts transcripts tar.gz "gzip -6" all
+    ;;
+  transcripts-trial)
+    # Parallel trial (Thomas 2026-10-09): only sessions a person wrote in (plus their subagents and
+    # tool-result files, memory, the collector's state), zstd -3 instead of gzip. Separate names
+    # (govstate-trialzst-*), separate log mode; the real `transcripts` run and the watch are untouched.
+    # Skipped, not failed, when the disk has less than HARNESS_TRIAL_MIN_FREE_GB (default 10) free.
+    transcripts_run transcripts-trial trialzst tar.zst "zstd -3 -T2 -q" human
     ;;
   candles)
     OUT="$DEST/govstate-candles-$STAMP.tar.gz"
@@ -278,7 +306,7 @@ case "$MODE" in
     RC=$?
     ;;
   *)
-    echo "usage: $0 [core|candles|transcripts]" >&2; exit 2 ;;
+    echo "usage: $0 [core|candles|transcripts|transcripts-trial]" >&2; exit 2 ;;
 esac
 
 # tar exits 1 when a live append-mode file changed under it (the content is a valid snapshot);
