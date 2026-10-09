@@ -21,12 +21,17 @@ posix_only = pytest.mark.skipif(sys.platform == "win32", reason="backup_watch.sh
 OK_LINE = "2026-09-07T08:15:29Z OK mode=core govstate-20260907-0815.tar.gz.age 28M kept=7 enc=age recipient=age1qqqqqqqq anchor=excluded hermes-snapshot=ok workflow-snapshot=ok\n"
 PRE_P10_LINE = "2026-09-07T08:15:29Z OK mode=core govstate-20260907-0815.tar.gz.age 28M kept=7 enc=age recipient=age1qqqqqqqq anchor=excluded hermes-snapshot=ok\n"
 FAILED_LINE = "2026-09-07T07:45:05Z FAILED mode=core rc=2 hermes-snapshot=ok workflow-snapshot=ok\n"
+TR_OK_LINE = "2026-09-07T07:55:10Z OK mode=transcripts kind=full govstate-transcripts-full-20260907-0755.tar.gz.age 800M files=12 enc=age recipient=age1qqqqqqqq collector-state=included\n"
+TR_FAILED_LINE = "2026-09-08T07:55:10Z FAILED mode=transcripts stage=encrypt rc=1 kind=inc\n"
 
 
-def _dest(tmp_path: Path, *, core: bool = True, candles: bool = True, log: str = OK_LINE) -> Path:
+def _dest(tmp_path: Path, *, core: bool = True, candles: bool = True, log: str = OK_LINE,
+          transcripts: bool = True, tr_log: str = TR_OK_LINE) -> Path:
     dest = tmp_path / "governance-state"
     dest.mkdir(exist_ok=True)
-    (dest / "backup.log").write_text(log, encoding="utf-8")
+    (dest / "backup.log").write_text(log + (tr_log if transcripts else ""), encoding="utf-8")
+    if transcripts:
+        (dest / "govstate-transcripts-full-20260907-0755.tar.gz.age").write_text("x", encoding="utf-8")
     if core:
         (dest / "govstate-20260907-0815.tar.gz.age").write_text("x", encoding="utf-8")
     if candles:
@@ -45,13 +50,14 @@ def _health_log(tmp_path: Path, *, age_seconds: int | None = 0) -> Path:
     return log
 
 
-def _run(tmp_path: Path, dest: Path, health: Path, *, dry_run: bool = True):
+def _run(tmp_path: Path, dest: Path, health: Path, *, dry_run: bool = True, collector: Path | None = None):
     cmd = [str(SCRIPT)] + (["--dry-run"] if dry_run else [])
     return subprocess.run(
         cmd, capture_output=True, text=True, timeout=60,
         env={**os.environ, "HARNESS_BACKUP_DEST": str(dest), "HEALTH_WATCH_LOG": str(health),
              "THOMAS_ENV_FILE": str(tmp_path / "absent.env"),
-             "OPERATOR_REGISTRATION": str(tmp_path / "absent.json")},
+             "OPERATOR_REGISTRATION": str(tmp_path / "absent.json"),
+             "PROMPT_COLLECTOR_STATUS": str(collector or tmp_path / "absent-status.json")},
     )
 
 
@@ -206,3 +212,64 @@ def test_a_backup_refused_for_carrying_the_anchor_is_named_as_that(tmp_path):
 def test_an_ok_line_without_the_anchor_marker_means_a_script_that_never_checked(tmp_path):
     result = _run(tmp_path, _dest(tmp_path, log=OK_NO_ANCHOR_MARK), _health_log(tmp_path))
     assert result.returncode == 1 and "anchor=excluded 표기가 없습니다" in result.stdout
+
+
+# 7. the conversation transcripts archive (Thomas 2026-10-09)
+
+@posix_only
+def test_no_transcripts_archive_at_all_is_reported(tmp_path):
+    result = _run(tmp_path, _dest(tmp_path, transcripts=False), _health_log(tmp_path))
+    assert result.returncode == 1 and "대화 기록(transcripts) 아카이브가 하나도 없습니다" in result.stdout
+
+
+@posix_only
+def test_a_stale_transcripts_archive_and_a_missing_full_are_reported(tmp_path):
+    dest = _dest(tmp_path, transcripts=False, tr_log=TR_OK_LINE.replace("kind=full govstate-transcripts-full", "kind=inc govstate-transcripts-inc"))
+    (dest / "backup.log").write_text(OK_LINE + TR_OK_LINE, encoding="utf-8")
+    inc = dest / "govstate-transcripts-inc-20260907-0755.tar.gz.age"
+    inc.write_text("x", encoding="utf-8")
+    os.utime(inc, (0, 0))
+    result = _run(tmp_path, dest, _health_log(tmp_path))
+    assert result.returncode == 1
+    assert "대화 기록 아카이브가" in result.stdout and "전체(full) 아카이브가 없습니다" in result.stdout
+
+
+@posix_only
+def test_a_failed_transcripts_run_is_reported(tmp_path):
+    result = _run(tmp_path, _dest(tmp_path, tr_log=TR_OK_LINE + TR_FAILED_LINE), _health_log(tmp_path))
+    assert result.returncode == 1 and "마지막 대화 기록 백업이 실패로 끝났습니다" in result.stdout
+
+
+# 8. the prompt collector's status file
+
+def _status(tmp_path: Path, body: str) -> Path:
+    p = tmp_path / "status.json"
+    p.write_text(body, encoding="utf-8")
+    return p
+
+
+@posix_only
+def test_an_absent_collector_status_is_not_a_problem(tmp_path):
+    result = _run(tmp_path, _dest(tmp_path), _health_log(tmp_path))
+    assert result.returncode == 0 and "수집기" not in result.stdout
+
+
+@posix_only
+def test_a_fresh_passing_collector_says_nothing(tmp_path):
+    import datetime
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    status = _status(tmp_path, '{"overall": "WARNING", "last_success": "%s"}' % now)
+    result = _run(tmp_path, _dest(tmp_path), _health_log(tmp_path), collector=status)
+    assert result.returncode == 0, result.stdout
+
+
+@posix_only
+@pytest.mark.parametrize("body, words", [
+    ('{"overall": "FAIL", "failed": ["vault_push"], "last_success": "2026-09-07T00:00:00+00:00"}', "실패했습니다 (vault_push)"),
+    ('{"overall": "PASS", "last_success": "2026-09-01T00:00:00+00:00"}', "마지막 성공이"),
+    ('{"overall": "PASS"}', "한 번도 성공하지 않았습니다"),
+    ("not json", "읽을 수 없습니다"),
+])
+def test_a_failed_stale_or_unreadable_collector_is_reported(tmp_path, body, words):
+    result = _run(tmp_path, _dest(tmp_path), _health_log(tmp_path), collector=_status(tmp_path, body))
+    assert result.returncode == 1 and words in result.stdout, result.stdout

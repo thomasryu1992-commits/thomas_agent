@@ -28,6 +28,12 @@
 #      member list and the execution stage anchor is not in the archive (EXECUTION_STAGE_ANTI_ROLLBACK
 #      D1 a). The archive is encrypted and cannot be listed here, so the script's word is the evidence;
 #      an OK line without it means the installed script predates the check
+#   7. the conversation transcripts (`mode=transcripts`, Thomas 2026-10-09): some transcripts
+#      archive is younger than 26 h, a FULL one is younger than 8 days, and the last
+#      `mode=transcripts` line reads OK with `enc=age`
+#   8. the prompt collector's own status file, when it exists: `overall` is not FAIL and its last
+#      successful run is younger than 50 h (it runs inside the daily morning job). No file = the
+#      collector is not installed on this host, which is not a backup problem
 #
 # Secrets: the control-bot token is read from the single secret source (/root/thomas_agent/.env,
 # 0600 root) and handed to curl through a config file on stdin, so it never reaches argv or the log.
@@ -47,6 +53,10 @@ CURL="${CURL_BIN:-curl}"
 CORE_MAX_AGE_H=26
 CANDLE_MAX_AGE_D=8
 HEALTH_MAX_AGE_MIN=30     # health_watch.sh runs every 10 minutes; three missed runs is a dead watch
+TRANSCRIPTS_MAX_AGE_H=26
+TRANSCRIPTS_FULL_MAX_AGE_D=8
+COLLECTOR_STATUS="${PROMPT_COLLECTOR_STATUS:-/root/.claude/prompt-collector/status.json}"
+COLLECTOR_MAX_AGE_H=50
 DRY_RUN=0
 case "${1:-}" in
   "")         ;;
@@ -136,9 +146,65 @@ else
   fi
 fi
 
+# 7. the conversation transcripts archive (daily inc, weekly full)
+tr_any=$(ls -1t "$DEST"/govstate-transcripts-*.tar.gz.age 2>/dev/null | head -1)
+tr_full=$(ls -1t "$DEST"/govstate-transcripts-full-*.tar.gz.age 2>/dev/null | head -1)
+last_tr=$(grep ' mode=transcripts ' "$BACKUP_LOG" 2>/dev/null | tail -1)
+if [ -z "$tr_any" ]; then
+  PROBLEMS+=("대화 기록(transcripts) 아카이브가 하나도 없습니다 ($DEST)")
+  BACKUP_PROBLEM=1
+else
+  tr_age_h=$(( (NOW - $(stat -c %Y "$tr_any")) / 3600 ))
+  if [ "$tr_age_h" -gt "$TRANSCRIPTS_MAX_AGE_H" ]; then
+    PROBLEMS+=("대화 기록 아카이브가 ${tr_age_h}시간 지났습니다 (한도 ${TRANSCRIPTS_MAX_AGE_H}h) — $(basename "$tr_any")")
+    BACKUP_PROBLEM=1
+  fi
+  if [ -z "$tr_full" ]; then
+    PROBLEMS+=("대화 기록의 전체(full) 아카이브가 없습니다 — 변경분만으로는 복원할 수 없습니다")
+    BACKUP_PROBLEM=1
+  elif [ $(( (NOW - $(stat -c %Y "$tr_full")) / 86400 )) -gt "$TRANSCRIPTS_FULL_MAX_AGE_D" ]; then
+    PROBLEMS+=("대화 기록의 전체 아카이브가 ${TRANSCRIPTS_FULL_MAX_AGE_D}일보다 오래됐습니다 — $(basename "$tr_full")")
+    BACKUP_PROBLEM=1
+  fi
+fi
+case "$last_tr" in
+  "") [ -n "$tr_any" ] && { PROBLEMS+=("backup.log 에 transcripts 실행 기록이 없습니다"); BACKUP_PROBLEM=1; } ;;
+  *" OK mode=transcripts "*" enc=age "*) ;;
+  *) PROBLEMS+=("마지막 대화 기록 백업이 실패로 끝났습니다: $last_tr"); BACKUP_PROBLEM=1 ;;
+esac
+
+# 8. the prompt collector's status file (absent = not installed here, not a problem)
+if [ -f "$COLLECTOR_STATUS" ]; then
+  collector=$(python3 - "$COLLECTOR_STATUS" "$NOW" "$COLLECTOR_MAX_AGE_H" <<'PY' 2>/dev/null
+import datetime, json, sys
+try:
+    s = json.load(open(sys.argv[1]))
+except Exception:
+    print("unreadable"); raise SystemExit
+now, max_h = int(sys.argv[2]), int(sys.argv[3])
+last = s.get("last_success")
+try:
+    age_h = (now - datetime.datetime.fromisoformat(last.replace("Z", "+00:00")).timestamp()) / 3600
+except Exception:
+    age_h = None
+if s.get("overall") == "FAIL":
+    print("FAIL " + ",".join(s.get("failed", [])))
+elif age_h is None or age_h > max_h:
+    print("stale %s" % ("never" if age_h is None else int(age_h)))
+PY
+)
+  case "$collector" in
+    "") ;;
+    unreadable) PROBLEMS+=("프롬프트 수집기 상태 파일을 읽을 수 없습니다 ($COLLECTOR_STATUS)") ;;
+    FAIL*)      PROBLEMS+=("프롬프트 수집기가 실패했습니다 (${collector#FAIL }) — 볼트 Prompt/대화-수집/상태.md") ;;
+    "stale never") PROBLEMS+=("프롬프트 수집기가 한 번도 성공하지 않았습니다 — 아침 작업 로그 확인") ;;
+    stale*)     PROBLEMS+=("프롬프트 수집기의 마지막 성공이 ${collector#stale }시간 전입니다 (한도 ${COLLECTOR_MAX_AGE_H}h) — 아침 작업 로그 확인") ;;
+  esac
+fi
+
 if [ "${#PROBLEMS[@]}" -eq 0 ]; then
-  [ "$DRY_RUN" -eq 1 ] && echo "OK — 백업 최신 (core $(basename "${core:-none}"), candles $(basename "${candle:-none}"))"
-  log "OK checks=6"
+  [ "$DRY_RUN" -eq 1 ] && echo "OK — 백업 최신 (core $(basename "${core:-none}"), candles $(basename "${candle:-none}"), transcripts $(basename "${tr_any:-none}"))"
+  log "OK checks=8"
   exit 0
 fi
 

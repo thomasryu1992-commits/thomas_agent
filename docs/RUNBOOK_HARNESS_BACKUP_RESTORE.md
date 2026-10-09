@@ -192,6 +192,30 @@ docker exec -u 10001 thomas-scheduler python -m scripts.register_execution_stage
 Do not use `--sync-anchor` here: it refuses a missing or off-chain anchor for exactly this reason. A
 restore could never bring back a stage that had been demoted.
 
+### 2.5 Transcripts (Claude Code conversations, 2026-10-09)
+
+`mode=transcripts` runs daily at 07:55Z. It writes `govstate-transcripts-full-<stamp>.tar.gz.age` weekly
+and `govstate-transcripts-inc-<stamp>.tar.gz.age` (files changed since the previous transcripts archive,
+one hour of overlap) on the other days. Both are encrypted to the same recipients as core, and the Mac
+pull fetches them through the same `govstate-*` glob. The members are `.claude/projects` (every session's
+`.jsonl`, subagents and the per-project memory) and `.claude/prompt-collector` (the prompt collector's
+local state and review queue) when it exists. Member paths are relative to `/root`.
+
+Restore on the Mac, then copy back: the newest full first, then every later inc in stamp order, so a
+later copy of a session overwrites the earlier one.
+
+```bash
+# on the Mac
+cd ~/Backups/thomas-govstate && mkdir -p restore-transcripts
+for f in $(ls govstate-transcripts-full-*.age | tail -1) $(ls govstate-transcripts-inc-*.age); do
+  age -d -i ~/.config/thomas-govstate/age-key.txt "$f" | tar xz -C restore-transcripts
+done      # an inc older than the chosen full is harmless: the full and later incs overwrite it
+# then rsync restore-transcripts/.claude/ to root@host:/root/.claude/ (sessions must not be running)
+```
+
+Only the member list can be checked on the host side. The run logs `files=<n>` from tar's own index,
+and the backup watch (§3, checks 7 and 8) reads the log line, not the archive.
+
 ## 3. Health and restart budgets (Q15)
 
 **Hermes healthcheck** — the container's CMD is `sleep infinity` (an s6 slot), so a dead gateway leaves the container `running`; `gateway_state.json` changes only on transitions and is not a liveness signal. The compose healthcheck reads the age of `/opt/data/state/gateway.heartbeat`, which the gateway rewrites every 30 s: unhealthy when older than 120 s (interval 60 s, 3 retries, 180 s start period). Like every Thomas healthcheck, it **reports** — nothing on this host restarts a container on `unhealthy`; that is a separate decision. Since 2026-09-07 something at least *reads* it: see *Container health watch* below.
@@ -299,7 +323,7 @@ docker inspect hermes --format '{{.State.Health.Status}} {{json .Config.Healthch
 docker exec hermes sh -c 'ps -o args | grep shutdownd' | grep -o '\-g [0-9]*'        # -g 25000
 grep restart_drain_timeout /root/hermes-trial/data/config.yaml
 tail -1 /root/hermes-trial/data/logs/container-boot.log | grep -o 'prior_exit=[a-z]*' # clean after any stop
-crontab -l | grep backups/                            # 07:40 rotate, 07:45 core, 08:00 backup watch, */10 health, Sun 08:15 candles
+crontab -l | grep backups/                            # 07:40 rotate, 07:45 core, 07:55 transcripts, 08:00 backup watch, */10 health, Sun 08:15 candles
 /root/backups/backup-watch.sh --dry-run                        # OK — 백업 최신 …, or the message it would send
 ```
 
