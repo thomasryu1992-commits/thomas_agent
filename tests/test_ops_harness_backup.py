@@ -284,6 +284,7 @@ def test_a_later_run_carries_only_what_changed_since_the_last_archive(tmp_path):
     (host / ".claude/projects/-root-thomas-agent/new-session.jsonl").write_text('{"type":"user"}\n{}\n', encoding="utf-8")
     out, dest, log = _run_transcripts(tmp_path, host)
     assert out.returncode == 0, out.stderr
+    assert "not dumped" not in out.stderr                      # one line per unchanged file would flood cron
     (inc,) = dest.glob("govstate-transcripts-inc-*.tar.gz.age")
     assert _members(inc) == [".claude/projects/-root-thomas-agent/new-session.jsonl", "TRANSCRIPTS_MANIFEST.txt"]
     assert " OK mode=transcripts kind=inc " in log.splitlines()[-1] and "collector-state=absent" in log
