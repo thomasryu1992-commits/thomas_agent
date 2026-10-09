@@ -56,16 +56,46 @@ def append(path: Path, *, record_type: str, tamper_code: str, lock_code: str, la
         existing = verify(path, record_type=record_type, tamper_code=tamper_code)
         previous = existing[-1]["sha256"] if existing else None
         built = build(previous)
-        pending = list(built["rows"]) if "rows" in built else [built]
-        written: list[dict[str, Any]] = []
-        lines: list[str] = []
-        for fields in pending:
-            row: dict[str, Any] = {"record_type": record_type, **dict(fields), "prev_sha256": previous}
-            row["sha256"] = _hash(row)
-            previous = row["sha256"]
-            written.append(row)
-            lines.append(json.dumps(row, ensure_ascii=False, sort_keys=True))
-        if lines:
-            with path.open("a", encoding="utf-8") as handle:
-                handle.write("\n".join(lines) + "\n")
+        return _write(path, record_type, previous, list(built["rows"]) if "rows" in built else [built])
+
+
+def append_unique(path: Path, *, record_type: str, tamper_code: str, lock_code: str, label: str,
+                  build: Callable[[list[dict[str, Any]]], list[Mapping[str, Any]]],
+                  key: str = "source_event_key") -> list[dict[str, Any]]:
+    """Append the lines ``build(existing)`` returns whose ``key`` the log does not hold yet; return them.
+
+    One locked step (H6d-min, Thomas 2026-10-09): the chain is re-verified, ``build`` sees every verified
+    line and may raise to refuse, and a line whose key is already in the log — or earlier in the same
+    batch — is dropped. So a writer that crashed after its append and runs again writes nothing twice:
+    an append-only log alone is not exactly-once, the key check under the lock is. A line without the
+    key is refused whole (``tamper_code``): it could never be deduplicated."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with locked(path.with_suffix(".lock"), code=lock_code, label=label):
+        existing = verify(path, record_type=record_type, tamper_code=tamper_code)
+        seen = {row.get(key) for row in existing}
+        fresh: list[Mapping[str, Any]] = []
+        for fields in build(existing):
+            value = fields.get(key)
+            if not value:
+                raise ToolError(tamper_code, f"a {path.name} line without {key} cannot be appended")
+            if value in seen:
+                continue
+            seen.add(value)
+            fresh.append(fields)
+        return _write(path, record_type, existing[-1]["sha256"] if existing else None, fresh)
+
+
+def _write(path: Path, record_type: str, previous: str | None,
+           pending: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    written: list[dict[str, Any]] = []
+    lines: list[str] = []
+    for fields in pending:
+        row: dict[str, Any] = {"record_type": record_type, **dict(fields), "prev_sha256": previous}
+        row["sha256"] = _hash(row)
+        previous = row["sha256"]
+        written.append(row)
+        lines.append(json.dumps(row, ensure_ascii=False, sort_keys=True))
+    if lines:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
     return written

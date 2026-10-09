@@ -24,6 +24,18 @@ NOW = "2026-10-09T03:00:00Z"
 NOW_MS = int(datetime.datetime(2026, 10, 9, 3, 0, tzinfo=datetime.timezone.utc).timestamp() * 1000)
 LATER = "2026-10-09T04:00:00Z"
 LATER_MS = NOW_MS + 3_600_000
+# What a clean fire saw (H6d-min §11): readiness only passes on this fire's health, never a past PASS.
+CURRENT_OK = {"binance": True, "toss": True, "freshness": True, "coherence": True}
+
+
+def _not_windows(rows):
+    """The ledger lines other than the per-fire Toss window line (H6d-min writes one each fire)."""
+    return [r for r in rows if r["event"] != "toss_window_observed"]
+
+
+def _window(rows):
+    (window,) = [r for r in rows if r["event"] == "toss_window_observed"]
+    return window
 
 
 class Feed:
@@ -194,16 +206,20 @@ class Toss:
 
 def test_toss_cash_explained_by_a_fill_leaves_no_residual(tmp_path):
     cash_flows.collect_toss(Toss(), _snap(1_000_000, 100.0), tmp_path, now=NOW)
-    buy = {"side": "BUY", "currency": "KRW", "execution": {"filledAmount": "700000", "commission": "1400", "tax": "0",
+    buy = {"orderId": "o-buy", "side": "BUY", "currency": "KRW", "execution": {"filledAmount": "700000", "commission": "1400", "tax": "0",
                                                            "filledAt": "2026-10-09T03:30:00Z"}}
     cash_flows.collect_toss(Toss([buy]), _snap(298_600, 100.0), tmp_path, now=LATER)
-    assert cash_flows.verify(tmp_path) == []
+    rows = cash_flows.verify(tmp_path)
+    assert _not_windows(rows) == []                                              # no residual, no exchange
+    window = _window(rows)                                                       # H6d-min: the window line
+    assert window["residual_status"] == {"KRW": "CLEAR", "USD": "CLEAR"} and len(window["buy_orders"]["KRW"]) == 1
 
 
 def test_an_unexplained_toss_change_is_an_unresolved_shadow_residual(tmp_path):
     cash_flows.collect_toss(Toss(), _snap(1_000_000, 100.0), tmp_path, now=NOW)
     cash_flows.collect_toss(Toss(), _snap(6_000_000, 100.0), tmp_path, now=LATER)
-    (row,) = cash_flows.verify(tmp_path)
+    (row,) = _not_windows(cash_flows.verify(tmp_path))
+    assert _window(cash_flows.verify(tmp_path))["residual_status"]["KRW"] == "OPEN"
     assert row["event"] == "toss_residual" and row["pocket"] == "KRW" and row["residual"] == "5000000"
     assert row["source_confidence"] == "UNRESOLVED" and row["accounting_status"] == "SHADOW_ONLY"
 
@@ -211,7 +227,8 @@ def test_an_unexplained_toss_change_is_an_unresolved_shadow_residual(tmp_path):
 def test_a_krw_usd_exchange_pair_is_reconciled_internal(tmp_path):
     cash_flows.collect_toss(Toss(), _snap(1_000_000, 0.0), tmp_path, now=NOW)
     cash_flows.collect_toss(Toss(), _snap(860_000, 100.0), tmp_path, now=LATER)
-    (row,) = cash_flows.verify(tmp_path)
+    (row,) = _not_windows(cash_flows.verify(tmp_path))
+    assert _window(cash_flows.verify(tmp_path))["exchange_pair"] is True
     assert row["event"] == "internal_exchange" and row["source_confidence"] == "RECONCILED"
 
 
@@ -330,10 +347,11 @@ def test_amounts_compare_as_numbers():
 def _toss_window(tmp_path, *, side, residual_krw=0):
     cash_flows.collect_toss(Toss(), _snap(1_000_000, 0.0), tmp_path, now=NOW)
     sign = -1 if side == "BUY" else 1
-    fill = {"side": side, "currency": "KRW", "execution": {"filledAmount": "100000", "commission": "0", "tax": "0",
+    fill = {"orderId": f"o-{side}", "side": side, "currency": "KRW", "execution": {"filledAmount": "100000", "commission": "0", "tax": "0",
                                                            "filledAt": "2026-10-09T03:30:00Z"}}
     cash_flows.collect_toss(Toss([fill]), _snap(1_000_000 + sign * 100_000 + residual_krw, 0.0), tmp_path, now=LATER)
-    return cash_flows.load_state(tmp_path)["toss_evidence"]
+    # H6d-min: evidence is recomputed from the window lines, not read from a counter in the state file.
+    return cash_flows.toss_evidence(cash_flows.verify(tmp_path), epoch=0, today_kst="2026-10-10")
 
 
 def test_an_explained_fill_is_toss_evidence(tmp_path):
@@ -343,16 +361,21 @@ def test_an_explained_fill_is_toss_evidence(tmp_path):
 def test_a_fill_that_leaves_a_residual_makes_the_toss_semantics_mixed(tmp_path):
     evidence = _toss_window(tmp_path, side="SELL", residual_krw=5_000)
     assert evidence["activity_unexplained"] == 1
-    state, _why = cash_flows.toss_semantics(cash_flows.load_state(tmp_path), today_kst="2026-10-10")
+    state, _why = cash_flows.toss_semantics(cash_flows.verify(tmp_path), cash_flows.load_state(tmp_path),
+                                            today_kst="2026-10-10")
     assert state == "MIXED"
 
 
 def test_readiness_waits_and_enables_nothing(tmp_path):
     _collect(tmp_path, Feed())
-    ready = cash_flows.readiness(tmp_path, now=LATER)
+    ready = cash_flows.readiness(tmp_path, now=NOW, current=CURRENT_OK)
     assert ready["ready"] is False
     assert ready["checks"]["binance_real_schema"] == "WAITING" and ready["checks"]["toss_cash_semantics"] == "WAITING"
     assert ready["checks"]["shadow_observation"] == "RUNNING" and ready["checks"]["internal_transfer_guard"] == "PASS"
+    # H6d-min §11: outside the fire that read the sources, their health is not taken from the last one.
+    later = cash_flows.readiness(tmp_path, now=LATER)
+    assert {later["checks"][k] for k in ("binance_access", "binance_real_schema", "internal_transfer_guard",
+                                          "current_health")} == {"UNCHECKED"} and later["ready"] is False
 
 
 def test_readiness_is_ready_only_when_every_piece_is_in(tmp_path):
@@ -364,15 +387,15 @@ def test_readiness_is_ready_only_when_every_piece_is_in(tmp_path):
     cash_flows._save_state(tmp_path, state)
     for day in range(9, 17):
         cash_flows.mark_fire_verified(tmp_path, now=f"2026-10-{day:02d}T04:00:00Z")
-    assert cash_flows.readiness(tmp_path, now="2026-10-12T00:00:00Z")["ready"] is False   # 3 days of shadow
-    ready = cash_flows.readiness(tmp_path, now="2026-10-17T00:00:00Z")
+    assert _ready_at(tmp_path, "2026-10-12T00:00:00Z")["ready"] is False                 # 3 days of shadow
+    ready = _ready_at(tmp_path, "2026-10-17T00:00:00Z")
     assert ready["ready"] is True and set(ready["checks"].values()) == {"PASS"}
 
 
 def test_readiness_tells_once_per_epoch_and_again_after_it_breaks(tmp_path, monkeypatch):
     sequence = iter([True, True, False, True])
     monkeypatch.setattr(cash_flows, "readiness",
-                        lambda _d, *, now: {"ready": next(sequence), "checks": {}, "shadow_days": 7, "toss_note": "",
+                        lambda _d, *, now, current=None: {"ready": next(sequence), "checks": {}, "shadow_days": 7, "toss_note": "",
                                             "next_step": "x"})
     first = cash_flows.update_readiness(tmp_path, now=NOW)
     assert first["ready"] and first["epoch"] == 1 and not first["told"]
@@ -417,6 +440,11 @@ def _flow_state(tmp_path):
     return cash_flows.load_state(store.state_dir(tmp_path))
 
 
+def _flow_rows(tmp_path):
+    from runtime.mvp_runtime.holdings import store
+    return cash_flows.verify(store.state_dir(tmp_path))
+
+
 def _set_cutover(tmp_path):
     from runtime.mvp_runtime.holdings import store
     cash_flows.set_cutover(store.state_dir(tmp_path), at="2026-10-09T02:00:00Z", requested_by="claude")
@@ -429,8 +457,9 @@ def test_a_clean_store_fire_is_marked_verified_and_a_broken_one_is_not(monkeypat
     _store_fire(monkeypatch, tmp_path, flows=Feed(pay=ToolError("TOOL_TRANSPORT", "x")))     # a shadow read too
     assert "first_verified_fire_at" not in _flow_state(tmp_path)
     _store_fire(monkeypatch, tmp_path)
-    state = _flow_state(tmp_path)
-    assert state["first_verified_fire_at"] == NOW and state["shadow_success_dates"] == ["2026-10-09"]
+    # H6d-min: the verified fire and its date are ledger lines; the state file carries neither.
+    assert cash_flows.shadow_record(_flow_rows(tmp_path)) == (NOW, ["2026-10-09"])
+    assert "shadow_success_dates" not in _flow_state(tmp_path)
 
 
 def test_a_store_fire_whose_toss_pass_fails_is_not_verified(monkeypatch, tmp_path):
@@ -448,14 +477,15 @@ def test_a_post_cutover_exception_reaches_the_board_and_an_alert_with_counts_onl
     _set_cutover(tmp_path)
     pay = {"transactionId": "p1", "amount": "123.45", "currency": "SECRETCOIN", "transactionTime": NOW_MS - 60_000}
     result = _store_fire(monkeypatch, tmp_path, flows=Feed(pay=[pay]))
-    count, text = result["exception_alert"]
-    assert count == 1 and "1건" in text and "SECRETCOIN" not in text and "123" not in text
+    token, text = result["exception_alert"]
+    assert "1건" in text and "SECRETCOIN" not in text and "123" not in text
+    assert "p1" not in text and "p1" not in str(token)                    # H6d-min: no event key leaves
     assert result["readiness_alert"] is None
     stored = json.loads(store.snapshot_path(tmp_path).read_text(encoding="utf-8"))
     assert "SECRETCOIN" not in json.dumps(stored)
     ready = stored["cash_flows"]["readiness"]
     assert ready["exceptions"] == 1 and ready["checks"]["post_cutover_exceptions"] == "FAIL"
-    store.mark_exceptions_told(1, now=NOW, root=tmp_path)
+    store.mark_exceptions_told(token, now=NOW, root=tmp_path)
     assert _store_fire(monkeypatch, tmp_path, flows=Feed(pay=[pay]))["exception_alert"] is None   # told once
 
 
@@ -520,8 +550,16 @@ def test_a_failed_transfer_read_fails_this_fires_coherence(monkeypatch, tmp_path
 
 # --- H6b readiness-hardening (Thomas 2026-10-09) -----------------------------------------------------
 
+def _ready_at(tmp_path, now):
+    """A clean fire at ``now`` (every history read), then the readiness with that fire's health."""
+    _collect(tmp_path, Feed(), now=now, now_ms=int(datetime.datetime.fromisoformat(now.replace("Z", "+00:00"))
+                                                    .timestamp() * 1000))
+    return cash_flows.readiness(tmp_path, now=now, current=CURRENT_OK)
+
+
 def _ready_but_for(tmp_path, *, dates=range(9, 17)):
-    """Every readiness piece in, the cutover at NOW; the caller takes one away."""
+    """Every readiness piece in, the cutover at NOW; the caller takes one away. The Toss evidence is
+    seeded as the pre-H6d state file held it, so these are epoch-0 cases (imported once, H6d-min)."""
     cash_flows.set_cutover(tmp_path, at=NOW, requested_by="claude")
     _collect(tmp_path, Feed(crypto_deposit=[DEPOSIT]), now=LATER, now_ms=LATER_MS)
     state = cash_flows.load_state(tmp_path)
@@ -538,21 +576,20 @@ def test_the_first_verified_fire_is_marked_after_the_fire_never_by_the_read(tmp_
     assert "first_verified_fire_at" not in cash_flows.load_state(tmp_path)       # the read alone proves nothing
     assert cash_flows.readiness(tmp_path, now=LATER)["checks"]["cutover_boundary"] == "WAITING"
     cash_flows.mark_fire_verified(tmp_path, now="2026-10-09T02:00:00Z")           # before the cutover: not counted
-    assert "first_verified_fire_at" not in cash_flows.load_state(tmp_path)
+    assert cash_flows.shadow_record(cash_flows.verify(tmp_path)) == (None, [])
     cash_flows.mark_fire_verified(tmp_path, now=LATER)
     cash_flows.mark_fire_verified(tmp_path, now="2026-10-09T05:00:00Z")
-    state = cash_flows.load_state(tmp_path)
-    assert state["first_verified_fire_at"] == LATER and state["shadow_success_dates"] == ["2026-10-09"]
+    assert cash_flows.shadow_record(cash_flows.verify(tmp_path)) == (LATER, ["2026-10-09"])
 
 
 def test_seven_elapsed_days_without_seven_verified_dates_is_still_running(tmp_path):
     _ready_but_for(tmp_path, dates=(9, 10, 11))
-    ready = cash_flows.readiness(tmp_path, now="2026-10-20T00:00:00Z")            # eleven days elapsed
+    ready = _ready_at(tmp_path, "2026-10-20T00:00:00Z")                           # eleven days elapsed
     assert ready["checks"]["shadow_observation"] == "RUNNING" and ready["shadow_success_dates"] == 3
     assert ready["ready"] is False
     for day in (12, 13, 14, 15):
         cash_flows.mark_fire_verified(tmp_path, now=f"2026-10-{day:02d}T04:00:00Z")
-    assert cash_flows.readiness(tmp_path, now="2026-10-20T00:00:00Z")["ready"] is True
+    assert _ready_at(tmp_path, "2026-10-20T00:00:00Z")["ready"] is True
 
 
 def test_seven_verified_dates_before_seven_elapsed_days_is_still_running(tmp_path):
@@ -563,7 +600,7 @@ def test_seven_verified_dates_before_seven_elapsed_days_is_still_running(tmp_pat
 
 def test_the_ready_baseline_passes(tmp_path):
     _ready_but_for(tmp_path)
-    ready = cash_flows.readiness(tmp_path, now="2026-10-17T00:00:00Z")
+    ready = _ready_at(tmp_path, "2026-10-17T00:00:00Z")
     assert ready["ready"] is True and ready["exceptions"] == 0
     assert ready["checks"]["post_cutover_exceptions"] == "PASS"
 
@@ -586,7 +623,7 @@ def test_a_held_event_before_the_cutover_does_not_block(tmp_path):
     pay = {"transactionId": "p0", "amount": "5", "currency": "USDT", "transactionTime": NOW_MS - 60_000}
     _collect(tmp_path, Feed(pay=[pay]), now="2026-10-09T05:00:00Z", now_ms=LATER_MS + 3_600_000)
     assert cash_flows.summary(tmp_path)["held"] == 1                              # held, but observed only
-    assert cash_flows.readiness(tmp_path, now="2026-10-17T00:00:00Z")["ready"] is True
+    assert _ready_at(tmp_path, "2026-10-17T00:00:00Z")["ready"] is True
 
 
 def test_a_look_alike_after_the_cutover_blocks_through_the_link(tmp_path):
@@ -609,25 +646,33 @@ def test_a_toss_residual_after_the_cutover_blocks_and_one_before_does_not(tmp_pa
 
 
 def test_exceptions_are_told_each_time_the_count_grows(tmp_path):
+    """Kept from H6b readiness-hardening, now by exception key (H6d-min §10): a new one is told, a told
+    one is not, an undelivered one is offered again."""
     _ready_but_for(tmp_path)
     assert cash_flows.update_readiness(tmp_path, now=LATER)["exceptions_untold"] is False
     pay = {"transactionId": "p1", "amount": "5", "currency": "USDT", "transactionTime": NOW_MS + 60_000}
     _collect(tmp_path, Feed(pay=[pay]), now="2026-10-09T05:00:00Z", now_ms=LATER_MS + 3_600_000)
     first = cash_flows.update_readiness(tmp_path, now=LATER)
-    assert first["exceptions"] == 1 and first["exceptions_untold"] is True
-    assert cash_flows.update_readiness(tmp_path, now=LATER)["exceptions_untold"] is True   # not delivered yet
-    cash_flows.mark_exceptions_told(tmp_path, count=1, now=LATER)
+    assert first["exceptions"] == 1 and first["exceptions_untold"] is True and first["exceptions_new"] == 1
+    again = cash_flows.update_readiness(tmp_path, now=LATER)
+    assert again["exceptions_untold"] is True                                    # not delivered yet
+    cash_flows.mark_exceptions_told(tmp_path, token=again["exceptions_token"], now=LATER)
     assert cash_flows.update_readiness(tmp_path, now=LATER)["exceptions_untold"] is False
     second = {**pay, "transactionId": "p2", "amount": "6"}
     _collect(tmp_path, Feed(pay=[second]), now="2026-10-09T06:00:00Z", now_ms=LATER_MS + 7_200_000)
-    assert cash_flows.update_readiness(tmp_path, now=LATER)["exceptions_untold"] is True
+    grown = cash_flows.update_readiness(tmp_path, now=LATER)
+    assert grown["exceptions_untold"] is True and grown["exceptions_new"] == 1 and grown["exceptions"] == 2
 
 
 def test_moving_the_cutover_restarts_the_shadow_dates(tmp_path):
     _ready_but_for(tmp_path)
+    assert cash_flows.shadow_record(cash_flows.verify(tmp_path))[1] != []
     cash_flows.set_cutover(tmp_path, at="2026-10-12T00:00:00Z", requested_by="thomas", migrate=True, reason="repair")
     state = cash_flows.load_state(tmp_path)
     assert "shadow_success_dates" not in state and "first_verified_fire_at" not in state
+    assert cash_flows.shadow_record(cash_flows.verify(tmp_path)) == (None, [])     # H6d-min: from the ledger
+    cash_flows.set_cutover(tmp_path, at=NOW, requested_by="thomas", migrate=True, reason="back")
+    assert cash_flows.shadow_record(cash_flows.verify(tmp_path)) == (None, [])     # moving back revives nothing
 
 
 def test_the_board_names_the_unit_shadow_and_asks_for_an_exception_review():
