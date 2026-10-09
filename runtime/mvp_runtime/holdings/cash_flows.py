@@ -56,7 +56,7 @@ import re
 import textwrap
 import time
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
@@ -404,24 +404,37 @@ def _legacy_import_rows(existing: list[dict[str, Any]], state: Mapping[str, Any]
     first verified fire — becomes one ledger line, so a lost cache cannot lose it. Counters only."""
     if _legacy(existing) is not None:
         return []
-    names = ("toss_evidence", "shadow_success_dates", "first_verified_fire_at")
-    if not any(state.get(name) for name in names):
+    counters, dates, first = _legacy_fields(state)        # first: a falsy 0 or False is refused, not "nothing"
+    if not any(state.get(name) for name in ("toss_evidence", "shadow_success_dates", "first_verified_fire_at")):
         return []
-    counters, dates, first = _legacy_fields(state)
     return [{"event": EVENT_LEGACY, "source": "ledger", "source_event_key": "legacy_import:v1",
              "toss_evidence": counters, "shadow_success_dates": dates, "first_verified_fire_at": first,
              "cutover_at": cutover_at(existing) or "", "cutover_generation": cutover_generation(existing),
              "provenance": "state_file_before_h6d_min"}]
 
 
-_KST_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_KST_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+_LEGACY_COUNTERS = ("buy_explained", "sell_explained", "activity_unexplained")
+
+
+def _is_kst_day(value: Any) -> bool:
+    """A date as H6b wrote it (``date.isoformat()``): the shape, and a day the calendar has."""
+    if not isinstance(value, str) or not _KST_DAY.fullmatch(value):
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _legacy_fields(state: Mapping[str, Any]) -> tuple[dict[str, Any], list[str], str]:
     """The pre-H6d fields as the H6b code wrote them, or a refusal: a counter that is not a whole number,
-    a day that is not a KST date, a first fire that is not a time. Nothing is coerced, so nothing is
-    imported from a cache that does not say what H6b meant (it raises inside the ledger write, so the
-    refusal leaves the ledger and the state as they were)."""
+    a day that is not a KST date (shape and calendar), a first fire that is not a time in the Z form.
+    Absent means the key is missing or null, the only empty values H6b left; any other falsy value (0,
+    False, "", [], {}) is a refusal, not "never recorded". Nothing is coerced, so nothing is imported from
+    a cache that does not say what H6b meant (it raises inside the ledger write, so the refusal leaves the
+    ledger and the state as they were)."""
     def refuse(what: str) -> ToolError:
         return ToolError(LEDGER_TAMPERED, f"{STATE_FILENAME}: the pre-H6d {what} is malformed; nothing imported")
 
@@ -438,7 +451,7 @@ def _legacy_fields(state: Mapping[str, Any]) -> tuple[dict[str, Any], list[str],
     if not isinstance(raw, dict):
         raise refuse("toss_evidence")
     counters: dict[str, Any] = {name: count(raw.get(name), f"toss_evidence.{name}")
-                                for name in ("buy_explained", "sell_explained", "activity_unexplained")}
+                                for name in _LEGACY_COUNTERS}
     days = raw.get("settlement_days")
     if days is None:
         days = {}
@@ -446,7 +459,7 @@ def _legacy_fields(state: Mapping[str, Any]) -> tuple[dict[str, Any], list[str],
         raise refuse("toss_evidence.settlement_days")
     settlement: dict[str, Any] = {}
     for day, row in days.items():
-        if not isinstance(day, str) or not _KST_DAY.match(day) or not isinstance(row, dict):
+        if not _is_kst_day(day) or not isinstance(row, dict):
             raise refuse("toss_evidence.settlement_days")
         settlement[day] = {name: count(row.get(name), f"toss_evidence.settlement_days.{name}")
                            for name in ("windows", "unexplained")}
@@ -454,11 +467,13 @@ def _legacy_fields(state: Mapping[str, Any]) -> tuple[dict[str, Any], list[str],
     dates = state.get("shadow_success_dates")
     if dates is None:
         dates = []
-    if not isinstance(dates, list) or not all(isinstance(d, str) and _KST_DAY.match(d) for d in dates):
+    if not isinstance(dates, list) or not all(_is_kst_day(d) for d in dates):
         raise refuse("shadow_success_dates")
-    first = state.get("first_verified_fire_at") or ""
-    if first and (not isinstance(first, str) or _iso_ms(first) is None):
-        raise refuse("first_verified_fire_at")
+    first = state.get("first_verified_fire_at")
+    if first is None:
+        first = ""
+    elif not isinstance(first, str) or not first.endswith("Z") or _iso_ms(first) is None:
+        raise refuse("first_verified_fire_at")              # the Z form H6b wrote: shadow_record compares text
     return counters, sorted(dates), first
 
 

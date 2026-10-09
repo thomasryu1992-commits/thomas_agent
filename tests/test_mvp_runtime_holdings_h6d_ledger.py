@@ -318,16 +318,21 @@ H6B_FIELDS = {"toss_evidence": {"buy_explained": 1, "sell_explained": 2, "activi
               "shadow_success_dates": ["2026-10-10", "2026-10-09"], "first_verified_fire_at": "2026-10-09T04:00:00Z"}
 
 
+DROP = object()                                                                       # the field is absent
+
+
 def _h6b_state(tmp_path, **changes):
     """A state file as the H6b code (#1196) left it: the cutover in the ledger, the evidence in the cache."""
     set_cutover(tmp_path)
     body = json.loads(cash_flows.state_path(tmp_path).read_text(encoding="utf-8"))
     body.update(json.loads(json.dumps(H6B_FIELDS)))
     for name, value in changes.items():
-        if name.startswith("toss_evidence."):
-            body["toss_evidence"][name.split(".", 1)[1]] = value
+        where, key = ((body["toss_evidence"], name.split(".", 1)[1]) if name.startswith("toss_evidence.")
+                      else (body, name))
+        if value is DROP:
+            where.pop(key, None)
         else:
-            body[name] = value
+            where[key] = value
     cash_flows.state_path(tmp_path).write_text(json.dumps(body), encoding="utf-8")
 
 
@@ -351,6 +356,27 @@ def test_a_well_formed_pre_h6d_cache_is_imported_once_and_left_behind(tmp_path):
     assert ready["checks"]["ledger_state_consistency"] == "PASS"
 
 
+# The empty values H6b could leave: a first fire it never recorded (absent, or null), and real dates that
+# only look unusual. They import as before; nothing about them is a refusal.
+WELL_FORMED = [
+    ("first fire absent", {"first_verified_fire_at": DROP}, ""),
+    ("first fire null", {"first_verified_fire_at": None}, ""),
+    ("a leap day", {"toss_evidence.settlement_days": {"2028-02-29": {"windows": 1, "unexplained": 0}}},
+     "2026-10-09T04:00:00Z"),
+]
+
+
+@pytest.mark.parametrize("case, changes, first", WELL_FORMED, ids=[c[0] for c in WELL_FORMED])
+def test_the_empty_values_h6b_could_leave_still_import_once(tmp_path, case, changes, first):
+    _h6b_state(tmp_path, **changes)
+    collect(tmp_path, now=T1)
+    collect(tmp_path, now=T2)
+    rows = events(tmp_path, cash_flows.EVENT_LEGACY)
+    assert len(rows) == 1 and rows[0]["first_verified_fire_at"] == first
+    ready = cash_flows.readiness(tmp_path, now=T2, current=CURRENT_OK)
+    assert ready["checks"]["ledger_state_consistency"] == "PASS"
+
+
 MALFORMED = [
     ("count not a number", {"toss_evidence.buy_explained": "lots"}),                  # H3-2
     ("count negative", {"toss_evidence.sell_explained": -1}),
@@ -364,6 +390,27 @@ MALFORMED = [
     ("shadow dates a string", {"shadow_success_dates": "2026-10-09"}),
     ("shadow date not a date", {"shadow_success_dates": ["2026-10-09", "monday"]}),
     ("first fire not a time", {"first_verified_fire_at": "yesterday"}),
+    # a date that has the shape but not the calendar (found in the P1 re-check, 2026-10-09)
+    ("shadow date month 13", {"shadow_success_dates": ["2026-13-99"]}),
+    ("shadow date month 0", {"shadow_success_dates": ["2026-00-10"]}),
+    ("settlement day Feb 30", {"toss_evidence.settlement_days": {"2026-02-30": {"windows": 1}}}),
+    ("shadow date with a newline", {"shadow_success_dates": ["2026-10-09\n"]}),
+    # a first fire that is falsy but not absent is not "never recorded"
+    ("first fire zero", {"first_verified_fire_at": 0}),
+    ("first fire false", {"first_verified_fire_at": False}),
+    ("first fire empty list", {"first_verified_fire_at": []}),
+    ("first fire empty object", {"first_verified_fire_at": {}}),
+    ("first fire empty string", {"first_verified_fire_at": ""}),
+    ("first fire a date only", {"first_verified_fire_at": "2026-10-09"}),
+    ("first fire without an offset", {"first_verified_fire_at": "2026-10-09T04:00:00"}),
+    ("first fire Feb 30", {"first_verified_fire_at": "2026-02-30T04:00:00Z"}),
+    ("first fire not in the Z form", {"first_verified_fire_at": "2026-10-09T13:00:00+09:00"}),  # sorts as text
+    # the same, alone in a cache whose other fields are gone: still a refusal, not "nothing to import"
+    ("only a falsy first fire", {"first_verified_fire_at": 0, "toss_evidence": DROP, "shadow_success_dates": DROP}),
+    ("only empty evidence of the wrong type", {"toss_evidence": [], "shadow_success_dates": DROP,
+                                               "first_verified_fire_at": DROP}),
+    ("only a false shadow list", {"shadow_success_dates": False, "toss_evidence": DROP,
+                                  "first_verified_fire_at": DROP}),
 ]
 
 
@@ -380,6 +427,7 @@ def test_a_malformed_pre_h6d_cache_is_refused_with_its_code_and_leaves_both_file
     assert events(tmp_path, cash_flows.EVENT_LEGACY) == []
     ready = cash_flows.readiness(tmp_path, now=T2, current=CURRENT_OK)
     assert ready["checks"]["ledger_state_consistency"] == "FAIL" and ready["ready"] is False
+    assert ready["checks"]["toss_cash_semantics"] != "PASS"                          # never read as evidence
 
 
 def test_a_repaired_cache_then_imports_once(tmp_path):
