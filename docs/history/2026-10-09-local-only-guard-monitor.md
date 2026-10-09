@@ -26,6 +26,8 @@
     - The settings wrapper, with the guard and without it.
 
     Against the previous guard, 19 of them fail.
+  - `tests/skip_ceiling.json`: win32 goes from 214 to 254. The 40 new cases are bash and skip on Windows
+    like their neighbours. 254 is the count this PR's Windows CI read.
 - **Not changed:** the guard's rules for Read, Grep and Glob, the fallback in the wrapper, and any runtime
   code.
 - **Applying it:** a merge updates the repository copy. The user-level copy at
