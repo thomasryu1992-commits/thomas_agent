@@ -59,6 +59,17 @@ core thin while lanes grow, stated as rules:
   why the per-machine grants were retired and what that gave up: `docs/BUILD_HISTORY.md`.
 - **Claude does not touch the live money path.** The crypto stack can place a real order.
   Claude does not run it, does not handle keys, does not enable live trading.
+- **Claude reads the holdings lane only through its one table.** Use
+  `docker exec thomas-scheduler python -m scripts.holdings_board` (or `--json`). Never open
+  `.runtime_governance_state/holdings/` directly, and never run `holdings_board --full`,
+  `--local`, `--unclassified`, `--classify`/`--unclassify`, `--reset-peak`,
+  `--cash-flow-cutover`, `--flows`, `--resolve` or `--semantics-epoch`. Those are Thomas's, in his
+  own terminal. The local files name holdings and carry per-wallet and sub-class breakdowns; H3
+  (`holdings/disclosure.py`) lets exactly one table leave the process, and a model prompt is a way out.
+  Never report a breakdown from which one instrument's share follows.
+  `.claude/hooks/guard-local-only.sh` and the `Read` deny rules in `.claude/settings.json` are a
+  tripwire, **not a boundary**. Claude runs as root and the docker group reaches every mount, so this
+  rule is what holds until OS separation exists (`docs/history/2026-10-09-local-only-guard.md`).
 - **Crypto research machinery is paused until cohort 1's close on 2027-03-22** (Thomas 2026-09-26,
   review D3; scope and end restated 2026-10-01). No new templates, hypotheses or trials in `crypto/`,
   and no reallocation of the mint budget across families. A first FORWARD_CONFIRMED before that date
