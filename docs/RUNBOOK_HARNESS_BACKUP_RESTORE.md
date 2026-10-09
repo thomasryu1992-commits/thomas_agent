@@ -45,6 +45,7 @@ Consequences to keep in mind:
 | `thomas_agent/workspace` | 10001 | content-lane deliverables (`POST.md`, `PASTE.txt`, …) | — |
 | `thomas_agent/.env` | root, 0600 | the single secret source (see `DEPLOYMENT.md` → *Secret boundary*) | — |
 | `hermes-trial/data` | 10000:10000, 0700 | `SOUL.md`, `config.yaml`, `mcp/` shims, `skills/`, `cron/jobs.json`, `memories/`, `sessions/`, `auth.json`, and `state-snapshots/<stamp>-daily/` — a **consistent** `state.db` copy made by `hermes backup --quick` (sqlite backup API) moments before the tar | the live `state.db*`, `kanban.db*`, `cron/executions.db*` (WAL-mode databases copied mid-write are not backups — the snapshot directory carries them); `cache/`, `lazy-packages/`, `home/`, `bin/`, `.local/` (installed packages, recreated on boot); `logs/`, `sandboxes/`, `image_cache/`, `audio_cache/`, `models_dev_cache.json` |
+| `.claude/settings.json`, `.claude/settings.local.json`, `.claude/CLAUDE.md`, `thomas_agent/.claude/settings.local.json`, `.claude/skills` (since 2026-10-09, TA-PROMPT-RETENTION-01) | root | Claude Code's own configuration: user settings (hooks, permissions), the global instructions, this repository's untracked permission file, the author's skills with their local git history. No other backup carried them. **Optional:** an absent one is counted (`claude-config=present/5` on the OK line), never a failure. ~0.65 MB | `skills/synced` (re-synced from claude.ai), `*.bak-*`. **Never carried:** `.claude/.credentials.json` and `~/.claude.json` — a login is recreated, not restored; an archive whose member list names either is refused (`reason=credential-in-archive`) |
 
 Measured 2026-09-04: **25 MB, 4.8 s** (the previous Thomas-only archive was 15 MB). Off-host: the Mac pull (`com.thomas.govstate-pull`, daily 18:00 KST, 90-day retention) globs `govstate-*.tar.gz`, so it picked the new shape up without reinstalling. **The encrypted
 name does not match that glob**: the Mac pull script (vault `ops/mac-backup-pull/`) must be updated
@@ -136,6 +137,16 @@ tar xzf /root/restore/govstate-<stamp>.tar.gz -C /root thomas_agent/THOMAS_CORE/
 tar xzf /root/restore/govstate-<stamp>.tar.gz -C /root thomas_agent/workspace && chown -R 10001:10001 /root/thomas_agent/workspace
 tar xzf /root/restore/govstate-<stamp>.tar.gz -C /root thomas_agent/.env && chown root:root /root/thomas_agent/.env && chmod 600 /root/thomas_agent/.env
 ```
+
+**Claude Code configuration** (`.claude/settings*.json`, `.claude/CLAUDE.md`,
+`thomas_agent/.claude/settings.local.json`, `.claude/skills`, since 2026-10-09). Never extract these over a live
+`~/.claude`: hooks and permissions take effect for every running session. Extract to a side directory, diff,
+then copy what you mean to restore:
+```bash
+mkdir -p /root/restore/claude-config && tar xzf /root/restore/govstate-<stamp>.tar.gz -C /root/restore/claude-config .claude thomas_agent/.claude
+diff -r /root/restore/claude-config/.claude/skills /root/.claude/skills; diff /root/restore/claude-config/.claude/settings.json /root/.claude/settings.json
+```
+A login is not in the archive by design: sign in again (`claude` → `/login`).
 
 ### 2.3 Hermes
 
@@ -254,6 +265,19 @@ bash restore_transcripts.sh ~/Backups/thomas-govstate ~/restore-20261008 --until
   (vault `ops/mac-backup-pull/pull-govstate-backup.sh`, 2026-10-09).
 - **Status.** The real `transcripts` run, the watch and core are unchanged. Switching to it, deleting the
   old set and changing retention all wait for Thomas.
+
+**The switch candidate** (`transcripts-fullzst`, 2026-10-09, TA-PROMPT-RETENTION-01). Everything the gzip
+set carries, compressed with zstd -3: `govstate-fullzst-{full,inc}-<stamp>.tar.zst.age`, restore with
+`--set fullzst`, same disk floor as the trial. **Not scheduled and not a production set.** Run it only into a
+separate destination, never `/root/backups/governance-state` (the Mac pull and the prunes read that
+directory):
+```bash
+HARNESS_BACKUP_DEST=/root/backups/<scratch> HARNESS_BACKUP_AGE_RECIPIENTS=<recipients> \
+  nice -n19 ionice -c3 /root/backups/backup-governance-state.sh transcripts-fullzst
+```
+Real data, 2026-10-09: full 518 MB in 16 s (gzip 739 MB in ~51 s), inc 19 MB; restored with a throwaway key
+as `CONTENT_VERIFIED … archives=2 … tail=ok … core-hash=ok:161,bad:0`, and the same chain without its last
+inc as `BROKEN … tail=MISSING` exit 5. Key and archives deleted afterwards. Switching to it waits for Thomas.
 
 Only the member list can be checked on the host side. The run logs `files=<n>` from tar's own index,
 and the backup watch (§3, checks 7 and 8) reads the log line, not the archive.
