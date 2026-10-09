@@ -325,7 +325,51 @@ def test_core_does_not_carry_the_transcripts(tmp_path):
     out, dest, _ = _run(tmp_path, host=_transcripts_host(tmp_path))
     assert out.returncode == 0, out.stderr
     (archive,) = dest.glob("govstate-2*.tar.gz.age")
-    assert not any(m.startswith(".claude") for m in _members(archive))
+    assert not any(m.startswith((".claude/projects", ".claude/prompt-collector")) for m in _members(archive))
+
+
+# Claude Code's own configuration rides in core (TA-PROMPT-RETENTION-01, 2026-10-09): settings, the
+# global CLAUDE.md, the repo's untracked settings.local.json, the author's skills and their git history.
+
+def _host_with_config(tmp_path: Path) -> Path:
+    host = _host(tmp_path)
+    for rel in (".claude/settings.json", ".claude/settings.local.json", ".claude/CLAUDE.md",
+                "thomas_agent/.claude/settings.local.json", ".claude/skills/blog/SKILL.md",
+                ".claude/skills/blog/assets/prompt.txt", ".claude/skills/.git/HEAD",
+                ".claude/skills/blog/SKILL.md.bak-20261007", ".claude/skills/synced/u/docx/SKILL.md",
+                ".claude/.credentials.json", ".claude.json"):
+        (host / rel).parent.mkdir(parents=True, exist_ok=True)
+        (host / rel).write_text("x\n", encoding="utf-8")
+    return host
+
+
+def test_core_carries_claude_code_config_but_never_the_login(tmp_path):
+    out, dest, log = _run(tmp_path, host=_host_with_config(tmp_path))
+    assert out.returncode == 0, out.stderr
+    (archive,) = dest.glob("govstate-2*.tar.gz.age")
+    members = set(_members(archive))
+    assert {".claude/settings.json", ".claude/settings.local.json", ".claude/CLAUDE.md",
+            "thomas_agent/.claude/settings.local.json", ".claude/skills/blog/SKILL.md",
+            ".claude/skills/blog/assets/prompt.txt", ".claude/skills/.git/HEAD"} <= members
+    assert not any("synced" in m or ".bak-" in m for m in members)              # re-synced / superseded
+    assert ".claude/.credentials.json" not in members and ".claude.json" not in members
+    assert "thomas_agent/.env" in members                                       # the rest of core unchanged
+    assert "claude-config=5/5" in log.split()
+
+
+def test_absent_config_is_counted_not_a_failure(tmp_path):
+    out, dest, log = _run(tmp_path)                                             # a host with none of it
+    assert out.returncode == 0, out.stderr
+    assert "claude-config=0/5" in log and " OK mode=core " in log
+
+
+def test_a_core_archive_that_would_carry_a_login_is_refused_and_removed(tmp_path):
+    host = _host_with_config(tmp_path)
+    (host / ".claude/skills/blog/.credentials.json").write_text("x\n", encoding="utf-8")   # one slipped into a member
+    out, dest, log = _run(tmp_path, host=host)
+    assert out.returncode == 2
+    assert "reason=credential-in-archive" in log and " OK " not in log
+    assert not _archives(dest)
 
 
 
@@ -653,3 +697,46 @@ def test_a_core_asset_that_changed_during_the_backup_is_skipped_not_failed(tmp_p
         for l in body.splitlines()) + "\n")
     out = _restore(tmp_path, tmp_path / "t")
     assert out.returncode == 0 and "core-hash=ok:0,bad:0,skipped:1" in out.stdout and "changed-during-backup=1" in out.stdout
+
+
+# The switch candidate (TA-PROMPT-RETENTION-01): everything the gzip set carries, zstd -3, unscheduled.
+
+@pytest.mark.skipif(not shutil.which("zstd"), reason="zstd is not installed")
+def test_the_fullzst_candidate_carries_every_session_and_restores_its_chain(tmp_path):
+    host = _human_and_headless(tmp_path)
+    dest = tmp_path / "dest"
+    (tmp_path / "age-recipients.txt").write_text(RECIPIENT + "\n", encoding="utf-8")
+    def run(stamp, full_days):
+        env = {**os.environ, "PATH": f"{_bin(tmp_path)}:{os.environ['PATH']}", "HARNESS_BACKUP_HOST_ROOT": str(host),
+               "HARNESS_BACKUP_DEST": str(dest), "HARNESS_BACKUP_AGE_RECIPIENTS": str(tmp_path / "age-recipients.txt"),
+               "STUB_AGE_MODE": "ok", "HARNESS_BACKUP_STAMP": stamp, "HARNESS_TRIAL_MIN_FREE_GB": "0",
+               "HARNESS_TRANSCRIPTS_FULL_DAYS": full_days}
+        return subprocess.run(["bash", str(SCRIPT), "transcripts-fullzst"], capture_output=True, text=True, timeout=60, env=env)
+    assert run("20261010-0900", "0").returncode == 0
+    (full,) = dest.glob("govstate-fullzst-full-20261010-0900.tar.zst.age")
+    plain = subprocess.run(["zstd", "-dc"], input=full.read_bytes()[len(HEADER):], capture_output=True, check=True).stdout
+    with tarfile.open(fileobj=io.BytesIO(plain)) as tar:
+        names = {m.name for m in tar.getmembers() if m.isfile()}
+    assert {".claude/projects/-root-thomas-agent/headless.jsonl", ".claude/projects/-root-thomas-agent/human.jsonl",
+            ".claude/projects/-root-thomas-agent/old-session.jsonl"} <= names           # nothing selected away
+    _session(host, "human.jsonl").write_text('{"type":"user","origin":{"kind":"human"}}\n{"more":1}\n', encoding="utf-8")
+    os.utime(_session(host, "human.jsonl"), (full.stat().st_mtime + 7200,) * 2)
+    assert run("20261010-1100", "7").returncode == 0
+    log = (dest / "backup.log").read_text(encoding="utf-8")
+    assert " OK mode=transcripts-fullzst kind=inc " in log and " sel=all " in log
+    assert not list(dest.glob("govstate-transcripts-*")) and not list(dest.glob("govstate-trialzst-*"))
+    r = _restore(tmp_path, tmp_path / "t", "--set", "fullzst", "--expect-head", "20261010-1100")
+    assert r.returncode == 0 and r.stdout.startswith("CONTENT_VERIFIED set=fullzst"), r.stdout + r.stderr
+    assert "archives=2" in r.stdout
+
+
+def test_the_fullzst_candidate_yields_to_a_short_disk(tmp_path):
+    host = _human_and_headless(tmp_path)
+    dest = tmp_path / "dest"
+    (tmp_path / "age-recipients.txt").write_text(RECIPIENT + "\n", encoding="utf-8")
+    env = {**os.environ, "PATH": f"{_bin(tmp_path)}:{os.environ['PATH']}", "HARNESS_BACKUP_HOST_ROOT": str(host),
+           "HARNESS_BACKUP_DEST": str(dest), "HARNESS_BACKUP_AGE_RECIPIENTS": str(tmp_path / "age-recipients.txt"),
+           "STUB_AGE_MODE": "ok", "HARNESS_TRIAL_MIN_FREE_GB": "999999"}
+    out = subprocess.run(["bash", str(SCRIPT), "transcripts-fullzst"], capture_output=True, text=True, timeout=60, env=env)
+    assert out.returncode == 0 and "SKIPPED mode=transcripts-fullzst reason=disk" in (dest / "backup.log").read_text()
+    assert not list(dest.glob("govstate-fullzst-*"))
