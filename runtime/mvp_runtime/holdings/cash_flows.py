@@ -1029,7 +1029,12 @@ def _amendments(existing: list[dict[str, Any]], orders: list[Mapping[str, Any]])
     """Late evidence on earlier windows (H6d-min §7): an order that filled inside a window but was not in
     it, or a sale whose settlement date changed. Each is one keyed line, so re-reading adds nothing; the
     window itself is never edited. An amendment only ever withdraws a window from the evidence."""
-    windows = [r for r in existing if r.get("event") == EVENT_TOSS_WINDOW and not r.get("orders_truncated")]
+    # Only windows that end after the earliest fill read can hold one of these orders; a settlement entry
+    # sits in a window ending on its settlement day, after the fill. So the scan stays a week wide.
+    fills = [_iso_ms((o.get("execution") or {}).get("filledAt")) for o in orders]
+    earliest = None if None in fills else min(fills, default=None)      # an unreadable fill: scan them all
+    windows = [r for r in existing if r.get("event") == EVENT_TOSS_WINDOW and not r.get("orders_truncated")
+               and (earliest is None or (_iso_ms(r.get("window_end")) or 0) >= earliest)]
     out: list[dict[str, Any]] = []
     for order in orders:
         _basis, digest = order_identity(order)
