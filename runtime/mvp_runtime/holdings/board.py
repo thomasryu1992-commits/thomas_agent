@@ -126,6 +126,14 @@ def render_view(view: dict[str, Any], *, stamp_line: str) -> list[str]:
     block = view.get("combined")
     if isinstance(block, dict):
         lines.extend(render_combined(block))
+    flows = view.get("cash_flows")
+    if isinstance(flows, dict):
+        if flows.get("error"):
+            lines.append(f"{'cash flows':12}: shadow ledger not updated this fire ({flows['error']})")
+        else:
+            lines.append(f"{'cash flows':12}: shadow - {flows.get('external_flows', 0)} external, "
+                         f"{flows.get('internal_transfers', 0)} internal, {flows.get('held', 0)} held, "
+                         f"{flows.get('toss_residuals', 0)} toss residual(s); no verdict uses them")
     allocation = view.get("allocation")
     if isinstance(allocation, dict):
         lines.extend(render_allocation(allocation))

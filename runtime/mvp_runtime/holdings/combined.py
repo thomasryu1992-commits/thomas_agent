@@ -157,6 +157,8 @@ COMBINED_KEYS = frozenset({
     "reconciliation_failures",
     # H5b: the id of the baseline the peak stands on (``baseline_log``); no amount.
     "baseline_id",
+    # H6b: whether a spot<->futures transfer fell inside the sources' time window (coherence).
+    "internal_transfer_in_window",
     "peak_total_krw",
     "peak_at",
     "drawdown_pct",
@@ -287,11 +289,32 @@ def _coherence(times: dict[str, Any], now: str) -> tuple[bool, float | None]:
     return skew <= MAX_SNAPSHOT_SKEW_SECONDS, skew
 
 
+def _transfer_crossing(times: dict[str, Any], transfers: list[int] | None, now: str) -> bool:
+    """True when a spot<->futures transfer falls between the futures and the wallet times, or when the
+    transfers are unknown while both sides are counted."""
+    futures, wallet = times.get(SOURCE_FUTURES), times.get(SOURCE_SPOT) or times.get(SOURCE_EARN)
+    if futures is None or wallet is None:
+        return False
+    if transfers is None:
+        return True
+    try:
+        edges = sorted(int(timeutil.parse_iso(str(stamp)).timestamp() * 1000) for stamp in (futures, wallet))
+    except (TypeError, ValueError):
+        return True
+    return any(edges[0] <= moment <= edges[1] for moment in transfers)
+
+
 def judge(toss_view: dict[str, Any], *, crypto_status: str, crypto_krw: float | None,
           wallet_block: dict[str, Any], toss_warnings: int = 0, now: str = "",
           source_times: dict[str, Any] | None = None,
-          toss_reconciliation_failures: list[str] | None = None) -> dict[str, Any]:
-    """H2's verdict over the declared scope: ``sources``, ``checks`` and the five flags. Amount-free."""
+          toss_reconciliation_failures: list[str] | None = None,
+          internal_transfer_ms: list[int] | None = ()) -> dict[str, Any]:
+    """H2's verdict over the declared scope: ``sources``, ``checks`` and the five flags. Amount-free.
+
+    ``internal_transfer_ms`` (H6b, D-H6 §5): the times of spot<->futures transfers the cash-flow pass saw;
+    ``None`` when it could not read them. A transfer between the futures snapshot's time and the wallet
+    read's counts the same money twice or not at all, so coherence fails for that fire; so does not
+    knowing, while both sides are in the total."""
     wallet_status = wallet_block["crypto_wallet_status"]
     toss_total = toss_view.get("known_total_krw")
     toss_read = toss_total is not None and not toss_view.get("partial")
@@ -315,6 +338,8 @@ def judge(toss_view: dict[str, Any], *, crypto_status: str, crypto_krw: float | 
     freshness = crypto_status != "stale"
     times = {name: (source_times or {}).get(name) for name, row in sources.items() if row["included"]}
     coherent, skew = _coherence(times, now)
+    crossing = _transfer_crossing(times, internal_transfer_ms, now)
+    coherent = coherent and not crossing
     recon = ["not_computed"] if toss_reconciliation_failures is None else list(toss_reconciliation_failures)
     checks = {name: NOT_EVALUATED for name in CHECKS}
     checks.update({CHECK_COVERAGE: PASS if coverage else FAIL,
@@ -337,6 +362,7 @@ def judge(toss_view: dict[str, Any], *, crypto_status: str, crypto_krw: float | 
         "snapshot_skew_seconds": None if skew is None else round(skew, 1),
         "max_snapshot_skew_seconds": MAX_SNAPSHOT_SKEW_SECONDS,
         "reconciliation_failures": recon,
+        "internal_transfer_in_window": crossing,
     }
 
 
@@ -345,7 +371,8 @@ def combine(toss_view: dict[str, Any], *, usd_krw_rate: float | None, root: Path
             wallet_status: str = WALLET_NOT_CONFIGURED, toss_warnings: int = 0,
             toss_as_of: str | None = None,
             toss_reconciliation_failures: list[str] | None = None,
-            mapping_version: int | None = None) -> dict[str, Any]:
+            mapping_version: int | None = None,
+            internal_transfer_ms: list[int] | None = ()) -> dict[str, Any]:
     """The combined block, and the peak file moved when (and only when) the portfolio NAV is complete (H2).
 
     ``toss_warnings`` is the Toss read's parse-warning count: a field the Toss total rests on was missing
@@ -365,7 +392,8 @@ def combine(toss_view: dict[str, Any], *, usd_krw_rate: float | None, root: Path
                     SOURCE_SPOT: wallet_as_of, SOURCE_EARN: wallet_as_of}
     verdict = judge(toss_view, crypto_status=crypto_status, crypto_krw=crypto_krw, wallet_block=wallet_block,
                     toss_warnings=toss_warnings, now=now, source_times=source_times,
-                    toss_reconciliation_failures=toss_reconciliation_failures)
+                    toss_reconciliation_failures=toss_reconciliation_failures,
+                    internal_transfer_ms=internal_transfer_ms)
     complete = verdict["portfolio_nav_complete"]
     total = (toss_total or 0) + (crypto_krw or 0) + wallet_krw if complete else None
 

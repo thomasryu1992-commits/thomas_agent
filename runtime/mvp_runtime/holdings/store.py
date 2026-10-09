@@ -44,7 +44,7 @@ from .. import timeutil
 from ..errors import ToolError
 from ..filelock import locked
 from ..paths import repo_root as _repo_root
-from . import allocation, binance_wallet, classification, combined, disclosure
+from . import allocation, binance_wallet, cash_flows, classification, combined, disclosure
 from .board import aggregate_view, render_view
 from .toss_account import TossHoldingsFeed, read_holdings, select_holdings_feed
 
@@ -136,6 +136,19 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
         wallet, wallet_reason = None, type(exc).__name__
     wallet_status = (combined.WALLET_NOT_CONFIGURED if wallet is None and wallet_reason == "NOT_CONFIGURED"
                      else f"failed ({wallet_reason})" if wallet is None else combined.WALLET_OK)
+    # H6b (shadow): the cash-flow histories, appended to the local ledger. A failure costs this fire the
+    # ledger and — because the transfers are then unknown — its coherence, never the Toss snapshot.
+    transfers: list[int] | None = ()
+    flows_note = None
+    flow_feed = binance_wallet.select_wallet_feed() if wallet is not None else None
+    if isinstance(flow_feed, binance_wallet.BinanceWalletFeed):
+        try:
+            pass_result = cash_flows.collect_binance(flow_feed, state_dir(root), now=now)
+            transfers = pass_result["internal_ms"]
+            if "transfer_spot_to_futures" in pass_result["errors"] or "transfer_futures_to_spot" in pass_result["errors"]:
+                transfers = None
+        except Exception as exc:  # noqa: BLE001 — see the comment above
+            transfers, flows_note = None, type(exc).__name__
     # H5a entries, read once per fire: the allocation places by them, and a new baseline records their
     # version (H5b).
     try:
@@ -147,7 +160,8 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
                                  state_dir=state_dir(root), wallet=wallet, wallet_status=wallet_status,
                                  toss_warnings=len(snapshot.warnings), toss_as_of=snapshot.collected_at,
                                  toss_reconciliation_failures=combined.toss_reconciliation(snapshot),
-                                 mapping_version=entries.mapping_version if entries else None)
+                                 mapping_version=entries.mapping_version if entries else None,
+                                 internal_transfer_ms=transfers)
     except Exception as exc:  # noqa: BLE001 — the combined total must not cost the Toss snapshot
         block = None
         combined_note = f"combined not computed ({type(exc).__name__})"
@@ -164,6 +178,15 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
     except Exception as exc:  # noqa: BLE001 — see the comment above
         body["allocation"] = None
         combined_note += f"; allocation not computed ({type(exc).__name__})"
+    try:
+        feed = _feed()
+        if isinstance(feed, TossHoldingsFeed):
+            cash_flows.collect_toss(feed, snapshot, state_dir(root), now=now)
+        body["cash_flows"] = cash_flows.summary(state_dir(root))
+    except Exception as exc:  # noqa: BLE001 — shadow bookkeeping must not cost the board
+        flows_note = flows_note or type(exc).__name__
+    if flows_note:
+        body["cash_flows"] = {"mode": cash_flows.ACCOUNTING_MODE, "error": flows_note}
     # H3: the doors get one table under the single-holding rule; the whole fire goes to the local file.
     # Without the allocation's makeup there is no table to judge, so nothing leaves but status words.
     try:

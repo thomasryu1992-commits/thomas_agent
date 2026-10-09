@@ -4,10 +4,10 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **664** distinct codes across **1309** raise sites
+- **664** distinct codes across **1307** raise sites
 - **23** exception classes carry them
 - **76** codes are raised from more than one module (see below)
-- **140** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
+- **143** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
 - **29** raise sites carry a human-readable **message** where a code would go, so there is nothing to look up — a different gap from the line above, and counted apart from it
 
 ## Codes raised from more than one module
@@ -454,9 +454,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `FRONTDESK_ROLE_UNRESOLVED` | `OperatorBlocked` | `runtime/mvp_runtime/frontdesk.py` | `_require_active_role` | `—` |
 | `FRONTDESK_ROLE_UNRESOLVED` | `OperatorBlocked` | `runtime/mvp_runtime/frontdesk.py` | `_require_active_role` | `len(entries) != 1` |
 | `GUARD_NOT_APPROVED` | `SubmitRefused` | `runtime/mvp_runtime/crypto/live_execution.py` | `submit_and_reconcile` | `not (isinstance(guard_verdict, Mapping) and guard_verdict.get('approved') is True)` |
-| `HOLDINGS_BASELINE_LOG_TAMPERED` | `ToolError` | `runtime/mvp_runtime/holdings/baseline_log.py` | `_lines` | `—` |
-| `HOLDINGS_BASELINE_LOG_TAMPERED` | `ToolError` | `runtime/mvp_runtime/holdings/baseline_log.py` | `_lines` | `not isinstance(row, dict)` |
-| `HOLDINGS_BASELINE_LOG_TAMPERED` | `ToolError` | `runtime/mvp_runtime/holdings/baseline_log.py` | `verify` | `row.get('record_type') != RECORD_TYPE or row.get('prev_sha256') != previous or row.get('sha256'…` |
+| `HOLDINGS_CASH_FLOW_LEDGER_TAMPERED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `load_state` | `—` |
 | `HOLDINGS_CLASSIFICATION_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/classification.py` | `apply` | `asset_class not in ASSIGNABLE_CLASSES` |
 | `HOLDINGS_CLASSIFICATION_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/classification.py` | `apply` | `not _valid_id(instrument)` |
 | `HOLDINGS_CLASSIFICATION_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/holdings/classification.py` | `load` | `—` |

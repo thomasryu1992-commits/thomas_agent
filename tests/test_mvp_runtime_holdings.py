@@ -474,7 +474,7 @@ def test_the_snapshot_holds_the_aggregate_and_nothing_else(monkeypatch, gate_ope
     raw = store.snapshot_path(tmp_path).read_text(encoding="utf-8")
     body = json.loads(raw)
     # H3: the doors' file carries one table; the Toss and per-venue breakdowns are local only.
-    stamps = {"record_type", "as_of", "written_at", "combined", "allocation"}
+    stamps = {"record_type", "as_of", "written_at", "combined", "allocation", "cash_flows"}
     assert set(body) == (board.AGGREGATE_KEYS - disclosure.LOCAL_ONLY_TOP_KEYS) | stamps
     assert set(body["combined"]) == combined.COMBINED_KEYS - disclosure.LOCAL_ONLY_COMBINED_KEYS
     assert set(body["allocation"]) == (allocation.ALLOCATION_KEYS - disclosure.LOCAL_ONLY_ALLOCATION_KEYS
