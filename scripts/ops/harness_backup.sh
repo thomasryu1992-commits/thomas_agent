@@ -114,7 +114,7 @@ transcripts_run() {  # mode set ext compressor selection
   if [ ! -d "$HOST_ROOT/.claude/projects" ]; then
     log "FAILED mode=$mode stage=archive rc=2 missing=.claude/projects"; exit 2
   fi
-  if [ "$sel" = human ]; then
+  if [ "$mode" != transcripts ]; then          # the trial and the zstd candidate yield to the disk; the real set never does
     local min_gb="${HARNESS_TRIAL_MIN_FREE_GB:-10}" free_kb
     free_kb=$(df -Pk "$DEST" | awk 'NR==2 {print $4}')
     if [ "$free_kb" -lt $(( min_gb * 1024 * 1024 )) ]; then
@@ -236,6 +236,20 @@ case "$MODE" in
              "$THOMAS/THOMAS_CORE/activations" "$THOMAS/THOMAS_CORE/approvals"
              "$THOMAS/workspace" "$THOMAS/.env"
              "$HERMES/data")
+    # 2b. Claude Code's own configuration (Thomas 2026-10-09, TA-PROMPT-RETENTION-01): the user
+    #     settings, the global CLAUDE.md, this repository's untracked settings.local.json, and the
+    #     author's skills with their local git history. No other backup carried them. Optional: an
+    #     absent one is counted in the log (`claude-config=present/listed`), never fails the archive
+    #     that holds the trading state. Skills synced from claude.ai (skills/synced) re-sync and stay
+    #     out. Never carried, and checked below from what tar wrote: the OAuth login
+    #     (.credentials.json) and ~/.claude.json — a login is recreated, not restored.
+    CONFIG=(".claude/settings.json" ".claude/settings.local.json" ".claude/CLAUDE.md"
+            "$THOMAS/.claude/settings.local.json" ".claude/skills")
+    CONFIG_PRESENT=()
+    for member in "${CONFIG[@]}"; do
+      [ -e "$HOST_ROOT/$member" ] && CONFIG_PRESENT+=("$member")
+    done
+    SNAP_NOTE="$SNAP_NOTE claude-config=${#CONFIG_PRESENT[@]}/${#CONFIG[@]}"
     MISSING=()
     for member in "${MEMBERS[@]}"; do
       [ -e "$HOST_ROOT/$member" ] || MISSING+=("$member")
@@ -261,7 +275,8 @@ case "$MODE" in
         --exclude="$HERMES/data/logs" --exclude="$HERMES/data/sandboxes" \
         --exclude="$HERMES/data/image_cache" --exclude="$HERMES/data/audio_cache" \
         --exclude="$HERMES/data/models_dev_cache.json" \
-        "${MEMBERS[@]}" | "$AGE" -R "$RECIPIENTS" -o "$PART"
+        --exclude=".claude/skills/synced" --exclude=".claude/skills/*.bak-*" --exclude=".claude/skills/*/*.bak-*" \
+        "${MEMBERS[@]}" ${CONFIG_PRESENT[@]+"${CONFIG_PRESENT[@]}"} | "$AGE" -R "$RECIPIENTS" -o "$PART"
     PIPE=("${PIPESTATUS[@]}")
     TAR_RC=${PIPE[0]}
     AGE_RC=${PIPE[1]}
@@ -274,8 +289,10 @@ case "$MODE" in
     # The execution stage anchor must not be in the archive (EXECUTION_STAGE_ANTI_ROLLBACK D1 a).
     # The --exclude above keeps it out; this proves it did, from what tar actually wrote. No list
     # at all is not proof of absence, so it fails the same way.
-    if [ ! -s "$INDEX" ] || grep -q 'crypto/execution_stage_anchor\.json$' "$INDEX"; then
+    if [ ! -s "$INDEX" ] || grep -q 'crypto/execution_stage_anchor\.json$' "$INDEX" \
+         || grep -qE '(^|/)\.credentials\.json$|^\.claude\.json$' "$INDEX"; then
       REASON=anchor-in-archive
+      grep -qE '(^|/)\.credentials\.json$|^\.claude\.json$' "$INDEX" && REASON=credential-in-archive
       [ -s "$INDEX" ] || REASON=no-member-list
       rm -f "$PART" "$INDEX"
       log "FAILED mode=$MODE stage=archive reason=$REASON $SNAP_NOTE"
@@ -303,6 +320,12 @@ case "$MODE" in
     # Skipped, not failed, when the disk has less than HARNESS_TRIAL_MIN_FREE_GB (default 10) free.
     transcripts_run transcripts-trial trialzst tar.zst "zstd -3 -T2 -q" human
     ;;
+  transcripts-fullzst)
+    # Switch candidate under validation (Thomas 2026-10-09, TA-PROMPT-RETENTION-01): everything the
+    # gzip set carries, compressed with zstd -3. NOT scheduled and not a production set: run by hand
+    # into a separate HARNESS_BACKUP_DEST until a switch is approved. Same disk floor as the trial.
+    transcripts_run transcripts-fullzst fullzst tar.zst "zstd -3 -T2 -q" all
+    ;;
   candles)
     OUT="$DEST/govstate-candles-$STAMP.tar.gz"
     KEEP=4
@@ -313,7 +336,7 @@ case "$MODE" in
     RC=$?
     ;;
   *)
-    echo "usage: $0 [core|candles|transcripts|transcripts-trial]" >&2; exit 2 ;;
+    echo "usage: $0 [core|candles|transcripts|transcripts-trial|transcripts-fullzst]" >&2; exit 2 ;;
 esac
 
 # tar exits 1 when a live append-mode file changed under it (the content is a valid snapshot);

@@ -4,7 +4,7 @@
 # keeps to bash 3.2 and the tools both systems share (no mapfile, no GNU stat/date; perl reads mtimes).
 #
 #   restore_transcripts.sh <archive-dir> <target-dir> [--until YYYYmmdd-HHMM] [--identity <age key>]
-#                          [--set transcripts|trialzst] [--expect-head YYYYmmdd-HHMM]
+#                          [--set transcripts|trialzst|fullzst] [--expect-head YYYYmmdd-HHMM]
 #
 # Order: the newest FULL at or before the point, then only the INCs after it, oldest first. An inc older
 # than the chosen full is never applied (it would put older copies over newer ones).
@@ -38,7 +38,7 @@
 #       problems the first in this order wins: 3, 5, 8, 6, 4, 7.
 set -u
 AGE="${AGE_BIN:-age}"
-[ $# -ge 2 ] || { echo "usage: $0 <archive-dir> <target-dir> [--until S] [--identity K] [--set transcripts|trialzst] [--expect-head S]" >&2; exit 64; }
+[ $# -ge 2 ] || { echo "usage: $0 <archive-dir> <target-dir> [--until S] [--identity K] [--set transcripts|trialzst|fullzst] [--expect-head S]" >&2; exit 64; }
 DIR=$1; TARGET=$2; shift 2
 UNTIL=""; SET=transcripts; HEAD_WANT=""
 KEY="${GOVSTATE_AGE_KEY:-$HOME/.config/thomas-govstate/age-key.txt}"
@@ -53,7 +53,7 @@ while [ $# -gt 0 ]; do
 done
 case "$SET" in
   transcripts) EXT=tar.gz ;;
-  trialzst)    EXT=tar.zst ;;
+  trialzst|fullzst) EXT=tar.zst ;;
   *) echo "unknown set: $SET" >&2; exit 64 ;;
 esac
 
