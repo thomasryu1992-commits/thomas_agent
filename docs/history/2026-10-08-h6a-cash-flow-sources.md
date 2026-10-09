@@ -1,7 +1,7 @@
 # H6a: the cash-flow history reads, read-only, and a probe that prints counts
 
 - **What this PR changes:**
-  - `holdings/binance_wallet.py`: `FLOW_SOURCES` and `flow_history`. Ten history reads go over six
+  - `holdings/binance_wallet.py`: `FLOW_SOURCES` and `flow_history`. Nine history reads go over six
     signed GET paths. Each one is checked against Binance's own connector source:
     - crypto deposit and withdraw;
     - fiat deposit and withdraw (`/fiat/orders`), card and bank buy and sell (`/fiat/payments`);
@@ -25,3 +25,9 @@
   an external inflow. The design's list of five had missed it.
 - **What it does not do:** no ledger, no units, nothing stored, nothing on the board. Whether Toss
   `cashBuyingPower` moves with settlement is the D-H6-7 gate, which this PR does not open.
+- **First probe (2026-10-08 16:4xZ, after the `candidate-1192` deploy):** every source returned PASS. On
+  Binance that was the nine history reads on the read-only key (last 7 days); on Toss, the closed-order
+  list (last 30 days). Every read returned 0 rows, so on live data the error codes are confirmed but
+  the row shapes are not: the parsers rest on the documented shapes until the first real flow. No
+  Toss order closed in those 30 days, so the execution fields and the D-H6-7 `cashBuyingPower` gate
+  are still unobserved.
