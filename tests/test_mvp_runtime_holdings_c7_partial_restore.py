@@ -226,3 +226,57 @@ def test_c7_10_a_re_read_after_a_restore_appends_nothing_twice(live, tmp_path, r
         fire(live, later(T2, hours=hours), P2)
     assert keys(live).count("pay:p2") == 1
     assert_whole(live, later(T2, hours=3), 1)
+
+
+# C7-D: a refused write today reaches no one. The exception alert is computed after ``summary``, which
+# verifies the ledger first; with the chain broken the whole block raises, and the board keeps only the
+# exception's class name. The design (§5) pairs every refusal with its own message; this pins the gap.
+def test_defect_c7_d_a_refused_write_sends_no_message(monkeypatch, tmp_path):
+    from runtime.mvp_runtime.holdings import store
+    from tests.test_mvp_runtime_holdings_cash_flows import _store_fire
+
+    d = store.state_dir(tmp_path)
+    cash_flows.set_cutover(d, at="2026-10-09T02:00:00Z", requested_by="test")
+    feed = Feed(pay=[pay("p1", at="2026-10-09T02:30:00Z")])
+    first = _store_fire(monkeypatch, tmp_path, flows=feed)
+    assert first["exception_alert"] is not None                                   # a working ledger tells
+    path = cash_flows.ledger_path(d)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    row = json.loads(lines[1])
+    row["edited"] = True
+    lines[1] = json.dumps(row)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    second = _store_fire(monkeypatch, tmp_path, flows=feed, now="2026-10-09T04:00:00Z")
+    # Today: nothing is offered to Thomas, though the exception was never told and every write is refused.
+    assert (second["alert"], second["readiness_alert"], second["exception_alert"]) == (None, None, None)
+    with pytest.raises(ToolError) as exc:
+        cash_flows.verify(d)
+    assert exc.value.reason_code == cash_flows.LEDGER_TAMPERED
+
+
+# C7-11: the state file is gone (C2). Without cursors the next read reaches back the first-read lookback
+# (7 days) less the overlap, so a ledger whose tip is younger than that recovers by itself …
+def test_c7_11_a_missing_state_recovers_a_ledger_inside_the_first_lookback(live, tmp_path):
+    before = backup_point(live, tmp_path)
+    fire(live, T2, P2)
+    fire(live, later(T2, days=3), P2)
+    restore_ledger_only(live, before)
+    cash_flows.state_path(live).unlink()
+    now = later(T2, days=3, hours=1)
+    fire(live, now, P2)
+    assert keys(live).count("pay:p2") == 1
+    assert_whole(live, now, 1)
+
+
+# … and one whose tip is older than that loses what lies in between, with the readiness at PASS.
+def test_defect_c7_11_a_missing_state_with_a_ledger_older_than_the_lookback_loses_the_flow(live, tmp_path):
+    before = backup_point(live, tmp_path)
+    fire(live, T2, P2)
+    fire(live, later(T2, days=10), P2)
+    restore_ledger_only(live, before)
+    cash_flows.state_path(live).unlink()
+    now = later(T2, days=10, hours=1)
+    fire(live, now, P2)
+    # Design: UNCHECKED (history UNVERIFIED), never PASS, until a re-read reaches the cutover.
+    assert "pay:p2" not in keys(live)
+    assert checks(live, now) == ("PASS", "PASS", 0)

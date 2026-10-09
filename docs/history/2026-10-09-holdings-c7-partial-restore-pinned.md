@@ -11,11 +11,15 @@
       - a cursor ahead of the newest event on a quiet day;
       - a broken chain refused with both files unchanged;
       - no duplicate after any re-read.
-    - Three cases are pinned as they behave today, in tests named `test_defect_…`:
+    - Five cases are pinned as they behave today, in tests named `test_defect_…`:
       - **a ledger restored past the re-read loses the flow, its exception goes, and the readiness
         says PASS**;
       - a ledger from another history with the same length passes;
-      - a state with no checkpoint reads as consistent.
+      - a state with no checkpoint reads as consistent;
+      - a missing state file with a ledger older than the first read's reach loses the flow;
+      - **a refused write sends no message at all**: the exception alert is computed after `summary`,
+        which verifies the ledger first.
+    - Also asserted as it must stay: a missing state file whose ledger is within that reach recovers.
   - `docs/proposals/HOLDINGS_LEDGER_CHECKPOINT_V0.1.md` (DRAFT) holds three things:
     - the fix: the state records the ledger's line count and that line's hash; an ancestor passes, and
       a shorter or different ledger is refused with `LEDGER_TAMPERED`;
