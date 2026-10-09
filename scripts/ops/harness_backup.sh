@@ -57,7 +57,7 @@ DEST="${HARNESS_BACKUP_DEST:-/root/backups/governance-state}"
 HOST_ROOT="${HARNESS_BACKUP_HOST_ROOT:-/root}"
 THOMAS=thomas_agent
 HERMES=hermes-trial
-STAMP=$(date -u +%Y%m%d-%H%M)
+STAMP="${HARNESS_BACKUP_STAMP:-$(date -u +%Y%m%d-%H%M)}"   # override for tests only
 AGE="${AGE_BIN:-age}"
 RECIPIENTS="${HARNESS_BACKUP_AGE_RECIPIENTS:-/root/backups/age-recipients.txt}"
 umask 077
@@ -191,7 +191,12 @@ case "$MODE" in
     # or pasted into a session lived on this disk. Same age recipients as core — no new key — and the
     # same `govstate-` prefix, so the Mac pull already fetches it. A full archive weekly, and on the
     # other days only the files changed since the newest transcripts archive (one hour of overlap).
-    # Restore = the newest full, then every later inc in stamp order (RUNBOOK, "Transcripts").
+    # Restore with scripts/ops/restore_transcripts.sh: the newest full at or before the chosen point,
+    # then only the incs after that full, in stamp order — never an inc older than its full, which
+    # would put older content back over newer (RUNBOOK §2.5). Every archive carries
+    # TRANSCRIPTS_MANIFEST.txt: the files that existed when it was made, headed by `# t0=` (UTC,
+    # touch -t form), so a restore can drop what was deleted since the full and keep what appeared
+    # after t0.
     # `.claude/prompt-collector` (the collector's local state and its review queue, which hold prompt
     # text that never goes to the vault) rides along when it exists; `.claude/projects` must exist.
     if ! AGE_REASON=$(age_ready); then
@@ -223,11 +228,17 @@ case "$MODE" in
     OUT="$DEST/govstate-transcripts-$KIND-$STAMP.tar.gz.age"
     PART="$OUT.part"
     INDEX="$PART.index"
+    MFDIR="$DEST/.manifest-$STAMP"
+    mkdir -p "$MFDIR"
+    { echo "# t0=$(date -u +%Y%m%d%H%M.%S)"
+      (cd "$HOST_ROOT" && find "${T_MEMBERS[@]}" -type f | LC_ALL=C sort); } > "$MFDIR/TRANSCRIPTS_MANIFEST.txt"
     tar czvf - --index-file="$INDEX" --warning=no-file-changed "${NEWER[@]}" -C "$HOST_ROOT" \
-        "${T_MEMBERS[@]}" | "$AGE" -R "$RECIPIENTS" -o "$PART"
+        "${T_MEMBERS[@]}" -C "$MFDIR" TRANSCRIPTS_MANIFEST.txt | "$AGE" -R "$RECIPIENTS" -o "$PART"
     PIPE=("${PIPESTATUS[@]}")
     TAR_RC=${PIPE[0]}
     AGE_RC=${PIPE[1]}
+    rm -f "$MFDIR/TRANSCRIPTS_MANIFEST.txt"
+    rmdir "$MFDIR" 2>/dev/null
     # A session being written while tar reads it makes tar exit 1 (file changed as we read it);
     # that copy is a valid snapshot of the lines written so far. Only 2 and above is a failure.
     if [ "$TAR_RC" -gt 1 ] || [ ! -s "$INDEX" ]; then
@@ -235,7 +246,7 @@ case "$MODE" in
       log "FAILED mode=transcripts stage=archive rc=$TAR_RC kind=$KIND"
       exit 2
     fi
-    FILES=$(grep -vc '/$' "$INDEX")
+    FILES=$(grep -vc -e '/$' -e '^TRANSCRIPTS_MANIFEST.txt$' "$INDEX")
     rm -f "$INDEX"
     if [ "$AGE_RC" -ne 0 ] || [ "$(head -c 21 "$PART" 2>/dev/null)" != "age-encryption.org/v1" ]; then
       rm -f "$PART"
