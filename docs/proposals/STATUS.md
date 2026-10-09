@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **61**건: `DRAFT` 1 · `PARTIALLY DECIDED` 5 · `DECIDED` 12 · `IMPLEMENTED` 36 · `SUPERSEDED` 1 · `RECORD` 6
+제안서 **62**건: `DRAFT` 2 · `PARTIALLY DECIDED` 5 · `DECIDED` 12 · `IMPLEMENTED` 36 · `SUPERSEDED` 1 · `RECORD` 6
 
-## Thomas 결정 대기 (6)
+## Thomas 결정 대기 (7)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -18,6 +18,7 @@
 | [PERSONAL_BRANDING_EXPANSION_HYPOTHESIS_V0.1.md](PERSONAL_BRANDING_EXPANSION_HYPOTHESIS_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-06 | B1(0단계 측정)은 결정되어 지어졌다: 10-11 주(10-12 보고)부터 주간 리뷰가 잰다. B2(1단계 시작 조건)·B3(관문 수치)은 §4 그대로 결정됐고(Thomas 2026-10-06), 주간 리뷰가 시작 조건 충족 여부를 계산해 보인다. 열린 항목은 B4 수익 기준이며, 2단계 관문을 넘은 시점에 정한다. |
 | [RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md](RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-06 | (a)(b)(d)는 첫 forward cohort 판정(2027-03-22) 때 묻는다. 그때까지 크립토 라이브는 LIVE_AUTONOMOUS로 올리지 않고 현재 값을 유지한다(Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q6). 관문이 "슬리피지 실측 뒤"에서 "첫 판정 때"로 바뀌어 순환이 없어졌다. **값은 하나도 바뀌지 않았다.** |
 | [MULTI_ASSET_EXPANSION_V0.1.md](MULTI_ASSET_EXPANSION_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-08 | 열린 것: §6 D2 비교 기준 비준(P4 때). 부록 C(바이낸스 현물·Simple Earn 조회) 판단 문장은 Thomas가 2026-10-08에 확인했다(강도 잠정). **H2(평가 완전성, 2026-10-08, 아래 결정 절)가 지어졌다: 보드의 합계는 선언 범위 v1(토스·바이낸스 선물·현물·Simple Earn)이 모두 들어가고 평가·신선도 검사를 통과할 때만 portfolio NAV다. 지갑이 꺼진 지금은 INCOMPLETE이고, 고점·낙폭 알림·비중 판정이 멈춘다(Thomas가 알고 고름). 지갑은 H3·H4 뒤에 켠다. H1-c(2026-10-08) 끝. H3-min(반출 경계, 2026-10-08, 아래 결정 절): 저장 스냅샷에는 단일 종목 금액을 숨긴 자산군 표 하나만 남는다. H4-min(2026-10-08): coherence와 reconciliation이 필수 검사가 됐다. 지갑 활성화(2026-10-08 08:18Z): 첫 실행(08:33Z)에서 다섯 검사 모두 PASS, `portfolio_nav_complete=true`, 범위 v1 고점이 새로 잡혔다.** 피드는 2026-10-07에 지어졌다(`holdings/binance_wallet.py`, P2 합산 블록에 합류). **BLOCKER (H1-a, 2026-10-07): 계정 키를 scheduler-maint와 공유하던 A안을 철회했다. 그 키는 주문 키와 같다. H1-b(2026-10-08)로 전용 읽기 전용 키(`BINANCE_READ_API_*`)를 들였고 지갑도 그 키만 읽는다. H2–H4가 끝나기 전에는 지갑을 켜지 않는다.** D1–D4 결정(2026-10-02): (A) 자산 관리 먼저, 옵션은 조건부, 읽기 전용 보드는 연구 일시 중지 중 허용. 2026-10-07 Thomas: 첫 계좌를 토스증권으로 바꿨다(부록 B, 잠정). P1(토스 보드·`/holdings`·Hermes `holdings_status`)이 운영 중이다. **P2 결정(2026-10-07, 아래 결정 절): 알림만, 낙폭 한도 고점 대비 -20%, 바이낸스(엔진 증거금) 비중 한도 없음, USDT 환산은 토스 매매기준율.** P2의 낙폭 한도가 `holdings/combined.py`로 지어졌다. `TOTAL_ASSET_ALLOCATION_V0.1.md`의 5/25 밴드(Q2)와 BTC 위험 기여도 상한(Q4)은 P2의 한도 후보에서 뺐다(Thomas 2026-10-07): 시스템은 비중 한도를 두지 않는다. 목표 대비 이탈 표시(그 문서 Q9·§11.1)가 보드에 지어졌다(2026-10-07, 표시만). §6 D2 비교 기준 비준은 P4 때 한다. IV–RV 측정은 연구 일시 중지의 예외로 허용됐다(2026-10-06, 아래 결정 절). |
+| [HOLDINGS_LEDGER_CHECKPOINT_V0.1.md](HOLDINGS_LEDGER_CHECKPOINT_V0.1.md) | `DRAFT` | 2026-10-09 | H6d-min(#1205)의 원장과 상태 파일이 서로 다른 시점에서 복원되면 기록이 조용히 사라지고 readiness는 PASS로 남는다(C7). 상태 파일에 원장 끝(줄 수·해시)을 체크포인트로 남겨 이 경우를 기존 `LEDGER_TAMPERED`로 거부하는 설계다. 회귀 테스트(`tests/test_mvp_runtime_holdings_c7_partial_restore.py`)가 오늘의 결함을 고정한다. 런타임 변경은 §6의 Thomas 결정 뒤에 별도 PR로 한다. |
 
 ## 결정됨 — 구현 남음 (12)
 
