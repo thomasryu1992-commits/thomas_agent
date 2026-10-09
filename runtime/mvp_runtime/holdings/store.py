@@ -140,6 +140,7 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
     # ledger and — because the transfers are then unknown — its coherence, never the Toss snapshot.
     transfers: list[int] | None = ()
     flows_note = None
+    readiness_alert = None
     flow_feed = binance_wallet.select_wallet_feed() if wallet is not None else None
     if isinstance(flow_feed, binance_wallet.BinanceWalletFeed):
         try:
@@ -182,11 +183,22 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
         feed = _feed()
         if isinstance(feed, TossHoldingsFeed):
             cash_flows.collect_toss(feed, snapshot, state_dir(root), now=now)
-        body["cash_flows"] = cash_flows.summary(state_dir(root))
+    except Exception as exc:  # noqa: BLE001 — a Toss shadow failure costs that pass, not the summary
+        flows_note = flows_note or f"toss {type(exc).__name__}"
+    try:
+        flows = cash_flows.summary(state_dir(root))
+        ready = cash_flows.update_readiness(state_dir(root), now=now)
+        flows["readiness"] = {key: ready[key] for key in ("checks", "ready", "shadow_days", "next_step")}
+        body["cash_flows"] = flows
+        if ready["ready"] and not ready["told"]:
+            readiness_alert = (
+                f"[보유 자산] H6 준비 완료 — 실제 입출금 형식 확인, 토스 현금 의미 확인({ready['toss_note']}), "
+                f"shadow 관찰 {ready['shadow_days']:.0f}일. 다음 단계: {ready['next_step']}. "
+                "자동으로 켜지지 않습니다. 진행하려면 승인해 주세요.")
     except Exception as exc:  # noqa: BLE001 — shadow bookkeeping must not cost the board
         flows_note = flows_note or type(exc).__name__
     if flows_note:
-        body["cash_flows"] = {"mode": cash_flows.ACCOUNTING_MODE, "error": flows_note}
+        body.setdefault("cash_flows", {"mode": cash_flows.ACCOUNTING_MODE})["error"] = flows_note
     # H3: the doors get one table under the single-holding rule; the whole fire goes to the local file.
     # Without the allocation's makeup there is no table to judge, so nothing leaves but status words.
     try:
@@ -205,7 +217,13 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
     if block is not None:
         # The alert is a Telegram message, so it is built from what may leave.
         edge = combined.alert(outward["combined"], told=combined.read_told(state_dir(root)), as_of=body["as_of"])
-    return {"status": f"holdings snapshot: refreshed; {combined_note}", "alert": edge}
+    return {"status": f"holdings snapshot: refreshed; {combined_note}", "alert": edge,
+            "readiness_alert": readiness_alert}
+
+
+def mark_readiness_told(*, now: str, root: Path | None = None) -> None:
+    """Record that the H6 readiness message was delivered — once; it is not sent again."""
+    cash_flows.mark_readiness_told(state_dir(root), now=now)
 
 
 def mark_told(state: str, *, now: str, root: Path | None = None) -> None:

@@ -129,11 +129,19 @@ def render_view(view: dict[str, Any], *, stamp_line: str) -> list[str]:
     flows = view.get("cash_flows")
     if isinstance(flows, dict):
         if flows.get("error"):
-            lines.append(f"{'cash flows':12}: shadow ledger not updated this fire ({flows['error']})")
-        else:
+            lines.append(f"{'cash flows':12}: shadow ledger not fully updated this fire ({flows['error']})")
+        if "events" in flows:
             lines.append(f"{'cash flows':12}: shadow - {flows.get('external_flows', 0)} external, "
                          f"{flows.get('internal_transfers', 0)} internal, {flows.get('held', 0)} held, "
                          f"{flows.get('toss_residuals', 0)} toss residual(s); no verdict uses them")
+            ready = flows.get("readiness")
+            if isinstance(ready, dict):
+                lines.append("--- H6 readiness ---")
+                lines.extend(f"{name:24} {state}" for name, state in (ready.get("checks") or {}).items())
+                lines.append(f"{'H6c_ready':24} {'true' if ready.get('ready') else 'false'}")
+                lines.append(f"{'Action required':24} "
+                             + ("approve the next step (" + str(ready.get("next_step")) + ")" if ready.get("ready")
+                                else "None"))
     allocation = view.get("allocation")
     if isinstance(allocation, dict):
         lines.extend(render_allocation(allocation))

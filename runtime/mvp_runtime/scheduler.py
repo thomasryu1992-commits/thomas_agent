@@ -1450,18 +1450,36 @@ def _execute(
         from .holdings import store as holdings_store
 
         result = holdings_store.refresh(now=now, root=repo_root)
-        if result["alert"] is None:
-            return result["status"]
-        state, text = result["alert"]
-        try:
-            channel = operator_mod.select_operator_channel(now=now, root=repo_root)
-            operator_mod.notify_operator(channel, text, repo_root=repo_root)
-        except MvpRuntimeError as exc:
-            return f"{result['status']}; drawdown {state} not sent:{exc.reason_code}"
-        except Exception as exc:  # noqa: BLE001 — transport must not stop scheduling
-            return f"{result['status']}; drawdown {state} not sent:{type(exc).__name__}"
-        holdings_store.mark_told(state, now=now, root=repo_root)
-        return f"{result['status']}; drawdown {state} told"
+        status = result["status"]
+
+        def _tell(text: str) -> str | None:
+            """Deliver one message; the reason it was not sent, or None."""
+            try:
+                channel = operator_mod.select_operator_channel(now=now, root=repo_root)
+                operator_mod.notify_operator(channel, text, repo_root=repo_root)
+            except MvpRuntimeError as exc:
+                return exc.reason_code
+            except Exception as exc:  # noqa: BLE001 — transport must not stop scheduling
+                return type(exc).__name__
+            return None
+
+        if result["alert"] is not None:
+            state, text = result["alert"]
+            failure = _tell(text)
+            if failure:
+                status = f"{status}; drawdown {state} not sent:{failure}"
+            else:
+                holdings_store.mark_told(state, now=now, root=repo_root)
+                status = f"{status}; drawdown {state} told"
+        # H6 readiness (Thomas 2026-10-09): told once, when the evidence first suffices; enables nothing.
+        if result.get("readiness_alert"):
+            failure = _tell(result["readiness_alert"])
+            if failure:
+                status = f"{status}; h6 readiness not sent:{failure}"
+            else:
+                holdings_store.mark_readiness_told(now=now, root=repo_root)
+                status = f"{status}; h6 readiness told"
+        return status
     if schedule.kind == KIND_FORWARD_COHORT:
         # ALLOW-tier venue read, and writes to the cohort's own store alone: no pool, no forward
         # book, no candidates, no orders. A context that fails costs that context (named in the
