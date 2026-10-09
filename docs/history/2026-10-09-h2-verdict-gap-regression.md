@@ -23,4 +23,11 @@
     `scope_change` path in `combine` does not. Reproduced with synthetic files: a told mark of
     `breached` from the old scope, then the first complete fire under the new scope (`initialized`),
     then a second fire. The second fire sends "낙폭이 한도 안으로 돌아왔습니다" at +0.0 %. That is a
-    recovery message for a baseline that never fell. It is minor: no drop is missed.
+    recovery message for a baseline that never fell.
+
+    **Correction (same day):** this first read called it minor, saying no drop is missed. That is wrong.
+    A later check found that the stale `breached` mark also silences a real breach under the new
+    baseline: the breach equals the mark, so no edge fires and nothing is sent (about −50 % in the
+    synthetic case). The fix is #1206 (`docs/history/2026-10-09-new-baseline-clears-told.md`).
+    Production is not known to have hit it: the fire after the scope v1 baseline was a plain `combined
+    clear`, and the scheduler ledger shows no drawdown message (as #1206 records).
