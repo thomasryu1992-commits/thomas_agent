@@ -26,8 +26,10 @@ HEADER = b"age-encryption.org/v1\n"
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="harness_backup.sh is a bash script")
 
 STUB_AGE = """#!/bin/bash
-# -R <file> -o <out>: behave per $STUB_AGE_MODE
-out=""; while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2;; *) shift;; esac; done
+# -R <file> -o <out>: behave per $STUB_AGE_MODE.  -d -i <key> <file>: strip the version line (restore tests)
+out=""; dec=0; in=""
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2;; -d) dec=1; shift;; -i|-R) shift 2;; *) in="$1"; shift;; esac; done
+if [ "$dec" = 1 ]; then tail -c +23 "$in"; exit 0; fi
 case "${STUB_AGE_MODE:-ok}" in
   ok)        { printf 'age-encryption.org/v1\\n'; cat; } > "$out" ;;
   fail)      cat > /dev/null; printf 'partial' > "$out"; exit 1 ;;
@@ -55,6 +57,9 @@ def _bin(tmp_path: Path) -> Path:
     for f in stub.iterdir():
         f.chmod(0o755)
     return stub
+
+
+RESTORE = REPO_ROOT / "scripts" / "ops" / "restore_transcripts.sh"
 
 
 def _run(tmp_path: Path, *, recipients: str | None = RECIPIENT + "\n", age_mode: str = "ok",
@@ -258,7 +263,8 @@ def test_the_first_transcripts_run_is_a_full_encrypted_archive_of_both_roots(tmp
     assert archive.read_bytes().startswith(HEADER)
     assert sorted(_members(archive)) == [".claude/projects/-root-thomas-agent/new-session.jsonl",
                                          ".claude/projects/-root-thomas-agent/old-session.jsonl",
-                                         ".claude/prompt-collector/state.json"]
+                                         ".claude/prompt-collector/state.json",
+                                         "TRANSCRIPTS_MANIFEST.txt"]
     line = log.splitlines()[-1]
     assert " OK mode=transcripts kind=full " in line and " files=3 " in line
     assert f"enc=age recipient={RECIPIENT[:12]}" in line and "collector-state=included" in line
@@ -279,7 +285,7 @@ def test_a_later_run_carries_only_what_changed_since_the_last_archive(tmp_path):
     out, dest, log = _run_transcripts(tmp_path, host)
     assert out.returncode == 0, out.stderr
     (inc,) = dest.glob("govstate-transcripts-inc-*.tar.gz.age")
-    assert _members(inc) == [".claude/projects/-root-thomas-agent/new-session.jsonl"]
+    assert _members(inc) == [".claude/projects/-root-thomas-agent/new-session.jsonl", "TRANSCRIPTS_MANIFEST.txt"]
     assert " OK mode=transcripts kind=inc " in log.splitlines()[-1] and "collector-state=absent" in log
 
 
@@ -319,3 +325,105 @@ def test_core_does_not_carry_the_transcripts(tmp_path):
     assert out.returncode == 0, out.stderr
     (archive,) = dest.glob("govstate-2*.tar.gz.age")
     assert not any(m.startswith(".claude") for m in _members(archive))
+
+
+
+# Restore order and deletions (2026-10-09 review): newest full at or before the point, then only the
+# incs after it; files deleted since the full stay deleted; the final manifest is the integrity check.
+
+def _backup(tmp_path: Path, host: Path, stamp: str, *, full: bool = False) -> str:
+    dest = tmp_path / "dest"
+    (tmp_path / "age-recipients.txt").write_text(RECIPIENT + "\n", encoding="utf-8")
+    env = {**os.environ, "PATH": f"{_bin(tmp_path)}:{os.environ['PATH']}",
+           "HARNESS_BACKUP_HOST_ROOT": str(host), "HARNESS_BACKUP_DEST": str(dest),
+           "HARNESS_BACKUP_AGE_RECIPIENTS": str(tmp_path / "age-recipients.txt"), "STUB_AGE_MODE": "ok",
+           "HARNESS_BACKUP_STAMP": stamp, "HARNESS_TRANSCRIPTS_FULL_DAYS": "0" if full else "7"}
+    out = subprocess.run(["bash", str(SCRIPT), "transcripts"], capture_output=True, text=True, timeout=60, env=env)
+    assert out.returncode == 0, out.stderr
+    return (dest / "backup.log").read_text(encoding="utf-8").splitlines()[-1]
+
+
+def _restore(tmp_path: Path, target: Path, *extra: str):
+    env = {**os.environ, "PATH": f"{_bin(tmp_path)}:{os.environ['PATH']}"}
+    return subprocess.run(["bash", str(RESTORE), str(tmp_path / "dest"), str(target), "--identity", "unused", *extra],
+                          capture_output=True, text=True, timeout=60, env=env)
+
+
+def _session(host: Path, name: str) -> Path:
+    return host / ".claude/projects/-root-thomas-agent" / name
+
+
+def test_every_transcripts_archive_carries_a_manifest_with_its_t0(tmp_path):
+    line = _backup(tmp_path, _transcripts_host(tmp_path), "20261009-0100", full=True)
+    assert " files=3 " in line                                   # the manifest is not counted as a file
+    (archive,) = (tmp_path / "dest").glob("govstate-transcripts-full-*.age")
+    with tarfile.open(fileobj=io.BytesIO(gzip.decompress(archive.read_bytes()[len(HEADER):]))) as tar:
+        body = tar.extractfile("TRANSCRIPTS_MANIFEST.txt").read().decode()
+    lines = body.splitlines()
+    assert lines[0].startswith("# t0=") and len(lines[0]) == len("# t0=202610090100.00")
+    assert ".claude/projects/-root-thomas-agent/old-session.jsonl" in lines
+    assert not list((tmp_path / "dest").glob(".manifest-*"))     # the staging directory is gone
+
+
+def test_restore_applies_the_inc_and_keeps_deletions_deleted(tmp_path):
+    host = _transcripts_host(tmp_path)
+    _backup(tmp_path, host, "20261001-0755", full=True)
+    _session(host, "old-session.jsonl").write_text('{"v":2}\n', encoding="utf-8")       # changed
+    _session(host, "new-session.jsonl").unlink()                                          # deleted
+    _session(host, "third-session.jsonl").write_text('{"v":1}\n', encoding="utf-8")     # added
+    _backup(tmp_path, host, "20261002-0755")
+    target = tmp_path / "restored"
+    out = _restore(tmp_path, target)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert _session(target, "old-session.jsonl").read_text() == '{"v":2}\n'
+    assert not _session(target, "new-session.jsonl").exists()
+    assert _session(target, "third-session.jsonl").exists()
+    assert "deleted=1 missing=0" in out.stdout and "archives=2" in out.stdout
+
+
+def test_restore_never_applies_an_inc_older_than_the_chosen_full(tmp_path):
+    host = _transcripts_host(tmp_path)
+    s = _session(host, "old-session.jsonl")
+    s.write_text("v1\n", encoding="utf-8")
+    _backup(tmp_path, host, "20261001-0755", full=True)
+    s.write_text("v2\n", encoding="utf-8")
+    _backup(tmp_path, host, "20261002-0755")                       # inc: v2
+    s.write_text("v3\n", encoding="utf-8")
+    _backup(tmp_path, host, "20261008-0755", full=True)            # newer full: v3
+    _session(host, "late.jsonl").write_text("x\n", encoding="utf-8")
+    _backup(tmp_path, host, "20261009-0755")                       # inc after it
+    target = tmp_path / "latest"
+    out = _restore(tmp_path, target)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert _session(target, "old-session.jsonl").read_text() == "v3\n"   # not v2 from the older inc
+    assert _session(target, "late.jsonl").exists()
+    assert "full=20261008-0755 archives=2 skipped-older-incs=1" in out.stdout
+    earlier = tmp_path / "earlier"
+    out = _restore(tmp_path, earlier, "--until", "20261002-0755")
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert _session(earlier, "old-session.jsonl").read_text() == "v2\n"
+    assert not _session(earlier, "late.jsonl").exists()
+    assert "full=20261001-0755 archives=2" in out.stdout
+
+
+def test_restore_reports_a_missing_full_and_files_the_archives_did_not_carry(tmp_path):
+    host = _transcripts_host(tmp_path)
+    out = _restore(tmp_path, tmp_path / "t")
+    assert out.returncode == 2
+    _backup(tmp_path, host, "20261001-0755", full=True)
+    out = _restore(tmp_path, tmp_path / "t", "--until", "20260901-0000")
+    assert out.returncode == 2 and "no full archive at or before" in out.stderr
+    # an archive whose manifest lists a file it did not carry: the integrity check says so
+    archive = next((tmp_path / "dest").glob("govstate-transcripts-full-*.age"))
+    raw = gzip.decompress(archive.read_bytes()[len(HEADER):])
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=io.BytesIO(raw)) as src, tarfile.open(fileobj=buf, mode="w") as dst:
+        for m in src.getmembers():
+            data = src.extractfile(m).read() if m.isfile() else None
+            if m.name == "TRANSCRIPTS_MANIFEST.txt":
+                data += b".claude/projects/-root-thomas-agent/never-archived.jsonl\n"
+                m.size = len(data)
+            dst.addfile(m, io.BytesIO(data) if data is not None else None)
+    archive.write_bytes(HEADER + gzip.compress(buf.getvalue()))
+    out = _restore(tmp_path, tmp_path / "t2")
+    assert out.returncode == 4 and "missing=1" in out.stdout

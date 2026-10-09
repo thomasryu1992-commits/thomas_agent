@@ -201,16 +201,31 @@ pull fetches them through the same `govstate-*` glob. The members are `.claude/p
 `.jsonl`, subagents and the per-project memory) and `.claude/prompt-collector` (the prompt collector's
 local state and review queue) when it exists. Member paths are relative to `/root`.
 
-Restore on the Mac, then copy back: the newest full first, then every later inc in stamp order, so a
-later copy of a session overwrites the earlier one.
+Restore on the Mac with `scripts/ops/restore_transcripts.sh`, then copy back. Do not apply the archives
+by hand: the order matters.
+
+1. Choose the point to restore to (`--until YYYYmmdd-HHMM`; default: the newest archive).
+2. The script takes the newest **full** at or before that point,
+3. restores it,
+4. then applies only the **incs after that full** (and at or before the point), oldest first. An inc
+   older than the chosen full is skipped: applied after the full it would put older copies over newer
+   ones. The first version of this section did exactly that (corrected 2026-10-09).
+5. Last, it checks against the final archive's `TRANSCRIPTS_MANIFEST.txt`:
+   - a restored file that the manifest does not list, and that is not newer than its `# t0=`, was
+     deleted before that backup, so it is removed again (an inc carries no deletions);
+   - every file the manifest lists must exist in the target.
+
+   Exit codes: 0 restored and complete, 2 no usable full, 3 decrypt or untar failed, 4 the manifest lists
+   files the archives did not carry. Archives from before the manifest (2026-10-09 07:32 and earlier)
+   restore without step 5's deletion and integrity check, and the summary line says so.
 
 ```bash
-# on the Mac
-cd ~/Backups/thomas-govstate && mkdir -p restore-transcripts
-for f in $(ls govstate-transcripts-full-*.age | tail -1) $(ls govstate-transcripts-inc-*.age); do
-  age -d -i ~/.config/thomas-govstate/age-key.txt "$f" | tar xz -C restore-transcripts
-done      # an inc older than the chosen full is harmless: the full and later incs overwrite it
-# then rsync restore-transcripts/.claude/ to root@host:/root/.claude/ (sessions must not be running)
+# on the Mac (the script is plain bash 3.2; fetch it from the repository)
+curl -fsSLO https://raw.githubusercontent.com/thomasryu1992-commits/thomas_agent/main/scripts/ops/restore_transcripts.sh
+bash restore_transcripts.sh ~/Backups/thomas-govstate ~/restore-transcripts            # newest point
+bash restore_transcripts.sh ~/Backups/thomas-govstate ~/restore-20261008 --until 20261008-2359
+# → restored until=… full=… archives=N skipped-older-incs=M deleted=D missing=0
+# then rsync ~/restore-transcripts/.claude/ to root@host:/root/.claude/ (no sessions running)
 ```
 
 Only the member list can be checked on the host side. The run logs `files=<n>` from tar's own index,
