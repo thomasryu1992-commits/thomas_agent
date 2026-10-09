@@ -22,12 +22,13 @@
     - **Stamp override for tests.** `HARNESS_BACKUP_STAMP` overrides the stamp, for tests only.
   - Runbook §2.5 is rewritten around the script.
   - Tests:
-    - Four new tests: the manifest and its t0; restore applying an inc and keeping a deletion deleted;
+    - A real `age` round trip (fresh throwaway key in the test's temp dir) through the backup and the restore script.
+  - Four new tests: the manifest and its t0; restore applying an inc and keeping a deletion deleted;
       a newer full shadowing an older inc, with `--until` choosing the older chain; and the missing-full
       and missing-file exits.
     - The stub `age` gains a decrypt mode.
     - Three mutations were each caught: applying every inc, no deletion pass, ignoring `--until` for the full.
-  - `tests/skip_ceiling.json` win32 129 → 133: the four new tests run bash and skip on Windows.
+  - `tests/skip_ceiling.json` win32 129 → 134: the five new tests run bash and skip on Windows.
 - **Not verified here:** a run on the Mac itself (bash 3.2 and BSD tools). The script avoids the known
   differences, but the first real restore on the Mac is its first run there.
 - **Existing archives:** the 2026-10-09 07:32 full has no manifest. It still restores, but without the

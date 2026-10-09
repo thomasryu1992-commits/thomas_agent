@@ -427,3 +427,24 @@ def test_restore_reports_a_missing_full_and_files_the_archives_did_not_carry(tmp
     archive.write_bytes(HEADER + gzip.compress(buf.getvalue()))
     out = _restore(tmp_path, tmp_path / "t2")
     assert out.returncode == 4 and "missing=1" in out.stdout
+
+
+@pytest.mark.skipif(not (shutil.which("age") and shutil.which("age-keygen")), reason="age is not installed")
+def test_a_real_age_transcripts_backup_restores_with_the_script(tmp_path):
+    key = tmp_path / "key.txt"
+    subprocess.run(["age-keygen", "-o", str(key)], check=True, capture_output=True)
+    public = subprocess.run(["age-keygen", "-y", str(key)], check=True, capture_output=True, text=True).stdout
+    host = _transcripts_host(tmp_path)
+    dest = tmp_path / "dest"
+    (tmp_path / "age-recipients.txt").write_text(public, encoding="utf-8")
+    env = {**os.environ, "AGE_BIN": shutil.which("age"), "HARNESS_BACKUP_HOST_ROOT": str(host),
+           "HARNESS_BACKUP_DEST": str(dest), "HARNESS_BACKUP_AGE_RECIPIENTS": str(tmp_path / "age-recipients.txt"),
+           "HARNESS_BACKUP_STAMP": "20261009-0100"}
+    out = subprocess.run(["bash", str(SCRIPT), "transcripts"], capture_output=True, text=True, timeout=60, env=env)
+    assert out.returncode == 0, out.stderr
+    target = tmp_path / "restored"
+    out = subprocess.run(["bash", str(RESTORE), str(dest), str(target), "--identity", str(key)],
+                         capture_output=True, text=True, timeout=60, env={**os.environ, "AGE_BIN": shutil.which("age")})
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "missing=0" in out.stdout
+    assert _session(target, "old-session.jsonl").read_text() == _session(host, "old-session.jsonl").read_text()
