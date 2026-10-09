@@ -282,3 +282,12 @@ def test_an_epoch_is_never_a_pass_even_over_passing_counters(tmp_path):
 def test_the_digest_follows_the_reconciliation_not_the_text(tmp_path):
     assert cash_flows.reconciliation_digest() == cash_flows.reconciliation_digest()
     assert len(cash_flows.reconciliation_fingerprint()) == 16
+
+
+def test_an_unnameable_fill_spoils_the_settlement_day_of_its_window(tmp_path):
+    start_epoch(tmp_path)
+    _settlement_fires(tmp_path, 12)                                                  # 11 clean windows
+    nameless = order(None, "BUY", "10000", "2026-10-10T03:00:00Z")
+    toss_fire(tmp_path, 990_000, "2026-10-10T03:30:00Z", [SETTLES, nameless])       # explained, but unnameable
+    assert events(tmp_path, "toss_window_observed")[-1]["identity_stable"] is False
+    assert _evidence(tmp_path)["clean_settlement_days"] == []

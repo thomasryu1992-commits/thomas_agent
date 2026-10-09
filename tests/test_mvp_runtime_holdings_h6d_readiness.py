@@ -174,3 +174,15 @@ def test_the_aggregate_view_still_passes_the_guard_and_keeps_its_keys(monkeypatc
     stored = json.loads(store.snapshot_path(tmp_path).read_text(encoding="utf-8"))
     assert set(stored["cash_flows"]["readiness"]) == {"checks", "ready", "shadow_days", "shadow_success_dates",
                                                       "exceptions", "next_step"}
+
+
+def test_a_second_message_keeps_what_the_first_one_told(tmp_path):
+    set_cutover(tmp_path)
+    collect(tmp_path, Feed(pay=[pay("p1")]), now="2026-10-09T04:00:00Z")
+    first = cash_flows.update_readiness(tmp_path, now="2026-10-09T04:00:00Z")
+    cash_flows.mark_exceptions_told(tmp_path, token=first["exceptions_token"], now="2026-10-09T04:00:00Z")
+    collect(tmp_path, Feed(pay=[pay("p2", "6", at="2026-10-09T04:10:00Z")]), now="2026-10-09T04:20:00Z")
+    second = cash_flows.update_readiness(tmp_path, now="2026-10-09T04:20:00Z")
+    cash_flows.mark_exceptions_told(tmp_path, token=second["exceptions_token"], now="2026-10-09T04:20:00Z")
+    third = cash_flows.update_readiness(tmp_path, now="2026-10-09T04:20:00Z")
+    assert third["exceptions"] == 2 and third["exceptions_untold"] is False          # p1 is not told again
