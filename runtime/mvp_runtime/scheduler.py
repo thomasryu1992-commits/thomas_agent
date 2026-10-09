@@ -1479,6 +1479,15 @@ def _execute(
             else:
                 holdings_store.mark_readiness_told(now=now, root=repo_root)
                 status = f"{status}; h6 readiness told"
+        # H6 exceptions (Thomas 2026-10-09): told each time the count of unexplained events grows.
+        if result.get("exception_alert"):
+            count, text = result["exception_alert"]
+            failure = _tell(text)
+            if failure:
+                status = f"{status}; h6 exceptions not sent:{failure}"
+            else:
+                holdings_store.mark_exceptions_told(count, now=now, root=repo_root)
+                status = f"{status}; h6 exceptions told"
         return status
     if schedule.kind == KIND_FORWARD_COHORT:
         # ALLOW-tier venue read, and writes to the cohort's own store alone: no pool, no forward
