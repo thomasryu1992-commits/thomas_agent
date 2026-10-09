@@ -215,6 +215,19 @@
        - 준비되면(false→true) 텔레그램이 한 번 간다. 전달된 뒤에만 표시를 남기고, 실패하면 다음 실행에서 다시 보낸다.
        - 준비가 깨졌다가 다시 갖춰지면 새 epoch이고, 다시 한 번 알린다.
        - 다음 단계는 자동으로 켜지지 않는다. Thomas 승인이 필요하다.
+   - **H6b readiness-hardening (Thomas 2026-10-09):**
+     - **이름:** 준비 신호는 `H6b_shadow_ready`다. 열리는 것은 H6b-shadow이고, H6c 권위 회계가 아니다.
+     - **예외:** 새 검사 `post_cutover_exceptions`를 둔다.
+       - 세는 것은 cutover 이후의 Binance HELD 사건(Pay, 결제, 중복 의심 양쪽, 취소, 맞지 않는 행)과 토스
+         UNRESOLVED 잔차다.
+       - 1건이라도 있으면 FAIL이다. 보드는 `Action required: exception review (N)`을 보인다.
+       - 건수가 늘 때마다 텔레그램이 한 번 간다. 건수만 담고, 전달된 뒤에만 표시를 남긴다.
+       - 해소 도구는 H6d이고, 그전까지는 막힌 채로 남는다(Thomas 결정).
+     - **shadow 관찰:** cutover 후 7일이 지나고, 정상 실행이 있었던 KST 날짜가 7개 이상이어야 PASS다.
+       - 날짜마다 정상 실행 한 번이면 되므로 일시 장애 하나로 영원히 막히지 않는다.
+     - **정상 실행:** Binance 내역 9개를 모두 읽고, 토스 pass와 원장·readiness 계산이 끝난 실행이다.
+       - `first_verified_fire_at`은 그런 실행 뒤에만 기록된다. 읽기 시작 시점에 기록하지 않는다.
+       - cutover를 옮기면 날짜 기록도 지워진다.
 3. **H6b-shadow:** unitized NAV를 옆에서만 계산한다. 기존 낙폭 판정은 그대로이고, 외부 성과 판정에는 쓰지 않는다.
 4. **H6c:** 첫 완전 NAV에서 NAV/unit = 100으로 시작하고 unit 회계를 권위로 삼는다. 낙폭은 NAV/unit 고점 대비가 된다.
    `--reset-peak`는 복구 전용으로 내린다.

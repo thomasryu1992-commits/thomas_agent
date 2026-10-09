@@ -138,10 +138,13 @@ def render_view(view: dict[str, Any], *, stamp_line: str) -> list[str]:
             if isinstance(ready, dict):
                 lines.append("--- H6 readiness ---")
                 lines.extend(f"{name:24} {state}" for name, state in (ready.get("checks") or {}).items())
-                lines.append(f"{'H6c_ready':24} {'true' if ready.get('ready') else 'false'}")
-                lines.append(f"{'Action required':24} "
-                             + ("approve the next step (" + str(ready.get("next_step")) + ")" if ready.get("ready")
-                                else "None"))
+                lines.append(f"{'shadow days / dates':24} {ready.get('shadow_days', 0)} / "
+                             f"{ready.get('shadow_success_dates', 0)} (need 7 / 7)")
+                lines.append(f"{'H6b_shadow_ready':24} {'true' if ready.get('ready') else 'false'}")
+                action = ("approve the next step (" + str(ready.get("next_step")) + ")" if ready.get("ready")
+                          else f"exception review ({ready['exceptions']})" if ready.get("exceptions")
+                          else "None")
+                lines.append(f"{'Action required':24} {action}")
     allocation = view.get("allocation")
     if isinstance(allocation, dict):
         lines.extend(render_allocation(allocation))

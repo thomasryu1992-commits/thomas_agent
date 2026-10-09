@@ -969,7 +969,7 @@ def test_h6_readiness_is_told_once_and_only_after_delivery(monkeypatch, gate_ope
     def fake_readiness(state_dir, *, now):
         told = bool(cash_flows.load_state(state_dir).get("readiness_told_at"))
         return {"checks": {"ledger_chain": "PASS"}, "ready": True, "shadow_days": 7.0, "toss_note": "ok",
-                "next_step": "H6b-shadow", "told": told}
+                "shadow_success_dates": 7, "exceptions": 0, "next_step": "H6b-shadow", "told": told}
 
     monkeypatch.setattr(cash_flows, "readiness", fake_readiness)
     monkeypatch.setattr(operator_mod, "select_operator_channel", lambda **_kw: "channel")
@@ -982,5 +982,5 @@ def test_h6_readiness_is_told_once_and_only_after_delivery(monkeypatch, gate_ope
     sent = []
     monkeypatch.setattr(operator_mod, "notify_operator", lambda channel, text, **_kw: sent.append(text))
     assert _fire(tmp_path).endswith("h6 readiness told")
-    assert len(sent) == 1 and "H6 준비 완료" in sent[0] and "자동으로 켜지지 않습니다" in sent[0]
+    assert len(sent) == 1 and "H6b_shadow_ready" in sent[0] and "자동으로 켜지지 않습니다" in sent[0]
     assert "h6 readiness" not in _fire(tmp_path) and len(sent) == 1

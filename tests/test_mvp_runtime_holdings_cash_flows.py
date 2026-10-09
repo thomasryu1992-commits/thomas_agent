@@ -292,7 +292,7 @@ def test_the_cutover_is_set_once_and_splits_events_by_their_own_time(tmp_path):
     assert rows["crypto_deposit:after"]["cutover_phase"] == "POST_CUTOVER"
     assert rows["crypto_deposit:after"]["accounting_eligibility"] == "ELIGIBLE"
     state = cash_flows.load_state(tmp_path)
-    assert state["first_verified_fire_at"] == LATER and state["shadow_started_at"] == "2026-10-09T03:33:54Z"
+    assert "first_verified_fire_at" not in state and state["shadow_started_at"] == "2026-10-09T03:33:54Z"
     _collect(tmp_path, Feed(), now="2026-10-09T05:00:00Z", now_ms=LATER_MS + 3_600_000)   # a restart, a redeploy
     assert cash_flows.load_state(tmp_path)["cutover_at"] == NOW
 
@@ -362,6 +362,8 @@ def test_readiness_is_ready_only_when_every_piece_is_in(tmp_path):
     state["toss_evidence"] = {"buy_explained": 1, "sell_explained": 1, "activity_unexplained": 0,
                               "settlement_days": {"2026-10-10": {"windows": 20, "unexplained": 0}}}
     cash_flows._save_state(tmp_path, state)
+    for day in range(9, 17):
+        cash_flows.mark_fire_verified(tmp_path, now=f"2026-10-{day:02d}T04:00:00Z")
     assert cash_flows.readiness(tmp_path, now="2026-10-12T00:00:00Z")["ready"] is False   # 3 days of shadow
     ready = cash_flows.readiness(tmp_path, now="2026-10-17T00:00:00Z")
     assert ready["ready"] is True and set(ready["checks"].values()) == {"PASS"}
@@ -379,6 +381,110 @@ def test_readiness_tells_once_per_epoch_and_again_after_it_breaks(tmp_path, monk
     assert cash_flows.update_readiness(tmp_path, now=NOW)["ready"] is False        # it broke
     again = cash_flows.update_readiness(tmp_path, now=NOW)
     assert again["ready"] and again["epoch"] == 2 and not again["told"]           # back: told again
+
+
+def _store_fire(monkeypatch, tmp_path, *, flows=None, toss_orders=(), now=NOW):
+    """One holdings fire through the store, with a capable Binance feed answering ``flows`` and a Toss feed."""
+    from runtime.mvp_runtime.holdings import store, toss_account
+    from runtime.mvp_runtime.holdings.model import HoldingsSnapshot, MarketTotals
+
+    futures = tmp_path / combined.BINANCE_SNAPSHOT_REL
+    futures.parent.mkdir(parents=True, exist_ok=True)
+    futures.write_text(json.dumps({"record_type": combined.BINANCE_RECORD_TYPE, "configured": True, "asset": "USDT",
+                                   "margin_balance": 100.0, "as_of": now}), encoding="utf-8")
+    zero = {name: 0.0 for name in binance_wallet.CLASSES}
+    wallet = binance_wallet.WalletSnapshot(spot_usdt=zero, earn_usdt=dict(zero), unpriced_assets=0,
+                                           collected_at=now, latency_ms=0)
+    toss = HoldingsSnapshot(account="****", broker="toss",
+                            domestic=MarketTotals(market="domestic", holdings_value_krw=0.0, unrealized_pnl_krw=0.0,
+                                                  cash_krw=1_000_000.0),
+                            overseas=MarketTotals(market="overseas", holdings_value_krw=0.0, unrealized_pnl_krw=0.0,
+                                                  cash_krw=0.0),
+                            holdings=(), collected_at=now, latency_ms=1, usd_krw_rate=1400.0)
+    toss_feed = toss_account.TossHoldingsFeed()
+    monkeypatch.setattr(toss_feed, "closed_orders", lambda **_kw: (list(toss_orders), False))
+    monkeypatch.setattr(store, "read_holdings", lambda **_: (toss, None))
+    monkeypatch.setattr(store, "_feed", lambda: toss_feed)
+    monkeypatch.setattr(binance_wallet, "read_wallet", lambda **_: (wallet, None))
+    capable = binance_wallet.BinanceWalletFeed()
+    monkeypatch.setattr(capable, "flow_history", (flows or Feed()).flow_history)
+    monkeypatch.setattr(binance_wallet, "select_wallet_feed", lambda: capable)
+    return store.refresh(now=now, root=tmp_path)
+
+
+def _flow_state(tmp_path):
+    from runtime.mvp_runtime.holdings import store
+    return cash_flows.load_state(store.state_dir(tmp_path))
+
+
+def _set_cutover(tmp_path):
+    from runtime.mvp_runtime.holdings import store
+    cash_flows.set_cutover(store.state_dir(tmp_path), at="2026-10-09T02:00:00Z", requested_by="claude")
+
+
+def test_a_clean_store_fire_is_marked_verified_and_a_broken_one_is_not(monkeypatch, tmp_path):
+    _set_cutover(tmp_path)
+    _store_fire(monkeypatch, tmp_path, flows=Feed(transfer_spot_to_futures=ToolError("TOOL_TRANSPORT", "x")))
+    assert "first_verified_fire_at" not in _flow_state(tmp_path)
+    _store_fire(monkeypatch, tmp_path, flows=Feed(pay=ToolError("TOOL_TRANSPORT", "x")))     # a shadow read too
+    assert "first_verified_fire_at" not in _flow_state(tmp_path)
+    _store_fire(monkeypatch, tmp_path)
+    state = _flow_state(tmp_path)
+    assert state["first_verified_fire_at"] == NOW and state["shadow_success_dates"] == ["2026-10-09"]
+
+
+def test_a_store_fire_whose_toss_pass_fails_is_not_verified(monkeypatch, tmp_path):
+    from runtime.mvp_runtime.holdings import store
+
+    _set_cutover(tmp_path)
+    monkeypatch.setattr(store.cash_flows, "collect_toss", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    _store_fire(monkeypatch, tmp_path)
+    assert "first_verified_fire_at" not in _flow_state(tmp_path)
+
+
+def test_a_post_cutover_exception_reaches_the_board_and_an_alert_with_counts_only(monkeypatch, tmp_path):
+    from runtime.mvp_runtime.holdings import store
+
+    _set_cutover(tmp_path)
+    pay = {"transactionId": "p1", "amount": "123.45", "currency": "SECRETCOIN", "transactionTime": NOW_MS - 60_000}
+    result = _store_fire(monkeypatch, tmp_path, flows=Feed(pay=[pay]))
+    count, text = result["exception_alert"]
+    assert count == 1 and "1건" in text and "SECRETCOIN" not in text and "123" not in text
+    assert result["readiness_alert"] is None
+    stored = json.loads(store.snapshot_path(tmp_path).read_text(encoding="utf-8"))
+    assert "SECRETCOIN" not in json.dumps(stored)
+    ready = stored["cash_flows"]["readiness"]
+    assert ready["exceptions"] == 1 and ready["checks"]["post_cutover_exceptions"] == "FAIL"
+    store.mark_exceptions_told(1, now=NOW, root=tmp_path)
+    assert _store_fire(monkeypatch, tmp_path, flows=Feed(pay=[pay]))["exception_alert"] is None   # told once
+
+
+def test_the_scheduler_tells_the_exceptions_and_marks_them_only_once_delivered(monkeypatch, tmp_path):
+    from runtime.mvp_runtime import operator as operator_mod, scheduler
+    from runtime.mvp_runtime.errors import MvpRuntimeError
+    from runtime.mvp_runtime.holdings import store
+
+    told: list[int] = []
+    monkeypatch.setattr(store, "refresh", lambda **_: {"status": "ok", "alert": None, "readiness_alert": None,
+                                                       "exception_alert": (2, "H6 예외 2건")})
+    monkeypatch.setattr(store, "mark_exceptions_told", lambda count, **_: told.append(count))
+    monkeypatch.setattr(operator_mod, "select_operator_channel", lambda **_: object())
+    sent: list[str] = []
+
+    def down(_channel, text, **_kw):
+        raise MvpRuntimeError("OPERATOR_CHANNEL_DOWN", "down")
+
+    schedule = scheduler.Schedule(schedule_id="s", kind=scheduler.KIND_HOLDINGS, request="", interval_seconds=3600,
+                                  enabled=True, created_by="test", created_at=NOW, next_run_at=NOW)
+
+    def fire():
+        return scheduler._execute(schedule, now=NOW, ledger=None, working_memory=None, programization=None,
+                                  repo_root=tmp_path, executor=lambda **_: {})
+
+    monkeypatch.setattr(operator_mod, "notify_operator", down)
+    assert "h6 exceptions not sent:OPERATOR_CHANNEL_DOWN" in fire() and told == []
+    monkeypatch.setattr(operator_mod, "notify_operator", lambda _c, text, **_kw: sent.append(text))
+    assert "h6 exceptions told" in fire() and told == [2] and sent == ["H6 예외 2건"]
 
 
 def test_a_failed_transfer_read_fails_this_fires_coherence(monkeypatch, tmp_path):
@@ -410,3 +516,130 @@ def test_a_failed_transfer_read_fails_this_fires_coherence(monkeypatch, tmp_path
     block = json.loads(store.snapshot_path(tmp_path).read_text(encoding="utf-8"))["combined"]
     assert block["checks"]["coherence"] == "FAIL" and block["internal_transfer_in_window"] is True
     assert block["portfolio_nav_complete"] is False
+
+
+# --- H6b readiness-hardening (Thomas 2026-10-09) -----------------------------------------------------
+
+def _ready_but_for(tmp_path, *, dates=range(9, 17)):
+    """Every readiness piece in, the cutover at NOW; the caller takes one away."""
+    cash_flows.set_cutover(tmp_path, at=NOW, requested_by="claude")
+    _collect(tmp_path, Feed(crypto_deposit=[DEPOSIT]), now=LATER, now_ms=LATER_MS)
+    state = cash_flows.load_state(tmp_path)
+    state["toss_evidence"] = {"buy_explained": 1, "sell_explained": 1, "activity_unexplained": 0,
+                              "settlement_days": {"2026-10-10": {"windows": 20, "unexplained": 0}}}
+    cash_flows._save_state(tmp_path, state)
+    for day in dates:
+        cash_flows.mark_fire_verified(tmp_path, now=f"2026-10-{day:02d}T04:00:00Z")
+
+
+def test_the_first_verified_fire_is_marked_after_the_fire_never_by_the_read(tmp_path):
+    cash_flows.set_cutover(tmp_path, at=NOW, requested_by="claude")
+    _collect(tmp_path, Feed(transfer_futures_to_spot=ToolError("TOOL_TRANSPORT", "x")), now=LATER, now_ms=LATER_MS)
+    assert "first_verified_fire_at" not in cash_flows.load_state(tmp_path)       # the read alone proves nothing
+    assert cash_flows.readiness(tmp_path, now=LATER)["checks"]["cutover_boundary"] == "WAITING"
+    cash_flows.mark_fire_verified(tmp_path, now="2026-10-09T02:00:00Z")           # before the cutover: not counted
+    assert "first_verified_fire_at" not in cash_flows.load_state(tmp_path)
+    cash_flows.mark_fire_verified(tmp_path, now=LATER)
+    cash_flows.mark_fire_verified(tmp_path, now="2026-10-09T05:00:00Z")
+    state = cash_flows.load_state(tmp_path)
+    assert state["first_verified_fire_at"] == LATER and state["shadow_success_dates"] == ["2026-10-09"]
+
+
+def test_seven_elapsed_days_without_seven_verified_dates_is_still_running(tmp_path):
+    _ready_but_for(tmp_path, dates=(9, 10, 11))
+    ready = cash_flows.readiness(tmp_path, now="2026-10-20T00:00:00Z")            # eleven days elapsed
+    assert ready["checks"]["shadow_observation"] == "RUNNING" and ready["shadow_success_dates"] == 3
+    assert ready["ready"] is False
+    for day in (12, 13, 14, 15):
+        cash_flows.mark_fire_verified(tmp_path, now=f"2026-10-{day:02d}T04:00:00Z")
+    assert cash_flows.readiness(tmp_path, now="2026-10-20T00:00:00Z")["ready"] is True
+
+
+def test_seven_verified_dates_before_seven_elapsed_days_is_still_running(tmp_path):
+    _ready_but_for(tmp_path, dates=range(9, 16))
+    ready = cash_flows.readiness(tmp_path, now="2026-10-15T23:00:00Z")            # 6.8 days, 7 dates
+    assert ready["shadow_success_dates"] == 7 and ready["checks"]["shadow_observation"] == "RUNNING"
+
+
+def test_the_ready_baseline_passes(tmp_path):
+    _ready_but_for(tmp_path)
+    ready = cash_flows.readiness(tmp_path, now="2026-10-17T00:00:00Z")
+    assert ready["ready"] is True and ready["exceptions"] == 0
+    assert ready["checks"]["post_cutover_exceptions"] == "PASS"
+
+
+@pytest.mark.parametrize("source,row", [
+    ("pay", {"transactionId": "p1", "amount": "5", "currency": "USDT", "transactionTime": NOW_MS + 60_000}),
+    ("fiat_buy", {"orderNo": "f1", "sourceAmount": "10000", "fiatCurrency": "KRW", "obtainAmount": "7",
+                  "cryptoCurrency": "USDT", "status": "Completed", "createTime": NOW_MS + 60_000}),
+])
+def test_a_held_event_after_the_cutover_blocks_the_readiness(tmp_path, source, row):
+    _ready_but_for(tmp_path)
+    _collect(tmp_path, Feed(**{source: [row]}), now="2026-10-09T05:00:00Z", now_ms=LATER_MS + 3_600_000)
+    ready = cash_flows.readiness(tmp_path, now="2026-10-17T00:00:00Z")
+    assert ready["exceptions"] == 1 and ready["checks"]["post_cutover_exceptions"] == "FAIL"
+    assert ready["ready"] is False
+
+
+def test_a_held_event_before_the_cutover_does_not_block(tmp_path):
+    _ready_but_for(tmp_path)
+    pay = {"transactionId": "p0", "amount": "5", "currency": "USDT", "transactionTime": NOW_MS - 60_000}
+    _collect(tmp_path, Feed(pay=[pay]), now="2026-10-09T05:00:00Z", now_ms=LATER_MS + 3_600_000)
+    assert cash_flows.summary(tmp_path)["held"] == 1                              # held, but observed only
+    assert cash_flows.readiness(tmp_path, now="2026-10-17T00:00:00Z")["ready"] is True
+
+
+def test_a_look_alike_after_the_cutover_blocks_through_the_link(tmp_path):
+    _ready_but_for(tmp_path)
+    after = {**DEPOSIT, "id": "d2", "insertTime": NOW_MS + 60_000}
+    twin = {"transactionId": "p2", "amount": "100.5", "currency": "USDT", "transactionTime": NOW_MS + 120_000}
+    _collect(tmp_path, Feed(crypto_deposit=[after], pay=[twin]), now="2026-10-09T05:00:00Z",
+             now_ms=LATER_MS + 3_600_000)
+    assert cash_flows.readiness(tmp_path, now="2026-10-17T00:00:00Z")["exceptions"] == 2   # both sides
+
+
+def test_a_toss_residual_after_the_cutover_blocks_and_one_before_does_not(tmp_path):
+    cash_flows.collect_toss(Toss(), _snap(1_000_000, 0.0), tmp_path, now="2026-10-09T02:00:00Z")
+    cash_flows.collect_toss(Toss(), _snap(1_050_000, 0.0), tmp_path, now="2026-10-09T02:30:00Z")   # before
+    _ready_but_for(tmp_path)
+    assert cash_flows.readiness(tmp_path, now="2026-10-17T00:00:00Z")["exceptions"] == 0
+    cash_flows.collect_toss(Toss(), _snap(1_100_000, 0.0), tmp_path, now="2026-10-10T00:00:00Z")   # after
+    ready = cash_flows.readiness(tmp_path, now="2026-10-17T00:00:00Z")
+    assert ready["exceptions"] == 1 and ready["ready"] is False
+
+
+def test_exceptions_are_told_each_time_the_count_grows(tmp_path):
+    _ready_but_for(tmp_path)
+    assert cash_flows.update_readiness(tmp_path, now=LATER)["exceptions_untold"] is False
+    pay = {"transactionId": "p1", "amount": "5", "currency": "USDT", "transactionTime": NOW_MS + 60_000}
+    _collect(tmp_path, Feed(pay=[pay]), now="2026-10-09T05:00:00Z", now_ms=LATER_MS + 3_600_000)
+    first = cash_flows.update_readiness(tmp_path, now=LATER)
+    assert first["exceptions"] == 1 and first["exceptions_untold"] is True
+    assert cash_flows.update_readiness(tmp_path, now=LATER)["exceptions_untold"] is True   # not delivered yet
+    cash_flows.mark_exceptions_told(tmp_path, count=1, now=LATER)
+    assert cash_flows.update_readiness(tmp_path, now=LATER)["exceptions_untold"] is False
+    second = {**pay, "transactionId": "p2", "amount": "6"}
+    _collect(tmp_path, Feed(pay=[second]), now="2026-10-09T06:00:00Z", now_ms=LATER_MS + 7_200_000)
+    assert cash_flows.update_readiness(tmp_path, now=LATER)["exceptions_untold"] is True
+
+
+def test_moving_the_cutover_restarts_the_shadow_dates(tmp_path):
+    _ready_but_for(tmp_path)
+    cash_flows.set_cutover(tmp_path, at="2026-10-12T00:00:00Z", requested_by="thomas", migrate=True, reason="repair")
+    state = cash_flows.load_state(tmp_path)
+    assert "shadow_success_dates" not in state and "first_verified_fire_at" not in state
+
+
+def test_the_board_names_the_unit_shadow_and_asks_for_an_exception_review():
+    from runtime.mvp_runtime.holdings import board
+
+    def lines(**ready):
+        flows = {"events": 1, "readiness": {"checks": {"ledger_chain": "PASS"}, "ready": False, "shadow_days": 2.0,
+                                            "shadow_success_dates": 2, "exceptions": 0, "next_step": "H6b-shadow",
+                                            **ready}}
+        return "\n".join(board.render_view({"cash_flows": flows}, stamp_line="as of x"))
+    text = lines()
+    assert "H6b_shadow_ready" in text and "H6c_ready" not in text
+    assert "Action required          None" in text
+    assert "Action required          exception review (2)" in lines(exceptions=2)
+    assert "Action required          approve the next step (H6b-shadow)" in lines(ready=True)

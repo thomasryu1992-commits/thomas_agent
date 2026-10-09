@@ -66,6 +66,8 @@ CRITICAL_SOURCES = ("transfer_spot_to_futures", "transfer_futures_to_spot")
 PRE_CUTOVER, POST_CUTOVER = "PRE_CUTOVER", "POST_CUTOVER"
 OBSERVED_ONLY, ELIGIBLE = "OBSERVED_ONLY", "ELIGIBLE"
 SHADOW_MIN_DAYS = 7
+# H6b readiness-hardening (Thomas 2026-10-09): what readiness opens is the unit shadow, not H6c.
+READY_NAME = "H6b_shadow_ready"
 
 CONFIRMED, RECONCILED, UNRESOLVED = "CONFIRMED", "RECONCILED", "UNRESOLVED"
 READY, HELD = "READY", "HELD"
@@ -223,10 +225,9 @@ def collect_binance(feed: Any, state_dir: Path, *, now: str, now_ms: int | None 
     sources = state.setdefault("sources", {})
     # The boundary H6c must respect (Thomas 2026-10-09). It is set once, explicitly, at activation
     # (:func:`set_cutover`), never by a fire: a fire an hour after a deploy would misfile what moved in
-    # between. With none set, every event is observed only.
+    # between. With none set, every event is observed only. Whether this fire counts as verified is
+    # decided after it ends (:func:`mark_fire_verified`), never here.
     cutover_ms = int(state["cutover_ms"]) if state.get("cutover_ms") else None
-    if cutover_ms is not None and not state.get("first_verified_fire_at"):
-        state["first_verified_fire_at"] = now
     ledger = verify(state_dir)
     seen = {row.get("source_event_key") for row in ledger}
     recorded = {row.get("source_event_key"): row for row in ledger if row.get("event") in (EVENT_FLOW, EVENT_INTERNAL)}
@@ -332,8 +333,48 @@ def set_cutover(state_dir: Path, *, at: str, requested_by: str, reason: str | No
     if shadow_started_at and not state.get("shadow_started_at"):
         state["shadow_started_at"] = shadow_started_at
     state.pop("first_verified_fire_at", None)
+    state.pop("shadow_success_dates", None)
     _save_state(state_dir, state)
     return state
+
+
+def _kst_date(at: str) -> str:
+    return (timeutil.parse_iso(at) + timedelta(hours=9)).date().isoformat()
+
+
+def mark_fire_verified(state_dir: Path, *, now: str) -> None:
+    """Called once a fire's histories all read and its ledger, Toss and readiness passes ended cleanly
+    (Thomas 2026-10-09). The first such fire after the cutover is the boundary's evidence; each KST date
+    with one counts toward the shadow observation. A fire that broke anywhere counts for nothing."""
+    state = load_state(state_dir)
+    cutover_ms = int(state["cutover_ms"]) if state.get("cutover_ms") else None
+    if cutover_ms is None or timeutil.parse_iso(now).timestamp() * 1000 < cutover_ms:
+        return
+    state.setdefault("first_verified_fire_at", now)
+    state["shadow_success_dates"] = sorted({*(state.get("shadow_success_dates") or []), _kst_date(now)})
+    _save_state(state_dir, state)
+
+
+def post_cutover_exceptions(rows: list[dict[str, Any]], state: Mapping[str, Any]) -> int:
+    """Events after the cutover that nothing explains yet (Thomas 2026-10-09): a Binance event held for any
+    reason (unverified meaning, look-alike, reversal, malformed row) or a Toss residual. Each blocks the
+    readiness until resolved; resolving one is a later step. A line whose time cannot be read counts."""
+    if not state.get("cutover_ms"):
+        return 0
+    cutover_ms = int(state["cutover_ms"])
+    status = effective_status(rows)
+    count = 0
+    for row in rows:
+        event = row.get("event")
+        if event in (EVENT_FLOW, EVENT_INTERNAL):
+            count += row.get("cutover_phase") == POST_CUTOVER and status.get(row["source_event_key"]) == HELD
+        elif event in (EVENT_MALFORMED, EVENT_TOSS_RESIDUAL):
+            try:
+                written_ms = timeutil.parse_iso(str(row.get("at"))).timestamp() * 1000
+            except (ValueError, TypeError):
+                written_ms = None
+            count += written_ms is None or written_ms >= cutover_ms
+    return count
 
 
 def _canon(amount: Any) -> Decimal | None:
@@ -531,12 +572,20 @@ def readiness(state_dir: Path, *, now: str) -> dict[str, Any]:
     checks["cross_source_dedupe"] = "PASS"
     checks["internal_transfer_guard"] = ("PASS" if all(sources.get(n, {}).get("access") == "PASS"
                                                        for n in CRITICAL_SOURCES) else "FAIL")
-    days = 0.0
+    exceptions = post_cutover_exceptions(rows, state)
+    checks["post_cutover_exceptions"] = "PASS" if not exceptions else "FAIL"
+    # Seven days since the cutover, and a verified fire on seven KST dates: elapsed time alone is not a
+    # shadow that worked. One fire a date, not every hour, so a passing outage does not block it forever.
+    days, dates = 0.0, []
     if state.get("cutover_ms"):
         days = (timeutil.parse_iso(now).timestamp() * 1000 - int(state["cutover_ms"])) / 86_400_000
-    checks["shadow_observation"] = "PASS" if days >= SHADOW_MIN_DAYS else "RUNNING"
+        start = _kst_date(state["cutover_at"]) if state.get("cutover_at") else ""
+        dates = [d for d in state.get("shadow_success_dates") or [] if d >= start]
+    checks["shadow_observation"] = ("PASS" if days >= SHADOW_MIN_DAYS and len(dates) >= SHADOW_MIN_DAYS
+                                    else "RUNNING")
     ready = all(value == "PASS" for value in checks.values())
-    return {"checks": checks, "toss_note": toss_why, "shadow_days": round(days, 1), "ready": ready,
+    return {"checks": checks, "toss_note": toss_why, "shadow_days": round(days, 1),
+            "shadow_success_dates": len(dates), "exceptions": exceptions, "ready": ready,
             "next_step": "H6b-shadow (NAV per unit computed beside the board, no verdict)"}
 
 
@@ -549,9 +598,13 @@ def update_readiness(state_dir: Path, *, now: str) -> dict[str, Any]:
     if ready["ready"] and not record.get("ready"):
         record["epoch"] = int(record.get("epoch") or 0) + 1
     record["ready"] = ready["ready"]
+    # Exceptions are told as they appear: once each time the count grows, never again for the same ones.
+    owed = state.setdefault("exceptions", {"count": 0, "told_count": 0})
+    owed["count"] = int(ready.get("exceptions") or 0)
     _save_state(state_dir, state)
     ready["epoch"] = record["epoch"]
     ready["told"] = record.get("told_epoch") == record["epoch"]
+    ready["exceptions_untold"] = owed["count"] > int(owed.get("told_count") or 0)
     return ready
 
 
@@ -559,6 +612,13 @@ def mark_readiness_told(state_dir: Path, *, now: str) -> None:
     state = load_state(state_dir)
     record = state.setdefault("readiness", {"epoch": 0, "ready": False, "told_epoch": 0})
     record["told_epoch"], record["told_at"] = record.get("epoch", 0), now
+    _save_state(state_dir, state)
+
+
+def mark_exceptions_told(state_dir: Path, *, count: int, now: str) -> None:
+    state = load_state(state_dir)
+    owed = state.setdefault("exceptions", {"count": count, "told_count": 0})
+    owed["told_count"], owed["told_at"] = max(int(owed.get("told_count") or 0), count), now
     _save_state(state_dir, state)
 
 
