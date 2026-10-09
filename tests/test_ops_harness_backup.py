@@ -362,7 +362,10 @@ def test_every_transcripts_archive_carries_a_manifest_with_its_t0(tmp_path):
         body = tar.extractfile("TRANSCRIPTS_MANIFEST.txt").read().decode()
     lines = body.splitlines()
     assert lines[0].startswith("# t0=") and len(lines[0]) == len("# t0=202610090100.00")
-    assert ".claude/projects/-root-thomas-agent/old-session.jsonl" in lines
+    assert lines[1:6] == ["# set=transcripts", "# kind=full", "# stamp=20261009-0100", "# chain=20261009-0100", "# prev=none"]
+    row = next(l for l in lines if l.startswith(".claude/projects/-root-thomas-agent/old-session.jsonl\t"))
+    path, size, mtime = row.split("\t")
+    assert int(size) == len('{"type":"user"}\n') and int(mtime) > 1_700_000_000
     assert not list((tmp_path / "dest").glob(".manifest-*"))     # the staging directory is gone
 
 
@@ -449,3 +452,158 @@ def test_a_real_age_transcripts_backup_restores_with_the_script(tmp_path):
     assert out.returncode == 0, out.stdout + out.stderr
     assert "missing=0" in out.stdout
     assert _session(target, "old-session.jsonl").read_text() == _session(host, "old-session.jsonl").read_text()
+
+
+
+# Chain and file checks (2026-10-09, second review): a gap, a missing tail, an out-of-order archive, a
+# stale copy and a legacy archive are each told apart from a verified restore.
+
+def _edit_manifest(archive: Path, edit) -> None:
+    raw = gzip.decompress(archive.read_bytes()[len(HEADER):])
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=io.BytesIO(raw)) as src, tarfile.open(fileobj=buf, mode="w") as dst:
+        for m in src.getmembers():
+            data = src.extractfile(m).read() if m.isfile() else None
+            if m.name == "TRANSCRIPTS_MANIFEST.txt":
+                data = edit(data.decode()).encode()
+                m.size = len(data)
+            dst.addfile(m, io.BytesIO(data) if data is not None else None)
+    archive.write_bytes(HEADER + gzip.compress(buf.getvalue()))
+
+
+def _chain_of_three(tmp_path: Path) -> Path:
+    host = _transcripts_host(tmp_path)
+    _backup(tmp_path, host, "20261001-0755", full=True)
+    _session(host, "a.jsonl").write_text("a\n", encoding="utf-8")
+    _backup(tmp_path, host, "20261002-0755")
+    _session(host, "b.jsonl").write_text("b\n", encoding="utf-8")
+    _backup(tmp_path, host, "20261003-0755")
+    _session(host, "c.jsonl").write_text("c\n", encoding="utf-8")
+    _backup(tmp_path, host, "20261004-0755")
+    return host
+
+
+def test_each_inc_names_its_full_and_the_archive_before_it(tmp_path):
+    _chain_of_three(tmp_path)
+    log = (tmp_path / "dest" / "backup.log").read_text().splitlines()
+    assert "chain=20261001-0755 prev=none" in log[0]
+    assert "chain=20261001-0755 prev=20261001-0755" in log[1]
+    assert "chain=20261001-0755 prev=20261003-0755" in log[3]
+
+
+def test_a_complete_chain_with_the_logged_head_is_verified(tmp_path):
+    _chain_of_three(tmp_path)
+    out = _restore(tmp_path, tmp_path / "t", "--expect-head", "20261004-0755")
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert out.stdout.startswith("VERIFIED") and "tail=ok" in out.stdout and "missing=0 stale=0" in out.stdout
+
+
+def test_a_missing_middle_inc_is_refused_even_though_every_file_is_present(tmp_path):
+    """FULL + INC-A + INC-C without INC-B: INC-C carries everything INC-B did (one-hour overlap aside, its
+    window starts at INC-B), so the files could all be there — the chain still says B is missing."""
+    _chain_of_three(tmp_path)
+    (tmp_path / "dest" / "govstate-transcripts-inc-20261003-0755.tar.gz.age").unlink()
+    out = _restore(tmp_path, tmp_path / "t")
+    assert out.returncode == 5 and out.stdout.startswith("BROKEN")
+    assert "follows 20261003-0755, which is missing" in out.stdout
+
+
+def test_a_missing_last_inc_is_caught_only_against_the_logged_head(tmp_path):
+    _chain_of_three(tmp_path)
+    (tmp_path / "dest" / "govstate-transcripts-inc-20261004-0755.tar.gz.age").unlink()
+    out = _restore(tmp_path, tmp_path / "t")
+    assert out.returncode == 0 and "tail=unchecked" in out.stdout      # the archives alone cannot tell
+    out = _restore(tmp_path, tmp_path / "t2", "--expect-head", "20261004-0755")
+    assert out.returncode == 5 and "tail=MISSING" in out.stdout
+
+
+def test_an_archive_renamed_out_of_order_breaks_the_chain(tmp_path):
+    _chain_of_three(tmp_path)
+    d = tmp_path / "dest"
+    (d / "govstate-transcripts-inc-20261002-0755.tar.gz.age").rename(d / "govstate-transcripts-inc-20261005-0755.tar.gz.age")
+    out = _restore(tmp_path, tmp_path / "t")
+    assert out.returncode == 5 and out.stdout.startswith("BROKEN")       # the gap where it used to sit is found first
+
+
+def test_a_restored_copy_older_than_the_manifest_says_is_stale(tmp_path):
+    _chain_of_three(tmp_path)
+    last = tmp_path / "dest" / "govstate-transcripts-inc-20261004-0755.tar.gz.age"
+    def newer(body):                     # the manifest says a.jsonl was written later than any copy carried
+        return "\n".join(l.rsplit("\t", 1)[0] + "\t9999999999" if l.startswith(".claude/projects/-root-thomas-agent/a.jsonl\t") else l
+                         for l in body.splitlines()) + "\n"
+    _edit_manifest(last, newer)
+    out = _restore(tmp_path, tmp_path / "t")
+    assert out.returncode == 6 and out.stdout.startswith("STALE") and "stale=1" in out.stdout
+
+
+def test_a_file_that_changed_while_the_backup_ran_is_counted_not_failed(tmp_path):
+    _chain_of_three(tmp_path)
+    last = tmp_path / "dest" / "govstate-transcripts-inc-20261004-0755.tar.gz.age"
+    def older(body):                     # the manifest line predates the copy tar carried
+        return "\n".join(l.rsplit("\t", 1)[0] + "\t1000000000" if l.startswith(".claude/projects/-root-thomas-agent/c.jsonl\t") else l
+                         for l in body.splitlines()) + "\n"
+    _edit_manifest(last, older)
+    out = _restore(tmp_path, tmp_path / "t")
+    assert out.returncode == 0 and "changed-during-backup=1" in out.stdout
+
+
+def test_a_legacy_archive_without_chain_headers_restores_but_is_not_verified(tmp_path):
+    host = _transcripts_host(tmp_path)
+    _backup(tmp_path, host, "20261001-0755", full=True)
+    full = next((tmp_path / "dest").glob("govstate-transcripts-full-*"))
+    _edit_manifest(full, lambda body: "\n".join(l.split("\t")[0] for l in body.splitlines()
+                                                if not l.startswith(("# set=", "# kind=", "# stamp=", "# chain=", "# prev="))) + "\n")
+    out = _restore(tmp_path, tmp_path / "t")
+    assert out.returncode == 7 and out.stdout.startswith("UNVERIFIED")
+    assert _session(tmp_path / "t", "old-session.jsonl").exists()
+
+
+# The parallel trial: human sessions only, zstd -3, separate names, skipped on a full disk.
+
+def _trial(tmp_path: Path, host: Path, stamp: str, **env_extra):
+    dest = tmp_path / "dest"
+    (tmp_path / "age-recipients.txt").write_text(RECIPIENT + "\n", encoding="utf-8")
+    env = {**os.environ, "PATH": f"{_bin(tmp_path)}:{os.environ['PATH']}", "HARNESS_BACKUP_HOST_ROOT": str(host),
+           "HARNESS_BACKUP_DEST": str(dest), "HARNESS_BACKUP_AGE_RECIPIENTS": str(tmp_path / "age-recipients.txt"),
+           "STUB_AGE_MODE": "ok", "HARNESS_BACKUP_STAMP": stamp, "HARNESS_TRIAL_MIN_FREE_GB": "0", **env_extra}
+    out = subprocess.run(["bash", str(SCRIPT), "transcripts-trial"], capture_output=True, text=True, timeout=60, env=env)
+    return out, dest, (dest / "backup.log").read_text() if (dest / "backup.log").exists() else ""
+
+
+def _human_and_headless(tmp_path: Path) -> Path:
+    host = _transcripts_host(tmp_path)
+    proj = host / ".claude/projects/-root-thomas-agent"
+    (proj / "human.jsonl").write_text('{"type":"user","origin":{"kind":"human"}}\n', encoding="utf-8")
+    (proj / "human" / "subagents").mkdir(parents=True)
+    (proj / "human" / "subagents" / "agent-1.jsonl").write_text("{}\n", encoding="utf-8")
+    (proj / "headless.jsonl").write_text('{"type":"user","promptSource":"sdk"}\n', encoding="utf-8")
+    (proj / "memory").mkdir()
+    (proj / "memory" / "MEMORY.md").write_text("m\n", encoding="utf-8")
+    return host
+
+
+@pytest.mark.skipif(not shutil.which("zstd"), reason="zstd is not installed")
+def test_the_trial_keeps_only_human_sessions_compressed_with_zstd_and_restores(tmp_path):
+    out, dest, log = _trial(tmp_path, _human_and_headless(tmp_path), "20261009-0805")
+    assert out.returncode == 0, out.stderr
+    (archive,) = dest.glob("govstate-trialzst-full-20261009-0805.tar.zst.age")
+    plain = subprocess.run(["zstd", "-dc"], input=archive.read_bytes()[len(HEADER):], capture_output=True, check=True).stdout
+    with tarfile.open(fileobj=io.BytesIO(plain)) as tar:
+        names = {m.name for m in tar.getmembers() if m.isfile()}
+    assert ".claude/projects/-root-thomas-agent/human.jsonl" in names
+    assert ".claude/projects/-root-thomas-agent/human/subagents/agent-1.jsonl" in names
+    assert ".claude/projects/-root-thomas-agent/memory/MEMORY.md" in names
+    assert ".claude/prompt-collector/state.json" in names
+    assert ".claude/projects/-root-thomas-agent/headless.jsonl" not in names
+    assert ".claude/projects/-root-thomas-agent/old-session.jsonl" not in names    # no human marker
+    assert " OK mode=transcripts-trial kind=full " in log and " sel=human " in log
+    assert not list(dest.glob("govstate-transcripts-*"))                             # the real set is untouched
+    r = _restore(tmp_path, tmp_path / "t", "--set", "trialzst", "--expect-head", "20261009-0805")
+    assert r.returncode == 0 and r.stdout.startswith("VERIFIED set=trialzst"), r.stdout + r.stderr
+
+
+def test_the_trial_is_skipped_not_failed_when_the_disk_is_short(tmp_path):
+    out, dest, log = _trial(tmp_path, _human_and_headless(tmp_path), "20261009-0805", HARNESS_TRIAL_MIN_FREE_GB="999999")
+    assert out.returncode == 0
+    assert "SKIPPED mode=transcripts-trial reason=disk" in log
+    assert not list(dest.glob("govstate-trialzst-*"))

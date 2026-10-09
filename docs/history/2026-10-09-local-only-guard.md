@@ -32,8 +32,9 @@
     - inline Python that imports the holdings package.
   - `tests/test_claude_local_only_guard.py` has 55 cases on synthetic payloads: 29 refused, 10
     allowed, 7 file-tool cases, plus the wiring and the missing-guard fallback.
-  - `tests/skip_ceiling.json`: win32 134 → 187, for the 53 bash cases that skip on Windows like
-    their neighbours.
+  - `tests/skip_ceiling.json`: win32 +53, for the 53 bash cases that skip on Windows like their
+    neighbours. The branch's own CI read 187 on a 134 base. After merging main (#1201 set 144), the
+    ceiling is 197, confirmed against the merged head's Windows CI.
 - **What this does not do — the limits, stated plainly:**
   - It is a tripwire, not a boundary. Any of these get past it:
     - a path assembled at run time;
