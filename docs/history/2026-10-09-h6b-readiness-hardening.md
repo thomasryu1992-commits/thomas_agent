@@ -20,7 +20,7 @@
     - The signal is `H6b_shadow_ready`, not `H6c_ready`.
     - A `shadow days / dates` line is added.
     - `Action required` reads `exception review (N)` while exceptions block the signal.
-  - Tests: 16 new and 2 changed tests (51 in all) in `tests/test_mvp_runtime_holdings_cash_flows.py`, through the store
+  - Tests: 16 new and 2 changed tests (51 in all) in `tests/test_mvp_runtime_holdings_cash_flows.py`, and the scheduler readiness test in `tests/test_mvp_runtime_holdings.py` takes the new keys and name; through the store
     and the scheduler too.
     - Eight mutations were each caught: the two exception counts, the date rule, the verified-fire
       guard, the Binance error check, the told mark, the told comparison, and the pre-cutover guard.
