@@ -219,10 +219,17 @@ Restore on the Mac with `scripts/ops/restore_transcripts.sh`, then copy back. Do
    - A restored file the manifest does not list, and not newer than its `t0`, was deleted before that
      backup. It is removed again.
    - Size and mtime only, not checksums.
-5. **Legacy archives.** Archives without the chain headers (2026-10-09 08:20 and earlier) still restore.
+5. **Core-asset content.** The prompt collector's state and the per-project memory, ~15 MB, carry a
+   sha256. Each restored one is hashed. A mismatch → **BROKEN, exit 8**. A copy that changed during the
+   backup is skipped. The conversation logs themselves are not hashed; for them size, mtime and the chain
+   are the proof.
+6. **Legacy archives.** Archives without the chain headers (2026-10-09 08:20 and earlier) still restore.
    The run ends **UNVERIFIED, exit 7**.
 
-Exit 0 (**VERIFIED**) means: the chain walked, the tail matched `--expect-head`, nothing was missing or stale.
+Exit 0 has two names:
+- **CONTENT_VERIFIED:** the chain walked, the tail matched `--expect-head`, nothing was missing or stale,
+  and every core-asset hash matched.
+- **CHAIN_VERIFIED:** the same, with no core-asset hash in scope.
 
 ```bash
 # on the host: the newest stamp to expect
@@ -231,7 +238,7 @@ grep ' mode=transcripts ' /root/backups/governance-state/backup.log | tail -1   
 curl -fsSLO https://raw.githubusercontent.com/thomasryu1992-commits/thomas_agent/main/scripts/ops/restore_transcripts.sh
 bash restore_transcripts.sh ~/Backups/thomas-govstate ~/restore-transcripts --expect-head <stamp>
 bash restore_transcripts.sh ~/Backups/thomas-govstate ~/restore-20261008 --until 20261008-2359
-# → VERIFIED set=transcripts … full=… archives=N … tail=ok deleted=D missing=0 stale=0 changed-during-backup=C
+# → CONTENT_VERIFIED set=transcripts … full=… archives=N … tail=ok … missing=0 stale=0 … core-hash=ok:N,bad:0,…
 # then rsync ~/restore-transcripts/.claude/ to root@host:/root/.claude/ (no sessions running)
 ```
 
