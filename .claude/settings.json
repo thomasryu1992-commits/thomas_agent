@@ -3,6 +3,12 @@
     "ask": [
       "Bash(docker compose:*)",
       "Bash(git checkout:*)"
+    ],
+    "deny": [
+      "Read(/.runtime_governance_state/holdings)",
+      "Read(/.runtime_governance_state/holdings/**)",
+      "Read(//root/thomas_agent/.runtime_governance_state/holdings)",
+      "Read(//root/thomas_agent/.runtime_governance_state/holdings/**)"
     ]
   },
   "hooks": {
@@ -13,6 +19,17 @@
           {
             "type": "command",
             "command": "p=$(cat); r=\"${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)}\"; h=\"$r/.claude/hooks/block-main-commits.sh\"; if [ -r \"$h\" ]; then printf '%s' \"$p\" | bash \"$h\"; else case \"$p\" in *git*commit*) printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"The no-direct-main-commits guard (.claude/hooks/block-main-commits.sh) could not be found, so this commit cannot be judged. Restore it, or drop the hook from .claude/settings.json if it was removed deliberately.\"}}';; esac; fi",
+            "shell": "bash",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Read|Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "p=$(cat); r=\"${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)}\"; h=\"$r/.claude/hooks/guard-local-only.sh\"; if [ -r \"$h\" ] && o=$(printf '%s' \"$p\" | bash \"$h\"); then printf '%s' \"$o\"; else case \"$p\" in *runtime_governance_state/holdings*|*holdings/holdings_*|*holdings_board*--*) printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"The LOCAL_ONLY guard (.claude/hooks/guard-local-only.sh) is missing or failed, so this holdings reference cannot be judged and is refused. Restore the guard, or use docker exec thomas-scheduler python -m scripts.holdings_board.\"}}';; esac; fi",
             "shell": "bash",
             "timeout": 10
           }
