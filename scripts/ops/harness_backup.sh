@@ -232,7 +232,9 @@ case "$MODE" in
     mkdir -p "$MFDIR"
     { echo "# t0=$(date -u +%Y%m%d%H%M.%S)"
       (cd "$HOST_ROOT" && find "${T_MEMBERS[@]}" -type f | LC_ALL=C sort); } > "$MFDIR/TRANSCRIPTS_MANIFEST.txt"
-    tar czvf - --index-file="$INDEX" --warning=no-file-changed "${NEWER[@]}" -C "$HOST_ROOT" \
+    # no-file-unchanged: an inc otherwise prints "file is unchanged; not dumped" once per skipped file —
+    # about fourteen thousand lines a day into cron's discarded mail on 2026-10-09.
+    tar czvf - --index-file="$INDEX" --warning=no-file-changed --warning=no-file-unchanged "${NEWER[@]}" -C "$HOST_ROOT" \
         "${T_MEMBERS[@]}" -C "$MFDIR" TRANSCRIPTS_MANIFEST.txt | "$AGE" -R "$RECIPIENTS" -o "$PART"
     PIPE=("${PIPESTATUS[@]}")
     TAR_RC=${PIPE[0]}
