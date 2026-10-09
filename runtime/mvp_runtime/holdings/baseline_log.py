@@ -23,14 +23,12 @@ A state file, not a ledger record: nothing gates on it; it explains.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Mapping
 
 from runtime.read_only_kernel import integrity
 
-from ..errors import ToolError
-from ..filelock import locked
+from . import chained_log
 
 FILENAME = "holdings_baselines.jsonl"
 RECORD_TYPE = "holdings_baseline_event.v1"
@@ -49,37 +47,9 @@ def path(state_dir: Path) -> Path:
     return state_dir / FILENAME
 
 
-def _lines(state_dir: Path) -> list[dict[str, Any]]:
-    target = path(state_dir)
-    if not target.exists():
-        return []
-    out = []
-    for number, raw in enumerate(target.read_text(encoding="utf-8").splitlines(), 1):
-        if not raw.strip():
-            continue
-        try:
-            row = json.loads(raw)
-        except ValueError:
-            raise ToolError(BASELINE_LOG_TAMPERED, f"{FILENAME} line {number} does not parse") from None
-        if not isinstance(row, dict):
-            raise ToolError(BASELINE_LOG_TAMPERED, f"{FILENAME} line {number} is not a record")
-        out.append(row)
-    return out
-
-
-def _hash(row: Mapping[str, Any]) -> str:
-    return integrity.sha256_value({key: value for key, value in row.items() if key != "sha256"})
-
-
 def verify(state_dir: Path) -> list[dict[str, Any]]:
     """Every line, after re-deriving the chain. Raises :data:`BASELINE_LOG_TAMPERED` on a break."""
-    rows = _lines(state_dir)
-    previous = None
-    for number, row in enumerate(rows, 1):
-        if row.get("record_type") != RECORD_TYPE or row.get("prev_sha256") != previous or row.get("sha256") != _hash(row):
-            raise ToolError(BASELINE_LOG_TAMPERED, f"{FILENAME} line {number} breaks the chain")
-        previous = row["sha256"]
-    return rows
+    return chained_log.verify(path(state_dir), record_type=RECORD_TYPE, tamper_code=BASELINE_LOG_TAMPERED)
 
 
 def last(state_dir: Path) -> dict[str, Any] | None:
@@ -89,18 +59,13 @@ def last(state_dir: Path) -> dict[str, Any] | None:
 
 def append(state_dir: Path, event: str, *, at: str, fields: Mapping[str, Any]) -> dict[str, Any]:
     """Append one event under the lock and return it. The id is derived from the event itself."""
-    target = path(state_dir)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with locked(target.with_suffix(".lock"), code="HOLDINGS_BASELINE_LOG_LOCKED", label="holdings baseline log"):
-        rows = verify(state_dir)
-        previous = rows[-1]["sha256"] if rows else None
-        row: dict[str, Any] = {"record_type": RECORD_TYPE, "event": event, "at": at, **dict(fields),
-                               "prev_sha256": previous}
-        row["baseline_id"] = integrity.short_id("baseline", {"event": event, "at": at, "prev": previous})
-        row["sha256"] = _hash(row)
-        with target.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
-    return row
+    def build(previous: str | None) -> dict[str, Any]:
+        return {"event": event, "at": at, **dict(fields),
+                "baseline_id": integrity.short_id("baseline", {"event": event, "at": at, "prev": previous})}
+
+    return chained_log.append(path(state_dir), record_type=RECORD_TYPE, tamper_code=BASELINE_LOG_TAMPERED,
+                              lock_code="HOLDINGS_BASELINE_LOG_LOCKED", label="holdings baseline log",
+                              build=build)[0]
 
 
 def pending_reset(state_dir: Path) -> dict[str, Any] | None:
