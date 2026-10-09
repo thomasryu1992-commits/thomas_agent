@@ -25,6 +25,8 @@
     - Seven new tests in `tests/test_ops_backup_watch.py`.
     - The watch tests now point the collector status at a scratch path, so they never read the host's file.
     - Three mutations were each caught: no mtime filter, wrong retention, collector root dropped.
+    - `tests/skip_ceiling.json` win32 115 → 129: the 14 new tests run bash scripts and skip on Windows
+      like their neighbours (5 backup + 9 watch cases; CI read `Skipped tests on win32: 129`).
 - **Sizes measured 2026-10-09:** a full archive is about 0.8 GB compressed (`gzip -1` estimate). One
   day's changed files were 178 MB raw. The Mac keeps 90 days, so it will hold about 13 fulls plus the
   incs.
