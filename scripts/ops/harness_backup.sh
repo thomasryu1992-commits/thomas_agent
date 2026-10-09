@@ -12,6 +12,9 @@
 #              hermes-trial/data                        (SOUL, MCP shims, skills, cron, memories, sessions,
 #                                                        and a consistent SQLite copy via `hermes backup --quick`)
 #   candles  weekly Sun 08:15Z, keep 4 — crypto/candle_archive only (unchanged from 2026-08-31).
+#   transcripts  daily 07:55Z — Claude Code conversations (.claude/projects) and the prompt
+#              collector's local state, encrypted like core. Full weekly (keep 2), changed files on
+#              the other days (kept while their full is). Thomas 2026-10-09.
 #
 # The assistant's compose definition is NOT a member: since PR5 (2026-09-04) hermes is the ninth
 # service of this repository's docker-compose.yml, which is code and lives in git. Backing up the
@@ -183,6 +186,75 @@ case "$MODE" in
     SNAP_NOTE="$RECIPIENT_NOTE anchor=excluded $SNAP_NOTE"
     RC=0
     ;;
+  transcripts)
+    # Claude Code conversation transcripts (Thomas 2026-10-09): the only copy of every prompt typed
+    # or pasted into a session lived on this disk. Same age recipients as core — no new key — and the
+    # same `govstate-` prefix, so the Mac pull already fetches it. A full archive weekly, and on the
+    # other days only the files changed since the newest transcripts archive (one hour of overlap).
+    # Restore = the newest full, then every later inc in stamp order (RUNBOOK, "Transcripts").
+    # `.claude/prompt-collector` (the collector's local state and its review queue, which hold prompt
+    # text that never goes to the vault) rides along when it exists; `.claude/projects` must exist.
+    if ! AGE_REASON=$(age_ready); then
+      log "FAILED mode=transcripts stage=encrypt $AGE_REASON"
+      exit 3
+    fi
+    RECIPIENT_NOTE="enc=age recipient=$(grep -m1 -E '^age1' "$RECIPIENTS" | cut -c1-12)"
+    if [ ! -d "$HOST_ROOT/.claude/projects" ]; then
+      log "FAILED mode=transcripts stage=archive rc=2 missing=.claude/projects"
+      exit 2
+    fi
+    T_MEMBERS=(".claude/projects")
+    COLLECTOR_NOTE="collector-state=absent"
+    if [ -d "$HOST_ROOT/.claude/prompt-collector" ]; then
+      T_MEMBERS+=(".claude/prompt-collector")
+      COLLECTOR_NOTE="collector-state=included"
+    fi
+    FULL_DAYS="${HARNESS_TRANSCRIPTS_FULL_DAYS:-7}"
+    last_full=$(ls -1t "$DEST"/govstate-transcripts-full-*.tar.gz.age 2>/dev/null | head -1)
+    last_any=$(ls -1t "$DEST"/govstate-transcripts-*.tar.gz.age 2>/dev/null | head -1)
+    KIND=full
+    NEWER=()
+    if [ -n "$last_full" ] && [ $(( $(date +%s) - $(stat -c %Y "$last_full") )) -lt $(( FULL_DAYS * 86400 - 3600 )) ]; then
+      KIND=inc
+      # One hour of overlap with the archive before: a file appended while that one was written
+      # is carried again rather than missed.
+      NEWER=(--newer-mtime="@$(( $(stat -c %Y "$last_any") - 3600 ))")
+    fi
+    OUT="$DEST/govstate-transcripts-$KIND-$STAMP.tar.gz.age"
+    PART="$OUT.part"
+    INDEX="$PART.index"
+    tar czvf - --index-file="$INDEX" --warning=no-file-changed "${NEWER[@]}" -C "$HOST_ROOT" \
+        "${T_MEMBERS[@]}" | "$AGE" -R "$RECIPIENTS" -o "$PART"
+    PIPE=("${PIPESTATUS[@]}")
+    TAR_RC=${PIPE[0]}
+    AGE_RC=${PIPE[1]}
+    # A session being written while tar reads it makes tar exit 1 (file changed as we read it);
+    # that copy is a valid snapshot of the lines written so far. Only 2 and above is a failure.
+    if [ "$TAR_RC" -gt 1 ] || [ ! -s "$INDEX" ]; then
+      rm -f "$PART" "$INDEX"
+      log "FAILED mode=transcripts stage=archive rc=$TAR_RC kind=$KIND"
+      exit 2
+    fi
+    FILES=$(grep -vc '/$' "$INDEX")
+    rm -f "$INDEX"
+    if [ "$AGE_RC" -ne 0 ] || [ "$(head -c 21 "$PART" 2>/dev/null)" != "age-encryption.org/v1" ]; then
+      rm -f "$PART"
+      log "FAILED mode=transcripts stage=encrypt rc=$AGE_RC kind=$KIND"
+      exit 3
+    fi
+    mv -f "$PART" "$OUT"
+    chmod 600 "$OUT"
+    # Two fulls and the incs since the older of them: every kept inc has a full to sit on.
+    ls -1t "$DEST"/govstate-transcripts-full-*.tar.gz.age 2>/dev/null | tail -n +3 | xargs -r rm -f
+    oldest_full=$(ls -1t "$DEST"/govstate-transcripts-full-*.tar.gz.age 2>/dev/null | tail -1)
+    if [ -n "$oldest_full" ]; then
+      for f in "$DEST"/govstate-transcripts-inc-*.tar.gz.age; do
+        if [ -e "$f" ] && [ "$f" -ot "$oldest_full" ]; then rm -f "$f"; fi
+      done
+    fi
+    log "OK mode=transcripts kind=$KIND $(basename "$OUT") $(du -h "$OUT" | cut -f1) files=$FILES $RECIPIENT_NOTE $COLLECTOR_NOTE"
+    exit 0
+    ;;
   candles)
     OUT="$DEST/govstate-candles-$STAMP.tar.gz"
     KEEP=4
@@ -193,7 +265,7 @@ case "$MODE" in
     RC=$?
     ;;
   *)
-    echo "usage: $0 [core|candles]" >&2; exit 2 ;;
+    echo "usage: $0 [core|candles|transcripts]" >&2; exit 2 ;;
 esac
 
 # tar exits 1 when a live append-mode file changed under it (the content is a valid snapshot);

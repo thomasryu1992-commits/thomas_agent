@@ -217,3 +217,105 @@ def test_a_real_age_round_trip_decrypts_with_the_private_key_only(tmp_path):
     plain = subprocess.run(["age", "-d", "-i", str(key), str(archive)], check=True, capture_output=True).stdout
     with tarfile.open(fileobj=io.BytesIO(gzip.decompress(plain))) as tar:
         assert "thomas_agent/.env" in tar.getnames()
+
+
+# The transcripts mode (Thomas 2026-10-09): Claude Code conversations, encrypted like core.
+
+def _transcripts_host(tmp_path: Path, *, collector: bool = True) -> Path:
+    host = _host(tmp_path)
+    proj = host / ".claude/projects/-root-thomas-agent"
+    proj.mkdir(parents=True)
+    (proj / "old-session.jsonl").write_text('{"type":"user"}\n', encoding="utf-8")
+    (proj / "new-session.jsonl").write_text('{"type":"user"}\n', encoding="utf-8")
+    if collector:
+        (host / ".claude/prompt-collector").mkdir(parents=True)
+        (host / ".claude/prompt-collector/state.json").write_text("{}", encoding="utf-8")
+    return host
+
+
+def _run_transcripts(tmp_path: Path, host: Path, *, recipients: str = RECIPIENT + "\n"):
+    dest = tmp_path / "dest"
+    rfile = tmp_path / "age-recipients.txt"
+    rfile.write_text(recipients, encoding="utf-8")
+    env = {**os.environ, "PATH": f"{_bin(tmp_path)}:{os.environ['PATH']}",
+           "HARNESS_BACKUP_HOST_ROOT": str(host), "HARNESS_BACKUP_DEST": str(dest),
+           "HARNESS_BACKUP_AGE_RECIPIENTS": str(rfile), "STUB_AGE_MODE": "ok"}
+    out = subprocess.run(["bash", str(SCRIPT), "transcripts"], capture_output=True, text=True, timeout=60, env=env)
+    log = (dest / "backup.log").read_text(encoding="utf-8") if (dest / "backup.log").exists() else ""
+    return out, dest, log
+
+
+def _members(archive: Path) -> list[str]:
+    with tarfile.open(fileobj=io.BytesIO(gzip.decompress(archive.read_bytes()[len(HEADER):]))) as tar:
+        return [m.name for m in tar.getmembers() if m.isfile()]
+
+
+def test_the_first_transcripts_run_is_a_full_encrypted_archive_of_both_roots(tmp_path):
+    out, dest, log = _run_transcripts(tmp_path, _transcripts_host(tmp_path))
+    assert out.returncode == 0, out.stderr
+    (archive,) = dest.glob("govstate-transcripts-full-*.tar.gz.age")
+    assert oct(archive.stat().st_mode & 0o777) == "0o600"
+    assert archive.read_bytes().startswith(HEADER)
+    assert sorted(_members(archive)) == [".claude/projects/-root-thomas-agent/new-session.jsonl",
+                                         ".claude/projects/-root-thomas-agent/old-session.jsonl",
+                                         ".claude/prompt-collector/state.json"]
+    line = log.splitlines()[-1]
+    assert " OK mode=transcripts kind=full " in line and " files=3 " in line
+    assert f"enc=age recipient={RECIPIENT[:12]}" in line and "collector-state=included" in line
+    assert not list(dest.glob("*.part*")) and not list(dest.glob("*.index"))
+
+
+def test_a_later_run_carries_only_what_changed_since_the_last_archive(tmp_path):
+    host = _transcripts_host(tmp_path, collector=False)
+    out, dest, _ = _run_transcripts(tmp_path, host)
+    assert out.returncode == 0, out.stderr
+    full = next(dest.glob("govstate-transcripts-full-*"))
+    past = full.stat().st_mtime - 3 * 3600                  # the full was written three hours ago
+    os.utime(full, (past, past))
+    old = host / ".claude/projects/-root-thomas-agent/old-session.jsonl"
+    os.utime(old, (past - 7200, past - 7200))               # untouched since before that
+    os.utime(host / ".claude/projects/-root-thomas-agent/new-session.jsonl", (past - 7200, past - 7200))
+    (host / ".claude/projects/-root-thomas-agent/new-session.jsonl").write_text('{"type":"user"}\n{}\n', encoding="utf-8")
+    out, dest, log = _run_transcripts(tmp_path, host)
+    assert out.returncode == 0, out.stderr
+    (inc,) = dest.glob("govstate-transcripts-inc-*.tar.gz.age")
+    assert _members(inc) == [".claude/projects/-root-thomas-agent/new-session.jsonl"]
+    assert " OK mode=transcripts kind=inc " in log.splitlines()[-1] and "collector-state=absent" in log
+
+
+def test_a_week_old_full_makes_the_next_run_full_and_retention_keeps_two(tmp_path):
+    host = _transcripts_host(tmp_path)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    for i, name in enumerate(("full-20260901-0755", "inc-20260902-0755", "full-20260908-0755", "inc-20260909-0755")):
+        f = dest / f"govstate-transcripts-{name}.tar.gz.age"
+        f.write_bytes(HEADER)
+        t = 1_000_000_000 + i * 86400
+        os.utime(f, (t, t))
+    out, dest, log = _run_transcripts(tmp_path, host)
+    assert out.returncode == 0, out.stderr
+    assert " kind=full " in log.splitlines()[-1]
+    names = sorted(p.name for p in dest.glob("govstate-transcripts-*"))
+    # three fulls exist → the oldest goes, and so does the inc that sat on it
+    assert "govstate-transcripts-full-20260901-0755.tar.gz.age" not in names
+    assert "govstate-transcripts-inc-20260902-0755.tar.gz.age" not in names
+    assert "govstate-transcripts-full-20260908-0755.tar.gz.age" in names
+    assert "govstate-transcripts-inc-20260909-0755.tar.gz.age" in names
+    assert len([n for n in names if "-full-" in n]) == 2
+
+
+def test_transcripts_refuse_without_a_valid_recipient_and_without_the_projects_root(tmp_path):
+    out, dest, log = _run_transcripts(tmp_path, _transcripts_host(tmp_path), recipients="age1short\n")
+    assert out.returncode == 3 and "FAILED mode=transcripts stage=encrypt reason=malformed-recipient" in log
+    assert not list(dest.glob("govstate-transcripts-*"))
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    out, dest, log = _run_transcripts(tmp_path, _host(bare))
+    assert out.returncode == 2 and "FAILED mode=transcripts stage=archive rc=2 missing=.claude/projects" in log
+
+
+def test_core_does_not_carry_the_transcripts(tmp_path):
+    out, dest, _ = _run(tmp_path, host=_transcripts_host(tmp_path))
+    assert out.returncode == 0, out.stderr
+    (archive,) = dest.glob("govstate-2*.tar.gz.age")
+    assert not any(m.startswith(".claude") for m in _members(archive))
