@@ -138,6 +138,16 @@ tar xzf /root/restore/govstate-<stamp>.tar.gz -C /root thomas_agent/workspace &&
 tar xzf /root/restore/govstate-<stamp>.tar.gz -C /root thomas_agent/.env && chown root:root /root/thomas_agent/.env && chmod 600 /root/thomas_agent/.env
 ```
 
+**Claude Code configuration** (`.claude/settings*.json`, `.claude/CLAUDE.md`,
+`thomas_agent/.claude/settings.local.json`, `.claude/skills`, since 2026-10-09). Never extract these over a live
+`~/.claude`: hooks and permissions take effect for every running session. Extract to a side directory, diff,
+then copy what you mean to restore:
+```bash
+mkdir -p /root/restore/claude-config && tar xzf /root/restore/govstate-<stamp>.tar.gz -C /root/restore/claude-config .claude thomas_agent/.claude
+diff -r /root/restore/claude-config/.claude/skills /root/.claude/skills; diff /root/restore/claude-config/.claude/settings.json /root/.claude/settings.json
+```
+A login is not in the archive by design: sign in again (`claude` → `/login`).
+
 ### 2.3 Hermes
 
 The archive holds the data directory **without** the live databases, and a snapshot directory **with** consistent copies of them. Put the copies where the live files go, and delete any WAL/shared-memory files next to them — a stale `-wal` beside a restored `state.db` corrupts it on first open.
