@@ -9,6 +9,9 @@
     python -m scripts.holdings_board --classify binance:SOL=coin    # Thomas's entry (H5a), as the service user
     python -m scripts.holdings_board --unclassify binance:SOL
     python -m scripts.holdings_board --cash-flow-cutover 2026-10-09T04:30:00Z   # once, at H6b activation
+    python -m scripts.holdings_board --flows                        # H6 exceptions, terminal only (H6d-min)
+    python -m scripts.holdings_board --resolve KEY --kind deposit --by thomas --reason "..."   # terminal only
+    python -m scripts.holdings_board --semantics-epoch --change-ref "#1203" --by thomas --reason "..."
 
 Read-only. It places nothing and has no flag that would let it.
 
@@ -53,8 +56,17 @@ from a loss, so this is the answer after any deposit or withdrawal. It writes go
 in the lane as the service user (``docker exec -u 10001 thomas-scheduler-maint python -m
 scripts.holdings_board --reset-peak``) and refuses a host-side root run.
 
-Claude does not run the live read, ``--local``, ``--unclassified``, ``--classify`` or ``--unclassify`` (their
-output or input names holdings and would reach a model provider), and does not handle the keys.
+**``--flows`` / ``--resolve`` / ``--semantics-epoch``** (H6d-min, Thomas 2026-10-09). ``--flows`` lists the
+H6 exceptions — key, category, phase, review state and the kinds each may be closed as; no amount.
+``--resolve KEY --kind K`` closes one exception's review with a ``flow_resolved`` line; the event stays
+HELD (a review is not evidence, and nothing is eligible for accounting in H6b). ``--semantics-epoch
+--change-ref REF`` starts a new Toss semantics epoch after a reconciliation change: it prints the
+reconciliation digest and asks for its first 8 characters back. Both writes need an interactive
+terminal, ``--by`` and ``--reason``, and run as the service user (``docker exec -it -u 10001
+thomas-scheduler-maint ...``). The keys name venue events: these are Thomas's, on his terminal.
+
+Claude does not run the live read, ``--local``, ``--unclassified``, ``--classify``, ``--unclassify``,
+``--flows``, ``--resolve`` or ``--semantics-epoch`` (their output or input names holdings and would reach a model provider), and does not handle the keys.
 """
 
 from __future__ import annotations
@@ -99,10 +111,17 @@ def main(argv: list[str] | None = None) -> int:
                       help="add or change classification entries (Thomas, as the service user)")
     mode.add_argument("--unclassify", nargs="+", metavar="ID", help="remove classification entries")
     mode.add_argument("--cash-flow-cutover", metavar="AT", help="record the cash-flow ledger's boundary (once)")
+    mode.add_argument("--flows", action="store_true", help="H6 exceptions and their review state (terminal only)")
+    mode.add_argument("--resolve", metavar="KEY", help="close one H6 exception's review (Thomas, terminal only)")
+    mode.add_argument("--semantics-epoch", action="store_true",
+                      help="start a new Toss semantics epoch after a reconciliation change (Thomas, terminal only)")
+    parser.add_argument("--kind", help="what the exception was (--resolve; --flows lists the allowed kinds)")
+    parser.add_argument("--change-ref", help="the merged reconciliation change, #<PR> or a commit (--semantics-epoch)")
     parser.add_argument("--migrate", action="store_true", help="move an existing cutover (--cash-flow-cutover)")
     parser.add_argument("--shadow-started", metavar="AT", help="when the shadow ledger first ran (recorded once)")
     parser.add_argument("--reason", help="why the peak is reset (--reset-peak; required, logged)")
-    parser.add_argument("--by", default="thomas", help="who asks for the reset (--reset-peak; logged)")
+    parser.add_argument("--by", help="who asks (logged; --reset-peak and --cash-flow-cutover default to thomas, "
+                                     "--resolve and --semantics-epoch require it)")
     parser.add_argument("--timeout", type=int, default=10, help="seconds per request (--full)")
     args = parser.parse_args(argv)
 
@@ -130,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
         from runtime.mvp_runtime.holdings import cash_flows
         try:
             assert_not_foreign_root_run()
-            state = cash_flows.set_cutover(state_dir(), at=args.cash_flow_cutover, requested_by=args.by,
+            state = cash_flows.set_cutover(state_dir(), at=args.cash_flow_cutover, requested_by=args.by or "thomas",
                                            reason=args.reason, migrate=args.migrate,
                                            shadow_started_at=args.shadow_started)
         except MvpRuntimeError as exc:
@@ -139,6 +158,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"cash-flow cutover: {state['cutover_at']} (shadow started {state.get('shadow_started_at')})")
         return EXIT_OK
 
+    if args.flows or args.resolve or args.semantics_epoch:
+        return _exceptions(args)
+
     if args.reset_peak:
         try:
             assert_not_foreign_root_run()
@@ -146,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"refused ({exc.reason_code}): {exc}")
             return EXIT_BLOCKED
         try:
-            removed = combined.reset_peak(state_dir(), reason=args.reason or "", requested_by=args.by)
+            removed = combined.reset_peak(state_dir(), reason=args.reason or "", requested_by=args.by or "thomas")
         except MvpRuntimeError as exc:
             print(f"refused ({exc.reason_code}): {exc}")
             return EXIT_BLOCKED
@@ -181,6 +203,51 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(text)
     return EXIT_OK
+
+
+def _interactive() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _exceptions(args: argparse.Namespace) -> int:
+    """H6d-min: list, resolve, or start an epoch. The writes refuse a host-side root run, a missing
+    terminal, ``--by`` or ``--reason`` before they read anything."""
+    from runtime.mvp_runtime.holdings import cash_flows
+
+    try:
+        if args.flows:
+            rows = cash_flows.flows_view(state_dir())
+            print(f"h6 exceptions: {sum(r['review'] == 'OPEN' for r in rows)} open, "
+                  f"{sum(r['review'] == 'CLOSED' for r in rows)} closed")
+            for row in rows:
+                print(f"  {row['review']:6} {row['phase']:12} {row['category']:18} {row['direction'] or '-':3} "
+                      f"{row['key']}  allowed: {', '.join(row['allowed']) or 'none'}"
+                      + (f"  closed as: {row['kind']}" if row["kind"] else ""))
+            return EXIT_OK
+        assert_not_foreign_root_run()
+        if args.resolve:
+            written = cash_flows.resolve(state_dir(), target=args.resolve, kind=args.kind or "",
+                                         reason=args.reason or "", requested_by=args.by or "",
+                                         interactive=_interactive())
+            print(f"resolved: {written['resolves']} as {written['kind']} (review closed; still HELD, "
+                  "not evidence, not eligible)")
+            return EXIT_OK
+        if not _interactive():
+            raise ToolError(cash_flows.EPOCH_REFUSED, "an epoch starts at an interactive terminal")
+        if not (args.by or "").strip() or not (args.reason or "").strip():
+            raise ToolError(cash_flows.EPOCH_REFUSED, "an epoch needs --by and --reason")
+        digest = cash_flows.reconciliation_digest()
+        print(f"reconciliation fingerprint {cash_flows.reconciliation_fingerprint()}, digest {digest}")
+        confirm = input("type the digest's first 8 characters to start the epoch: ")
+        written = cash_flows.start_semantics_epoch(state_dir(), requested_by=args.by, reason=args.reason,
+                                                   change_ref=args.change_ref or "", confirm=confirm,
+                                                   interactive=True)
+        print(f"toss semantics epoch {written['epoch']} started (previous: {written['previous_epoch_status']}); "
+              "it starts WAITING")
+        return EXIT_OK
+    except MvpRuntimeError as exc:
+        print(f"refused ({exc.reason_code}): {exc}")
+        return EXIT_BLOCKED
 
 
 def _unclassified() -> int:

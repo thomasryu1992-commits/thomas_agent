@@ -4,10 +4,10 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **665** distinct codes across **1309** raise sites
+- **673** distinct codes across **1330** raise sites
 - **23** exception classes carry them
 - **76** codes are raised from more than one module (see below)
-- **143** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
+- **144** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
 - **29** raise sites carry a human-readable **message** where a code would go, so there is nothing to look up — a different gap from the line above, and counted apart from it
 
 ## Codes raised from more than one module
@@ -454,9 +454,30 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `FRONTDESK_ROLE_UNRESOLVED` | `OperatorBlocked` | `runtime/mvp_runtime/frontdesk.py` | `_require_active_role` | `—` |
 | `FRONTDESK_ROLE_UNRESOLVED` | `OperatorBlocked` | `runtime/mvp_runtime/frontdesk.py` | `_require_active_role` | `len(entries) != 1` |
 | `GUARD_NOT_APPROVED` | `SubmitRefused` | `runtime/mvp_runtime/crypto/live_execution.py` | `submit_and_reconcile` | `not (isinstance(guard_verdict, Mapping) and guard_verdict.get('approved') is True)` |
-| `HOLDINGS_CASH_FLOW_CUTOVER_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `set_cutover` | `migrate and (not (reason or '').strip())` |
-| `HOLDINGS_CASH_FLOW_CUTOVER_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `set_cutover` | `previous and (not migrate)` |
+| `HOLDINGS_CASH_FLOW_CUTOVER_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `rows` | `migrate and (not (reason or '').strip())` |
+| `HOLDINGS_CASH_FLOW_CUTOVER_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `rows` | `previous and (not migrate)` |
+| `HOLDINGS_CASH_FLOW_CUTOVER_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `set_cutover` | `_iso_ms(at) is None` |
+| `HOLDINGS_CASH_FLOW_EPOCH_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `rows` | `epochs and epochs[-1].get('reconciliation_digest') == digest` |
+| `HOLDINGS_CASH_FLOW_EPOCH_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `start_semantics_epoch` | `(confirm or '').strip() != digest[:8]` |
+| `HOLDINGS_CASH_FLOW_EPOCH_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `start_semantics_epoch` | `not (requested_by or '').strip() or not (reason or '').strip()` |
+| `HOLDINGS_CASH_FLOW_EPOCH_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `start_semantics_epoch` | `not CHANGE_REF.match((change_ref or '').strip())` |
+| `HOLDINGS_CASH_FLOW_EPOCH_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `start_semantics_epoch` | `not interactive` |
+| `HOLDINGS_CASH_FLOW_EPOCH_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `start_semantics_epoch` | `not written` |
+| `HOLDINGS_CASH_FLOW_EVENT_INVALID` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `_validate` | `event == EVENT_TOSS_WINDOW and (not set(row['residual_status'].values()) <= {'OPEN', 'CLEAR'})` |
+| `HOLDINGS_CASH_FLOW_EVENT_INVALID` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `_validate` | `missing` |
+| `HOLDINGS_CASH_FLOW_EVENT_INVALID` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `_validate` | `row.get(name) not in allowed` |
 | `HOLDINGS_CASH_FLOW_LEDGER_TAMPERED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `load_state` | `—` |
+| `HOLDINGS_CASH_FLOW_LEDGER_TAMPERED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `load_state` | `not isinstance(body, dict)` |
+| `HOLDINGS_CASH_FLOW_RESOLVE_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `resolve` | `not written` |
+| `HOLDINGS_CASH_FLOW_RESOLVE_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `rows` | `target in resolutions(existing)` |
+| `HOLDINGS_CASH_FLOW_RESOLVE_INVALID_TARGET` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `rows` | `row.get('accounting_status') == 'APPLIED'` |
+| `HOLDINGS_CASH_FLOW_RESOLVE_INVALID_TARGET` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `rows` | `row.get('event') not in EXCEPTION_EVENTS` |
+| `HOLDINGS_CASH_FLOW_RESOLVE_KIND_NOT_ALLOWED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `resolve` | `kind not in ALL_KINDS` |
+| `HOLDINGS_CASH_FLOW_RESOLVE_KIND_NOT_ALLOWED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `rows` | `kind not in allowed` |
+| `HOLDINGS_CASH_FLOW_RESOLVE_NOT_OPEN` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `rows` | `target not in open_exceptions(existing)` |
+| `HOLDINGS_CASH_FLOW_RESOLVE_NO_TARGET` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `rows` | `not matches` |
+| `HOLDINGS_CASH_FLOW_RESOLVE_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `resolve` | `not (requested_by or '').strip() or not (reason or '').strip()` |
+| `HOLDINGS_CASH_FLOW_RESOLVE_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `resolve` | `not interactive` |
 | `HOLDINGS_CLASSIFICATION_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/classification.py` | `apply` | `asset_class not in ASSIGNABLE_CLASSES` |
 | `HOLDINGS_CLASSIFICATION_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/classification.py` | `apply` | `not _valid_id(instrument)` |
 | `HOLDINGS_CLASSIFICATION_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/holdings/classification.py` | `load` | `—` |
