@@ -154,3 +154,37 @@ def test_an_allocation_block_without_a_complete_nav_gives_no_verdict():
              "portfolio_nav_complete": False}
     allocated = allocation.allocate(_no_holdings(), TOSS, block)
     assert allocated["complete"] is False and "portfolio NAV incomplete" in allocated["notes"][0]
+
+
+def test_a_verdict_gap_resumes_on_the_standing_peak_and_tells_what_moved_inside_it(tmp_path):
+    """The H2 gap (2026-10-08, about 4.5 h with no drawdown verdict): an incomplete stretch between two
+    complete fires. The gap itself must stay silent and leave everything alone. The first complete
+    fire after it compares against the peak that stood before it: no new baseline (a re-initialized
+    peak would erase a drop taken inside the gap), and a breach reached inside the gap is told then."""
+    from runtime.mvp_runtime.holdings import baseline_log
+
+    _futures_file(tmp_path)
+    hdir = tmp_path / "h"
+    first = _combine(tmp_path, toss={**TOSS, "known_total_krw": 40_000_000.0})
+    assert first["drawdown_state"] == combined.STATE_INITIALIZED
+    peak = json.loads((hdir / combined.PEAK_FILENAME).read_text())
+    baselines = baseline_log.verify(hdir)
+    told = combined.STATE_CLEAR
+
+    for kwargs in ({"wallet_status": combined.WALLET_NOT_CONFIGURED},   # coverage: the gate is off
+                   {"toss": {**TOSS, "partial": True}},                    # valuation
+                   {"rate": None}):                                        # valuation: no FX
+        gap = _combine(tmp_path, **kwargs)
+        assert gap["drawdown_state"] == combined.STATE_UNKNOWN and gap["combined_total_krw"] is None
+        for mark in (combined.STATE_CLEAR, combined.STATE_BREACHED):     # the gap is never told as a verdict:
+            assert combined.alert(gap, told=mark, as_of=NOW) is None     # not as a drop, not as a recovery
+        assert json.loads((hdir / combined.PEAK_FILENAME).read_text()) == peak
+        assert baseline_log.verify(hdir) == baselines                   # nor does it start a baseline
+
+    back = _combine(tmp_path)                                           # complete again, far lower
+    assert back["drawdown_state"] == combined.STATE_BREACHED            # not "initialized"
+    assert back["peak_total_krw"] == peak["peak_total_krw"] and back["peak_at"] == peak["peak_at"]
+    assert back["drawdown_pct"] == round((back["combined_total_krw"] / peak["peak_total_krw"] - 1) * 100, 2)
+    assert baseline_log.verify(hdir) == baselines
+    edge = combined.alert(back, told=told, as_of=NOW)
+    assert edge is not None and edge[0] == combined.STATE_BREACHED
