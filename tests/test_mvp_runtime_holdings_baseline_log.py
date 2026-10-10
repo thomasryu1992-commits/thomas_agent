@@ -131,3 +131,79 @@ def test_the_block_carries_the_id_and_no_door_reads_the_log(tmp_path):
                 for n in ast.walk(tree)):
             offenders.append(path.relative_to(ROOT).as_posix())
     assert offenders == []
+
+
+# A new baseline starts with nothing told (found 2026-10-09 after H2). ``reset_peak`` removes the told mark
+# with the peak; the baselines ``combine`` starts itself (scope_change, first_complete) once did not, so a
+# mark from the old baseline judged the new one: a "back within the limit" message for a baseline that
+# never fell, and silence for a real breach whose state equalled the stale mark.
+
+def _told_breached(hdir, *, peak=None):
+    hdir.mkdir(parents=True, exist_ok=True)
+    if peak is not None:
+        (hdir / combined.PEAK_FILENAME).write_text(json.dumps(peak))
+    combined.write_told(hdir, combined.STATE_BREACHED, now=NOW)
+
+
+def _edge(root, block):
+    return combined.alert(block, told=combined.read_told(root / "h"), as_of=NOW)
+
+
+@pytest.mark.parametrize("peak, cause", [
+    ({"peak_total_krw": 30_000_000.0, "peak_at": NOW}, "scope_change"),   # S1: a peak from another scope
+    (None, "first_complete"),                                              # S2: no peak at all
+], ids=["S1-scope-change", "S2-first-complete"])
+def test_a_new_baseline_carries_no_told_mark_from_the_old_one(tmp_path, peak, cause):
+    hdir = tmp_path / "h"
+    _told_breached(hdir, peak=peak)
+    first = _fire(tmp_path)
+    row = baseline_log.verify(hdir)[-1]
+    assert row["cause"] == cause and first["drawdown_state"] == combined.STATE_INITIALIZED
+    standing = json.loads((hdir / combined.PEAK_FILENAME).read_text())
+    assert (row["new_baseline_krw"], row["baseline_at"]) == (int(round(standing["peak_total_krw"])), standing["peak_at"])
+    assert combined.read_told(hdir) == combined.STATE_CLEAR and _edge(tmp_path, first) is None
+    second = _fire(tmp_path, at=LATER)                              # unchanged: clear, and nothing to say
+    assert second["drawdown_state"] == combined.STATE_CLEAR and _edge(tmp_path, second) is None
+
+
+def test_s3_a_real_breach_under_the_new_baseline_is_told(tmp_path):
+    hdir = tmp_path / "h"
+    _told_breached(hdir, peak={"peak_total_krw": 30_000_000.0, "peak_at": NOW})
+    _fire(tmp_path)                                                  # new scope baseline: 10.1 M
+    down = _fire(tmp_path, at=LATER, total=5_000_000.0)              # 5.1 M: about -50 %
+    assert down["drawdown_state"] == combined.STATE_BREACHED
+    edge = _edge(tmp_path, down)
+    assert edge is not None and edge[0] == combined.STATE_BREACHED
+
+
+def test_s4_an_explicit_reset_behaves_as_before(tmp_path):
+    hdir = tmp_path / "h"
+    _fire(tmp_path)
+    combined.write_told(hdir, combined.STATE_BREACHED, now=NOW)
+    assert combined.reset_peak(hdir, reason="withdrawal", requested_by="thomas", now=NOW) == [
+        combined.PEAK_FILENAME, combined.ALERT_MARK_FILENAME]
+    again = _fire(tmp_path, at=LATER, total=5_000_000.0)
+    assert baseline_log.verify(hdir)[-1]["cause"] == "after_reset"
+    assert again["drawdown_state"] == combined.STATE_INITIALIZED and _edge(tmp_path, again) is None
+    down = _fire(tmp_path, at=LATER, total=2_000_000.0)
+    assert _edge(tmp_path, down)[0] == combined.STATE_BREACHED
+
+
+def test_a_stop_between_the_mark_and_the_peak_starts_the_baseline_again(monkeypatch, tmp_path):
+    """The mark goes before the peak is written: a process stopped in between leaves no peak, so the next
+    fire starts the baseline again (one more baseline line) and never judges it against the stale mark."""
+    hdir = tmp_path / "h"
+    _told_breached(hdir, peak={"peak_total_krw": 30_000_000.0, "peak_at": NOW})
+    real = combined._write_peak
+
+    def _stop(*_a, **_kw):
+        raise OSError("stopped")
+
+    monkeypatch.setattr(combined, "_write_peak", _stop)
+    with pytest.raises(OSError):
+        _fire(tmp_path)
+    assert combined.read_told(hdir) == combined.STATE_CLEAR
+    monkeypatch.setattr(combined, "_write_peak", real)
+    block = _fire(tmp_path, at=LATER)
+    assert block["drawdown_state"] == combined.STATE_INITIALIZED
+    assert [cause for event, cause in _events(tmp_path) if event == "baseline_set"] == ["scope_change"] * 2

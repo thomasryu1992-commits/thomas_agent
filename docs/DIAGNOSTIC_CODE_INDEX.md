@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **674** distinct codes across **1336** raise sites
+- **674** distinct codes across **1337** raise sites
 - **23** exception classes carry them
 - **76** codes are raised from more than one module (see below)
 - **144** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -473,6 +473,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `HOLDINGS_CASH_FLOW_EVENT_INVALID` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `_validate` | `row.get(name) not in allowed` |
 | `HOLDINGS_CASH_FLOW_LEDGER_TAMPERED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `load_state` | `—` |
 | `HOLDINGS_CASH_FLOW_LEDGER_TAMPERED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `load_state` | `not isinstance(body, dict)` |
+| `HOLDINGS_CASH_FLOW_LEDGER_TAMPERED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `refuse` | `—` |
 | `HOLDINGS_CASH_FLOW_RESOLVE_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `resolve` | `not written` |
 | `HOLDINGS_CASH_FLOW_RESOLVE_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `rows` | `target in resolutions(existing)` |
 | `HOLDINGS_CASH_FLOW_RESOLVE_INVALID_TARGET` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `rows` | `row.get('accounting_status') == 'APPLIED'` |
