@@ -56,7 +56,7 @@ import re
 import textwrap
 import time
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
@@ -404,19 +404,89 @@ def _legacy_import_rows(existing: list[dict[str, Any]], state: Mapping[str, Any]
     first verified fire — becomes one ledger line, so a lost cache cannot lose it. Counters only."""
     if _legacy(existing) is not None:
         return []
-    names = ("toss_evidence", "shadow_success_dates", "first_verified_fire_at")
-    if not any(state.get(name) for name in names):
+    counters, dates, first = _legacy_fields(state)        # first: a falsy 0 or False is refused, not "nothing"
+    if not any(state.get(name) for name in ("toss_evidence", "shadow_success_dates", "first_verified_fire_at")):
         return []
-    raw = state.get("toss_evidence") or {}
-    counters = {name: int(raw.get(name) or 0) for name in ("buy_explained", "sell_explained", "activity_unexplained")}
-    counters["settlement_days"] = {str(day): {"windows": int(row.get("windows") or 0),
-                                              "unexplained": int(row.get("unexplained") or 0)}
-                                   for day, row in (raw.get("settlement_days") or {}).items()}
     return [{"event": EVENT_LEGACY, "source": "ledger", "source_event_key": "legacy_import:v1",
-             "toss_evidence": counters, "shadow_success_dates": sorted(state.get("shadow_success_dates") or []),
-             "first_verified_fire_at": state.get("first_verified_fire_at") or "",
+             "toss_evidence": counters, "shadow_success_dates": dates, "first_verified_fire_at": first,
              "cutover_at": cutover_at(existing) or "", "cutover_generation": cutover_generation(existing),
              "provenance": "state_file_before_h6d_min"}]
+
+
+_KST_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+_LEGACY_COUNTERS = ("buy_explained", "sell_explained", "activity_unexplained")
+
+
+def _is_kst_day(value: Any) -> bool:
+    """A date as H6b wrote it (``date.isoformat()``): the shape, and a day the calendar has."""
+    if not isinstance(value, str) or not _KST_DAY.fullmatch(value):
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _legacy_fields(state: Mapping[str, Any]) -> tuple[dict[str, Any], list[str], str]:
+    """The pre-H6d fields as the H6b code wrote them, or a refusal: a counter that is not a whole number,
+    a day that is not a KST date (shape and calendar), a first fire that is not a time in the Z form.
+    Absent means the key is missing or null, the only empty values H6b left; any other falsy value (0,
+    False, "", [], {}) is a refusal, not "never recorded". Nothing is coerced, so nothing is imported from
+    a cache that does not say what H6b meant (it raises inside the ledger write, so the refusal leaves the
+    ledger and the state as they were)."""
+    def refuse(what: str) -> ToolError:
+        return ToolError(LEDGER_TAMPERED, f"{STATE_FILENAME}: the pre-H6d {what} is malformed; nothing imported")
+
+    def count(value: Any, what: str) -> int:
+        if value is None:
+            return 0
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise refuse(what)
+        return value
+
+    raw = state.get("toss_evidence")
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise refuse("toss_evidence")
+    counters: dict[str, Any] = {name: count(raw.get(name), f"toss_evidence.{name}")
+                                for name in _LEGACY_COUNTERS}
+    days = raw.get("settlement_days")
+    if days is None:
+        days = {}
+    if not isinstance(days, dict):
+        raise refuse("toss_evidence.settlement_days")
+    settlement: dict[str, Any] = {}
+    for day, row in days.items():
+        if not _is_kst_day(day) or not isinstance(row, dict):
+            raise refuse("toss_evidence.settlement_days")
+        settlement[day] = {name: count(row.get(name), f"toss_evidence.settlement_days.{name}")
+                           for name in ("windows", "unexplained")}
+    counters["settlement_days"] = settlement
+    dates = state.get("shadow_success_dates")
+    if dates is None:
+        dates = []
+    if not isinstance(dates, list) or not all(_is_kst_day(d) for d in dates):
+        raise refuse("shadow_success_dates")
+    first = state.get("first_verified_fire_at")
+    if first is None:
+        first = ""
+    elif not isinstance(first, str) or not first.endswith("Z") or _iso_ms(first) is None:
+        raise refuse("first_verified_fire_at")              # the Z form H6b wrote: shadow_record compares text
+    return counters, sorted(dates), first
+
+
+def legacy_import_refusal(rows: list[Mapping[str, Any]], state: Mapping[str, Any]) -> str | None:
+    """Why the pending pre-H6d import would be refused, or None (imported already, nothing to import,
+    or well formed). The readiness reads it, so a refused import is a FAIL there, not a silent stall."""
+    if _legacy(rows) is not None:
+        return None
+    try:
+        _legacy_import_rows(list(rows), state)  # type: ignore[arg-type]
+    except ToolError as exc:
+        return exc.reason_code
+    return None
 
 
 def shadow_record(rows: list[Mapping[str, Any]]) -> tuple[str | None, list[str]]:
@@ -1173,7 +1243,13 @@ def toss_semantics(rows: list[Mapping[str, Any]], state: Mapping[str, Any], *, t
     evidence = toss_evidence(rows, epoch=epoch, today_kst=today_kst)
     if epoch == 0:
         legacy = _legacy(rows)
-        counters = (legacy or {}).get("toss_evidence") if legacy else state.get("toss_evidence")
+        if legacy:
+            counters = legacy.get("toss_evidence")
+        else:
+            try:                               # not imported yet: read through the import's own check
+                counters = _legacy_fields(state)[0]
+            except ToolError:
+                return "WAITING", "the pre-H6d counters on file are malformed; nothing was imported"
         verdict, why = _legacy_semantics(counters or {}, today_kst)
         if evidence["activity_unexplained"]:
             return "MIXED", f"{evidence['activity_unexplained']} pocket-window(s) with activity left a residual"
@@ -1309,6 +1385,8 @@ def readiness(state_dir: Path, *, now: str, current: Mapping[str, Any] | None = 
         state_ok = True
     except ToolError:
         state, state_ok = {"sources": {}}, False
+    if state_ok and checks["ledger_chain"] == PASS and legacy_import_refusal(rows, state):
+        state_ok = False                       # a pre-H6d cache the import refuses is not a consistent state
     boundary = cutover_at(rows)
     checks["ledger_state_consistency"] = (PASS if state_ok and checks["ledger_chain"] == PASS
                                           and (state.get("cutover_at") or None) == boundary else FAIL)
