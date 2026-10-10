@@ -139,7 +139,7 @@ def test_the_guard_is_wired_for_every_tool_that_reads():
     entries = json.loads(SETTINGS.read_text(encoding="utf-8"))["hooks"]["PreToolUse"]
     matchers = [entry["matcher"] for entry in entries
                 if any("guard-local-only.sh" in hook["command"] for hook in entry["hooks"])]
-    assert matchers and set(matchers[0].split("|")) >= {"Bash", "Read", "Grep", "Glob"}
+    assert matchers and set(matchers[0].split("|")) >= {"Bash", "Read", "Grep", "Glob", "Monitor"}
     # The main-commit guard keeps its own entry, unchanged in kind.
     assert any(entry["matcher"] == "Bash" and "block-main-commits.sh" in entry["hooks"][0]["command"]
                for entry in entries)
@@ -174,3 +174,72 @@ def test_without_the_guard_the_wrapper_still_refuses_a_holdings_reference(tmp_pa
     env = {"PATH": "/usr/bin:/bin", "CLAUDE_PROJECT_DIR": str(tmp_path)}
     out = _run(["bash", "-c", _wrapper()], _payload("Bash", command=command), tmp_path, env)
     assert ("deny" if '"deny"' in out else "allow") == expected
+
+
+# --- Monitor runs a shell command too (2026-10-09) ----------------------------------------------------
+# Its input is {"command": ..., "description": ..., "timeout_ms": ...} or {"ws": {...}}. Before this, a
+# Monitor command was judged only as JSON text for paths: the terminal-only modes and the holdings import
+# went through. Now a Monitor `command` is judged exactly as Bash's.
+
+TERMINAL_ONLY = ("--full", "--local", "--unclassified", "--classify binance:X=coin", "--unclassify binance:X",
+                 "--reset-peak --reason r", "--cash-flow-cutover 2026-10-09T00:00:00Z", "--flows",
+                 "--resolve pay:x --kind deposit", "--semantics-epoch --change-ref '#1'")
+
+
+def _monitor(**tool_input) -> str:
+    return json.dumps({"tool_name": "Monitor", "tool_input": {"description": "synthetic", "timeout_ms": 1000,
+                                                                **tool_input}})
+
+
+@posix_only
+@pytest.mark.parametrize("tool", ["Bash", "Monitor"])
+@pytest.mark.parametrize("flag", TERMINAL_ONLY)
+def test_a_terminal_only_mode_is_refused_from_bash_and_monitor(tmp_path, tool, flag):
+    command = f"docker exec -it thomas-scheduler-maint python -m scripts.holdings_board {flag}"
+    payload = _payload("Bash", command=command) if tool == "Bash" else _monitor(command=command)
+    assert _decision(payload, tmp_path) == "deny"
+
+
+@posix_only
+@pytest.mark.parametrize(("tool_input", "expected"), [
+    ({"command": "python3 -c 'from runtime.mvp_runtime.holdings import store'"}, "deny"),
+    ({"command": "python -c 'from runtime.mvp_runtime import holdings'"}, "deny"),
+    ({"command": "tail -f /root/thomas_agent/.runtime_governance_state/holdings/holdings_cash_flows.jsonl"}, "deny"),
+    ({"command": "grep -r usd /root/thomas_agent/.runtime_governance_state"}, "deny"),
+    ({"ws": {"url": "wss://example.invalid/.runtime_governance_state/holdings"}}, "deny"),
+    ({}, "deny"),                                                     # neither a command nor a socket
+    ({"command": ["tail", "-f", "x"]}, "deny"),                       # a command that is not a string
+    ({"command": "docker exec thomas-scheduler python -m scripts.holdings_board"}, "allow"),
+    ({"command": "docker exec thomas-scheduler python -m scripts.holdings_board --json"}, "allow"),
+    ({"command": "tail -f /var/log/app.log | grep --line-buffered ERROR"}, "allow"),
+    ({"command": "until gh pr checks 1 --json bucket | grep -q pending; do sleep 30; done"}, "allow"),
+    ({"command": "tail -f run.log", "description": "watch holdings_local.json for a test"}, "allow"),
+    ({"ws": {"url": "wss://events.example.invalid/stream"}}, "allow"),
+])
+def test_monitor_is_judged_like_bash(tmp_path, tool_input, expected):
+    assert _decision(_monitor(**tool_input), tmp_path) == expected
+
+
+@posix_only
+@pytest.mark.parametrize("command", [
+    "python3 -c 'from runtime.mvp_runtime.holdings import store'",
+    "docker exec thomas-scheduler python -m scripts.holdings_board --flows",
+    "docker exec thomas-scheduler python -m scripts.holdings_board --json",
+    "tail -f /var/log/app.log",
+])
+def test_bash_and_monitor_give_the_same_answer(tmp_path, command):
+    assert _decision(_payload("Bash", command=command), tmp_path) == _decision(_monitor(command=command), tmp_path)
+
+
+@posix_only
+@pytest.mark.parametrize(("payload", "expected"), [
+    (_monitor(command="docker exec thomas-scheduler python -m scripts.holdings_board --full"), "deny"),
+    (_monitor(command="tail -f .runtime_governance_state/holdings/a.json"), "deny"),
+    (_monitor(command="tail -f /var/log/app.log"), "allow"),
+])
+def test_the_settings_wrapper_judges_monitor_with_and_without_the_guard(tmp_path, payload, expected):
+    with_guard = {"PATH": "/usr/bin:/bin", "CLAUDE_PROJECT_DIR": str(REPO_ROOT)}
+    without = {"PATH": "/usr/bin:/bin", "CLAUDE_PROJECT_DIR": str(tmp_path)}
+    for env in (with_guard, without):
+        out = _run(["bash", "-c", _wrapper()], payload, tmp_path, env)
+        assert ("deny" if '"deny"' in out else "allow") == expected
