@@ -421,24 +421,30 @@ class BinanceWalletFeed:
                 rows = []
             if not isinstance(rows, list):
                 raise ToolError("MALFORMED_RESULT", f"{source} history carried no rows")
-            total = body.get("total") if has_total and isinstance(body, dict) else None
-            if len(rows) >= size:
+            if not all(isinstance(row, dict) for row in rows):
+                raise ToolError("MALFORMED_RESULT", f"{source} history carried a row that is not an object")
+            # Where the venue documents ``total`` it is part of the answer: rows without a whole-number total
+            # are not shown complete. Only a quiet window (no rows) may come without one.
+            total = body.get("total") if isinstance(body, dict) else None
+            if has_total and (rows or total is not None) and (
+                    not isinstance(total, int) or isinstance(total, bool) or total < len(rows)
+                    or (total > len(rows) and len(rows) < size)):
+                raise ToolError(FLOW_INCOMPLETE, f"{source} history: total {total!r}, rows {len(rows)}")
+            whole = has_total and total == len(rows)
+            if len(rows) >= size and not whole:
                 # A full page may be the first ``size`` of more. Read each side again, split where the page's
                 # own rows sit (their median time, so a burst inside a long window is cut in few reads) or,
-                # without readable times, at the middle. The sides share that instant, so a row there is
-                # reached whichever way the venue bounds a window; the copies are folded below.
-                if end - start < 2:
-                    raise ToolError(FLOW_INCOMPLETE, f"{source} history: a full page within one instant")
-                times = sorted(t for t in (_row_ms(row) for row in rows if isinstance(row, dict))
-                               if t is not None and start < t < end)
+                # without readable times, at the middle. The sides overlap on two instants, ``middle`` and
+                # ``middle + 1``, so every row is reached whichever way the venue bounds a window (no page
+                # says); the copies are folded below.
+                if end - start < 3:
+                    raise ToolError(FLOW_INCOMPLETE, f"{source} history: a full page in a window too short to split")
+                times = sorted(t for t in (_row_ms(row) for row in rows) if t is not None and start < t < end)
                 middle = times[len(times) // 2] if times else (start + end) // 2
-                pending.extend([(middle, end), (start, middle)])
+                middle = min(max(middle, start + 1), end - 2)
+                pending.extend([(middle, end), (start, middle + 1)])
                 continue
-            if isinstance(total, int) and not isinstance(total, bool) and total != len(rows):
-                raise ToolError(FLOW_INCOMPLETE, f"{source} history: total {total}, rows {len(rows)}")
             for row in rows:
-                if not isinstance(row, dict):
-                    continue
                 key = (f"id:{row[id_name]}" if row.get(id_name) not in (None, "")
                        else "row:" + json.dumps(row, sort_keys=True, default=str))
                 if key in found and found[key] != row:

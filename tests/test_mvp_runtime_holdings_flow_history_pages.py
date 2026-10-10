@@ -26,6 +26,8 @@ HOUR = 3_600_000
 DEFAULT_PAGE = {"crypto_deposit": 1000, "crypto_withdraw": 1000, "fiat_deposit": 100, "fiat_withdraw": 100,
                 "fiat_buy": 100, "fiat_sell": 100, "pay": 100, "transfer_spot_to_futures": 10,
                 "transfer_futures_to_spot": 10}
+ABSENT = object()                                # a body with no ``total`` field
+NULL = object()                                  # ``"total": null``
 TIME_FIELD = {"crypto_deposit": "insertTime", "pay": "transactionTime", "transfer_spot_to_futures": "timestamp",
               "transfer_futures_to_spot": "timestamp", "fiat_deposit": "createTime"}
 
@@ -51,12 +53,20 @@ def _source_of(path: str, query: dict[str, str]) -> str:
 class Venue:
     """Rows per source; answers the asked window and page. ``fail`` maps a request number (1-based, per
     source) to an exception to raise; ``total_bias`` skews the reported total; ``change`` edits rows after
-    the given request number, as a venue whose rows move under a read."""
+    the given request number, as a venue whose rows move under a read. ``bounds`` is how the venue reads
+    a window — ``"[]"`` both ends in, ``"[)"``, ``"(]"``, ``"()"`` — since no Binance page says.
+    ``total`` replaces the reported total (``ABSENT`` drops it); ``junk`` is appended to every page."""
 
-    def __init__(self, rows=None, *, fail=None, total_bias=0, change=None):
+    def __init__(self, rows=None, *, fail=None, total_bias=0, change=None, bounds="[]", total=None, junk=()):
         self.rows = {name: list(r) for name, r in (rows or {}).items()}
         self.fail, self.total_bias, self.change = dict(fail or {}), total_bias, change
+        self.bounds, self.total, self.junk = bounds, total, list(junk)
         self.sent: list[tuple[str, dict[str, str]]] = []
+
+    def _inside(self, t, start, end):
+        low = start <= t if self.bounds[0] == "[" else start < t
+        high = t <= end if self.bounds[1] == "]" else t < end
+        return low and high
 
     def count(self, source):
         return sum(1 for name, _q in self.sent if name == source)
@@ -74,16 +84,20 @@ class Venue:
         _p, _f, (start_name, end_name), _d = binance_wallet.FLOW_SOURCES[source]
         start, end = int(query[start_name]), int(query[end_name])
         field = TIME_FIELD.get(source, "insertTime")
-        inside = sorted((r for r in self.rows.get(source, []) if start <= r[field] <= end),
+        inside = sorted((r for r in self.rows.get(source, []) if self._inside(r[field], start, end)),
                         key=lambda r: r[field], reverse=True)               # newest first
         page_name = binance_wallet.FLOW_PAGES[source][0] if hasattr(binance_wallet, "FLOW_PAGES") else None
         size = int(query.get(page_name, DEFAULT_PAGE[source])) if page_name else DEFAULT_PAGE[source]
-        page = inside[:size]
-        total = len(inside) + self.total_bias
+        page = inside[:size] + self.junk
+        total = (len(inside) + self.total_bias if self.total is None
+                 else None if self.total is NULL else self.total)
         if source.startswith("transfer"):
-            body = {"total": total, "rows": page} if inside else {"total": 0}
+            body = ({"rows": page} if self.total is ABSENT
+                    else {"total": total, "rows": page} if page else {"total": 0})
         elif source.startswith("fiat"):
             body = {"code": "000000", "data": page, "total": total}
+            if self.total is ABSENT:
+                body.pop("total")
         elif source == "pay":
             body = {"code": "000000", "data": page}
         else:
@@ -192,13 +206,13 @@ def test_t6_t7_a_failed_or_timed_out_piece_fails_the_whole_read(monkeypatch, wal
 
 
 def _seams(venue, source):
-    """Instants that end one piece and start another: where a full page was split."""
+    """Where a full page was split: one piece ends at ``middle + 1`` and the other starts at ``middle``."""
     sent = [q for name, q in venue.sent if name == source]
-    return {q["endTime"] for q in sent} & {q["startTime"] for q in sent}
+    return {str(int(q["endTime"]) - 1) for q in sent} & {q["startTime"] for q in sent}
 
 
-# T8: a full page is split at its rows' median time; the two sides share that instant, so the row sitting
-# on it is read twice and returned once.
+# T8: a full page is split at its rows' median time; the two sides share that instant and the next, so
+# the row sitting on it is read twice and returned once.
 def test_t8_a_row_on_the_seam_is_returned_once(monkeypatch, wallet):
     rows = [transfer(i, t) for i, t in enumerate(spread(121))]
     venue = serve(monkeypatch, Venue({"transfer_spot_to_futures": rows}))
@@ -212,8 +226,8 @@ def test_t8b_a_row_that_changes_between_two_pieces_is_incomplete(monkeypatch, wa
     rows = [transfer(i, t, status="PENDING") for i, t in enumerate(spread(121))]
 
     def settle(venue):
-        # Before the third piece: the row on the seam (the second piece's end) settles.
-        seam = int([q for name, q in venue.sent if name == "transfer_spot_to_futures"][1]["endTime"])
+        # Before the third piece: the row on the seam (the second piece ends one past it) settles.
+        seam = int([q for name, q in venue.sent if name == "transfer_spot_to_futures"][1]["endTime"]) - 1
         for row in venue.rows["transfer_spot_to_futures"]:
             if row["timestamp"] == seam:
                 row["status"] = "CONFIRMED"
@@ -324,3 +338,99 @@ def test_t13_to_t16_an_incomplete_source_keeps_its_cursor_and_the_next_fire_read
     fire(wallet, tmp_path, T2 + HOUR)
     keys = transfer_keys(tmp_path)
     assert len(keys) == len(set(keys)) == 150
+
+
+# --- follow-up review (2026-10-10): total, odd rows, an exactly full page, bounds, budgets -------------
+
+def fiat(i, at):
+    return {"orderNo": f"F{i:05d}", "createTime": at}
+
+
+ROWS = {"transfer_spot_to_futures": transfer, "fiat_deposit": fiat, "pay": pay_row}
+
+
+# R1: where the venue documents ``total`` it is part of the answer. Rows without a usable one are not
+# shown complete; a quiet window with neither rows nor total stays a normal empty read.
+@pytest.mark.parametrize("source", ["transfer_spot_to_futures", "fiat_deposit"])
+@pytest.mark.parametrize("total", [ABSENT, NULL, "3", True, 2.5], ids=["absent", "null", "text", "bool", "float"])
+def test_r1_rows_without_a_usable_total_are_incomplete(monkeypatch, wallet, source, total):
+    serve(monkeypatch, Venue({source: [ROWS[source](i, t) for i, t in enumerate(spread(3))]}, total=total))
+    with pytest.raises(ToolError) as exc:
+        read(wallet, source)
+    assert exc.value.reason_code == binance_wallet.FLOW_INCOMPLETE
+
+
+@pytest.mark.parametrize("source", ["transfer_spot_to_futures", "fiat_deposit"])
+def test_r1b_a_quiet_window_without_a_total_is_still_empty(monkeypatch, wallet, source):
+    serve(monkeypatch, Venue(total=ABSENT))
+    assert read(wallet, source) == []
+
+
+# R2: a row that is not an object is not dropped in silence — the page is malformed.
+@pytest.mark.parametrize("source", ["transfer_spot_to_futures", "pay", "crypto_deposit"])
+@pytest.mark.parametrize("junk", ["text", 5, None, ["a"]], ids=["text", "number", "null", "list"])
+def test_r2_a_row_that_is_not_an_object_fails_the_read(monkeypatch, wallet, source, junk):
+    make = ROWS.get(source, lambda i, t: {"id": f"D{i}", "insertTime": t})
+    serve(monkeypatch, Venue({source: [make(i, t) for i, t in enumerate(spread(3))]}, junk=[junk]))
+    with pytest.raises(ToolError) as exc:
+        read(wallet, source)
+    assert exc.value.reason_code == "MALFORMED_RESULT"
+
+
+# R3: a page exactly at the maximum. With ``total`` equal to it the answer is whole, in one request, even
+# when every row sits on one instant; without ``total`` (Pay) a full page on one instant stays unprovable.
+@pytest.mark.parametrize("source, size", [("transfer_spot_to_futures", 100), ("fiat_deposit", 500)])
+def test_r3_a_page_exactly_full_with_its_total_is_whole_in_one_request(monkeypatch, wallet, source, size):
+    venue = serve(monkeypatch, Venue({source: [ROWS[source](i, t) for i, t in enumerate(spread(size))]}))
+    assert len(read(wallet, source)) == size and venue.count(source) == 1
+
+
+def test_r3b_a_full_page_with_its_total_on_one_instant_is_whole(monkeypatch, wallet):
+    at = NOW_MS - HOUR
+    serve(monkeypatch, Venue({"transfer_spot_to_futures": [transfer(i, at) for i in range(100)]}))
+    assert len(read(wallet, "transfer_spot_to_futures", at, at + 1)) == 100
+
+
+def test_r3c_a_full_page_whose_total_says_more_is_still_split(monkeypatch, wallet):
+    rows = [transfer(i, t) for i, t in enumerate(spread(101))]
+    venue = serve(monkeypatch, Venue({"transfer_spot_to_futures": rows}))
+    assert len(read(wallet, "transfer_spot_to_futures")) == 101 and venue.count("transfer_spot_to_futures") > 1
+
+
+# R4: no Binance page says whether a window's ends are in or out. Every reading must reach every row,
+# the one on the seam included.
+@pytest.mark.parametrize("bounds", ["[]", "[)", "(]", "()"])
+@pytest.mark.parametrize("source", ["transfer_spot_to_futures", "pay"])
+def test_r4_every_row_arrives_however_the_venue_bounds_a_window(monkeypatch, wallet, bounds, source):
+    rows = [ROWS[source](i, t) for i, t in enumerate(spread(150))]
+    serve(monkeypatch, Venue({source: rows}, bounds=bounds))
+    got = read(wallet, source)
+    ident = binance_wallet.FLOW_PAGES[source][3]
+    assert sorted(r[ident] for r in got) == sorted(r[ident] for r in rows)
+
+
+# R5: the request budget is per source and per read: one source spending its budget costs no other.
+def test_r5_one_source_over_its_budget_leaves_the_others_whole(monkeypatch, wallet, tmp_path):
+    window_start = NOW_MS - 7 * DAY + DAY // 2
+    venue = serve(monkeypatch, Venue({
+        "transfer_spot_to_futures": [transfer(i, t) for i, t in enumerate(spread(1000, window_start, NOW_MS))],
+        "transfer_futures_to_spot": [transfer(i, t, source="transfer_futures_to_spot")
+                                     for i, t in enumerate(spread(150))],
+        "pay": [pay_row(i, t) for i, t in enumerate(spread(150))]}))
+    result = fire(wallet, tmp_path, NOW_MS)
+    assert set(result["errors"]) == {"transfer_spot_to_futures"}
+    assert venue.count("transfer_spot_to_futures") == binance_wallet.FLOW_MAX_REQUESTS
+    assert 1 < venue.count("transfer_futures_to_spot") <= binance_wallet.FLOW_MAX_REQUESTS
+    assert 1 < venue.count("pay") <= binance_wallet.FLOW_MAX_REQUESTS
+    assert all(venue.count(name) == 1 for name in binance_wallet.FLOW_SOURCES
+               if name not in ("transfer_spot_to_futures", "transfer_futures_to_spot", "pay"))
+    state = cursors(tmp_path)
+    assert state["transfer_spot_to_futures"] is None and state["pay"] == state["transfer_futures_to_spot"] == NOW_MS
+
+
+def test_r5b_every_read_starts_a_fresh_budget(monkeypatch, wallet):
+    rows = [pay_row(i, t) for i, t in enumerate(spread(150))]
+    venue = serve(monkeypatch, Venue({"pay": rows}))
+    for _ in range(3):
+        assert len(read(wallet, "pay")) == 150
+    assert venue.count("pay") == 3 * (venue.count("pay") // 3) > 3

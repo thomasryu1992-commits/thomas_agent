@@ -4,11 +4,12 @@
   - Each request names its page size at the documented maximum, through a new `FLOW_PAGES` mapping.
     `FLOW_SOURCES` is unchanged.
   - A full page is read again as two windows. They are split at the median time of the page's rows, or
-    at the middle when the rows carry no numeric time. The two windows share that instant, and a row
-    read twice is kept once, by its venue id.
+    at the middle when the rows carry no numeric time. The two windows overlap on that instant and the
+    next, and a row read twice is kept once, by its venue id. A full page whose `total` equals its rows
+    is not split.
   - A read that cannot be shown whole raises `BINANCE_FLOW_HISTORY_INCOMPLETE`. That happens when:
-    - `total` disagrees with the rows;
-    - a full page sits inside one millisecond;
+    - `total` is missing or not a whole number on a page with rows, or disagrees with the rows;
+    - a full page (without a matching `total`) sits in a window under 3 ms, too short to split;
     - one id comes back with different content in two windows;
     - more than `FLOW_MAX_REQUESTS` (8) requests or `FLOW_READ_SECONDS` (15) are needed.
 
@@ -50,6 +51,22 @@
   - **Past reads.** This prevents new silent loss. It does not find or restore rows an earlier read may
     already have dropped; that needs the ledger and is part of the C7 work (#1209). Whether any
     production read was cut is not known.
+- **Follow-up review (same day): four defects in the first version, reproduced, then fixed.**
+  - **`total` was optional.** A transfer or fiat page whose `total` was missing, null, text, a boolean or
+    a fraction was read with no check. Now such a page with rows is `INCOMPLETE`. Only a quiet window,
+    with no rows, may come without a total.
+  - **Rows that are not objects were dropped silently.** On Pay and deposit, nothing caught it. Now the
+    page is `MALFORMED_RESULT`.
+  - **A page exactly full was always split.** That cost 3 requests where 1 does. It also failed 100
+    transfers on one instant whose `total` said 100. Where the venue gives `total`, a page whose `total`
+    equals its rows is whole. Without `total` (Pay, deposit, withdraw), a full page is still split, and a
+    full page on one instant still fails.
+  - **The halves shared one instant.** A venue that leaves both ends of a window out would lose the row on
+    the seam: 2 of 150 in the test. The halves are now `[start, middle + 1]` and `[middle, end]`, which
+    cover every row under all four readings of the bounds.
+
+  The request budget was already per source and per read. A source over its budget leaves the others
+  whole, and that is now pinned. Each fix has a mutation that fails its tests.
 - **Tests:** `tests/test_mvp_runtime_holdings_flow_history_pages.py` covers T1–T16 on a fake venue that
   applies the asked window and page, or its default page when none is asked.
   - Five mutations each fail at least one test: no split, no fold of duplicates, no ceiling, no `total`
