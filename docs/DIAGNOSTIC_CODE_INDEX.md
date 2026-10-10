@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **674** distinct codes across **1335** raise sites
+- **674** distinct codes across **1336** raise sites
 - **23** exception classes carry them
 - **76** codes are raised from more than one module (see below)
 - **144** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -199,6 +199,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `BINANCE_FLOW_HISTORY_INCOMPLETE` | `ToolError` | `runtime/mvp_runtime/holdings/binance_wallet.py` | `flow_history` | `end - start < 3` |
 | `BINANCE_FLOW_HISTORY_INCOMPLETE` | `ToolError` | `runtime/mvp_runtime/holdings/binance_wallet.py` | `flow_history` | `has_total and (rows or total is not None) and (not isinstance(total, int) or isinstance(total, …` |
 | `BINANCE_FLOW_HISTORY_INCOMPLETE` | `ToolError` | `runtime/mvp_runtime/holdings/binance_wallet.py` | `flow_history` | `key in found and found[key] != row` |
+| `BINANCE_FLOW_HISTORY_INCOMPLETE` | `ToolError` | `runtime/mvp_runtime/holdings/binance_wallet.py` | `flow_history` | `loose and requests > 1` |
 | `BINANCE_FLOW_HISTORY_INCOMPLETE` | `ToolError` | `runtime/mvp_runtime/holdings/binance_wallet.py` | `flow_history` | `requests >= FLOW_MAX_REQUESTS or time.monotonic() - started > FLOW_READ_SECONDS` |
 | `BINANCE_WALLET_PATH_REFUSED` | `ToolBlocked` | `runtime/mvp_runtime/holdings/binance_wallet.py` | `_get` | `(base, path) not in ALLOWED_REQUESTS` |
 | `BINANCE_WALLET_PATH_REFUSED` | `ToolBlocked` | `runtime/mvp_runtime/holdings/binance_wallet.py` | `flow_history` | `source not in FLOW_SOURCES` |

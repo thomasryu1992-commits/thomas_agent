@@ -67,6 +67,23 @@
 
   The request budget was already per source and per read. A source over its budget leaves the others
   whole, and that is now pinned. Each fix has a mutation that fails its tests.
+- **Final integrity review (same day): three more paths, each reproduced first, then fixed.**
+  - **The asked window's own ends.** The halves now overlap, but a row exactly on the first or last
+    instant of the caller's window was lost whenever the venue leaves an end out. That happened in 12 of
+    16 cases: `[)`, `(]` and `()`, one page or split, transfer and Pay. The read now asks one instant
+    wider on each side. It does not widen when that would pass the source's longest window (the probe asks
+    exactly that), and then those two instants stay unguaranteed. `collect_binance` always leaves 60 s of
+    room, so its reads are always widened.
+  - **Rows without their venue id.** They were folded by their content, so two different transactions
+    alike became one. The read now folds only by id. Rows without one are all returned, for the
+    normalizer to record as malformed (the existing policy, which also folds identical malformed rows by
+    digest). A read of more than one piece that holds one is `INCOMPLETE`: the pieces overlap, so one row
+    read twice and two rows alike cannot be told apart.
+  - **Fiat and Pay failure bodies.** Their `code` and `success` were not read, so `code 100001,
+    success false, data []` was an empty history and the cursor moved. Now the body must say it
+    worked, with `code` `000000` or `success` true, and must not say otherwise. Anything else is the
+    existing `BINANCE_WALLET_REJECTED`, carrying the venue's code only, never its message. Accepted: one
+    field missing while the other says it worked. Refused: both missing, or a contradiction.
 - **Tests:** `tests/test_mvp_runtime_holdings_flow_history_pages.py` covers T1–T16 on a fake venue that
   applies the asked window and page, or its default page when none is asked.
   - Five mutations each fail at least one test: no split, no fold of duplicates, no ceiling, no `total`

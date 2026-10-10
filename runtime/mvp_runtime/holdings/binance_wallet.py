@@ -127,6 +127,10 @@ FLOW_INCOMPLETE = "BINANCE_FLOW_HISTORY_INCOMPLETE"
 # Per source and read. One request in the normal case, as before; splits only when a page comes back full.
 # Small on purpose: withdraw history and fiat orders weigh heavily against the account's request limit.
 FLOW_MAX_REQUESTS = 8
+# Fiat and Pay wrap their rows in ``code`` ("000000" when it worked) and ``success``. A body that says the
+# call failed, says neither, or contradicts itself is a refused read — never an empty history.
+FLOW_ENVELOPE_SOURCES = frozenset({"fiat_deposit", "fiat_withdraw", "fiat_buy", "fiat_sell", "pay"})
+FLOW_OK_CODE = "000000"
 FLOW_READ_SECONDS = 15.0
 
 # The whole egress surface, (base, path) by constant. Anything else is refused before a socket opens.
@@ -405,7 +409,13 @@ class BinanceWalletFeed:
         size_name, size, has_total, id_name = FLOW_PAGES[source]
         started, requests = time.monotonic(), 0
         found: dict[str, dict[str, Any]] = {}
-        pending = [(start_ms, end_ms)]
+        loose: list[dict[str, Any]] = []               # rows without their venue id: never folded by content
+        # One instant wider on each side, so a row on the asked first or last instant arrives whichever way
+        # the venue bounds a window (no page says) — unless that would pass the venue's longest window.
+        lo, hi = start_ms - 1, end_ms + 1
+        if hi - lo > days * 86_400_000:
+            lo, hi = start_ms, end_ms
+        pending = [(lo, hi)]
         while pending:
             start, end = pending.pop()
             if requests >= FLOW_MAX_REQUESTS or time.monotonic() - started > FLOW_READ_SECONDS:
@@ -414,6 +424,15 @@ class BinanceWalletFeed:
             requests += 1
             body = self._get(BINANCE_BASE_URL, path, {**fixed, start_name: start, end_name: end, size_name: size},
                              signed=True, what=f"{source} history", timeout_seconds=timeout_seconds)
+            if source in FLOW_ENVELOPE_SOURCES:
+                code = body.get("code") if isinstance(body, dict) else None
+                success = body.get("success") if isinstance(body, dict) else None
+                said_ok = code == FLOW_OK_CODE or success is True
+                said_failed = (code is not None and code != FLOW_OK_CODE) or (success is not None and success is not True)
+                if said_failed or not said_ok:
+                    # The venue's code only, as for an HTTP refusal; its message never reaches a log.
+                    shown = str(code) if isinstance(code, (str, int)) and str(code).isalnum() and len(str(code)) <= 12 else ""
+                    raise _ApiRejected(urllib.parse.urlparse(BINANCE_BASE_URL).hostname or "?", 200, shown)
             rows = body if isinstance(body, list) else (
                 (body.get("data") if isinstance(body.get("data"), list) else body.get("rows"))
                 if isinstance(body, dict) else None)
@@ -445,12 +464,17 @@ class BinanceWalletFeed:
                 pending.extend([(middle, end), (start, middle + 1)])
                 continue
             for row in rows:
-                key = (f"id:{row[id_name]}" if row.get(id_name) not in (None, "")
-                       else "row:" + json.dumps(row, sort_keys=True, default=str))
+                if row.get(id_name) in (None, ""):
+                    loose.append(row)                   # the normalizer's to judge (a malformed-row event)
+                    continue
+                key = f"id:{row[id_name]}"
                 if key in found and found[key] != row:
-                    raise ToolError(FLOW_INCOMPLETE, f"{source} history: a row changed between two pieces")
+                    raise ToolError(FLOW_INCOMPLETE, f"{source} history: one id with two contents")
                 found[key] = row
-        return list(found.values())
+        if loose and requests > 1:
+            # The pieces overlap, so a row without its id may be one row read twice or two rows alike: unknown.
+            raise ToolError(FLOW_INCOMPLETE, f"{source} history: a row without its id in a read of {requests} pieces")
+        return [*found.values(), *loose]
 
     def wallet_snapshot(self, *, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) -> WalletSnapshot:
         self._check_gate()

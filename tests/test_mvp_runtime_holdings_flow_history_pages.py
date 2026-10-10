@@ -29,7 +29,8 @@ DEFAULT_PAGE = {"crypto_deposit": 1000, "crypto_withdraw": 1000, "fiat_deposit":
 ABSENT = object()                                # a body with no ``total`` field
 NULL = object()                                  # ``"total": null``
 TIME_FIELD = {"crypto_deposit": "insertTime", "pay": "transactionTime", "transfer_spot_to_futures": "timestamp",
-              "transfer_futures_to_spot": "timestamp", "fiat_deposit": "createTime"}
+              "transfer_futures_to_spot": "timestamp", "fiat_deposit": "createTime", "fiat_withdraw": "createTime",
+              "fiat_buy": "createTime", "fiat_sell": "createTime"}
 
 
 class _Response(io.BytesIO):
@@ -57,10 +58,12 @@ class Venue:
     a window — ``"[]"`` both ends in, ``"[)"``, ``"(]"``, ``"()"`` — since no Binance page says.
     ``total`` replaces the reported total (``ABSENT`` drops it); ``junk`` is appended to every page."""
 
-    def __init__(self, rows=None, *, fail=None, total_bias=0, change=None, bounds="[]", total=None, junk=()):
+    def __init__(self, rows=None, *, fail=None, total_bias=0, change=None, bounds="[]", total=None, junk=(),
+                 envelope=None):
         self.rows = {name: list(r) for name, r in (rows or {}).items()}
         self.fail, self.total_bias, self.change = dict(fail or {}), total_bias, change
         self.bounds, self.total, self.junk = bounds, total, list(junk)
+        self.envelope = dict(envelope or {})            # fiat and Pay: replaces code/success (ABSENT drops)
         self.sent: list[tuple[str, dict[str, str]]] = []
 
     def _inside(self, t, start, end):
@@ -95,13 +98,19 @@ class Venue:
             body = ({"rows": page} if self.total is ABSENT
                     else {"total": total, "rows": page} if page else {"total": 0})
         elif source.startswith("fiat"):
-            body = {"code": "000000", "data": page, "total": total}
+            body = {"code": "000000", "message": "success", "data": page, "total": total, "success": True}
             if self.total is ABSENT:
                 body.pop("total")
         elif source == "pay":
-            body = {"code": "000000", "data": page}
+            body = {"code": "000000", "message": "success", "data": page, "success": True}
         else:
             body = page
+        if isinstance(body, dict) and (source.startswith("fiat") or source == "pay"):
+            for key, value in self.envelope.items():
+                if value is ABSENT:
+                    body.pop(key, None)
+                else:
+                    body[key] = value
         return _Response(body)
 
 
@@ -156,7 +165,7 @@ def test_t2_one_page_is_one_request_with_the_page_size_at_its_maximum(monkeypatc
     assert len(rows) == 5 and venue.count("transfer_spot_to_futures") == 1
     _source, query = venue.sent[0]
     assert query["size"] == "100" and query["type"] == "MAIN_UMFUTURE"
-    assert (query["startTime"], query["endTime"]) == (str(NOW_MS - DAY), str(NOW_MS))
+    assert (query["startTime"], query["endTime"]) == (str(NOW_MS - DAY - 1), str(NOW_MS + 1))   # one wider
     for source, (name, size, _total, _id) in binance_wallet.FLOW_PAGES.items():
         read(wallet, source)
         assert venue.sent[-1][1][name] == str(size)
@@ -248,11 +257,13 @@ def test_t9_rows_piled_on_one_instant_fail_closed(monkeypatch, wallet):
 
 
 def test_t11_a_full_page_in_a_window_of_one_millisecond_cannot_be_split(monkeypatch, wallet):
+    # The asked window is widened by an instant each side; the pile on one instant still cannot be split.
     at = NOW_MS - HOUR
     venue = serve(monkeypatch, Venue({"pay": [pay_row(i, at) for i in range(100)]}))
     with pytest.raises(ToolError) as exc:
         read(wallet, "pay", at, at + 1)
-    assert exc.value.reason_code == binance_wallet.FLOW_INCOMPLETE and venue.count("pay") == 1
+    assert exc.value.reason_code == binance_wallet.FLOW_INCOMPLETE
+    assert 1 <= venue.count("pay") <= binance_wallet.FLOW_MAX_REQUESTS
 
 
 # T10: Pay has no page and no total — a full page of 100 is split; 99 is whole as it is.
@@ -434,3 +445,118 @@ def test_r5b_every_read_starts_a_fresh_budget(monkeypatch, wallet):
     for _ in range(3):
         assert len(read(wallet, "pay")) == 150
     assert venue.count("pay") == 3 * (venue.count("pay") // 3) > 3
+
+
+# --- final integrity review (2026-10-10): the outer bounds, rows without an id, a failed envelope -------
+
+# B1–B8: a row exactly on the asked window's first or last instant arrives, however the venue bounds a
+# window, in a single page and in a split read alike. The seams inside a split are R4's; these are the ends.
+@pytest.mark.parametrize("bounds", ["[]", "[)", "(]", "()"])
+@pytest.mark.parametrize("n", [3, 150], ids=["one page", "split"])
+@pytest.mark.parametrize("source", ["transfer_spot_to_futures", "pay"])
+def test_b_a_row_on_the_first_or_last_instant_arrives(monkeypatch, wallet, bounds, n, source):
+    start, end = NOW_MS - DAY, NOW_MS
+    make = ROWS[source]
+    rows = [make(i, t) for i, t in enumerate(spread(n))] + [make(7001, start), make(7002, end)]
+    serve(monkeypatch, Venue({source: rows}, bounds=bounds))
+    ident = binance_wallet.FLOW_PAGES[source][3]
+    got = sorted(r[ident] for r in read(wallet, source, start, end))
+    assert got == sorted(r[ident] for r in rows)
+
+
+def test_b9_a_window_already_at_the_venue_limit_is_asked_as_it_is(monkeypatch, wallet):
+    # No room to widen: the read keeps the caller's window, so the venue's longest window is never passed.
+    _p, _f, (start_name, end_name), days = binance_wallet.FLOW_SOURCES["transfer_spot_to_futures"]
+    venue = serve(monkeypatch, Venue())
+    read(wallet, "transfer_spot_to_futures", NOW_MS - days * DAY, NOW_MS)
+    query = venue.sent[-1][1]
+    assert int(query[end_name]) - int(query[start_name]) <= days * DAY
+
+
+# I1–I6: the read folds only copies it can prove are one row — the same venue id. Rows without an id are
+# the normalizers' to judge (a malformed-row event each); the read never merges two of them by content.
+def _no_id(at, amount="1"):
+    return {"amount": amount, "currency": "USDT", "transactionTime": at}
+
+
+def test_i1_i3_rows_by_id(monkeypatch, wallet):
+    t = spread(3)
+    serve(monkeypatch, Venue({"pay": [pay_row(1, t[0]), pay_row(2, t[1])]}))
+    assert len(read(wallet, "pay")) == 2                                           # I1: two ids, two rows
+    serve(monkeypatch, Venue({"pay": [pay_row(1, t[0]), pay_row(1, t[0])]}))
+    assert len(read(wallet, "pay")) == 1                                           # I2: one id, one content
+    serve(monkeypatch, Venue({"pay": [pay_row(1, t[0]), {**pay_row(1, t[0]), "amount": "2"}]}))
+    with pytest.raises(ToolError) as exc:                                          # I3: one id, two contents
+        read(wallet, "pay")
+    assert exc.value.reason_code == binance_wallet.FLOW_INCOMPLETE
+
+
+@pytest.mark.parametrize("rows, kept", [
+    ([_no_id(NOW_MS - HOUR)], 1),                                                  # I4
+    ([_no_id(NOW_MS - HOUR), _no_id(NOW_MS - HOUR)], 2),                           # I5: never merged by content
+    ([_no_id(NOW_MS - HOUR), _no_id(NOW_MS - HOUR, "2")], 2),                      # I6
+], ids=["I4 one", "I5 two alike", "I6 two different"])
+def test_i4_i6_rows_without_an_id_are_all_returned_from_one_page(monkeypatch, wallet, rows, kept):
+    serve(monkeypatch, Venue({"pay": rows}))
+    assert len(read(wallet, "pay")) == kept
+
+
+def test_i7_a_row_without_an_id_in_a_split_read_cannot_be_told_from_its_seam_copy(monkeypatch, wallet):
+    rows = [pay_row(i, t) for i, t in enumerate(spread(150))] + [_no_id(NOW_MS - DAY // 2)]
+    serve(monkeypatch, Venue({"pay": rows}))
+    with pytest.raises(ToolError) as exc:
+        read(wallet, "pay")
+    assert exc.value.reason_code == binance_wallet.FLOW_INCOMPLETE
+
+
+def test_i8_alike_rows_without_an_id_reach_the_ledger_as_malformed(monkeypatch, wallet, tmp_path):
+    # The normalizer, not the read, owns them: a malformed-row event, the source's schema MISMATCH.
+    serve(monkeypatch, Venue({"pay": [_no_id(NOW_MS - HOUR), _no_id(NOW_MS - HOUR, "2")]}))
+    fire(wallet, tmp_path, NOW_MS)
+    assert len([r for r in cash_flows.verify(tmp_path) if r["event"] == cash_flows.EVENT_MALFORMED]) == 2
+    assert cash_flows.load_state(tmp_path)["sources"]["pay"]["schema"] == cash_flows.SCHEMA_MISMATCH
+
+
+# E·A–H: fiat (and Pay) wrap their rows in ``code`` and ``success``. A body that says the call failed — or
+# says nothing either way, or contradicts itself — is a refused read, never an empty history.
+ROW = object()
+
+
+@pytest.mark.parametrize("case, envelope, rows, ok", [
+    ("A", {"code": "000000", "success": True}, [], True),
+    ("B", {"code": "000000", "success": True}, ROW, True),
+    ("C", {"code": "100001", "success": False}, [], False),
+    ("D", {"code": "100001", "success": False}, ROW, False),
+    ("E", {"success": False, "code": ABSENT}, [], False),
+    ("F code missing", {"code": ABSENT, "success": True}, ROW, True),
+    ("G success missing", {"code": "000000", "success": ABSENT}, ROW, True),
+    ("both missing", {"code": ABSENT, "success": ABSENT}, ROW, False),
+    ("H ok code, false", {"code": "000000", "success": False}, ROW, False),
+    ("H bad code, true", {"code": "100001", "success": True}, [], False),
+])
+@pytest.mark.parametrize("source", ["fiat_deposit", "fiat_buy", "pay"])
+def test_e_a_failed_envelope_is_never_an_empty_history(monkeypatch, wallet, source, case, envelope, rows, ok):
+    data = [ROWS.get(source, fiat)(i, t) for i, t in enumerate(spread(2))] if rows is ROW else []
+    venue = Venue({source: data}, envelope=envelope)
+    if case == "E":
+        venue.total = 0
+    serve(monkeypatch, venue)
+    if ok:
+        assert len(read(wallet, source)) == len(data)
+        return
+    with pytest.raises(ToolError) as exc:
+        read(wallet, source)
+    assert exc.value.reason_code == "BINANCE_WALLET_REJECTED"
+    assert "message" not in str(exc.value) and "success" not in str(exc.value).lower()
+
+
+def test_e_a_failed_fiat_envelope_keeps_the_cursor(monkeypatch, wallet, tmp_path):
+    serve(monkeypatch, Venue())
+    fire(wallet, tmp_path, T0)
+    serve(monkeypatch, Venue(envelope={"code": "100001", "success": False, "message": "sensitive detail"}))
+    result = fire(wallet, tmp_path, T1)
+    assert {"fiat_deposit", "fiat_withdraw", "fiat_buy", "fiat_sell", "pay"} <= set(result["errors"])
+    after = cursors(tmp_path)
+    assert all(after[name] == T0 for name in ("fiat_deposit", "fiat_withdraw", "fiat_buy", "fiat_sell", "pay"))
+    assert after["crypto_deposit"] == T1
+    assert "sensitive" not in json.dumps(cash_flows.load_state(tmp_path))

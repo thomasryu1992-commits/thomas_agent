@@ -80,7 +80,8 @@ def test_each_history_is_a_signed_get_and_its_shape_parses(monkeypatch, wallet, 
     assert len(rows) == (0 if body == {"total": 0} else 1)
     method, sent_path, query = sent[0]
     assert method == "GET" and sent_path == path and "signature" in query
-    assert query[start_name] == [str(NOW_MS - DAY)] and query[end_name] == [str(NOW_MS)]
+    # One instant wider on each side (PR-0): a row on the asked first or last instant arrives either way.
+    assert query[start_name] == [str(NOW_MS - DAY - 1)] and query[end_name] == [str(NOW_MS + 1)]
     for key, value in fixed.items():
         assert query[key] == [str(value)]
 
