@@ -443,6 +443,10 @@ def combine(toss_view: dict[str, Any], *, usd_krw_rate: float | None, root: Path
             "scope_version": PORTFOLIO_SCOPE_VERSION,
             "mapping_version": mapping_version})
         block["baseline_id"] = row["baseline_id"]
+        # A new baseline starts with nothing told, as after ``reset_peak``: a mark left from the old one
+        # would answer for this one (a recovery that never fell, or silence for a real breach). Before
+        # the peak, so a stop in between leaves no peak and the next fire starts the baseline again.
+        (state_dir / ALERT_MARK_FILENAME).unlink(missing_ok=True)
         _write_peak(peak_path, total, now)
         block.update({"peak_total_krw": total, "peak_at": now, "drawdown_pct": 0.0,
                       "drawdown_state": STATE_INITIALIZED})
