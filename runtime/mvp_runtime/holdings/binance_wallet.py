@@ -104,6 +104,34 @@ FLOW_SOURCES: dict[str, tuple[str, dict[str, Any], tuple[str, str], int]] = {
     "transfer_spot_to_futures": (UNIVERSAL_TRANSFER_PATH, {"type": "MAIN_UMFUTURE"}, ("startTime", "endTime"), 7),
     "transfer_futures_to_spot": (UNIVERSAL_TRANSFER_PATH, {"type": "UMFUTURE_MAIN"}, ("startTime", "endTime"), 7),
 }
+# PR-0 (2026-10-10): each history answers at most one page, sized by its own parameter. Name -> (the page
+# size parameter, its documented maximum, whether the body carries ``total``, the row's venue id). Binance's
+# pages (checked 2026-10-10): deposit/withdraw ``limit`` max 1000, fiat ``rows`` max 500 with ``total``,
+# Pay ``limit`` max 100 and no page or total, universal transfer ``size`` max 100 (default 10) with
+# ``total``. No page documents its sort order or whether its bounds are inclusive, so a full page is read
+# again as two halves of its window rather than by page number or offset.
+FLOW_PAGES: dict[str, tuple[str, int, bool, str]] = {
+    "crypto_deposit": ("limit", 1000, False, "id"),
+    "crypto_withdraw": ("limit", 1000, False, "id"),
+    "fiat_deposit": ("rows", 500, True, "orderNo"),
+    "fiat_withdraw": ("rows", 500, True, "orderNo"),
+    "fiat_buy": ("rows", 500, True, "orderNo"),
+    "fiat_sell": ("rows", 500, True, "orderNo"),
+    "pay": ("limit", 100, False, "transactionId"),
+    "transfer_spot_to_futures": ("size", 100, True, "tranId"),
+    "transfer_futures_to_spot": ("size", 100, True, "tranId"),
+}
+# A history that cannot be shown complete: the source fails this fire and keeps its cursor, so the next
+# fire reads the same stretch again. Never a partial list read as the whole.
+FLOW_INCOMPLETE = "BINANCE_FLOW_HISTORY_INCOMPLETE"
+# Per source and read. One request in the normal case, as before; splits only when a page comes back full.
+# Small on purpose: withdraw history and fiat orders weigh heavily against the account's request limit.
+FLOW_MAX_REQUESTS = 8
+# Fiat and Pay wrap their rows in ``code`` ("000000" when it worked) and ``success``. A body that says the
+# call failed, says neither, or contradicts itself is a refused read — never an empty history.
+FLOW_ENVELOPE_SOURCES = frozenset({"fiat_deposit", "fiat_withdraw", "fiat_buy", "fiat_sell", "pay"})
+FLOW_OK_CODE = "000000"
+FLOW_READ_SECONDS = 15.0
 
 # The whole egress surface, (base, path) by constant. Anything else is refused before a socket opens.
 ALLOWED_REQUESTS = frozenset({
@@ -194,6 +222,20 @@ class NoWalletFeed:
 
     def wallet_snapshot(self, *, timeout_seconds: int) -> WalletSnapshot | None:
         return None
+
+
+_ROW_TIME_FIELDS = ("insertTime", "transactionTime", "timestamp", "createTime", "updateTime")
+
+
+def _row_ms(row: Mapping[str, Any]) -> int | None:
+    """A history row's time in ms where the venue gives one as a number (withdrawals give text: None)."""
+    for name in _ROW_TIME_FIELDS:
+        value = row.get(name)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    return None
 
 
 class _ApiRejected(ToolError):
@@ -364,16 +406,75 @@ class BinanceWalletFeed:
         path, fixed, (start_name, end_name), days = FLOW_SOURCES[source]
         if end_ms <= start_ms or end_ms - start_ms > days * 86_400_000:
             raise ToolError("MALFORMED_REQUEST", f"{source}: window must be within {days} days")
-        body = self._get(BINANCE_BASE_URL, path, {**fixed, start_name: start_ms, end_name: end_ms},
-                         signed=True, what=f"{source} history", timeout_seconds=timeout_seconds)
-        rows = body if isinstance(body, list) else (
-            (body.get("data") if isinstance(body.get("data"), list) else body.get("rows"))
-            if isinstance(body, dict) else None)
-        if rows is None and isinstance(body, dict) and body.get("total") == 0:
-            rows = []
-        if not isinstance(rows, list):
-            raise ToolError("MALFORMED_RESULT", f"{source} history carried no rows")
-        return [row for row in rows if isinstance(row, dict)]
+        size_name, size, has_total, id_name = FLOW_PAGES[source]
+        started, requests = time.monotonic(), 0
+        found: dict[str, dict[str, Any]] = {}
+        loose: list[dict[str, Any]] = []               # rows without their venue id: never folded by content
+        # One instant wider on each side, so a row on the asked first or last instant arrives whichever way
+        # the venue bounds a window (no page says) — unless that would pass the venue's longest window.
+        lo, hi = start_ms - 1, end_ms + 1
+        if hi - lo > days * 86_400_000:
+            lo, hi = start_ms, end_ms
+        pending = [(lo, hi)]
+        while pending:
+            start, end = pending.pop()
+            if requests >= FLOW_MAX_REQUESTS or time.monotonic() - started > FLOW_READ_SECONDS:
+                raise ToolError(FLOW_INCOMPLETE, f"{source} history: more than {requests} pieces or "
+                                f"{FLOW_READ_SECONDS:.0f} s; the rest not read")
+            requests += 1
+            body = self._get(BINANCE_BASE_URL, path, {**fixed, start_name: start, end_name: end, size_name: size},
+                             signed=True, what=f"{source} history", timeout_seconds=timeout_seconds)
+            if source in FLOW_ENVELOPE_SOURCES:
+                code = body.get("code") if isinstance(body, dict) else None
+                success = body.get("success") if isinstance(body, dict) else None
+                said_ok = code == FLOW_OK_CODE or success is True
+                said_failed = (code is not None and code != FLOW_OK_CODE) or (success is not None and success is not True)
+                if said_failed or not said_ok:
+                    # The venue's code only, as for an HTTP refusal; its message never reaches a log.
+                    shown = str(code) if isinstance(code, (str, int)) and str(code).isalnum() and len(str(code)) <= 12 else ""
+                    raise _ApiRejected(urllib.parse.urlparse(BINANCE_BASE_URL).hostname or "?", 200, shown)
+            rows = body if isinstance(body, list) else (
+                (body.get("data") if isinstance(body.get("data"), list) else body.get("rows"))
+                if isinstance(body, dict) else None)
+            if rows is None and isinstance(body, dict) and body.get("total") == 0:
+                rows = []
+            if not isinstance(rows, list):
+                raise ToolError("MALFORMED_RESULT", f"{source} history carried no rows")
+            if not all(isinstance(row, dict) for row in rows):
+                raise ToolError("MALFORMED_RESULT", f"{source} history carried a row that is not an object")
+            # Where the venue documents ``total`` it is part of the answer: rows without a whole-number total
+            # are not shown complete. Only a quiet window (no rows) may come without one.
+            total = body.get("total") if isinstance(body, dict) else None
+            if has_total and (rows or total is not None) and (
+                    not isinstance(total, int) or isinstance(total, bool) or total < len(rows)
+                    or (total > len(rows) and len(rows) < size)):
+                raise ToolError(FLOW_INCOMPLETE, f"{source} history: total {total!r}, rows {len(rows)}")
+            whole = has_total and total == len(rows)
+            if len(rows) >= size and not whole:
+                # A full page may be the first ``size`` of more. Read each side again, split where the page's
+                # own rows sit (their median time, so a burst inside a long window is cut in few reads) or,
+                # without readable times, at the middle. The sides overlap on two instants, ``middle`` and
+                # ``middle + 1``, so every row is reached whichever way the venue bounds a window (no page
+                # says); the copies are folded below.
+                if end - start < 3:
+                    raise ToolError(FLOW_INCOMPLETE, f"{source} history: a full page in a window too short to split")
+                times = sorted(t for t in (_row_ms(row) for row in rows) if t is not None and start < t < end)
+                middle = times[len(times) // 2] if times else (start + end) // 2
+                middle = min(max(middle, start + 1), end - 2)
+                pending.extend([(middle, end), (start, middle + 1)])
+                continue
+            for row in rows:
+                if row.get(id_name) in (None, ""):
+                    loose.append(row)                   # the normalizer's to judge (a malformed-row event)
+                    continue
+                key = f"id:{row[id_name]}"
+                if key in found and found[key] != row:
+                    raise ToolError(FLOW_INCOMPLETE, f"{source} history: one id with two contents")
+                found[key] = row
+        if loose and requests > 1:
+            # The pieces overlap, so a row without its id may be one row read twice or two rows alike: unknown.
+            raise ToolError(FLOW_INCOMPLETE, f"{source} history: a row without its id in a read of {requests} pieces")
+        return [*found.values(), *loose]
 
     def wallet_snapshot(self, *, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) -> WalletSnapshot:
         self._check_gate()
