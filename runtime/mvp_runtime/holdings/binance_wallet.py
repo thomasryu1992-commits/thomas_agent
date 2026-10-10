@@ -104,6 +104,30 @@ FLOW_SOURCES: dict[str, tuple[str, dict[str, Any], tuple[str, str], int]] = {
     "transfer_spot_to_futures": (UNIVERSAL_TRANSFER_PATH, {"type": "MAIN_UMFUTURE"}, ("startTime", "endTime"), 7),
     "transfer_futures_to_spot": (UNIVERSAL_TRANSFER_PATH, {"type": "UMFUTURE_MAIN"}, ("startTime", "endTime"), 7),
 }
+# PR-0 (2026-10-10): each history answers at most one page, sized by its own parameter. Name -> (the page
+# size parameter, its documented maximum, whether the body carries ``total``, the row's venue id). Binance's
+# pages (checked 2026-10-10): deposit/withdraw ``limit`` max 1000, fiat ``rows`` max 500 with ``total``,
+# Pay ``limit`` max 100 and no page or total, universal transfer ``size`` max 100 (default 10) with
+# ``total``. No page documents its sort order or whether its bounds are inclusive, so a full page is read
+# again as two halves of its window rather than by page number or offset.
+FLOW_PAGES: dict[str, tuple[str, int, bool, str]] = {
+    "crypto_deposit": ("limit", 1000, False, "id"),
+    "crypto_withdraw": ("limit", 1000, False, "id"),
+    "fiat_deposit": ("rows", 500, True, "orderNo"),
+    "fiat_withdraw": ("rows", 500, True, "orderNo"),
+    "fiat_buy": ("rows", 500, True, "orderNo"),
+    "fiat_sell": ("rows", 500, True, "orderNo"),
+    "pay": ("limit", 100, False, "transactionId"),
+    "transfer_spot_to_futures": ("size", 100, True, "tranId"),
+    "transfer_futures_to_spot": ("size", 100, True, "tranId"),
+}
+# A history that cannot be shown complete: the source fails this fire and keeps its cursor, so the next
+# fire reads the same stretch again. Never a partial list read as the whole.
+FLOW_INCOMPLETE = "BINANCE_FLOW_HISTORY_INCOMPLETE"
+# Per source and read. One request in the normal case, as before; splits only when a page comes back full.
+# Small on purpose: withdraw history and fiat orders weigh heavily against the account's request limit.
+FLOW_MAX_REQUESTS = 8
+FLOW_READ_SECONDS = 15.0
 
 # The whole egress surface, (base, path) by constant. Anything else is refused before a socket opens.
 ALLOWED_REQUESTS = frozenset({
@@ -194,6 +218,20 @@ class NoWalletFeed:
 
     def wallet_snapshot(self, *, timeout_seconds: int) -> WalletSnapshot | None:
         return None
+
+
+_ROW_TIME_FIELDS = ("insertTime", "transactionTime", "timestamp", "createTime", "updateTime")
+
+
+def _row_ms(row: Mapping[str, Any]) -> int | None:
+    """A history row's time in ms where the venue gives one as a number (withdrawals give text: None)."""
+    for name in _ROW_TIME_FIELDS:
+        value = row.get(name)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    return None
 
 
 class _ApiRejected(ToolError):
@@ -364,16 +402,49 @@ class BinanceWalletFeed:
         path, fixed, (start_name, end_name), days = FLOW_SOURCES[source]
         if end_ms <= start_ms or end_ms - start_ms > days * 86_400_000:
             raise ToolError("MALFORMED_REQUEST", f"{source}: window must be within {days} days")
-        body = self._get(BINANCE_BASE_URL, path, {**fixed, start_name: start_ms, end_name: end_ms},
-                         signed=True, what=f"{source} history", timeout_seconds=timeout_seconds)
-        rows = body if isinstance(body, list) else (
-            (body.get("data") if isinstance(body.get("data"), list) else body.get("rows"))
-            if isinstance(body, dict) else None)
-        if rows is None and isinstance(body, dict) and body.get("total") == 0:
-            rows = []
-        if not isinstance(rows, list):
-            raise ToolError("MALFORMED_RESULT", f"{source} history carried no rows")
-        return [row for row in rows if isinstance(row, dict)]
+        size_name, size, has_total, id_name = FLOW_PAGES[source]
+        started, requests = time.monotonic(), 0
+        found: dict[str, dict[str, Any]] = {}
+        pending = [(start_ms, end_ms)]
+        while pending:
+            start, end = pending.pop()
+            if requests >= FLOW_MAX_REQUESTS or time.monotonic() - started > FLOW_READ_SECONDS:
+                raise ToolError(FLOW_INCOMPLETE, f"{source} history: more than {requests} pieces or "
+                                f"{FLOW_READ_SECONDS:.0f} s; the rest not read")
+            requests += 1
+            body = self._get(BINANCE_BASE_URL, path, {**fixed, start_name: start, end_name: end, size_name: size},
+                             signed=True, what=f"{source} history", timeout_seconds=timeout_seconds)
+            rows = body if isinstance(body, list) else (
+                (body.get("data") if isinstance(body.get("data"), list) else body.get("rows"))
+                if isinstance(body, dict) else None)
+            if rows is None and isinstance(body, dict) and body.get("total") == 0:
+                rows = []
+            if not isinstance(rows, list):
+                raise ToolError("MALFORMED_RESULT", f"{source} history carried no rows")
+            total = body.get("total") if has_total and isinstance(body, dict) else None
+            if len(rows) >= size:
+                # A full page may be the first ``size`` of more. Read each side again, split where the page's
+                # own rows sit (their median time, so a burst inside a long window is cut in few reads) or,
+                # without readable times, at the middle. The sides share that instant, so a row there is
+                # reached whichever way the venue bounds a window; the copies are folded below.
+                if end - start < 2:
+                    raise ToolError(FLOW_INCOMPLETE, f"{source} history: a full page within one instant")
+                times = sorted(t for t in (_row_ms(row) for row in rows if isinstance(row, dict))
+                               if t is not None and start < t < end)
+                middle = times[len(times) // 2] if times else (start + end) // 2
+                pending.extend([(middle, end), (start, middle)])
+                continue
+            if isinstance(total, int) and not isinstance(total, bool) and total != len(rows):
+                raise ToolError(FLOW_INCOMPLETE, f"{source} history: total {total}, rows {len(rows)}")
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                key = (f"id:{row[id_name]}" if row.get(id_name) not in (None, "")
+                       else "row:" + json.dumps(row, sort_keys=True, default=str))
+                if key in found and found[key] != row:
+                    raise ToolError(FLOW_INCOMPLETE, f"{source} history: a row changed between two pieces")
+                found[key] = row
+        return list(found.values())
 
     def wallet_snapshot(self, *, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) -> WalletSnapshot:
         self._check_gate()

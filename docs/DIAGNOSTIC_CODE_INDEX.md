@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **673** distinct codes across **1330** raise sites
+- **674** distinct codes across **1334** raise sites
 - **23** exception classes carry them
 - **76** codes are raised from more than one module (see below)
 - **144** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -196,6 +196,10 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `AUTHORITY_INVARIANT` | `PlannerBlocked` | `runtime/mvp_runtime/assignment.py` | `build_role_assignment` | `not invariant_holds` |
 | `AUTHORITY_RECORD_INVALID` | `KernelBlocked` | `runtime/read_only_kernel/policy.py` | `adapt_policy` | `authority.get('effective_permission_level') is None` |
 | `AUTHORITY_RECORD_INVALID` | `KernelBlocked` | `runtime/read_only_kernel/preflight.py` | `run_preflight` | `—` |
+| `BINANCE_FLOW_HISTORY_INCOMPLETE` | `ToolError` | `runtime/mvp_runtime/holdings/binance_wallet.py` | `flow_history` | `end - start < 2` |
+| `BINANCE_FLOW_HISTORY_INCOMPLETE` | `ToolError` | `runtime/mvp_runtime/holdings/binance_wallet.py` | `flow_history` | `isinstance(total, int) and (not isinstance(total, bool)) and (total != len(rows))` |
+| `BINANCE_FLOW_HISTORY_INCOMPLETE` | `ToolError` | `runtime/mvp_runtime/holdings/binance_wallet.py` | `flow_history` | `key in found and found[key] != row` |
+| `BINANCE_FLOW_HISTORY_INCOMPLETE` | `ToolError` | `runtime/mvp_runtime/holdings/binance_wallet.py` | `flow_history` | `requests >= FLOW_MAX_REQUESTS or time.monotonic() - started > FLOW_READ_SECONDS` |
 | `BINANCE_WALLET_PATH_REFUSED` | `ToolBlocked` | `runtime/mvp_runtime/holdings/binance_wallet.py` | `_get` | `(base, path) not in ALLOWED_REQUESTS` |
 | `BINANCE_WALLET_PATH_REFUSED` | `ToolBlocked` | `runtime/mvp_runtime/holdings/binance_wallet.py` | `flow_history` | `source not in FLOW_SOURCES` |
 | `BINDING_FAILED` | `PlannerBlocked` | `runtime/mvp_runtime/binding.py` | `bind_task_to_core` | `—` |
