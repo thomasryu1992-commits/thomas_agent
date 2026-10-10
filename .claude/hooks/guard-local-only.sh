@@ -21,8 +21,9 @@
 #     `/root/thomas_agent/…`, a worktree, `docker cp`);
 #   - a state file's name, or `holdings/holdings_…`, for a command run from inside the state root;
 #   - a glob in the first path segment under the state root, which could expand into holdings;
-#   - Bash only: a recursive read of the whole state root, the terminal-only `holdings_board` modes,
-#     and inline Python that imports the holdings package.
+#   - for a command that runs (Bash's or Monitor's `command`): a recursive read of the whole state root,
+#     the terminal-only `holdings_board` modes, and inline Python that imports the holdings package;
+#   - a Bash or Monitor input with no command it can read.
 # What stays allowed: `holdings_board` and `holdings_board --json` (the one table), other state files
 # (`schedules.jsonl`, `crypto/…`), `ls`/`du` of the state root, and the source and tests of the lane.
 #
@@ -31,19 +32,32 @@ set -uo pipefail
 
 payload=$(cat)
 
-# Judge the command for Bash and the tool input for the file tools, not the whole payload, so that a
-# `description` naming a file does not trip it. python3 parses it (jq is not guaranteed). If parsing
-# fails, the raw payload is judged: denying too much is the cheap error here.
+# Judge the command for the tools that run one, and the tool input for the file tools, not the whole
+# payload, so that a `description` naming a file does not trip it. Bash and Monitor both run a shell
+# `command` (Monitor's other form, `ws`, opens a WebSocket and runs no shell, so it gets the path checks
+# only). A command tool whose input has neither is not a shape this guard knows: it is refused. python3
+# parses it (jq is not guaranteed). If parsing fails, the raw payload is judged as a command: denying too
+# much is the cheap error here.
 parsed=$(printf '%s' "$payload" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
 tool = d.get("tool_name") or ""
 ti = d.get("tool_input") or {}
 print(tool)
-print(ti.get("command", "") if tool == "Bash" else json.dumps(ti))
-' 2>/dev/null) || parsed=$'\n'"$payload"
+if tool in ("Bash", "Monitor") and isinstance(ti.get("command"), str):
+    print("command"); print(ti["command"])
+elif tool == "Monitor" and isinstance(ti.get("ws"), dict) and "command" not in ti:
+    print("socket"); print(json.dumps(ti))
+elif tool in ("Bash", "Monitor"):
+    print("unknown"); print(json.dumps(ti))
+else:
+    print("file"); print(json.dumps(ti))
+' 2>/dev/null) || parsed=$'\n'"raw"$'\n'"$payload"
 tool=${parsed%%$'\n'*}
-subject=${parsed#*$'\n'}
+rest=${parsed#*$'\n'}
+kind=${rest%%$'\n'*}
+subject=""
+[[ $rest == *$'\n'* ]] && subject=${rest#*$'\n'}
 # One line, so a flag after a line continuation still sits next to its command.
 flat=$(printf '%s' "$subject" | tr '\n\\' '  ')
 
@@ -60,8 +74,10 @@ state='runtime_governance_state/+'
 [[ $flat =~ holdings_(classification|local)\.json|holdings_cash_flows?(_state)?\.jsonl?|holdings_baselines\.jsonl ]] \
   && deny "a holdings state file by name"
 [[ $flat =~ ${state}[^/[:space:]\"\']*[*?[{] ]] && deny "a glob under the state root"
+[[ $kind == unknown ]] && deny "a $tool input without a command this guard can read"
 
-if [[ $tool == "Bash" || -z $tool ]]; then
+# The rules for a command that runs: Bash and Monitor alike, and a raw payload that did not parse.
+if [[ $kind == command || $kind == raw ]]; then
   root_ref="${state}?([[:space:]\"\']|$)"
   recursive='(grep|egrep)[^;&|]*[[:space:]]-[a-zA-Z]*[rR]|(^|[^a-zA-Z0-9_])(rg|ag|ack|find|tar|zip|7z|rsync)[[:space:]]|(^|[^a-zA-Z0-9_])(cp|scp)[^;&|]*[[:space:]]-[a-zA-Z]*[rRa]'
   if [[ $flat =~ $root_ref ]] && [[ $flat =~ $recursive ]]; then
