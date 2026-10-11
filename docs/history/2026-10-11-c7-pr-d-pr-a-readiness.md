@@ -19,6 +19,24 @@
 - **Review items:**
   - R-1: PR-D's alert key before checkpoints exist. The note recommends a digest of the frozen state file.
   - R-3: `ledger_state_consistency` before the first checkpoint. The note recommends keeping today's reading.
+- **Second review (2026-10-11):**
+  - R-1:
+    - The frozen-state property depends on the fire order. The state-only writers save without verifying the
+      ledger, and only `summary()` failing first keeps them from running. PR-D must keep that order, with a test.
+    - A recurrence is caught by the told file's lifecycle, not by the digest.
+    - Missing or unreadable state alerts with a marker.
+    - The digest stays in the LOCAL_ONLY told file.
+    - The key carries a format marker for the switch to PR-A.
+  - R-2:
+    - The first note overstated the gap: C7 §6 already keys detect-only alerts on the frozen checkpoint. What it
+      leaves open is the non-exception input.
+    - That input must not use the state digest, which changes every fire while writes continue.
+    - Its reason_code is DECISION_REQUIRED.
+  - R-3:
+    - A never-had checkpoint and a lost one cannot be told apart from the state alone.
+    - Option (a) leaves this to PR-B's UNCHECKED. Option (b) adds a `checkpoint_introduced` ledger line in PR-A.
+      This is DECISION_REQUIRED.
+  - A PR-D start checklist is added (§2.7).
 - **What it deliberately does not do:**
   - It writes no code.
   - It does not change the C7 order or decisions.
