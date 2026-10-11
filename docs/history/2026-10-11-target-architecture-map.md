@@ -6,7 +6,7 @@
   - It records the eight things that stay his explicit approval.
   - It places the seven layers on the code and documents that own them today. Each layer has four columns: owner,
     built, not built, and what blocks the next step.
-  - It adds a roadmap by asset class with entry evidence and approver, and evidence gates G1–G7.
+  - It adds a roadmap by asset class with entry evidence and approver, and evidence gates G1a–G1d, G2a–G2c, G3–G7.
   - It lists six open questions, D-A1–D-A6.
 - **Why a map and not a plan:**
   - The pieces existed in five owner documents: the execution stage ladder, the multi-asset P0–P4 lanes, the target
@@ -27,6 +27,18 @@
   - D-A4: where crypto-spot orders belong.
   - D-A5: C7 D2.
   - D-A6: whether to build the IV–RV measurement.
+- **Corrections before merge (Thomas 2026-10-11, PR review):**
+  - The global LOCAL_ONLY guard is recorded PENDING, not verified. #1212's body says PENDING and the repository
+    holds no completion record.
+  - G2 is split into three gates, using only rules that already exist:
+    - strategy promotion: FORWARD_CONFIRMED is the necessary condition, then the promotion door;
+    - stage climb: one rung at a time, and LIVE_AUTONOMOUS needs a COMPLETE signed testnet cycle
+      (`EXECUTION_STAGE_V0.1.md` decisions 2 and 11);
+    - real orders: the live gate, budget, limits, venue contract and the pre-order gate.
+  - G1 is split into four steps: H6b-shadow; the C7 D2 evidence and decision; the C7 build in its owner's order
+    PR-D → A → B → C; and H6c activation as its own approval.
+  - D2 is placed before PR-B, because PR-B's re-collection design depends on it. D-A5 is marked as the first to
+    resolve, and A/C stays undecided.
 - **What it deliberately does not do:**
   - It changes no runtime, schema, policy, constant, stage, gate, budget or limit.
   - It adds no rung and does not reopen the canary, `stocks/`, the P3 gate or the research pause.

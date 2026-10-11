@@ -1,6 +1,6 @@
 # 제안: Thomas Agent 목표 아키텍처 — 7개 계층의 지도와 증거 관문 로드맵 (DRAFT v0.1)
 
-**상태:** DRAFT 2026-10-11 — 최종 목표(승인된 범위 안의 자율 투자 운영)와 지금의 운영 제한을 한 장에 묶은 지도다. 새 실행 권한이나 정책 권위를 만들지 않으며, 각 줄의 권위는 줄마다 적은 소유 문서에 있다. Thomas의 검토를 기다린다. 결정이 필요한 것은 여섯 가지다: 포트폴리오 전체 위험 한도가 주문을 막는지(D-A1), 실행 단계를 자산군별로 어떻게 적용하는지(D-A2), LIVE_SCALED 진입 규칙(D-A3), 크립토 현물 주문을 어느 단계에서 다루는지(D-A4), C7 D2(D-A5), IV–RV 측정을 지을지(D-A6).
+**상태:** DRAFT 2026-10-11 — 최종 목표(승인된 범위 안의 자율 투자 운영)와 지금의 운영 제한을 한 장에 묶은 지도다. 새 실행 권한이나 정책 권위를 만들지 않으며, 각 줄의 권위는 줄마다 적은 소유 문서에 있다. Thomas의 검토를 기다린다. 결정이 필요한 것은 여섯 가지다: 포트폴리오 전체 위험 한도가 주문을 막는지(D-A1), 실행 단계를 자산군별로 어떻게 적용하는지(D-A2), LIVE_SCALED 진입 규칙(D-A3), 크립토 현물 주문을 어느 단계에서 다루는지(D-A4), C7 D2(D-A5, **우선 해결 대상** — C7 PR-B 설계보다 먼저), IV–RV 측정을 지을지(D-A6). 전역 LOCAL_ONLY Guard의 갱신 완료는 이 문서 기준으로 미확인(PENDING)이다.
 
 **기준:** origin/main `71226ab7` (#1212), 2026-10-11. 운영 상태는 읽기 전용 명령으로만 확인했다: `live_readiness`, `register_execution_stage --show`, `holdings_board` 기본 렌더.
 **입력:** Thomas의 7계층 구상과 다섯 가지 답(2026-10-11, 모두 기본값 채택).
@@ -81,7 +81,7 @@
 | H6 현금흐름 | shadow 원장 운영 중. 판정에는 쓰지 않는다. H6b-shadow, H6c 모두 미승인 | `PORTFOLIO_CASH_FLOW_LEDGER_V0.1.md` |
 | C7 | 설계와 D1–D4 패킷까지 있다. **미구현.** D2 부분 결정 | `HOLDINGS_LEDGER_CHECKPOINT_V0.1.md` §12 |
 | 병합된 것 | #1211(결정 기록), #1212(Toss 연속성 진단, 터미널 전용). #1212는 **실제 원장에서 아직 실행하지 않았다** | git |
-| 전역 LOCAL_ONLY Guard | 2026-10-11 Thomas가 main 기준으로 갱신하고 다섯 항목을 검증했다 | #1212 본문 |
+| 전역 LOCAL_ONLY Guard | **PENDING — 이 문서 기준으로는 미확인.** #1212 본문은 `GLOBAL_GUARD_PENDING`이고, 저장소에는 갱신과 다섯 항목 검증의 완료 기록이 없다. 확인이 필요한 사실로 남긴다 | #1212 본문 |
 
 ---
 
@@ -96,7 +96,7 @@
 | 소유 | `MULTI_ASSET_EXPANSION_V0.1.md`(P1·P2), `TOTAL_ASSET_ALLOCATION_V0.1.md`, `PORTFOLIO_CASH_FLOW_LEDGER_V0.1.md`(H6), `HOLDINGS_LEDGER_CHECKPOINT_V0.1.md`(C7) |
 | 지어진 것 | `holdings/`: 계좌 읽기(`toss_account`, `binance_wallet`), 합산·낙폭 알림(`combined`), 목표 대비 이탈 표시(`allocation`), 외부 경계(`disclosure`), 분류(`classification`), 기준선 로그(`baseline_log`), 현금흐름 shadow 원장과 readiness(`cash_flows`), Toss 연속성 진단(#1212). 크립토 선물 계정은 `crypto/account.py`가 따로 읽는다 |
 | 안 지어진 것 | unit 회계(입출금과 성과 분리, H6b-shadow·H6c). C7 체크포인트. 계좌별·전체 수익률. 주식 포지션의 원가·손익 회계. 옵션 포지션 표현 |
-| 지금 막는 것 | H6b_shadow_ready(7일·7일자, Toss 현금 의미, 예외 0건). **C7 구현**(H6c의 선행 조건, #1211 Q3). C7 D2(D-A5) |
+| 지금 막는 것 | H6b_shadow_ready(7일·7일자, Toss 현금 의미, 예외 0건). **C7 D2(D-A5)**: C7 PR-B의 재수집·이력 판정 설계보다 먼저 정해야 한다. **C7 구현**(PR-D → A → B → C, H6c의 선행 조건, #1211 Q3). 순서는 §6 G1a–G1d |
 
 ### ② Market Intelligence — 시장 분석
 
@@ -177,7 +177,7 @@
 
 | 자산군 | 지금 조회 | 지금 주문 | 다음 관문 | 진입 증거 | 승인 |
 |---|---|---|---|---|---|
-| **암호화폐 선물** (바이낸스 USDⓈ-M) | 예(`crypto/account`, 보드 범위 v1) | 장치 있음, **PAPER·게이트 닫힘·무장 0** | 첫 실거래 전략(G2) | FORWARD_CONFIRMED ≥1, 판정은 연구 에포크 규칙대로 | Thomas: 승격, 실행 단계 상승, 게이트 재개(포지션 확인 먼저) |
+| **암호화폐 선물** (바이낸스 USDⓈ-M) | 예(`crypto/account`, 보드 범위 v1) | 장치 있음, **PAPER·게이트 닫힘·무장 0** | 첫 실거래(G2a 전략 승격 → G2b 실행 단계 → G2c 주문 실행) | 세 관문이 각각 다르다. 판정은 연구 에포크 규칙대로(§6) | Thomas: 관문마다 따로 |
 | **암호화폐 현물** (바이낸스 현물·Simple Earn) | 예(보드 범위 v1, 읽기 전용 키) | **없음.** 주문 어댑터 없음, `venue` enum 밖 | 어느 단계에서 다룰지 미정(D-A4) | 규제 판단(기존 크립토 판단의 연장인지), 어댑터, 스키마 변경 | Thomas |
 | **주식 현물** (토스증권) | 예(P1, 부록 B: 조회만) | **없음.** 부록 B는 조회만 덮는다 | **P3**(G4) | 2027-03-22 이후, 크립토 FORWARD_CONFIRMED ≥1, 주문용 새 규제 판단, `venue` enum 확장, 세 이음매로 들어오되 주식 특성은 따로 검증 | Thomas(P3 진입은 별도 승인) |
 | **주식 관련 선물 / Equity Perp** (Hyperliquid HIP-3) | 시세만(S1 수집기, 2026-08-04~) | **없음.** 실주문은 S0 확정 승격 전 불가 | `REMAINING_WORK.md` §H의 S2 이후 순서, P3 | S0 확정(지금 강도 잠정), 측정 기록 | Thomas |
@@ -193,12 +193,17 @@
 
 | 관문 | 여는 것 | 진입 증거 | 승인 | 소유 |
 |---|---|---|---|---|
-| **G1** 회계 권위 | H6b-shadow, 그다음 H6c(unit 회계가 낙폭 판정) | H6b_shadow_ready(7일·7일자, Toss 현금 의미 PASS, 예외 0건, 스키마) → **C7 구현·배포** → D2 결정 → H6c 조건 | Thomas, 단계마다 | H6 §7, C7 §12, #1211 Q3 |
-| **G2** 크립토 첫 실거래 전략 | 전략 1개의 LIVE 무장 | FORWARD_CONFIRMED ≥1. 첫 확정이 2027-03-22 전에 나와도 일시 중지는 끝나지 않고, E1·E2가 발동한다 | Thomas: 승격 문 + 단계 상승 + 게이트 재개 | §L, `SELECTION_MULTIPLICITY…` D1 |
+| **G1a** H6b-shadow | unit 회계를 옆에서 **표시만** | H6b_shadow_ready(7일·7일자, Toss 현금 의미 PASS, 예외 0건, 스키마). 시스템이 알린다 | Thomas | H6 §7 |
+| **G1b** C7 D2 증거와 결정 (**D-A5, 우선**) | C7 PR-B의 재수집·이력 판정 설계 방향 | D2를 고르려면 증거가 둘 필요하다. 각각 별도 승인이다: 실제 원장에 대한 Toss 연속성 진단(#1212), 바이낸스 과거 창 probe(C7 §12.3의 7). A안을 고를 수 있는 시간 제약은 약 2027-04-01. **D2는 C7 전체 구현 뒤가 아니라 PR-B 앞에 정한다** | Thomas | C7 §12.1–§12.3 |
+| **G1c** C7 구현 | PR-D → PR-A → PR-B → PR-C, 이 순서와 의존관계 그대로. PR-A는 감지만, 쓰기 차단은 PR-C에서만 | PR마다 구현, 머지, 배포를 따로 승인. PR-B는 G1b(D2)가 정해진 뒤에 설계한다 | Thomas, PR마다 | C7 §10·§12.1 D1 |
+| **G1d** H6c 활성화 | unit 회계가 낙폭 판정의 권위가 된다 | G1a 운영 + G1c 배포(C7이 H6c의 선행 조건, #1211 Q3) + Toss 현금 의미 + 미해결 예외 0. **H6c 활성화 승인은 D2 결정과 다른, 따로 받는 승인이다** | Thomas | H6 §7, #1211 Q3 |
+| **G2a** 전략 승격 | 전략 1개를 LIVE 등급으로 무장 | **FORWARD_CONFIRMED ≥1이 필요 조건**이다(`SELECTION_MULTIPLICITY…` D1). 첫 확정이 2027-03-22 전에 나와도 일시 중지는 끝나지 않고, E1·E2가 발동한다(§L) | Thomas: 승격 문(`promote_strategy_candidates.py --live-tier LIVE`) | 같은 문서, `REMAINING_WORK.md` §L |
+| **G2b** 실행 단계 승격 | PAPER → SIGNED_TESTNET → LIVE_AUTONOMOUS | 한 번에 한 칸(CLIMB), 단계마다 Thomas 승인이 증인이다. **LIVE_AUTONOMOUS로 오르려면 완결된 signed testnet cycle 하나를 지정해야 한다**(`--testnet-cycle`, decision 2). 완결의 뜻: 진입 대사 → 보호 주문 RESTING 확인 → 철회 → reduceOnly 청산 대사 → 거래소 포지션 깨끗(decision 11) | Thomas, 칸마다 | `EXECUTION_STAGE_V0.1.md` |
+| **G2c** 실제 주문 실행 | 실주문 송신 | G2a(무장 ≥1)와 G2b(LIVE_AUTONOMOUS) 둘 다, 그리고 live 게이트 재개(`MVP_LIVE_TRADING=real`, 확인 문구, 포지션 확인 먼저), 등록된 예산과 위험 한도, 거래소 계약 확인 최신, 주문마다 주문 전 관문 통과. 셋 중 하나라도 없으면 실주문은 없다 | Thomas: 게이트 재개 | `RUNTIME_SAFETY_INVARIANTS_V0.1.md`, `live_readiness` |
 | **G3** LIVE_SCALED | 규모 확대 | **진입 규칙 미정**(D-A3) | Thomas | `EXECUTION_STAGE_V0.1.md` |
 | **G4** P3 주식 | 주식 연구, 아키텍처, paper, 브로커 검증, 주문 승인, 제한적 실거래 — 여섯 단계가 각각 따로 승인된다 | **2027-03-22 이후** + 크립토 FORWARD_CONFIRMED ≥1 + 주문용 규제 판단 + `venue` enum 확장 + D-A2 | Thomas, 단계마다 | `MULTI_ASSET_EXPANSION_V0.1.md` §5, #1211 Q1·Q2 |
 | **G5** P4 옵션 | 옵션 도입 **검토** | P3 + 다중 레그 + 옵션 판정 규칙 + 거래소 S0 + D2 비교 기준 비준 | Thomas | 같은 문서 §5·§6 D2 |
-| **G6** 자동 리밸런싱 | 리밸런싱 주문 | G1(H6c) 완료 뒤 **2026-10-07 결정을 다시 여는 별도 결정**. H6c 완료가 곧 승인은 아니다 | Thomas | `TOTAL_ASSET_ALLOCATION_V0.1.md` |
+| **G6** 자동 리밸런싱 | 리밸런싱 주문 | G1d(H6c) 완료 뒤 **2026-10-07 결정을 다시 여는 별도 결정**. H6c 완료가 곧 승인은 아니다 | Thomas | `TOTAL_ASSET_ALLOCATION_V0.1.md` |
 | **G7** 여러 자산군 실거래 | 두 번째 자산군의 실주문 | D-A1(포트폴리오 한도), D-A2(자산군별 단계) | Thomas | 이 문서 §7 |
 | (참고) 엔진 비중 첫 증액 | 크립토 엔진 배분 | cohort 1 판정(**2027-03-22**) | Thomas | `TOTAL_ASSET_ALLOCATION_V0.1.md` Q5 |
 
@@ -218,7 +223,7 @@
 | **D-A2** | 실행 단계를 자산군별로 어떻게 적용하는가 | 단계 원장은 지금 크립토 레인의 권한이다. #1211 Q2는 크립토 권한의 상속을 금했다. 새 rung을 만들지 않고 자산군별로 단계를 두는 방법이 없다 | P3 진입 전(G4) |
 | **D-A3** | LIVE_SCALED 진입 규칙 | 사다리가 "별도 결정"으로 남겨 두었다 | G3 전 |
 | **D-A4** | 크립토 현물 주문을 어느 단계에서 다루는가 | 조회는 범위 v1에 있지만 주문 경로가 없다. `MULTI_ASSET_EXPANSION_V0.1.md` §3은 "기존 크립토 판단의 연장인지 확인 필요"로 남겼다 | 제안이 나올 때 |
-| **D-A5** | C7 D2(Toss 증명 방식, cutover 유지) | A안 조건부 우선, B안 비추천, C안 대안. 최종은 미승인 | G1 전. A안의 시간 제약은 약 2027-04-01 |
+| **D-A5** (**우선 해결 대상**) | C7 D2(Toss 증명 방식, cutover 유지) | A안 조건부 우선, B안 비추천, C안 대안. 최종은 미승인. 이 문서는 A/C를 정하지 않는다 | **C7 PR-B 설계 전**(G1b). 결정에 필요한 증거 둘은 각각 별도 승인. A안의 시간 제약은 약 2027-04-01 |
 | **D-A6** | IV–RV 측정을 지을지 | 연구 일시 중지의 예외로 허용됐다(2026-10-06). 짓는 것은 별도 승인이다 | 선택 사항 |
 
 ### 7.2 충돌이 아니라 예정된 순서인 것
