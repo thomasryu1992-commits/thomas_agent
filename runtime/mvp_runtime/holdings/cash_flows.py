@@ -1615,3 +1615,147 @@ def summary(state_dir: Path) -> dict[str, Any]:
         "sources": {name: {"access": info.get("access"), "schema": info.get("schema")}
                     for name, info in sorted((state.get("sources") or {}).items())},
     }
+
+
+# --- C7 PR-D: BLOCKED — a ledger or state every writer refuses, told on its own path ----------------------
+# HOLDINGS_LEDGER_CHECKPOINT_V0.1.md §6 (Thomas 2026-10-11: D1 direction, PR-D approved for a review PR).
+# Every other H6 message is computed from a readable ledger, so a broken one used to send nothing (C7-D).
+# This judgement reads the ledger and the state itself, read-only and outside every writer, so it runs
+# whatever the holdings fire did before it: an early return, a failed Toss read. It writes nothing but the
+# told file below, and that only after a delivery. The lock codes (STATE_LOCKED, LEDGER_LOCKED) are
+# transient and never BLOCKED; this judgement takes no lock, so it never meets one.
+BLOCKED_TOLD_FILENAME = "holdings_cash_flow_blocked_told.json"
+BLOCKED_KEY_STATE = "v1:state"          # PR-D: every commit is refused, so the state file stays as it was
+BLOCKED_KEY_CHECKPOINT = "v2:ckpt"      # PR-A: a detect-only marker keys on its frozen checkpoint (§6)
+# The non-exception input PR-A will leave in the state (§3, readiness note R-2). PR-D reads it; nothing in
+# this PR writes it, and its reason code is PR-A's to decide (until then the §6 family code stands in).
+DETECTION_MARKER_KEY = "ledger_checkpoint_mismatch"
+BLOCKED_TOKEN_TOLD = "blocked"
+BLOCKED_TOKEN_RESOLVED = "resolved"
+
+
+def blocked_told_path(state_dir: Path) -> Path:
+    return state_dir / BLOCKED_TOLD_FILENAME
+
+
+def _state_fingerprint(state_dir: Path) -> str:
+    """The state file's bytes as a short digest, or why there is none. LOCAL_ONLY: it lives in the told
+    file and in the token, never in a message, a snapshot or a status line."""
+    try:
+        data = state_path(state_dir).read_bytes()
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "unreadable"
+    return hashlib.sha256(data).hexdigest()[:16]
+
+
+def _blocked(state_dir: Path, reason_code: str, category: str) -> dict[str, Any]:
+    key = f"{BLOCKED_KEY_STATE}:{category}:{_state_fingerprint(state_dir)}"
+    return {"blocked": True, "reason_code": reason_code, "category": category, "key": key}
+
+
+def _marker_blocked(marker: Any) -> dict[str, Any]:
+    """A PR-A detection marker: keyed on the checkpoint it froze, never on the state's bytes, because the
+    writes go on while it stands (a state digest would be a new failure every fire)."""
+    checkpoint = marker.get("checkpoint") if isinstance(marker, Mapping) else None
+    lines = checkpoint.get("lines") if isinstance(checkpoint, Mapping) else None
+    digest = checkpoint.get("sha256") if isinstance(checkpoint, Mapping) else None
+    if isinstance(lines, int) and lines >= 0 and isinstance(digest, str) and digest:
+        key = f"{BLOCKED_KEY_CHECKPOINT}:{lines}:{digest[:16]}"
+    else:
+        key = f"{BLOCKED_KEY_CHECKPOINT}:malformed"
+    code = marker.get("reason_code") if isinstance(marker, Mapping) else None
+    return {"blocked": True, "reason_code": code if isinstance(code, str) and code else LEDGER_TAMPERED,
+            "category": "marker", "key": key}
+
+
+def blocked_state(state_dir: Path) -> dict[str, Any]:
+    """Whether the ledger or its state is in a condition every writer refuses (C7 §6). Read-only.
+
+    ``{"blocked": False}``, or ``{"blocked": True, "reason_code", "category", "key"}`` where the category is
+    one of ``verify`` (the chain), ``load_state`` (the cache), ``legacy`` (the pending pre-H6d import),
+    ``marker`` (a PR-A detection) or ``check`` (this judgement itself failed: a check that cannot run never
+    reads as fine). No ledger and no state is a lane that never ran, not a failure. A missing state beside
+    a readable ledger is the C7-11 recovery path, not BLOCKED."""
+    if not (ledger_path(state_dir).exists() or state_path(state_dir).exists()):
+        return {"blocked": False}
+    try:
+        try:
+            rows = verify(state_dir)
+        except ToolError as exc:
+            return _blocked(state_dir, exc.reason_code, "verify")
+        except OSError as exc:
+            return _blocked(state_dir, type(exc).__name__, "verify")
+        try:
+            state = load_state(state_dir)
+        except ToolError as exc:
+            return _blocked(state_dir, exc.reason_code, "load_state")
+        refusal = legacy_import_refusal(rows, state)
+        if refusal:
+            return _blocked(state_dir, refusal, "legacy")
+        if state.get(DETECTION_MARKER_KEY) is not None:
+            return _marker_blocked(state[DETECTION_MARKER_KEY])
+    except Exception as exc:  # noqa: BLE001 — a judgement that cannot finish is BLOCKED, never fine
+        return _blocked(state_dir, type(exc).__name__, "check")
+    return {"blocked": False}
+
+
+def read_blocked_told(state_dir: Path) -> tuple[dict[str, Any], str | None]:
+    """The told record — ``key``, ``told_at``, ``resolved_told_at`` — and why it could not be read. An
+    unreadable record reads as never told: the alert repeats rather than goes missing."""
+    path = blocked_told_path(state_dir)
+    if not path.exists():
+        return {}, None
+    try:
+        body = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return {}, f"told record unreadable ({type(exc).__name__})"
+    if not isinstance(body, dict):
+        return {}, "told record unreadable (not an object)"
+    return {name: body.get(name) for name in ("key", "told_at", "resolved_told_at")}, None
+
+
+def blocked_alert(state_dir: Path, *, now: str) -> dict[str, Any]:
+    """The BLOCKED edge since the last DELIVERED message: ``{"alert": (token, text) | None, "note"}``.
+
+    One message when a failure appears (its key), none while that told failure stands, one when it clears,
+    and one again if a failure appears after the clearing was told — the transitions are explicit in the
+    told record, so a recurrence with the same state bytes is still told. The text names the reason code
+    and the check, never the key, an amount, an asset or an account."""
+    judgement = blocked_state(state_dir)
+    told, note = read_blocked_told(state_dir)
+    standing = bool(told.get("key")) and bool(told.get("told_at")) and not told.get("resolved_told_at")
+    if judgement["blocked"]:
+        if standing and told.get("key") == judgement["key"]:
+            return {"alert": None, "note": note}
+        text = (f"[보유 자산] H6 현금흐름 원장 BLOCKED — {judgement['reason_code']} ({judgement['category']}), "
+                f"{now} 확인. 원장·상태 쓰기가 거부되어 H6 기록과 예외 알림이 멈춰 있습니다. "
+                "금액과 계정은 담지 않습니다. Thomas 터미널에서 원인을 확인해 주세요.")
+        return {"alert": (f"{BLOCKED_TOKEN_TOLD}|{judgement['key']}", text), "note": note}
+    if standing:
+        text = f"[보유 자산] H6 현금흐름 원장 BLOCKED 해소 — {now} 기준 원장과 상태 검증이 다시 통과합니다."
+        return {"alert": (f"{BLOCKED_TOKEN_RESOLVED}|{told['key']}", text), "note": note}
+    return {"alert": None, "note": note}
+
+
+def mark_blocked_told(state_dir: Path, *, token: str, now: str) -> bool:
+    """Record a delivered BLOCKED or clearing message — called only after delivery. Writes the told file
+    alone (tmp → replace, the drawdown told file's pattern); a write that fails raises, so the caller never
+    counts it as recorded and the next fire offers the message again. Returns False for a token it does not
+    know (nothing written)."""
+    kind, _, key = str(token).partition("|")
+    if kind == BLOCKED_TOKEN_TOLD and key:
+        body = {"key": key, "told_at": now, "resolved_told_at": None}
+    elif kind == BLOCKED_TOKEN_RESOLVED and key:
+        told, _note = read_blocked_told(state_dir)
+        body = {"key": key, "told_at": told.get("told_at") if told.get("key") == key else None,
+                "resolved_told_at": now}
+    else:
+        return False
+    path = blocked_told_path(state_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"record_version": 1, **body}, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
+    return True

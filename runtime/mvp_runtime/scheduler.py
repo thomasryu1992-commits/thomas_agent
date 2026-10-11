@@ -1489,6 +1489,24 @@ def _execute(
             else:
                 holdings_store.mark_exceptions_told(token, now=now, root=repo_root)
                 status = f"{status}; h6 exceptions told"
+        # C7 PR-D (HOLDINGS_LEDGER_CHECKPOINT_V0.1.md §6): a ledger or state every writer refuses is judged
+        # on its own, read-only, whatever refresh returned above — an early return still reaches this. Told
+        # once per failure and once when it clears; the told file moves only after delivery, and a told
+        # record that could not be written is said so, never counted as written.
+        blocked = holdings_store.blocked_check(now=now, root=repo_root)
+        if blocked.get("note"):
+            status = f"{status}; h6 blocked {blocked['note']}"
+        if blocked.get("alert") is not None:
+            token, text = blocked["alert"]
+            failure = _tell(text)
+            if failure:
+                status = f"{status}; h6 blocked not sent:{failure}"
+            else:
+                try:
+                    holdings_store.mark_blocked_told(token, now=now, root=repo_root)
+                    status = f"{status}; h6 blocked told"
+                except Exception as exc:  # noqa: BLE001 — the message went; the next fire offers it again
+                    status = f"{status}; h6 blocked told not recorded:{type(exc).__name__}"
         return status
     if schedule.kind == KIND_FORWARD_COHORT:
         # ALLOW-tier venue read, and writes to the cohort's own store alone: no pool, no forward
