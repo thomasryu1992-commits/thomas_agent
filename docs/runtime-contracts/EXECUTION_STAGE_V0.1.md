@@ -14,6 +14,8 @@ no expiry (renewals on the money path were retired 2026-07-28 / 2026-08-10).
 with a `LIVE_CANARY` rung (`SIGNED_TESTNET -> LIVE_CANARY -> LIVE_SCALED`). Thomas kept the ladder
 as it is — no canary rung. The ladder above is the decided one, not a legacy name awaiting migration;
 a document that describes a canary rung describes a proposal that was declined.
+**Asked again and not approved:** 2026-10-05 (`PHASE_7_14_ALIGNMENT_AUDIT_V0.1.md` Q1) and 2026-10-11, the fourth time
+(a stock-trading plan's "Stage 5 Limited Live Canary", `PORTFOLIO_AND_STOCK_TRADING_PLAN_AUDIT_V0.1.md` Q4).
 
 ## 1. The ladder
 
