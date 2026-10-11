@@ -866,6 +866,9 @@ TOSS_UNEXPLAINED_GAP = "UNEXPLAINED_GAP"
 TOSS_INCOMPLETE_EVIDENCE = "INCOMPLETE_EVIDENCE"
 TOSS_LEDGER_INVALID = "LEDGER_INVALID"
 TOSS_UNCHECKED = "UNCHECKED"
+# The ledger is LOCAL_ONLY: the check runs at Thomas's interactive terminal, refused before it reads anything
+# otherwise. A slip guard like the resolve and epoch ones — not a boundary against root or the docker group.
+TOSS_CONTINUITY_REFUSED = "HOLDINGS_CASH_FLOW_TOSS_CONTINUITY_REFUSED"
 
 
 def toss_continuity(rows: list[Mapping[str, Any]], *, now: str) -> dict[str, Any]:
@@ -941,9 +944,13 @@ def toss_continuity(rows: list[Mapping[str, Any]], *, now: str) -> dict[str, Any
     return result
 
 
-def toss_continuity_view(state_dir: Path, *, now: str) -> dict[str, Any]:
+def toss_continuity_view(state_dir: Path, *, now: str, interactive: bool) -> dict[str, Any]:
     """For Thomas's terminal (``--toss-continuity``): the verdict over the verified ledger. A chain that
-    does not verify is LEDGER_INVALID with its reason code. LOCAL — never a door, never a message."""
+    does not verify is LEDGER_INVALID with its reason code. Refused without an interactive terminal, before
+    the ledger is opened. LOCAL — never a door, never a message."""
+    if not interactive:
+        raise ToolError(TOSS_CONTINUITY_REFUSED, "the continuity check runs at an interactive terminal "
+                                                 "(it reads the LOCAL_ONLY ledger)")
     try:
         rows = verify(state_dir)
     except ToolError as exc:

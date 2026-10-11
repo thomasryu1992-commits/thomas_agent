@@ -70,10 +70,11 @@ thomas-scheduler-maint ...``). The keys name venue events: these are Thomas's, o
 windows tile the stretch from the latest cutover to the last window: ``CONTINUOUS``, ``UNEXPLAINED_GAP``,
 ``INCOMPLETE_EVIDENCE``, ``LEDGER_INVALID`` or ``UNCHECKED``, with counts and the gap bounds (times only, no
 amount). It writes nothing and changes no verdict: continuity is not the Toss cash semantics, not history
-completeness, and not a readiness check. A chain that does not verify exits ``EXIT_BLOCKED``; a half-written
-last line reads that way too, so run it once more before concluding. The ledger is LOCAL_ONLY: Thomas's
-terminal (``docker exec -it -u 10001 thomas-scheduler-maint python -m scripts.holdings_board
---toss-continuity``), and only its first line leaves it.
+completeness, and not a readiness check. A chain that does not verify exits ``EXIT_BLOCKED``: that is a
+finding to investigate, not something a re-run clears. The ledger is LOCAL_ONLY: Thomas's terminal, as the
+service user, and only its first two lines leave it. Without a terminal on both stdin and stdout, or as a
+host-side root run, it is refused before the ledger is opened — slip guards against a pipe, a model's
+shell or a missing ``-it -u 10001``, not a boundary against root or the docker group.
 
 Claude does not run the live read, ``--local``, ``--unclassified``, ``--classify``, ``--unclassify``,
 ``--flows``, ``--resolve``, ``--semantics-epoch`` or ``--toss-continuity`` (their output or input names holdings
@@ -286,9 +287,18 @@ def render_toss_continuity(result: dict) -> str:
 
 
 def _toss_continuity() -> int:
+    """Refuses a host-side root run and a missing terminal before the ledger is read. Both are slip guards
+    (a pipe, a model's shell, ``docker exec`` without ``-it -u 10001``), not a boundary: root and the docker
+    group can read the file directly."""
     from runtime.mvp_runtime.holdings import cash_flows
 
-    result = cash_flows.toss_continuity_view(state_dir(), now=timeutil.utc_now_iso())
+    try:
+        assert_not_foreign_root_run()
+        result = cash_flows.toss_continuity_view(state_dir(), now=timeutil.utc_now_iso(),
+                                                 interactive=_interactive())
+    except MvpRuntimeError as exc:
+        print(f"refused ({exc.reason_code}): {exc}")
+        return EXIT_BLOCKED
     print(render_toss_continuity(result))
     return EXIT_BLOCKED if result["status"] == cash_flows.TOSS_LEDGER_INVALID else EXIT_OK
 

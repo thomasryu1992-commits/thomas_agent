@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **674** distinct codes across **1337** raise sites
+- **675** distinct codes across **1338** raise sites
 - **23** exception classes carry them
 - **76** codes are raised from more than one module (see below)
 - **144** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -484,6 +484,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `HOLDINGS_CASH_FLOW_RESOLVE_NO_TARGET` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `rows` | `not matches` |
 | `HOLDINGS_CASH_FLOW_RESOLVE_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `resolve` | `not (requested_by or '').strip() or not (reason or '').strip()` |
 | `HOLDINGS_CASH_FLOW_RESOLVE_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `resolve` | `not interactive` |
+| `HOLDINGS_CASH_FLOW_TOSS_CONTINUITY_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `toss_continuity_view` | `not interactive` |
 | `HOLDINGS_CLASSIFICATION_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/classification.py` | `apply` | `asset_class not in ASSIGNABLE_CLASSES` |
 | `HOLDINGS_CLASSIFICATION_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/classification.py` | `apply` | `not _valid_id(instrument)` |
 | `HOLDINGS_CLASSIFICATION_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/holdings/classification.py` | `load` | `—` |

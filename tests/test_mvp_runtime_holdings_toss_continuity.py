@@ -52,7 +52,7 @@ def cutover(state_dir, hours: float = 0, *, migrate: bool = False) -> None:
 
 
 def judge(state_dir) -> dict:
-    return cash_flows.toss_continuity_view(state_dir, now=NOW)
+    return cash_flows.toss_continuity_view(state_dir, now=NOW, interactive=True)
 
 
 # A. every window joins the next at the same instant, from the cutover on
@@ -204,11 +204,64 @@ def test_the_diagnostic_writes_nothing_and_adds_nothing_to_the_outward_summary(t
     assert not any("continuity" in key for key in before)
 
 
-def _board(monkeypatch, state_dir):
+def _board(monkeypatch, state_dir, *, interactive=True):
     from scripts import holdings_board
 
     monkeypatch.setattr(holdings_board, "state_dir", lambda: state_dir)
+    monkeypatch.setattr(holdings_board, "assert_not_foreign_root_run", lambda: None)
+    monkeypatch.setattr(holdings_board, "_interactive", lambda: interactive)
     return holdings_board
+
+
+def _ledger_never_opened(monkeypatch):
+    def opened(_state_dir):
+        raise AssertionError("the ledger was read")
+    monkeypatch.setattr(cash_flows, "verify", opened)
+
+
+# Terminal only (Thomas 2026-10-11, #1212 hardening): a slip guard, refused before the ledger is opened.
+def test_without_an_interactive_terminal_the_check_is_refused_before_it_reads(tmp_path, monkeypatch, capsys):
+    cutover(tmp_path, 0)
+    write(tmp_path, window(0, 1))
+    _ledger_never_opened(monkeypatch)
+    with pytest.raises(ToolError) as exc:
+        cash_flows.toss_continuity_view(tmp_path, now=NOW, interactive=False)
+    assert exc.value.reason_code == cash_flows.TOSS_CONTINUITY_REFUSED
+    board = _board(monkeypatch, tmp_path, interactive=False)
+    assert board.main(["--toss-continuity"]) == EXIT_BLOCKED
+    out = capsys.readouterr().out
+    assert out.startswith(f"refused ({cash_flows.TOSS_CONTINUITY_REFUSED})") and "toss continuity:" not in out
+
+
+def test_a_host_side_root_run_is_refused_before_it_reads(tmp_path, monkeypatch, capsys):
+    from runtime.mvp_runtime.errors import PersistenceError
+
+    cutover(tmp_path, 0)
+    board = _board(monkeypatch, tmp_path)
+    _ledger_never_opened(monkeypatch)
+
+    def foreign():
+        raise PersistenceError("STATE_FOREIGN_ROOT_RUN", "synthetic: state owned by uid 10001, run as root")
+    monkeypatch.setattr(board, "assert_not_foreign_root_run", foreign)
+    assert board.main(["--toss-continuity"]) == EXIT_BLOCKED
+    assert capsys.readouterr().out.startswith("refused (STATE_FOREIGN_ROOT_RUN)")
+
+
+def test_the_real_terminal_test_reads_both_ends(monkeypatch):
+    """The CLI's own check: stdin and stdout both a TTY (a pipe on either side is refused)."""
+    from scripts import holdings_board
+
+    class Stream:
+        def __init__(self, tty):
+            self.tty = tty
+
+        def isatty(self):
+            return self.tty
+
+    for stdin, stdout, expected in ((True, True, True), (True, False, False), (False, True, False)):
+        monkeypatch.setattr(holdings_board.sys, "stdin", Stream(stdin))
+        monkeypatch.setattr(holdings_board.sys, "stdout", Stream(stdout))
+        assert holdings_board._interactive() is expected
 
 
 def test_the_terminal_names_the_verdict_first_and_no_amount(tmp_path, monkeypatch, capsys):

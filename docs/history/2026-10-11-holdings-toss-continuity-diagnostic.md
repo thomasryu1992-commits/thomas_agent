@@ -27,8 +27,23 @@
     its first window reads `INCOMPLETE_EVIDENCE` (`no_window_before_first`) from this check alone. This is a
     property of the code; the real file was not read.
 - **Placement:** the code lives in `cash_flows.py` because `test_no_door_module_reads_the_ledger` allows only
-  `cash_flows.py`, `store.py` and `holdings_board.py` to read the ledger. No new reason code is added; a broken
-  chain reports `verify`'s `LEDGER_TAMPERED`.
+  `cash_flows.py`, `store.py` and `holdings_board.py` to read the ledger. A broken chain reports `verify`'s
+  `LEDGER_TAMPERED`.
+  - `LEDGER_INVALID` is a finding to investigate. A re-run that comes back clean does not clear it.
+- **Pre-merge hardening (Thomas 2026-10-11):**
+  - **Terminal only:** the check is refused before the ledger is opened in two cases:
+    - stdin or stdout is not a terminal: `HOLDINGS_CASH_FLOW_TOSS_CONTINUITY_REFUSED`, the one new code;
+    - a host-side root run: `STATE_FOREIGN_ROOT_RUN`.
+
+    This is the resolve and epoch pattern. Both checks are slip guards against a pipe, a model's shell, or a
+    `docker exec` without `-it`. They are not a boundary: root and the docker group can read the file.
+  - **Guard list consistency:** `test_every_holdings_board_mode_but_the_one_table_is_terminal_only` reads
+    every `holdings_board` mode from the source and requires each one except `--json` to be in the guard
+    test's `TERMINAL_ONLY` list. Each flag in that list is run through the real guard. The test is plain
+    Python, so it runs on Windows too.
+  - **Windows skip ceiling 254 → 256:** the two new skips are the Bash and Monitor cases of
+    `--toss-continuity` in the `@posix_only` guard test ("the guard is a bash script"). The test has 20
+    items on main and 22 here; the new test file has no skip.
 - **What it deliberately does not do:**
   - It changes none of these: the readiness, `history_completeness` (which does not exist yet), the cutover,
     the epoch, the ledger format, the Binance collection, Toss calls, the schedule, the outward summary.
@@ -39,4 +54,14 @@
   - The installed global guard (`/root/.claude/hooks/`) does not refuse it until Thomas refreshes it from main
     after the merge (`global-guard-kit/README.md`, "Update after the repository's guard changes").
   - The stale primary checkout has no project guard.
-  - Do not deploy before that refresh.
+  - Do not deploy, and do not build a tool image, before that refresh.
+- **How Thomas runs it (after the merge, the refresh, and a separate approval):** a one-off tool image, not a
+  deploy (CLAUDE.md, the deploy skill's one-off section).
+  - Build `thomas-agent-runtime:tool-1212` from a clean origin/main tree. `latest` and the running
+    containers are untouched.
+  - Run it with `docker run --rm -it --network none` as the scheduler's user, read off
+    `docker inspect thomas-scheduler` (`thomas` on 2026-10-11).
+  - Mount the state directory read-only (`:ro`), and pass no env file: the check needs no key and no
+    network.
+  - `docker exec` into a running container works only after an ordinary deploy of this code, which is not
+    planned.
