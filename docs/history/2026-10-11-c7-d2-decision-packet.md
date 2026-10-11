@@ -17,6 +17,11 @@
   - Thomas decided (#1212 final review, decision 6) that this reason is not waived.
   - That outcome would therefore rule out option A's Toss condition unless a new decision is made. The packet
     does not propose one.
+- **Correction (2026-10-11, review):**
+  - The first packet made "trailing at the normal fire interval" part of option A's minimum evidence. No owner
+    decision supports that condition, and #1212's decision 3 declined using trailing to change the verdict.
+  - The diagnostic's contract stays as #1212 wrote it, and trailing is reference only.
+  - Whether A needs separate evidence of freshness after the last window is now a DECISION_REQUIRED item.
 - **What it deliberately does not do:**
   - It neither recommends nor decides A or C.
   - It runs neither evidence step.
