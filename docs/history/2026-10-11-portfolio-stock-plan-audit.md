@@ -12,7 +12,12 @@
   - Q1, no: P3's gate (2027-03-22 and one crypto FORWARD_CONFIRMED) stays.
   - Q2, no: `stocks/` stays rejected and stocks come in through the three seams. Stock strategy, hours, settlement, order
     policy and risk checks are validated on their own. No crypto approval or execution authority carries over to stocks.
-  - Q3, conditional: C7 as an H6c precondition is agreed. D1–D4 wait on the packet.
+  - Q3, conditional: C7 is an H6c precondition. D1–D4 were confirmed the same day, as design direction only:
+    - D1 agreed, with five conditions;
+    - D2 partly: a separate `history_completeness` and UNCHECKED were agreed, while the Toss proof and the
+      cutover stay open (§12.2 options A, B, C);
+    - D3 agreed;
+    - D4 conditional on five verifications, with no change authority for the backup session.
   - Q4, yes: the fourth canary request is on record.
   - Q5, no: none of the six new documents.
 - **Why the audit is shaped this way:**
@@ -22,6 +27,12 @@
   - The stock half of the plan met four recorded decisions. Writing six documents would have duplicated owners or decided
     against the record.
 - **Facts it rests on:**
+  - On transfers, the D2 investigation found:
+    - Binance's official connector documents a 6-month history, with 7 days as the no-parameter default.
+    - The code clamps every transfer read to the last 7 days.
+    - Under that clamp, re-collection stops reaching `cutover − 1d` around 2026-10-15 04Z.
+    - An older window has never been sent, so the venue side is not verified.
+    - The packet's first draft wrote 10-16 and was corrected the same day.
   - The Toss public spec `openapi.json` v1.2.24, read 2026-10-11. No endpoint was called. It shows:
     - the order create, modify and cancel APIs and conditional orders;
     - `scopes: {}`, so the read key is the order key;
