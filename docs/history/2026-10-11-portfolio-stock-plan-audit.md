@@ -33,6 +33,13 @@
     - Under that clamp, re-collection stops reaching `cutover − 1d` around 2026-10-15 04Z.
     - An older window has never been sent, so the venue side is not verified.
     - The packet's first draft wrote 10-16 and was corrected the same day.
+  - Option A's feasibility review (§12.3):
+    - One constant does two jobs: the per-request span cap in `flow_history` and the depth clamp in
+      `collect_binance`. Changing it alone would also send unverified long spans.
+    - A scratch prototype backfill was run against the real feed code on a fake venue: 18 synthetic cases
+      passed, and 13 fail when the window is mutated to 8 days.
+    - With a 175-day margin, A's practical deadline is about 2027-04-01.
+    - The live probe is specified but was not run.
   - The Toss public spec `openapi.json` v1.2.24, read 2026-10-11. No endpoint was called. It shows:
     - the order create, modify and cancel APIs and conditional orders;
     - `scopes: {}`, so the read key is the order key;
