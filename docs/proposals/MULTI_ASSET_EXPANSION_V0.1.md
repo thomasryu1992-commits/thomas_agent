@@ -157,7 +157,7 @@ H4-min(2026-10-08): coherence와 reconciliation이 필수 검사가 됐다. 지�
 | P0 | 목적(D1·D2)과 규제 기록(D3). 형식은 `EQUITY_PERP_LANE_V0.1.md` 부록 A를 재사용한다(판단 주체·날짜·근거·재검토 조건) | Thomas 결정 |
 | P1 | 읽기 전용 통합 보드: 계좌별 잔고·노출·자산군 비중. 주문 경로 없음. **P1-a(코드: 두 렌더·스크립트) #1115. P1-b(scheduler-maint 배선·`holdings_refresh` 유지보수 kind·`/holdings` verb·Hermes read) #1116. Hermes read는 정책 1.6.2로 켬(Thomas 2026-10-07). 계좌는 KIS에서 토스로 교체(Thomas 2026-10-07, 부록 B). 브로커 키는 scheduler-maint에만 둔다(Thomas 2026-10-02)** | P0 + D4 + 각 계좌 읽기 capability의 env opt-in |
 | P2 | (A)의 한도: 계좌 전체 낙폭 한도(알림만). **낙폭 한도 지어짐(2026-10-07)**: `holdings/combined.py` — 토스 + 바이낸스 스냅샷 파일 합산, 고점 대비 -20%에 텔레그램 알림. 밴드·BTC 상한(`TOTAL_ASSET_ALLOCATION_V0.1.md` Q2·Q4)은 한도 후보에서 뺐다(Thomas 2026-10-07). 소유자는 `holdings/`(아래 결정 절의 정정: 진입을 막지 않으므로 `risk_limits.py`·`live_budget.py`가 아니다) | P1 운영 기록(Thomas가 2026-10-07에 생략) |
-| P3 | (B) 알파 확장. 주식 퍼프는 §H의 S2 이후 순서를 그대로 따른다 | 연구 일시 중지 종료(2027-03-22), 크립토에서 FORWARD_CONFIRMED 1건 이상 |
+| P3 | (B) 알파 확장. 주식 퍼프는 §H의 S2 이후 순서를 그대로 따른다. **토스 주식 자동매매(Thomas 2026-10-11, `PORTFOLIO_AND_STOCK_TRADING_PLAN_AUDIT_V0.1.md` Q1·Q2): 관문을 앞당기지 않는다. 세 이음매로 들어오고 `stocks/`를 다시 열지 않는다. 주식의 전략·거래시간·결제·주문 정책·위험 검사는 따로 검증하고, 크립토의 승인·실행 권한은 상속하지 않는다** | 연구 일시 중지 종료(2027-03-22), 크립토에서 FORWARD_CONFIRMED 1건 이상 |
 | P4 | 옵션 — 수익 목적, §6 D2의 비교 기준을 넘을 때만 채택 | P3 + 다중 레그 표현 결정 + 옵션 판정 규칙(에포크 경계) + 베뉴 S0 + D2 비교 기준 비준 |
 
 P1의 계좌 읽기는 network capability다. 이것도 다른 capability와 같이 `safety_gate.select_env_gated(...)`를
@@ -409,6 +409,9 @@ Claude는 어떤 베뉴의 키도 다루지 않고, 라이브를 켜지 않는�
    - `token-revoked`나 `expired-token`을 받으면 **한 번만** 다시 발급하고, 반복하지 않는다.
 5. **모의투자는 없다.** 첫 실계좌 조회가 응답 필드의 검증 단계다.
 6. **호출 한도는 응답 헤더(`X-RateLimit-*`)로 알려 준다.** 보드는 시간당 몇 번만 호출하므로 한도에 닿지 않는다.
+
+- **주문 범위 확인 (2026-10-11, 공식 스펙 v1.2.24):** 주문 생성·정정·취소, 조건주문, 주문 보조 조회가 공개돼 있고, 샌드박스는 없다. 표는
+  `PORTFOLIO_AND_STOCK_TRADING_PLAN_AUDIT_V0.1.md` §D에 있다. 이것은 능력의 기록이고 이 부록의 범위(조회)를 넓히지 않는다.
 
 ### 키 자세
 
