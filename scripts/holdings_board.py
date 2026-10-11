@@ -12,6 +12,7 @@
     python -m scripts.holdings_board --flows                        # H6 exceptions, terminal only (H6d-min)
     python -m scripts.holdings_board --resolve KEY --kind deposit --by thomas --reason "..."   # terminal only
     python -m scripts.holdings_board --semantics-epoch --change-ref "#1203" --by thomas --reason "..."
+    python -m scripts.holdings_board --toss-continuity              # do the Toss windows tile the stretch since the cutover
 
 Read-only. It places nothing and has no flag that would let it.
 
@@ -65,8 +66,19 @@ reconciliation digest and asks for its first 8 characters back. Both writes need
 terminal, ``--by`` and ``--reason``, and run as the service user (``docker exec -it -u 10001
 thomas-scheduler-maint ...``). The keys name venue events: these are Thomas's, on his terminal.
 
+**``--toss-continuity``** (C7 D2, Thomas 2026-10-11) reads the verified ledger and says whether its Toss
+windows tile the stretch from the latest cutover to the last window: ``CONTINUOUS``, ``UNEXPLAINED_GAP``,
+``INCOMPLETE_EVIDENCE``, ``LEDGER_INVALID`` or ``UNCHECKED``, with counts and the gap bounds (times only, no
+amount). It writes nothing and changes no verdict: continuity is not the Toss cash semantics, not history
+completeness, and not a readiness check. A chain that does not verify exits ``EXIT_BLOCKED``: that is a
+finding to investigate, not something a re-run clears. The ledger is LOCAL_ONLY: Thomas's terminal, as the
+service user, and only its first two lines leave it. Without a terminal on both stdin and stdout, or as a
+host-side root run, it is refused before the ledger is opened — slip guards against a pipe, a model's
+shell or a missing ``-it -u 10001``, not a boundary against root or the docker group.
+
 Claude does not run the live read, ``--local``, ``--unclassified``, ``--classify``, ``--unclassify``,
-``--flows``, ``--resolve`` or ``--semantics-epoch`` (their output or input names holdings and would reach a model provider), and does not handle the keys.
+``--flows``, ``--resolve``, ``--semantics-epoch`` or ``--toss-continuity`` (their output or input names holdings
+or reads the local ledger, and would reach a model provider), and does not handle the keys.
 """
 
 from __future__ import annotations
@@ -115,6 +127,8 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--resolve", metavar="KEY", help="close one H6 exception's review (Thomas, terminal only)")
     mode.add_argument("--semantics-epoch", action="store_true",
                       help="start a new Toss semantics epoch after a reconciliation change (Thomas, terminal only)")
+    mode.add_argument("--toss-continuity", action="store_true",
+                      help="whether the Toss windows tile the stretch since the cutover (C7 D2; terminal only)")
     parser.add_argument("--kind", help="what the exception was (--resolve; --flows lists the allowed kinds)")
     parser.add_argument("--change-ref", help="the merged reconciliation change, #<PR> or a commit (--semantics-epoch)")
     parser.add_argument("--migrate", action="store_true", help="move an existing cutover (--cash-flow-cutover)")
@@ -160,6 +174,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.flows or args.resolve or args.semantics_epoch:
         return _exceptions(args)
+
+    if args.toss_continuity:
+        return _toss_continuity()
 
     if args.reset_peak:
         try:
@@ -248,6 +265,42 @@ def _exceptions(args: argparse.Namespace) -> int:
     except MvpRuntimeError as exc:
         print(f"refused ({exc.reason_code}): {exc}")
         return EXIT_BLOCKED
+
+
+def render_toss_continuity(result: dict) -> str:
+    """The verdict first (the one line Thomas may pass on), then counts and gap bounds. No amount."""
+    lines = [f"toss continuity: {result['status']} (cutover generation {result['cutover_generation']})",
+             f"  reasons  : {', '.join(result['reasons']) or 'none'}",
+             f"  windows  : {result['windows']} since the cutover ({result['windows_before_cutover']} before it; "
+             f"{result['epochs']} epoch(s))",
+             f"  gaps     : {len(result['gaps'])} unexplained, {result['gap_hours']} h; "
+             "0 explained (no ledger line can explain a gap yet)",
+             f"  other    : overlaps {result['overlaps']}, duplicates {result['duplicates']}, truncated "
+             f"{result['truncated']}, unreadable {result['unreadable']}, amended {result['amended_windows']} "
+             f"(orphan {result['orphan_amendments']})",
+             f"  span     : leading {result['leading_hours']} h, longest window {result['longest_window_hours']} h, "
+             f"trailing {result['trailing_hours']} h"]
+    lines += [f"  gap      : {g['from']} .. {g['to']} ({g['hours']} h)" for g in result["gaps"]]
+    lines.append("  note     : the observed windows only — not the Toss cash semantics, not history completeness, "
+                 "not readiness; it changes nothing")
+    return "\n".join(lines)
+
+
+def _toss_continuity() -> int:
+    """Refuses a host-side root run and a missing terminal before the ledger is read. Both are slip guards
+    (a pipe, a model's shell, ``docker exec`` without ``-it -u 10001``), not a boundary: root and the docker
+    group can read the file directly."""
+    from runtime.mvp_runtime.holdings import cash_flows
+
+    try:
+        assert_not_foreign_root_run()
+        result = cash_flows.toss_continuity_view(state_dir(), now=timeutil.utc_now_iso(),
+                                                 interactive=_interactive())
+    except MvpRuntimeError as exc:
+        print(f"refused ({exc.reason_code}): {exc}")
+        return EXIT_BLOCKED
+    print(render_toss_continuity(result))
+    return EXIT_BLOCKED if result["status"] == cash_flows.TOSS_LEDGER_INVALID else EXIT_OK
 
 
 def _unclassified() -> int:

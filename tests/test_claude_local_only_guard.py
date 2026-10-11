@@ -183,7 +183,28 @@ def test_without_the_guard_the_wrapper_still_refuses_a_holdings_reference(tmp_pa
 
 TERMINAL_ONLY = ("--full", "--local", "--unclassified", "--classify binance:X=coin", "--unclassify binance:X",
                  "--reset-peak --reason r", "--cash-flow-cutover 2026-10-09T00:00:00Z", "--flows",
-                 "--resolve pay:x --kind deposit", "--semantics-epoch --change-ref '#1'")
+                 "--resolve pay:x --kind deposit", "--semantics-epoch --change-ref '#1'", "--toss-continuity")
+
+
+def _board_modes() -> set[str]:
+    """Every ``mode.add_argument("--…")`` in ``scripts/holdings_board.py``, read from its source."""
+    import ast
+
+    tree = ast.parse((REPO_ROOT / "scripts" / "holdings_board.py").read_text(encoding="utf-8"))
+    return {node.args[0].value for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument" and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "mode" and node.args and isinstance(node.args[0], ast.Constant)
+            and str(node.args[0].value).startswith("--")}
+
+
+# #1212 (2026-10-11): a new holdings_board mode must not ship unguarded. Every mode but the one table
+# (`--json`) is in TERMINAL_ONLY, and each TERMINAL_ONLY flag is run through the real guard above. Pure
+# Python, so it also runs where the bash guard test skips.
+def test_every_holdings_board_mode_but_the_one_table_is_terminal_only():
+    modes = _board_modes()
+    assert "--json" in modes and "--toss-continuity" in modes
+    assert modes - {"--json"} == {flag.split()[0] for flag in TERMINAL_ONLY}
 
 
 def _monitor(**tool_input) -> str:
