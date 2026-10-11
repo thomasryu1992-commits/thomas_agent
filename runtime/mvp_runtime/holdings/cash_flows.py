@@ -853,6 +853,104 @@ def flows_view(state_dir: Path) -> list[dict[str, Any]]:
     return out
 
 
+# --- the Toss window continuity diagnostic (C7 D2, Thomas 2026-10-11) ------------------------------------
+# Terminal only (``holdings_board --toss-continuity``). It asks one question of the ledger: do the observed
+# Toss windows tile the stretch from the latest cutover to the last window? Not the Toss cash semantics, not
+# history completeness, not readiness; it writes nothing and enables nothing. Each window runs from the
+# previous fire's cash point to this fire, so a downtime is one long window, and a gap is a fire that
+# recorded no window (an unusable snapshot, a moved cache) — not proof that a record was lost. No ledger
+# line can explain a gap today (HOLDINGS_LEDGER_CHECKPOINT_V0.1.md §4, option (a) is not built), so every
+# gap is unexplained. Worst first: LEDGER_INVALID, UNCHECKED, UNEXPLAINED_GAP, INCOMPLETE_EVIDENCE.
+TOSS_CONTINUOUS = "CONTINUOUS"
+TOSS_UNEXPLAINED_GAP = "UNEXPLAINED_GAP"
+TOSS_INCOMPLETE_EVIDENCE = "INCOMPLETE_EVIDENCE"
+TOSS_LEDGER_INVALID = "LEDGER_INVALID"
+TOSS_UNCHECKED = "UNCHECKED"
+
+
+def toss_continuity(rows: list[Mapping[str, Any]], *, now: str) -> dict[str, Any]:
+    """The continuity verdict over verified ledger rows, with its counts and gap bounds. No amount."""
+    at = cutover_at(rows)
+    cutover_ms = _iso_ms(at) if at else None
+    result: dict[str, Any] = {"status": TOSS_UNCHECKED, "reasons": [], "cutover_generation": cutover_generation(rows),
+                              "windows": 0, "windows_before_cutover": 0, "epochs": 0, "gaps": [], "gap_hours": 0.0,
+                              "overlaps": 0, "duplicates": 0, "truncated": 0, "unreadable": 0, "amended_windows": 0,
+                              "orphan_amendments": 0, "leading_hours": None, "longest_window_hours": None,
+                              "trailing_hours": None}
+    if cutover_ms is None:
+        result["reasons"] = ["empty_ledger" if not rows else "no_cutover"]
+        return result
+    hours = lambda ms: round(ms / 3_600_000, 1)                                             # noqa: E731
+    windows: list[tuple[int, int, str, str]] = []
+    keys: set[str] = set()
+    epochs: set[Any] = set()
+    for row in rows:
+        if row.get("event") != EVENT_TOSS_WINDOW:
+            continue
+        keys.add(str(row.get("source_event_key")))
+        start, end = _iso_ms(row.get("window_start")), _iso_ms(row.get("window_end"))
+        if start is None or end is None or end < start:
+            result["unreadable"] += 1
+            continue
+        if end <= cutover_ms:
+            result["windows_before_cutover"] += 1
+            continue
+        windows.append((max(start, cutover_ms), end, at if start < cutover_ms else str(row["window_start"]),
+                        str(row["window_end"])))
+        epochs.add(row.get("epoch"))
+        result["truncated"] += bool(row.get("orders_truncated"))
+    amended = {str(r.get("amends")) for r in rows if r.get("event") == EVENT_TOSS_AMENDED}
+    result["amended_windows"] = len(amended & keys)
+    result["orphan_amendments"] = len(amended - keys)
+    result["epochs"] = len(epochs)
+    windows.sort()
+    seen: set[tuple[int, int]] = set()
+    cursor: tuple[int, str] | None = None
+    for start, end, start_at, end_at in windows:
+        if (start, end) in seen:
+            result["duplicates"] += 1
+            continue
+        seen.add((start, end))
+        result["windows"] += 1
+        if cursor is not None and start > cursor[0]:
+            result["gaps"].append({"from": cursor[1], "to": start_at, "hours": hours(start - cursor[0])})
+        elif cursor is not None and start < cursor[0]:
+            result["overlaps"] += 1
+        if cursor is None or end > cursor[0]:
+            cursor = (end, end_at)
+    reasons: list[str] = []
+    if result["gaps"]:
+        reasons.append("unexplained_gap")
+        result["gap_hours"] = round(sum(g["hours"] for g in result["gaps"]), 1)
+    if not windows:
+        reasons.append("no_window_since_cutover")
+    else:
+        lead = windows[0][0] - cutover_ms
+        result["leading_hours"] = hours(lead)
+        result["longest_window_hours"] = hours(max(end - start for start, end, _s, _e in windows))
+        result["trailing_hours"] = hours(max(0, (_iso_ms(now) or 0) - cursor[0])) if cursor else None
+        if lead > 0:
+            reasons.append("no_window_before_first")     # the stretch before window lines existed: not covered
+    for name, reason in (("overlaps", "overlap"), ("duplicates", "duplicate_window"), ("truncated", "orders_truncated"),
+                         ("unreadable", "window_unreadable"), ("orphan_amendments", "orphan_amendment")):
+        if result[name]:
+            reasons.append(reason)
+    result["reasons"] = reasons
+    result["status"] = (TOSS_UNEXPLAINED_GAP if result["gaps"] else TOSS_INCOMPLETE_EVIDENCE if reasons
+                        else TOSS_CONTINUOUS)
+    return result
+
+
+def toss_continuity_view(state_dir: Path, *, now: str) -> dict[str, Any]:
+    """For Thomas's terminal (``--toss-continuity``): the verdict over the verified ledger. A chain that
+    does not verify is LEDGER_INVALID with its reason code. LOCAL — never a door, never a message."""
+    try:
+        rows = verify(state_dir)
+    except ToolError as exc:
+        return {**toss_continuity([], now=now), "status": TOSS_LEDGER_INVALID, "reasons": [exc.reason_code]}
+    return toss_continuity(rows, now=now)
+
+
 def _canon(amount: Any) -> Decimal | None:
     """The amount as a number for comparison: "1", "1.0" and "1.00000000" are one amount. The ledger keeps
     the venue's own string; only comparisons use this."""
