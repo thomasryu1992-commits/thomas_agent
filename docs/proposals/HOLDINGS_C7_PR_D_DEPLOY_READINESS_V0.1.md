@@ -31,7 +31,7 @@
 | 신규 candidate | NOT_BUILT | |
 | Rollback 이미지 | **ROLLBACK_NOT_VERIFIED** (원본 식별됨) | 이번 배포의 rollback 원본은 지금 도는 `67d9b622d648`이고, `latest`가 그것을 가리킨다(관측 시점). `rollback-pre-<N>` 태그는 아직 없다. 기존 `rollback-pre-1210` = `cb57fab0baba`(=`candidate-1206`)는 이전 배포의 rollback 점이다. 태그는 배포 시점 preflight가 다시 정하고, 복구는 실행해 보지 않았다 |
 | Global Guard | **GLOBAL_GUARD_VERIFIED** (설치·연결) | 증거 수준은 세 가지로 나뉜다(§5 Gate 2). (A) GLOBAL_GUARD_INSTALLATION_VERIFIED: main·kit·설치본 sha256 모두 `88addc9d6d2e94e9f88a864ec27dcdef0f833e6dff4e894629cbaf712690fc86`, `refresh_guard.py check` exit 0. (B) GLOBAL_GUARD_HOOK_WIRING_VERIFIED: `test_guard.py` ALL PASS, 새 세션에서 기존 경로 탐침 3개 거부. 기존 규칙이라 told 규칙 자체의 직접 검증은 아니다. (C) TOLD_FILENAME_PROTECTION_VERIFIED_BY_CODE_IDENTITY_AND_CI: 간접 검증. (D) GATE_2_DIRECT_SYNTHETIC_TEST_PASSED(2026-10-12): kit `test_guard.py`(sha256 `d1ae8d77055d3799ce5eb98701c84b45780c1410bd1cb8016e94bf1b82c9dab4`)에 told 파일명 DENY 3건·snapshot ALLOW 1건을 더해 설치본과 전역 wrapper로 실행했다. 결과는 `ALL PASS`, exit 0, 실행 전후 설치본 sha 불변. 새 세션 실탐침은 하지 않았다(NEW_SESSION_TOLD_PROBE_NOT_PERFORMED). rollback 점 `guard-local-only.sh.pre-1217`(옛 `865e9eec…`). 근거: Thomas 운영자 증거 2026-10-12 |
-| Candidate 태그 | **CANDIDATE_TAG_DECISION_REQUIRED** | 기본 권고 `candidate-1217`(§4.1) |
+| Candidate 태그 | **CANDIDATE_TAG_DECISION_REQUIRED** | `candidate-1217`은 잠정 권고(PROVISIONAL_RECOMMENDATION, §4.1). 자가검증 PR이 묶음에 들어오므로 최종 배포 기준선에서 다시 정한다 |
 | 이미지 내 동작 검증 | **VALIDATION_PATH_UNRESOLVED** (진입점 구현됨) | 정식 진입점 `scripts/c7_blocked_selftest.py`는 구현됐고 저장소 합성 테스트를 통과했다(VALIDATION_ENTRYPOINT_IMPLEMENTED, REPOSITORY_SYNTHETIC_TESTS_PASSED, 2026-10-12). candidate 안 실행과 D-10 격리 증거는 별도 승인이다(§4.3) |
 | 배포 승인 | NOT_GRANTED | |
 
@@ -47,6 +47,7 @@
 | `scripts/holdings_board.py` | #1212 `--toss-continuity` | 터미널 전용. Guard가 Claude 세션에서 거부한다(설치본도 이 모드를 안다) |
 
 - #1217(`.claude/`, `tests/`)과 문서 PR(#1209, #1211, #1213–#1215)은 이미지에 들어가지 않는다.
+- **갱신(2026-10-12):** 자가검증 PR은 `COPY scripts/`로 이미지에 다섯 번째 파일 `scripts/c7_blocked_selftest.py`를 더한다(`cash_flows`를 import한다). 이 파일에 닿는 schedule이나 door는 없다(`test_nothing_in_the_runtime_imports_the_door`). 위의 "네 파일"은 최종 배포 기준선에서 다시 계산한다(설계 문서 §3.5).
 - 이 기준은 "운영 이미지가 `b6d4bf30`에서 빌드됐다"는 가정 위에 있다. 시각은 이 가정과 맞는다: `b6d4bf30`은 2026-10-10T09:55:29Z, 이미지 생성은 10:12:45Z, 그 다음 main 커밋(`c9bcf1af`, 이미지 경로 변화 없음)은 16:27:04Z다. 그러나 시각은 내용의 증거가 아니다. 이미지에 SHA 라벨이 없고 컨테이너 안을 열어 보지 않았으므로, 배포 때 §4.3의 CODE_IDENTITY_VERIFICATION이 이 가정을 대신한다.
 - `docker-compose.yml`, `Dockerfile`, 환경 변수는 바뀌지 않았다. 새 env, 새 mount, 새 서비스는 없다.
 
