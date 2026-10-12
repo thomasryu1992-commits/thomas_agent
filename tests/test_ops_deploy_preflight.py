@@ -7,6 +7,8 @@ changes the one fact it is about.
 from __future__ import annotations
 
 import json
+import pathlib
+import re
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -80,6 +82,8 @@ def _host(**over):
             }}
             return 0, json.dumps(config)
         if argv[:2] == ["docker", "ps"]:
+            if facts["running_names"] is None:
+                return 1, ""
             return 0, "\n".join(facts["running_names"])
         if "fetch" in argv:
             return 0, ""
@@ -338,10 +342,27 @@ def test_unreadable_compose_labels_warn_first_and_stop_the_promote():
     assert _levels(pf.preflight(_promote_host(labels=None), 42, TREE, promote=True))["compose"] == "STOP"
 
 
-def test_a_stack_started_another_way_still_only_warns_at_promote():
-    """A known mismatch keeps its level: only the unknown became a STOP."""
-    run = _promote_host(labels={"com.docker.compose.project": "deploy-42"})
-    assert _levels(pf.preflight(run, 42, TREE, promote=True))["compose"] == "WARN"
+_LABELS = {"com.docker.compose.project": "thomas_agent",
+           "com.docker.compose.project.environment_file": "/root/thomas_agent/.env"}
+
+
+@pytest.mark.parametrize("labels", [
+    {**_LABELS, "com.docker.compose.project": "deploy-42"},
+    {**_LABELS, "com.docker.compose.project.environment_file": "/root/deploy-42/.env"},
+    {**_LABELS, "com.docker.compose.project.environment_file": ""},
+])
+def test_a_label_mismatch_warns_first_and_stops_the_promote(capsys, labels):
+    """A known mismatch is a STOP at the promote (Thomas 2026-10-12); the first run keeps its WARN."""
+    assert _levels(pf.preflight(_host(labels=labels), 42, None))["compose"] == "WARN"
+    assert _levels(pf.preflight(_promote_host(labels=labels), 42, TREE, promote=True))["compose"] == "STOP"
+    assert pf.main(["42", "--promote", "--tree", TREE], run=_promote_host(labels=labels)) == 1
+    captured = capsys.readouterr()
+    assert "DEPLOY_PREFLIGHT=STOP" in captured.out and SECRET not in captured.out + captured.err
+
+
+def test_matching_labels_pass_both_runs():
+    assert _levels(pf.preflight(_host(), 42, None))["compose"] == "PASS"
+    assert _levels(pf.preflight(_promote_host(), 42, TREE, promote=True))["compose"] == "PASS"
 
 
 @pytest.mark.parametrize("raw", ["not json", "[]", '{"services": []}',
@@ -385,3 +406,108 @@ def test_the_required_checks_all_still_run():
     promote = {r.name for r in pf.preflight(_promote_host(), 42, TREE, promote=True)}
     assert {"pr", "tags", "rollback", "compose", "primary", "fires", "tree", "volumes"} <= first
     assert {"pr", "promote", "compose", "primary", "fires", "tree", "volumes"} <= promote
+
+
+# --- the services compose up would touch (Thomas 2026-10-12) -------------------------------------------------
+
+EIGHT = ("thomas-operator", "thomas-scheduler", "thomas-scheduler-maint", "thomas-read-bridge",
+         "thomas-dispatch-bridge", "thomas-pipeline-worker", "thomas-knowledge-bridge", "thomas-switch-bridge")
+
+
+def _stack(**over):
+    """A host whose tree compose names the eight runtime services and hermes, as the real file does."""
+    services = {name: {"container_name": name, "environment": {"TELEGRAM_BOT_TOKEN": SECRET}, "volumes": [
+        {"type": "bind", "source": pf.STATE_SOURCE, "target": "/app/.runtime_governance_state"}]} for name in EIGHT}
+    services["hermes"] = {"container_name": "hermes", "volumes": []}
+    over.setdefault("running_names", [*EIGHT, "hermes"])
+    return _promote_host(compose_raw=json.dumps({"services": services}), **over)
+
+
+def _services(run, promote):
+    return [r for r in pf.preflight(run, 42, TREE, promote=promote, now=NOW) if r.name == "services"]
+
+
+@pytest.mark.parametrize("promote", [False, True])
+def test_the_whole_stack_running_passes_both_runs(promote):
+    assert [r.level for r in _services(_stack(), promote)] == ["PASS"]
+
+
+@pytest.mark.parametrize("promote", [False, True])
+def test_unrelated_containers_of_other_projects_are_not_compared(promote):
+    assert [r.level for r in _services(_stack(running_names=[*EIGHT, "hermes", "postgres", "blog-cron"]),
+                                       promote)] == ["PASS"]
+
+
+@pytest.mark.parametrize("running", [
+    None,                                   # docker ps failed
+    [],                                     # docker ps answered: nothing runs
+    [*EIGHT[1:], "hermes"],                 # one service down
+    [*EIGHT[:3], "hermes"],                 # several down
+    [*EIGHT, "hermes", "thomas-legacy"],    # a thomas- container this file no longer names
+], ids=["ps-failed", "empty", "one-missing", "several-missing", "unexpected-thomas"])
+def test_any_service_difference_warns_first_and_stops_the_promote(capsys, running):
+    assert {r.level for r in _services(_stack(running_names=running), False)} == {"WARN"}
+    assert {r.level for r in _services(_stack(running_names=running), True)} == {"STOP"}
+    assert pf.main(["42", "--promote", "--tree", TREE], run=_stack(running_names=running)) == 1
+    captured = capsys.readouterr()
+    assert "DEPLOY_PREFLIGHT=STOP" in captured.out and SECRET not in captured.out + captured.err
+
+
+def test_a_failed_container_list_is_not_read_as_an_empty_one():
+    (failed,) = _services(_stack(running_names=None), True)
+    (empty,) = [r for r in _services(_stack(running_names=[]), True) if "not running" in r.message]
+    assert "cannot list" in failed.message and "cannot list" not in empty.message
+
+
+# --- the compose bind contract, statically (no .env value is read) -------------------------------------------
+
+def _raw_compose() -> dict:
+    import yaml  # the raw file: ${...} left as written, nothing interpolated
+    return yaml.safe_load((pathlib.Path(__file__).resolve().parents[1] / "docker-compose.yml")
+                          .read_text(encoding="utf-8"))
+
+
+def _bind_sources() -> dict[str, list[str]]:
+    """Each service's bind sources as written: everything before the ``:/target`` part. A source that
+    is not ``${VAR:-default}[/sub]`` is kept whole, so the test below names it."""
+    out = {}
+    for name, spec in _raw_compose()["services"].items():
+        sources = []
+        for volume in spec.get("volumes") or []:
+            match = re.match(r"(\$\{[A-Z_]+:-[^}]+\}[^:]*):/", str(volume))
+            sources.append(match.group(1) if match else str(volume))
+        out[name] = sources
+    return out
+
+
+# The variables the bind sources may be built from: paths only, never a credential. What each resolves
+# to lives in .env, which only the volume check at deploy time sees.
+PATH_VARIABLES = {"THOMAS_STATE_DIR", "THOMAS_CORE_ACTIVATIONS_DIR", "THOMAS_CORE_APPROVALS_DIR",
+                  "THOMAS_WORKSPACE_DIR", "THOMAS_BLOG_VAULT_DIR", "HERMES_DATA_DIR"}
+
+
+def test_every_bind_source_is_a_path_variable_with_a_default():
+    """Each bind source is ``${PATH_VAR:-default}[/sub]``: no literal host path, no other variable."""
+    sources_by_service = _bind_sources()
+    assert sum(map(len, sources_by_service.values())) >= 25   # the file has 26; an empty parse is not a pass
+    for service, sources in sources_by_service.items():
+        for source in sources:
+            match = re.fullmatch(r"\$\{([A-Z_]+):-[^}]+\}(/[\w./-]+)?", source)
+            assert match, (service, source)
+            assert match.group(1) in PATH_VARIABLES, (service, source)
+
+
+def test_every_runtime_service_mounts_the_state_root_from_the_one_variable():
+    compose = _raw_compose()
+    runtime = {n: s for n, s in compose["services"].items() if s.get("image") == "thomas-agent-runtime"}
+    assert {s.get("container_name") for s in runtime.values()} == set(EIGHT)
+    for name, spec in runtime.items():
+        assert "${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state" in spec["volumes"], name
+
+
+def test_an_unset_state_variable_is_caught_by_the_volume_check():
+    """The static contract cannot say what .env sets; it says what happens when it sets nothing: the
+    default is relative, compose resolves it inside the tree, and the deploy-time check stops."""
+    assert "${THOMAS_STATE_DIR:-./.runtime_governance_state}".split(":-")[1].startswith("./")
+    unresolved = f"{TREE}/.runtime_governance_state"
+    assert _levels(pf.preflight(_host(state_source=unresolved), 42, TREE))["volumes"] == "STOP"

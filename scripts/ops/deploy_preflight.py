@@ -43,7 +43,9 @@ PASS, not on a STOP, and not when the output does not parse.
 **A fact it cannot read is never a PASS.** An image list, a running stack's labels, gh's or compose's
 JSON, or the scheduler state that does not come back is unverified: a STOP where the answer decides
 the step (the tags before tagging; everything at ``--promote``, which compose up follows), a WARN on
-the first run only where the existing check already warns on a known fact.
+the first run only where the existing check already warns on a known fact. At ``--promote`` a known
+difference stops too: compose labels other than ``-p thomas_agent --env-file …/.env``, and a
+``thomas-`` container set other than the tree's compose services (Thomas 2026-10-12).
 """
 
 from __future__ import annotations
@@ -202,7 +204,9 @@ def check_compose_labels(run: Runner, promote: bool = False) -> Result:
         return Result("PASS", "compose",
                       f"running stack was started with -p {PROJECT} --env-file {ENV_FILE}. Run: "
                       f"docker compose -p {PROJECT} --env-file {ENV_FILE} -f <tree>/docker-compose.yml up -d")
-    return Result("WARN", "compose",
+    # A known mismatch warns on the first run and stops the promote: compose up with the printed
+    # flags would act on a stack other than the one that runs (Thomas 2026-10-12).
+    return Result("STOP" if promote else "WARN", "compose",
                   f"running stack labels read project={project!r} env_file={env_file!r}, not "
                   f"{PROJECT!r}/{ENV_FILE!r}. Find out how it was started before running compose")
 
@@ -215,7 +219,7 @@ def check_primary_checkout(run: Runner) -> Result:
                   f"compose from it: use a clean worktree of origin/main")
 
 
-def check_tree(run: Runner, tree: str) -> list[Result]:
+def check_tree(run: Runner, tree: str, promote: bool = False) -> list[Result]:
     results: list[Result] = []
     status = _out(run, ["git", "-C", tree, "status", "--porcelain"])
     head = _out(run, ["git", "-C", tree, "rev-parse", "HEAD"])
@@ -270,13 +274,22 @@ def check_tree(run: Runner, tree: str) -> list[Result]:
         results.append(Result("PASS", "volumes", f"state mounts resolve to {STATE_SOURCE}"))
 
     wanted = {spec.get("container_name") or name for name, spec in services.items()}
-    running = set((_out(run, ["docker", "ps", "--format", "{{.Names}}"]) or "").split())
+    listed = _out(run, ["docker", "ps", "--format", "{{.Names}}"])
+    if listed is None:  # a failed list is not an empty one
+        return results + [Result("STOP" if promote else "WARN", "services",
+                                 "cannot list the running containers; which services compose up would "
+                                 "recreate, start or orphan is unverified")]
+    running = set(listed.split())
     gone = sorted(n for n in running if n.startswith("thomas-") and n not in wanted)
     new = sorted(wanted - running)
+    # At the promote a difference means compose up does more than recreate what runs: it starts a
+    # service that was down, or leaves a thomas- container this file no longer names (Thomas
+    # 2026-10-12). Containers of other projects (no thomas- prefix) stay out of the comparison.
+    level = "STOP" if promote else "WARN"
     if gone:
-        results.append(Result("WARN", "services", f"running but not in this compose file: {', '.join(gone)}"))
+        results.append(Result(level, "services", f"running but not in this compose file: {', '.join(gone)}"))
     if new:
-        results.append(Result("WARN", "services", f"in this compose file but not running: {', '.join(new)}"))
+        results.append(Result(level, "services", f"in this compose file but not running: {', '.join(new)}"))
     if not gone and not new:
         results.append(Result("PASS", "services", f"{len(wanted)} services match the running containers"))
     return results
@@ -359,7 +372,7 @@ def preflight(run: Runner, pr: int, tree: str | None, promote: bool = False,
     results += [check_compose_labels(run, promote), check_primary_checkout(run),
                 check_scheduled_fires(run, now or datetime.now(timezone.utc), promote)]
     if tree:
-        results += check_tree(run, tree)
+        results += check_tree(run, tree, promote)
     return results
 
 

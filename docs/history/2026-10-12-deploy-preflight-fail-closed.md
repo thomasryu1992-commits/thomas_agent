@@ -25,8 +25,7 @@
   - Each unknown is now a STOP where its answer decides the step:
     - the image list in every check that uses it;
     - at `--promote`, the scheduler state, the unparseable start and the labels.
-  - The first run keeps the WARNs it had. Known facts keep their level: a label mismatch, and a
-    factory fire due on the first run.
+  - The first run keeps the WARNs it had, including a factory fire due on the first run.
   - Bad JSON is a STOP that never echoes the output, which holds `.env` values.
   - No check was removed, no STOP became a WARN, and no new command runs.
   - The deploy skill is unchanged, and nothing in it became false.
@@ -36,6 +35,22 @@
   - Each unknown has a test, including a test that `main()` exits 1 at promote.
   - A further test pins the full check list of both runs.
   - Fifteen of the new tests fail on the old code.
+- **Second round** (independent review, Thomas decision 2026-10-12):
+  - A label mismatch (project or env file) was still only a WARN, so a promote could end OK while
+    compose up would act on another stack. It is now a STOP at `--promote`, and still a WARN first.
+  - A failed `docker ps` became an empty list and then a WARN. Failure and an empty list are now told
+    apart.
+  - At `--promote`, any difference between the running `thomas-` containers and the tree's compose
+    services is a STOP: a missing service, or a `thomas-` container the file no longer names. That
+    includes hermes, since `up -d` would start it. Other projects' containers are not compared.
+  - Nine of the new tests fail on the first-round head `907faf64`.
+- **Secret-free path** (SECRET_FREE_PARTIAL_VALIDATION_ONLY):
+  - Tests now pin the raw compose bind contract without reading `.env`:
+    - 26 sources, each `${PATH_VAR:-default}`, over six path variables and no credential;
+    - the eight runtime services take the state root from `THOMAS_STATE_DIR`;
+    - an unset variable falls inside the tree, where the volume check stops.
+  - What the six variables resolve to lives only in `.env`, and compose cannot interpolate a subset.
+    So the deploy-time volume check is still required, and the execution decision stays open.
 - **Still open:** who runs the operational preflight, given that it handles the interpolated `.env`
   in memory. This is PREFLIGHT_EXECUTION_POLICY_DECISION_REQUIRED and Thomas decides
   (`HOLDINGS_C7_PR_D_DEPLOY_READINESS_V0.1.md` §4.4).
