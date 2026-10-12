@@ -248,21 +248,66 @@ def test_nothing_is_applied_and_no_unit_exists(tmp_path):
     assert not [k for r in rows for k in r if "unit" in k]
 
 
+DOOR_ALLOWED = frozenset({"runtime/mvp_runtime/holdings/cash_flows.py", "runtime/mvp_runtime/holdings/store.py",
+                          "scripts/holdings_board.py"})     # the terminal's cutover command, not a door
+# C7 PR-D self-test (Thomas 2026-10-12): may IMPORT cash_flows to run its synthetic lanes, nothing more. The
+# ledger/state filename literals stay forbidden for it as for every other module, and the exemption is this one
+# exact path (tests/test_c7_blocked_selftest.py pins its isolation). Not a door, not a general widening.
+IMPORT_ONLY_EXEMPT = frozenset({"scripts/c7_blocked_selftest.py"})
+
+
+def _door_offences(rel: str, source: str) -> list[str]:
+    """Why a module under runtime/ or scripts/ breaks the no-door rule: ``literal`` (names the ledger or its
+    state file) and/or ``import`` (imports cash_flows). The two are judged apart."""
+    if rel in DOOR_ALLOWED:
+        return []
+    tree = ast.parse(source)
+    offences = []
+    if any(isinstance(n, ast.Constant) and n.value in (cash_flows.FILENAME, cash_flows.STATE_FILENAME)
+           for n in ast.walk(tree)):
+        offences.append("literal")
+    imports = any(isinstance(n, ast.ImportFrom) and ((n.module or "").endswith("cash_flows")
+                  or any(a.name == "cash_flows" for a in n.names)) for n in ast.walk(tree))
+    if imports and rel not in IMPORT_ONLY_EXEMPT:
+        offences.append("import")
+    return offences
+
+
 def test_no_door_module_reads_the_ledger():
-    allowed = ({ROOT / "runtime" / "mvp_runtime" / "holdings" / n for n in ("cash_flows.py", "store.py")}
-               | {ROOT / "scripts" / "holdings_board.py"})      # the terminal's cutover command, not a door
     offenders = []
     for path in [*(ROOT / "runtime").rglob("*.py"), *(ROOT / "scripts").rglob("*.py")]:
-        if path in allowed:
-            continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        literal = any(isinstance(n, ast.Constant) and n.value in (cash_flows.FILENAME, cash_flows.STATE_FILENAME)
-                      for n in ast.walk(tree))
-        imports = any(isinstance(n, ast.ImportFrom) and ((n.module or "").endswith("cash_flows")
-                      or any(a.name == "cash_flows" for a in n.names)) for n in ast.walk(tree))
-        if literal or imports:
-            offenders.append(path.relative_to(ROOT).as_posix())
+        rel = path.relative_to(ROOT).as_posix()
+        if _door_offences(rel, path.read_text(encoding="utf-8")):
+            offenders.append(rel)
     assert offenders == []
+
+
+_IMPORT = "from runtime.mvp_runtime.holdings import cash_flows\n"
+
+
+@pytest.mark.parametrize(("rel", "source", "expected"), [
+    # the self-test: its import is allowed, a filename literal is not
+    ("scripts/c7_blocked_selftest.py", _IMPORT, []),
+    ("scripts/c7_blocked_selftest.py", _IMPORT + f"NAME = {cash_flows.FILENAME!r}\n", ["literal"]),
+    ("scripts/c7_blocked_selftest.py", f"NAME = {cash_flows.STATE_FILENAME!r}\n", ["literal"]),
+    # any other module: the import is still refused, and so is a literal
+    ("scripts/other_tool.py", _IMPORT, ["import"]),
+    ("runtime/mvp_runtime/other.py", "from .holdings.cash_flows import verify\n", ["import"]),
+    ("scripts/other_tool.py", f"P = {cash_flows.FILENAME!r}\n", ["literal"]),
+    # the exemption is the exact path, not a name that looks like it
+    ("scripts/sub/c7_blocked_selftest.py", _IMPORT, ["import"]),
+    ("runtime/c7_blocked_selftest.py", _IMPORT, ["import"]),
+    # the three allowed files keep their standing
+    ("scripts/holdings_board.py", _IMPORT, []),
+])
+def test_the_self_test_exemption_is_import_only_and_exact(rel, source, expected):
+    assert _door_offences(rel, source) == expected
+
+
+def test_the_exemptions_did_not_grow():
+    assert IMPORT_ONLY_EXEMPT == {"scripts/c7_blocked_selftest.py"}
+    assert DOOR_ALLOWED == {"runtime/mvp_runtime/holdings/cash_flows.py", "runtime/mvp_runtime/holdings/store.py",
+                            "scripts/holdings_board.py"}
 
 
 def test_a_transfer_in_the_window_withholds_the_nav_through_combine(tmp_path):

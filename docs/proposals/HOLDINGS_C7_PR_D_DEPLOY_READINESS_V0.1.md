@@ -1,6 +1,6 @@
 # 제안: C7 PR-D 운영 배포 준비 패킷 — 무엇이 실리고, 무엇을 확인하고, 어떻게 되돌리나 (DRAFT v0.1)
 
-**상태:** DRAFT 2026-10-12 — C7 PR-D(#1216)를 운영에 올리기 전의 준비 패킷이다. 문서 준비 판정은 PREPARATION_COMPLETE_PENDING_EVIDENCE이고, 운영 배포 판정은 따로 DEPLOYMENT_HOLD다(§10). 2026-10-12 갱신(검토 기준 main `d97db39c`): Global Guard는 설치 동일성과 훅 연결이 Thomas 운영자 증거로 확인됐다(GLOBAL_GUARD_VERIFIED). told 파일명 보호는 코드 동일성과 CI로만 확인됐고, Gate 2가 요구한 직접 합성 탐침은 하지 않았다(DIRECT_TOLD_FILENAME_PROBE_NOT_PERFORMED). 운영 이미지와 여덟 서비스는 읽기 전용 메타데이터로 식별했다(IDENTIFIED_METADATA_ONLY, 이미지 안 코드 내용은 미검증). 배포를 막는 것은 Rollback(ROLLBACK_NOT_VERIFIED), Guard를 지키는 이미지 내 동작 검증 경로(DEPLOYMENT_HOLD — VALIDATION_PATH_UNRESOLVED), Gate 2의 직접 합성 조건, 배포 승인(NOT_GRANTED)이다. DECISION_REQUIRED가 셋 있다: candidate 태그(CANDIDATE_TAG_DECISION_REQUIRED, 기본 권고 `candidate-1217`), 이미지 내 동작 검증 경로(SEPARATE_APPROVAL_REQUIRED, §4.3), told 파일명의 간접 증거를 Gate 2 충족으로 받아들일지 직접 탐침을 승인할지(§10).
+**상태:** DRAFT 2026-10-12 — C7 PR-D(#1216)를 운영에 올리기 전의 준비 패킷이다. 문서 준비 판정은 PREPARATION_COMPLETE_PENDING_EVIDENCE이고, 운영 배포 판정은 따로 DEPLOYMENT_HOLD다(§10). 2026-10-12 갱신(검토 기준 main `d97db39c`): Global Guard는 설치 동일성과 훅 연결이 Thomas 운영자 증거로 확인됐다(GLOBAL_GUARD_VERIFIED). Gate 2는 2026-10-12 Thomas가 Guard kit 직접 합성 시험 결과를 수용해 충족됐다(GATE_2_FULLY_SATISFIED, 증거 GATE_2_DIRECT_SYNTHETIC_TEST_PASSED). 새 Claude 세션의 told 파일명 실탐침은 하지 않았다(NEW_SESSION_TOLD_PROBE_NOT_PERFORMED). 이미지 자가검증 진입점은 구현됐고 저장소 합성 테스트를 통과했지만(VALIDATION_ENTRYPOINT_IMPLEMENTED, REPOSITORY_SYNTHETIC_TESTS_PASSED), candidate 안에서는 돌리지 않았다. 운영 이미지와 여덟 서비스는 읽기 전용 메타데이터로 식별했다(IDENTIFIED_METADATA_ONLY, 이미지 안 코드 내용은 미검증). 배포를 막는 것은 Rollback(ROLLBACK_NOT_VERIFIED), candidate 안의 동작 검증과 D-10 격리 증거(DEPLOYMENT_HOLD — VALIDATION_PATH_UNRESOLVED), 배포 승인(NOT_GRANTED)이다. DECISION_REQUIRED가 둘 있다: candidate 태그(CANDIDATE_TAG_DECISION_REQUIRED, `candidate-1217`은 잠정 권고이고 자가검증 PR이 더해지면 다시 정한다), 진입점의 candidate 격리 실행 승인(§4.3, 설계 문서 §2.4 V-4).
 
 **기준:** 두 기준선이 있다.
 - **설계 기준선:** origin/main `1f328ffd`(#1217 병합 시점). §2의 변경 범위와 §3–§9의 계획은 이 시점의 코드와 문서를 읽은 결과이고, 역사적 기준으로 남긴다.
@@ -30,9 +30,9 @@
 | 현재 운영 candidate | **`candidate-1210`** (= `latest`) | 같은 id에 붙은 태그. 이미지 생성 2026-10-10T10:12:45Z. 이미지에는 git SHA 라벨이 없다(Dockerfile에 `LABEL` 없음) |
 | 신규 candidate | NOT_BUILT | |
 | Rollback 이미지 | **ROLLBACK_NOT_VERIFIED** (원본 식별됨) | 이번 배포의 rollback 원본은 지금 도는 `67d9b622d648`이고, `latest`가 그것을 가리킨다(관측 시점). `rollback-pre-<N>` 태그는 아직 없다. 기존 `rollback-pre-1210` = `cb57fab0baba`(=`candidate-1206`)는 이전 배포의 rollback 점이다. 태그는 배포 시점 preflight가 다시 정하고, 복구는 실행해 보지 않았다 |
-| Global Guard | **GLOBAL_GUARD_VERIFIED** (설치·연결) | 증거 수준은 세 가지로 나뉜다(§5 Gate 2). (A) GLOBAL_GUARD_INSTALLATION_VERIFIED: main·kit·설치본 sha256 모두 `88addc9d6d2e94e9f88a864ec27dcdef0f833e6dff4e894629cbaf712690fc86`, `refresh_guard.py check` exit 0. (B) GLOBAL_GUARD_HOOK_WIRING_VERIFIED: `test_guard.py` ALL PASS, 새 세션에서 기존 경로 탐침 3개 거부. 기존 규칙이라 told 규칙 자체의 직접 검증은 아니다. (C) TOLD_FILENAME_PROTECTION_VERIFIED_BY_CODE_IDENTITY_AND_CI: 간접 검증. 운영 Global Guard에서 직접 합성 탐침은 하지 않았다(DIRECT_TOLD_FILENAME_PROBE_NOT_PERFORMED). rollback 점 `guard-local-only.sh.pre-1217`(옛 `865e9eec…`). 근거: Thomas 운영자 증거 2026-10-12 |
+| Global Guard | **GLOBAL_GUARD_VERIFIED** (설치·연결) | 증거 수준은 세 가지로 나뉜다(§5 Gate 2). (A) GLOBAL_GUARD_INSTALLATION_VERIFIED: main·kit·설치본 sha256 모두 `88addc9d6d2e94e9f88a864ec27dcdef0f833e6dff4e894629cbaf712690fc86`, `refresh_guard.py check` exit 0. (B) GLOBAL_GUARD_HOOK_WIRING_VERIFIED: `test_guard.py` ALL PASS, 새 세션에서 기존 경로 탐침 3개 거부. 기존 규칙이라 told 규칙 자체의 직접 검증은 아니다. (C) TOLD_FILENAME_PROTECTION_VERIFIED_BY_CODE_IDENTITY_AND_CI: 간접 검증. (D) GATE_2_DIRECT_SYNTHETIC_TEST_PASSED(2026-10-12): kit `test_guard.py`(sha256 `d1ae8d77055d3799ce5eb98701c84b45780c1410bd1cb8016e94bf1b82c9dab4`)에 told 파일명 DENY 3건·snapshot ALLOW 1건을 더해 설치본과 전역 wrapper로 실행했다. 결과는 `ALL PASS`, exit 0, 실행 전후 설치본 sha 불변. 새 세션 실탐침은 하지 않았다(NEW_SESSION_TOLD_PROBE_NOT_PERFORMED). rollback 점 `guard-local-only.sh.pre-1217`(옛 `865e9eec…`). 근거: Thomas 운영자 증거 2026-10-12 |
 | Candidate 태그 | **CANDIDATE_TAG_DECISION_REQUIRED** | 기본 권고 `candidate-1217`(§4.1) |
-| 이미지 내 동작 검증 | **SEPARATE_APPROVAL_REQUIRED** | Guard를 지키는 경로가 승인되지 않았다(§4.3) |
+| 이미지 내 동작 검증 | **VALIDATION_PATH_UNRESOLVED** (진입점 구현됨) | 정식 진입점 `scripts/c7_blocked_selftest.py`는 구현됐고 저장소 합성 테스트를 통과했다(VALIDATION_ENTRYPOINT_IMPLEMENTED, REPOSITORY_SYNTHETIC_TESTS_PASSED, 2026-10-12). candidate 안 실행과 D-10 격리 증거는 별도 승인이다(§4.3) |
 | 배포 승인 | NOT_GRANTED | |
 
 ## 2. 배포 대상과 변경 범위
@@ -177,13 +177,14 @@
 - 이것은 배포 실행에 대한 차단이다. 문서 준비 판정(PREPARATION_COMPLETE_PENDING_EVIDENCE)과는 별개다.
 - 이 패킷은 검증 경로를 구현하지 않고, Guard 정책을 바꾸지 않는다.
 - 경로를 정하는 일은 Thomas의 결정이다. 예를 들어 이미지에 포함된 정식 진입점을 새로 만드는 코드 변경이 있는데, 이것도 별도 승인 대상이다.
+- **갱신(2026-10-12):** Thomas의 조건부 승인으로 정식 진입점 `scripts/c7_blocked_selftest.py`를 구현했다(설계 문서 §2.2–§2.5의 기준 D-1–D-10). 저장소 합성 테스트를 통과했다(VALIDATION_ENTRYPOINT_IMPLEMENTED, REPOSITORY_SYNTHETIC_TESTS_PASSED). candidate 이미지 안에서는 아직 돌리지 않았으므로 상태는 VALIDATION_PATH_UNRESOLVED 그대로다.
 
 ## 5. 배포 전 Gate
 
 | Gate | 조건 | 현재 |
 |---|---|---|
 | 1 코드 무결성 | #1216·#1217이 main에 있음, 필수 CI 5개 PASS, Safety invariants PASS, Release Gate PASS, candidate가 기준 SHA로 연결됨 | main과 CI는 **충족**. candidate 연결은 빌드 때 CODE_IDENTITY_VERIFICATION(§4.3)으로 확인 |
-| 2 Global Guard | 설치본 sha = main의 Guard sha, kit `check` exit 0, kit `test_guard.py` ALL PASS, told 파일명 합성 DENY, `holdings_snapshot.json` 합성 ALLOW, 새 세션 적용 확인, `.prev` 백업 존재 | **부분 충족.**<br>설치본 sha, kit `check` exit 0, kit test ALL PASS, 새 세션 적용, 백업은 충족(GLOBAL_GUARD_INSTALLATION_VERIFIED, GLOBAL_GUARD_HOOK_WIRING_VERIFIED). 백업은 `.pre-1217`이고 `.prev`는 보존했다.<br>**told 파일명 합성 DENY와 `holdings_snapshot.json` 합성 ALLOW는 운영 Global Guard에서 직접 하지 않았다(DIRECT_TOLD_FILENAME_PROBE_NOT_PERFORMED).** 같은 결과는 바이트 동일성과 main CI 테스트(`test_the_told_record_is_refused_by_name_wherever_it_is`, `test_the_told_rule_leaves_ordinary_work_alone`)로만 뒷받침된다(TOLD_FILENAME_PROTECTION_VERIFIED_BY_CODE_IDENTITY_AND_CI).<br>이 조건은 완화하지 않았다. 간접 증거로 충족할지는 Thomas의 결정이고, 직접 탐침은 별도 승인 대상이다(SEPARATE_APPROVAL_REQUIRED) |
+| 2 Global Guard | 설치본 sha = main의 Guard sha, kit `check` exit 0, kit `test_guard.py` ALL PASS, told 파일명 합성 DENY, `holdings_snapshot.json` 합성 ALLOW, 새 세션 적용 확인, `.prev` 백업 존재 | **충족 — GATE_2_FULLY_SATISFIED**(Thomas 수용 2026-10-12).<br>설치본 sha, kit `check` exit 0, 새 세션 적용, 백업은 이전부터 충족했다(GLOBAL_GUARD_INSTALLATION_VERIFIED, GLOBAL_GUARD_HOOK_WIRING_VERIFIED). 백업은 `.pre-1217`이고 `.prev`는 보존했다.<br>**told 파일명 합성 DENY와 `holdings_snapshot.json` 합성 ALLOW:** kit에 Bash·Read·Monitor DENY 3건과 snapshot ALLOW 1건을 더했다(kit sha256 `1922dcfe…` → `d1ae8d77055d3799ce5eb98701c84b45780c1410bd1cb8016e94bf1b82c9dab4`, 사본 `test_guard.py.pre-told`). 설치본과 전역 wrapper로 실행한 결과는 다음과 같다(GATE_2_DIRECT_SYNTHETIC_TEST_PASSED).<br>- 설정 6/6, DENY 15+3, ALLOW 10+1, Guard가 없을 때의 동작 3/3<br>- `ALL PASS`, exit 0<br>- 실행 전후 설치본·kit·설정 sha 불변<br>조건은 완화하지 않았고, 직접 합성 검증으로 채웠다.<br>**새 Claude 세션의 told 파일명 실탐침은 하지 않았다(NEW_SESSION_TOLD_PROBE_NOT_PERFORMED).** kit 합성 시험과 같은 증거로 적지 않는다. 이전 레이블 DIRECT_TOLD_FILENAME_PROBE_NOT_PERFORMED는 이 두 기록으로 대체됐다 |
 | 3 LOCAL_ONLY | 준비 확인이 실제 금융 데이터 없이 가능, Secret 노출 없음, 새 외부 출력 없음, 자동 원장 복구 없음 | **충족(코드 기준)**. 새 외부 출력은 Telegram 문구 하나이고 키·금액·계정이 없다(테스트 고정). told 파일은 상태 디렉터리 안 |
 | 4 Runtime 호환성 | 원장·상태 형식 변화 없음, told 파일 초기 생성 계약, 잠금 계약, 기존 scheduler 동작 유지 | **충족(코드와 합성 테스트 기준)**. PR-D는 told 파일만 쓴다. 잠금은 기존 `_state_lock`이다. 판정은 잠금을 잡지 않는다 |
 | 5 운영자 알림(소스) | 최초 BLOCKED, 지속 중 중복 없음, 전송 실패 시 재알림, 기록 실패 시 재알림, 해소 1회, 재발 재알림, 파일 소실 시 잘못된 해소 없음, 금융 데이터 비노출 | **충족(합성)**. `tests/test_mvp_runtime_holdings_c7_blocked.py` 47건이 각 항목을 덮는다. 실제 채널 확인은 SEPARATE_APPROVAL_REQUIRED |
@@ -202,7 +203,7 @@
 - 승인된 이미지 내 동작 검증 경로가 없음: **DEPLOYMENT_HOLD — VALIDATION_PATH_UNRESOLVED**
 - 여덟 서비스의 지금 이미지 id가 서로 다르거나, rollback 태그가 그 이미지를 가리키지 않음
 - operator·pipeline-worker·bridge에 끊으면 안 되는 작업이 진행 중임(운영자 판단)
-- Gate 2가 PENDING 또는 FAILED
+- Gate 2가 PENDING, FAILED, 또는 완전히 충족되지 않음(GATE_2_NOT_FULLY_SATISFIED → DEPLOYMENT_HOLD, 기존 조건의 Fail-Closed 해석. 2026-10-12 현재 Gate 2는 충족)
 - 배포 전 운영 원장이 거부 상태라는 증거가 있는데, 그 알림을 받을 준비가 안 됨(Thomas 판단)
 - 실제 금융 데이터를 읽어야만 할 수 있는 확인이 필요해짐(별도 승인)
 - Guard가 배포 명령을 거부함
@@ -260,28 +261,28 @@ holdings fire의 status 줄(`schedules.jsonl`의 `last_status`, scheduler 이벤
 
 | 구분 | 판정 |
 |---|---|
-| 문서 준비 | **DRAFT — PREPARATION_COMPLETE_PENDING_EVIDENCE**. 계획은 갖췄다. Global Guard와 운영 메타데이터는 채웠고, Rollback 확인·검증 경로·태그·승인이 남았다 |
+| 문서 준비 | **DRAFT — PREPARATION_COMPLETE_PENDING_EVIDENCE**. Global Guard, Gate 2, 운영 메타데이터, 자가검증 진입점은 채웠다. Rollback 확인, candidate 안 검증, 태그, 승인이 남았다 |
 | 운영 배포 | **DEPLOYMENT_HOLD** |
 
 **DEPLOYMENT_HOLD인 이유**
 
 1. Rollback이 확인되지 않았다(ROLLBACK_NOT_VERIFIED). 원본 이미지는 식별했지만 rollback 태그와 복구는 배포 시점의 일이다.
-2. Guard를 지키는 이미지 내부 동작 검증 경로가 정해지지 않았다(VALIDATION_PATH_UNRESOLVED).
+2. 이미지 내부 동작 검증이 끝나지 않았다(VALIDATION_PATH_UNRESOLVED). 진입점은 구현했고 저장소 합성 테스트를 통과했다(VALIDATION_ENTRYPOINT_IMPLEMENTED, REPOSITORY_SYNTHETIC_TESTS_PASSED). 그러나 candidate 안 실행과 D-10 격리 증거는 아직이다.
 3. candidate 태그가 정해지지 않았다(CANDIDATE_TAG_DECISION_REQUIRED).
-4. Gate 2의 직접 합성 조건(told 파일명 DENY, snapshot ALLOW)이 미충족이다(DIRECT_TOLD_FILENAME_PROBE_NOT_PERFORMED). 간접 증거 수용 여부는 결정되지 않았다.
-5. Thomas의 운영 배포 승인이 없다(NOT_GRANTED).
+4. Thomas의 운영 배포 승인이 없다(NOT_GRANTED).
 
 **미해결 항목**
 
 | 항목 | 상태 |
 |---|---|
 | Global Guard 설치·연결 | **해소** — GLOBAL_GUARD_VERIFIED(설치 동일성, 훅 연결) |
-| told 파일명 직접 합성 검증 | **미수행** — DIRECT_TOLD_FILENAME_PROBE_NOT_PERFORMED. 간접 검증(코드 동일성 + CI)만 있음 |
+| Gate 2 | **해소** — GATE_2_FULLY_SATISFIED(GATE_2_DIRECT_SYNTHETIC_TEST_PASSED, Thomas 수용 2026-10-12) |
+| 새 세션 told 실탐침 | **미수행** — NEW_SESSION_TOLD_PROBE_NOT_PERFORMED(필수 조건 아님, Thomas 결정) |
 | 현재 운영 이미지 | **식별** — IDENTIFIED_METADATA_ONLY(`67d9b622d648`, 코드 내용 미검증) |
 | 여덟 서비스 메타데이터 | **관측** — 같은 이미지, healthy, 재시작 0(§3.2) |
 | Rollback | ROLLBACK_NOT_VERIFIED(원본 식별됨) |
-| Candidate 태그 | CANDIDATE_TAG_DECISION_REQUIRED(기본 권고 `candidate-1217`) |
-| 이미지 내 동작 검증 | SEPARATE_APPROVAL_REQUIRED(VALIDATION_PATH_UNRESOLVED) |
+| Candidate 태그 | CANDIDATE_TAG_DECISION_REQUIRED(`candidate-1217`은 잠정 권고. 자가검증 PR이 묶음에 들어오면 다시 정함) |
+| 이미지 내 동작 검증 | VALIDATION_PATH_UNRESOLVED. 진입점 `scripts/c7_blocked_selftest.py` 구현·저장소 테스트 통과. candidate 실행과 D-10 격리 증거는 별도 승인 |
 | 운영 배포 승인 | NOT_GRANTED |
 
 코드와 합성 테스트 기준으로 안전성 불변식(원장 불변, 거래 권한 불변, LOCAL_ONLY, at-least-once)이 의심스러운 곳은 없다. HOLD는 그 불변식 때문이 아니라 위의 증거·경로·승인이 비어 있기 때문이다.
@@ -289,8 +290,7 @@ holdings fire의 status 줄(`schedules.jsonl`의 `last_status`, scheduler 이벤
 **DECISION_REQUIRED**
 
 1. candidate 태그: 기본 권고 `candidate-1217`, 대안 `candidate-1216`. 어느 쪽이든 코드 식별은 §4.1의 다섯 값으로 한다.
-2. 이미지 내 동작 검증 경로: SYNTHETIC_RUNTIME_VALIDATION을 어떤 승인된 경로로 할지. Guard 정책의 예외나 우회는 이 결정에 포함되지 않는다.
-3. Gate 2의 told 파일명 조건: 간접 증거(코드 동일성 + CI)를 충족으로 받아들일지, 운영 Global Guard에서 직접 합성 탐침을 할지(별도 승인). 결정 전까지 Gate 2는 부분 충족이다.
+2. 이미지 내 동작 검증: 구현된 진입점을 candidate에서 D-10 격리로 실행할지(설계 문서 §2.4 V-4). Guard 정책의 예외나 우회는 이 결정에 포함되지 않는다.
 
 ## 11. 하지 않은 것
 
