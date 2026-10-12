@@ -12,6 +12,7 @@ import ast
 import json
 import pathlib
 import re
+import sys
 from unittest import mock
 
 import pytest
@@ -640,7 +641,11 @@ def test_concurrent_told_writes_leave_one_whole_record_and_no_tmp(tmp_path):
         thread.start()
     for thread in threads:
         thread.join()
-    assert errors == []
+    if sys.platform == "win32":                                               # Windows refuses a replace onto a
+        assert all(isinstance(exc, PermissionError) for exc in errors)        # target another writer is moving:
+        assert len(errors) < len(tokens)                                      # it raises, never counts as told
+    else:
+        assert errors == []
     told = _standing(d)                                                       # parses: never a torn file
     assert told["key"] in {t.split("|", 1)[1] for t in tokens} and told["told_at"] in stamps
     assert [p.name for p in d.iterdir() if p.name.endswith(".tmp")] == []

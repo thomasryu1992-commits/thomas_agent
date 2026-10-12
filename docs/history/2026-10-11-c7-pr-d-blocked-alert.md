@@ -108,6 +108,8 @@
         stays standing.
       - A stale BLOCKED write lands after the clearing was recorded: refused, so a recurrence is still told.
       - Both fires deliver the same failure: two messages.
+      - On Windows, a replace onto a file another writer is moving raises `PermissionError` (CI found it).
+        That write raises, so it is counted as not recorded and the next fire offers the message again.
     - **At-least-once, not exactly-once.** A send and its record are two steps, so a crash or an overlap
       between them repeats a message. Silence is not the failure mode. The check and the replace are not
       one atomic step either: two writers inside the same instant can both pass it. A lock would close that,
