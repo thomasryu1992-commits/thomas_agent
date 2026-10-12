@@ -96,38 +96,50 @@
       - Only `scheduler.py` calls `mark_blocked_told`.
       - So fires overlap only when an operator runs a manual `tick` (`--lane all`) while the service runs.
         Nothing excludes that.
-    - Two fixes, no lock:
+    - Three fixes:
       - The tmp file is unique per write (pid + uuid) and removed if the replace fails. A fixed `.tmp` let
         two writers tear one file.
       - `mark_blocked_told` refuses a stale token and returns False:
         - a `now` older than the record's latest time;
         - a clearing for a key that is not the standing one.
+      - The read, the check and the replace run as one step under the state lock (`_state_lock`, the
+        existing `filelock.locked` sidecar every state write takes first; Thomas 2026-10-12, second review).
+        No new lock file and no new store. The judgement still takes no lock; only the told write does.
+        A lock it cannot get raises STATE_LOCKED: not recorded, and offered again by the next fire.
     - The fire's status says `told not recorded:stale` for a refused token, never `told`.
     - Interleavings, each pinned by a test:
       - A judges a clearing, then B records a newer failure, then A's write lands: refused, and B's failure
         stays standing.
       - A stale BLOCKED write lands after the clearing was recorded: refused, so a recurrence is still told.
       - Both fires deliver the same failure: two messages.
-      - On Windows, a replace onto a file another writer is moving raises `PermissionError` (CI found it).
-        That write raises, so it is counted as not recorded and the next fire offers the message again.
+      - A stale BLOCKED writer passes its check and stalls before its replace, while a newer clearing or a
+        newer failure is written. A synthetic test forces this interleaving. Without the lock the stale
+        record replaced the newer one: the clearing was erased in one test, the newer failure overwritten
+        in the other. Both reproduced on `89aedde3`. With the lock the newer writer waits; the stale write
+        lands first and the newer one is checked against it and written over it.
+      - Before the lock, Windows CI showed that a replace onto a file another writer is moving raises
+        `PermissionError`. Writers no longer overlap. A reader holding the file open can still make a
+        replace fail there; that write raises and is not recorded.
     - **At-least-once, not exactly-once.** A send and its record are two steps, so a crash or an overlap
-      between them repeats a message. Silence is not the failure mode. The check and the replace are not
-      one atomic step either: two writers inside the same instant can both pass it. A lock would close that,
-      and is not added without a decision.
+      between them repeats a message. Silence is not the failure mode. The lock closes the window in which
+      a stale record could overwrite a newer one. It does not make the send and the record one step.
 - **Tests** (synthetic only):
-  - `tests/test_mvp_runtime_holdings_c7_blocked.py` (44) covers:
+  - `tests/test_mvp_runtime_holdings_c7_blocked.py` (47) covers:
     - what is BLOCKED, every early return of `refresh`, and locks;
     - told / cleared / told again, delivery and told-write failure, and restart;
     - key versions, fire order and isolation;
     - that nothing identifying leaves, and the PR-A marker;
     - the review's Cases A–E (first run, both files gone, a ledger begun after, a ledger gone beside a state,
       a real repair cleared exactly once, a check that raises, C7-11 with and without a verified ledger);
-    - stale and overlapping told writes, a failed replace, and the stale status word.
+    - stale and overlapping told writes, a failed replace, and the stale status word;
+    - forced races of a stale BLOCKED write against a clearing and a newer failure, eight writers ending on
+      the newest, and a busy lock that is not recorded and is told again.
   - `test_defect_c7_d` flips to `test_c7_d_a_refused_write_is_told_once_by_the_blocked_check`.
   - Mutations:
     - Removing the scheduler block or the reason preservation fails 11 of the 28 tests it had then.
     - Removing the clearing rule fails 4 (Cases B and E).
+    - Removing the lock fails 3: the two forced races and the busy lock.
     - Removing only the continuity half fails 1.
-    - Removing the stale-token checks fails 3.
+    - Removing the stale-token checks fails 4 (3 then; the eight-writer test now expects the newest to win).
   - The synthetic lane pins the cutover line's wall-clock stamp to its synthetic day, as a real lane's first
     line is older than any told record.

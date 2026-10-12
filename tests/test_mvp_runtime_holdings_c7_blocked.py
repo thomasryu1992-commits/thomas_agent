@@ -12,7 +12,6 @@ import ast
 import json
 import pathlib
 import re
-import sys
 from unittest import mock
 
 import pytest
@@ -641,13 +640,10 @@ def test_concurrent_told_writes_leave_one_whole_record_and_no_tmp(tmp_path):
         thread.start()
     for thread in threads:
         thread.join()
-    if sys.platform == "win32":                                               # Windows refuses a replace onto a
-        assert all(isinstance(exc, PermissionError) for exc in errors)        # target another writer is moving:
-        assert len(errors) < len(tokens)                                      # it raises, never counts as told
-    else:
-        assert errors == []
+    assert errors == []                                                       # serialized: no replace collides
     told = _standing(d)                                                       # parses: never a torn file
-    assert told["key"] in {t.split("|", 1)[1] for t in tokens} and told["told_at"] in stamps
+    newest = max(range(len(stamps)), key=lambda i: stamps[i])
+    assert (told["key"], told["told_at"]) == (tokens[newest].split("|", 1)[1], stamps[newest])  # newest wins
     assert [p.name for p in d.iterdir() if p.name.endswith(".tmp")] == []
 
 
@@ -674,3 +670,77 @@ def test_the_fire_says_not_recorded_when_the_record_is_stale(monkeypatch, tmp_pa
     monkeypatch.setattr(cash_flows, "mark_blocked_told", lambda *_a, **_k: False)
     status = holdings_fire(tmp_path)
     assert "h6 blocked told not recorded:stale" in status and not re.search(r"h6 blocked told(;|$)", status)
+
+
+# --- review 2026-10-12 (2): read, check and replace of the told record are one step under the state lock --
+
+def _race(d: pathlib.Path, monkeypatch, *, stale: tuple[str, str], newer: tuple[str, str]) -> list[bool]:
+    """Force the interleaving that a check-then-replace without a lock loses: the stale writer (an older
+    ``now``) passes its check, then stalls before its replace while the newer writer runs to the end. A
+    lock makes the newer writer wait instead; the stall is bounded, so either way both finish."""
+    import threading
+    stale_checked, newer_done = threading.Event(), threading.Event()
+    real_write_text = pathlib.Path.write_text
+
+    def write_text(self, *args, **kwargs):
+        if self.name.endswith(".tmp") and threading.current_thread().name == "stale":
+            stale_checked.set()
+            newer_done.wait(timeout=1.0)                                          # without a lock B finishes here
+        return real_write_text(self, *args, **kwargs)
+    monkeypatch.setattr(pathlib.Path, "write_text", write_text)
+    results: dict[str, bool] = {}
+
+    def run(name: str, token: str, now: str) -> None:
+        results[name] = cash_flows.mark_blocked_told(d, token=token, now=now)
+        if name == "newer":
+            newer_done.set()
+    a = threading.Thread(target=run, name="stale", args=("stale", *stale))
+    a.start()
+    assert stale_checked.wait(timeout=5.0)
+    b = threading.Thread(target=run, name="newer", args=("newer", *newer))
+    b.start()
+    a.join(timeout=10.0)
+    b.join(timeout=10.0)
+    return [results["stale"], results["newer"]]
+
+
+def test_a_stale_blocked_record_racing_a_clearing_never_erases_it(monkeypatch, tmp_path):
+    d = lane(tmp_path)
+    break_chain(d)
+    key = cash_flows.blocked_alert(d, now=NOW)["alert"][0].split("|", 1)[1]
+    assert cash_flows.mark_blocked_told(d, token=f"blocked|{key}", now=NOW) is True
+    _race(d, monkeypatch, stale=(f"blocked|{key}", LATER), newer=(f"resolved|{key}", LATEST))
+    told = _standing(d)
+    assert told["resolved_told_at"] == LATEST                                  # the clearing stands
+    assert cash_flows.blocked_alert(d, now="2026-10-09T08:00:00Z")["alert"] is not None  # a recurrence is told
+
+
+def test_a_stale_blocked_record_racing_a_newer_failure_never_replaces_it(monkeypatch, tmp_path):
+    d = lane(tmp_path)
+    _race(d, monkeypatch, stale=("blocked|v1:state:verify:aaaa", LATER),
+          newer=("blocked|v1:state:load_state:bbbb", LATEST))
+    told = _standing(d)
+    assert (told["key"], told["told_at"]) == ("v1:state:load_state:bbbb", LATEST)
+
+
+def test_a_told_write_that_cannot_get_the_lock_is_not_recorded_and_told_again(monkeypatch, tmp_path):
+    """The lock keeps at-least-once: a busy lock is a failed write (STATE_LOCKED), never a told one."""
+    from runtime.mvp_runtime import filelock
+    from runtime.mvp_runtime.errors import PersistenceError
+    d = lane(tmp_path)
+    break_chain(d)
+    patch_full_fire(monkeypatch, tmp_path)
+    channel = Channel(monkeypatch)
+    monkeypatch.setattr(filelock, "ACQUIRE_DEADLINE_SECONDS", 0.2)
+    with cash_flows._state_lock(d):                                           # another writer holds the state
+        with pytest.raises(PersistenceError) as refused:
+            cash_flows.mark_blocked_told(d, token="blocked|v1:state:verify:cccc", now=NOW)
+        assert refused.value.reason_code == cash_flows.STATE_LOCKED
+        assert not cash_flows.blocked_told_path(d).exists()
+        status = store.blocked_check(now=NOW, root=tmp_path)
+        token, text = status["alert"]
+        operator_mod.notify_operator(None, text)
+        with pytest.raises(PersistenceError):
+            store.mark_blocked_told(token, now=NOW, root=tmp_path)
+    assert "h6 blocked told" in holdings_fire(tmp_path, LATER)                  # offered again, then recorded
+    assert len(channel.blocked()) == 2 and _standing(d)["told_at"] == LATER

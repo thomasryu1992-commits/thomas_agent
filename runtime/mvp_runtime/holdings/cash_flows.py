@@ -1624,8 +1624,8 @@ def summary(state_dir: Path) -> dict[str, Any]:
 # Every other H6 message is computed from a readable ledger, so a broken one used to send nothing (C7-D).
 # This judgement reads the ledger and the state itself, read-only and outside every writer, so it runs
 # whatever the holdings fire did before it: an early return, a failed Toss read. It writes nothing but the
-# told file below, and that only after a delivery. The lock codes (STATE_LOCKED, LEDGER_LOCKED) are
-# transient and never BLOCKED; this judgement takes no lock, so it never meets one.
+# told file below, and that only after a delivery, under the state lock. The lock codes (STATE_LOCKED,
+# LEDGER_LOCKED) are transient and never BLOCKED; the judgement takes no lock, so it never meets one.
 BLOCKED_TOLD_FILENAME = "holdings_cash_flow_blocked_told.json"
 BLOCKED_KEY_STATE = "v1:state"          # PR-D: every commit is refused, so the state file stays as it was
 BLOCKED_KEY_CHECKPOINT = "v2:ckpt"      # PR-A: a detect-only marker keys on its frozen checkpoint (§6)
@@ -1773,12 +1773,21 @@ def mark_blocked_told(state_dir: Path, *, token: str, now: str) -> bool:
     written by a later fire (an older ``now`` never overwrites a newer record), or a clearing of a key
     that is not the standing one. Holdings fires are serial in the deployment (one maintenance lane); two
     overlap only when an operator ticks by hand meanwhile. Then a stale token loses here and the next fire
-    re-judges, so the cost is a duplicate message, never a failure recorded as told when it was not. No
-    lock: the check and the replace are not one atomic step, so two writers inside the same instant can
-    still both pass it (docs/history/2026-10-11-c7-pr-d-blocked-alert.md)."""
+    re-judges, so the cost is a duplicate message, never a failure recorded as told when it was not.
+
+    The read, the check and the replace are one step under the state lock (the existing sidecar every
+    state write takes first), so a stale writer cannot pass its check and replace after a newer one. A
+    lock that cannot be had raises STATE_LOCKED like any other failed write: not recorded, offered again.
+    The judgement above takes no lock; only this record does."""
     kind, _, key = str(token).partition("|")
     if kind not in (BLOCKED_TOKEN_TOLD, BLOCKED_TOKEN_RESOLVED) or not key:
         return False
+    with _state_lock(state_dir):
+        return _write_blocked_told(state_dir, kind=kind, key=key, now=now)
+
+
+def _write_blocked_told(state_dir: Path, *, kind: str, key: str, now: str) -> bool:
+    """The body of :func:`mark_blocked_told`, under its lock."""
     told, _note = read_blocked_told(state_dir)
     at = _iso_ms(now)
     latest = [ms for ms in (_iso_ms(told.get("told_at")), _iso_ms(told.get("resolved_told_at"))) if ms is not None]
