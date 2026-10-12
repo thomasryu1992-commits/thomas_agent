@@ -1,6 +1,6 @@
 # 제안: C7 PR-D 운영 배포 준비 패킷 — 무엇이 실리고, 무엇을 확인하고, 어떻게 되돌리나 (DRAFT v0.1)
 
-**상태:** DRAFT 2026-10-12 — C7 PR-D(#1216)를 운영에 올리기 전의 준비 패킷이다. 문서 준비 판정은 PREPARATION_COMPLETE_PENDING_EVIDENCE이고, 운영 배포 판정은 따로 DEPLOYMENT_HOLD다(§10). 2026-10-12 갱신(검토 기준 main `d97db39c`): Global Guard는 설치 동일성과 훅 연결이 Thomas 운영자 증거로 확인됐다(GLOBAL_GUARD_VERIFIED). Gate 2는 2026-10-12 Thomas가 Guard kit 직접 합성 시험 결과를 수용해 충족됐다(GATE_2_FULLY_SATISFIED, 증거 GATE_2_DIRECT_SYNTHETIC_TEST_PASSED). 새 Claude 세션의 told 파일명 실탐침은 하지 않았다(NEW_SESSION_TOLD_PROBE_NOT_PERFORMED). 이미지 자가검증 진입점은 구현됐고 저장소 합성 테스트를 통과했지만(VALIDATION_ENTRYPOINT_IMPLEMENTED, REPOSITORY_SYNTHETIC_TESTS_PASSED), candidate 안에서는 돌리지 않았다. 운영 이미지와 여덟 서비스는 읽기 전용 메타데이터로 식별했다(IDENTIFIED_METADATA_ONLY, 이미지 안 코드 내용은 미검증). 배포를 막는 것은 Rollback(ROLLBACK_NOT_VERIFIED), candidate 안의 동작 검증과 D-10 격리 증거(DEPLOYMENT_HOLD — VALIDATION_PATH_UNRESOLVED), 배포 승인(NOT_GRANTED)이다. DECISION_REQUIRED가 둘 있다: candidate 태그(CANDIDATE_TAG_DECISION_REQUIRED, `candidate-1217`은 잠정 권고이고 자가검증 PR이 더해지면 다시 정한다), 진입점의 candidate 격리 실행 승인(§4.3, 설계 문서 §2.4 V-4).
+**상태:** DRAFT 2026-10-12 — C7 PR-D(#1216)를 운영에 올리기 전의 준비 패킷이다. 문서 준비 판정은 PREPARATION_COMPLETE_PENDING_EVIDENCE이고, 운영 배포 판정은 따로 DEPLOYMENT_HOLD다(§10). 2026-10-12 갱신(검토 기준 main `d97db39c`): Global Guard는 설치 동일성과 훅 연결이 Thomas 운영자 증거로 확인됐다(GLOBAL_GUARD_VERIFIED). Gate 2는 2026-10-12 Thomas가 Guard kit 직접 합성 시험 결과를 수용해 충족됐다(GATE_2_FULLY_SATISFIED, 증거 GATE_2_DIRECT_SYNTHETIC_TEST_PASSED). 새 Claude 세션의 told 파일명 실탐침은 하지 않았다(NEW_SESSION_TOLD_PROBE_NOT_PERFORMED). 이미지 자가검증 진입점은 구현됐고 저장소 합성 테스트를 통과했지만(VALIDATION_ENTRYPOINT_IMPLEMENTED, REPOSITORY_SYNTHETIC_TESTS_PASSED), candidate 안에서는 돌리지 않았다. 운영 이미지와 여덟 서비스는 읽기 전용 메타데이터로 식별했다(IDENTIFIED_METADATA_ONLY, 이미지 안 코드 내용은 미검증). 배포를 막는 것은 Rollback(ROLLBACK_NOT_VERIFIED), candidate 안의 동작 검증과 D-10 격리 증거(DEPLOYMENT_HOLD — VALIDATION_PATH_UNRESOLVED), 배포 승인(NOT_GRANTED)이다. DECISION_REQUIRED가 셋 있다: candidate 태그(CANDIDATE_TAG_DECISION_REQUIRED, 자가검증 #1221 병합 뒤 권고는 `candidate-1221`), 진입점의 candidate 격리 실행 승인(§4.3, 설계 문서 §2.4 V-4), 운영 preflight를 누가 어떤 범위로 돌리는지(§4.4, PREFLIGHT_EXECUTION_POLICY_DECISION_REQUIRED). 2026-10-12 preflight 안전성 검토: Guard 충돌은 없다. 읽지 못한 사실이 PASS나 통과 가능한 WARN이 되던 fail-open을 고쳤다(1차 다섯 곳, 2차 라벨 불일치·`docker ps` 실패·서비스 불일치의 promote STOP, 3차 활성 factory의 `next_run_at`을 읽지 못함의 promote STOP). Secret 없는 검증은 정적 계약까지만 가능하다(SECRET_FREE_PARTIAL_VALIDATION_ONLY, §4.4).
 
 **기준:** 두 기준선이 있다.
 - **설계 기준선:** origin/main `1f328ffd`(#1217 병합 시점). §2의 변경 범위와 §3–§9의 계획은 이 시점의 코드와 문서를 읽은 결과이고, 역사적 기준으로 남긴다.
@@ -183,6 +183,57 @@
   - 소스 무결성: 덮는 소스가 없거나 읽히지 않거나 소스 루트 밖으로 풀려도 `RESULT PASS`가 나올 수 있었다. 이제 `FAIL source_integrity`, `RESULT FAIL`, exit 1이고 메시지·traceback이 없다.
   - 합성 루트: `TemporaryDirectory`가 Python의 임시 디렉터리 선택(`TMPDIR`)을 따랐다. 이제 부모를 `/tmp`로 고정했고 fallback이 없다. D-10의 `/tmp` tmpfs 규칙과 맞는다.
   - 둘 다 부정 테스트로 고정했다. Windows CI는 모듈 상수만 바꿔 같은 테스트를 돌린다(skip 없음). door 예외(`IMPORT_ONLY_EXEMPT`)와 Guard는 그대로다. candidate 안에서는 여전히 돌리지 않았다.
+
+### 4.4 Preflight 안전성 검토 (2026-10-12, 코드·합성 fixture만)
+
+`deploy_preflight.py`는 실행하지 않았다. 코드, 그 테스트, Guard 규칙, compose 파일을 읽었다.
+
+**검사별 분류**
+
+| 범주 | 검사 | 필요한 데이터 | Guard | 이번에 확인한 것 |
+|---|---|---|---|---|
+| SAFE_STATIC | `pr`(병합, 병합 커밋이 origin/main에 있음), `tree`(깨끗한 origin/main), 이미지 경로 diff, 소스 해시, Dockerfile·compose 정적 검토 | git, GitHub | 걸리지 않음 | 확인함: #1221 = `abda884f` = origin/main. 이미지 경로 변경 5개 파일(§2) |
+| OPERATOR_METADATA_REQUIRED | `tags`, `rollback`, `promote`(`docker images`, 실행 중 이미지 id), `compose`(라벨), `services`(`docker ps` 이름) | Docker 데몬 메타데이터 | 걸리지 않음 | 확인하지 않음. 과거 관측은 §3.2(06:15Z)뿐이다 |
+| PROTECTED_OPERATIONAL_EVIDENCE | `volumes`(`.env` 보간 compose config), `fires`(`runtime_ledger/scheduler_events.jsonl` 꼬리, `schedules.jsonl`) | 운영 `.env`의 값, 운영 상태 파일 | 걸리지 않음(아래) | 확인하지 않음 |
+
+- **Guard와의 관계:** Guard는 holdings 상태 디렉터리와 holdings 파일 이름만 막는다. `schedules.jsonl`은 허용 대상으로 명시돼 있고, `scheduler_events.jsonl`은 holdings 규칙 밖이다. holdings fire가 이벤트에 남기는 상태 줄(`store.refresh`의 `status`)은 상태 단어·예외 이름·reason code뿐이며 금액은 없다(코드로 추적했다). preflight는 그중 `kind`, `schedule_id` 끝 8자, `created_at`만 출력한다. 따라서 **Guard 규칙상으로는 막히지 않지만, 운영 상태이므로 실행에는 승인이 필요하다.**
+- **compose config의 노출 범위:** compose 파일은 `${…}`로 `.env`의 키를 보간한다. 여기에는 거래소 주문 키(`MVP_LIVE_ORDER_API_SECRET` 등), Toss, Telegram, provider 키가 포함된다. 따라서 volume 검사의 출력은 이 값들을 **preflight 프로세스 메모리 안에서** 담는다. 스크립트는 서비스 이름, 컨테이너 이름, bind source만 꺼내고 출력하지 않는다(테스트로 고정). 이 검사는 `THOMAS_STATE_DIR` 보간 없이는 성립하지 않으므로 그대로 둔다. 같은 보간은 배포의 `compose up` 자체에서도 일어난다.
+
+**고친 결함 (fail-open → fail-closed).** 필수 검사는 하나도 지우지 않았다. STOP을 WARN으로 바꾼 곳도 없다. 첫 실행의 WARN은 유지했다(첫 실행의 factory 예정 포함).
+
+| 결함 | 전 | 후 |
+|---|---|---|
+| `docker images` 실패 | 빈 목록으로 읽혀 `tags`가 PASS("free")를 냄 | `tags`·`rollback`·`promote` STOP("unverified") |
+| scheduler 상태 파일을 읽지 못함 | 두 실행 모두 WARN, `DEPLOY_PREFLIGHT=OK` 가능 | `--promote`는 STOP, 첫 실행은 WARN |
+| 짝 없는 `started`의 시각을 해석하지 못함 | 무시됨 | `--promote`에서 진행 중으로 봄(STOP) |
+| compose 라벨을 읽지 못함 | WARN | `--promote` STOP, 첫 실행 WARN |
+| compose 라벨 불일치(project, env file) | WARN | `--promote` STOP, 첫 실행 WARN (Thomas 결정 2026-10-12, 2차 보완) |
+| `docker ps` 실패 | 빈 목록으로 읽혀 "not running" WARN | 실패를 빈 목록과 구분한다. `--promote` STOP, 첫 실행 WARN (2차 보완) |
+| 실행 중인 `thomas-` 컨테이너 집합이 tree compose의 서비스와 다름(누락, 이름 없는 `thomas-` 컨테이너) | WARN | `--promote` STOP, 첫 실행 WARN (2차 보완). 비교 대상은 compose의 서비스 전부라서 hermes가 꺼져 있어도 STOP이다(`up -d`가 hermes를 새로 시작하게 되므로). 다른 프로젝트 컨테이너(`thomas-` 접두사 없음)는 비교하지 않는다 |
+| 활성 `crypto_factory`의 `next_run_at`이 없음, null, 빈 값, 해석 불가, 시간대 없음 | 그 일정은 무시됨 | `--promote` STOP, 첫 실행 WARN (3차 보완). schedule id 끝 8자만 출력하고 값은 출력하지 않는다. 비활성 일정과 factory가 아닌 일정은 그대로다 |
+| 시간대 없는 시각(`started`의 `created_at` 포함) | aware인 `now`와 비교하다 `TypeError`로 비정상 종료 | 해석 불가로 본다. `started`는 기존 규칙대로 `--promote` STOP (3차 보완) |
+| gh·compose 출력이 JSON이 아니거나 모양이 다름 | traceback | `pr`/`volumes` STOP. 출력 내용은 찍지 않음 |
+
+2차 보완 테스트는 수정 전 코드(`907faf64`)에서 9건, 3차 보완 테스트는 `85379e41`에서 12건이 실패한다. 합성 테스트는 가짜 `.env` 값을 compose 출력에 넣어 검증한다. PASS, bind 이상, JSON 오류 어느 경로에서도 그 값이 stdout과 stderr에 나오지 않는다. 그 밖에도 위 표의 각 경우와 두 실행의 필수 검사 목록이 그대로인지를 고정했다. 수정 전 코드에서는 새 테스트 15건이 실패한다.
+
+**Secret 없는 검증 경로: SECRET_FREE_PARTIAL_VALIDATION_ONLY (2026-10-12 검토)**
+- **정적으로 증명한 것** (`.env` 값은 읽지 않았다. 원본 compose를 테스트로 고정):
+  - bind source 26개가 모두 `${경로변수:-기본값}[/하위경로]` 꼴이다.
+  - 쓰이는 변수는 경로 변수 여섯 개뿐이다(`THOMAS_STATE_DIR`, `THOMAS_CORE_ACTIVATIONS_DIR`, `THOMAS_CORE_APPROVALS_DIR`, `THOMAS_WORKSPACE_DIR`, `THOMAS_BLOG_VAULT_DIR`, `HERMES_DATA_DIR`). 고정된 호스트 경로나 credential 변수는 없다.
+  - 런타임 서비스 여덟 개가 모두 상태 루트를 `THOMAS_STATE_DIR` 하나에서 mount한다.
+  - 기본값이 상대 경로다. 그래서 변수가 비어 있으면 tree 안으로 풀리고, 배포 시점 volume 검사가 STOP한다.
+- **증명하지 못한 것:** 여섯 변수가 실제로 무엇으로 풀리는지. 이 값의 근거는 `.env`뿐이다. compose는 변수 일부만 골라 보간하지 못한다. 그래서 기존 volume 검사와 같은 효력을 가지려면 `.env` 보간이 필요하다. 정적 계약만으로는 Volume Gate를 충족하지 못하며, 배포 시점 volume 검사가 그대로 필수다.
+- **판단에 필요한 사실:** 배포 7단계의 `compose up -d`도 compose 프로세스 안에서 같은 `.env`를 보간한다. 따라서 정할 것은 `.env`를 보간할지 여부가 아니다. preflight의 Python 프로세스가 그 보간 결과를 **추가로** 받아도 되는지다.
+- 실행 중 컨테이너의 mount나 파일 메타데이터에서 경로 값을 추론하는 경로는 쓰지 않았다. 지금 컨테이너가 맞다는 사실이 새 compose가 맞다는 증거는 아니기 때문이다.
+
+**실행 판단 (PREFLIGHT_EXECUTION_POLICY_DECISION_REQUIRED)**
+- preflight 없이는 배포하지 않는다(§6).
+- 운영 preflight는 B·C 범주를 읽는다. 이번 승인은 그것을 제외했으므로 이 범주는 미충족이다.
+- 정해야 할 것:
+  - 누가 돌리는가. 스킬은 배포하는 세션이 돌린다고 정한다.
+  - Claude 세션이 `.env` 보간을 포함한 이 스크립트를 돌려도 되는가.
+  - 출력은 스크립트의 판정 줄만 쓴다.
+- 보호된 접근을 다른 스크립트·실행기·사람으로 옮기는 방식은 제안하지 않는다.
 
 ## 5. 배포 전 Gate
 
