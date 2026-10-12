@@ -8,13 +8,19 @@ read holdings data, and it is shaped so that it cannot:
 - **No input surface (D-1).** It takes no arguments, reads no environment variable and never reads stdin.
   Any argument is refused before anything runs.
 - **Its own synthetic root only (D-2, D-3).** Every call gets an explicit directory inside a fresh
-  ``TemporaryDirectory``. It imports only ``cash_flows``, whose functions take that directory; it never
-  imports ``store`` (whose ``state_dir()`` defaults to the real state) and never resolves the default state
-  path. A root that cannot be made, or that lands under a ``.runtime_governance_state`` directory, is a FAIL.
+  ``TemporaryDirectory`` made under ``/tmp`` (``SYNTHETIC_PARENT``), the tmpfs of the isolated candidate run.
+  The parent is fixed: no environment variable (``TMPDIR``) and no argument can move it, and nothing falls
+  back to another temporary directory. It imports only ``cash_flows``, whose functions take that directory;
+  it never imports ``store`` (whose ``state_dir()`` defaults to the real state) and never resolves the
+  default state path. A parent that is unusable or under a ``.runtime_governance_state`` directory is a FAIL
+  before any lane starts; so is a root that cannot be made or does not land directly in the parent.
 - **No network, no delivery (D-4, D-5).** Nothing here imports an operator channel, a provider or an HTTP
   client. "Delivery" is this process deciding whether to record the alert.
 - **Closed output (D-6).** ``PASS <check>`` / ``FAIL <check>``, ``SOURCE <sha256> <path>`` for the files it
   covers, and ``RESULT PASS|FAIL``. An exception becomes ``FAIL <check>`` with no message or traceback.
+- **Source integrity is part of the result.** Each covered file must resolve, through no symlink and no
+  ``..``, to a regular file inside the source root and hash cleanly. One that is missing, unreadable or
+  outside makes ``FAIL source_integrity`` and ``RESULT FAIL``, however the checks went.
 - **Runtime untouched (D-9).** Nothing in ``runtime/`` imports this module; it changes no runtime file.
 
 Run it only where it was approved, isolated on a candidate image (D-10): ``python -m scripts.c7_blocked_selftest``.
@@ -47,6 +53,9 @@ COVERED_SOURCES = (
     "scripts/c7_blocked_selftest.py",
 )
 STATE_ROOT_NAME = ".runtime_governance_state"
+# Where every synthetic root is made: the candidate run's /tmp tmpfs (design §2.5). A constant, so only the
+# repository tests can point it elsewhere (Windows CI has no /tmp); nothing at run time can move it.
+SYNTHETIC_PARENT = Path("/tmp")
 _FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 
@@ -56,14 +65,23 @@ def _clock() -> Callable[[int], str]:
     return lambda minutes: (base + timedelta(minutes=minutes)).strftime(_FORMAT)
 
 
+def _parent() -> Path:
+    """The resolved synthetic parent, or an error: it must exist as a directory outside any state root."""
+    parent = SYNTHETIC_PARENT.resolve(strict=True)
+    if not parent.is_dir() or any(part == STATE_ROOT_NAME for part in parent.parts):
+        raise RuntimeError("synthetic parent refused")
+    return parent
+
+
 @contextmanager
 def _lane() -> Iterator[Path]:
     """A synthetic lane: its own temporary root, a cutover line in a fresh ledger, and a state. Never a
     default path: the directory handed to every call is built here and checked before use."""
-    with tempfile.TemporaryDirectory(prefix="c7-selftest-") as temp:
+    parent = _parent()
+    with tempfile.TemporaryDirectory(prefix="c7-selftest-", dir=parent) as temp:
         root = Path(temp).resolve()
-        if any(part == STATE_ROOT_NAME for part in root.parts):
-            raise RuntimeError("synthetic root under a state directory")
+        if root.parent != parent or any(part == STATE_ROOT_NAME for part in root.parts):
+            raise RuntimeError("synthetic root outside its parent")
         state_dir = root / "holdings"
         state_dir.mkdir()
         cash_flows.set_cutover(state_dir, at="2026-01-01T00:00:00Z", requested_by="c7-selftest")
@@ -94,8 +112,7 @@ def _deliver(state_dir: Path, now: str) -> tuple[str, str] | None:
 
 def check_synthetic_root_isolated() -> bool:
     with _lane() as state_dir:
-        temp_root = Path(tempfile.gettempdir()).resolve()
-        return (state_dir.is_relative_to(temp_root)
+        return (state_dir.is_relative_to(_parent())
                 and not any(part == STATE_ROOT_NAME for part in state_dir.parts)
                 and cash_flows.ledger_path(state_dir).parent == state_dir
                 and cash_flows.state_path(state_dir).parent == state_dir)
@@ -208,13 +225,28 @@ CHECKS: tuple[tuple[str, Callable[[], bool]], ...] = (
 )
 
 
-def source_hashes() -> list[tuple[str, str]]:
-    """``(sha256, path)`` for each covered file, or ``("missing", path)``. Paths are relative to the root."""
-    out = []
+def _source_digest(rel: str) -> str:
+    """sha256 of one covered file, or an error. The path is fixed here, relative and without ``..``; it must
+    resolve, through no symlink, to a regular file inside the source root."""
+    if Path(rel).is_absolute() or ".." in Path(rel).parts or STATE_ROOT_NAME in Path(rel).parts:
+        raise ValueError("source path refused")
+    root = ROOT.resolve(strict=True)
+    path = (root / rel).resolve(strict=True)
+    if path != root / rel or not path.is_file():
+        raise ValueError("source path refused")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def source_hashes() -> tuple[list[tuple[str, str]], bool]:
+    """``(sha256, path)`` for each covered file that hashed, and whether every one did. A file that is
+    missing, unreadable or outside the source root is left out and makes the second value False."""
+    out, complete = [], True
     for rel in COVERED_SOURCES:
-        path = ROOT / rel
-        out.append((hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "missing", rel))
-    return out
+        try:
+            out.append((_source_digest(rel), rel))
+        except Exception:  # noqa: BLE001 — a source that cannot be hashed is a FAIL, and says nothing more (D-6)
+            complete = False
+    return out, complete
 
 
 def run_selftest_checks() -> list[tuple[str, bool]]:
@@ -234,12 +266,23 @@ def main(argv: list[str] | None = None) -> int:
         print("FAIL input_refused")
         print("RESULT FAIL")
         return 2
-    results = run_selftest_checks()
-    for name, ok in results:
-        print(f"{'PASS' if ok else 'FAIL'} {name}")
-    for digest, rel in source_hashes():
-        print(f"SOURCE {digest} {rel}")
-    passed = all(ok for _name, ok in results)
+    try:
+        _parent()
+    except Exception:  # noqa: BLE001 — no usable synthetic parent: no lane starts anywhere (D-2)
+        print("FAIL synthetic_root_isolated")
+        print("RESULT FAIL")
+        return 1
+    try:
+        results = run_selftest_checks()
+        for name, ok in results:
+            print(f"{'PASS' if ok else 'FAIL'} {name}")
+        hashes, complete = source_hashes()
+        print(f"{'PASS' if complete else 'FAIL'} source_integrity")
+        for digest, rel in hashes:
+            print(f"SOURCE {digest} {rel}")
+        passed = complete and all(ok for _name, ok in results)
+    except Exception:  # noqa: BLE001 — anything unforeseen is a FAIL with no message or traceback (D-6)
+        passed = False
     print(f"RESULT {'PASS' if passed else 'FAIL'}")
     return 0 if passed else 1
 

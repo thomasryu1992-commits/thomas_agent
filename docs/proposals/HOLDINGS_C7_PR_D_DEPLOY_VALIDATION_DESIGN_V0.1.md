@@ -188,10 +188,10 @@ Dockerfile에는 `VOLUME ["/app/.runtime_governance_state"]`가 있다. 그 디�
 | Network | `.HostConfig.NetworkMode` | `none`. 이 모드에서는 loopback 외의 인터페이스가 없다. Telegram, 거래소, 내부 서비스 어디에도 닿을 수 없다 |
 | Mounts | `.Mounts`, `.HostConfig.Mounts` | 정확히 두 개, 둘 다 `Type=tmpfs`: `/tmp`, 그리고 `/app/.runtime_governance_state`(mode 0555) |
 | Volume | `.Mounts`의 `Type` | `bind`, `volume`이 하나도 없음. 상태 루트에 tmpfs가 명시돼 있어 익명 볼륨이 생기지 않았음을 이 목록으로 확인 |
-| Tmpfs | 진입점의 합성 루트 경로 출력(경로만) | `/tmp/` 아래. 상태 잠금 파일(`…/holdings/*.lock`)도 그 아래. 끝나면 `TemporaryDirectory`가 지우고, tmpfs는 컨테이너와 함께 사라짐 |
+| Tmpfs | `.Mounts`의 `/tmp` 항목 + 진입점의 `PASS synthetic_root_isolated` | `/tmp`가 tmpfs다. 진입점은 경로를 출력하지 않는다(D-6). 대신 이 검사가 lane이 고정 부모 `/tmp` 바로 아래에 만들어졌는지 확인한다(`SYNTHETIC_PARENT`, §2.6). 상태 잠금 파일(`…/holdings/*.lock`)도 그 아래다. 끝나면 `TemporaryDirectory`가 지우고, tmpfs는 컨테이너와 함께 사라짐 |
 | Environment | 환경 변수 **이름** 목록 | Dockerfile 기본 ENV 다섯 개(`PYTHONUNBUFFERED`, `PYTHONUTF8`, `PYTHONDONTWRITEBYTECODE`, `PIP_NO_CACHE_DIR`, `PIP_DISABLE_PIP_VERSION_CHECK`)와 Docker 기본(`PATH`, `HOSTNAME` 등)만. 주입된 변수 없음. 진입점은 env를 읽지 않음(D-1, 고정 테스트) |
 | Filesystem | `.HostConfig.ReadonlyRootfs`, 상태 루트 tmpfs mode | `true`, 0555. 운영 파일은 컨테이너 안에 없고, 상태 루트에는 쓸 수 없음 |
-| Output | 표준 출력 | `PASS`/`FAIL` 단어, 소스 sha256, 합성 루트 경로, `RESULT`뿐. 키·digest·금액 없음 |
+| Output | 표준 출력 | `PASS`/`FAIL` 단어(`source_integrity` 포함), 소스 sha256, `RESULT`뿐. 경로 내용·키·digest·금액 없음 |
 | Exit Code | `docker start -a`의 종료 코드 | 성공 0, 실패 0이 아님 |
 
 **임시 루트 규칙(진입점 구현 조건):**
@@ -229,9 +229,12 @@ Dockerfile에는 `VOLUME ["/app/.runtime_governance_state"]`가 있다. 그 디�
   - `state_dir(...)` 호출과 `STATE_REL`이 없다(AST 테스트).
   - 루트를 만들 수 없거나 `.runtime_governance_state` 아래로 풀리면 FAIL이다. fallback은 없다(테스트).
   - 모든 lane이 임시 루트 안에서만 열리고 끝나면 지워진다(테스트).
+  - **보완(2026-10-12, 병합 전):** 처음 구현은 `TemporaryDirectory`에 `dir`를 주지 않아 Python의 임시 디렉터리 선택(`TMPDIR` 등)을 따랐다. §2.5의 `/tmp` tmpfs 규칙과 어긋났고, 환경 변수가 루트를 옮길 수 있었다. 이제 부모는 상수 `SYNTHETIC_PARENT = /tmp`로 고정했고, 모든 lane은 `TemporaryDirectory(dir=/tmp)`로 만든다. 부모가 없거나 상태 디렉터리 아래면 lane 하나 열기 전에 `FAIL synthetic_root_isolated`, exit 1이다. 만들어진 루트가 부모 바로 아래가 아니면 cutover 전에 거부한다. 다른 임시 디렉터리로 대체하지 않는다(테스트: 부모 없음, 상태 디렉터리 아래, 다른 곳에 생성됨, `tempfile.tempdir`이 바뀌어도 쓰지 않음, `dir` 인자 기록, AST의 `gettempdir`·`tempdir` 금지).
+  - **Windows CI:** Windows에는 `/tmp`가 없다. 테스트는 모듈 상수만 pytest 디렉터리로 바꿔 같은 검사를 돌린다. CLI 인자나 환경 변수로는 바꿀 수 없고, skip·xfail은 없다. `SYNTHETIC_PARENT`가 `/tmp`인지는 별도 테스트로 고정한다.
 - **네트워크·전송(D-4):** 새 인터프리터에서 진입점만 import했을 때 `socket`, `ssl`, `http.client`, `urllib.request`, `requests`, `httpx`가 로드되지 않는다. operator, providers, scheduler, `holdings.store`도 로드되지 않는다(테스트). mock이 아니라 실제 import 그래프로 확인했다. 전송은 "기록할지"를 이 프로세스가 정하는 것으로 대체했다.
 - **출력(D-6):** `PASS|FAIL <검사>`, `SOURCE <sha256> <경로>`, `RESULT PASS|FAIL`뿐이다(정규식 테스트). 예외는 메시지 없는 `FAIL`로 끝난다(테스트).
-- **검토와 고정(D-7, D-8):** 이 PR의 검토 대상이다. `tests/test_c7_blocked_selftest.py` 18건이 위를 고정한다. PR-D 동작을 망가뜨리면(해소 보류 규칙 제거, 오래된 기록 거부 제거, 판정 침묵) 해당 검사가 FAIL이 된다.
+- **소스 무결성(보완 2026-10-12, 병합 전):** 처음 구현은 덮는 소스가 없으면 `SOURCE missing`을 찍고도 상태 전이 검사만으로 `RESULT PASS`를 낼 수 있었다. 읽기 예외는 traceback으로 샐 수 있었다. 이제 다섯 파일 각각이 상대 경로이고 `..`·상태 디렉터리 이름이 없으며, symlink 없이 소스 루트 안의 일반 파일로 풀리고, 읽기·해시가 성공해야 한다. 하나라도 어긋나면 `FAIL source_integrity`, `RESULT FAIL`, exit 1이다. 그 파일의 `SOURCE` 줄은 나오지 않고, 메시지·traceback도 없다. 검사 대상 목록은 상수이고 인자로 바꿀 수 없다. 테스트는 저장소를 건드리지 않고 복사한 트리에서 만든다: 1개·여러 개 누락, `OSError`, `PermissionError`, 해시 실패, `..`·절대 경로·상태 디렉터리·디렉터리, symlink 탈출, 그리고 상태 전이가 모두 PASS여도 전체 FAIL.
+- **검토와 고정(D-7, D-8):** 이 PR의 검토 대상이다. `tests/test_c7_blocked_selftest.py` 36건이 위를 고정한다(처음 18건, 보완 뒤 36건). PR-D 동작을 망가뜨리면(해소 보류 규칙 제거, 오래된 기록 거부 제거, 판정 침묵) 해당 검사가 FAIL이 된다.
 - **Runtime 불변(D-9):** `runtime/`의 어떤 모듈도 진입점을 import하지 않는다(테스트).
 
 **원장 접근 금지 테스트의 예외(Thomas 결정 2026-10-12)**

@@ -179,6 +179,10 @@
 - 이 패킷은 검증 경로를 구현하지 않고, Guard 정책을 바꾸지 않는다.
 - 경로를 정하는 일은 Thomas의 결정이다. 예를 들어 이미지에 포함된 정식 진입점을 새로 만드는 코드 변경이 있는데, 이것도 별도 승인 대상이다.
 - **갱신(2026-10-12):** Thomas의 조건부 승인으로 정식 진입점 `scripts/c7_blocked_selftest.py`를 구현했다(설계 문서 §2.2–§2.5의 기준 D-1–D-10). 저장소 합성 테스트를 통과했다(VALIDATION_ENTRYPOINT_IMPLEMENTED, REPOSITORY_SYNTHETIC_TESTS_PASSED). candidate 이미지 안에서는 아직 돌리지 않았으므로 상태는 VALIDATION_PATH_UNRESOLVED 그대로다.
+- **보완(2026-10-12, 병합 전, Thomas 승인):** 독립 검토에서 나온 결함 둘을 고쳤다(설계 문서 §2.6).
+  - 소스 무결성: 덮는 소스가 없거나 읽히지 않거나 소스 루트 밖으로 풀려도 `RESULT PASS`가 나올 수 있었다. 이제 `FAIL source_integrity`, `RESULT FAIL`, exit 1이고 메시지·traceback이 없다.
+  - 합성 루트: `TemporaryDirectory`가 Python의 임시 디렉터리 선택(`TMPDIR`)을 따랐다. 이제 부모를 `/tmp`로 고정했고 fallback이 없다. D-10의 `/tmp` tmpfs 규칙과 맞는다.
+  - 둘 다 부정 테스트로 고정했다. Windows CI는 모듈 상수만 바꿔 같은 테스트를 돌린다(skip 없음). door 예외(`IMPORT_ONLY_EXEMPT`)와 Guard는 그대로다. candidate 안에서는 여전히 돌리지 않았다.
 
 ## 5. 배포 전 Gate
 
