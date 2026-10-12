@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **66**건: `DRAFT` 4 · `PARTIALLY DECIDED` 7 · `DECIDED` 12 · `IMPLEMENTED` 36 · `SUPERSEDED` 1 · `RECORD` 6
+제안서 **67**건: `DRAFT` 5 · `PARTIALLY DECIDED` 7 · `DECIDED` 12 · `IMPLEMENTED` 36 · `SUPERSEDED` 1 · `RECORD` 6
 
-## Thomas 결정 대기 (11)
+## Thomas 결정 대기 (12)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -23,6 +23,7 @@
 | [HOLDINGS_LEDGER_CHECKPOINT_V0.1.md](HOLDINGS_LEDGER_CHECKPOINT_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-11 | 열린 것: D2의 Toss 연속성 증명 방식과 cutover 유지 여부. A안이 조건부 우선 검토안이고, B안은 비추천, C안은 대안이며, 최종 cutover 결정은 미승인이다(§12.2–§12.3). 정해진 것(Thomas 2026-10-11, 설계 방향이며 구현 승인이 아니다): C7을 H6c의 선행 조건으로 둔다. D1은 PR-D → A → B → C 순서에 다섯 조건을 붙여 동의했다. D2는 `history_completeness`를 별도 키로 두고 체크포인트 없음·상태 누락을 UNCHECKED로 판정한다. D3은 두 단계 채택에 동의했다. D4는 다섯 검증 뒤로 조건을 붙였다. 각 PR의 구현·머지·배포는 따로 승인한다. H6d-min(#1205)의 원장과 상태 파일이 서로 다른 시점에서 복원되면 기록이 조용히 사라지고 readiness는 PASS로 남는다(C7). 원장 사슬·체크포인트·이력 완전성을 세 검사로 나누고, 축소·교체는 거부하며 Thomas에게 알리고, 이력은 재수집 증거로만 복구로 판정하는 설계다(3차 검토, 같은 날). 회귀 테스트(`tests/test_mvp_runtime_holdings_c7_partial_restore.py`)가 오늘의 결함을 고정한다. 구현은 §10의 다섯 PR로, §12의 Thomas 결정 뒤에 한다. |
 | [PORTFOLIO_AND_STOCK_TRADING_PLAN_AUDIT_V0.1.md](PORTFOLIO_AND_STOCK_TRADING_PLAN_AUDIT_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-11 | Q1·Q2·Q4·Q5는 권고대로 결정됐다(Thomas). 주식 자동매매는 P3 관문 뒤에 두고, `stocks/`를 다시 열지 않으며, 카나리 rung의 네 번째 요청과 그 비승인을 기록하고, 문서 6개는 만들지 않는다. Q3: C7은 H6c의 선행 조건이다. D1·D3은 방향 동의, D4는 조건부 동의다. 열린 것: **D2**, 곧 Toss 연속성 증명 방식과 cutover 유지 여부. A안이 조건부 우선 검토안이고 최종 cutover 결정은 미승인이다(`HOLDINGS_LEDGER_CHECKPOINT_V0.1.md` §12.2–§12.3). C7 구현은 시작하지 않았다. 토스 주문 능력은 공식 스펙 v1.2.24로 기록했다(§D). 코드·스키마·정책 변경 없음. |
 | [THOMAS_AGENT_TARGET_ARCHITECTURE_V0.1.md](THOMAS_AGENT_TARGET_ARCHITECTURE_V0.1.md) | `DRAFT` | 2026-10-11 | 최종 목표(승인된 범위 안의 자율 투자 운영)와 지금의 운영 제한을 한 장에 묶은 지도다. 새 실행 권한이나 정책 권위를 만들지 않으며, 각 줄의 권위는 줄마다 적은 소유 문서에 있다. Thomas의 검토를 기다린다. 결정이 필요한 것은 여섯 가지다: 포트폴리오 전체 위험 한도가 주문을 막는지(D-A1), 실행 단계를 자산군별로 어떻게 적용하는지(D-A2), LIVE_SCALED 진입 규칙(D-A3), 크립토 현물 주문을 어느 단계에서 다루는지(D-A4), C7 D2(D-A5, **우선 해결 대상** — C7 PR-B 설계보다 먼저), IV–RV 측정을 지을지(D-A6). 전역 LOCAL_ONLY Guard의 갱신 완료는 이 문서 기준으로 미확인(PENDING)이다. |
+| [HOLDINGS_C7_PR_D_DEPLOY_READINESS_V0.1.md](HOLDINGS_C7_PR_D_DEPLOY_READINESS_V0.1.md) | `DRAFT` | 2026-10-12 | C7 PR-D(#1216)를 운영에 올리기 전의 준비 패킷이다. 판정은 PREPARATION_COMPLETE_PENDING_EVIDENCE: 계획은 갖췄지만 Global Guard 반영(PENDING), 현재 운영 이미지 확인(UNKNOWN), Rollback 확인(ROLLBACK_NOT_VERIFIED)의 증거가 없다. DECISION_REQUIRED가 둘 있다: candidate 번호(기본 `candidate-1217`)와 PR-D의 이미지 내 동작 확인을 누가 어떻게 할지(§4.3). 배포 승인은 없다(NOT_GRANTED). |
 
 ## 결정됨 — 구현 남음 (12)
 
