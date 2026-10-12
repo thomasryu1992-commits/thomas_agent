@@ -1,6 +1,6 @@
 # 제안: C7 PR-D 배포 차단 조건 해소 — 검증 설계와 운영자 승인 패킷 (DRAFT v0.1)
 
-**상태:** DRAFT 2026-10-12 — PR-D 배포를 막는 조건 셋을 푸는 방법의 설계다. 셋은 Gate 2의 told 파일명 직접 합성 검증, 이미지 내부 동작 검증 경로, Candidate·Rollback 연결 검증이다. 설계만 했고, 어떤 검증도 실행하지 않았다. 상태는 바뀌지 않는다: DIRECT_TOLD_FILENAME_PROBE_NOT_PERFORMED, VALIDATION_PATH_UNRESOLVED, ROLLBACK_NOT_VERIFIED, CANDIDATE_TAG_DECISION_REQUIRED, DEPLOYMENT_HOLD, NOT_GRANTED. 권고는 셋이다. Gate 2는 가안(Guard kit 시험 확장). 이미지 검증은 인자 없는 정식 자가검증 진입점(설계 후보, 정책 판단 필요). Rollback은 메타데이터 수준 검증 기준. 각 단계의 구현과 실행은 따로 Thomas 승인을 받는다.
+**상태:** DRAFT 2026-10-12 — PR-D 배포를 막는 조건 셋을 푸는 방법의 설계다. 셋은 Gate 2의 told 파일명 직접 합성 검증, 이미지 내부 동작 검증 경로, Candidate·Rollback 연결 검증이다. 설계만 했고, 어떤 검증도 실행하지 않았다. 상태는 바뀌지 않는다: DIRECT_TOLD_FILENAME_PROBE_NOT_PERFORMED, VALIDATION_PATH_UNRESOLVED, ROLLBACK_NOT_VERIFIED, CANDIDATE_TAG_DECISION_REQUIRED, DEPLOYMENT_HOLD, NOT_GRANTED. 권고는 셋이다. Gate 2는 가안(Guard kit 시험 확장). 이미지 검증은 인자 없는 정식 자가검증 진입점(VALIDATION_PATH_DESIGN_PROPOSED, 정책 판단 필요, D-10 격리 증거 정의 포함). Rollback은 세 상태로 나눈다(ROLLBACK_TARGET_VERIFIED, ROLLBACK_PROCEDURE_REVIEWED, ROLLBACK_FUNCTIONAL_VERIFIED). Candidate 태그는 최종 배포 기준선이 정해진 뒤 정한다(`candidate-1217` — PROVISIONAL_RECOMMENDATION). Gate 2가 완전히 충족되지 않으면 배포는 막힌다(GATE_2_NOT_FULLY_SATISFIED → DEPLOYMENT_HOLD). 각 단계의 구현과 실행은 따로 Thomas 승인을 받는다.
 
 **기준:** origin/main `52e2b3ba`(#1219), 2026-10-12. 저장소 코드·문서, `/root/.claude/global-guard-kit`의 README·`test_guard.py`·`refresh_guard.py`를 읽기만 했다. Guard 탐침, kit 실행·변경, `docker run`/`exec`, 이미지 빌드·태그, 상태 파일·원장·Secret 접근은 없었다.
 **소유:** 배포 준비의 기준선과 Gate 정의는 `HOLDINGS_C7_PR_D_DEPLOY_READINESS_V0.1.md`에 있다. 이 문서는 그 Gate를 바꾸지 않고, 각 Gate를 채울 방법만 설계한다. Guard 정책은 `.claude/hooks/guard-local-only.sh`와 그 테스트가 정한다.
@@ -16,9 +16,10 @@
   - 결과는 고정된 PASS/FAIL 단어뿐이다.
   - 저장소 테스트로 고정된다.
   - 격리된 컨테이너에서 candidate에만 돌린다.
+  - 격리는 옵션이 아니라 실행 직전 컨테이너의 실제 구성으로 증명한다(§2.5 D-10 ISOLATION EVIDENCE).
   
-  이것이 Guard 정책을 지키는지는 Thomas의 판단이다. 그 판단과 구현·실행 승인 전까지 VALIDATION_PATH_UNRESOLVED다.
-- **Candidate·Rollback:** 승인 SHA → 배포 worktree → candidate 이미지 id → 이미지 안 소스 해시 → rollback 태그 id = 배포 전 여덟 서비스의 이미지 id. 이 연결을 단계마다 기록한다. 실제 복구 훈련은 권하지 않는다. rollback 대상은 지금 돌고 있는 이미지 그 자체이기 때문이다.
+  이것이 Guard 정책을 지키는지는 Thomas의 판단이다. 그 판단과 구현·실행 승인 전까지 VALIDATION_PATH_UNRESOLVED다. 설계가 있다는 뜻의 VALIDATION_PATH_DESIGN_PROPOSED와는 다른 상태다.
+- **Candidate·Rollback:** 승인 SHA → 배포 worktree → candidate 이미지 id → 이미지 안 소스 해시 → rollback 태그 id = 배포 전 여덟 서비스의 이미지 id. 이 연결을 단계마다 기록한다. 태그는 최종 배포 기준선이 정해진 뒤 정한다(`candidate-1217`은 PROVISIONAL_RECOMMENDATION, §3.5). Rollback은 대상 확인, 절차 검토, 실제 복구 성공을 따로 기록한다(§3.3). 실제 복구 훈련은 권하지 않는다.
 
 ## 1. Gate 2 — told 파일명 직접 합성 검증
 
@@ -104,7 +105,7 @@
 | D-7 | **코드가 고정·검토된다.** `scripts/` 아래 새 모듈로 PR 검토와 병합을 거친다. 실행은 candidate 이미지 안의 병합된 코드뿐이다 | 실행 내용을 세션이 바꿀 수 없다 |
 | D-8 | **저장소 테스트로 고정된다.** AST·동작 테스트가 D-1–D-6을 검사한다: 기본 상태 경로 미사용, 금지 import 없음, 인자 거부, 출력 어휘 | 나중의 수정이 기준을 깨면 CI가 실패한다 |
 | D-9 | **Runtime을 바꾸지 않는다.** runtime 코드는 이 모듈을 import하지 않는다. scheduler, door, 거래 경로와 무관하다 | 운영 동작과 권한에 영향이 없다 |
-| D-10 | **격리 실행만 한다.** 별도 승인 아래 candidate에서만 돈다. `--network none`, `--read-only`, 상태 루트 위 `tmpfs-mode=0555`, 상태 mount 없음, `--env-file` 없음, `--user 10001:10001`, `--cap-drop ALL`. 합성 루트는 `--tmpfs /tmp` 안에 만든다. Docker의 기본 tmpfs는 1777이라 이미지의 실행 사용자(Dockerfile `useradd --uid 10001 thomas`, `USER thomas`)가 쓸 수 있다. 그래야 `mkdtemp`와 상태 잠금 파일이 그 안에 생긴다. 실행이 여기서 실패하면 PR-D 결함이 아니라 실행 환경 문제로 본다 | 운영 상태 디렉터리와 완전히 분리된다(Dockerfile의 `VOLUME`이 `--read-only`를 빠져나가는 문제는 0555 tmpfs로 덮는다) |
+| D-10 | **격리 실행만 한다.** 별도 승인 아래 candidate에서만 돈다. 후보 옵션은 다음과 같다.<br>`--network none`, `--read-only`, `--user 10001:10001`, `--cap-drop ALL`, `--security-opt no-new-privileges`. 상태 루트(`/app/.runtime_governance_state`)와 `/tmp`에는 `--mount type=tmpfs`를 쓰고, 상태 루트는 `tmpfs-mode=0555`로 둔다. bind mount, named volume, `-e`, `--env-file`은 쓰지 않는다.<br>**옵션을 썼다는 사실은 격리의 증거가 아니다.** 증거는 §2.5의 D-10 ISOLATION EVIDENCE다 | 운영 상태 디렉터리와 완전히 분리된다. 단, §2.5로 실제 Mount·네트워크·권한·환경을 확인한 뒤에만 그렇게 말한다 |
 
 **선례:** Guard는 이미 `holdings_board`(기본)와 `--json`을 허용한다. 둘 다 출력이 정해진, 검토된 정식 문이다. 저장소에는 임시 디렉터리 안에서만 도는 격리 자가검증 `scripts/self_test_core_release_flow.py`도 있다. 위 기준은 이 두 선례의 성질을 PR-D 검증에 옮긴 것이다.
 
@@ -112,7 +113,17 @@
 - 이것이 "인라인 import 규칙의 취지에 맞는 문"인지는 정책 판단이고, Thomas가 정한다.
 - 구현과 실행은 각각 별도 승인이다.
 
-그래서 상태는 **VALIDATION_PATH_UNRESOLVED 그대로**이고, 이 설계는 VALIDATION_PATH_DESIGN_PROPOSED다. Guard 예외나 규칙 완화는 후보에 없다. Guard는 이 진입점 때문에 바뀌지 않는다.
+**두 상태를 구분한다.**
+- **VALIDATION_PATH_DESIGN_PROPOSED**는 이 설계가 있다는 뜻이다.
+- **VALIDATION_PATH_UNRESOLVED**는 배포를 막는 상태이고, 그대로다.
+
+D-1–D-10을 만족한다는 사실만으로 Guard 정책 준수가 자동 승인되지는 않는다. Guard는 인라인 holdings import를 막고, 파일에 쓴 스크립트 실행을 알려진 빈틈으로 적고 있다. 그러므로 진입점은 다음을 모두 거쳐야 경로가 된다.
+- Guard를 피하려는 스크립트가 아니다.
+- 실제 LOCAL_ONLY 데이터에 닿지 않는다.
+- 검토된 제한적 인터페이스다.
+- 정책 승인, 구현 승인, 실행 승인을 각각 받는다.
+
+Guard 예외나 규칙 완화는 후보에 없다. Guard는 이 진입점 때문에 바뀌지 않는다.
 
 ### 2.3 진입점 설계 (구현하지 않음)
 
@@ -143,14 +154,62 @@
 | V-1 정책 판단 | Thomas | **필요** | 2.2 기준을 만족하는 진입점을 정식 경로로 인정할지 결정 | 인정하지 않으면 VALIDATION_PATH_UNRESOLVED 유지, 배포 HOLD |
 | V-2 구현 PR | Claude | **필요** | 진입점 + 고정 테스트, 필수 CI 5개 PASS, Guard 테스트 그대로 PASS | 기준 하나라도 테스트로 고정 못 하면 중단·보고 |
 | V-3 병합 | Thomas | **필요** | squash, 트리 일치 | — |
-| V-4 candidate 격리 실행 | Thomas 또는 승인된 Claude | **필요** | 2.2 D-10 플래그로 `RESULT PASS`, 소스 sha256 = 승인 SHA의 파일 | `FAIL`, 출력 어휘 밖의 줄, 네트워크·mount 오류면 중단. 배포하지 않음 |
+| V-4 candidate 격리 실행 | Thomas 또는 승인된 Claude | **필요** | §2.5의 증거 13항이 모두 맞고 `RESULT PASS`, exit 0, 소스 sha256 = 승인 SHA의 파일 | §2.5.1의 격리 실패 조건 중 하나, `FAIL`, 출력 어휘 밖의 줄이면 중단. 배포하지 않음. VALIDATION_PATH_UNRESOLVED 유지 |
 | V-5 판정 | Claude가 증거 판독 | — | V-4 PASS + C-4(3.2) 일치 시 SYNTHETIC_RUNTIME_VALIDATION 충족을 **제안** | Thomas 수용 전까지 VALIDATION_PATH_UNRESOLVED |
+
+### 2.5 D-10 ISOLATION EVIDENCE (증거 정의, 지금 실행하지 않음)
+
+Dockerfile에는 `VOLUME ["/app/.runtime_governance_state"]`가 있다. 그 디렉터리는 `chown -R thomas:thomas /app`로 uid 10001의 것이 된다.
+- 명시적 mount가 없으면 Docker는 이 경로에 **uid 10001이 쓸 수 있는 익명 볼륨**을 만든다.
+- 이 볼륨은 `--read-only`를 빠져나간다.
+
+그래서 실행 옵션만으로는 격리를 말할 수 없다. 격리는 **실행 직전 컨테이너의 실제 구성**으로 확인한다.
+
+**확인 방식(설계):**
+1. `docker create`로 컨테이너를 만들고, 시작하기 전에 `docker inspect`로 아래 항목을 읽는다.
+2. 모두 맞을 때만 `docker start -a`로 실행한다.
+3. 끝나면 `docker rm`으로 지운다.
+
+모든 단계는 별도 실행 승인을 받는다. Secret 값은 출력하지 않는다. 환경은 **이름만** 읽는다(`{{range .Config.Env}}{{index (split . "=") 0}} {{end}}` 같은 형식).
+
+| 검증 항목 | 필요한 증거 | 기대 |
+|---|---|---|
+| Image | `.Image` | 승인된 candidate 이미지 id(C-6의 Q) |
+| Source | 진입점의 소스 sha256 출력 | 승인 Git SHA의 파일과 같음(C-7) |
+| User | `.Config.User` | `10001:10001`(root 아님) |
+| Privileged | `.HostConfig.Privileged` | `false` |
+| Capabilities | `.HostConfig.CapDrop`, `.HostConfig.CapAdd` | `CapDrop`이 `ALL`, `CapAdd`는 비어 있음, `SecurityOpt`에 `no-new-privileges` |
+| Network | `.HostConfig.NetworkMode` | `none`. 이 모드에서는 loopback 외의 인터페이스가 없다. Telegram, 거래소, 내부 서비스 어디에도 닿을 수 없다 |
+| Mounts | `.Mounts`, `.HostConfig.Mounts` | 정확히 두 개, 둘 다 `Type=tmpfs`: `/tmp`, 그리고 `/app/.runtime_governance_state`(mode 0555) |
+| Volume | `.Mounts`의 `Type` | `bind`, `volume`이 하나도 없음. 상태 루트에 tmpfs가 명시돼 있어 익명 볼륨이 생기지 않았음을 이 목록으로 확인 |
+| Tmpfs | 진입점의 합성 루트 경로 출력(경로만) | `/tmp/` 아래. 상태 잠금 파일(`…/holdings/*.lock`)도 그 아래. 끝나면 `TemporaryDirectory`가 지우고, tmpfs는 컨테이너와 함께 사라짐 |
+| Environment | 환경 변수 **이름** 목록 | Dockerfile 기본 ENV 다섯 개(`PYTHONUNBUFFERED`, `PYTHONUTF8`, `PYTHONDONTWRITEBYTECODE`, `PIP_NO_CACHE_DIR`, `PIP_DISABLE_PIP_VERSION_CHECK`)와 Docker 기본(`PATH`, `HOSTNAME` 등)만. 주입된 변수 없음. 진입점은 env를 읽지 않음(D-1, 고정 테스트) |
+| Filesystem | `.HostConfig.ReadonlyRootfs`, 상태 루트 tmpfs mode | `true`, 0555. 운영 파일은 컨테이너 안에 없고, 상태 루트에는 쓸 수 없음 |
+| Output | 표준 출력 | `PASS`/`FAIL` 단어, 소스 sha256, 합성 루트 경로, `RESULT`뿐. 키·digest·금액 없음 |
+| Exit Code | `docker start -a`의 종료 코드 | 성공 0, 실패 0이 아님 |
+
+**임시 루트 규칙(진입점 구현 조건):**
+- 합성 루트는 `TemporaryDirectory(dir="/tmp")`로만 만든다. 만들 수 없으면 `FAIL`, exit ≠ 0으로 끝낸다.
+- 기본 상태 경로(`STATE_REL`, 인자 없는 `state_dir()`)로 **fallback하지 않는다.** 고정 테스트가 이를 검사한다.
+- 루트가 `/app/.runtime_governance_state` 아래로 풀리면 `FAIL`이다.
+
+#### 2.5.1 격리 실패 조건
+
+다음 중 하나라도 보이면 실행하지 않거나 즉시 중단한다. 상태는 VALIDATION_PATH_UNRESOLVED 그대로다.
+- 실제 운영 상태 디렉터리 mount, 또는 운영 volume 연결
+- 네트워크 모드가 `none`이 아님, 또는 예상하지 못한 외부 통신
+- 주입된 환경 변수(특히 Secret 이름)
+- root, privileged, 남은 capability
+- 합성 데이터가 기본 상태 경로로 fallback
+- 예상하지 못한 파일 생성
+- 출력에 금융 데이터나 Secret
+- 이미지 id가 승인 candidate와 다름
 
 ## 3. Candidate·Rollback 연결 검증
 
 ### 3.1 원칙
 
-- 태그는 묶음의 이름이다(`candidate-1217`은 기본 권고이고, CANDIDATE_TAG_DECISION_REQUIRED). 코드의 증거는 아래 연결 고리다.
+- 태그는 묶음의 이름이다. 코드의 증거는 아래 연결 고리다. 태그를 언제 정하는지는 §3.5에 있다(`candidate-1217` — PROVISIONAL_RECOMMENDATION, CANDIDATE_TAG_DECISION_REQUIRED).
 - 운영 메타데이터(2026-10-12T06:15Z 관측: 여덟 서비스 `67d9b622d648` = `candidate-1210` = `latest`)는 관측 당시의 사실이다. 배포 때 다시 읽는다.
 
 ### 3.2 연결 고리와 단계 (배포 승인 이후의 절차, 지금 실행하지 않음)
@@ -162,21 +221,24 @@
 | C-3 첫 preflight | 배포자 | 배포 승인 | `deploy_preflight.py 1217`에 STOP 없음, `rollback` 줄이 태그할 원본을 지목 | STOP이면 worktree 제거 후 보고 |
 | C-4 배포 전 이미지 기록 | 배포자 | 배포 승인(메타데이터 읽기) | 여덟 컨테이너의 `.Image`가 모두 같은 id P(지금 관측은 `67d9b622d648`) | 서로 다르면 중단 |
 | C-5 rollback 태그 | 배포자 | 배포 승인 | `rollback-pre-1217` 생성 뒤 `docker image inspect --format '{{.Id}}'` = P | ≠ P면 태그를 지우고 중단 |
-| C-6 candidate 빌드 | 배포자 | 배포 승인 | `candidate-1217` 이미지 id Q, `latest`는 여전히 P | `latest`가 바뀌면 중단 |
+| C-6 candidate 빌드 | 배포자 | 배포 승인 | `candidate-<N>`(§3.5에서 확정한 번호) 이미지 id Q, `latest`는 여전히 P | `latest`가 바뀌면 중단 |
 | C-7 코드 동일성 | 배포자 | **필요**(컨테이너 실행) | candidate 안 `runtime/`·`scripts/` 파일의 sha256 목록이 worktree X의 같은 목록과 같다. 기준 목록은 `git -C /root/deploy-1217 ls-files -z runtime scripts \| xargs -0 sha256sum`이다. 이미지 쪽은 `--entrypoint sh`로 `find`와 `sha256sum`만 돌리는 격리 실행(D-10 플래그)이다. **`python`도 `-m`도 holdings import도 상태 mount도 없다.** 파일 바이트를 읽을 뿐이고 코드를 실행하지 않는다. 그래서 §2.1의 5단계 방식과 다르다. 진입점이 승인되면 V-4의 소스 해시가 이를 보강한다 | 한 줄이라도 다르면 candidate 폐기, 중단 |
 | C-8 동작 검증 | 2.4 V-4 | **필요** | `RESULT PASS` | 경로 미승인이면 여기서 HOLD |
 | C-9 promote 전 preflight | 배포자 | 배포 승인 | `--promote --tree`에 STOP 없음. `rollback-pre-1217` = 지금 도는 이미지, `fires` 없음 | `promote`·`fires` STOP이면 대기 또는 중단 |
 | C-10 promote·up | 배포자 | **배포 승인** | 여덟 컨테이너 `.Image` = Q, healthy, 두 lane의 다음 `fired` | 하나라도 아니면 3.3의 복구 |
 
-### 3.3 Rollback 검증 수준
+### 3.3 Rollback 검증 수준 — 세 상태
 
-| 수준 | 내용 | 권고 |
-|---|---|---|
-| R-1 메타데이터 | C-4·C-5·C-9: rollback 태그의 id가 배포 전 여덟 서비스의 이미지 id와 같고, 이미지가 저장소에 있다. compose 라벨(`thomas_agent`, `/root/thomas_agent/.env`)도 기록 | **권고.** rollback 대상은 지금 여덟 서비스가 healthy로 돌고 있는 바로 그 이미지다. 그 이미지가 돈다는 것은 이미 운영이 보여 준다 |
-| R-2 복구 명령 검토 | 스킬의 rollback 명령과 깨끗한 tree, 프로젝트·env 파일 지정 | R-1과 함께 |
-| R-3 실제 복구 훈련 | 배포 후 일부러 되돌렸다 다시 올림 | **권하지 않는다.** 운영을 두 번 재생성하고, fire를 끊을 위험만 더한다. 실패 시에만 실행한다 |
+각 수준이 **무엇을 증명하고 무엇을 증명하지 않는지**를 나눈다. 아래 명령과 메타데이터 읽기는 배포 승인 이후의 일이고, 지금은 실행하지 않는다.
 
-R-1 + R-2를 Gate 6 충족으로 볼지는 Thomas의 결정이다. 결정 전까지 ROLLBACK_NOT_VERIFIED다. 복구는 이미지 되돌림만이다. 원장·상태 파일, cutover, 낙폭 기준선은 건드리지 않는다.
+| 상태 | 증거 | 증명하지 않는 것 | 권고 |
+|---|---|---|---|
+| **ROLLBACK_TARGET_VERIFIED** | C-4·C-5·C-9: 배포 전 여덟 서비스의 이미지 id P, `rollback-pre-<N>` 존재, 그 id = P, 이미지가 저장소에 있음(`docker image inspect` 성공) | 복구가 실제로 성공한다는 것 | **권고** |
+| **ROLLBACK_PROCEDURE_REVIEWED** | 다음 항목을 문서로 확인한다. 실행은 하지 않는다.<br>- 스킬의 복구 명령(`docker tag …rollback-pre-<N> …latest` + 깨끗한 tree의 `compose up -d`)<br>- compose 프로젝트(`thomas_agent`), 기준 compose 파일, env 파일 경로(`/root/thomas_agent/.env`, 값은 읽지 않음)<br>- 재생성 범위(여덟 서비스), fire 충돌 조건(preflight `fires`), 복구 뒤 health·`fired` 확인 방법, 복구 실패 시 대응 | 명령이 실제로 성공한다는 것 | **권고**(TARGET과 함께) |
+| **ROLLBACK_FUNCTIONAL_VERIFIED** | 별도 승인된 실제 복구 시험이 필요하다. 명령 성공, 대상 이미지 복원, 여덟 서비스 재시작과 healthy, scheduler의 다음 `fired`, 오류 기록 | — | **권하지 않는다.** 운영을 두 번 재생성해 fire를 끊을 위험이 있다. 실패 시의 실제 복구에서만 생긴다 |
+
+- **Gate 6:** Thomas는 나중에 TARGET + PROCEDURE를 Gate 6 충족으로 승인할 수 있다. 그래도 세 상태는 따로 기록한다. **TARGET + PROCEDURE를 ROLLBACK_FUNCTIONAL_VERIFIED로 적지 않는다.** 결정 전까지 상태는 ROLLBACK_NOT_VERIFIED다.
+- **Rollback 안전성:** Rollback은 Runtime 이미지 되돌림이다. 금융 데이터 복구가 아니다. 다음은 바꾸지 않는다: 금융 원장, holdings 상태 파일, cutover, 체크포인트, backfill, 낙폭 기준선, H6c, 거래 단계, 자동 리밸런싱.
 
 ### 3.4 여덟 서비스 영향 (준비 문서 §3.1–§3.2 요약과 보강)
 
@@ -187,25 +249,65 @@ R-1 + R-2를 Gate 6 충족으로 볼지는 Thomas의 결정이다. 결정 전까
   - holdings fire 직전·직후. PR-D가 바꾸는 lane이라, 배포 직후 첫 holdings fire를 관찰할 수 있게 그 사이에 둔다.
 - **실패 시:** 서비스별로 고치지 않는다. 이미지 하나를 되돌려 한 번의 `up -d`로 여덟 서비스를 함께 되돌린다.
 
+### 3.5 Candidate 태그를 정하는 시점
+
+**Candidate 태그는 최종 배포 기준선과 거기 들어갈 구현 PR이 정해진 뒤에 정한다.**
+
+- 지금의 `candidate-1217`은 **PROVISIONAL_RECOMMENDATION**이다. 상태는 CANDIDATE_TAG_DECISION_REQUIRED다.
+- 자가검증 진입점 구현 PR(V-2)이 병합되면 배포 묶음의 마지막 PR이 바뀐다. 그러면 관례상 번호도 바뀔 수 있다.
+
+**확정 전 확인 사항**
+1. PR-D 구현 PR(#1216)
+2. Guard 보완 PR(#1217)
+3. 자가검증 진입점 구현 PR이 있는지, 그리고 병합됐는지
+4. 최종 origin/main SHA
+5. 배포 스킬의 `<N>`(PR 번호) 계약
+6. `deploy_preflight.py`의 PR 검증. `<N>`이 병합됐고 그 병합 커밋이 origin/main에 있어야 한다
+7. 태그 충돌. `candidate-<N>`·`rollback-pre-<N>`이 이미 있으면 다른 세션이 배포 중이라는 preflight STOP이다
+8. 기존 candidate 태그 보존(지우지 않음)
+9. rollback 태그와의 관계(같은 `<N>`)
+
+**식별 증거는 따로 기록한다**
+
+| 항목 | 뜻 |
+|---|---|
+| Approved Git SHA | 승인된 소스 기준(C-1) |
+| Build Git SHA | 실제로 빌드한 worktree의 `HEAD`(C-2) |
+| Candidate Tag | 배포 묶음의 이름 |
+| Candidate Image ID | 이미지 식별자(C-6의 Q) |
+| Source Hashes | 이미지 안 코드 동일성 증거(C-7, V-4) |
+| Rollback Image ID | 복구 대상(C-4의 P) |
+
+태그만으로 코드 동일성을 증명하지 않는다.
+
+**배포 범위는 다시 계산한다.** 준비 문서의 "이미지에 들어가는 변화는 네 파일"은 최종 배포 시점의 확정값이 아니다. 구현 PR이 더해지면 다음을 다시 계산한다: 변경 파일, 이미지에 들어가는 코드, Runtime 동작 영향, CI 증거, 이미지 검증 대상, 서비스 영향, Rollback 호환성.
+
 ## 4. 남은 배포 차단 조건과 결정
 
 | 조건 | 지금 | 풀리는 조건 |
 |---|---|---|
-| Gate 2 직접 합성 | DIRECT_TOLD_FILENAME_PROBE_NOT_PERFORMED | §1.4 승인·실행·수용 |
+| Gate 2 직접 합성 | DIRECT_TOLD_FILENAME_PROBE_NOT_PERFORMED(부분 충족) | §1.4 승인·실행·수용 |
 | 이미지 내부 동작 | VALIDATION_PATH_UNRESOLVED | §2.4 V-1–V-5 |
-| Candidate 태그 | CANDIDATE_TAG_DECISION_REQUIRED (기본 권고 `candidate-1217`) | Thomas 확정 |
-| Rollback | ROLLBACK_NOT_VERIFIED | §3.3 수준 결정 + 배포 시점 C-4·C-5·C-9 |
+| Candidate 태그 | CANDIDATE_TAG_DECISION_REQUIRED (`candidate-1217` — PROVISIONAL_RECOMMENDATION) | 최종 배포 기준선 확정 뒤 Thomas 확정(§3.5) |
+| Rollback | ROLLBACK_NOT_VERIFIED | §3.3 수준 결정 + 배포 시점 C-4·C-5·C-9(TARGET), 절차 검토(PROCEDURE). FUNCTIONAL은 별도 |
 | 여덟 서비스 진행 작업 | OPERATOR_EVIDENCE_REQUIRED | 배포 시점 운영자 확인 |
 | 배포 승인 | NOT_GRANTED | Thomas 승인 |
 | 판정 | **DEPLOYMENT_HOLD** | 위 모두 |
+
+**Gate 2의 Fail-Closed 해석.** 준비 문서는 "Gate 2가 PENDING 또는 FAILED면 중단"이라고 적는다. 그러나 지금 Gate 2는 부분 충족이다. 이 중간 상태도 막힘으로 읽는다:
+
+`GATE_2_NOT_FULLY_SATISFIED → DEPLOYMENT_HOLD`
+
+새 권한을 만드는 규칙이 아니라, 기존 필수 조건을 Fail-Closed로 해석한 것이다. 이 표현을 준비 문서에 반영하는 일은 후속 문서 작업으로 남긴다(이번 PR에서 준비 문서는 바꾸지 않는다).
 
 **Thomas 결정 항목**
 
 1. Gate 2: 가안 승인 여부(kit 변경, 실행, 선택 탐침 각각)
 2. 이미지 검증: §2.2 기준의 진입점을 정식 경로로 인정할지(V-1). 인정하면 구현 PR 승인(V-2). CI 보강 포함 여부
-3. Rollback: R-1 + R-2를 Gate 6 충족으로 볼지
-4. Candidate 태그 확정
-5. 배포 승인(위가 모두 풀린 뒤)
+3. Rollback: ROLLBACK_TARGET_VERIFIED + ROLLBACK_PROCEDURE_REVIEWED를 Gate 6 충족으로 볼지(FUNCTIONAL과는 따로 기록)
+4. Candidate 태그 확정(최종 배포 기준선이 정해진 뒤, §3.5)
+5. D-10 ISOLATION EVIDENCE(§2.5)를 V-4의 필수 증거로 받아들일지
+6. 배포 승인(위가 모두 풀린 뒤)
 
 이 문서의 병합이나 CI 통과는 어떤 상태도 바꾸지 않는다. 특히 Gate 2는 직접 합성 검증이 끝나거나 Thomas가 다른 증거의 수용을 명시하기 전까지 부분 충족이다.
 
