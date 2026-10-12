@@ -296,10 +296,15 @@ def check_tree(run: Runner, tree: str, promote: bool = False) -> list[Result]:
 
 
 def _parse_time(value: object) -> datetime | None:
+    """An aware instant, or None. A time without a zone is None too: it names no instant, and
+    comparing it with the aware ``now`` would raise instead of judging."""
+    if not isinstance(value, str):
+        return None
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        at = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    return at if at.tzinfo is not None and at.utcoffset() is not None else None
 
 
 def _jsonl(text: str) -> list[dict]:
@@ -350,13 +355,21 @@ def check_scheduled_fires(run: Runner, now: datetime, promote: bool) -> Result:
         if row.get("schedule_id"):
             latest[str(row["schedule_id"])] = row
     horizon = now + timedelta(seconds=FACTORY_DUE_MARGIN_SECONDS)
-    due = sorted(str(row.get("next_run_at")) for row in latest.values()
-                 if row.get("kind") == "crypto_factory" and row.get("enabled")
-                 and (at := _parse_time(row.get("next_run_at"))) is not None and at <= horizon)
+    factories = [row for row in latest.values() if row.get("kind") == "crypto_factory" and row.get("enabled")]
+    due = sorted(str(row.get("next_run_at")) for row in factories
+                 if (at := _parse_time(row.get("next_run_at"))) is not None and at <= horizon)
+    # An enabled factory whose next run cannot be read could be due now (Thomas 2026-10-12). Only
+    # the schedule id's suffix is named, never the value.
+    unknown = sorted(str(row["schedule_id"])[-8:] for row in factories if _parse_time(row.get("next_run_at")) is None)
     if due:
         return Result("STOP" if promote else "WARN", "fires",
                       f"{len(due)} crypto_factory fire(s) due by {horizon:%H:%M}Z (first {due[0]}). A promote "
-                      f"now restarts the lane under them: promote after they have fired")
+                      f"now restarts the lane under them: promote after they have fired"
+                      + (f"; {len(unknown)} more with an unreadable next_run_at" if unknown else ""))
+    if unknown:
+        return Result("STOP" if promote else "WARN", "fires",
+                      f"{len(unknown)} enabled crypto_factory schedule(s) have no readable timezone-aware "
+                      f"next_run_at ({', '.join(unknown)}); whether one is due is unverified")
     return Result("PASS", "fires", "no scheduled fire in flight and no factory fire due within "
                                    f"{FACTORY_DUE_MARGIN_SECONDS // 60} minutes")
 

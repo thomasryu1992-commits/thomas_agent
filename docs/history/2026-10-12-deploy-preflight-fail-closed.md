@@ -44,6 +44,15 @@
     services is a STOP: a missing service, or a `thomas-` container the file no longer names. That
     includes hermes, since `up -d` would start it. Other projects' containers are not compared.
   - Nine of the new tests fail on the first-round head `907faf64`.
+- **Third round** (Thomas decision 2026-10-12):
+  - An enabled `crypto_factory` schedule whose `next_run_at` was missing, null, empty or unparseable
+    was skipped, so a promote could pass while that fire was due. It is now a WARN on the first run
+    and a STOP at `--promote`. Only the schedule id's suffix is named, never the value.
+  - `_parse_time` also returns None for a time without a zone. Such a value used to raise
+    `TypeError` against the aware `now` and crash the run. A zoneless `started` time is now the
+    unreadable-start case.
+  - Disabled schedules, other kinds and the latest-record rule are unchanged.
+  - Twelve of the new tests fail on `85379e41`.
 - **Secret-free path** (SECRET_FREE_PARTIAL_VALIDATION_ONLY):
   - Tests now pin the raw compose bind contract without reading `.env`:
     - 26 sources, each `${PATH_VAR:-default}`, over six path variables and no credential;

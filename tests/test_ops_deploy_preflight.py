@@ -511,3 +511,93 @@ def test_an_unset_state_variable_is_caught_by_the_volume_check():
     assert "${THOMAS_STATE_DIR:-./.runtime_governance_state}".split(":-")[1].startswith("./")
     unresolved = f"{TREE}/.runtime_governance_state"
     assert _levels(pf.preflight(_host(state_source=unresolved), 42, TREE))["volumes"] == "STOP"
+
+
+# --- an enabled factory's next run must be a readable, zoned instant (Thomas 2026-10-12) ---------------------
+
+FAR = NOW + timedelta(hours=3)
+
+
+def _row(sid="schedule_bad00001", kind="crypto_factory", enabled=True, **next_run):
+    row = {"schedule_id": sid, "kind": kind, "enabled": enabled}
+    row.update(next_run)                      # no key at all when the caller passes nothing
+    return json.dumps(row)
+
+
+BAD_NEXT_RUN = {
+    "missing": {},
+    "null": {"next_run_at": None},
+    "empty": {"next_run_at": ""},
+    "impossible-date": {"next_run_at": "2026-13-40T08:00:00Z"},
+    "garbage": {"next_run_at": "garbage-ts-91c4"},
+    "no-zone": {"next_run_at": "2026-10-05T08:15:00"},
+    "a-number": {"next_run_at": 1791187200},
+}
+
+
+@pytest.mark.parametrize("next_run", BAD_NEXT_RUN.values(), ids=BAD_NEXT_RUN.keys())
+def test_an_enabled_factory_with_an_unreadable_next_run_warns_first_and_stops_the_promote(next_run):
+    schedules = _row(**next_run)
+    first, promote = _fires(schedules=schedules), _fires(promote=True, schedules=schedules)
+    assert (first.level, promote.level) == ("WARN", "STOP")
+    assert "bad00001" in promote.message and "unverified" in promote.message
+
+
+@pytest.mark.parametrize("value", [_iso(FAR), FAR.astimezone(timezone(timedelta(hours=7))).isoformat(),
+                                   FAR.isoformat()], ids=["Z", "plus-07", "plus-00"])
+def test_a_zoned_next_run_far_off_passes_both_runs(value):
+    schedules = _row(next_run_at=value)
+    assert (_fires(schedules=schedules).level, _fires(promote=True, schedules=schedules).level) == ("PASS", "PASS")
+
+
+def test_an_offset_next_run_inside_the_margin_is_due():
+    soon = (NOW + timedelta(minutes=5)).astimezone(timezone(timedelta(hours=-5))).isoformat()
+    schedules = _row(next_run_at=soon)
+    assert (_fires(schedules=schedules).level, _fires(promote=True, schedules=schedules).level) == ("WARN", "STOP")
+
+
+@pytest.mark.parametrize("schedules", [
+    _row(enabled=False, next_run_at="garbage"),
+    _row(kind="health_watch", next_run_at="garbage"),
+    _row(kind="holdings_refresh"),
+], ids=["disabled-factory", "other-kind", "other-kind-missing"])
+def test_only_an_enabled_factory_is_held_to_it(schedules):
+    assert _fires(promote=True, schedules=schedules).level == "PASS"
+
+
+def test_the_latest_record_of_a_schedule_decides():
+    fixed = "\n".join([_row(next_run_at="garbage"), _row(next_run_at=_iso(FAR))])
+    broken = "\n".join([_row(next_run_at=_iso(FAR)), _row(next_run_at="garbage")])
+    assert _fires(promote=True, schedules=fixed).level == "PASS"
+    assert _fires(promote=True, schedules=broken).level == "STOP"
+
+
+def test_one_unreadable_factory_among_good_ones_stops_the_promote():
+    schedules = "\n".join([_row(sid="schedule_good0001", next_run_at=_iso(FAR)),
+                           _row(sid="schedule_good0002", next_run_at=_iso(FAR + timedelta(hours=1))),
+                           _row(sid="schedule_bad00001", next_run_at="garbage")])
+    result = _fires(promote=True, schedules=schedules)
+    assert result.level == "STOP" and "bad00001" in result.message and "good" not in result.message
+
+
+def test_a_due_fire_and_an_unreadable_one_are_both_named():
+    schedules = "\n".join([_schedule(NOW + timedelta(minutes=4)), _row(next_run_at="garbage")])
+    result = _fires(promote=True, schedules=schedules)
+    assert result.level == "STOP" and "1 more with an unreadable next_run_at" in result.message
+
+
+def test_an_unreadable_next_run_fails_the_promote_and_prints_no_value(capsys):
+    run = _promote_host(schedules=_row(next_run_at="garbage-ts-91c4"))
+    assert pf.main(["42", "--promote", "--tree", TREE], run=run) == 1
+    captured = capsys.readouterr()
+    assert "DEPLOY_PREFLIGHT=STOP" in captured.out
+    assert "garbage-ts-91c4" not in captured.out + captured.err and SECRET not in captured.out + captured.err
+    assert "Traceback" not in captured.out + captured.err
+
+
+def test_a_zoneless_start_time_is_unreadable_not_a_crash():
+    """``(now - at)`` with a naive ``at`` raised TypeError; it is now the unreadable-start case."""
+    events = json.dumps({"action": "started", "schedule_run_id": "srun_n", "created_at": "2026-10-05T08:12:40",
+                         "kind": "crypto_factory", "schedule_id": "schedule_x"})
+    assert _fires(events=events).level == "PASS"
+    assert _fires(promote=True, events=events).level == "STOP"
