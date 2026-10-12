@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .. import timeutil
-from ..errors import ToolError
+from ..errors import MvpRuntimeError, ToolError
 from ..filelock import locked
 from ..paths import repo_root as _repo_root
 from . import allocation, binance_wallet, cash_flows, classification, combined, disclosure
@@ -151,7 +151,7 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
             if "transfer_spot_to_futures" in pass_result["errors"] or "transfer_futures_to_spot" in pass_result["errors"]:
                 transfers = None
         except Exception as exc:  # noqa: BLE001 — see the comment above
-            transfers, flows_note = None, type(exc).__name__
+            transfers, flows_note = None, _reason(exc)
     # H5a entries, read once per fire: the allocation places by them, and a new baseline records their
     # version (H5b).
     try:
@@ -187,7 +187,7 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
             cash_flows.collect_toss(feed, snapshot, state_dir(root), now=now)
             toss_ok = True
     except Exception as exc:  # noqa: BLE001 — a Toss shadow failure costs that pass, not the summary
-        flows_note = flows_note or f"toss {type(exc).__name__}"
+        flows_note = flows_note or f"toss {_reason(exc)}"
     try:
         flows = cash_flows.summary(state_dir(root))
         # H6d-min §11: readiness judges this fire's health, never a past PASS — every history read, the
@@ -217,7 +217,7 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
             # Last, so only a fire whose histories, ledger, Toss pass and readiness all ended counts.
             cash_flows.mark_fire_verified(state_dir(root), now=now)
     except Exception as exc:  # noqa: BLE001 — shadow bookkeeping must not cost the board
-        flows_note = flows_note or type(exc).__name__
+        flows_note = flows_note or _reason(exc)
     if flows_note:
         body.setdefault("cash_flows", {"mode": cash_flows.ACCOUNTING_MODE})["error"] = flows_note
     # H3: the doors get one table under the single-holding rule; the whole fire goes to the local file.
@@ -251,6 +251,33 @@ def mark_exceptions_told(token: str | None, *, now: str, root: Path | None = Non
     """Record that Thomas was told of the H6 exceptions ``token`` names — only after delivery (H6d-min:
     by exception, so one found while the message was in flight is still told)."""
     cash_flows.mark_exceptions_told(state_dir(root), token=token, now=now)
+
+
+def _reason(exc: BaseException) -> str:
+    """The reason code a runtime error carries, else the exception's class (C7 PR-D: a refused ledger
+    said only "ToolError" on the board, which named nothing)."""
+    return exc.reason_code if isinstance(exc, MvpRuntimeError) else type(exc).__name__
+
+
+def blocked_check(*, now: str, root: Path | None = None) -> dict[str, Any]:
+    """C7 PR-D: whether the cash-flow ledger or its state is BLOCKED, judged on its own after the fire —
+    read-only, whatever :func:`refresh` returned (an early return, a failed Toss read). Returns ``{"alert":
+    (token, text) | None, "note": str | None}``; the caller sends the alert and only then records it with
+    :func:`mark_blocked_told`. Never raises: a judgement that cannot run is told as BLOCKED, not as fine."""
+    try:
+        return cash_flows.blocked_alert(state_dir(root), now=now)
+    except Exception as exc:  # noqa: BLE001 — see the docstring
+        reason = type(exc).__name__
+        return {"alert": (f"{cash_flows.BLOCKED_TOKEN_TOLD}|{cash_flows.BLOCKED_KEY_STATE}:check:{reason}",
+                          f"[보유 자산] H6 현금흐름 원장 BLOCKED 판정이 실행되지 않았습니다 ({reason}, {now}). "
+                          "정상으로 보지 않습니다. Thomas 터미널에서 확인해 주세요."),
+                "note": f"check failed ({reason})"}
+
+
+def mark_blocked_told(token: str, *, now: str, root: Path | None = None) -> bool:
+    """Record a delivered BLOCKED or clearing message (C7 PR-D) — only after delivery. A write that fails
+    raises, so it is never counted as recorded."""
+    return cash_flows.mark_blocked_told(state_dir(root), token=token, now=now)
 
 
 def mark_told(state: str, *, now: str, root: Path | None = None) -> None:

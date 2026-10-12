@@ -231,7 +231,7 @@ def test_c7_10_a_re_read_after_a_restore_appends_nothing_twice(live, tmp_path, r
 # C7-D: a refused write today reaches no one. The exception alert is computed after ``summary``, which
 # verifies the ledger first; with the chain broken the whole block raises, and the board keeps only the
 # exception's class name. The design (§5) pairs every refusal with its own message; this pins the gap.
-def test_defect_c7_d_a_refused_write_sends_no_message(monkeypatch, tmp_path):
+def test_c7_d_a_refused_write_is_told_once_by_the_blocked_check(monkeypatch, tmp_path):
     from runtime.mvp_runtime.holdings import store
     from tests.test_mvp_runtime_holdings_cash_flows import _store_fire
 
@@ -247,11 +247,18 @@ def test_defect_c7_d_a_refused_write_sends_no_message(monkeypatch, tmp_path):
     lines[1] = json.dumps(row)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     second = _store_fire(monkeypatch, tmp_path, flows=feed, now="2026-10-09T04:00:00Z")
-    # Today: nothing is offered to Thomas, though the exception was never told and every write is refused.
+    # refresh's own messages all need a readable ledger, so it still offers none of them ...
     assert (second["alert"], second["readiness_alert"], second["exception_alert"]) == (None, None, None)
     with pytest.raises(ToolError) as exc:
         cash_flows.verify(d)
     assert exc.value.reason_code == cash_flows.LEDGER_TAMPERED
+    # ... and since PR-D the BLOCKED check, read-only and on its own, tells it once, by its reason code.
+    snapshot = json.loads(store.snapshot_path(tmp_path).read_text(encoding="utf-8"))
+    assert snapshot["cash_flows"]["error"] == cash_flows.LEDGER_TAMPERED
+    blocked = store.blocked_check(now="2026-10-09T04:00:00Z", root=tmp_path)
+    assert blocked["alert"] is not None and cash_flows.LEDGER_TAMPERED in blocked["alert"][1]
+    assert store.mark_blocked_told(blocked["alert"][0], now="2026-10-09T04:00:00Z", root=tmp_path)
+    assert store.blocked_check(now="2026-10-09T05:00:00Z", root=tmp_path)["alert"] is None
 
 
 # C7-11: the state file is gone (C2). Without cursors the next read reaches back the first-read lookback
