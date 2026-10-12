@@ -1,6 +1,6 @@
 # 제안: C7 PR-D 배포 차단 조건 해소 — 검증 설계와 운영자 승인 패킷 (DRAFT v0.1)
 
-**상태:** DRAFT 2026-10-12 — PR-D 배포를 막는 조건 셋을 푸는 방법의 설계다. 셋은 Gate 2의 told 파일명 직접 합성 검증, 이미지 내부 동작 검증 경로, Candidate·Rollback 연결 검증이다. 설계만 했고, 어떤 검증도 실행하지 않았다. 상태는 바뀌지 않는다: DIRECT_TOLD_FILENAME_PROBE_NOT_PERFORMED, VALIDATION_PATH_UNRESOLVED, ROLLBACK_NOT_VERIFIED, CANDIDATE_TAG_DECISION_REQUIRED, DEPLOYMENT_HOLD, NOT_GRANTED. 권고는 셋이다. Gate 2는 가안(Guard kit 시험 확장). 이미지 검증은 인자 없는 정식 자가검증 진입점(VALIDATION_PATH_DESIGN_PROPOSED, 정책 판단 필요, D-10 격리 증거 정의 포함). Rollback은 세 상태로 나눈다(ROLLBACK_TARGET_VERIFIED, ROLLBACK_PROCEDURE_REVIEWED, ROLLBACK_FUNCTIONAL_VERIFIED). Candidate 태그는 최종 배포 기준선이 정해진 뒤 정한다(`candidate-1217` — PROVISIONAL_RECOMMENDATION). Gate 2가 완전히 충족되지 않으면 배포는 막힌다(GATE_2_NOT_FULLY_SATISFIED → DEPLOYMENT_HOLD). 각 단계의 구현과 실행은 따로 Thomas 승인을 받는다.
+**상태:** DRAFT 2026-10-12 — PR-D 배포를 막는 조건 셋을 푸는 방법의 설계다. 셋은 Gate 2의 told 파일명 직접 합성 검증, 이미지 내부 동작 검증 경로, Candidate·Rollback 연결 검증이다. 2026-10-12 갱신: Gate 2는 kit 직접 합성 시험(`ALL PASS`, exit 0)을 Thomas가 수용해 충족됐다(GATE_2_FULLY_SATISFIED, GATE_2_DIRECT_SYNTHETIC_TEST_PASSED). 새 세션 told 실탐침은 하지 않았다(NEW_SESSION_TOLD_PROBE_NOT_PERFORMED). 자가검증 진입점 `scripts/c7_blocked_selftest.py`를 구현했고 저장소 합성 테스트를 통과했다(VALIDATION_ENTRYPOINT_IMPLEMENTED, REPOSITORY_SYNTHETIC_TESTS_PASSED, §2.6). candidate 안 실행과 D-10 격리 증거는 아직이다. 남은 상태: VALIDATION_PATH_UNRESOLVED, ROLLBACK_NOT_VERIFIED, CANDIDATE_TAG_DECISION_REQUIRED, DEPLOYMENT_HOLD, NOT_GRANTED. 권고는 셋이다. Gate 2는 가안(Guard kit 시험 확장). 이미지 검증은 인자 없는 정식 자가검증 진입점(VALIDATION_PATH_DESIGN_PROPOSED, 정책 판단 필요, D-10 격리 증거 정의 포함). Rollback은 세 상태로 나눈다(ROLLBACK_TARGET_VERIFIED, ROLLBACK_PROCEDURE_REVIEWED, ROLLBACK_FUNCTIONAL_VERIFIED). Candidate 태그는 최종 배포 기준선이 정해진 뒤 정한다(`candidate-1217` — PROVISIONAL_RECOMMENDATION. 자가검증 PR이 묶음에 들어오므로 다시 정한다). Gate 2가 완전히 충족되지 않으면 배포는 막힌다(GATE_2_NOT_FULLY_SATISFIED → DEPLOYMENT_HOLD). 이 해석은 이제 준비 문서에도 반영됐다. 각 단계의 구현과 실행은 따로 Thomas 승인을 받는다.
 
 **기준:** origin/main `52e2b3ba`(#1219), 2026-10-12. 저장소 코드·문서, `/root/.claude/global-guard-kit`의 README·`test_guard.py`·`refresh_guard.py`를 읽기만 했다. Guard 탐침, kit 실행·변경, `docker run`/`exec`, 이미지 빌드·태그, 상태 파일·원장·Secret 접근은 없었다.
 **소유:** 배포 준비의 기준선과 Gate 정의는 `HOLDINGS_C7_PR_D_DEPLOY_READINESS_V0.1.md`에 있다. 이 문서는 그 Gate를 바꾸지 않고, 각 Gate를 채울 방법만 설계한다. Guard 정책은 `.claude/hooks/guard-local-only.sh`와 그 테스트가 정한다.
@@ -29,7 +29,13 @@
 - 설치본과 main의 바이트 동일성
 - main CI 테스트(`test_the_told_record_is_refused_by_name_wherever_it_is`, `test_the_told_rule_leaves_ordinary_work_alone`)
 
-이것은 간접이다(TOLD_FILENAME_PROTECTION_VERIFIED_BY_CODE_IDENTITY_AND_CI). 운영 Guard에 대한 직접 합성 검증은 하지 않았다(DIRECT_TOLD_FILENAME_PROBE_NOT_PERFORMED).
+이것은 간접이다(TOLD_FILENAME_PROTECTION_VERIFIED_BY_CODE_IDENTITY_AND_CI). 운영 Guard에 대한 직접 합성 검증은 하지 않았다(DIRECT_TOLD_FILENAME_PROBE_NOT_PERFORMED, 작성 당시 기록).
+
+**갱신(2026-10-12):** §1.4의 G2-1–G2-4를 수행했다.
+- kit `test_guard.py`: sha256 `1922dcfe…` → `d1ae8d77055d3799ce5eb98701c84b45780c1410bd1cb8016e94bf1b82c9dab4`, 사본 `test_guard.py.pre-told`
+- 결과: 설정 6/6, DENY 15+3, ALLOW 10+1, Guard가 없을 때의 동작 3/3, `ALL PASS`, exit 0, 실행 전후 설치본·kit·설정 sha 불변
+
+Thomas가 이를 Gate 2의 직접 합성 검증으로 수용했다(GATE_2_FULLY_SATISFIED, GATE_2_DIRECT_SYNTHETIC_TEST_PASSED). 이전 레이블 DIRECT_TOLD_FILENAME_PROBE_NOT_PERFORMED는 이것으로 대체됐다. 남는 미수행은 새 Claude 세션의 told 실탐침뿐이다(NEW_SESSION_TOLD_PROBE_NOT_PERFORMED, 필수 아님). kit 합성 시험과 같은 증거로 적지 않는다.
 
 ### 1.2 가안 — Guard kit 시험 확장 (권고)
 
@@ -82,7 +88,7 @@
 | G2-3 kit 변경 | Thomas (또는 승인 시 Claude) | **필요** | 1.2의 네 줄만 추가. `diff` 결과가 그 네 줄뿐 | 다른 줄이 바뀌었으면 사본으로 되돌림 |
 | G2-4 kit 시험 | Thomas | **필요** | `--project-tree` 없이 `python3 test_guard.py`를 돌린다(전역 설정 + 설치본만). `ok` 줄에 새 DENY 3건·ALLOW 1건이 있고, `ALL PASS`, exit 0 | `FAIL`이 하나라도 있으면 사본으로 되돌리고 보고. 설치본은 건드리지 않는다 |
 | G2-5 새 세션 탐침(선택) | Thomas가 새 Claude 세션에 지시 | **필요** | hook이 거부 메시지로 대답 | 다른 대답이면 보고 |
-| G2-6 판정 | Claude가 증거 판독 | — | G2-1–G2-4 통과 시 Gate 2 직접 합성 조건 충족을 **제안** | Thomas가 받아들이기 전까지 DIRECT_TOLD_FILENAME_PROBE_NOT_PERFORMED 유지 |
+| G2-6 판정 | Claude가 증거 판독 | — | G2-1–G2-4 통과 시 Gate 2 직접 합성 조건 충족을 **제안** | Thomas가 받아들이기 전까지 DIRECT_TOLD_FILENAME_PROBE_NOT_PERFORMED 유지. **결과(2026-10-12): 모두 통과, Thomas 수용 → GATE_2_FULLY_SATISFIED** |
 
 ## 2. 이미지 내부 동작 검증 경로
 
@@ -182,10 +188,10 @@ Dockerfile에는 `VOLUME ["/app/.runtime_governance_state"]`가 있다. 그 디�
 | Network | `.HostConfig.NetworkMode` | `none`. 이 모드에서는 loopback 외의 인터페이스가 없다. Telegram, 거래소, 내부 서비스 어디에도 닿을 수 없다 |
 | Mounts | `.Mounts`, `.HostConfig.Mounts` | 정확히 두 개, 둘 다 `Type=tmpfs`: `/tmp`, 그리고 `/app/.runtime_governance_state`(mode 0555) |
 | Volume | `.Mounts`의 `Type` | `bind`, `volume`이 하나도 없음. 상태 루트에 tmpfs가 명시돼 있어 익명 볼륨이 생기지 않았음을 이 목록으로 확인 |
-| Tmpfs | 진입점의 합성 루트 경로 출력(경로만) | `/tmp/` 아래. 상태 잠금 파일(`…/holdings/*.lock`)도 그 아래. 끝나면 `TemporaryDirectory`가 지우고, tmpfs는 컨테이너와 함께 사라짐 |
+| Tmpfs | `.Mounts`의 `/tmp` 항목 + 진입점의 `PASS synthetic_root_isolated` | `/tmp`가 tmpfs다. 진입점은 경로를 출력하지 않는다(D-6). 대신 이 검사가 lane이 고정 부모 `/tmp` 바로 아래에 만들어졌는지 확인한다(`SYNTHETIC_PARENT`, §2.6). 상태 잠금 파일(`…/holdings/*.lock`)도 그 아래다. 끝나면 `TemporaryDirectory`가 지우고, tmpfs는 컨테이너와 함께 사라짐 |
 | Environment | 환경 변수 **이름** 목록 | Dockerfile 기본 ENV 다섯 개(`PYTHONUNBUFFERED`, `PYTHONUTF8`, `PYTHONDONTWRITEBYTECODE`, `PIP_NO_CACHE_DIR`, `PIP_DISABLE_PIP_VERSION_CHECK`)와 Docker 기본(`PATH`, `HOSTNAME` 등)만. 주입된 변수 없음. 진입점은 env를 읽지 않음(D-1, 고정 테스트) |
 | Filesystem | `.HostConfig.ReadonlyRootfs`, 상태 루트 tmpfs mode | `true`, 0555. 운영 파일은 컨테이너 안에 없고, 상태 루트에는 쓸 수 없음 |
-| Output | 표준 출력 | `PASS`/`FAIL` 단어, 소스 sha256, 합성 루트 경로, `RESULT`뿐. 키·digest·금액 없음 |
+| Output | 표준 출력 | `PASS`/`FAIL` 단어(`source_integrity` 포함), 소스 sha256, `RESULT`뿐. 경로 내용·키·digest·금액 없음 |
 | Exit Code | `docker start -a`의 종료 코드 | 성공 0, 실패 0이 아님 |
 
 **임시 루트 규칙(진입점 구현 조건):**
@@ -205,6 +211,50 @@ Dockerfile에는 `VOLUME ["/app/.runtime_governance_state"]`가 있다. 그 디�
 - 출력에 금융 데이터나 Secret
 - 이미지 id가 승인 candidate와 다름
 
+### 2.6 구현 (2026-10-12, Thomas 조건부 승인)
+
+**V-1·V-2 수행.** Thomas가 정책 조건 10개를 붙여 구현을 승인했고, 진입점을 구현했다. Runtime 코드는 바꾸지 않았다.
+- **파일:** `scripts/c7_blocked_selftest.py`, 실행은 `python -m scripts.c7_blocked_selftest`
+- **검사 10개(§2.3의 7개를 넓힘):**
+  - `synthetic_root_isolated`, `healthy_is_quiet`, `broken_is_told_once_and_stays_quiet`
+  - `failed_delivery_is_offered_again`, `failed_record_is_offered_again`
+  - `repair_is_cleared_once_and_recurrence_told`, `vanished_is_not_cleared`, `stale_token_is_refused`
+  - `lock_is_not_blocked`, `alert_text_carries_no_key`
+
+**D-1–D-9의 구현 근거**
+- **입력(D-1, D-5):** 인자가 있으면 아무것도 돌리기 전에 `FAIL input_refused`, exit 2. 환경 변수와 stdin은 읽지 않는다(AST 테스트).
+- **데이터 격리(D-2, D-3):**
+  - 검사마다 새 `TemporaryDirectory`를 만든다. 모든 호출에 그 안의 경로를 명시한다.
+  - `cash_flows`만 import하고 `store`는 import하지 않는다. `store.state_dir()`는 기본값이 실제 상태 경로다.
+  - `state_dir(...)` 호출과 `STATE_REL`이 없다(AST 테스트).
+  - 루트를 만들 수 없거나 `.runtime_governance_state` 아래로 풀리면 FAIL이다. fallback은 없다(테스트).
+  - 모든 lane이 임시 루트 안에서만 열리고 끝나면 지워진다(테스트).
+  - **보완(2026-10-12, 병합 전):** 처음 구현은 `TemporaryDirectory`에 `dir`를 주지 않아 Python의 임시 디렉터리 선택(`TMPDIR` 등)을 따랐다. §2.5의 `/tmp` tmpfs 규칙과 어긋났고, 환경 변수가 루트를 옮길 수 있었다. 이제 부모는 상수 `SYNTHETIC_PARENT = /tmp`로 고정했고, 모든 lane은 `TemporaryDirectory(dir=/tmp)`로 만든다. 부모가 없거나 상태 디렉터리 아래면 lane 하나 열기 전에 `FAIL synthetic_root_isolated`, exit 1이다. 만들어진 루트가 부모 바로 아래가 아니면 cutover 전에 거부한다. 다른 임시 디렉터리로 대체하지 않는다(테스트: 부모 없음, 상태 디렉터리 아래, 다른 곳에 생성됨, `tempfile.tempdir`이 바뀌어도 쓰지 않음, `dir` 인자 기록, AST의 `gettempdir`·`tempdir` 금지).
+  - **Windows CI:** Windows에는 `/tmp`가 없다. 테스트는 모듈 상수만 pytest 디렉터리로 바꿔 같은 검사를 돌린다. CLI 인자나 환경 변수로는 바꿀 수 없고, skip·xfail은 없다. `SYNTHETIC_PARENT`가 `/tmp`인지는 별도 테스트로 고정한다.
+- **네트워크·전송(D-4):** 새 인터프리터에서 진입점만 import했을 때 `socket`, `ssl`, `http.client`, `urllib.request`, `requests`, `httpx`가 로드되지 않는다. operator, providers, scheduler, `holdings.store`도 로드되지 않는다(테스트). mock이 아니라 실제 import 그래프로 확인했다. 전송은 "기록할지"를 이 프로세스가 정하는 것으로 대체했다.
+- **출력(D-6):** `PASS|FAIL <검사>`, `SOURCE <sha256> <경로>`, `RESULT PASS|FAIL`뿐이다(정규식 테스트). 예외는 메시지 없는 `FAIL`로 끝난다(테스트).
+- **소스 무결성(보완 2026-10-12, 병합 전):** 처음 구현은 덮는 소스가 없으면 `SOURCE missing`을 찍고도 상태 전이 검사만으로 `RESULT PASS`를 낼 수 있었다. 읽기 예외는 traceback으로 샐 수 있었다. 이제 다섯 파일 각각이 상대 경로이고 `..`·상태 디렉터리 이름이 없으며, symlink 없이 소스 루트 안의 일반 파일로 풀리고, 읽기·해시가 성공해야 한다. 하나라도 어긋나면 `FAIL source_integrity`, `RESULT FAIL`, exit 1이다. 그 파일의 `SOURCE` 줄은 나오지 않고, 메시지·traceback도 없다. 검사 대상 목록은 상수이고 인자로 바꿀 수 없다. 테스트는 저장소를 건드리지 않고 복사한 트리에서 만든다: 1개·여러 개 누락, `OSError`, `PermissionError`, 해시 실패, `..`·절대 경로·상태 디렉터리·디렉터리, symlink 탈출, 그리고 상태 전이가 모두 PASS여도 전체 FAIL.
+- **검토와 고정(D-7, D-8):** 이 PR의 검토 대상이다. `tests/test_c7_blocked_selftest.py` 36건이 위를 고정한다(처음 18건, 보완 뒤 36건). PR-D 동작을 망가뜨리면(해소 보류 규칙 제거, 오래된 기록 거부 제거, 판정 침묵) 해당 검사가 FAIL이 된다.
+- **Runtime 불변(D-9):** `runtime/`의 어떤 모듈도 진입점을 import하지 않는다(테스트).
+
+**원장 접근 금지 테스트의 예외(Thomas 결정 2026-10-12)**
+- `tests/test_mvp_runtime_holdings_cash_flows.py::test_no_door_module_reads_the_ledger`는 import 검사와 파일명 리터럴 검사를 나눠 판정하도록 바꿨다.
+- 정확히 `scripts/c7_blocked_selftest.py` 하나만 `cash_flows` **import**가 허용된다(`IMPORT_ONLY_EXEMPT`). 원장·상태 파일명 리터럴 금지는 이 파일에도 그대로 적용된다.
+- 기존 허용 파일 셋(`DOOR_ALLOWED`)은 그대로다.
+- 부정 테스트로 다음을 고정했다:
+  - 이 파일에 리터럴이 생기면 거부된다.
+  - 다른 모듈의 import는 거부된다.
+  - 이름만 같은 다른 경로는 거부된다.
+  - 예외 목록이 늘어나지 않는다.
+- 일반적인 원장 접근 권한의 확대가 아니다.
+
+**이 구현으로 바뀌지 않는 것**
+- candidate 이미지 안에서 돌리지 않았다.
+- D-10 ISOLATION EVIDENCE(§2.5)는 확보하지 않았다.
+- 저장소 테스트는 pytest 안에서만 진입점을 돌렸다.
+
+그래서 상태는 VALIDATION_ENTRYPOINT_IMPLEMENTED, REPOSITORY_SYNTHETIC_TESTS_PASSED이고, 배포를 막는 VALIDATION_PATH_UNRESOLVED는 그대로다. 이 진입점이 candidate 묶음에 들어가므로, 배포 범위 계산(준비 문서 §2)은 최종 기준선에서 다시 한다(§3.5).
+
 ## 3. Candidate·Rollback 연결 검증
 
 ### 3.1 원칙
@@ -217,14 +267,14 @@ Dockerfile에는 `VOLUME ["/app/.runtime_governance_state"]`가 있다. 그 디�
 | 단계 | 실행 주체 | 승인 | 예상 증거 | 중단 조건 |
 |---|---|---|---|---|
 | C-1 승인 SHA 고정 | Thomas | 배포 승인의 일부 | 배포할 origin/main 전체 SHA X | X가 #1216·#1217 병합 커밋을 포함하지 않으면 중단 |
-| C-2 깨끗한 worktree | 배포자 | 배포 승인 | `/root/deploy-1217`의 `HEAD` = X, `git status` 비어 있음 | 다르면 중단 |
-| C-3 첫 preflight | 배포자 | 배포 승인 | `deploy_preflight.py 1217`에 STOP 없음, `rollback` 줄이 태그할 원본을 지목 | STOP이면 worktree 제거 후 보고 |
+| C-2 깨끗한 worktree | 배포자 | 배포 승인 | `/root/deploy-<N>`의 `HEAD` = X, `git status` 비어 있음 | 다르면 중단 |
+| C-3 첫 preflight | 배포자 | 배포 승인 | `deploy_preflight.py <N>`에 STOP 없음, `rollback` 줄이 태그할 원본을 지목 | STOP이면 worktree 제거 후 보고 |
 | C-4 배포 전 이미지 기록 | 배포자 | 배포 승인(메타데이터 읽기) | 여덟 컨테이너의 `.Image`가 모두 같은 id P(지금 관측은 `67d9b622d648`) | 서로 다르면 중단 |
-| C-5 rollback 태그 | 배포자 | 배포 승인 | `rollback-pre-1217` 생성 뒤 `docker image inspect --format '{{.Id}}'` = P | ≠ P면 태그를 지우고 중단 |
+| C-5 rollback 태그 | 배포자 | 배포 승인 | `rollback-pre-<N>` 생성 뒤 `docker image inspect --format '{{.Id}}'` = P | ≠ P면 태그를 지우고 중단 |
 | C-6 candidate 빌드 | 배포자 | 배포 승인 | `candidate-<N>`(§3.5에서 확정한 번호) 이미지 id Q, `latest`는 여전히 P | `latest`가 바뀌면 중단 |
-| C-7 코드 동일성 | 배포자 | **필요**(컨테이너 실행) | candidate 안 `runtime/`·`scripts/` 파일의 sha256 목록이 worktree X의 같은 목록과 같다. 기준 목록은 `git -C /root/deploy-1217 ls-files -z runtime scripts \| xargs -0 sha256sum`이다. 이미지 쪽은 `--entrypoint sh`로 `find`와 `sha256sum`만 돌리는 격리 실행(D-10 플래그)이다. **`python`도 `-m`도 holdings import도 상태 mount도 없다.** 파일 바이트를 읽을 뿐이고 코드를 실행하지 않는다. 그래서 §2.1의 5단계 방식과 다르다. 진입점이 승인되면 V-4의 소스 해시가 이를 보강한다 | 한 줄이라도 다르면 candidate 폐기, 중단 |
+| C-7 코드 동일성 | 배포자 | **필요**(컨테이너 실행) | candidate 안 `runtime/`·`scripts/` 파일의 sha256 목록이 worktree X의 같은 목록과 같다. 기준 목록은 목록과 해시를 **같은 디렉터리에서** 만든다: `(cd /root/deploy-<N> && git ls-files -z runtime scripts \| sort -z \| xargs -0 sha256sum)`. 이전 문안 `git -C … ls-files \| xargs -0 sha256sum`은 해시를 호출한 위치에서 계산해 틀린다. 이미지 쪽은 `--entrypoint sh`로 `cd /app && find runtime scripts -type f \| sort \| xargs sha256sum`만 돌리는 격리 실행(D-10 플래그)이다. 두 목록을 경로 기준으로 정렬해 비교한다. **`python`도 `-m`도 holdings import도 상태 mount도 없다.** 파일 바이트를 읽을 뿐이고 코드를 실행하지 않는다. 그래서 §2.1의 5단계 방식과 다르다. 진입점이 승인되면 V-4의 소스 해시가 이를 보강한다 | 한 줄이라도 다르면 candidate 폐기, 중단 |
 | C-8 동작 검증 | 2.4 V-4 | **필요** | `RESULT PASS` | 경로 미승인이면 여기서 HOLD |
-| C-9 promote 전 preflight | 배포자 | 배포 승인 | `--promote --tree`에 STOP 없음. `rollback-pre-1217` = 지금 도는 이미지, `fires` 없음 | `promote`·`fires` STOP이면 대기 또는 중단 |
+| C-9 promote 전 preflight | 배포자 | 배포 승인 | `--promote --tree`에 STOP 없음. `rollback-pre-<N>` = 지금 도는 이미지, `fires` 없음 | `promote`·`fires` STOP이면 대기 또는 중단 |
 | C-10 promote·up | 배포자 | **배포 승인** | 여덟 컨테이너 `.Image` = Q, healthy, 두 lane의 다음 `fired` | 하나라도 아니면 3.3의 복구 |
 
 ### 3.3 Rollback 검증 수준 — 세 상태
@@ -286,15 +336,15 @@ Dockerfile에는 `VOLUME ["/app/.runtime_governance_state"]`가 있다. 그 디�
 
 | 조건 | 지금 | 풀리는 조건 |
 |---|---|---|
-| Gate 2 직접 합성 | DIRECT_TOLD_FILENAME_PROBE_NOT_PERFORMED(부분 충족) | §1.4 승인·실행·수용 |
-| 이미지 내부 동작 | VALIDATION_PATH_UNRESOLVED | §2.4 V-1–V-5 |
+| Gate 2 직접 합성 | **GATE_2_FULLY_SATISFIED**(GATE_2_DIRECT_SYNTHETIC_TEST_PASSED, Thomas 수용 2026-10-12). 새 세션 실탐침은 NEW_SESSION_TOLD_PROBE_NOT_PERFORMED | 해소 |
+| 이미지 내부 동작 | VALIDATION_PATH_UNRESOLVED. V-1(정책)과 V-2(구현)는 됐다(VALIDATION_ENTRYPOINT_IMPLEMENTED, REPOSITORY_SYNTHETIC_TESTS_PASSED, §2.6) | V-3 병합, V-4 candidate 격리 실행(D-10 ISOLATION EVIDENCE), V-5 수용 |
 | Candidate 태그 | CANDIDATE_TAG_DECISION_REQUIRED (`candidate-1217` — PROVISIONAL_RECOMMENDATION) | 최종 배포 기준선 확정 뒤 Thomas 확정(§3.5) |
 | Rollback | ROLLBACK_NOT_VERIFIED | §3.3 수준 결정 + 배포 시점 C-4·C-5·C-9(TARGET), 절차 검토(PROCEDURE). FUNCTIONAL은 별도 |
 | 여덟 서비스 진행 작업 | OPERATOR_EVIDENCE_REQUIRED | 배포 시점 운영자 확인 |
 | 배포 승인 | NOT_GRANTED | Thomas 승인 |
 | 판정 | **DEPLOYMENT_HOLD** | 위 모두 |
 
-**Gate 2의 Fail-Closed 해석.** 준비 문서는 "Gate 2가 PENDING 또는 FAILED면 중단"이라고 적는다. 그러나 지금 Gate 2는 부분 충족이다. 이 중간 상태도 막힘으로 읽는다:
+**Gate 2의 Fail-Closed 해석.** 준비 문서는 "Gate 2가 PENDING 또는 FAILED면 중단"이라고 적는다. 작성 당시 Gate 2는 부분 충족이었고, 그 중간 상태도 막힘으로 읽었다(2026-10-12 수용 뒤로는 충족):
 
 `GATE_2_NOT_FULLY_SATISFIED → DEPLOYMENT_HOLD`
 
@@ -302,14 +352,14 @@ Dockerfile에는 `VOLUME ["/app/.runtime_governance_state"]`가 있다. 그 디�
 
 **Thomas 결정 항목**
 
-1. Gate 2: 가안 승인 여부(kit 변경, 실행, 선택 탐침 각각)
-2. 이미지 검증: §2.2 기준의 진입점을 정식 경로로 인정할지(V-1). 인정하면 구현 PR 승인(V-2). CI 보강 포함 여부
+1. ~~Gate 2: 가안 승인 여부~~ — 해소(kit 변경·실행 승인, 결과 수용 2026-10-12. 새 세션 탐침은 필수 아님)
+2. 이미지 검증: V-1·V-2는 됐다(조건부 승인, 구현 PR). 남은 것은 구현 PR 병합(V-3), candidate 격리 실행(V-4)
 3. Rollback: ROLLBACK_TARGET_VERIFIED + ROLLBACK_PROCEDURE_REVIEWED를 Gate 6 충족으로 볼지(FUNCTIONAL과는 따로 기록)
 4. Candidate 태그 확정(최종 배포 기준선이 정해진 뒤, §3.5)
 5. D-10 ISOLATION EVIDENCE(§2.5)를 V-4의 필수 증거로 받아들일지
 6. 배포 승인(위가 모두 풀린 뒤)
 
-이 문서의 병합이나 CI 통과는 어떤 상태도 바꾸지 않는다. 특히 Gate 2는 직접 합성 검증이 끝나거나 Thomas가 다른 증거의 수용을 명시하기 전까지 부분 충족이다.
+이 문서의 병합이나 CI 통과는 어떤 상태도 바꾸지 않는다. Gate 2는 2026-10-12 Thomas의 수용으로 충족됐다. 그 사실은 배포 승인이 아니다.
 
 ## 5. 하지 않은 것
 
