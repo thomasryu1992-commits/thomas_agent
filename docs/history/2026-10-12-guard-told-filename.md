@@ -20,9 +20,13 @@
       - `Read`, `Grep` and `Glob` on that copy;
       - a `Monitor` tail.
     - Two the path rules already covered.
-  - The allowed list gains the one table named on its own (`cat holdings_snapshot.json`), pinning that it
-    still passes. A second test keeps another `*_told.json` name, the increment's history entry, the
-    lane's tests and its source allowed.
+  - A second test keeps these allowed: the one table named on its own (`cat holdings_snapshot.json`),
+    another `*_told.json` name, the increment's history entry, and the lane's tests and source.
+  - Each direction is one test, not one item per form. Every posix-only item is a skip on Windows, counted
+    against `tests/skip_ceiling.json`.
+    - The first run, at one item per form, put 270 skips against a ceiling of 256 on `windows-latest`.
+    - The two tests add two. The win32 ceiling goes 256 → 258, in this PR, as #1207 and #1212 did for
+      their guard tests.
 - **What it deliberately does not do:**
   - No wider pattern. A `holdings_[a-z_]+\.json` would refuse `holdings_snapshot.json`, the one table
     allowed out.
