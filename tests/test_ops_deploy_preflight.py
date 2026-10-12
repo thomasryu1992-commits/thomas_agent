@@ -15,6 +15,8 @@ from scripts.ops import deploy_preflight as pf
 
 RUNNING = "sha256:run"
 TREE = "/root/deploy-42"
+# What `docker compose config` interpolates from .env: a synthetic value that must never be printed.
+SECRET = "synthetic-secret-value-7f3a"
 
 
 def _host(**over):
@@ -34,6 +36,7 @@ def _host(**over):
         "extra_binds": [],
         "events": "",
         "schedules": "",
+        "compose_raw": None,   # None: a well-formed config; a string: compose printed exactly that
     }
     facts.update(over)
     calls = []
@@ -50,8 +53,10 @@ def _host(**over):
             if fmt == "{{.Image}}":
                 return (0, facts["running"]) if facts["running"] else (1, "")
             key = fmt.split('"')[1]
-            return 0, facts["labels"].get(key, "")
+            return (0, facts["labels"].get(key, "")) if facts["labels"] is not None else (1, "")
         if argv[:2] == ["docker", "images"]:
+            if facts["images"] is None:
+                return 1, ""
             return 0, "\n".join(f"{t} {i}" for t, i in facts["images"].items())
         if "rev-list" in argv:
             return 0, facts["behind"]
@@ -64,8 +69,11 @@ def _host(**over):
         if argv[-1] == "origin/main":
             return (0, facts["main"]) if facts["main"] else (1, "")
         if argv[:2] == ["docker", "compose"]:
+            if facts["compose_raw"] is not None:
+                return 0, facts["compose_raw"]
             config = {"services": {
-                "scheduler": {"container_name": "thomas-scheduler", "volumes": [
+                "scheduler": {"container_name": "thomas-scheduler", "environment": {"TELEGRAM_BOT_TOKEN": SECRET},
+                              "volumes": [
                     {"type": "bind", "source": facts["state_source"], "target": "/app/.runtime_governance_state"},
                     *({"type": "bind", "source": s, "target": "/x"} for s in facts["extra_binds"])]},
                 "hermes": {"container_name": "hermes", "volumes": [{"type": "volume", "source": "hermes-data"}]},
@@ -291,3 +299,89 @@ def test_a_torn_line_is_skipped_not_fatal():
     events = '{"action": "start' + "\n" + _event("started", "srun_a", NOW - timedelta(seconds=5))
     assert _fires(events=events).level == "STOP"
 
+
+
+# --- a fact that cannot be read is never a PASS (2026-10-12) -------------------------------------------------
+
+def _promote_host(**over):
+    return _host(images={"latest": RUNNING, "rollback-pre-42": RUNNING, "candidate-42": "sha256:c"}, **over)
+
+
+def test_an_unreadable_image_list_never_reports_the_tags_free():
+    levels = _levels(pf.preflight(_host(images=None), 42, None))
+    assert levels["tags"] == "STOP" and levels["rollback"] == "STOP"
+
+
+def test_an_unreadable_image_list_says_unverified_not_untagged():
+    (result,) = [r for r in pf.preflight(_host(images=None), 42, None) if r.name == "rollback"]
+    assert "unverified" in result.message and "no name to roll back to" not in result.message
+
+
+def test_an_unreadable_image_list_stops_the_promote():
+    assert _levels(pf.preflight(_host(images=None), 42, TREE, promote=True))["promote"] == "STOP"
+
+
+def test_unreadable_scheduler_state_stops_the_promote():
+    assert _fires(promote=True, events=None).level == "STOP"
+    assert _fires(promote=True, schedules=None).level == "STOP"
+
+
+def test_an_unpaired_start_of_unreadable_time_stops_the_promote_and_not_the_first_run():
+    events = json.dumps({"action": "started", "schedule_run_id": "srun_x", "created_at": "garbled",
+                         "kind": "crypto_factory", "schedule_id": "schedule_x"})
+    assert _fires(promote=True, events=events).level == "STOP"
+    assert _fires(events=events).level == "PASS"
+
+
+def test_unreadable_compose_labels_warn_first_and_stop_the_promote():
+    assert _levels(pf.preflight(_host(labels=None), 42, None))["compose"] == "WARN"
+    assert _levels(pf.preflight(_promote_host(labels=None), 42, TREE, promote=True))["compose"] == "STOP"
+
+
+def test_a_stack_started_another_way_still_only_warns_at_promote():
+    """A known mismatch keeps its level: only the unknown became a STOP."""
+    run = _promote_host(labels={"com.docker.compose.project": "deploy-42"})
+    assert _levels(pf.preflight(run, 42, TREE, promote=True))["compose"] == "WARN"
+
+
+@pytest.mark.parametrize("raw", ["not json", "[]", '{"services": []}',
+                                 '{"services": {"s": {"volumes": ["./x:/y"]}}}',
+                                 '{"services": {"s": "x"}}'])
+def test_a_compose_config_that_does_not_parse_stops_without_echoing_it(capsys, raw):
+    noisy = raw.replace("x", SECRET)
+    assert pf.main(["42", "--tree", TREE], run=_host(compose_raw=noisy)) == 1
+    captured = capsys.readouterr()
+    assert "[STOP] volumes:" in captured.out and "DEPLOY_PREFLIGHT=STOP" in captured.out
+    assert SECRET not in captured.out + captured.err
+
+
+@pytest.mark.parametrize("raw", ["not json", "[]", '"MERGED"'])
+def test_a_pr_answer_that_does_not_parse_stops(raw):
+    def run(argv):
+        return (0, raw) if list(argv)[:3] == ["gh", "pr", "view"] else _host()(argv)
+    assert _levels(pf.preflight(run, 42, None))["pr"] == "STOP"
+
+
+@pytest.mark.parametrize("over", [{}, {"extra_binds": ["relative/x"]}, {"state_source": "/elsewhere"}])
+def test_the_interpolated_env_is_never_printed_on_any_path(capsys, over):
+    """PASS, a bad bind and a missing state mount: the env value that compose resolved never reaches
+    stdout or stderr."""
+    pf.main(["42", "--tree", TREE], run=_host(**over))
+    captured = capsys.readouterr()
+    assert SECRET not in captured.out + captured.err and "TELEGRAM_BOT_TOKEN" not in captured.out
+
+
+@pytest.mark.parametrize("over", [{"images": None}, {"events": None}, {"labels": None},
+                                  {"compose_raw": "not json"}])
+def test_every_unknown_at_promote_fails_the_run(capsys, over):
+    run = _host(**over) if "images" in over else _promote_host(**over)
+    assert pf.main(["42", "--promote", "--tree", TREE], run=run) == 1
+    assert "DEPLOY_PREFLIGHT=STOP" in capsys.readouterr().out
+
+
+def test_the_required_checks_all_still_run():
+    """Every check the procedure relies on is still in both runs: none was dropped for the unknowns."""
+    first = {r.name for r in pf.preflight(_host(), 42, TREE)}
+    promote = {r.name for r in pf.preflight(_promote_host(), 42, TREE, promote=True)}
+    assert {"pr", "tags", "rollback", "compose", "primary", "fires", "tree", "volumes"} <= first
+    assert {"pr", "promote", "compose", "primary", "fires", "tree", "volumes"} <= promote

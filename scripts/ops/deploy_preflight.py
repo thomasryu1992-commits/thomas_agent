@@ -37,7 +37,13 @@ mistake a session on this host has made or nearly made:
   runs; a factory fire due within the margin stops the promote run and warns on the first.
 
 ``docker compose config`` interpolates ``.env``, so its output holds secret values. This script
-reads only service names, container names and bind sources from it, and never prints it.
+reads only service names, container names and bind sources from it, and never prints it — not on a
+PASS, not on a STOP, and not when the output does not parse.
+
+**A fact it cannot read is never a PASS.** An image list, a running stack's labels, gh's or compose's
+JSON, or the scheduler state that does not come back is unverified: a STOP where the answer decides
+the step (the tags before tagging; everything at ``--promote``, which compose up follows), a WARN on
+the first run only where the existing check already warns on a known fact.
 """
 
 from __future__ import annotations
@@ -98,7 +104,12 @@ def check_pr_merged(run: Runner, pr: int) -> Result:
     raw = _out(run, ["gh", "pr", "view", str(pr), "--json", "state,mergedAt,mergeCommit"])
     if raw is None:
         return Result("STOP", "pr", f"gh pr view {pr} failed; cannot tell whether it merged")
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        data = None
+    if not isinstance(data, dict):
+        return Result("STOP", "pr", f"gh pr view {pr} did not return a JSON object; cannot tell whether it merged")
     if data.get("state") != "MERGED":
         return Result("STOP", "pr", f"#{pr} is {data.get('state')}, not merged. Nothing to deploy yet")
     sha = (data.get("mergeCommit") or {}).get("oid")
@@ -110,8 +121,11 @@ def check_pr_merged(run: Runner, pr: int) -> Result:
     return Result("PASS", "pr", f"#{pr} merged as {sha[:10]}, on origin/main")
 
 
-def _image_ids(run: Runner) -> dict[str, str]:
-    raw = _out(run, ["docker", "images", IMAGE, "--no-trunc", "--format", "{{.Tag}} {{.ID}}"]) or ""
+def _image_ids(run: Runner) -> dict[str, str] | None:
+    """Tag → image id, or None when the list could not be read (an empty dict means no tags)."""
+    raw = _out(run, ["docker", "images", IMAGE, "--no-trunc", "--format", "{{.Tag}} {{.ID}}"])
+    if raw is None:
+        return None
     ids: dict[str, str] = {}
     for line in raw.splitlines():
         tag, _, image_id = line.partition(" ")
@@ -125,6 +139,8 @@ def check_rollback_point(run: Runner, pr: int) -> Result:
     if not running:
         return Result("STOP", "rollback", f"cannot read the running image of {PROBE_CONTAINER}")
     ids = _image_ids(run)
+    if ids is None:
+        return Result("STOP", "rollback", f"cannot read the {IMAGE} image list; the rollback point is unverified")
     if ids.get("latest") == running:
         return Result("PASS", "rollback",
                       f"latest is the running image: tag rollback-pre-{pr} from latest")
@@ -140,6 +156,9 @@ def check_rollback_point(run: Runner, pr: int) -> Result:
 
 def check_tags_free(run: Runner, pr: int) -> Result:
     ids = _image_ids(run)
+    if ids is None:
+        return Result("STOP", "tags", f"cannot read the {IMAGE} image list; whether rollback-pre-{pr} and "
+                                      f"candidate-{pr} are free is unverified")
     taken = [t for t in (f"rollback-pre-{pr}", f"candidate-{pr}") if t in ids]
     if taken:
         return Result("STOP", "tags",
@@ -152,6 +171,8 @@ def check_promote_window(run: Runner, pr: int) -> Result:
     running = _out(run, ["docker", "inspect", PROBE_CONTAINER, "--format", "{{.Image}}"])
     ids = _image_ids(run)
     rollback, candidate = f"rollback-pre-{pr}", f"candidate-{pr}"
+    if ids is None:
+        return Result("STOP", "promote", f"cannot read the {IMAGE} image list; the promote window is unverified")
     if candidate not in ids:
         return Result("STOP", "promote", f"{candidate} does not exist; build it first")
     if rollback not in ids:
@@ -170,9 +191,13 @@ def _label(run: Runner, key: str) -> str | None:
                       '{{index .Config.Labels "' + key + '"}}'])
 
 
-def check_compose_labels(run: Runner) -> Result:
+def check_compose_labels(run: Runner, promote: bool = False) -> Result:
     project = _label(run, "com.docker.compose.project")
     env_file = _label(run, "com.docker.compose.project.environment_file")
+    if project is None or env_file is None:
+        return Result("STOP" if promote else "WARN", "compose",
+                      f"cannot read the compose labels of {PROBE_CONTAINER}; how the running stack was "
+                      f"started is unverified. Find out before running compose")
     if project == PROJECT and env_file == ENV_FILE:
         return Result("PASS", "compose",
                       f"running stack was started with -p {PROJECT} --env-file {ENV_FILE}. Run: "
@@ -213,7 +238,18 @@ def check_tree(run: Runner, tree: str) -> list[Result]:
                      "-f", f"{tree}/docker-compose.yml", "config", "--format", "json"])
     if raw is None:
         return results + [Result("STOP", "volumes", "docker compose config failed for that tree")]
-    services = json.loads(raw).get("services") or {}
+    try:
+        config = json.loads(raw)
+    except ValueError:
+        config = None
+    services = config.get("services") if isinstance(config, dict) else None
+    if not isinstance(services, dict) or not all(
+            isinstance(spec, dict) and isinstance(spec.get("volumes") or [], list)
+            and all(isinstance(vol, dict) for vol in spec.get("volumes") or [])
+            for spec in services.values()):
+        # Never echo the output: it holds .env's values.
+        return results + [Result("STOP", "volumes", "docker compose config did not return a readable "
+                                                    "service list; the bind sources are unverified")]
     bad: list[str] = []
     state_seen = False
     for name, spec in sorted(services.items()):
@@ -269,8 +305,9 @@ def check_scheduled_fires(run: Runner, now: datetime, promote: bool) -> Result:
     events = _out(run, ["tail", "-n", str(EVENTS_TAIL), SCHEDULER_EVENTS])
     schedules = _out(run, ["cat", SCHEDULES])
     if events is None or schedules is None:
-        return Result("WARN", "fires", "cannot read the scheduler state files; check by hand that no "
-                                       "scheduled fire is running before compose up")
+        return Result("STOP" if promote else "WARN", "fires",
+                      "cannot read the scheduler state files; whether a scheduled fire is running is "
+                      "unverified. compose up must wait until it can be read")
     started: dict[str, dict] = {}
     closed: set[str] = set()
     for event in _jsonl(events):
@@ -283,8 +320,13 @@ def check_scheduled_fires(run: Runner, now: datetime, promote: bool) -> Result:
             closed.add(run_id)
     in_flight = []
     for run_id, event in started.items():
+        if run_id in closed:
+            continue
         at = _parse_time(event.get("created_at"))
-        if run_id not in closed and at is not None and (now - at).total_seconds() <= IN_FLIGHT_SECONDS:
+        if at is None:
+            if promote:  # an unpaired start of unknown age could be running now
+                in_flight.append(f"{event.get('kind')} {str(event.get('schedule_id'))[-8:]} since an unreadable time")
+        elif (now - at).total_seconds() <= IN_FLIGHT_SECONDS:
             in_flight.append(f"{event.get('kind')} {str(event.get('schedule_id'))[-8:]} since {event.get('created_at')}")
     if in_flight:
         return Result("STOP", "fires",
@@ -314,7 +356,7 @@ def preflight(run: Runner, pr: int, tree: str | None, promote: bool = False,
         results.append(check_promote_window(run, pr))
     else:
         results += [check_tags_free(run, pr), check_rollback_point(run, pr)]
-    results += [check_compose_labels(run), check_primary_checkout(run),
+    results += [check_compose_labels(run, promote), check_primary_checkout(run),
                 check_scheduled_fires(run, now or datetime.now(timezone.utc), promote)]
     if tree:
         results += check_tree(run, tree)
