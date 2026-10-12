@@ -1,8 +1,12 @@
 # 제안: C7 PR-D 운영 배포 준비 패킷 — 무엇이 실리고, 무엇을 확인하고, 어떻게 되돌리나 (DRAFT v0.1)
 
-**상태:** DRAFT 2026-10-12 — C7 PR-D(#1216)를 운영에 올리기 전의 준비 패킷이다. 문서 준비 판정은 PREPARATION_COMPLETE_PENDING_EVIDENCE이고, 운영 배포 판정은 따로 DEPLOYMENT_HOLD다(§10). 배포를 막는 것은 Global Guard 반영 증거(GLOBAL_GUARD_UPDATE_PENDING), 현재 운영 이미지(UNKNOWN), Rollback(ROLLBACK_NOT_VERIFIED), Guard를 지키는 이미지 내 동작 검증 경로(DEPLOYMENT_HOLD — VALIDATION_PATH_UNRESOLVED), 배포 승인(NOT_GRANTED)이다. DECISION_REQUIRED가 둘 있다: candidate 태그(CANDIDATE_TAG_DECISION_REQUIRED, 기본 권고 `candidate-1217`)와 이미지 내 동작 검증 경로(SEPARATE_APPROVAL_REQUIRED, §4.3).
+**상태:** DRAFT 2026-10-12 — C7 PR-D(#1216)를 운영에 올리기 전의 준비 패킷이다. 문서 준비 판정은 PREPARATION_COMPLETE_PENDING_EVIDENCE이고, 운영 배포 판정은 따로 DEPLOYMENT_HOLD다(§10). 2026-10-12 갱신(검토 기준 main `d97db39c`): Global Guard는 설치 동일성과 훅 연결이 Thomas 운영자 증거로 확인됐다(GLOBAL_GUARD_VERIFIED). told 파일명 보호는 코드 동일성과 CI로만 확인됐고, Gate 2가 요구한 직접 합성 탐침은 하지 않았다(DIRECT_TOLD_FILENAME_PROBE_NOT_PERFORMED). 운영 이미지와 여덟 서비스는 읽기 전용 메타데이터로 식별했다(IDENTIFIED_METADATA_ONLY, 이미지 안 코드 내용은 미검증). 배포를 막는 것은 Rollback(ROLLBACK_NOT_VERIFIED), Guard를 지키는 이미지 내 동작 검증 경로(DEPLOYMENT_HOLD — VALIDATION_PATH_UNRESOLVED), Gate 2의 직접 합성 조건, 배포 승인(NOT_GRANTED)이다. DECISION_REQUIRED가 셋 있다: candidate 태그(CANDIDATE_TAG_DECISION_REQUIRED, 기본 권고 `candidate-1217`), 이미지 내 동작 검증 경로(SEPARATE_APPROVAL_REQUIRED, §4.3), told 파일명의 간접 증거를 Gate 2 충족으로 받아들일지 직접 탐침을 승인할지(§10).
 
-**기준:** origin/main `1f328ffd`(#1217), 2026-10-12. 코드와 문서만 읽었다. 운영 컨테이너, 이미지, 상태 파일, 원장, 거래소 API에는 이번 작업에서 접근하지 않았다. 운영 상태 값은 이전 작업의 관측이고, 그렇게 표시했다.
+**기준:** 두 기준선이 있다.
+- **설계 기준선:** origin/main `1f328ffd`(#1217 병합 시점). §2의 변경 범위와 §3–§9의 계획은 이 시점의 코드와 문서를 읽은 결과이고, 역사적 기준으로 남긴다.
+- **검토 기준선:** origin/main `d97db39c`(#1218 병합 이후). 이번 갱신(#1219)의 기준이다. `d97db39c`는 `1f328ffd`에 문서만 더한 것이라 이미지에 들어가는 파일은 같다.
+
+문서 기준 Git SHA는 운영 이미지의 코드 버전이 아니다(이미지에는 SHA 라벨이 없다, §1). 갱신 내용: 운영 메타데이터를 2026-10-12T06:15Z에 읽기 전용으로 관측했다(`docker ps`, `docker inspect`·`docker image ls`의 지정 필드만, env 미출력). 컨테이너 안 실행(`exec`/`run`), 상태 파일, 원장, 거래소 API에는 접근하지 않았다.
 **소유:** 배포 절차의 권위는 `.claude/skills/deploy/SKILL.md`와 `scripts/ops/deploy_preflight.py`, PR-D 설계의 권위는 `HOLDINGS_LEDGER_CHECKPOINT_V0.1.md` §6이다. 이 패킷은 둘을 바꾸지 않는다.
 
 ---
@@ -11,7 +15,7 @@
 
 - **실리는 것은 origin/main 전체다.** 이미지에 들어가는 변화는 #1210 이후 네 파일뿐이다(§2).
 - **코드 동작이 바뀌는 곳은 holdings fire 하나지만, 배포가 건드리는 것은 여덟 서비스다(§3).** 장애가 없으면 새 메시지도, 새 파일도, 새 status 단어도 없다.
-- **문서 준비와 배포 허가는 다르다.** 문서는 PREPARATION_COMPLETE_PENDING_EVIDENCE이고, 배포는 DEPLOYMENT_HOLD다. 증거 셋(Global Guard, 지금 도는 이미지, Rollback)과 승인된 이미지 내 동작 검증 경로가 없다. 안전성 불변식이 코드에서 의심스러운 곳은 없다. HOLD는 그 때문이 아니라 위의 빈칸 때문이다.
+- **문서 준비와 배포 허가는 다르다.** 문서는 PREPARATION_COMPLETE_PENDING_EVIDENCE이고, 배포는 DEPLOYMENT_HOLD다. Global Guard는 확인됐고 지금 도는 이미지는 메타데이터로 식별했다(2026-10-12). Rollback 확인, 승인된 이미지 내 동작 검증 경로, candidate 태그, 배포 승인이 없다. 안전성 불변식이 코드에서 의심스러운 곳은 없다. HOLD는 그 때문이 아니라 위의 빈칸 때문이다.
 - **CI 통과와 이 문서의 병합은 배포 권한을 주지 않는다.**
 
 ## 1. 기준선
@@ -20,12 +24,13 @@
 |---|---|---|
 | 승인된 코드 | #1216 → `52b744e9` | MERGED 2026-10-12T03:17Z |
 | 보안 보완 | #1217 → `1f328ffd` | MERGED 2026-10-12T03:59Z |
-| 현재 main | `1f328ffd357f1cd7f8c304e9c882ad634ef6f92a` | 필수 CI 5개·Safety invariants 성공 |
-| 현재 운영 이미지 | **UNKNOWN** | 마지막 관측(2026-10-12T03:17Z, 읽기 전용): scheduler·scheduler-maint = `67d9b622d648` = `candidate-1210` = `latest`. 이번 작업에서는 다시 보지 않았다 |
-| 현재 운영 candidate | **UNKNOWN** | 같은 관측에서 `candidate-1210`. 이미지에는 git SHA 라벨이 없다(Dockerfile에 `LABEL` 없음) |
+| 설계 기준선 main | `1f328ffd357f1cd7f8c304e9c882ad634ef6f92a` | #1217 병합 시점. 역사적 기준(§2의 범위 분석) |
+| 검토 기준선 main | `d97db39c33e13ed163712bc5a34dea0ac4c5542d` | #1218 병합 이후, 이번 갱신의 기준. 필수 CI 5개·Safety invariants 성공 |
+| 현재 운영 이미지 | **IDENTIFIED_METADATA_ONLY** | 관측 2026-10-12T06:15Z: 여덟 서비스 모두 `sha256:67d9b622d648f41e29c81fc10d1f2ecded98867fb697b5995e4781c8e47f29b3`. 이미지 안 코드 내용은 확인하지 않았다(§2) |
+| 현재 운영 candidate | **`candidate-1210`** (= `latest`) | 같은 id에 붙은 태그. 이미지 생성 2026-10-10T10:12:45Z. 이미지에는 git SHA 라벨이 없다(Dockerfile에 `LABEL` 없음) |
 | 신규 candidate | NOT_BUILT | |
-| Rollback 이미지 | **ROLLBACK_NOT_VERIFIED** | 같은 관측에서 `rollback-pre-1210` = `cb57fab0baba`(1206 이미지)였다. 이번 배포의 rollback 점은 배포 시점에 preflight가 정한다 |
-| Global Guard | **GLOBAL_GUARD_UPDATE_PENDING** | 설치본 sha256 `865e9eec…`(mtime 2026-10-11 17:03Z), main의 Guard `88addc9d…`. 아직 반영되지 않았다(§5 Gate 2) |
+| Rollback 이미지 | **ROLLBACK_NOT_VERIFIED** (원본 식별됨) | 이번 배포의 rollback 원본은 지금 도는 `67d9b622d648`이고, `latest`가 그것을 가리킨다(관측 시점). `rollback-pre-<N>` 태그는 아직 없다. 기존 `rollback-pre-1210` = `cb57fab0baba`(=`candidate-1206`)는 이전 배포의 rollback 점이다. 태그는 배포 시점 preflight가 다시 정하고, 복구는 실행해 보지 않았다 |
+| Global Guard | **GLOBAL_GUARD_VERIFIED** (설치·연결) | 증거 수준은 세 가지로 나뉜다(§5 Gate 2). (A) GLOBAL_GUARD_INSTALLATION_VERIFIED: main·kit·설치본 sha256 모두 `88addc9d6d2e94e9f88a864ec27dcdef0f833e6dff4e894629cbaf712690fc86`, `refresh_guard.py check` exit 0. (B) GLOBAL_GUARD_HOOK_WIRING_VERIFIED: `test_guard.py` ALL PASS, 새 세션에서 기존 경로 탐침 3개 거부. 기존 규칙이라 told 규칙 자체의 직접 검증은 아니다. (C) TOLD_FILENAME_PROTECTION_VERIFIED_BY_CODE_IDENTITY_AND_CI: 간접 검증. 운영 Global Guard에서 직접 합성 탐침은 하지 않았다(DIRECT_TOLD_FILENAME_PROBE_NOT_PERFORMED). rollback 점 `guard-local-only.sh.pre-1217`(옛 `865e9eec…`). 근거: Thomas 운영자 증거 2026-10-12 |
 | Candidate 태그 | **CANDIDATE_TAG_DECISION_REQUIRED** | 기본 권고 `candidate-1217`(§4.1) |
 | 이미지 내 동작 검증 | **SEPARATE_APPROVAL_REQUIRED** | Guard를 지키는 경로가 승인되지 않았다(§4.3) |
 | 배포 승인 | NOT_GRANTED | |
@@ -42,7 +47,7 @@
 | `scripts/holdings_board.py` | #1212 `--toss-continuity` | 터미널 전용. Guard가 Claude 세션에서 거부한다(설치본도 이 모드를 안다) |
 
 - #1217(`.claude/`, `tests/`)과 문서 PR(#1209, #1211, #1213–#1215)은 이미지에 들어가지 않는다.
-- 이 기준은 "운영 이미지가 `b6d4bf30`에서 빌드됐다"는 가정 위에 있다. 이미지에 SHA 라벨이 없으므로, 배포 때 §4.3의 확인이 이 가정을 대신한다.
+- 이 기준은 "운영 이미지가 `b6d4bf30`에서 빌드됐다"는 가정 위에 있다. 시각은 이 가정과 맞는다: `b6d4bf30`은 2026-10-10T09:55:29Z, 이미지 생성은 10:12:45Z, 그 다음 main 커밋(`c9bcf1af`, 이미지 경로 변화 없음)은 16:27:04Z다. 그러나 시각은 내용의 증거가 아니다. 이미지에 SHA 라벨이 없고 컨테이너 안을 열어 보지 않았으므로, 배포 때 §4.3의 CODE_IDENTITY_VERIFICATION이 이 가정을 대신한다.
 - `docker-compose.yml`, `Dockerfile`, 환경 변수는 바뀌지 않았다. 새 env, 새 mount, 새 서비스는 없다.
 
 **바뀌지 않는 것:** 거래 실행 권한, 원장 기록 정책과 형식, cutover, H6b/H6c, 자동 리밸런싱, 낙폭 기준선(`baseline_baa665…`), Trading Stage(PAPER), 거래소 API 권한. PR-D는 알림이고, 복구가 아니다.
@@ -88,6 +93,33 @@
 | 원래 이미지 = rollback 태그 | promote 직전 `--promote` preflight가 확인한다(`rollback-pre-<N>`이 지금 도는 이미지) |
 
 - **복구 순서:** 실패하면 서비스별로 고치지 않고 이미지 하나를 되돌린다(§8). 한 번의 `up -d`로 여덟 서비스가 함께 돌아간다. 그 뒤 health를 확인하고, scheduler 두 lane의 다음 `fired`를 기다린다.
+
+### 3.2 여덟 서비스 관측 (2026-10-12T06:15Z, 읽기 전용 메타데이터)
+
+`docker ps`와 `docker inspect`의 지정 필드만 읽었다(env 미출력, 컨테이너 안 실행 없음).
+
+| 컨테이너 | 이미지 | 시작 | health | 재시작 |
+|---|---|---|---|---|
+| `thomas-operator` | `67d9b622d648` | 2026-10-10T10:13:44Z | healthy | 0 |
+| `thomas-scheduler` | `67d9b622d648` | 2026-10-10T10:13:44Z | healthy | 0 |
+| `thomas-scheduler-maint` | `67d9b622d648` | 2026-10-10T10:13:44Z | healthy | 0 |
+| `thomas-read-bridge` | `67d9b622d648` | 2026-10-10T10:13:44Z | healthy | 0 |
+| `thomas-dispatch-bridge` | `67d9b622d648` | 2026-10-10T10:13:44Z | healthy | 0 |
+| `thomas-pipeline-worker` | `67d9b622d648` | 2026-10-10T10:13:44Z | healthy | 0 |
+| `thomas-knowledge-bridge` | `67d9b622d648` | 2026-10-10T10:13:44Z | healthy | 0 |
+| `thomas-switch-bridge` | `67d9b622d648` | 2026-10-10T10:13:44Z | healthy | 0 |
+
+- 여덟 서비스의 compose 라벨이 모두 같다.
+  - 프로젝트 `thomas_agent`
+  - compose 파일 `/root/deploy-1210/docker-compose.yml`
+  - env 파일 `/root/thomas_agent/.env`
+
+  다음 배포도 같은 프로젝트와 env 파일로 해야 같은 컨테이너를 다시 만든다(스킬 7단계).
+- `hermes`는 별도 이미지(`hermes-agent`, `5539d8870610`)이고 이 묶음 밖이다.
+- §3.1은 여덟 서비스가 한 이미지를 쓰므로 rollback 태그 하나로 모두 되돌릴 수 있다고 전제한다. 관측은 이 전제와 맞는다.
+- 이 표는 관측 시점의 사실이다.
+  - 배포 직전에는 preflight로 다시 읽는다.
+  - 진행 중인 fire와 작업은 이 관측에 들어 있지 않다.
 
 ## 4. Candidate 이미지 계획 (실행하지 않음)
 
@@ -151,12 +183,12 @@
 | Gate | 조건 | 현재 |
 |---|---|---|
 | 1 코드 무결성 | #1216·#1217이 main에 있음, 필수 CI 5개 PASS, Safety invariants PASS, Release Gate PASS, candidate가 기준 SHA로 연결됨 | main과 CI는 **충족**. candidate 연결은 빌드 때 CODE_IDENTITY_VERIFICATION(§4.3)으로 확인 |
-| 2 Global Guard | 설치본 sha = main의 Guard sha, kit `check` exit 0, kit `test_guard.py` ALL PASS, told 파일명 합성 DENY, `holdings_snapshot.json` 합성 ALLOW, 새 세션 적용 확인, `.prev` 백업 존재 | **GLOBAL_GUARD_UPDATE_PENDING**. 설치본 `865e9eec…` ≠ main `88addc9d…`. 나머지 증거 없음 |
+| 2 Global Guard | 설치본 sha = main의 Guard sha, kit `check` exit 0, kit `test_guard.py` ALL PASS, told 파일명 합성 DENY, `holdings_snapshot.json` 합성 ALLOW, 새 세션 적용 확인, `.prev` 백업 존재 | **부분 충족.**<br>설치본 sha, kit `check` exit 0, kit test ALL PASS, 새 세션 적용, 백업은 충족(GLOBAL_GUARD_INSTALLATION_VERIFIED, GLOBAL_GUARD_HOOK_WIRING_VERIFIED). 백업은 `.pre-1217`이고 `.prev`는 보존했다.<br>**told 파일명 합성 DENY와 `holdings_snapshot.json` 합성 ALLOW는 운영 Global Guard에서 직접 하지 않았다(DIRECT_TOLD_FILENAME_PROBE_NOT_PERFORMED).** 같은 결과는 바이트 동일성과 main CI 테스트(`test_the_told_record_is_refused_by_name_wherever_it_is`, `test_the_told_rule_leaves_ordinary_work_alone`)로만 뒷받침된다(TOLD_FILENAME_PROTECTION_VERIFIED_BY_CODE_IDENTITY_AND_CI).<br>이 조건은 완화하지 않았다. 간접 증거로 충족할지는 Thomas의 결정이고, 직접 탐침은 별도 승인 대상이다(SEPARATE_APPROVAL_REQUIRED) |
 | 3 LOCAL_ONLY | 준비 확인이 실제 금융 데이터 없이 가능, Secret 노출 없음, 새 외부 출력 없음, 자동 원장 복구 없음 | **충족(코드 기준)**. 새 외부 출력은 Telegram 문구 하나이고 키·금액·계정이 없다(테스트 고정). told 파일은 상태 디렉터리 안 |
 | 4 Runtime 호환성 | 원장·상태 형식 변화 없음, told 파일 초기 생성 계약, 잠금 계약, 기존 scheduler 동작 유지 | **충족(코드와 합성 테스트 기준)**. PR-D는 told 파일만 쓴다. 잠금은 기존 `_state_lock`이다. 판정은 잠금을 잡지 않는다 |
 | 5 운영자 알림(소스) | 최초 BLOCKED, 지속 중 중복 없음, 전송 실패 시 재알림, 기록 실패 시 재알림, 해소 1회, 재발 재알림, 파일 소실 시 잘못된 해소 없음, 금융 데이터 비노출 | **충족(합성)**. `tests/test_mvp_runtime_holdings_c7_blocked.py` 47건이 각 항목을 덮는다. 실제 채널 확인은 SEPARATE_APPROVAL_REQUIRED |
 | 5b 이미지 내 동작 검증 경로 | Guard를 지키고 실제 데이터가 없는 SYNTHETIC_RUNTIME_VALIDATION 경로가 승인됨 | **DEPLOYMENT_HOLD — VALIDATION_PATH_UNRESOLVED**. 승인된 경로가 없다(§4.3) |
-| 6 Rollback과 서비스 재생성 | 운영 이미지 식별, rollback 이미지 존재, 명령 검토, 형식 호환, 비가역 변경 없음, 사후 확인 방법. 여기에 §3.1의 항목: 여덟 서비스의 기존 이미지 id, 실제 재생성 대상, 진행 중인 fire와 작업, 서비스별 health 방법, 원래 이미지와 rollback 태그의 일치, 배포 뒤 여덟 서비스의 이미지 id 일치 | **ROLLBACK_NOT_VERIFIED**. 명령·호환성·비가역성은 §8에 검토했다. 이미지와 서비스 항목은 OPERATOR_EVIDENCE_REQUIRED이고, 배포 시점 preflight와 운영자가 확인한다 |
+| 6 Rollback과 서비스 재생성 | 운영 이미지 식별, rollback 이미지 존재, 명령 검토, 형식 호환, 비가역 변경 없음, 사후 확인 방법. 여기에 §3.1의 항목: 여덟 서비스의 기존 이미지 id, 실제 재생성 대상, 진행 중인 fire와 작업, 서비스별 health 방법, 원래 이미지와 rollback 태그의 일치, 배포 뒤 여덟 서비스의 이미지 id 일치 | **ROLLBACK_NOT_VERIFIED**. 명령·호환성·비가역성은 §8에 검토했다. 메타데이터는 §3.2에 관측했다(여덟 서비스 같은 이미지, healthy, 재시작 0, 같은 compose 프로젝트). 진행 중인 fire·작업, rollback 태그 생성, 복구 실행은 배포 시점 preflight와 운영자의 몫이다 |
 | 7 운영자 승인 | Thomas의 별도 배포 승인 | **NOT_GRANTED**. 병합, CI PASS, Guard VERIFIED는 배포 승인이 아니다 |
 
 **Gate 2가 배포 앞에 오는 이유:** 배포 뒤 told 파일이 실제로 생긴다. 상태 디렉터리 안에서는 설치본의 경로 규칙이 이미 막는다. 그러나 이름만 쓴 참조나 다른 경로의 사본은 새 규칙이 있어야 막힌다(#1217).
@@ -228,23 +260,26 @@ holdings fire의 status 줄(`schedules.jsonl`의 `last_status`, scheduler 이벤
 
 | 구분 | 판정 |
 |---|---|
-| 문서 준비 | **DRAFT — PREPARATION_COMPLETE_PENDING_EVIDENCE**. 계획은 갖췄고 증거가 비어 있다 |
+| 문서 준비 | **DRAFT — PREPARATION_COMPLETE_PENDING_EVIDENCE**. 계획은 갖췄다. Global Guard와 운영 메타데이터는 채웠고, Rollback 확인·검증 경로·태그·승인이 남았다 |
 | 운영 배포 | **DEPLOYMENT_HOLD** |
 
 **DEPLOYMENT_HOLD인 이유**
 
-1. Global Guard 적용 증거가 없다(GLOBAL_GUARD_UPDATE_PENDING).
-2. 운영 이미지(UNKNOWN)와 Rollback(ROLLBACK_NOT_VERIFIED)의 증거가 없다.
-3. Guard를 지키는 이미지 내부 동작 검증 경로가 정해지지 않았다(VALIDATION_PATH_UNRESOLVED).
-4. Thomas의 운영 배포 승인이 없다(NOT_GRANTED).
+1. Rollback이 확인되지 않았다(ROLLBACK_NOT_VERIFIED). 원본 이미지는 식별했지만 rollback 태그와 복구는 배포 시점의 일이다.
+2. Guard를 지키는 이미지 내부 동작 검증 경로가 정해지지 않았다(VALIDATION_PATH_UNRESOLVED).
+3. candidate 태그가 정해지지 않았다(CANDIDATE_TAG_DECISION_REQUIRED).
+4. Gate 2의 직접 합성 조건(told 파일명 DENY, snapshot ALLOW)이 미충족이다(DIRECT_TOLD_FILENAME_PROBE_NOT_PERFORMED). 간접 증거 수용 여부는 결정되지 않았다.
+5. Thomas의 운영 배포 승인이 없다(NOT_GRANTED).
 
 **미해결 항목**
 
 | 항목 | 상태 |
 |---|---|
-| Global Guard | GLOBAL_GUARD_UPDATE_PENDING |
-| 현재 운영 이미지 | UNKNOWN |
-| Rollback | ROLLBACK_NOT_VERIFIED |
+| Global Guard 설치·연결 | **해소** — GLOBAL_GUARD_VERIFIED(설치 동일성, 훅 연결) |
+| told 파일명 직접 합성 검증 | **미수행** — DIRECT_TOLD_FILENAME_PROBE_NOT_PERFORMED. 간접 검증(코드 동일성 + CI)만 있음 |
+| 현재 운영 이미지 | **식별** — IDENTIFIED_METADATA_ONLY(`67d9b622d648`, 코드 내용 미검증) |
+| 여덟 서비스 메타데이터 | **관측** — 같은 이미지, healthy, 재시작 0(§3.2) |
+| Rollback | ROLLBACK_NOT_VERIFIED(원본 식별됨) |
 | Candidate 태그 | CANDIDATE_TAG_DECISION_REQUIRED(기본 권고 `candidate-1217`) |
 | 이미지 내 동작 검증 | SEPARATE_APPROVAL_REQUIRED(VALIDATION_PATH_UNRESOLVED) |
 | 운영 배포 승인 | NOT_GRANTED |
@@ -255,7 +290,8 @@ holdings fire의 status 줄(`schedules.jsonl`의 `last_status`, scheduler 이벤
 
 1. candidate 태그: 기본 권고 `candidate-1217`, 대안 `candidate-1216`. 어느 쪽이든 코드 식별은 §4.1의 다섯 값으로 한다.
 2. 이미지 내 동작 검증 경로: SYNTHETIC_RUNTIME_VALIDATION을 어떤 승인된 경로로 할지. Guard 정책의 예외나 우회는 이 결정에 포함되지 않는다.
+3. Gate 2의 told 파일명 조건: 간접 증거(코드 동일성 + CI)를 충족으로 받아들일지, 운영 Global Guard에서 직접 합성 탐침을 할지(별도 승인). 결정 전까지 Gate 2는 부분 충족이다.
 
 ## 11. 하지 않은 것
 
-이미지 빌드·태그, 컨테이너 접근·재시작, Global Guard 설치·수정·kit 실행, preflight 실행, 실제 Telegram 발송, 원장·상태 파일 열람, Secret 조회, PR-A·B·C, H6c, 자동 리밸런싱, cutover, 거래 단계 변경.
+이미지 빌드·태그, 컨테이너 안 실행(`exec`/`run`)·재시작(메타데이터 읽기만 했다), Global Guard 설치·수정·kit 실행(Thomas가 했다), preflight 실행, 실제 Telegram 발송, 원장·상태 파일 열람, Secret 조회, PR-A·B·C, H6c, 자동 리밸런싱, cutover, 거래 단계 변경.
