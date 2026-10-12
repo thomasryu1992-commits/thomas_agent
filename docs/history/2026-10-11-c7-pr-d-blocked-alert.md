@@ -9,7 +9,7 @@
       clears, and one again if it returns.
     - `read_blocked_told` and `mark_blocked_told` keep the told record in a new LOCAL_ONLY file,
       `holdings_cash_flow_blocked_told.json`. It holds `key`, `told_at` and `resolved_told_at`. It is written only
-      after a delivery, with the drawdown told file's tmp → replace pattern.
+      after a delivery, through a tmp file of its own and a replace (review 2026-10-12, below).
   - `holdings/store.py`:
     - `_reason(exc)` makes the board's `cash_flows.error` carry the reason code instead of `ToolError`, in the
       three places that dropped it.
@@ -41,9 +41,22 @@
   - The board's `cash_flows.error` carries the reason code.
   - A broken ledger sends one message, and its clearing sends one.
   - Healthy operation sends nothing new.
-- **Guard note:** the LOCAL_ONLY guard's by-name rule does not match the new told file's name. Its pattern
-  wants `.json` right after `holdings_cash_flow` or `_state`, so the file is covered by the state-directory
-  path rule only. That is a guard follow-up, not this PR.
+- **Guard note (review 2026-10-12: GUARD_COVERAGE_PARTIAL, read-only analysis):**
+  - The path rules cover the file where it lives. `runtime_governance_state/+holdings` matches any path into
+    the state directory (repo, worktree, `/app`, `docker cp`). `holdings/+holdings_` matches a reference
+    relative to the state root.
+  - The by-name rule does not match it. The pattern wants `.json` right after `holdings_cash_flow` or
+    `_state`, so a bare name with no directory passes. So does a copy at another path. The drawdown told
+    file and the peak file have the same gap today.
+  - The global copy installed on this host has the same sha256 as the repo hook (`865e9eec…`), so this
+    analysis applies to both.
+  - The risk is low. The file holds a key (a 16-hex prefix of a sha256 over the state bytes, not
+    reversible), `told_at` and `resolved_told_at`. It holds no amount, asset or account. A leak would tell
+    when a failure was told, nothing financial. That is why it does not hold the merge.
+  - The follow-up is a guard change, which needs its own approval. Add the narrow name
+    (`holdings_cash_flow_blocked_told\.json`, or `holdings_[a-z_]*_told\.json` to take the drawdown told
+    file too). Never use a wide `holdings_[a-z_]+\.json`, which would also refuse `holdings_snapshot.json`,
+    the one table allowed out.
 - **What it deliberately does not do:**
   - It creates no checkpoint, writes no marker and decides no PR-A reason code (the §6 family code stands in for
     a marker without one).
@@ -52,9 +65,67 @@
     repeat each fire rather than go quiet. A persistent limit would be a later decision.
   - It drops "days left" (§6). It would need an unverified ledger tail time, which D-3 said not to store unless
     needed.
+- **Review corrections (Thomas 2026-10-12):**
+  - **P0: nothing to verify is not a verification.** `blocked_state` answered not-BLOCKED both when it
+    re-derived a chain and when there was none: no ledger and no state (`{"blocked": False}` before any
+    check), or no ledger beside a state (a missing ledger verifies as an empty chain). `blocked_alert` read
+    either as the clearing. Reproduced: break the chain, tell it, delete both files, fire. Refresh rebuilt
+    a state, and the clearing went out. If the next write starts a new chain, that one verifies too.
+    - Now a not-BLOCKED answer carries `verified_since`, the `at` of the first line of a chain re-derived
+      in that check, or None.
+    - A told failure clears only when that line is no newer than its `told_at`, so the ledger that failed
+      verifies again. Otherwise the record stays standing, nothing is sent, and the status line says
+      `clearing withheld (nothing verified)` or `(the ledger began after the failure was told)`.
+    - Unchanged:
+      - A first run with no told record sends nothing.
+      - C7-11 (a verified ledger, the state missing) still clears.
+      - A check that raises is BLOCKED (`check`), a known repeat, never a clearing.
+    - Limits:
+      - A ledger truncated but still starting at its first line reads as repaired. Telling it from a repair
+        is PR-A's checkpoint.
+      - A failure told while no ledger existed (a pre-H6d refusal before the first write) cannot clear by
+        this rule, because the first ledger is written after it. It stays withheld until a later decision
+        (C7 adopt, PR-C).
+      - The production lane has a ledger, so this limit does not reach it today.
+      - A louder message for a vanished ledger is not added: this PR changes only whether a clearing is told.
+  - **P1: the told record under overlapping fires.**
+    - Facts:
+      - `holdings_refresh` is a maintenance kind, and compose runs one `tick --lane maintenance`.
+      - `run_due` fires serially.
+      - `claim_due` takes each occurrence at most once, under the store lock.
+      - Only `scheduler.py` calls `mark_blocked_told`.
+      - So fires overlap only when an operator runs a manual `tick` (`--lane all`) while the service runs.
+        Nothing excludes that.
+    - Two fixes, no lock:
+      - The tmp file is unique per write (pid + uuid) and removed if the replace fails. A fixed `.tmp` let
+        two writers tear one file.
+      - `mark_blocked_told` refuses a stale token and returns False:
+        - a `now` older than the record's latest time;
+        - a clearing for a key that is not the standing one.
+    - The fire's status says `told not recorded:stale` for a refused token, never `told`.
+    - Interleavings, each pinned by a test:
+      - A judges a clearing, then B records a newer failure, then A's write lands: refused, and B's failure
+        stays standing.
+      - A stale BLOCKED write lands after the clearing was recorded: refused, so a recurrence is still told.
+      - Both fires deliver the same failure: two messages.
+    - **At-least-once, not exactly-once.** A send and its record are two steps, so a crash or an overlap
+      between them repeats a message. Silence is not the failure mode. The check and the replace are not
+      one atomic step either: two writers inside the same instant can both pass it. A lock would close that,
+      and is not added without a decision.
 - **Tests** (synthetic only):
-  - `tests/test_mvp_runtime_holdings_c7_blocked.py` (29) covers what is BLOCKED, every early return of `refresh`,
-    locks, told/cleared/told-again, delivery and told-write failure, restart, key versions, fire order, isolation,
-    nothing identifying leaves, and the PR-A marker.
+  - `tests/test_mvp_runtime_holdings_c7_blocked.py` (44) covers:
+    - what is BLOCKED, every early return of `refresh`, and locks;
+    - told / cleared / told again, delivery and told-write failure, and restart;
+    - key versions, fire order and isolation;
+    - that nothing identifying leaves, and the PR-A marker;
+    - the review's Cases A–E (first run, both files gone, a ledger begun after, a ledger gone beside a state,
+      a real repair cleared exactly once, a check that raises, C7-11 with and without a verified ledger);
+    - stale and overlapping told writes, a failed replace, and the stale status word.
   - `test_defect_c7_d` flips to `test_c7_d_a_refused_write_is_told_once_by_the_blocked_check`.
-  - A mutation removing the scheduler block or the reason preservation fails 11 of the 28 it had then.
+  - Mutations:
+    - Removing the scheduler block or the reason preservation fails 11 of the 28 tests it had then.
+    - Removing the clearing rule fails 4 (Cases B and E).
+    - Removing only the continuity half fails 1.
+    - Removing the stale-token checks fails 3.
+  - The synthetic lane pins the cutover line's wall-clock stamp to its synthetic day, as a real lane's first
+    line is older than any told record.

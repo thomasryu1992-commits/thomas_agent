@@ -1503,8 +1503,10 @@ def _execute(
                 status = f"{status}; h6 blocked not sent:{failure}"
             else:
                 try:
-                    holdings_store.mark_blocked_told(token, now=now, root=repo_root)
-                    status = f"{status}; h6 blocked told"
+                    if holdings_store.mark_blocked_told(token, now=now, root=repo_root):
+                        status = f"{status}; h6 blocked told"
+                    else:  # a later fire's record stands: this one is not written, the next fire re-judges
+                        status = f"{status}; h6 blocked told not recorded:stale"
                 except Exception as exc:  # noqa: BLE001 — the message went; the next fire offers it again
                     status = f"{status}; h6 blocked told not recorded:{type(exc).__name__}"
         return status

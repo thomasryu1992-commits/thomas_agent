@@ -12,6 +12,7 @@ import ast
 import json
 import pathlib
 import re
+from unittest import mock
 
 import pytest
 
@@ -20,7 +21,7 @@ from runtime.mvp_runtime import scheduler
 from runtime.mvp_runtime.errors import MvpRuntimeError, ToolError
 from runtime.mvp_runtime.holdings import binance_wallet, cash_flows, combined, store
 from runtime.mvp_runtime.holdings.model import HoldingsSnapshot, MarketTotals
-from tests._h6d_support import Feed, ms, pay, set_cutover
+from tests._h6d_support import CUTOVER, Feed, ms, pay, set_cutover
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 NOW = "2026-10-09T05:00:00Z"
@@ -31,9 +32,12 @@ LATEST = "2026-10-09T07:00:00Z"
 # --- synthetic lanes -------------------------------------------------------------------------------------
 
 def lane(root: pathlib.Path) -> pathlib.Path:
-    """A working H6 lane under ``root``: the cutover and one fire with a Pay row (an open exception)."""
+    """A working H6 lane under ``root``: the cutover and one fire with a Pay row (an open exception). The
+    cutover line is stamped with the wall clock, so it is pinned to the synthetic day: the ledger's first
+    line is older than every told record here, as a real lane's is (the clearing reads it)."""
     d = store.state_dir(root)
-    set_cutover(d)
+    with mock.patch.object(cash_flows.timeutil, "utc_now_iso", return_value=CUTOVER):
+        set_cutover(d)
     cash_flows.collect_binance(Feed(pay=[pay("p1")]), d, now=NOW, now_ms=ms(NOW))
     return d
 
@@ -125,7 +129,7 @@ def holdings_fire(root: pathlib.Path, now: str = NOW) -> str:
 
 def test_1_a_broken_chain_is_blocked_with_its_reason_code(tmp_path):
     d = lane(tmp_path)
-    assert cash_flows.blocked_state(d) == {"blocked": False}
+    assert cash_flows.blocked_state(d) == {"blocked": False, "verified_since": CUTOVER}
     break_chain(d)
     judged = cash_flows.blocked_state(d)
     assert judged["blocked"] and judged["reason_code"] == cash_flows.LEDGER_TAMPERED
@@ -143,7 +147,7 @@ def test_2_a_broken_chain_and_a_broken_state_are_one_failure(tmp_path):
 def test_3_a_missing_state_alone_is_the_recovery_path_and_with_a_broken_chain_is_blocked(tmp_path):
     d = lane(tmp_path)
     cash_flows.state_path(d).unlink()
-    assert cash_flows.blocked_state(d) == {"blocked": False}                  # C7-11 recovers by re-reading
+    assert cash_flows.blocked_state(d) == {"blocked": False, "verified_since": CUTOVER}  # C7-11 re-reads
     break_chain(d)
     assert cash_flows.blocked_state(d)["key"] == "v1:state:verify:missing"
 
@@ -228,7 +232,7 @@ def test_6_7_every_early_return_of_refresh_still_tells_a_broken_ledger(monkeypat
 def test_8_a_lock_is_never_read_as_a_broken_ledger(monkeypatch, tmp_path):
     d = lane(tmp_path)
     with cash_flows._state_lock(d):                                           # a writer holds the state
-        assert cash_flows.blocked_state(d) == {"blocked": False}              # the judgement takes no lock
+        assert not cash_flows.blocked_state(d)["blocked"]                     # the judgement takes no lock
     patch_full_fire(monkeypatch, tmp_path)
     monkeypatch.setattr(cash_flows, "collect_binance", lambda *_a, **_k: (_ for _ in ()).throw(
         ToolError(cash_flows.STATE_LOCKED, "busy")))
@@ -422,7 +426,7 @@ def test_the_board_names_the_reason_code_not_the_class(monkeypatch, tmp_path):
 
 
 def test_no_lane_is_not_blocked(tmp_path):
-    assert cash_flows.blocked_state(store.state_dir(tmp_path)) == {"blocked": False}
+    assert cash_flows.blocked_state(store.state_dir(tmp_path)) == {"blocked": False, "verified_since": None}
     assert store.blocked_check(now=NOW, root=tmp_path) == {"alert": None, "note": None}
 
 
@@ -444,3 +448,224 @@ def test_the_told_file_stays_out_of_every_door():
         if any(isinstance(n, ast.Constant) and n.value == cash_flows.BLOCKED_TOLD_FILENAME for n in ast.walk(tree)):
             offenders.append(path.relative_to(ROOT).as_posix())
     assert offenders == []
+
+
+# --- review 2026-10-12, P0: nothing to verify is not a verification ----------------------------------------
+
+def _standing(d: pathlib.Path) -> dict:
+    told, note = cash_flows.read_blocked_told(d)
+    assert note is None
+    return told
+
+
+def test_case_a_a_first_run_sends_nothing_and_initializes_as_before(monkeypatch, tmp_path):
+    patch_full_fire(monkeypatch, tmp_path)
+    channel = Channel(monkeypatch)
+    status = holdings_fire(tmp_path)
+    d = store.state_dir(tmp_path)
+    assert "refreshed" in status and "h6 blocked" not in status
+    assert channel.blocked() == [] and not cash_flows.blocked_told_path(d).exists()
+    assert cash_flows.state_path(d).exists()                                  # refresh initialized the lane
+
+
+def test_case_b_both_files_gone_after_a_told_failure_is_never_told_as_cleared(monkeypatch, tmp_path):
+    d = lane(tmp_path)
+    break_chain(d)
+    patch_full_fire(monkeypatch, tmp_path)
+    channel = Channel(monkeypatch)
+    assert "h6 blocked told" in holdings_fire(tmp_path)
+    told = _standing(d)
+    cash_flows.ledger_path(d).unlink()
+    cash_flows.state_path(d).unlink()
+    assert cash_flows.blocked_alert(d, now=LATER) == {"alert": None, "note": "clearing withheld (nothing verified)"}
+    status = holdings_fire(tmp_path, LATER)                                   # refresh rebuilds a state only
+    assert "h6 blocked clearing withheld (nothing verified)" in status
+    assert len(channel.blocked()) == 1 and not [t for t in channel.blocked() if "해소" in t]
+    assert _standing(d) == told                                               # still standing, not resolved
+    assert told["key"] not in status
+
+
+def test_case_b_a_ledger_begun_after_the_failure_is_not_its_clearing(tmp_path):
+    """Refresh starts a new chain where the old one vanished; its first line is newer than the told
+    failure, so it verifies but is not the ledger that failed."""
+    d = lane(tmp_path)
+    break_chain(d)
+    deliver(d, NOW)
+    cash_flows.ledger_path(d).unlink()
+    cash_flows.state_path(d).unlink()
+    cash_flows.collect_binance(Feed(pay=[pay("p9", at="2026-10-09T06:30:00Z")]), d, now=LATEST, now_ms=ms(LATEST))
+    assert cash_flows.blocked_state(d) == {"blocked": False, "verified_since": LATEST}
+    result = cash_flows.blocked_alert(d, now=LATEST)
+    assert result == {"alert": None, "note": "clearing withheld (the ledger began after the failure was told)"}
+    assert _standing(d)["resolved_told_at"] is None
+
+
+def test_case_b_a_ledger_gone_beside_a_readable_state_is_not_a_clearing(tmp_path):
+    """The missing ledger verifies vacuously (an empty chain): not BLOCKED, and not verified either."""
+    d = lane(tmp_path)
+    break_chain(d)
+    deliver(d, NOW)
+    cash_flows.ledger_path(d).unlink()
+    assert cash_flows.blocked_state(d) == {"blocked": False, "verified_since": None}
+    assert deliver(d, LATER) is None and _standing(d)["resolved_told_at"] is None
+
+
+def test_case_c_a_ledger_put_right_is_told_cleared_exactly_once(monkeypatch, tmp_path):
+    d = lane(tmp_path)
+    good = cash_flows.ledger_path(d).read_bytes()
+    break_chain(d)
+    patch_full_fire(monkeypatch, tmp_path)
+    channel = Channel(monkeypatch)
+    holdings_fire(tmp_path)
+    cash_flows.ledger_path(d).write_bytes(good)                               # restored from the good copy
+    assert "h6 blocked told" in holdings_fire(tmp_path, LATER)
+    holdings_fire(tmp_path, LATEST)
+    holdings_fire(tmp_path, "2026-10-09T08:00:00Z")
+    cleared = [t for t in channel.blocked() if "해소" in t]
+    assert len(channel.blocked()) == 2 and len(cleared) == 1
+    assert _standing(d)["resolved_told_at"] == LATER
+
+
+def test_case_d_a_check_that_raises_never_reads_as_cleared(monkeypatch, tmp_path):
+    d = lane(tmp_path)
+    break_chain(d)
+    deliver(d, NOW)
+    key = _standing(d)["key"]
+
+    def raises(*_a, **_k):
+        raise RuntimeError("verify could not run")
+    monkeypatch.setattr(cash_flows, "verify", raises)
+    token, _text = cash_flows.blocked_alert(d, now=LATER)["alert"]
+    assert token.startswith(f"blocked|{cash_flows.BLOCKED_KEY_STATE}:check:")
+    assert cash_flows.mark_blocked_told(d, token=token, now=LATER) is True
+    told = _standing(d)
+    assert told["key"] != key and told["resolved_told_at"] is None            # a known repeat, never a clearing
+    monkeypatch.setattr(cash_flows, "blocked_alert", raises)                  # the judgement itself fails
+    token, text = store.blocked_check(now=LATEST, root=tmp_path)["alert"]
+    assert token.startswith("blocked|") and "해소" not in text
+
+
+def test_case_e_a_missing_state_beside_a_verified_ledger_clears_by_c7_11(tmp_path):
+    """C7-11 stays a recovery path: the ledger's chain is re-derived, its first line predates the told
+    failure, and a missing state is a fresh start of the cache. The verification ran; it was not skipped."""
+    d = lane(tmp_path)
+    break_state(d)
+    deliver(d, NOW)
+    cash_flows.state_path(d).unlink()
+    judged = cash_flows.blocked_state(d)
+    assert judged == {"blocked": False, "verified_since": CUTOVER}
+    cleared = deliver(d, LATER)
+    assert cleared is not None and cleared[0].startswith("resolved|v1:state:load_state:")
+
+
+def test_case_e_a_missing_state_with_an_unverified_ledger_is_not_cleared(monkeypatch, tmp_path):
+    d = lane(tmp_path)
+    break_state(d)
+    deliver(d, NOW)
+    cash_flows.state_path(d).unlink()
+    monkeypatch.setattr(cash_flows, "verify", lambda _d: [])                  # nothing was actually verified
+    assert deliver(d, LATER) is None and _standing(d)["resolved_told_at"] is None
+
+
+# --- review 2026-10-12, P1: the told record under overlapping fires ---------------------------------------
+
+def test_a_late_clearing_never_overwrites_a_newer_failure(tmp_path):
+    """Fire A judges the clearing; fire B, later, finds a new failure and records it first. A's late write
+    is refused: the record keeps B's failure standing instead of reading as cleared."""
+    d = lane(tmp_path)
+    good = cash_flows.ledger_path(d).read_bytes()
+    break_chain(d)
+    deliver(d, NOW)
+    cash_flows.ledger_path(d).write_bytes(good)
+    late_token = cash_flows.blocked_alert(d, now=LATER)["alert"][0]           # A: resolved|K, not yet recorded
+    break_state(d)
+    newer = cash_flows.blocked_alert(d, now=LATEST)["alert"][0]               # B: a different failure
+    assert cash_flows.mark_blocked_told(d, token=newer, now=LATEST) is True
+    assert cash_flows.mark_blocked_told(d, token=late_token, now=LATER) is False
+    told = _standing(d)
+    assert told["key"] == newer.split("|", 1)[1] and told["resolved_told_at"] is None
+
+
+def test_a_late_failure_record_never_hides_a_recurrence(tmp_path):
+    """A stale BLOCKED record landing after its clearing was recorded would make the next recurrence of
+    the same key read as already told. It is refused, so the recurrence is told."""
+    d = lane(tmp_path)
+    good = cash_flows.ledger_path(d).read_bytes()
+    break_chain(d)
+    stale = cash_flows.blocked_alert(d, now=NOW)["alert"][0]                  # A delivers, its write stalls
+    deliver(d, NOW)                                                           # B: the same failure, recorded
+    cash_flows.ledger_path(d).write_bytes(good)
+    deliver(d, LATER)                                                         # the clearing, recorded
+    assert cash_flows.mark_blocked_told(d, token=stale, now=NOW) is False
+    break_chain(d)
+    assert deliver(d, LATEST) is not None                                     # the recurrence is told
+
+
+def test_a_clearing_for_a_key_that_is_not_standing_is_refused(tmp_path):
+    d = lane(tmp_path)
+    assert cash_flows.mark_blocked_told(d, token="resolved|v1:state:verify:0000", now=NOW) is False
+    assert not cash_flows.blocked_told_path(d).exists()
+    assert cash_flows.mark_blocked_told(d, token="other|x", now=NOW) is False
+
+
+def test_two_overlapping_fires_send_twice_at_least_once_not_exactly_once(tmp_path):
+    """Both judge the same failure before either records it: both deliver. A duplicate, never a silence —
+    the told record cannot make a send and its record one step, so exactly-once is not claimed."""
+    d = lane(tmp_path)
+    break_chain(d)
+    first = cash_flows.blocked_alert(d, now=NOW)["alert"]
+    second = cash_flows.blocked_alert(d, now=LATER)["alert"]
+    assert first is not None and second is not None and first[0] == second[0]
+    assert cash_flows.mark_blocked_told(d, token=first[0], now=NOW) is True
+    assert cash_flows.mark_blocked_told(d, token=second[0], now=LATER) is True
+    assert cash_flows.blocked_alert(d, now=LATEST)["alert"] is None           # quiet once recorded
+
+
+def test_concurrent_told_writes_leave_one_whole_record_and_no_tmp(tmp_path):
+    import threading
+    d = lane(tmp_path)
+    tokens = [f"blocked|v1:state:verify:{i:016x}" for i in range(8)]
+    stamps = [f"2026-10-09T06:00:0{i}Z" for i in range(8)]
+    gate = threading.Barrier(len(tokens))
+    errors: list[BaseException] = []
+
+    def write(token: str, now: str) -> None:
+        gate.wait()
+        try:
+            cash_flows.mark_blocked_told(d, token=token, now=now)
+        except BaseException as exc:  # noqa: BLE001 — collected and asserted below
+            errors.append(exc)
+    threads = [threading.Thread(target=write, args=pair) for pair in zip(tokens, stamps)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    told = _standing(d)                                                       # parses: never a torn file
+    assert told["key"] in {t.split("|", 1)[1] for t in tokens} and told["told_at"] in stamps
+    assert [p.name for p in d.iterdir() if p.name.endswith(".tmp")] == []
+
+
+def test_a_replace_that_fails_raises_keeps_the_record_and_leaves_no_tmp(monkeypatch, tmp_path):
+    d = lane(tmp_path)
+    break_chain(d)
+    deliver(d, NOW)
+    before = cash_flows.blocked_told_path(d).read_bytes()
+
+    def refuse(self, target):
+        raise PermissionError("replace refused")
+    monkeypatch.setattr(pathlib.Path, "replace", refuse)
+    with pytest.raises(PermissionError):
+        cash_flows.mark_blocked_told(d, token="blocked|v1:state:verify:ffff", now=LATER)
+    assert cash_flows.blocked_told_path(d).read_bytes() == before
+    assert [p.name for p in d.iterdir() if p.name.endswith(".tmp")] == []
+
+
+def test_the_fire_says_not_recorded_when_the_record_is_stale(monkeypatch, tmp_path):
+    d = lane(tmp_path)
+    break_chain(d)
+    patch_full_fire(monkeypatch, tmp_path)
+    Channel(monkeypatch)
+    monkeypatch.setattr(cash_flows, "mark_blocked_told", lambda *_a, **_k: False)
+    status = holdings_fire(tmp_path)
+    assert "h6 blocked told not recorded:stale" in status and not re.search(r"h6 blocked told(;|$)", status)

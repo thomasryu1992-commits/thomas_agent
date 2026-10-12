@@ -52,9 +52,11 @@ import ast
 import hashlib
 import inspect
 import json
+import os
 import re
 import textwrap
 import time
+import uuid
 from contextlib import contextmanager
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
@@ -1673,13 +1675,17 @@ def _marker_blocked(marker: Any) -> dict[str, Any]:
 def blocked_state(state_dir: Path) -> dict[str, Any]:
     """Whether the ledger or its state is in a condition every writer refuses (C7 §6). Read-only.
 
-    ``{"blocked": False}``, or ``{"blocked": True, "reason_code", "category", "key"}`` where the category is
-    one of ``verify`` (the chain), ``load_state`` (the cache), ``legacy`` (the pending pre-H6d import),
-    ``marker`` (a PR-A detection) or ``check`` (this judgement itself failed: a check that cannot run never
-    reads as fine). No ledger and no state is a lane that never ran, not a failure. A missing state beside
-    a readable ledger is the C7-11 recovery path, not BLOCKED."""
+    ``{"blocked": False, "verified_since"}``, or ``{"blocked": True, "reason_code", "category", "key"}``
+    where the category is one of ``verify`` (the chain), ``load_state`` (the cache), ``legacy`` (the
+    pending pre-H6d import), ``marker`` (a PR-A detection) or ``check`` (this judgement itself failed: a
+    check that cannot run never reads as fine). No ledger and no state is a lane that never ran, not a
+    failure. A missing state beside a readable ledger is the C7-11 recovery path, not BLOCKED.
+
+    ``verified_since`` is the ``at`` of the first line of a ledger whose chain was re-derived here, or None
+    when there was nothing to verify (no ledger, or an empty one). Not BLOCKED is not the same as verified:
+    a missing ledger verifies vacuously, so only ``verified_since`` can clear a told failure."""
     if not (ledger_path(state_dir).exists() or state_path(state_dir).exists()):
-        return {"blocked": False}
+        return {"blocked": False, "verified_since": None}
     try:
         try:
             rows = verify(state_dir)
@@ -1698,7 +1704,7 @@ def blocked_state(state_dir: Path) -> dict[str, Any]:
             return _marker_blocked(state[DETECTION_MARKER_KEY])
     except Exception as exc:  # noqa: BLE001 — a judgement that cannot finish is BLOCKED, never fine
         return _blocked(state_dir, type(exc).__name__, "check")
-    return {"blocked": False}
+    return {"blocked": False, "verified_since": rows[0].get("at") if rows else None}
 
 
 def read_blocked_told(state_dir: Path) -> tuple[dict[str, Any], str | None]:
@@ -1734,28 +1740,62 @@ def blocked_alert(state_dir: Path, *, now: str) -> dict[str, Any]:
                 "금액과 계정은 담지 않습니다. Thomas 터미널에서 원인을 확인해 주세요.")
         return {"alert": (f"{BLOCKED_TOKEN_TOLD}|{judgement['key']}", text), "note": note}
     if standing:
+        withheld = _clearing_withheld(judgement, told)
+        if withheld:
+            return {"alert": None, "note": "; ".join(part for part in (note, withheld) if part)}
         text = f"[보유 자산] H6 현금흐름 원장 BLOCKED 해소 — {now} 기준 원장과 상태 검증이 다시 통과합니다."
         return {"alert": (f"{BLOCKED_TOKEN_RESOLVED}|{told['key']}", text), "note": note}
     return {"alert": None, "note": note}
 
 
+def _clearing_withheld(judgement: Mapping[str, Any], told: Mapping[str, Any]) -> str | None:
+    """Why a told failure that no longer reads BLOCKED is not told as cleared, or None. Nothing to verify
+    is not a verification: a ledger that is gone, or one that began after the failure was told (refresh
+    starts a new chain where the old one vanished), is not the ledger that failed, repaired. The told
+    record stays standing, so nothing is sent until the ledger that was told verifies again. A ledger
+    restored or repaired in place keeps its first line, so it clears; one whose first line is gone does
+    not (C7 PR-A's checkpoint is what tells a truncated ledger from a repaired one)."""
+    since = _iso_ms(judgement.get("verified_since"))
+    if since is None:
+        return "clearing withheld (nothing verified)"
+    told_at = _iso_ms(told.get("told_at"))
+    if told_at is None or since > told_at:
+        return "clearing withheld (the ledger began after the failure was told)"
+    return None
+
+
 def mark_blocked_told(state_dir: Path, *, token: str, now: str) -> bool:
     """Record a delivered BLOCKED or clearing message — called only after delivery. Writes the told file
-    alone (tmp → replace, the drawdown told file's pattern); a write that fails raises, so the caller never
-    counts it as recorded and the next fire offers the message again. Returns False for a token it does not
-    know (nothing written)."""
+    alone (a tmp file of its own → replace); a write that fails raises, so the caller never counts it as
+    recorded and the next fire offers the message again.
+
+    Returns False, writing nothing, for a token it does not know and for a stale one: a record already
+    written by a later fire (an older ``now`` never overwrites a newer record), or a clearing of a key
+    that is not the standing one. Holdings fires are serial in the deployment (one maintenance lane); two
+    overlap only when an operator ticks by hand meanwhile. Then a stale token loses here and the next fire
+    re-judges, so the cost is a duplicate message, never a failure recorded as told when it was not. No
+    lock: the check and the replace are not one atomic step, so two writers inside the same instant can
+    still both pass it (docs/history/2026-10-11-c7-pr-d-blocked-alert.md)."""
     kind, _, key = str(token).partition("|")
-    if kind == BLOCKED_TOKEN_TOLD and key:
-        body = {"key": key, "told_at": now, "resolved_told_at": None}
-    elif kind == BLOCKED_TOKEN_RESOLVED and key:
-        told, _note = read_blocked_told(state_dir)
-        body = {"key": key, "told_at": told.get("told_at") if told.get("key") == key else None,
-                "resolved_told_at": now}
-    else:
+    if kind not in (BLOCKED_TOKEN_TOLD, BLOCKED_TOKEN_RESOLVED) or not key:
         return False
+    told, _note = read_blocked_told(state_dir)
+    at = _iso_ms(now)
+    latest = [ms for ms in (_iso_ms(told.get("told_at")), _iso_ms(told.get("resolved_told_at"))) if ms is not None]
+    if at is None or (latest and at < max(latest)):
+        return False
+    if kind == BLOCKED_TOKEN_TOLD:
+        body = {"key": key, "told_at": now, "resolved_told_at": None}
+    else:
+        if told.get("key") != key or not told.get("told_at") or told.get("resolved_told_at"):
+            return False
+        body = {"key": key, "told_at": told["told_at"], "resolved_told_at": now}
     path = blocked_told_path(state_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"record_version": 1, **body}, sort_keys=True), encoding="utf-8")
-    tmp.replace(path)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(json.dumps({"record_version": 1, **body}, sort_keys=True), encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
     return True
