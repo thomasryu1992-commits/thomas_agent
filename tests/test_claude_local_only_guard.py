@@ -87,6 +87,53 @@ ALLOWED = [
 ]
 
 
+# --- C7 PR-D's told record (2026-10-12) -----------------------------------------------------------------
+# `holdings_cash_flow_blocked_told.json` (#1216) lives in the state directory, which the path rules cover.
+# The by-name rule did not know it: a bare name, or a copy at another path, went through. The name is read
+# from the lane's own constant, so a rename cannot leave the rule behind silently.
+
+def _told_name() -> str:
+    from runtime.mvp_runtime.holdings import cash_flows
+    return cash_flows.BLOCKED_TOLD_FILENAME
+
+
+def _told_refs(name: str) -> list[str]:
+    return [
+        _payload("Bash", command=f"cat {name}"),                                         # bare, from the state dir
+        _payload("Bash", command=f"cp {name} /root/elsewhere/"),                          # copied out
+        _payload("Bash", command=f"cat /root/backup/{name}"),                             # a copy at another path
+        _payload("Bash", command=f"cat .runtime_governance_state/holdings/{name}"),       # the path rule, as before
+        _payload("Bash", command=f"cd .runtime_governance_state && cat holdings/{name}"),
+        _payload("Read", file_path=f"/root/backup/{name}"),
+        _payload("Grep", pattern="key", path=f"/root/backup/{name}"),
+        _payload("Glob", pattern=f"**/{name}"),
+        _monitor(command=f"tail -f /root/backup/{name}"),
+    ]
+
+
+# One test per direction, not one per form: each posix-only item is a skip on Windows, counted against
+# tests/skip_ceiling.json. The forms that fail are listed in the assertion instead.
+@posix_only
+def test_the_told_record_is_refused_by_name_wherever_it_is(tmp_path):
+    refs = _told_refs(_told_name())
+    assert len(refs) == 9
+    allowed = [ref for ref in refs if _decision(ref, tmp_path) != "deny"]
+    assert allowed == []
+
+
+@posix_only
+def test_the_told_rule_leaves_ordinary_work_alone(tmp_path):
+    commands = [
+        "cat holdings_snapshot.json",                                  # the one table, named on its own
+        "cat other_blocked_told.json",                                 # another name
+        "cat docs/history/2026-10-11-c7-pr-d-blocked-alert.md",        # the increment's own record
+        ".venv/bin/python -m pytest tests/test_mvp_runtime_holdings_c7_blocked.py -q",
+        "git show origin/main:runtime/mvp_runtime/holdings/cash_flows.py",
+    ]
+    refused = [command for command in commands if _decision(_payload("Bash", command=command), tmp_path) != "allow"]
+    assert refused == []
+
+
 @posix_only
 @pytest.mark.parametrize(("tool", "command"), DENIED)
 def test_the_ways_into_local_only_state_are_refused(tmp_path, tool, command):

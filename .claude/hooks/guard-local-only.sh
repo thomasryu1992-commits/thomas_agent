@@ -71,7 +71,7 @@ deny() {
 state='runtime_governance_state/+'
 [[ $flat =~ ${state}holdings ]] && deny "a path into the holdings state directory"
 [[ $flat =~ holdings/+holdings_ ]] && deny "a holdings state file"
-[[ $flat =~ holdings_(classification|local)\.json|holdings_cash_flows?(_state)?\.jsonl?|holdings_baselines\.jsonl ]] \
+[[ $flat =~ holdings_(classification|local)\.json|holdings_cash_flows?(_state)?\.jsonl?|holdings_cash_flow_blocked_told\.json|holdings_baselines\.jsonl ]] \
   && deny "a holdings state file by name"
 [[ $flat =~ ${state}[^/[:space:]\"\']*[*?[{] ]] && deny "a glob under the state root"
 [[ $kind == unknown ]] && deny "a $tool input without a command this guard can read"
