@@ -217,7 +217,7 @@ def source_hashes() -> list[tuple[str, str]]:
     return out
 
 
-def run_checks() -> list[tuple[str, bool]]:
+def run_selftest_checks() -> list[tuple[str, bool]]:
     results = []
     for name, check in CHECKS:
         try:
@@ -234,7 +234,7 @@ def main(argv: list[str] | None = None) -> int:
         print("FAIL input_refused")
         print("RESULT FAIL")
         return 2
-    results = run_checks()
+    results = run_selftest_checks()
     for name, ok in results:
         print(f"{'PASS' if ok else 'FAIL'} {name}")
     for digest, rel in source_hashes():

@@ -76,7 +76,7 @@ def test_source_hashes_match_the_files_in_this_tree():
 @pytest.mark.parametrize("argv", [["--root", "/x"], ["anything"], [""]])
 def test_any_input_is_refused_before_anything_runs(temp_root, capsys, monkeypatch, argv):
     ran = []
-    monkeypatch.setattr(selftest, "run_checks", lambda: ran.append(1) or [])
+    monkeypatch.setattr(selftest, "run_selftest_checks", lambda: ran.append(1) or [])
     assert selftest.main(argv) == 2
     assert _lines(capsys) == ["FAIL input_refused", "RESULT FAIL"]
     assert ran == []
