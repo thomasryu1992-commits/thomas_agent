@@ -271,7 +271,9 @@ def test_r01_a_look_alike_profile_is_refused_at_the_applier(tmp_path):
     {"reads": set(CLAUDE_READS)},                                  # mutable: not the structure it claims to be
 ])
 def test_r01_an_incoherent_registered_profile_refuses_to_listen(tmp_path, monkeypatch, broken):
-    monkeypatch.setenv(socket_door.CLIENT_UID_ENV, str(os.getuid()))
+    # A synthetic, well-formed allowlist (not the host's uid; os.getuid does not exist on Windows), so
+    # the refusal below can only come from the profile check, which runs before the allowlist is read.
+    monkeypatch.setenv(socket_door.CLIENT_UID_ENV, "1")
     bad = read_bridge.DoorProfile(**({"name": "claude", "reads": CLAUDE_READS, "projection": "v1"} | broken))
     monkeypatch.setattr(read_bridge, "PROFILES", {"claude": bad})
     with pytest.raises(ControlBlocked) as exc:
@@ -312,7 +314,7 @@ def test_r01_the_old_per_protection_flags_no_longer_exist():
     (["--profile", "nope", "--request-log", "LOG"], "DOOR_PROFILE_UNKNOWN"),
 ])
 def test_r01_the_cli_refuses_a_partial_profile(tmp_path, monkeypatch, capsys, argv, code):
-    monkeypatch.setenv(socket_door.CLIENT_UID_ENV, str(os.getuid()))
+    monkeypatch.setenv(socket_door.CLIENT_UID_ENV, "1")   # synthetic and well-formed, as above
     real = read_bridge.open_door
     monkeypatch.setattr(read_bridge, "open_door", lambda path, **kw: real(
         path, control_store=ControlStore(tmp_path), ledger=LedgerStore(tmp_path),
