@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "deploy_request_state.v0.1.schema.json",
+  "title": "Option C deploy runner request state — latest row per request_id wins; no TTL",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "request_id",
+    "request_sha256",
+    "state",
+    "recorded_at",
+    "result"
+  ],
+  "properties": {
+    "request_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{1,128}\\Z"
+    },
+    "request_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}\\Z"
+    },
+    "state": {
+      "enum": [
+        "claimed",
+        "completed",
+        "refused_before_consume",
+        "unknown",
+        "partial"
+      ]
+    },
+    "recorded_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z\\Z"
+    },
+    "result": {
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "enum": [
+              "claimed",
+              "unknown",
+              "partial"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "result": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "result": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  ]
+}
