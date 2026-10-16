@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "deploy_runner_clock.v0.1.schema.json",
+  "title": "Option C deploy runner clock record — the latest wall time this runner has seen",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "last_seen_wall"
+  ],
+  "properties": {
+    "last_seen_wall": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z\\Z"
+    }
+  }
+}

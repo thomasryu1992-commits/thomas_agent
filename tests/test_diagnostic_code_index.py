@@ -129,6 +129,14 @@ SHARED_ACROSS_MODULES = frozenset({
     # the bytes, `approval_verify` the parsed structure, `clock` a time field inside it. The runner
     # answers it with one fixed sentence, so an operator reading it back is looking at one contract.
     "APPROVAL_MALFORMED",
+    # Added 2026-10-16 with C3a-2. The deploy runner's request store gives REQUEST_ID_REUSED and
+    # REQUEST_IN_FLIGHT the meaning `bridge_idempotency` gives them (same id for a different request;
+    # the request is still being carried out) — the C2 design reused the meanings on purpose and
+    # changed only that a claim never times out. RUNNER_STARTUP_BLOCKED means one thing wherever it is
+    # raised (`clock`, `latch`, `startup`): the runner must not accept requests until its records are
+    # resolved. STORE_ID_MISMATCH means the consumption store is not the one this install expects, read
+    # by `consumption` and judged by `startup` when the install and the audit disagree.
+    "REQUEST_ID_REUSED", "REQUEST_IN_FLIGHT", "RUNNER_STARTUP_BLOCKED", "STORE_ID_MISMATCH",
 })
 
 
