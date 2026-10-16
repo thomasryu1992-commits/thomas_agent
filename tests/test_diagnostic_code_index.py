@@ -124,6 +124,11 @@ SHARED_ACROSS_MODULES = frozenset({
     # self-hash fails, and `live_pnl`'s P&L sum raises it on a hash-valid row whose amount is not a
     # number. Both mean that the history cannot be trusted as money, so the loss breaker trips.
     "LIVE_HISTORY_TAMPERED",
+    # Added 2026-10-16 with the Option C deploy runner (C3a-1). One meaning in all three modules:
+    # the signed deploy approval is not in its accepted form. `canonical` refuses the carrier and
+    # the bytes, `approval_verify` the parsed structure, `clock` a time field inside it. The runner
+    # answers it with one fixed sentence, so an operator reading it back is looking at one contract.
+    "APPROVAL_MALFORMED",
 })
 
 
