@@ -4,11 +4,11 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **675** distinct codes across **1338** raise sites
+- **684** distinct codes across **1349** raise sites
 - **23** exception classes carry them
 - **76** codes are raised from more than one module (see below)
 - **144** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
-- **29** raise sites carry a human-readable **message** where a code would go, so there is nothing to look up — a different gap from the line above, and counted apart from it
+- **33** raise sites carry a human-readable **message** where a code would go, so there is nothing to look up — a different gap from the line above, and counted apart from it
 
 ## Codes raised from more than one module
 
@@ -277,6 +277,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `CONTENT_TOO_LARGE` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | `_require_content` | `size > MAX_CONTENT_BYTES` |
 | `CONTROL_CHARS` | `TaskIntakeBlocked` | `runtime/mvp_runtime/intake.py` | `_reject_control_chars` | `code < 32 and ch not in _ALLOWED_CONTROL_CHARS or code == 127` |
 | `CONTROL_STATE_CHANGED` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | `apply_command` | `latest != baseline` |
+| `CONTROL_STORE_UNAVAILABLE` | `ControlBlocked` | `runtime/mvp_runtime/store_reads.py` | `read_runtime_status` | `control_store is None` |
 | `CONTROL_VERB_NOT_GRANTED` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | `apply_command` | `command in POLICY_GATED_COMMANDS and command not in granted_emergency_controls()` |
 | `CONTROL_WRITE_FAILED` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | `save` | `—` |
 | `CORE_CANDIDATE_ALREADY_DECIDED` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | `decide_core_candidate` | `candidate.get('status') != CORE_CANDIDATE_STATUS` |
@@ -332,6 +333,10 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `DOMAIN_EFFECT_MISMATCH` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | `_spend` | `len(_ALLOWED_DOMAINS) > 1` |
 | `DOMAIN_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | `_require_domain` | `domain not in _ALLOWED_DOMAINS` |
 | `DOMAIN_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | `_spend` | `domain not in _ALLOWED_DOMAINS` |
+| `DOOR_PROFILE_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/read_bridge.py` | `_registered` | `not isinstance(profile, DoorProfile) or PROFILES.get(profile.name) is not profile` |
+| `DOOR_PROFILE_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/read_bridge.py` | `_registered` | `not isinstance(reads, frozenset) or not reads or (not reads <= _PROFILE_ADMISSIBLE_READS) or (n…` |
+| `DOOR_PROFILE_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/read_bridge.py` | `open_door` | `request_log is not None` |
+| `DOOR_PROFILE_UNKNOWN` | `ControlBlocked` | `runtime/mvp_runtime/read_bridge.py` | `resolve_profile` | `not isinstance(name, str) or name not in PROFILES` |
 | `DOOR_REPLY_MALFORMED` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | `call_door` | `—` |
 | `DOOR_REPLY_MALFORMED` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | `call_door` | `size > max_reply_bytes` |
 | `DOOR_UNREACHABLE` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | `call_door` | `—` |
@@ -1106,6 +1111,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `PROGRAMIZATION_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/programization.py` | `append_observation` | `—` |
 | `PROGRAMIZATION_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/programization.py` | `append_pattern` | `—` |
 | `PROGRAMIZATION_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/programization.py` | `append_request` | `—` |
+| `PROJECTION_UNKNOWN` | `ControlBlocked` | `runtime/mvp_runtime/store_reads.py` | `require_projection` | `projection not in PROJECTIONS` |
 | `PROMOTED_NOT_RETIRED` | `OperatorBlocked` | `runtime/mvp_runtime/memory_console.py` | `apply_memory_command` | `—` |
 | `PROMOTED_UNAUDITED` | `OperatorBlocked` | `runtime/mvp_runtime/memory_console.py` | `apply_memory_command` | `—` |
 | `PROMOTION_ACTOR_MISSING` | `AuditError` | `runtime/mvp_runtime/audit.py` | `build_promotion_audit` | `not (isinstance(promoted_by, str) and promoted_by.strip())` |
@@ -1135,6 +1141,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE` | `ToolError` | `runtime/mvp_runtime/blog_content.py` | `load` | `not self.root.is_dir()` |
 | `QUERY_TOO_LONG` | `ToolBlocked` | `runtime/mvp_runtime/tools.py` | `_require_query` | `len(query) > MAX_QUERY_CHARS` |
 | `QUEUE_FULL` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | `submit_within_depth` | `depth >= limit` |
+| `READ_UID_ALLOWLIST_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/read_bridge.py` | `__init__` | `not self.allowed_client_uids` |
+| `READ_UID_ALLOWLIST_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/read_bridge.py` | `open_door` | `not socket_door.resolve_client_uids()` |
 | `REASON_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | `apply_dispatch` | `not isinstance(reason, str) or not reason.strip()` |
 | `REASON_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | `apply_workflow_command` | `not isinstance(reason, str) or not reason.strip()` |
 | `REASON_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/pipeline_worker.py` | `apply_work` | `not isinstance(reason, str) or not reason.strip()` |
@@ -1155,6 +1163,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `REGISTRY_UNRESOLVABLE` | `ProgramizationBlocked` | `runtime/mvp_runtime/registration.py` | `apply_registration` | `—` |
 | `REGISTRY_UNRESOLVABLE` | `ProgramizationBlocked` | `runtime/mvp_runtime/registration.py` | `request_registration` | `—` |
 | `REGISTRY_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/task_registry.py` | `_append` | `—` |
+| `REPLY_SCHEMA_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/store_reads.py` | `_checked` | `not jsonschema.Draft202012Validator(schema).is_valid(data)` |
 | `REPORTED_USAGE_INVALID` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | `record_reported_usage` | `—` |
 | `REPORTED_USAGE_INVALID` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | `record_reported_usage` | `isinstance(cost, bool) or not isinstance(cost, (int, float)) or cost < 0 or (cost != cost)` |
 | `REPORTED_USAGE_INVALID` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | `record_reported_usage` | `isinstance(v, bool) or not isinstance(v, int) or v < 0` |
@@ -1169,6 +1178,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `REQUEST_INPUT_INVALID` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization_cli.py` | `main` | `not (args.program_id and args.program_version)` |
 | `REQUEST_IN_FLIGHT` | `ControlBlocked` | `runtime/mvp_runtime/bridge_idempotency.py` | `claim` | `prior.get('state') == STATE_CLAIMED` |
 | `REQUEST_LINEAGE_MISSING` | `ProgramizationBlocked` | `runtime/mvp_runtime/program_request.py` | `_lineage_task` | `anchor is None` |
+| `REQUEST_LOG_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/read_bridge.py` | `open_door` | `request_log is None` |
+| `REQUEST_LOG_UNAVAILABLE` | `ControlBlocked` | `runtime/mvp_runtime/read_bridge.py` | `_log_request` | `—` |
 | `REQUEST_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | `apply_dispatch` | `not isinstance(text, str) or not text.strip()` |
 | `REQUEST_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/pipeline_worker.py` | `apply_work` | `not isinstance(text, str) or not text.strip()` |
 | `REQUEST_REQUIRES_ACCEPTED` | `ProgramizationBlocked` | `runtime/mvp_runtime/program_request.py` | `create_program_request` | `candidate.get('status') != 'ACCEPTED'` |
@@ -1384,7 +1395,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `VENUE_CONTRACT_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/venue_contract.py` | `read_verification` | `not isinstance(data, dict)` |
 | `VERB_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | `apply_workflow_command` | `not isinstance(command, str) or command.strip().lower() not in V3_COMMANDS` |
 | `VERB_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/knowledge_bridge.py` | `apply_knowledge` | `command not in _COMMANDS` |
-| `VERB_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/read_bridge.py` | `apply_read` | `command not in _READS` |
+| `VERB_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/read_bridge.py` | `apply_read` | `command not in served` |
 | `VERB_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | `apply_switch` | `command not in _ALLOWED_COMMANDS` |
 | `VERSION_CONFLICT` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | `propose_update` | `int(w['row_version']) != int(expected_version)` |
 | `VERSION_CONFLICT` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | `request_cancel` | `int(w['row_version']) != int(expected_version)` |

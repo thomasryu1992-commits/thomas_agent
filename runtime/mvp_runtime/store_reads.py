@@ -23,10 +23,11 @@ carried dormant — the read door refuses it until the committed policy lists it
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
-from . import approval, heartbeat, lane_digest, scheduler, timeutil
+from . import approval, control, heartbeat, lane_digest, scheduler, timeutil
 from .approval_store import ApprovalStore
 from .control import parse_count_arg, with_note
 from .errors import ControlBlocked, MvpRuntimeError
@@ -75,11 +76,15 @@ def _clip(text: str | None) -> str | None:
     return flat[:_STATUS_CHARS] + ("…" if len(flat) > _STATUS_CHARS else "")
 
 
-def read_schedules(schedules: ScheduleStore | None, *, now: str) -> dict[str, Any]:
-    """Every enabled schedule row, the lane it belongs to, and which ones are overdue."""
+def read_schedules(schedules: ScheduleStore | None, *, now: str, projection: str | None = None) -> dict[str, Any]:
+    """Every enabled schedule row, the lane it belongs to, and which ones are overdue.
+
+    ``projection="v1"`` answers with the closed reply contract instead (`_projected_schedules`)."""
     if schedules is None:
         raise ControlBlocked("SCHEDULES_UNAVAILABLE", "this door was opened without the schedule store")
     rows = schedules.list()
+    if projection is not None:
+        return _projected_schedules(rows, now=now, projection=projection)
     late = {s.schedule_id: seconds for s, seconds in scheduler.overdue_schedules(rows, now=now)}
     enabled = [
         {
@@ -98,7 +103,8 @@ def read_schedules(schedules: ScheduleStore | None, *, now: str) -> dict[str, An
     }
 
 
-def read_scheduler_events(ledger: LedgerStore | None, argument: str | None, *, now: str) -> dict[str, Any]:
+def read_scheduler_events(ledger: LedgerStore | None, argument: str | None, *, now: str,
+                          projection: str | None = None) -> dict[str, Any]:
     """The newest N scheduler events, read from the END of the active file and without the
     appender's lock (``LedgerStore.read_scheduler_events_tail``): the cost is the N rows, not
     the file, and the tick loop is never made to wait for a poller. The active file only —
@@ -110,6 +116,8 @@ def read_scheduler_events(ledger: LedgerStore | None, argument: str | None, *, n
     )
     tail = ledger.read_scheduler_events_tail(limit)
     total = ledger.count_scheduler_events()
+    if projection is not None:
+        return _projected_scheduler_events(tail, total=total, note=note, now=now, projection=projection)
     if not tail:
         text = "기록된 스케줄러 이벤트가 없습니다."
     else:
@@ -127,8 +135,451 @@ def read_scheduler_events(ledger: LedgerStore | None, argument: str | None, *, n
     }
 
 
-def read_heartbeat(*, now: str, repo_root: Path | None) -> dict[str, Any]:
-    """Liveness of the three loops, from the files they stamp. Pure read; never raises."""
+# --- reply projection v1 (D-11 c1; why: docs/history/2026-10-16-claude-read-door-profile.md) ---
+#
+# Decision state: c1 confirmed by Thomas on 2026-10-16 for the repository implementation only. Implemented, not
+# approved for any door in operation.
+#
+# A door that serves a less trusted reader than the assistant answers `schedules` and
+# `scheduler_events` from rows rebuilt out of closed lists, never from the stored rows themselves.
+# What is NOT handed on: the stored `status` (a factory child's failure carries `"<type>: <message>"`
+# there, `scheduler._collect_factory_child`), a schedule's `request`/`reason` text, a removal event's
+# `last_status`, a proposal's `proposed_by`, integrity fields, and any key this list does not name —
+# including keys added after this was written. The projection limits what LEAVES the door; the ledger
+# keeps what it stored (that is decision e, not this). Off unless the door is opened with it, so the
+# assistant's own door answers exactly as before.
+#
+# Where the protection is: in building each row out of closed lists (`project_scheduler_event`,
+# `project_last_status`). The JSON Schemas below check the SHAPE of what was built — closed keys,
+# enums, anchored patterns, lengths — and refuse a projection defect whole. A schema cannot tell
+# that a well-formed value is the wrong one, so it is a defect detector behind the projection, not
+# a second projection. Patterns end in `\Z`, not `$`, which would also match before a final newline.
+
+PROJECTION_V1 = "v1"
+PROJECTIONS: frozenset[str] = frozenset({PROJECTION_V1})
+PROJECTION_PARTIAL = "v1-partial"
+
+# Closed lists, read off the scheduler (pinned against its constants by test).
+EVENT_ACTIONS: frozenset[str] = frozenset({
+    scheduler.ACTION_STARTED, "fired", "failed", scheduler.ACTION_ABANDONED, "skipped",
+    scheduler.ACTION_DEFERRED, "gap_detected", scheduler.ACTION_CREATED, scheduler.ACTION_ENABLED,
+    scheduler.ACTION_DISABLED, scheduler.ACTION_REMOVED, scheduler.ACTION_EXPIRED, scheduler.ACTION_PROPOSED,
+})
+_MUTATION_ACTIONS = frozenset({scheduler.ACTION_CREATED, scheduler.ACTION_ENABLED, scheduler.ACTION_DISABLED,
+                               scheduler.ACTION_REMOVED, scheduler.ACTION_EXPIRED})
+_MUTATION_STATUSES = frozenset({"enabled", "disabled", "removed"})
+CHANGE_ACTIONS: frozenset[str] = frozenset({"create", "enable", "disable", "remove"})
+_FIXED_OUTCOMES: dict[tuple[str, str], str] = {
+    (scheduler.ACTION_STARTED, "running"): "started",
+    (scheduler.ACTION_ABANDONED, "abandoned_mid_run"): "abandoned",
+    ("skipped", "skipped_not_active"): "skipped:not_active",
+    (scheduler.ACTION_DEFERRED, "deferred_pass_budget"): "deferred:pass_budget",
+    (scheduler.ACTION_DEFERRED, "deferred_factory_child_running"): "deferred:factory_child_running",
+    (scheduler.ACTION_PROPOSED, "proposed"): "proposed",
+}
+_SCHEDULE_ID = re.compile(r"^schedule_[0-9a-f]{20}\Z")
+_RUN_ID = re.compile(r"^srun_[0-9a-f]{20}\Z")
+_ISO = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
+_CODE = re.compile(r"^[A-Z][A-Z0-9_]{2,63}\Z")
+_FAILED = re.compile(r"^failed:([A-Z][A-Z0-9_]{2,63})(?::.*)?\Z", re.S)
+_OVERDUE = re.compile(r"^overdue_seconds=(\d{1,10})\Z")
+_INT_FIELDS = ("duration_ms", "interval_seconds", "pass_elapsed_ms", "pass_budget_ms")
+_MAX_OUT_OF_SCOPE = 10
+
+
+def _nonneg_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _failed_outcome(status: Any) -> str | None:
+    match = _FAILED.match(status) if isinstance(status, str) else None
+    return f"failed:{match.group(1)}" if match else None
+
+
+def project_scheduler_event(raw: Any) -> dict[str, Any]:
+    """One stored scheduler event as the v1 contract row: closed fields, a normalised `outcome`,
+    `projection` naming whether anything the contract carries had to be dropped."""
+    if not isinstance(raw, Mapping):
+        return {"action": "UNKNOWN", "kind": "UNKNOWN", "outcome": "UNKNOWN", "projection": PROJECTION_PARTIAL}
+    partial = False
+    action = raw.get("action") if raw.get("action") in EVENT_ACTIONS else None
+    kind = raw.get("kind") if raw.get("kind") in scheduler.KINDS else None
+    row: dict[str, Any] = {"action": action or "UNKNOWN", "kind": kind or "UNKNOWN"}
+    status = raw.get("status")
+    if action is None or kind is None:
+        outcome = "UNKNOWN"
+    elif action == "fired":
+        outcome = "fired"                                  # the per-kind summary never leaves
+    elif action == "failed":
+        outcome = _failed_outcome(status) or "failed:UNKNOWN"
+    elif action == "gap_detected":
+        outcome = "gap_detected"
+        match = _OVERDUE.match(status) if isinstance(status, str) else None
+        if match:
+            row["overdue_seconds"] = int(match.group(1))
+        else:
+            partial = True
+    elif action in _MUTATION_ACTIONS:
+        outcome = action if status in _MUTATION_STATUSES else f"{action}:UNKNOWN"
+    else:
+        outcome = _FIXED_OUTCOMES.get((action, status)) if isinstance(status, str) else None
+        outcome = outcome or f"{action}:UNKNOWN"
+    partial = partial or outcome.endswith("UNKNOWN")
+    row["outcome"] = outcome
+
+    def keep(name: str, ok: bool, value: Any) -> None:
+        nonlocal partial
+        if name not in raw:
+            return
+        if ok:
+            row[name] = value
+        else:
+            partial = True
+
+    for name, pattern in (("schedule_id", _SCHEDULE_ID), ("schedule_run_id", _RUN_ID)):
+        value = raw.get(name)
+        keep(name, isinstance(value, str) and bool(pattern.match(value)), value)
+    for name in ("created_at", "started_at"):
+        value = raw.get(name)
+        keep(name, isinstance(value, str) and bool(_ISO.match(value)), value)
+    for name in _INT_FIELDS:
+        value = _nonneg_int(raw.get(name))
+        keep(name, value is not None, value)
+    if "previously_enabled" in raw:
+        keep("previously_enabled", isinstance(raw["previously_enabled"], bool), raw["previously_enabled"])
+    if action == scheduler.ACTION_PROPOSED:
+        keep("change_action", raw.get("change_action") in CHANGE_ACTIONS, raw.get("change_action"))
+        if "out_of_scope" in raw:
+            codes = raw["out_of_scope"]
+            good = ([c for c in codes if isinstance(c, str) and _CODE.match(c)]
+                    if isinstance(codes, list) else [])
+            if not isinstance(codes, list) or len(good) != len(codes) or len(good) > _MAX_OUT_OF_SCOPE:
+                partial = True
+            row["out_of_scope"] = good[:_MAX_OUT_OF_SCOPE]
+    row["projection"] = PROJECTION_PARTIAL if partial else PROJECTION_V1
+    return row
+
+
+def project_last_status(last_status: Any) -> tuple[str | None, bool]:
+    """`(last_outcome, partial)`. `last_status` is written only when a run ends (a failure, the
+    factory child's running marker, or a fired run's free-form summary), so any other string is a
+    success summary and folds to ``fired``."""
+    if last_status is None:
+        return None, False
+    if not isinstance(last_status, str):
+        return "UNKNOWN", True
+    if last_status.startswith("failed:"):
+        outcome = _failed_outcome(last_status)
+        return (outcome, False) if outcome else ("failed:UNKNOWN", True)
+    if last_status == scheduler.STATUS_FACTORY_RUNNING:
+        return "running", False
+    return "fired", False
+
+
+_TIME_SCHEMA = {"type": "string", "pattern": _ISO.pattern}
+_EVENT_ROW_SCHEMA: dict[str, Any] = {
+    "type": "object", "additionalProperties": False,
+    "required": ["action", "kind", "outcome", "projection"],
+    "properties": {
+        "action": {"enum": sorted(EVENT_ACTIONS) + ["UNKNOWN"]},
+        "kind": {"enum": sorted(scheduler.KINDS) + ["UNKNOWN"]},
+        "outcome": {"type": "string", "maxLength": 72, "pattern": (
+            r"^(fired|started|abandoned|proposed|gap_detected|skipped:not_active|deferred:pass_budget"
+            r"|deferred:factory_child_running|created|enabled|disabled|removed|expired|UNKNOWN"
+            r"|failed:[A-Z][A-Z0-9_]{2,63}|[a-z_]+:UNKNOWN)\Z")},
+        "projection": {"enum": [PROJECTION_V1, PROJECTION_PARTIAL]},
+        "schedule_id": {"type": "string", "pattern": _SCHEDULE_ID.pattern},
+        "schedule_run_id": {"type": "string", "pattern": _RUN_ID.pattern},
+        "created_at": _TIME_SCHEMA, "started_at": _TIME_SCHEMA,
+        **{name: {"type": "integer", "minimum": 0} for name in (*_INT_FIELDS, "overdue_seconds")},
+        "previously_enabled": {"type": "boolean"},
+        "change_action": {"enum": sorted(CHANGE_ACTIONS)},
+        "out_of_scope": {"type": "array", "maxItems": _MAX_OUT_OF_SCOPE,
+                         "items": {"type": "string", "pattern": _CODE.pattern}},
+    },
+}
+_EVENTS_DATA_SCHEMA: dict[str, Any] = {
+    "type": "object", "additionalProperties": False,
+    "required": ["events", "count", "active_file_total", "as_of", "projection"],
+    "properties": {
+        "events": {"type": "array", "maxItems": MAX_EVENTS, "items": _EVENT_ROW_SCHEMA},
+        "count": {"type": "integer", "minimum": 0, "maximum": MAX_EVENTS},
+        "active_file_total": {"type": "integer", "minimum": 0},
+        "as_of": _TIME_SCHEMA,
+        "projection": {"enum": [PROJECTION_V1, PROJECTION_PARTIAL]},
+    },
+}
+_SCHEDULE_ROW_SCHEMA: dict[str, Any] = {
+    "type": "object", "additionalProperties": False, "required": ["kind", "last_outcome"],
+    "properties": {
+        "kind": {"enum": sorted(scheduler.KINDS) + ["UNKNOWN"]},
+        "schedule_id": {"type": "string", "pattern": _SCHEDULE_ID.pattern},
+        "lane": {"enum": [scheduler.LANE_RISK, scheduler.LANE_MAINTENANCE]},
+        "interval_seconds": {"type": "integer", "minimum": 0},
+        "next_run_at": _TIME_SCHEMA, "last_run_at": _TIME_SCHEMA,
+        "last_outcome": {"anyOf": [{"type": "null"}, {"type": "string", "pattern":
+                         r"^(fired|running|UNKNOWN|failed:UNKNOWN|failed:[A-Z][A-Z0-9_]{2,63})\Z"}]},
+    },
+}
+_SCHEDULES_DATA_SCHEMA: dict[str, Any] = {
+    "type": "object", "additionalProperties": False,
+    "required": ["enabled", "disabled_count", "as_of", "projection"],
+    "properties": {
+        "enabled": {"type": "array", "items": _SCHEDULE_ROW_SCHEMA},
+        "disabled_count": {"type": "integer", "minimum": 0},
+        "as_of": _TIME_SCHEMA,
+        "projection": {"enum": [PROJECTION_V1, PROJECTION_PARTIAL]},
+    },
+}
+
+
+def require_projection(projection: str) -> None:
+    """Refuse a projection name this module does not define (the one place that raises it)."""
+    if projection not in PROJECTIONS:
+        raise ControlBlocked("PROJECTION_UNKNOWN", f"no reply projection named {projection!r}; nothing was read")
+
+
+def _checked(data: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
+    """The last gate before a projected reply leaves: its closed shape. A projection defect is
+    refused whole and the refusal names no field and no value."""
+    import jsonschema  # local: only a projecting door pays for it
+
+    if not jsonschema.Draft202012Validator(schema).is_valid(data):
+        raise ControlBlocked("REPLY_SCHEMA_INVALID",
+                             "the projected reply did not match its closed shape; nothing was returned")
+    return data
+
+
+def _projected_scheduler_events(tail: list[Any], *, total: int, note: str | None, now: str,
+                                projection: str) -> dict[str, Any]:
+    require_projection(projection)
+    rows = [project_scheduler_event(e) for e in tail]
+    partial = any(r["projection"] == PROJECTION_PARTIAL for r in rows)
+    data = _checked({"events": rows, "count": len(rows), "active_file_total": total, "as_of": now,
+                     "projection": PROJECTION_PARTIAL if partial else PROJECTION_V1}, _EVENTS_DATA_SCHEMA)
+    if not rows:
+        text = "기록된 스케줄러 이벤트가 없습니다."
+    else:
+        lines = [f"최근 스케줄러 이벤트 {len(rows)}개 (활성 파일 {total}개):"]
+        lines += [f"• {r.get('created_at', '-')} {r['kind']} {r['action']} — {r['outcome']}" for r in rows]
+        text = "\n".join(lines)
+    return {"reply": with_note(text, note), "action": "SCHEDULER_EVENTS_LISTED", "data": data}
+
+
+def _projected_schedules(rows: list[Any], *, now: str, projection: str) -> dict[str, Any]:
+    require_projection(projection)
+    enabled: list[dict[str, Any]] = []
+    partial = False
+    for s in sorted(rows, key=lambda s: (s.kind, s.next_run_at)):
+        if not s.enabled:
+            continue
+        outcome, lossy = project_last_status(s.last_status)
+        kind = s.kind if s.kind in scheduler.KINDS else "UNKNOWN"
+        partial = partial or lossy or kind == "UNKNOWN"
+        row: dict[str, Any] = {"kind": kind, "last_outcome": outcome}
+        if isinstance(s.schedule_id, str) and _SCHEDULE_ID.match(s.schedule_id):
+            row["schedule_id"] = s.schedule_id
+        else:
+            partial = True
+        lane = _lane(s.kind)
+        if lane is not None:
+            row["lane"] = lane
+        interval = _nonneg_int(s.interval_seconds)
+        if interval is not None:
+            row["interval_seconds"] = interval
+        for name in ("next_run_at", "last_run_at"):
+            value = getattr(s, name)
+            if isinstance(value, str) and _ISO.match(value):
+                row[name] = value
+            elif value is not None:
+                partial = True
+        enabled.append(row)
+    data = _checked({"enabled": enabled, "disabled_count": len(rows) - len(enabled), "as_of": now,
+                     "projection": PROJECTION_PARTIAL if partial else PROJECTION_V1}, _SCHEDULES_DATA_SCHEMA)
+    lines = [f"스케줄 {len(enabled)}개 실행 중"]
+    lines += [f"• {r['kind']} — {r['last_outcome'] or '-'}" for r in enabled]
+    return {"reply": "\n".join(lines), "action": "SCHEDULES_LISTED", "data": data}
+
+
+# --- reply contracts v1 for heartbeat and runtime_status (review R3-1/R3-2; why: docs/history/2026-10-16-claude-read-door-profile.md) ---
+# Thomas 2026-10-15: implement in the repository, do NOT add either read to any profile.
+#
+# Same discipline as the scheduler projection above: each reply is rebuilt from a closed allowlist over a
+# typed source, checked against a closed schema, and refused whole on a defect. Neither read is in any
+# door profile (`read_bridge._PROFILE_HELD_READS`): these functions exist so that admitting one later is a
+# profile decision, not a contract still to write.
+
+HEARTBEAT_STATUSES: frozenset[str] = frozenset({heartbeat.FRESH, heartbeat.STALE, heartbeat.MISSING,
+                                                heartbeat.UNREADABLE})
+_UNREADABLE_PART = {heartbeat.RECORD_UNREADABLE: "record", heartbeat.BUSY_MARK_UNREADABLE: "busy_mark"}
+_HEARTBEAT_NUMBERS = ("age_seconds", "stale_after_seconds", "interval_seconds")
+_NUMBER_SCHEMA = {"type": "number", "minimum": 0}
+_HEARTBEAT_ROW_SCHEMA: dict[str, Any] = {
+    "type": "object", "additionalProperties": False, "required": ["service", "status", "projection"],
+    "properties": {
+        "service": {"enum": [*HEARTBEAT_SERVICES, "UNKNOWN"]},
+        "status": {"enum": [*sorted(HEARTBEAT_STATUSES), "UNKNOWN"]},
+        "unreadable_part": {"enum": sorted(_UNREADABLE_PART.values())},
+        **{name: _NUMBER_SCHEMA for name in _HEARTBEAT_NUMBERS},
+        "heartbeat_at": _TIME_SCHEMA,
+        "busy": {"type": "object", "additionalProperties": False, "required": ["overrun"],
+                 "properties": {"kind": {"enum": sorted(scheduler.KINDS)}, "overrun": {"type": "boolean"},
+                                "started_at": _TIME_SCHEMA, "deadline_at": _TIME_SCHEMA}},
+        "projection": {"enum": [PROJECTION_V1, PROJECTION_PARTIAL]},
+    },
+}
+_HEARTBEAT_DATA_SCHEMA: dict[str, Any] = {
+    "type": "object", "additionalProperties": False, "required": ["services", "all_fresh", "as_of", "projection"],
+    "properties": {
+        "services": {"type": "array", "maxItems": len(HEARTBEAT_SERVICES), "items": _HEARTBEAT_ROW_SCHEMA},
+        "all_fresh": {"type": "boolean"}, "as_of": _TIME_SCHEMA,
+        "projection": {"enum": [PROJECTION_V1, PROJECTION_PARTIAL]},
+    },
+}
+
+
+def _nonneg_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value or value < 0:
+        return None
+    return float(value)
+
+
+def project_heartbeat_check(report: Any, failure: Any = None) -> dict[str, Any]:
+    """One ``heartbeat.inspect_heartbeat`` result as the v1 contract row.
+
+    Never carried: ``detail`` (its text holds the exception's message), ``pid``, ``checked_at``, any
+    key of the busy mark beyond kind/started_at/deadline_at, any key added later. Which part of an
+    UNREADABLE stamp failed comes from ``failure``, the structured code — never from ``detail``."""
+    if not isinstance(report, Mapping):
+        return {"service": "UNKNOWN", "status": "UNKNOWN", "projection": PROJECTION_PARTIAL}
+    service = report.get("service") if report.get("service") in HEARTBEAT_SERVICES else "UNKNOWN"
+    status = report.get("status") if report.get("status") in HEARTBEAT_STATUSES else "UNKNOWN"
+    partial = "UNKNOWN" in (service, status)
+    row: dict[str, Any] = {"service": service, "status": status}
+    if status == heartbeat.UNREADABLE:
+        part = _UNREADABLE_PART.get(failure) if isinstance(failure, str) else None
+        if part is None:
+            partial = True
+        else:
+            row["unreadable_part"] = part
+    for name in _HEARTBEAT_NUMBERS:
+        if report.get(name) is not None:
+            value = _nonneg_number(report.get(name))
+            if value is None:
+                partial = True
+            else:
+                row[name] = value
+    if report.get("heartbeat_at") is not None:
+        value = report.get("heartbeat_at")
+        if isinstance(value, str) and _ISO.match(value):
+            row["heartbeat_at"] = value
+        else:
+            partial = True
+    busy = report.get("busy")
+    if busy is not None:
+        if not isinstance(busy, Mapping) or not isinstance(report.get("overrun"), bool):
+            partial = True
+        else:
+            out: dict[str, Any] = {"overrun": report["overrun"]}
+            if busy.get("kind") in scheduler.KINDS:
+                out["kind"] = busy["kind"]
+            else:
+                partial = True
+            for name in ("started_at", "deadline_at"):
+                value = busy.get(name)
+                if isinstance(value, str) and _ISO.match(value):
+                    out[name] = value
+                else:
+                    partial = True
+            row["busy"] = out
+    row["projection"] = PROJECTION_PARTIAL if partial else PROJECTION_V1
+    return row
+
+
+def _projected_heartbeat(*, now: str, repo_root: Path | None, projection: str) -> dict[str, Any]:
+    require_projection(projection)
+    rows = [project_heartbeat_check(*heartbeat.inspect_heartbeat(s, now=now, root=repo_root))
+            for s in HEARTBEAT_SERVICES]
+    partial = any(r["projection"] == PROJECTION_PARTIAL for r in rows)
+    data = _checked({"services": rows, "all_fresh": all(r["status"] == heartbeat.FRESH for r in rows),
+                     "as_of": now, "projection": PROJECTION_PARTIAL if partial else PROJECTION_V1},
+                    _HEARTBEAT_DATA_SCHEMA)
+    lines = [f"{r['service']}: {r['status']}" + (f" ({r['unreadable_part']} unreadable)" if "unreadable_part" in r else "")
+             for r in rows]
+    return {"reply": "\n".join(lines), "action": "HEARTBEAT_CHECKED", "data": data}
+
+
+_CONTROL_MODES: frozenset[str] = frozenset({control.ACTIVE, control.PAUSED, control.KILLED})
+_RUNTIME_STATUS_SCHEMA: dict[str, Any] = {
+    "type": "object", "additionalProperties": False,
+    "required": ["mode", "execution_allowed", "trading_armed", "halt_level", "fail_closed",
+                 "stop_requested_count", "as_of", "projection"],
+    "properties": {
+        "mode": {"enum": [*sorted(_CONTROL_MODES), "UNKNOWN"]},
+        "execution_allowed": {"type": "boolean"}, "trading_armed": {"type": "boolean"},
+        "halt_level": {"enum": [*sorted(control.HALT_LEVELS), None]},
+        "fail_closed": {"type": "boolean"}, "stop_requested_count": {"type": "integer", "minimum": 0},
+        "updated_at": _TIME_SCHEMA, "as_of": _TIME_SCHEMA,
+        "projection": {"enum": [PROJECTION_V1, PROJECTION_PARTIAL]},
+    },
+}
+
+
+def project_runtime_status(state: Any, *, now: str) -> dict[str, Any]:
+    """A ``control.ControlState`` as the v1 contract: the stop/arm/halt facts, never who or why.
+
+    Read off the typed state, never the rendered ``/status`` text: ``updated_by`` (an operator id),
+    ``reason`` (operator free text, or the fail-closed explanation), the stop-requested task ids and
+    any field added to the state later are not carried. ``execution_allowed`` is recomputed from
+    ``mode`` here rather than trusted from the object."""
+    partial = False
+    mode = getattr(state, "mode", None)
+    if mode not in _CONTROL_MODES:
+        mode, partial = "UNKNOWN", True
+    halt = getattr(state, "halt_level", None)
+    if halt is not None and halt not in control.HALT_LEVELS:
+        halt, partial = None, True
+    ids = getattr(state, "stop_requested_task_ids", ())
+    if not isinstance(ids, (tuple, list)):
+        ids, partial = (), True
+    data: dict[str, Any] = {
+        "mode": mode,
+        "execution_allowed": mode == control.ACTIVE,
+        "trading_armed": getattr(state, "trading_armed", None) is True,
+        "halt_level": halt,
+        "fail_closed": getattr(state, "fail_closed", None) is True,
+        "stop_requested_count": len(ids),
+        "as_of": now,
+    }
+    updated_at = getattr(state, "updated_at", None)
+    if isinstance(updated_at, str) and _ISO.match(updated_at):
+        data["updated_at"] = updated_at
+    elif updated_at:
+        partial = True
+    data["projection"] = PROJECTION_PARTIAL if partial else PROJECTION_V1
+    return _checked(data, _RUNTIME_STATUS_SCHEMA)
+
+
+def read_runtime_status(control_store: Any, *, now: str, projection: str) -> dict[str, Any]:
+    """``runtime_status`` under a reply contract: ``ControlStore.load()`` (a read — it writes nothing,
+    and with no state file it reads the control-event ledger, also without writing), projected."""
+    require_projection(projection)
+    if control_store is None:
+        raise ControlBlocked("CONTROL_STORE_UNAVAILABLE", "this door was opened without the control store")
+    data = project_runtime_status(control_store.load(), now=now)
+    text = (f"mode: {data['mode']}\nexecution: {'allowed' if data['execution_allowed'] else 'BLOCKED'}\n"
+            f"live entries: {'armed' if data['trading_armed'] else 'DISARMED'}"
+            + (f"\nhalt: {data['halt_level']}" if data["halt_level"] else "")
+            + ("\nstate: fail-closed" if data["fail_closed"] else ""))
+    return {"reply": text, "action": control.CMD_STATUS, "data": data}
+
+
+def read_heartbeat(*, now: str, repo_root: Path | None, projection: str | None = None) -> dict[str, Any]:
+    """Liveness of the three loops, from the files they stamp. Pure read; never raises.
+
+    ``projection="v1"`` answers with the closed reply contract instead (`_projected_heartbeat`)."""
+    if projection is not None:
+        return _projected_heartbeat(now=now, repo_root=repo_root, projection=projection)
     checks = [heartbeat.check_heartbeat(s, now=now, root=repo_root) for s in HEARTBEAT_SERVICES]
     lines = [f"{c['service']}: {c['status']} — {c['detail']}" for c in checks]
     return {
