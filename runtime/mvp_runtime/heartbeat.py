@@ -57,6 +57,11 @@ STALE = "STALE"
 MISSING = "MISSING"
 UNREADABLE = "UNREADABLE"
 
+# Which part of an UNREADABLE stamp failed — a code beside the report, so a reader that must not see
+# `detail` (whose text carries the exception's message) can still tell the two apart (review R3-1).
+RECORD_UNREADABLE = "HEARTBEAT_RECORD_UNREADABLE"
+BUSY_MARK_UNREADABLE = "HEARTBEAT_BUSY_MARK_UNREADABLE"
+
 
 def heartbeats_dir(root: Path | None = None) -> Path:
     return (root if root is not None else _repo_root()) / HEARTBEATS_REL
@@ -101,19 +106,27 @@ def check_heartbeat(service: str, *, now: str | None = None, root: Path | None =
 
     A probe that blew up on a malformed record would take down the very check meant to
     tell you something is wrong, so every failure is a reported status instead."""
+    return inspect_heartbeat(service, now=now, root=root)[0]
+
+
+def inspect_heartbeat(service: str, *, now: str | None = None,
+                      root: Path | None = None) -> tuple[dict[str, Any], str | None]:
+    """``check_heartbeat``'s report, unchanged, and beside it which part failed when the status is
+    UNREADABLE (``RECORD_UNREADABLE`` / ``BUSY_MARK_UNREADABLE``), else ``None``. The report is the
+    one every existing reader gets; the code is extra, so nothing they read changed."""
     stamp = now or timeutil.utc_now_iso()
     path = heartbeat_path(service, root)
     result: dict[str, Any] = {"service": service, "checked_at": stamp, "age_seconds": None}
     if not path.is_file():
         return {**result, "status": MISSING,
-                "detail": f"no heartbeat at {HEARTBEATS_REL}/{service}.json"}
+                "detail": f"no heartbeat at {HEARTBEATS_REL}/{service}.json"}, None
     try:
         record = json.loads(path.read_text(encoding="utf-8"))
         heartbeat_at = record["heartbeat_at"]
         interval = float(record.get("interval_seconds") or 0.0)
         age = (timeutil.parse_iso(stamp) - timeutil.parse_iso(heartbeat_at)).total_seconds()
     except Exception as exc:  # noqa: BLE001 — a broken record is a finding, not a crash
-        return {**result, "status": UNREADABLE, "detail": f"{type(exc).__name__}: {exc}"}
+        return {**result, "status": UNREADABLE, "detail": f"{type(exc).__name__}: {exc}"}, RECORD_UNREADABLE
 
     limit = stale_after_seconds(interval)
     report = {
@@ -128,7 +141,7 @@ def check_heartbeat(service: str, *, now: str | None = None, root: Path | None =
     }
     busy = record.get("busy")
     if busy is None:
-        return report
+        return report, None
     # A fire is marked: its deadline decides, not the pass age. Either direction matters — a
     # pipeline fire at 400s is alive although no pass has stamped for 400s, and a breaker fire
     # at 130s is stuck although the stamp is only 130s old.
@@ -138,12 +151,12 @@ def check_heartbeat(service: str, *, now: str | None = None, root: Path | None =
         running = (timeutil.parse_iso(stamp) - timeutil.parse_iso(busy["started_at"])).total_seconds()
         left = (timeutil.parse_iso(busy["deadline_at"]) - timeutil.parse_iso(stamp)).total_seconds()
     except Exception as exc:  # noqa: BLE001 — a broken mark is a finding, like a broken record
-        return {**result, "status": UNREADABLE, "detail": f"busy mark: {type(exc).__name__}: {exc}"}
+        return {**result, "status": UNREADABLE, "detail": f"busy mark: {type(exc).__name__}: {exc}"}, BUSY_MARK_UNREADABLE
     if left > 0:
         return {**report, "status": FRESH, "busy": dict(busy), "overrun": False,
-                "detail": f"busy: {kind} {run_id} running {running:.0f}s, deadline in {left:.0f}s"}
+                "detail": f"busy: {kind} {run_id} running {running:.0f}s, deadline in {left:.0f}s"}, None
     return {**report, "status": STALE, "busy": dict(busy), "overrun": True,
-            "detail": f"OVERRUN: {kind} {run_id} running {running:.0f}s, {-left:.0f}s past its deadline"}
+            "detail": f"OVERRUN: {kind} {run_id} running {running:.0f}s, {-left:.0f}s past its deadline"}, None
 
 
 @contextmanager
@@ -181,6 +194,7 @@ def busy_marker(
 __all__ = [
     "FRESH", "MISSING", "OPERATOR_SERVICE", "SCHEDULER_MAINTENANCE_SERVICE",
     "SCHEDULER_RISK_SERVICE", "SCHEDULER_SERVICE", "STALE", "UNREADABLE",
-    "busy_marker", "check_heartbeat", "heartbeat_path", "heartbeats_dir", "stale_after_seconds",
+    "BUSY_MARK_UNREADABLE", "RECORD_UNREADABLE",
+    "busy_marker", "check_heartbeat", "heartbeat_path", "heartbeats_dir", "inspect_heartbeat", "stale_after_seconds",
     "write_heartbeat",
 ]
