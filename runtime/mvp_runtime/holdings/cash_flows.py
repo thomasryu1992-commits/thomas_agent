@@ -349,6 +349,81 @@ def _append(state_dir: Path, rows: list[dict[str, Any]], *, now: str) -> list[di
     return _append_unique(state_dir, lambda _existing: rows, now=now)
 
 
+# --- C7 PR-A: the checkpoint — the ledger the state last saw, detected, never enforced ---------------------
+# HOLDINGS_LEDGER_CHECKPOINT_V0.1.md §3 (D1, Thomas 2026-10-11: PR-A detects only; refusing is PR-C's). The
+# state keeps the ledger's length and last hash as of its last save. Because the ledger is a chain, line N's
+# hash proves lines 1…N, so a ledger that still holds that line at that position is the same history, grown;
+# one that is shorter or holds another line there was put back from elsewhere (C7-4, C7-6). The writes go on
+# while it stands (detect-only): the state records a marker, the checkpoint stays frozen so PR-D's alert key
+# does not change every fire, and readiness reads FAIL. No checkpoint at all (every state saved before this
+# code, or a state file that was lost) is not judged here: the history check is PR-B's (readiness note R-3,
+# option (가); D2: absent reads UNCHECKED there). PR-A writes no ledger line of its own.
+CHECKPOINT_KEY = "ledger_checkpoint"
+CHECKPOINT_SHORTER = "checkpoint_ledger_shorter"
+CHECKPOINT_REPLACED = "checkpoint_ledger_replaced"
+CHECKPOINT_MALFORMED = "checkpoint_malformed"
+TOLD_KEY_MISSING = "told_exception_missing"
+
+
+def _checkpoint_problem(rows: list[Mapping[str, Any]], state: Mapping[str, Any]) -> str | None:
+    """Why ``rows`` do not continue the state's checkpoint, or None (also when there is no checkpoint)."""
+    checkpoint = state.get(CHECKPOINT_KEY)
+    if checkpoint is None:
+        return None
+    lines = checkpoint.get("lines") if isinstance(checkpoint, Mapping) else None
+    digest = checkpoint.get("sha256") if isinstance(checkpoint, Mapping) else None
+    if not isinstance(lines, int) or isinstance(lines, bool) or lines < 1 or not isinstance(digest, str) or not digest:
+        return CHECKPOINT_MALFORMED
+    if len(rows) < lines:
+        return CHECKPOINT_SHORTER
+    if rows[lines - 1].get("sha256") != digest:
+        return CHECKPOINT_REPLACED
+    return None
+
+
+def _told_key_problem(rows: list[Mapping[str, Any]], state: Mapping[str, Any]) -> str | None:
+    """A told exception whose line the ledger no longer holds is a proven loss (C7 §3, second detector).
+
+    Compared against every exception line, resolved or explained since, not only the open ones: a told
+    exception that was closed later is still in the ledger and is no loss."""
+    told = (state.get("exceptions") or {}).get("told_keys") if isinstance(state.get("exceptions"), Mapping) else None
+    if not told:
+        return None
+    present = {_key_digest(str(row.get("source_event_key"))) for row in rows if row.get("event") in EXCEPTION_EVENTS}
+    return TOLD_KEY_MISSING if any(key not in present for key in told) else None
+
+
+def ledger_problem(rows: list[Mapping[str, Any]], state: Mapping[str, Any]) -> str | None:
+    """The first detector that fires for this ledger and state, or None."""
+    return _checkpoint_problem(rows, state) or _told_key_problem(rows, state)
+
+
+def _apply_checkpoint(state: dict[str, Any], after: list[Mapping[str, Any]], problem: str | None,
+                      observed: tuple[int, str | None], *, now: str) -> None:
+    """After a write: move the checkpoint to the new end, or leave it frozen and keep the marker.
+
+    ``observed`` is the ledger's length and last hash as the writer found it, before its own lines. A marker,
+    once set, stands until the operator adopts a ledger (PR-C, C7 §7): detection never clears itself, and the
+    checkpoint does not move while it stands."""
+    if state.get(DETECTION_MARKER_KEY) is not None:
+        return
+    if problem is None:
+        if after:
+            state[CHECKPOINT_KEY] = {"lines": len(after), "sha256": after[-1]["sha256"], "at": now}
+        return
+    checkpoint = state.get(CHECKPOINT_KEY)
+    usable = problem != CHECKPOINT_MALFORMED and isinstance(checkpoint, Mapping)
+    if not usable and checkpoint is None and observed[1] is not None:
+        # A told key went missing from a state with no checkpoint yet: freeze what was found.
+        checkpoint = state[CHECKPOINT_KEY] = {"lines": observed[0], "sha256": observed[1], "at": now}
+        usable = True
+    frozen = checkpoint if usable else {"lines": observed[0], "sha256": observed[1]}
+    # PR-D reads this shape (``_marker_blocked``) and keys its alert on the frozen checkpoint. The code is
+    # the §6 family code until R-2 is decided; ``reason`` names the detector.
+    state[DETECTION_MARKER_KEY] = {"reason_code": LEDGER_TAMPERED, "reason": problem, "since": now,
+                                   "checkpoint": {"lines": frozen.get("lines"), "sha256": frozen.get("sha256")}}
+
+
 def _commit(state_dir: Path, *, now: str,
             rows: Callable[[list[dict[str, Any]], dict[str, Any]], list[Mapping[str, Any]]],
             patch: Callable[[dict[str, Any], list[dict[str, Any]]], None] | None = None) -> list[dict[str, Any]]:
@@ -360,8 +435,12 @@ def _commit(state_dir: Path, *, now: str,
     with _state_lock(state_dir):
         state = load_state(state_dir)
         after: list[dict[str, Any]] = []
+        found: list[tuple[str | None, tuple[int, str | None]]] = []
 
         def build(existing: list[dict[str, Any]]) -> list[Mapping[str, Any]]:
+            # Under both locks (C7 §3). Detect only: nothing here refuses the write.
+            found.append((ledger_problem(existing, state),
+                          (len(existing), existing[-1]["sha256"] if existing else None)))
             out = [*_legacy_import_rows(existing, state), *rows(existing, state)]
             after.extend(existing)
             return out
@@ -373,6 +452,8 @@ def _commit(state_dir: Path, *, now: str,
                 state.pop(name, None)
         state["cutover_at"] = cutover_at(after)
         state["cutover_ms"] = _iso_ms(state["cutover_at"]) if state["cutover_at"] else None
+        if found:
+            _apply_checkpoint(state, after, found[0][0], found[0][1], now=now)
         if patch is not None:
             patch(state, after)
         _save_state(state_dir, state)
@@ -1482,18 +1563,22 @@ def readiness(state_dir: Path, *, now: str, current: Mapping[str, Any] | None = 
     combined NAV's own checks). Without it — any call outside a fire — the access, schema, transfer and
     health checks are UNCHECKED, so a past PASS never stands for the present (H6d-min §11)."""
     checks: dict[str, str] = {}
-    try:
-        rows = verify(state_dir)
-        checks["ledger_chain"] = PASS
-    except ToolError:
-        rows, checks["ledger_chain"] = [], FAIL
+    # The state first, the ledger second (C7 §3): a write between the two reads can only lengthen the
+    # ledger past the checkpoint read, never leave the checkpoint ahead of the ledger read.
     try:
         state = load_state(state_dir)
         state_ok = True
     except ToolError:
         state, state_ok = {"sources": {}}, False
+    try:
+        rows = verify(state_dir)
+        checks["ledger_chain"] = PASS
+    except ToolError:
+        rows, checks["ledger_chain"] = [], FAIL
     if state_ok and checks["ledger_chain"] == PASS and legacy_import_refusal(rows, state):
         state_ok = False                       # a pre-H6d cache the import refuses is not a consistent state
+    if state_ok and (state.get(DETECTION_MARKER_KEY) is not None or ledger_problem(rows, state)):
+        state_ok = False                       # PR-A: a detected mixed restore is not a consistent state
     boundary = cutover_at(rows)
     checks["ledger_state_consistency"] = (PASS if state_ok and checks["ledger_chain"] == PASS
                                           and (state.get("cutover_at") or None) == boundary else FAIL)
@@ -1533,6 +1618,8 @@ def readiness(state_dir: Path, *, now: str, current: Mapping[str, Any] | None = 
     return {"checks": checks, "toss_note": toss_why, "toss_epoch": toss_epoch(rows), "shadow_days": round(days, 1),
             "shadow_success_dates": len(dates), "exceptions": len(exceptions), "ready": ready,
             "open_exception_keys": sorted(exceptions),
+            # R-3: without a checkpoint a consistency PASS says nothing about a mixed restore (PR-B's check).
+            "checkpoint": "present" if isinstance(state.get(CHECKPOINT_KEY), Mapping) else "absent",
             "next_step": "H6b-shadow (NAV per unit computed beside the board, no verdict)"}
 
 
@@ -1629,8 +1716,8 @@ def summary(state_dir: Path) -> dict[str, Any]:
 BLOCKED_TOLD_FILENAME = "holdings_cash_flow_blocked_told.json"
 BLOCKED_KEY_STATE = "v1:state"          # PR-D: every commit is refused, so the state file stays as it was
 BLOCKED_KEY_CHECKPOINT = "v2:ckpt"      # PR-A: a detect-only marker keys on its frozen checkpoint (§6)
-# The non-exception input PR-A will leave in the state (§3, readiness note R-2). PR-D reads it; nothing in
-# this PR writes it, and its reason code is PR-A's to decide (until then the §6 family code stands in).
+# The non-exception input PR-A leaves in the state (§3, readiness note R-2): ``_apply_checkpoint`` writes it.
+# Its reason code stays the §6 family code until R-2 is decided; ``reason`` names the detector.
 DETECTION_MARKER_KEY = "ledger_checkpoint_mismatch"
 BLOCKED_TOKEN_TOLD = "blocked"
 BLOCKED_TOKEN_RESOLVED = "resolved"
