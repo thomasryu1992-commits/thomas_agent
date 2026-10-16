@@ -34,8 +34,11 @@ schedules live in `.runtime_governance_state/schedules.jsonl`.
 from __future__ import annotations
 
 import json
+import re
 import multiprocessing
 import os
+import stat
+import sys
 import time
 from collections import deque
 from contextlib import AbstractContextManager, nullcontext
@@ -2241,6 +2244,127 @@ FACTORY_CHILD_TIMEOUT_SECONDS = 900.0
 #: Spool under the per-machine state dir: `<run_id>.meta.json` (parent, at spawn) and
 #: `<run_id>.result.json` (child, atomically). The meta file is the restart-survivable claim.
 FACTORY_SPOOL_REL = ".runtime_governance_state/factory_spool"
+
+# Where a factory child's failure MESSAGE goes (D-11 e2, plus review E-02..E-04).
+# Why: docs/history/2026-10-16-factory-child-failure-type-only.md. Thomas confirmed e2 and those three on
+# 2026-10-16 as a repository security implementation only — not an operational approval; under the crypto
+# research pause it is the security-bug-fix exemption and changes no judgement. The child reports
+# `"<type>: <message>"`, and the message is whatever the computation raised — a path, a value, a symbol.
+# The failed status, which reaches the ledger, `last_status`, the operator alert, the service log and
+# every door that reads them, carries the exception TYPE only (or UNKNOWN); the message is kept for the
+# operator in one private file and nowhere else. No door's read serves it, and the operator reads it on
+# the host only (E-01: an operator-only procedure, never through Claude, a door or an alert). Rows already
+# in the ledger keep what they recorded (append-only, hashed per row): not rewritten.
+FACTORY_CHILD_ERRORS_REL = ".runtime_governance_state/diagnostics/factory_child_errors.jsonl"
+FACTORY_CHILD_ERROR_KEEP_CHARS = 2000
+#: The fixed code the service log carries when the diagnostics row could not be written. It names the
+#: occurrence, never the message; the occurrence's own status is unaffected (still failed).
+FACTORY_CHILD_DIAGNOSTICS_UNAVAILABLE = "FACTORY_CHILD_DIAGNOSTICS_UNAVAILABLE"
+#: The one failure string the PARENT writes itself (an unreadable result file). Every other failure string
+#: comes from the child as `"<type>: <message>"`.
+FACTORY_CHILD_CORRUPT_RESULT = "CORRUPT_RESULT"
+# A Python class name as the child's `type(exc).__name__` writes it: ASCII, starts with a letter, at most
+# 64 characters, and `\Z` so a trailing newline cannot ride along.
+_EXCEPTION_TYPE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}\Z")
+
+
+def factory_child_failure_status(error: object) -> str:
+    """`failed:FACTORY_CHILD:<exception type>` from a child's `"<type>: <message>"`, else `…:UNKNOWN`.
+
+    Only the text before the first `": "` can become the type, and only when it is a plain class name.
+    A string with no `": "` separator is not something the child writes, so it is UNKNOWN — except the
+    parent's own `CORRUPT_RESULT`. Empty, non-string, multi-line, control-character, non-ASCII,
+    over-long or path-like heads are all UNKNOWN. The message never enters the status, and the
+    `failed:` prefix every reader keys on is kept."""
+    if error == FACTORY_CHILD_CORRUPT_RESULT:
+        return f"failed:FACTORY_CHILD:{FACTORY_CHILD_CORRUPT_RESULT}"
+    if not isinstance(error, str) or ": " not in error:
+        return "failed:FACTORY_CHILD:UNKNOWN"
+    head = error.split(": ", 1)[0]
+    return f"failed:FACTORY_CHILD:{head if _EXCEPTION_TYPE.match(head) else 'UNKNOWN'}"
+
+
+def factory_child_diagnostics_supported() -> bool:
+    """Whether this platform can open the diagnostics file without following a link (POSIX: O_NOFOLLOW,
+    O_DIRECTORY and `dir_fd`). Where it cannot, the row is not written — the status never depends on it."""
+    return (hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY") and hasattr(os, "geteuid")
+            and os.open in os.supports_dir_fd)
+
+
+def _open_private(dir_fd: int | None, name: str | os.PathLike[str], flags: int, mode: int = 0o600) -> int:
+    fd = os.open(name, flags | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0), mode, dir_fd=dir_fd)
+    try:
+        st = os.fstat(fd)
+        want_dir = bool(flags & os.O_DIRECTORY)
+        if ((stat.S_ISDIR(st.st_mode) if want_dir else stat.S_ISREG(st.st_mode)) is False
+                or (not want_dir and st.st_nlink != 1)
+                or st.st_uid != os.geteuid() or st.st_mode & 0o077):
+            raise OSError("not a private file or directory of this process's user")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _append_diagnostics_row(path: Path, data: bytes) -> None:
+    """Append one row to the private diagnostics file, or raise.
+
+    The directory is created 0700 when absent and is never chmod-ed when present: an existing one that
+    is a link, not ours, or open to group/other is refused, as is a file that is a link, not regular,
+    hard-linked, not ours or open to group/other. Both are checked on the opened descriptor and the file
+    is opened relative to the directory's descriptor, so nothing can be swapped in between. A short
+    write is cut back to where it began."""
+    if not factory_child_diagnostics_supported():
+        raise OSError("this platform cannot open the diagnostics file without following a link")
+    try:
+        os.makedirs(path.parent, mode=0o700)
+    except FileExistsError:
+        pass
+    dir_fd = _open_private(None, path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fd = _open_private(dir_fd, path.name,
+                           os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NONBLOCK", 0))
+    finally:
+        os.close(dir_fd)
+    try:
+        start = os.fstat(fd).st_size
+        try:
+            if os.write(fd, data) != len(data):
+                raise OSError("short write to the diagnostics file")
+        except OSError:
+            try:
+                os.ftruncate(fd, start)
+            except OSError:
+                pass
+            raise
+    finally:
+        os.close(fd)
+
+
+def _record_factory_child_error(root: Path, *, schedule_id: str, run_id: str, error: object, now: str) -> bool:
+    """Write the message to the operator's diagnostics file; True when the row landed.
+
+    The broad catch is this function's own and nothing else's (review E-02): whatever goes wrong while
+    writing a diagnostics row — an OSError, an encoding problem, a refused file — must not cost the
+    occurrence its terminal event, and it never turns the failure into anything but a failure. The
+    service log gets the fixed code FACTORY_CHILD_DIAGNOSTICS_UNAVAILABLE and the occurrence's ids, never
+    the message. The row is JSON with `ensure_ascii`, so a lone surrogate or a control character in the
+    message is escaped rather than breaking the write."""
+    try:
+        row = {"at": now, "schedule_id": schedule_id, "schedule_run_id": run_id,
+               "error": str(error)[:FACTORY_CHILD_ERROR_KEEP_CHARS]}
+        data = (json.dumps(row, ensure_ascii=True, sort_keys=True) + "\n").encode("ascii")
+        _append_diagnostics_row(root / FACTORY_CHILD_ERRORS_REL, data)
+        return True
+    except Exception:  # noqa: BLE001 — scoped to the diagnostics write; see the docstring
+        try:
+            sys.stderr.write(f"{FACTORY_CHILD_DIAGNOSTICS_UNAVAILABLE} schedule_id={schedule_id} "
+                             f"schedule_run_id={run_id}\n")
+        except Exception:  # noqa: BLE001 — a closed stderr must not stop the terminal event either
+            pass
+        return False
+
+
 #: `_execute`'s KIND_FACTORY branch returns this to say "spawned, bracket stays open".
 STATUS_FACTORY_SPAWNED = "factory_child_spawned"
 #: `last_status` while the child computes — replaced by the real status line at collect.
@@ -2435,6 +2559,14 @@ def _fail_orphaned_factory_spool(
         meta_path.unlink(missing_ok=True)
         result_path = meta_path.with_name(meta_path.name.replace(".meta.json", ".result.json"))
         result_path.unlink(missing_ok=True)
+    # A result (or the child's half-written `.tmp`) whose meta is already gone — a parent that died
+    # between the two unlinks, or a child that finished after both. Nothing claims it, and it may hold
+    # a failure message (e-4): deleted unread. A live child always has its meta, so this never
+    # touches one.
+    for leftover in sorted([*spool.glob("*.result.json"), *spool.glob("*.result.json.tmp")]):
+        stem = leftover.name.split(".result.json", 1)[0]
+        if not (spool / f"{stem}.meta.json").exists():
+            leftover.unlink(missing_ok=True)
     return entries
 
 
@@ -2463,12 +2595,14 @@ def _collect_factory_child(
         try:
             payload = json.loads(child["result_path"].read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            payload = {"ok": False, "error": "CORRUPT_RESULT"}
+            payload = {"ok": False, "error": FACTORY_CHILD_CORRUPT_RESULT}
         if payload.get("ok") and isinstance(payload.get("result"), Mapping):
             action, result = "fired", payload["result"]
         else:
             action = "failed"
-            status = f"failed:FACTORY_CHILD:{str(payload.get('error'))[:160]}"
+            status = factory_child_failure_status(payload.get("error"))
+            _record_factory_child_error(root, schedule_id=child["schedule"].schedule_id,
+                                        run_id=str(child.get("run_id") or ""), error=payload.get("error"), now=now)
     elif process is None or not process.is_alive():
         exit_code = getattr(process, "exitcode", None)
         action = "failed"
