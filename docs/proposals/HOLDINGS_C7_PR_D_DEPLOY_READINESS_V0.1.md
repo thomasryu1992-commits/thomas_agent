@@ -1,6 +1,6 @@
 # 제안: C7 PR-D 운영 배포 준비 패킷 — 무엇이 실리고, 무엇을 확인하고, 어떻게 되돌리나 (DRAFT v0.1)
 
-**상태:** DRAFT 2026-10-12 — C7 PR-D(#1216)를 운영에 올리기 전의 준비 패킷이다. 문서 준비 판정은 PREPARATION_COMPLETE_PENDING_EVIDENCE이고, 운영 배포 판정은 따로 DEPLOYMENT_HOLD다(§10). 2026-10-12 갱신(검토 기준 main `d97db39c`): Global Guard는 설치 동일성과 훅 연결이 Thomas 운영자 증거로 확인됐다(GLOBAL_GUARD_VERIFIED). Gate 2는 2026-10-12 Thomas가 Guard kit 직접 합성 시험 결과를 수용해 충족됐다(GATE_2_FULLY_SATISFIED, 증거 GATE_2_DIRECT_SYNTHETIC_TEST_PASSED). 새 Claude 세션의 told 파일명 실탐침은 하지 않았다(NEW_SESSION_TOLD_PROBE_NOT_PERFORMED). 이미지 자가검증 진입점은 구현됐고 저장소 합성 테스트를 통과했지만(VALIDATION_ENTRYPOINT_IMPLEMENTED, REPOSITORY_SYNTHETIC_TESTS_PASSED), candidate 안에서는 돌리지 않았다. 운영 이미지와 여덟 서비스는 읽기 전용 메타데이터로 식별했다(IDENTIFIED_METADATA_ONLY, 이미지 안 코드 내용은 미검증). 배포를 막는 것은 Rollback(ROLLBACK_NOT_VERIFIED), candidate 안의 동작 검증과 D-10 격리 증거(DEPLOYMENT_HOLD — VALIDATION_PATH_UNRESOLVED), 배포 승인(NOT_GRANTED)이다. DECISION_REQUIRED가 셋 있다: candidate 태그(CANDIDATE_TAG_DECISION_REQUIRED, 자가검증 #1221 병합 뒤 권고는 `candidate-1221`), 진입점의 candidate 격리 실행 승인(§4.3, 설계 문서 §2.4 V-4), 운영 preflight를 누가 어떤 범위로 돌리는지(§4.4, PREFLIGHT_EXECUTION_POLICY_DECISION_REQUIRED). 2026-10-12 preflight 안전성 검토: Guard 충돌은 없다. 읽지 못한 사실이 PASS나 통과 가능한 WARN이 되던 fail-open을 고쳤다(1차 다섯 곳, 2차 라벨 불일치·`docker ps` 실패·서비스 불일치의 promote STOP, 3차 활성 factory의 `next_run_at`을 읽지 못함의 promote STOP). Secret 없는 검증은 정적 계약까지만 가능하다(SECRET_FREE_PARTIAL_VALIDATION_ONLY, §4.4).
+**상태:** DRAFT 2026-10-12 — C7 PR-D(#1216)를 운영에 올리기 전의 준비 패킷이다. 문서 준비 판정은 PREPARATION_COMPLETE_PENDING_EVIDENCE이고, 운영 배포 판정은 따로 DEPLOYMENT_HOLD다(§10). 2026-10-12 갱신(검토 기준 main `d97db39c`): Global Guard는 설치 동일성과 훅 연결이 Thomas 운영자 증거로 확인됐다(GLOBAL_GUARD_VERIFIED). Gate 2는 2026-10-12 Thomas가 Guard kit 직접 합성 시험 결과를 수용해 충족됐다(GATE_2_FULLY_SATISFIED, 증거 GATE_2_DIRECT_SYNTHETIC_TEST_PASSED). 새 Claude 세션의 told 파일명 실탐침은 하지 않았다(NEW_SESSION_TOLD_PROBE_NOT_PERFORMED). 이미지 자가검증 진입점은 구현됐고 저장소 합성 테스트를 통과했지만(VALIDATION_ENTRYPOINT_IMPLEMENTED, REPOSITORY_SYNTHETIC_TESTS_PASSED), candidate 안에서는 돌리지 않았다. 운영 이미지와 여덟 서비스는 읽기 전용 메타데이터로 식별했다(IDENTIFIED_METADATA_ONLY, 이미지 안 코드 내용은 미검증). 배포를 막는 것은 Rollback(ROLLBACK_NOT_VERIFIED), candidate 안의 동작 검증과 D-10 격리 증거(DEPLOYMENT_HOLD — VALIDATION_PATH_UNRESOLVED), 배포 승인(NOT_GRANTED)이다. DECISION_REQUIRED가 셋 있다: candidate 태그(CANDIDATE_TAG_DECISION_REQUIRED, 자가검증 #1221 병합 뒤 권고는 `candidate-1221`), 진입점의 candidate 격리 실행 승인(§4.3, 설계 문서 §2.4 V-4), 운영 preflight를 누가 어떤 범위로 돌리는지(§4.4, PREFLIGHT_EXECUTION_POLICY_DECISION_REQUIRED). 2026-10-12 preflight 안전성 검토: Guard 충돌은 없다. 읽지 못한 사실이 PASS나 통과 가능한 WARN이 되던 fail-open을 고쳤다(1차 다섯 곳, 2차 라벨 불일치·`docker ps` 실패·서비스 불일치의 promote STOP, 3차 활성 factory의 `next_run_at`을 읽지 못함의 promote STOP). Secret 없는 검증은 정적 계약까지만 가능하다(SECRET_FREE_PARTIAL_VALIDATION_ONLY, §4.4). 2026-10-12 Thomas 결정: 운영 Secret 정책은 Option A(현 정책 유지)다. 3-1·3-2 REJECT, Rollback 비상 권한과 운영 배포 NOT_GRANTED. 운영 preflight·배포·Rollback을 Claude가 실행할 승인된 경로는 없다. 해소 방향은 호스트 권한 분리(Option C, `HOST_PRIVILEGE_SEPARATION_V0.1.md`)이고, 그 설계는 DRAFT다(§4.5).
 
 **기준:** 두 기준선이 있다.
 - **설계 기준선:** origin/main `1f328ffd`(#1217 병합 시점). §2의 변경 범위와 §3–§9의 계획은 이 시점의 코드와 문서를 읽은 결과이고, 역사적 기준으로 남긴다.
@@ -235,6 +235,23 @@
   - 출력은 스크립트의 판정 줄만 쓴다.
 - 보호된 접근을 다른 스크립트·실행기·사람으로 옮기는 방식은 제안하지 않는다.
 
+### 4.5 운영 Secret 정책 결정 (Thomas 2026-10-12)
+
+§4.4의 PREFLIGHT_EXECUTION_POLICY_DECISION_REQUIRED에 대한 결정이다.
+
+| 항목 | 결정 |
+|---|---|
+| 정책 방향 | Option A — 현 정책 유지 |
+| 3-2 (preflight의 Python 프로세스가 보간된 compose config를 받는 것) | REJECT |
+| 3-1 (Claude가 운영 `.env`로 compose를 실행하는 것: 배포·Rollback) | REJECT |
+| B′ (기술 격리 없는 범위 한정 예외) | 채택하지 않음 |
+| Rollback 비상 권한 | NOT_GRANTED |
+| 운영 배포 | NOT_GRANTED, DEPLOYMENT_HOLD |
+
+- **근거:** Claude 실행 환경은 root이고 Docker 데몬에 접근한다. 명령 제한·출력 억제·로그 마스킹은 Secret 접근을 기술적으로 막지 못한다. compose config 처리에서 Secret이 프로세스 메모리에 들어간다.
+- **결과:** 이 패킷의 절차로는 운영 preflight(`--promote --tree`), 배포, Rollback을 실행할 수 없다. Gate 6 조건부 수용의 조건 5(Secret 정책 충족)는 Option A에서 채울 수 없다. V-5 수용은 그 Candidate에 한하며 이전되지 않는다.
+- **해소 방향:** Claude의 운영 권한과 Secret 접근 경계를 OS 수준에서 분리한다(Option C). 설계는 `HOST_PRIVILEGE_SEPARATION_V0.1.md`(DRAFT)에 있다. 그 설계가 구현·검증된 뒤에는 새 기준선의 candidate로 검증을 다시 한다. 그 사이 main이 움직이므로 이 문서의 Candidate 기준값은 그대로 이어지지 않는다.
+
 ## 5. 배포 전 Gate
 
 | Gate | 조건 | 현재 |
@@ -326,6 +343,7 @@ holdings fire의 status 줄(`schedules.jsonl`의 `last_status`, scheduler 이벤
 2. 이미지 내부 동작 검증이 끝나지 않았다(VALIDATION_PATH_UNRESOLVED). 진입점은 구현했고 저장소 합성 테스트를 통과했다(VALIDATION_ENTRYPOINT_IMPLEMENTED, REPOSITORY_SYNTHETIC_TESTS_PASSED). 그러나 candidate 안 실행과 D-10 격리 증거는 아직이다.
 3. candidate 태그가 정해지지 않았다(CANDIDATE_TAG_DECISION_REQUIRED).
 4. Thomas의 운영 배포 승인이 없다(NOT_GRANTED).
+5. 운영 Secret 정책이 Option A로 결정됐다(§4.5, Thomas 2026-10-12). Claude가 운영 preflight·배포·Rollback을 실행할 승인된 경로가 없다(NO_APPROVED_EXECUTION_PATH). 해소는 호스트 권한 분리(`HOST_PRIVILEGE_SEPARATION_V0.1.md`, DRAFT) 이후다.
 
 **미해결 항목**
 
@@ -340,6 +358,7 @@ holdings fire의 status 줄(`schedules.jsonl`의 `last_status`, scheduler 이벤
 | Candidate 태그 | CANDIDATE_TAG_DECISION_REQUIRED(`candidate-1217`은 잠정 권고. 자가검증 PR이 묶음에 들어오면 다시 정함) |
 | 이미지 내 동작 검증 | VALIDATION_PATH_UNRESOLVED. 진입점 `scripts/c7_blocked_selftest.py` 구현·저장소 테스트 통과. candidate 실행과 D-10 격리 증거는 별도 승인 |
 | 운영 배포 승인 | NOT_GRANTED |
+| 운영 Secret 정책 | **결정** — Option A(3-1·3-2 REJECT, §4.5). 실행 경로는 Option C 설계(DRAFT) 이후 |
 
 코드와 합성 테스트 기준으로 안전성 불변식(원장 불변, 거래 권한 불변, LOCAL_ONLY, at-least-once)이 의심스러운 곳은 없다. HOLD는 그 불변식 때문이 아니라 위의 증거·경로·승인이 비어 있기 때문이다.
 
