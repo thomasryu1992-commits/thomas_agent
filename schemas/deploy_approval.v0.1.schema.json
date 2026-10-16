@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "deploy_approval.v0.1.schema.json",
+  "title": "Option C deploy approval — the signed document Thomas issues for one runner action (document schema thomas.deploy_approval.v1)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "approval_id",
+    "nonce",
+    "action",
+    "environment",
+    "target",
+    "issued_at",
+    "expires_at",
+    "signature_namespace"
+  ],
+  "properties": {
+    "schema": {
+      "const": "thomas.deploy_approval.v1"
+    },
+    "approval_id": {
+      "type": "string",
+      "pattern": "^dap_[a-z2-7]{26}\\Z"
+    },
+    "nonce": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}\\Z"
+    },
+    "action": {
+      "enum": [
+        "prepare_candidate",
+        "validate_candidate",
+        "promote",
+        "rollback"
+      ]
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project",
+        "host_label",
+        "profile"
+      ],
+      "properties": {
+        "project": {
+          "const": "thomas_agent"
+        },
+        "host_label": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]{1,32}\\Z"
+        },
+        "profile": {
+          "enum": [
+            "production"
+          ]
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pr",
+        "git_commit_sha",
+        "candidate_tag",
+        "candidate_image_id",
+        "rollback_tag",
+        "rollback_image_id"
+      ],
+      "properties": {
+        "pr": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999999
+        },
+        "git_commit_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}\\Z"
+        },
+        "candidate_tag": {
+          "type": "string",
+          "pattern": "^candidate-[1-9][0-9]{0,5}\\Z"
+        },
+        "candidate_image_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^sha256:[0-9a-f]{64}\\Z"
+        },
+        "rollback_tag": {
+          "type": "string",
+          "pattern": "^rollback-pre-[1-9][0-9]{0,5}\\Z"
+        },
+        "rollback_image_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}\\Z"
+        }
+      }
+    },
+    "issued_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z\\Z"
+    },
+    "expires_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z\\Z"
+    },
+    "signature_namespace": {
+      "const": "deploy-approval.v1@thomas-agent"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "prepare_candidate"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "then": {
+        "properties": {
+          "target": {
+            "properties": {
+              "candidate_image_id": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "target": {
+            "properties": {
+              "candidate_image_id": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
