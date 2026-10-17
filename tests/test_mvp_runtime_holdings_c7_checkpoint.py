@@ -1,9 +1,10 @@
-"""C7 PR-A: the ledger checkpoint — recorded, moved, frozen on a mismatch, and never enforced (synthetic only).
+"""C7 PR-A and PR-C: the ledger checkpoint — recorded, moved, and enforced on a mismatch (synthetic only).
 
 ``docs/proposals/HOLDINGS_LEDGER_CHECKPOINT_V0.1.md`` §3 and the PR-A readiness note §3.2–§3.6. The restore
-cases themselves (C7-1 … C7-11) are in ``test_mvp_runtime_holdings_c7_partial_restore.py``; this file pins
-the mechanism: where the checkpoint lives, when it moves, what the two detectors see, the read order of the
-readiness, and that every state-only writer keeps the key.
+cases themselves (C7-1 … C7-11) are in ``test_mvp_runtime_holdings_c7_partial_restore.py`` and the adoption
+in ``test_mvp_runtime_holdings_c7_adopt.py``; this file pins the mechanism: where the checkpoint lives, when
+it moves, what the two detectors see, that a mismatch refuses the write and writes nothing (PR-C), the read
+order of the readiness, and that every state-only writer keeps the key.
 """
 
 from __future__ import annotations
@@ -11,6 +12,9 @@ from __future__ import annotations
 import json
 import shutil
 
+import pytest
+
+from runtime.mvp_runtime.errors import ToolError
 from runtime.mvp_runtime.holdings import cash_flows
 from tests._h6d_support import CURRENT_OK, Feed, iso, ledger, ms, pay, resolve, set_cutover
 
@@ -59,6 +63,27 @@ def tell_exceptions(d, now):
     cash_flows.mark_exceptions_told(d, token=ready["exceptions_token"], now=now)
 
 
+def files(d):
+    return {p.name: p.read_bytes() for p in sorted(d.iterdir()) if p.is_file() and not p.name.endswith(".lock")}
+
+
+def refused(d, write, detector):
+    """PR-C: the write raises LEDGER_TAMPERED naming the detector, and neither file changes."""
+    before = files(d)
+    with pytest.raises(ToolError) as caught:
+        write()
+    assert caught.value.reason_code == cash_flows.LEDGER_TAMPERED and detector in str(caught.value)
+    assert files(d) == before
+
+
+def plant_marker(d, reason=cash_flows.CHECKPOINT_SHORTER):
+    """What PR-A's detect-only code left behind before PR-C (it wrote this shape; nothing writes it now)."""
+    body = state(d)
+    body[cash_flows.DETECTION_MARKER_KEY] = {"reason_code": cash_flows.LEDGER_MISMATCH_DETECTED, "reason": reason,
+                                             "since": T1, "checkpoint": checkpoint(d)}
+    write_state(d, body)
+
+
 def test_every_write_moves_the_checkpoint_to_the_ledgers_new_end(tmp_path):
     set_cutover(tmp_path)
     assert checkpoint(tmp_path) == tip(tmp_path)                                  # the first write records it
@@ -70,7 +95,7 @@ def test_every_write_moves_the_checkpoint_to_the_ledgers_new_end(tmp_path):
     assert consistency(tmp_path, T2) == "PASS"
 
 
-def test_a_mismatch_freezes_the_checkpoint_and_the_alert_key_while_the_writes_go_on(tmp_path):
+def test_a_mismatch_refuses_every_write_and_keeps_one_alert_key(tmp_path):
     set_cutover(tmp_path)
     fire(tmp_path, T1)
     backup = tmp_path.parent / (tmp_path.name + "-backup")
@@ -78,32 +103,31 @@ def test_a_mismatch_freezes_the_checkpoint_and_the_alert_key_while_the_writes_go
     fire(tmp_path, T2, P2)
     frozen = checkpoint(tmp_path)
     shutil.copyfile(cash_flows.ledger_path(backup), cash_flows.ledger_path(tmp_path))
-    fire(tmp_path, later(T2, 1), P2)
-    marker = state(tmp_path)[cash_flows.DETECTION_MARKER_KEY]
+    refused(tmp_path, lambda: fire(tmp_path, later(T2, 1), P2), cash_flows.CHECKPOINT_SHORTER)
     key = cash_flows.blocked_state(tmp_path)["key"]
-    assert marker["checkpoint"] == frozen and marker["since"] == later(T2, 1)
     for hours in (2, 3):
-        fire(tmp_path, later(T2, hours), P2, pay(f"n{hours}", at=later(T2, hours - 1)))
+        refused(tmp_path, lambda: fire(tmp_path, later(T2, hours), P2, pay(f"n{hours}", at=later(T2, hours - 1))),
+                cash_flows.CHECKPOINT_SHORTER)
+        cash_flows.update_readiness(tmp_path, now=later(T2, hours), current=CURRENT_OK)   # a state-only save
+    refused(tmp_path, lambda: cash_flows.mark_fire_verified(tmp_path, now=later(T2, 4)), cash_flows.CHECKPOINT_SHORTER)
+    refused(tmp_path, lambda: cash_flows.set_cutover(tmp_path, at=later(T2, 4), requested_by="t", reason="r",
+                                                     migrate=True), cash_flows.CHECKPOINT_SHORTER)
     assert checkpoint(tmp_path) == frozen                                          # not moved
-    assert state(tmp_path)[cash_flows.DETECTION_MARKER_KEY] == marker              # first detection kept
+    assert cash_flows.DETECTION_MARKER_KEY not in state(tmp_path)                  # PR-C writes no marker
     assert cash_flows.blocked_state(tmp_path)["key"] == key                        # one failure, one alert key
-    assert {"pay:n2", "pay:n3"} <= {r.get("source_event_key") for r in ledger(tmp_path)}   # writes went on
+    assert not {"pay:n2", "pay:n3"} & {r.get("source_event_key") for r in ledger(tmp_path)}   # nothing laid on it
 
 
-def test_a_marker_stands_even_when_the_ledger_matches_again(tmp_path):
-    """Detection never clears itself: an operator adoption (PR-C) does."""
+def test_a_marker_pr_a_left_refuses_even_when_the_ledger_matches_again(tmp_path):
+    """A detection never clears itself: only an adoption does, so a marker PR-A left still refuses."""
     set_cutover(tmp_path)
     fire(tmp_path, T1)
-    backup = tmp_path.parent / (tmp_path.name + "-backup")
-    shutil.copytree(tmp_path, backup)
-    fire(tmp_path, T2, P2)
-    good = cash_flows.ledger_path(tmp_path).read_bytes()
-    shutil.copyfile(cash_flows.ledger_path(backup), cash_flows.ledger_path(tmp_path))
-    fire(tmp_path, later(T2, 1), P2)
-    cash_flows.ledger_path(tmp_path).write_bytes(good)                             # the right ledger is back
-    fire(tmp_path, later(T2, 2), P2)
-    assert cash_flows.DETECTION_MARKER_KEY in state(tmp_path)
-    assert consistency(tmp_path, later(T2, 2)) == "FAIL"
+    plant_marker(tmp_path)
+    assert cash_flows.ledger_problem(ledger(tmp_path), state(tmp_path)) is None   # the ledger matches
+    refused(tmp_path, lambda: fire(tmp_path, T2, P2), cash_flows.CHECKPOINT_SHORTER)
+    assert consistency(tmp_path, T2) == "FAIL"
+    judged = cash_flows.blocked_state(tmp_path)
+    assert (judged["category"], judged["reason_code"]) == ("checkpoint", cash_flows.LEDGER_TAMPERED)
 
 
 def test_a_told_exception_missing_from_the_ledger_is_a_proven_loss(tmp_path):
@@ -119,11 +143,11 @@ def test_a_told_exception_missing_from_the_ledger_is_a_proven_loss(tmp_path):
     body.pop(cash_flows.CHECKPOINT_KEY)                                            # only the second detector can see it
     write_state(tmp_path, body)
     assert consistency(tmp_path, later(T2, 1)) == "FAIL"                          # read-only, before any write
-    fire(tmp_path, later(T2, 30))                                                 # past the overlap: P2 stays lost
-    marker = state(tmp_path)[cash_flows.DETECTION_MARKER_KEY]
-    assert marker["reason"] == cash_flows.TOLD_KEY_MISSING
-    assert checkpoint(tmp_path) == marker["checkpoint"]                           # recorded once, frozen
-    assert cash_flows.blocked_state(tmp_path)["category"] == "marker"
+    refused(tmp_path, lambda: fire(tmp_path, later(T2, 30)), cash_flows.TOLD_KEY_MISSING)
+    assert checkpoint(tmp_path) is None                                           # nothing recorded on a refusal
+    judged = cash_flows.blocked_state(tmp_path)
+    end = ledger(tmp_path)[-1]["sha256"]
+    assert judged["category"] == "checkpoint" and judged["key"].endswith(f":{len(ledger(tmp_path))}:{end[:16]}")
 
 
 def test_a_told_exception_that_was_resolved_since_is_no_loss(tmp_path):
@@ -148,8 +172,7 @@ def test_a_malformed_checkpoint_is_detected_not_trusted(tmp_path):
         body[cash_flows.CHECKPOINT_KEY] = bad
         write_state(tmp_path, body)
         assert consistency(tmp_path, T2) == "FAIL", bad
-    fire(tmp_path, T2)
-    assert state(tmp_path)[cash_flows.DETECTION_MARKER_KEY]["reason"] == cash_flows.CHECKPOINT_MALFORMED
+        refused(tmp_path, lambda: fire(tmp_path, T2), cash_flows.CHECKPOINT_MALFORMED)
 
 
 def test_without_a_checkpoint_the_first_write_records_the_observed_end_and_says_absent_before(tmp_path):
@@ -194,16 +217,18 @@ def test_a_state_cannot_vouch_for_its_own_history(tmp_path):
         assert (ready["checkpoint"], ready["checkpoint_history"]) == ("observed", "UNVERIFIED"), claimed
 
 
-def test_a_detection_never_carries_the_refusal_code(tmp_path):
+def test_a_refusal_carries_the_refusal_code_and_writes_no_marker(tmp_path):
+    """R-2 (Thomas 2026-10-17): LEDGER_TAMPERED means a write was refused and nothing written — PR-C's case."""
     set_cutover(tmp_path)
     fire(tmp_path, T1)
     body = state(tmp_path)
     body[cash_flows.CHECKPOINT_KEY] = {"lines": 99, "sha256": "f" * 64, "basis": "observed", "observed_at": T1}
     write_state(tmp_path, body)
-    fire(tmp_path, T2, P2)
-    marker = state(tmp_path)[cash_flows.DETECTION_MARKER_KEY]
-    assert marker["reason_code"] == cash_flows.LEDGER_MISMATCH_DETECTED != cash_flows.LEDGER_TAMPERED
-    assert cash_flows.blocked_state(tmp_path)["reason_code"] == cash_flows.LEDGER_MISMATCH_DETECTED
+    refused(tmp_path, lambda: fire(tmp_path, T2, P2), cash_flows.CHECKPOINT_SHORTER)
+    assert cash_flows.DETECTION_MARKER_KEY not in state(tmp_path)
+    judged = cash_flows.blocked_state(tmp_path)
+    assert judged["reason_code"] == cash_flows.LEDGER_TAMPERED != cash_flows.LEDGER_MISMATCH_DETECTED
+    assert judged["key"] == f"{cash_flows.BLOCKED_KEY_CHECKPOINT}:refused:99:{'f' * 16}"
 
 
 def test_the_readiness_reads_the_state_before_the_ledger(tmp_path, monkeypatch):
@@ -248,15 +273,14 @@ def test_every_state_only_writer_keeps_the_checkpoint(tmp_path):
     assert checkpoint(tmp_path) == tip(tmp_path)
 
 
-def test_a_marker_survives_every_state_only_writer(tmp_path):
+def test_a_marker_and_the_refusal_key_survive_every_state_only_writer(tmp_path):
     set_cutover(tmp_path)
     fire(tmp_path, T1)
-    body = state(tmp_path)
-    body[cash_flows.CHECKPOINT_KEY] = {"lines": 99, "sha256": "f" * 64}
-    write_state(tmp_path, body)
-    fire(tmp_path, T2, P2)
+    plant_marker(tmp_path)
     marker = state(tmp_path)[cash_flows.DETECTION_MARKER_KEY]
+    key = cash_flows.blocked_state(tmp_path)["key"]
     ready = cash_flows.update_readiness(tmp_path, now=T2, current=CURRENT_OK)
     cash_flows.mark_exceptions_told(tmp_path, token=ready["exceptions_token"], now=T2)
     cash_flows.mark_readiness_told(tmp_path, now=T2)
     assert state(tmp_path)[cash_flows.DETECTION_MARKER_KEY] == marker
+    assert cash_flows.blocked_state(tmp_path)["key"] == key                        # the state's bytes moved; not it

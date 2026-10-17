@@ -7,9 +7,10 @@ and the readiness still says PASS. The fix is a design (``docs/proposals/HOLDING
 built in steps. Each test here is one case of that design's table (C7-1 … C7-11):
 
 - the cases the code already handles are asserted as they must stay;
-- the cases PR-A (the checkpoint, detect only) now catches — C7-4 and C7-6 — assert the detection: the
-  readiness FAILs and a marker stands for PR-D's alert, while the writes go on and nothing is repaired
-  (refusing is PR-C's, recovering PR-B's and the operator's);
+- the cases the checkpoint catches — C7-4 and C7-6 — assert PR-C's refusal (§9's final expectations): the
+  write raises LEDGER_TAMPERED and leaves both files byte for byte, the readiness FAILs, PR-D's alert says
+  the writes stopped, and only Thomas's two-step adoption reopens them. What an adoption then recovers is
+  what the cursors re-read; under option C nothing else is re-read (§12.5);
 - the cases PR-B (history completeness, option C) now reads — C7-8 and C7-11 — assert that the history is
   UNCHECKED and the readiness not ready, though ``ledger_state_consistency`` keeps its meaning and reads PASS.
   Nothing is recovered: under option C there is no re-read; the operator moves the cutover (§12.4).
@@ -81,17 +82,31 @@ def live(tmp_path):
     return d
 
 
-def assert_detected(d, now, reason):
-    """PR-A: the mixed restore is seen — consistency FAIL, a marker for PR-D's alert — and nothing else."""
+def files(d):
+    return {p.name: p.read_bytes() for p in sorted(d.iterdir()) if p.is_file() and not p.name.endswith(".lock")}
+
+
+def assert_refused(d, now, reason, *pays):
+    """PR-C: the mixed restore refuses the write — nothing written, consistency FAIL, the alert says so."""
+    before = files(d)
+    with pytest.raises(ToolError) as refused:
+        fire(d, now, *pays)
+    assert refused.value.reason_code == cash_flows.LEDGER_TAMPERED and reason in str(refused.value)
+    assert files(d) == before                                                       # both files, byte for byte
     chain, consistency, _ = checks(d, now)
     assert (chain, consistency) == ("PASS", "FAIL")
-    marker = cash_flows.load_state(d)[cash_flows.DETECTION_MARKER_KEY]
-    # R-2 (Thomas 2026-10-17): a detection carries its own code — LEDGER_TAMPERED means a refused write
-    assert marker["reason"] == reason and marker["reason_code"] == cash_flows.LEDGER_MISMATCH_DETECTED
+    assert cash_flows.DETECTION_MARKER_KEY not in cash_flows.load_state(d)          # PR-C writes no marker
     judged = cash_flows.blocked_state(d)
-    assert (judged["blocked"], judged["category"]) == (True, "marker")
+    assert (judged["blocked"], judged["category"], judged["reason_code"]) == (True, "checkpoint",
+                                                                               cash_flows.LEDGER_TAMPERED)
     text = cash_flows.blocked_alert(d, now=now)["alert"][1]
-    assert cash_flows.LEDGER_MISMATCH_DETECTED in text and "거부" not in text and "쓰기는 계속" in text
+    assert cash_flows.LEDGER_TAMPERED in text and "거부" in text and "쓰기는 계속" not in text
+
+
+def adopt(d, now):
+    shown = cash_flows.adoption_preview(d, interactive=True, requested_by="thomas", reason="restored ledger")
+    return cash_flows.adopt_ledger(d, confirm=shown["confirm"], requested_by="thomas", reason="restored ledger",
+                                   interactive=True, now=now)
 
 
 def assert_whole(d, now, exceptions):
@@ -132,33 +147,38 @@ def test_c7_3_a_state_behind_a_longer_ledger_recovers(live, tmp_path):
 
 
 # C7-4: only the ledger is put back from an older backup; the state keeps its newer cursors.
-def test_c7_4_a_ledger_restored_within_the_overlap_is_detected_though_the_re_read_finds_the_flow(live, tmp_path):
+def test_c7_4_a_ledger_restored_within_the_overlap_is_refused_then_adopted_and_the_re_read_finds_the_flow(live,
+                                                                                                         tmp_path):
     before = backup_point(live, tmp_path)
     fire(live, T2, P2)
     restore_ledger_only(live, before)
     now = later(T2, hours=1)
-    fire(live, now, P2)                                                            # the one-day re-read finds it
+    # D1 (Thomas 2026-10-11): a shorter ledger has no cause but a restore, so this too is refused, at the
+    # price of one operator adoption.
+    assert_refused(live, now, cash_flows.CHECKPOINT_SHORTER, P2)
+    adopt(live, later(T2, hours=2))
+    fire(live, later(T2, hours=3), P2)                                             # the one-day re-read finds it
     assert keys(live).count("pay:p2") == 1
-    # D1 (Thomas 2026-10-11): a shorter ledger has no cause but a restore, so this too is detected, at the
-    # price of one operator adoption (PR-C).
-    assert_detected(live, now, cash_flows.CHECKPOINT_SHORTER)
+    assert checks(live, later(T2, hours=3))[:2] == ("PASS", "PASS")
 
 
-def test_c7_4_a_ledger_restored_past_the_overlap_is_detected_and_the_writes_go_on(live, tmp_path):
+def test_c7_4_a_ledger_restored_past_the_overlap_is_refused_and_an_adoption_does_not_bring_the_flow_back(live,
+                                                                                                         tmp_path):
     before = backup_point(live, tmp_path)
     fire(live, T2, P2)
     fire(live, later(T2, days=3), P2)                                              # the cursor moves 3 days on
     assert checks(live, later(T2, days=3))[2] == 1
     restore_ledger_only(live, before)
     now = later(T2, days=3, hours=1)
-    fire(live, now, P2)
-    # PR-A detects only: the flow is still gone (recovering it is PR-B's re-read and the operator's adoption),
-    # but the readiness no longer passes and PR-D's alert has its input.
-    assert "pay:p2" not in keys(live)
-    assert_detected(live, now, cash_flows.CHECKPOINT_SHORTER)
+    assert_refused(live, now, cash_flows.CHECKPOINT_SHORTER, P2)
     p4 = pay("p4", at=later(T2, days=3, hours=1))
-    fire(live, later(T2, days=3, hours=2), P2, p4)
-    assert "pay:p4" in keys(live)                                                  # the writes go on
+    assert_refused(live, later(T2, days=3, hours=2), cash_flows.CHECKPOINT_SHORTER, P2, p4)   # nothing laid on it
+    adopt(live, later(T2, days=3, hours=3))
+    fire(live, later(T2, days=3, hours=4), P2, p4)
+    # Option C re-reads nothing: P2 lies outside the cursors' overlap and stays gone; the writes resume.
+    assert "pay:p2" not in keys(live) and "pay:p4" in keys(live)
+    ready = cash_flows.readiness(live, now=later(T2, days=3, hours=4), current=CURRENT_OK)
+    assert ready["checks"]["history_completeness"] == "UNCHECKED"
 
 
 # C7-5: ledger and state put back together, from the same archive.
@@ -175,7 +195,7 @@ def test_c7_5_a_restore_of_both_from_one_point_recovers(live, tmp_path):
 
 
 # C7-6: two restores mixed — the same number of lines, a different last line, a chain that verifies.
-def test_c7_6_a_ledger_of_another_history_with_the_same_length_is_detected(live, tmp_path):
+def test_c7_6_a_ledger_of_another_history_with_the_same_length_is_refused(live, tmp_path):
     other = backup_point(live, tmp_path, "other")
     fire(live, T2, P2)
     fire(other, T2, pay("p3", at="2026-10-09T04:40:00Z"))                         # a history the venue never had
@@ -184,10 +204,12 @@ def test_c7_6_a_ledger_of_another_history_with_the_same_length_is_detected(live,
     fire(live, later(T2, days=3), P2)
     restore_ledger_only(live, other)
     now = later(T2, days=3, hours=1)
-    fire(live, now, P2)
-    # The line at the state's checkpoint is not the line the state recorded. Detected; nothing repaired.
+    # The line at the state's checkpoint is not the line the state recorded. Refused; nothing repaired.
+    assert_refused(live, now, cash_flows.CHECKPOINT_REPLACED, P2)
+    adopt(live, later(T2, days=3, hours=2))
+    fire(live, later(T2, days=3, hours=3), P2)
+    # §9: after the adoption P3 stays in the ledger (an adoption erases nothing) and P2 is not re-read.
     assert "pay:p2" not in keys(live) and "pay:p3" in keys(live)
-    assert_detected(live, now, cash_flows.CHECKPOINT_REPLACED)
 
 
 # C7-7: a cursor ahead of the ledger's newest event is a quiet day, not a loss. A detector built on the
