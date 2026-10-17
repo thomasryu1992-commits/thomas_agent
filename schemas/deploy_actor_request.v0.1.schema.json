@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "deploy_actor_request.v0.1.schema.json",
+  "title": "Option C deploy runner — thomas.actor_request.v1, the message G forwards to X (C2 §6.1b). X re-validates every field itself",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "request_id",
+    "verb",
+    "args",
+    "gate_intake_seq"
+  ],
+  "properties": {
+    "schema": {
+      "const": "thomas.actor_request.v1"
+    },
+    "request_id": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]{1,128}\\Z"
+        }
+      ]
+    },
+    "verb": {
+      "enum": [
+        "inspect_candidate",
+        "prepare_candidate",
+        "validate_candidate",
+        "promote",
+        "rollback"
+      ]
+    },
+    "args": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pr": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999999
+        },
+        "git_commit_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}\\Z"
+        },
+        "candidate_image_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}\\Z"
+        },
+        "rollback_image_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}\\Z"
+        }
+      }
+    },
+    "approval_document_b64": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2734
+    },
+    "approval_signature": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "gate_intake_seq": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}

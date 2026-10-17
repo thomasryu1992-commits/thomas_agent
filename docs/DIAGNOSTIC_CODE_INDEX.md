@@ -4,11 +4,11 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **715** distinct codes across **1446** raise sites
+- **732** distinct codes across **1489** raise sites
 - **24** exception classes carry them
-- **81** codes are raised from more than one module (see below)
-- **173** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
-- **38** raise sites carry a human-readable **message** where a code would go, so there is nothing to look up — a different gap from the line above, and counted apart from it
+- **84** codes are raised from more than one module (see below)
+- **176** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
+- **40** raise sites carry a human-readable **message** where a code would go, so there is nothing to look up — a different gap from the line above, and counted apart from it
 
 ## Codes raised from more than one module
 
@@ -19,11 +19,13 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `ALREADY_CONSUMED` | `approval.py`, `switch_bridge.py` |
 | `APPROVAL_CONTENT_MISMATCH` | `probe.py`, `promotion.py`, `retirement.py`, `registration.py` |
 | `APPROVAL_EXPIRED` | `approval.py`, `probe.py`, `promotion.py`, `retirement.py`, `clock.py`, `registration.py`, `switch_bridge.py` |
-| `APPROVAL_MALFORMED` | `approval_verify.py`, `canonical.py`, `clock.py` |
+| `APPROVAL_MALFORMED` | `approval_verify.py`, `canonical.py`, `clock.py`, `gate.py` |
 | `APPROVAL_MISSING` | `probe.py`, `promotion.py`, `retirement.py`, `registration.py` |
 | `APPROVAL_NOT_APPROVED` | `probe.py`, `promotion.py`, `retirement.py`, `registration.py` |
 | `APPROVAL_WRONG_ACTION` | `probe.py`, `promotion.py`, `retirement.py`, `registration.py` |
-| `ARGUMENT_NOT_ACCEPTED` | `control.py`, `approval_verify.py`, `dispatch_bridge.py`, `knowledge_bridge.py`, `pipeline_worker.py`, `read_bridge.py`, `switch_bridge.py` |
+| `ARGUMENT_INVALID` | `approval_verify.py`, `docker_argv.py` |
+| `ARGUMENT_NOT_ACCEPTED` | `control.py`, `actor.py`, `approval_verify.py`, `gate.py`, `dispatch_bridge.py`, `knowledge_bridge.py`, `pipeline_worker.py`, `read_bridge.py`, `switch_bridge.py` |
+| `AUDIT_WRITE_FAILED` | `audit_chain.py`, `gate.py` |
 | `AUTHORITY_RECORD_INVALID` | `policy.py`, `preflight.py` |
 | `CANDIDATE_EXPIRED` | `consumption.py`, `memory_console.py` |
 | `CANDIDATE_GONE` | `consumption.py`, `memory_console.py` |
@@ -47,7 +49,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `LIFECYCLE_UNKNOWN_STRATEGY` | `pool_transitions.py`, `retirement.py` |
 | `LIVE_HISTORY_TAMPERED` | `live_ledger.py`, `live_pnl.py` |
 | `MALFORMED_DIRECTION` | `live_order.py`, `live_position.py` |
-| `MALFORMED_REQUEST` | `bridge_idempotency.py`, `dispatch_bridge.py`, `binance_wallet.py`, `knowledge_bridge.py`, `pipeline_worker.py`, `read_bridge.py`, `socket_door.py`, `switch_bridge.py` |
+| `MALFORMED_REQUEST` | `bridge_idempotency.py`, `actor.py`, `door.py`, `gate.py`, `dispatch_bridge.py`, `binance_wallet.py`, `knowledge_bridge.py`, `pipeline_worker.py`, `read_bridge.py`, `socket_door.py`, `switch_bridge.py` |
 | `MALFORMED_RESULT` | `account.py`, `market_data.py`, `binance_wallet.py`, `toss_account.py`, `naver_research.py`, `tools.py` |
 | `MISSING_OPERATOR` | `memory.py`, `program_request.py`, `programization.py` |
 | `MISSING_REASON` | `memory.py`, `memory_console.py`, `program_request.py`, `programization.py` |
@@ -73,13 +75,14 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `REASON_REQUIRED` | `dispatch_bridge.py`, `pipeline_worker.py`, `switch_bridge.py` |
 | `REGISTRY_UNAVAILABLE` | `planner.py`, `registry_console.py` |
 | `REGISTRY_UNRESOLVABLE` | `program_request.py`, `registration.py` |
+| `REQUEST_ID_REQUIRED` | `actor.py`, `dispatch_bridge.py` |
 | `REQUEST_ID_REUSED` | `bridge_idempotency.py`, `request_state.py` |
 | `REQUEST_IN_FLIGHT` | `bridge_idempotency.py`, `request_state.py` |
 | `REQUEST_REQUIRED` | `dispatch_bridge.py`, `pipeline_worker.py` |
 | `RESPONSE_TRUNCATED` | `validator.py`, `worker.py` |
 | `ROLE_DEFINITION_INVALID` | `assignment.py`, `planner.py` |
 | `ROUTE_NOT_SUPPORTED` | `router.py`, `worker_port.py` |
-| `RUNNER_STARTUP_BLOCKED` | `clock.py`, `latch.py`, `startup.py` |
+| `RUNNER_STARTUP_BLOCKED` | `clock.py`, `door.py`, `latch.py`, `startup.py` |
 | `SCHEDULES_UNAVAILABLE` | `dispatch_bridge.py`, `store_reads.py` |
 | `SECRET_IN_CANDIDATE` | `memory.py`, `programization.py` |
 | `STORE_ID_MISMATCH` | `consumption.py`, `startup.py` |
@@ -115,6 +118,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `ACTIVATION_EXPIRED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | `assert_authorization` | `now >= authorization.expires_at` |
 | `ACTIVATION_REVOKED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | `assert_authorization` | `not record_path.is_file()` |
 | `ACTOR_PROFILE_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/pipeline_worker.py` | `apply_work` | `isinstance(raw_profile, str) and raw_profile.strip() in _ACTOR_PROFILES` |
+| `ACTOR_REPLY_INVALID` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/gate.py` | `serve` | `answer['request_id'] not in (None, message['request_id'])` |
+| `ACTOR_UNAVAILABLE` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/gate.py` | `call_actor_socket` | `—` |
 | `ALREADY_CLASSIFIED` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | `classify_task` | `classification.get('classification_status') != 'UNCLASSIFIED'` |
 | `ALREADY_CONSUMED` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | `build_consumed_record` | `status == STATUS_CONSUMED` |
 | `ALREADY_CONSUMED` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | `spend_lock` | `latest is None or latest.get('status') != STATUS_APPROVED` |
@@ -169,6 +174,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `APPROVAL_MALFORMED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/canonical.py` | `require_canonical` | `—` |
 | `APPROVAL_MALFORMED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/clock.py` | `parse_utc_second` | `—` |
 | `APPROVAL_MALFORMED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/clock.py` | `parse_utc_second` | `not isinstance(value, str) or not _UTC_SECOND.match(value)` |
+| `APPROVAL_MALFORMED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/gate.py` | `check_frame` | `value is not None and (not isinstance(value, str) or not 1 <= len(value) <= ceiling)` |
 | `APPROVAL_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | `verify_probe_approval` | `approval is None` |
 | `APPROVAL_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | `verify_promotion_approval` | `approval is None` |
 | `APPROVAL_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | `verify_retirement_approval` | `approval is None` |
@@ -215,8 +221,15 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `ARGUMENT_INVALID` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/approval_verify.py` | `check_args` | `not _is_pr(args['pr'])` |
 | `ARGUMENT_INVALID` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/approval_verify.py` | `check_args` | `not isinstance(args, dict)` |
 | `ARGUMENT_INVALID` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/approval_verify.py` | `check_args` | `set(args) != allowed` |
+| `ARGUMENT_INVALID` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/docker_argv.py` | `_image_id` | `not isinstance(value, str) or not _IMAGE_ID.match(value)` |
+| `ARGUMENT_INVALID` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/docker_argv.py` | `_pr` | `not isinstance(pr, int) or isinstance(pr, bool) or (not 1 <= pr <= 999999)` |
+| `ARGUMENT_INVALID` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/docker_argv.py` | `container_inspect` | `name not in RUNTIME_CONTAINERS` |
+| `ARGUMENT_INVALID` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/docker_argv.py` | `image_inspect` | `not isinstance(ref, str) or not (allowed.match(ref) or _IMAGE_ID.match(ref))` |
+| `ARGUMENT_INVALID` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/docker_argv.py` | `tree_path` | `not root.is_absolute()` |
 | `ARGUMENT_NOT_ACCEPTED` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | `apply_command` | `expected_state is not None and command != CMD_RESUME` |
+| `ARGUMENT_NOT_ACCEPTED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_handle` | `'approval_document_b64' in message or 'approval_signature' in message` |
 | `ARGUMENT_NOT_ACCEPTED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/approval_verify.py` | `check_args` | `set(args) - allowed` |
+| `ARGUMENT_NOT_ACCEPTED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/gate.py` | `check_frame` | `set(frame) - FRAME_KEYS` |
 | `ARGUMENT_NOT_ACCEPTED` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | `apply_dispatch` | `unexpected` |
 | `ARGUMENT_NOT_ACCEPTED` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | `apply_workflow_command` | `unexpected` |
 | `ARGUMENT_NOT_ACCEPTED` | `ControlBlocked` | `runtime/mvp_runtime/knowledge_bridge.py` | `apply_knowledge` | `unexpected` |
@@ -241,6 +254,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `AUDIT_EVENT_INVALID` | `AuditError` | `runtime/mvp_runtime/audit.py` | `_make_event` | `—` |
 | `AUDIT_WRITE_FAILED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/audit_chain.py` | `append` | `—` |
 | `AUDIT_WRITE_FAILED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/audit_chain.py` | `append` | `set(fields) - set(FIELDS)` |
+| `AUDIT_WRITE_FAILED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/gate.py` | `_verified` | `row['seq'] != seq or row['previous_row_sha256'] != previous or row['row_sha256'] != _row_hash(r…` |
 | `AUTHORITY_INSUFFICIENT` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | `build_permission_decision` | `not authority_sufficient and disposition != 'BLOCK'` |
 | `AUTHORITY_INVARIANT` | `PlannerBlocked` | `runtime/mvp_runtime/assignment.py` | `build_role_assignment` | `not invariant_holds` |
 | `AUTHORITY_RECORD_INVALID` | `KernelBlocked` | `runtime/read_only_kernel/policy.py` | `adapt_policy` | `authority.get('effective_permission_level') is None` |
@@ -267,6 +281,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `BRIDGE_LIMITS_INVALID` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | `__init__` | `max_frame_bytes < 1 or request_timeout_seconds <= 0` |
 | `BUDGET_EXHAUSTED` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow.py` | `validate_plan` | `needed > budget.max_model_calls` |
 | `BUDGET_PROFILE_KIND_MISMATCH` | `PlannerBlocked` | `runtime/mvp_runtime/budgets.py` | `require_budget_profile` | `request_kind not in BUDGET_PROFILES[profile]['request_kinds']` |
+| `BUILD_FAILED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_act` | `code != 0` |
 | `CANARY_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/live_evidence.py` | `read_canary_orders` | `order_id in seen` |
 | `CANARY_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_evidence.py` | `read_canary_orders` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
 | `CANARY_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_evidence.py` | `read_canary_orders` | `—` |
@@ -318,6 +333,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `CLOCK_UNTRUSTED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/clock.py` | `check_clock` | `last_seen_wall is not None and now_wall < last_seen_wall - timedelta(seconds=policy.backstep_to…` |
 | `CLOCK_UNTRUSTED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/clock.py` | `check_clock` | `mono_elapsed < 0 or abs(wall_elapsed - mono_elapsed) > policy.clock_jump_s` |
 | `CLOCK_UNTRUSTED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/clock.py` | `check_clock` | `not sync_confirmed` |
+| `COMPOSE_PROJECT_MISMATCH` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_measure_images` | `parts[3] != self.config.environment.project` |
 | `CONSUMED_NOT_PROMOTED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | `consume_approval` | `—` |
 | `CONSUMED_UNAUDITED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | `consume_approval` | `—` |
 | `CONSUMPTION_DISABLED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | `consume` | `—` |
@@ -356,6 +372,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `COUNTERFACTUAL_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/counterfactual.py` | `read_counterfactual_outcomes` | `settlement_id in seen_settlements` |
 | `COUNTERFACTUAL_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/counterfactual.py` | `read_counterfactual_outcomes` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
 | `COUNTERFACTUAL_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/counterfactual.py` | `read_counterfactual_outcomes` | `—` |
+| `CREDENTIALS_UNAVAILABLE` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/door.py` | `peer_uid` | `creds is None` |
 | `CRYPTO_RISK_LIMITS_EXPIRED` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | `resolve_risk_limits` | `not _window_covers(record, now)` |
 | `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | `_validate` | `—` |
 | `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | `build_risk_limits_record` | `—` |
@@ -376,6 +393,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `CRYPTO_RISK_LIMITS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | `read_registered_limits` | `—` |
 | `CRYPTO_RISK_LIMITS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | `read_registered_limits` | `not isinstance(data, dict)` |
 | `CRYPTO_VENUE_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/state.py` | `venue_state_dir` | `venue not in VENUES` |
+| `DEADLINE_EXCEEDED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_act` | `remaining <= 0` |
+| `DEADLINE_EXCEEDED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_act` | `remaining <= 0` |
 | `DECISION_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | `build_approval_request` | `expires <= issued` |
 | `DEFINITION_INPUT_INVALID` | `ProgramizationBlocked` | `runtime/mvp_runtime/registration.py` | `build_program_definition` | `not (isinstance(purpose, str) and purpose.strip())` |
 | `DEFINITION_INPUT_INVALID` | `ProgramizationBlocked` | `runtime/mvp_runtime/registration.py` | `build_program_definition` | `not isinstance(definition_input, Mapping)` |
@@ -383,6 +402,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `DEFINITION_PATH_EXISTS` | `ProgramizationBlocked` | `runtime/mvp_runtime/registration.py` | `apply_registration` | `definition_path.exists()` |
 | `DELIVERY_POINTER_PERSIST_FAILED` | `OperatorBlocked` | `runtime/mvp_runtime/operator_feedback.py` | `record_delivery` | `—` |
 | `DELIVERY_STATUS_INVALID` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | `record_delivery` | `status not in wf.DELIVERY_STATUSES` |
+| `DOCKER_COMMAND_FAILED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_act` | `code != 0` |
+| `DOCKER_TIMEOUT` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_run` | `—` |
 | `DOMAIN_EFFECT_MISMATCH` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | `_emergency_close_ask` | `domain != _EMERGENCY_CLOSE_DOMAIN` |
 | `DOMAIN_EFFECT_MISMATCH` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | `_spend` | `len(_ALLOWED_DOMAINS) > 1` |
 | `DOMAIN_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | `_require_domain` | `domain not in _ALLOWED_DOMAINS` |
@@ -565,6 +586,10 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `IDEATION_INPUTS_REQUIRED` | `ToolError` | `runtime/mvp_runtime/blog_content.py` | `run_content_ideation` | `not seeds and (not target_override) and (not use_queue)` |
 | `IDEATION_INPUTS_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/pipeline_worker.py` | `_apply_job` | `not isinstance(inputs, dict) or not str(inputs.get('seeds') or '').strip()` |
 | `IDEMPOTENCY_UNAVAILABLE` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | `apply_dispatch` | `request_id is not None and ledger is None` |
+| `IMAGE_STATE_UNAVAILABLE` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_image_id` | `not _IMAGE.match(value)` |
+| `IMAGE_STATE_UNAVAILABLE` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_measure_images` | `latest is None` |
+| `IMAGE_STATE_UNAVAILABLE` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_measure_images` | `len(parts) != 4 or not _IMAGE.match(parts[0]) or parts[1] not in _STATES or (parts[2] not in _H…` |
+| `IMAGE_STATE_UNAVAILABLE` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_run` | `—` |
 | `INVALID_ASSIGNMENT_MODE` | `PlannerBlocked` | `runtime/mvp_runtime/assignment.py` | `build_role_assignment` | `assignment_mode not in ('normal', 'candidate_trial')` |
 | `INVALID_AUTHENTICATED` | `TaskIntakeBlocked` | `runtime/mvp_runtime/intake.py` | `build_task` | `not isinstance(authenticated, bool)` |
 | `INVALID_AUTHORITY` | `PlannerBlocked` | `runtime/mvp_runtime/assignment.py` | `build_role_assignment` | `—` |
@@ -815,6 +840,14 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MALFORMED_REQUEST` | `ControlBlocked` | `runtime/mvp_runtime/bridge_idempotency.py` | `fingerprint` | `—` |
 | `MALFORMED_REQUEST` | `ControlBlocked` | `runtime/mvp_runtime/bridge_idempotency.py` | `request_id_of` | `len(value) > MAX_REQUEST_ID_LENGTH` |
 | `MALFORMED_REQUEST` | `ControlBlocked` | `runtime/mvp_runtime/bridge_idempotency.py` | `request_id_of` | `not isinstance(raw, str) or not raw.strip()` |
+| `MALFORMED_REQUEST` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_handle` | `—` |
+| `MALFORMED_REQUEST` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_handle` | `not isinstance(message, dict)` |
+| `MALFORMED_REQUEST` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/door.py` | `decode_frame` | `—` |
+| `MALFORMED_REQUEST` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/gate.py` | `check_frame` | `'verb' not in frame or 'args' not in frame` |
+| `MALFORMED_REQUEST` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/gate.py` | `check_frame` | `client_id is not None and (not isinstance(client_id, str) or not _CLIENT.match(client_id))` |
+| `MALFORMED_REQUEST` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/gate.py` | `check_frame` | `frame.get('proto') != PROTO or isinstance(frame.get('proto'), bool)` |
+| `MALFORMED_REQUEST` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/gate.py` | `check_frame` | `not isinstance(frame, dict)` |
+| `MALFORMED_REQUEST` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/gate.py` | `check_frame` | `request_id is not None and (not isinstance(request_id, str) or not _TOKEN.match(request_id))` |
 | `MALFORMED_REQUEST` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | `_bounded_int` | `isinstance(value, bool) or not isinstance(value, int) or value < 0` |
 | `MALFORMED_REQUEST` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | `apply_dispatch` | `isinstance(raw_kind, str) and raw_kind.strip()` |
 | `MALFORMED_REQUEST` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | `apply_dispatch` | `len(raw_seeds) > MAX_SEED_CHARS` |
@@ -1002,6 +1035,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `OFFSET_STATE_MALFORMED` | `OperatorBlocked` | `runtime/mvp_runtime/operator.py` | `_load_offset` | `—` |
 | `OI_INTERVAL_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | `open_interest_history` | `interval not in OI_INTERVALS` |
 | `OI_SYMBOL_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/oi_store.py` | `append_rows` | `not name` |
+| `OPERATION_BLOCKED_BY_POLICY` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_handle` | `verb in POLICY_BLOCKED_VERBS and verb not in OPERATIONAL_VERBS_ENABLED` |
 | `ORDERBOOK_CROSSED` | `ToolError` | `runtime/mvp_runtime/crypto/orderbook_store.py` | `summarize_book` | `not best_bid < best_ask` |
 | `ORDERBOOK_DEPTH_EMPTY` | `ToolError` | `runtime/mvp_runtime/crypto/orderbook_store.py` | `summarize_book` | `total <= 0.0` |
 | `ORDERBOOK_IMPACT_UNPRICEABLE` | `ToolError` | `runtime/mvp_runtime/crypto/orderbook_store.py` | `_walked_level` | `—` |
@@ -1115,6 +1149,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | `load_open_position` | `PositionContext.from_position(stored) != context` |
 | `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | `position_path` | `path.parent != resolved_base` |
 | `POSITION_STATE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | `_read_position_file` | `—` |
+| `POST_CHECK_FAILED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_act` | `candidate is None` |
 | `PROBE_BATCH_EXHAUSTED` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | `select_cell` | `not empty` |
 | `PROBE_BUDGET_EXCEEDED` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | `assert_batch_budget` | `worst > cap` |
 | `PROBE_CELL_OPEN` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | `abandon_plan` | `open_index is not None` |
@@ -1227,6 +1262,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `REPORTED_USAGE_INVALID` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | `record_reported_usage` | `usage['cost_status'] not in wf.REPORTED_COST_STATUSES` |
 | `REQUEST_EXISTS` | `ProgramizationBlocked` | `runtime/mvp_runtime/program_request.py` | `create_program_request` | `any((row.get('candidate_id') == candidate_id for row in store.read_requests()))` |
 | `REQUEST_ID_CONFLICT` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | `submit` | `prior['fingerprint'] != validated.plan_hash` |
+| `REQUEST_ID_REQUIRED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_handle` | `request_id is None` |
 | `REQUEST_ID_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | `apply_workflow_command` | `request_id is None` |
 | `REQUEST_ID_REUSED` | `ControlBlocked` | `runtime/mvp_runtime/bridge_idempotency.py` | `claim` | `prior.get('request_sha256') != request_fingerprint` |
 | `REQUEST_ID_REUSED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/request_state.py` | `begin` | `prior['request_sha256'] != request_sha256` |
@@ -1285,8 +1321,12 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `RUNNER_ERROR` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/request_state.py` | `finish` | `prior is None or prior['state'] != CLAIMED or prior['request_sha256'] != request_sha256` |
 | `RUNNER_ERROR` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/request_state.py` | `finish` | `state not in TERMINAL` |
 | `RUNNER_ERROR` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/request_state.py` | `mark_unknown` | `prior is None or prior['state'] != CLAIMED` |
+| `RUNNER_LATCHED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_handle` | `self._latched` |
 | `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/clock.py` | `check_time_policy` | `not policy.deadlines_s or any((not isinstance(v, int) or isinstance(v, bool) or v <= 0 for v in…` |
 | `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/clock.py` | `check_time_policy` | `policy.max_lifetime_s < max(policy.deadlines_s.values())` |
+| `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/door.py` | `__init__` | `—` |
+| `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/door.py` | `__init__` | `not uids or any((not isinstance(u, int) or isinstance(u, bool) or u < 0 for u in uids))` |
+| `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/door.py` | `__init__` | `peer_refusal not in ('PEER_NOT_PERMITTED', 'ACTOR_PEER_NOT_PERMITTED')` |
 | `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/latch.py` | `_validate` | `—` |
 | `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/latch.py` | `read` | `—` |
 | `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/latch.py` | `set` | `—` |
@@ -1302,6 +1342,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/startup.py` | `write_last_seen` | `—` |
 | `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/startup.py` | `write_last_seen` | `os.write(fd, data) != len(data)` |
 | `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/startup.py` | `write_last_seen` | `st.st_uid != os.geteuid() or st.st_mode & 63` |
+| `RUNNING_IMAGES_INCONSISTENT` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_prepare` | `None in running or len(running) != 1` |
 | `RUN_LEDGER_UNAVAILABLE` | `ControlBlocked` | `runtime/mvp_runtime/store_reads.py` | `read_lane_digest` | `ledger is None or not hasattr(ledger, 'iter_records_with_archive')` |
 | `SCHEDULER_EVENT_INVALID` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | `_execute` | `run_id is None` |
 | `SCHEDULER_EVENT_INVALID` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | `mutation_event` | `action not in MUTATION_ACTIONS` |
@@ -1385,6 +1426,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `STRATEGY_POOL_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | `_read_active_pool_and_digest` | `—` |
 | `STRATEGY_POOL_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | `install_active_pool` | `expected_digest is not None` |
 | `SUBJECT_FINGERPRINT_FAILED` | `AuditError` | `runtime/mvp_runtime/audit.py` | `_fingerprint` | `—` |
+| `TAG_ALREADY_EXISTS` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_prepare` | `images['tags']['candidate'] is not None or images['tags']['rollback_pre'] is not None` |
 | `TARGET_EXISTS` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | `run_write` | `target.exists()` |
 | `TARGET_EXISTS` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | `write` | `—` |
 | `TARGET_NOT_CANDIDATE` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | `consume_approval` | `not target_ref.startswith(_CANDIDATE_TARGET_PREFIX)` |
@@ -1429,6 +1471,10 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `TRANSITION_INVALID` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | `approve_step` | `s is None or s['status'] != wf.S_WAITING_APPROVAL` |
 | `TRANSITION_INVALID` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | `bind_approval` | `s is None or s['status'] != wf.S_WAITING_APPROVAL` |
 | `TRANSITION_INVALID` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | `refuse_step_approval` | `s is None or s['status'] != wf.S_WAITING_APPROVAL` |
+| `TREE_NOT_CLEAN` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_tree` | `status.strip()` |
+| `TREE_NOT_ORIGIN_MAIN` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_tree` | `head != main` |
+| `TREE_UNAVAILABLE` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_tree` | `code != 0` |
+| `TREE_UNAVAILABLE` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_tree` | `code_h != 0 or code_m != 0 or (not _SHA.match(head)) or (not _SHA.match(main))` |
 | `TRIAL_REQUEST_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/trial.py` | `run_trial` | `not (isinstance(trial_request, str) and trial_request.strip())` |
 | `TRUST_ANCHOR_MISMATCH` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/trust.py` | `load_trust` | `keys != anchor` |
 | `TRUST_CONFIG_INSECURE` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/trust.py` | `parse_allowed_signers` | `','.join((f'{name}="{value}"' for name, value in found)) != opts` |

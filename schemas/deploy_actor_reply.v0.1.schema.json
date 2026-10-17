@@ -1,0 +1,468 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "deploy_actor_reply.v0.1.schema.json",
+  "title": "Option C deploy runner — thomas.actor_reply.v1, X's answer to G (C2 §6.1b). state is X's request state (null when no request record answers it)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "ok",
+    "request_id",
+    "state",
+    "replayed"
+  ],
+  "$defs": {
+    "inspection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pr",
+        "running",
+        "tags",
+        "containers",
+        "measured_at"
+      ],
+      "properties": {
+        "pr": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999999
+        },
+        "running": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "thomas-operator",
+            "thomas-scheduler",
+            "thomas-scheduler-maint",
+            "thomas-read-bridge",
+            "thomas-dispatch-bridge",
+            "thomas-pipeline-worker",
+            "thomas-knowledge-bridge",
+            "thomas-switch-bridge"
+          ],
+          "properties": {
+            "thomas-operator": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}\\Z"
+                }
+              ]
+            },
+            "thomas-scheduler": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}\\Z"
+                }
+              ]
+            },
+            "thomas-scheduler-maint": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}\\Z"
+                }
+              ]
+            },
+            "thomas-read-bridge": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}\\Z"
+                }
+              ]
+            },
+            "thomas-dispatch-bridge": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}\\Z"
+                }
+              ]
+            },
+            "thomas-pipeline-worker": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}\\Z"
+                }
+              ]
+            },
+            "thomas-knowledge-bridge": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}\\Z"
+                }
+              ]
+            },
+            "thomas-switch-bridge": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}\\Z"
+                }
+              ]
+            }
+          }
+        },
+        "tags": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "latest",
+            "candidate",
+            "rollback_pre"
+          ],
+          "properties": {
+            "latest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}\\Z"
+            },
+            "candidate": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}\\Z"
+                }
+              ]
+            },
+            "rollback_pre": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}\\Z"
+                }
+              ]
+            }
+          }
+        },
+        "containers": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "state",
+              "health"
+            ],
+            "properties": {
+              "name": {
+                "enum": [
+                  "thomas-operator",
+                  "thomas-scheduler",
+                  "thomas-scheduler-maint",
+                  "thomas-read-bridge",
+                  "thomas-dispatch-bridge",
+                  "thomas-pipeline-worker",
+                  "thomas-knowledge-bridge",
+                  "thomas-switch-bridge"
+                ]
+              },
+              "state": {
+                "enum": [
+                  "running",
+                  "exited",
+                  "restarting",
+                  "paused",
+                  "created",
+                  "dead"
+                ]
+              },
+              "health": {
+                "enum": [
+                  "healthy",
+                  "unhealthy",
+                  "starting",
+                  "none"
+                ]
+              }
+            }
+          }
+        },
+        "measured_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z\\Z"
+        }
+      }
+    },
+    "prepared": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pr",
+        "git_commit_sha",
+        "rollback_image_id",
+        "candidate_image_id"
+      ],
+      "properties": {
+        "pr": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999999
+        },
+        "git_commit_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}\\Z"
+        },
+        "rollback_image_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}\\Z"
+        },
+        "candidate_image_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}\\Z"
+        }
+      }
+    },
+    "partial_measurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pr",
+        "git_commit_sha",
+        "rollback_image_id",
+        "candidate_image_id"
+      ],
+      "properties": {
+        "pr": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999999
+        },
+        "git_commit_sha": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}\\Z"
+            }
+          ]
+        },
+        "rollback_image_id": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}\\Z"
+            }
+          ]
+        },
+        "candidate_image_id": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}\\Z"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "properties": {
+    "ok": {
+      "type": "boolean"
+    },
+    "request_id": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]{1,128}\\Z"
+        }
+      ]
+    },
+    "reason_code": {
+      "enum": [
+        "ACTOR_PEER_NOT_PERMITTED",
+        "ACTOR_REPLY_INVALID",
+        "ACTOR_UNAVAILABLE",
+        "APPROVAL_ACTION_MISMATCH",
+        "APPROVAL_ALREADY_CONSUMED",
+        "APPROVAL_BEFORE_CUTOFF",
+        "APPROVAL_BINDING_MISMATCH",
+        "APPROVAL_ENVIRONMENT_MISMATCH",
+        "APPROVAL_EXPIRED",
+        "APPROVAL_FIELD_MISSING",
+        "APPROVAL_LIFETIME_EXCEEDS_POLICY",
+        "APPROVAL_MALFORMED",
+        "APPROVAL_NOT_CANONICAL",
+        "APPROVAL_NOT_YET_VALID",
+        "APPROVAL_REQUIRED",
+        "APPROVAL_REVOKED",
+        "APPROVAL_SCHEMA_UNSUPPORTED",
+        "APPROVAL_TOO_SHORT_FOR_ACTION",
+        "APPROVAL_UNKNOWN_FIELD",
+        "ARGUMENT_INVALID",
+        "ARGUMENT_NOT_ACCEPTED",
+        "AUDIT_WRITE_FAILED",
+        "BUILD_FAILED",
+        "CLOCK_UNTRUSTED",
+        "COMPOSE_PROJECT_MISMATCH",
+        "CONSUMPTION_STORE_UNAVAILABLE",
+        "CONSUMPTION_WRITE_FAILED",
+        "CREDENTIALS_UNAVAILABLE",
+        "DEADLINE_EXCEEDED",
+        "DOCKER_COMMAND_FAILED",
+        "DOCKER_TIMEOUT",
+        "EFFECT_STATE_UNKNOWN",
+        "FAILED_EFFECT_PARTIAL",
+        "FRAME_TOO_LARGE",
+        "IMAGE_STATE_UNAVAILABLE",
+        "INSPECT_RATE_LIMITED",
+        "INSTANCE_LOCK_HELD",
+        "MALFORMED_REQUEST",
+        "OPERATION_BLOCKED_BY_POLICY",
+        "ORIGIN_FETCH_FAILED",
+        "PEER_NOT_PERMITTED",
+        "POST_CHECK_FAILED",
+        "REPLY_SCHEMA_INVALID",
+        "REQUEST_ID_REQUIRED",
+        "REQUEST_ID_REUSED",
+        "REQUEST_IN_FLIGHT",
+        "REVOCATION_LIST_UNAVAILABLE",
+        "ROLLBACK_POINT_MISSING",
+        "RUNNER_BUSY",
+        "RUNNER_ENVIRONMENT_MISMATCH",
+        "RUNNER_ERROR",
+        "RUNNER_LATCHED",
+        "RUNNER_STARTUP_BLOCKED",
+        "RUNNING_IMAGES_INCONSISTENT",
+        "SIGNATURE_INVALID",
+        "TAG_ALREADY_EXISTS",
+        "TREE_NOT_CLEAN",
+        "TREE_NOT_ORIGIN_MAIN",
+        "TREE_UNAVAILABLE",
+        "TRUST_ANCHOR_MISMATCH",
+        "TRUST_CONFIG_INSECURE",
+        "TRUST_CONFIG_UNAUTHORIZED_CHANGE",
+        "TRUST_CONFIG_UNAVAILABLE",
+        "VERB_NOT_PERMITTED",
+        "VERIFIER_UNAVAILABLE"
+      ]
+    },
+    "state": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "enum": [
+            "claimed",
+            "completed",
+            "refused_before_consume",
+            "unknown",
+            "partial"
+          ]
+        }
+      ]
+    },
+    "data": {
+      "type": "object"
+    },
+    "replayed": {
+      "type": "boolean"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "ok": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "data"
+        ],
+        "not": {
+          "required": [
+            "reason_code"
+          ]
+        },
+        "properties": {
+          "data": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/inspection"
+              },
+              {
+                "$ref": "#/$defs/prepared"
+              }
+            ]
+          }
+        }
+      },
+      "else": {
+        "required": [
+          "reason_code"
+        ],
+        "if": {
+          "properties": {
+            "reason_code": {
+              "const": "FAILED_EFFECT_PARTIAL"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/partial_measurement"
+            }
+          }
+        },
+        "else": {
+          "not": {
+            "required": [
+              "data"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}
