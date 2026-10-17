@@ -10,8 +10,9 @@ built in steps. Each test here is one case of that design's table (C7-1 … C7-1
 - the cases PR-A (the checkpoint, detect only) now catches — C7-4 and C7-6 — assert the detection: the
   readiness FAILs and a marker stands for PR-D's alert, while the writes go on and nothing is repaired
   (refusing is PR-C's, recovering PR-B's and the operator's);
-- the cases still open are pinned as they behave **today**, in a test whose name starts with
-  ``test_defect_`` (C7-8 and C7-11: PR-B's history check).
+- the cases PR-B (history completeness, option C) now reads — C7-8 and C7-11 — assert that the history is
+  UNCHECKED and the readiness not ready, though ``ledger_state_consistency`` keeps its meaning and reads PASS.
+  Nothing is recovered: under option C there is no re-read; the operator moves the cutover (§12.4).
 """
 
 from __future__ import annotations
@@ -209,7 +210,7 @@ def strip_checkpoint(d):
 
 
 # C7-8: a state with no checkpoint; nothing relates its cursors to the ledger.
-def test_defect_c7_8_a_state_without_a_checkpoint_is_read_as_consistent(live, tmp_path):
+def test_c7_8_a_state_without_a_checkpoint_reads_its_history_unchecked(live, tmp_path):
     before = backup_point(live, tmp_path)
     fire(live, T2, P2)
     fire(live, later(T2, days=3), P2)
@@ -217,13 +218,14 @@ def test_defect_c7_8_a_state_without_a_checkpoint_is_read_as_consistent(live, tm
     strip_checkpoint(live)
     state = cash_flows.load_state(live)
     assert not {"ledger_checkpoint", "checkpoint"} & set(state)
-    # Still a defect after PR-A (readiness note R-3, option (가)): PASS, though the cursors are three days past
-    # this ledger. PR-B's history check reads it UNCHECKED; until then the readiness says the checkpoint is
-    # absent, so this PASS is never read as a verified restore.
+    # PR-B (D2: absent reads UNCHECKED): the consistency check keeps its meaning and passes, but the history
+    # since the cutover is UNCHECKED, so the readiness is not ready.
     now = later(T2, days=3, hours=1)
     assert checks(live, now)[:2] == ("PASS", "PASS")
     ready = cash_flows.readiness(live, now=now, current=CURRENT_OK)
     assert (ready["checkpoint"], ready["checkpoint_history"]) == ("absent", "UNVERIFIED")
+    assert ready["checks"]["history_completeness"] == "UNCHECKED" and ready["history"]["reason"] == "no_checkpoint"
+    assert ready["ready"] is False
 
 
 # C7-9: a ledger whose chain is broken is refused, before and after a write; nothing is written.
@@ -307,8 +309,8 @@ def test_c7_11_a_missing_state_recovers_a_ledger_inside_the_first_lookback(live,
     assert_whole(live, now, 1)
 
 
-# … and one whose tip is older than that loses what lies in between, with the readiness at PASS.
-def test_defect_c7_11_a_missing_state_with_a_ledger_older_than_the_lookback_loses_the_flow(live, tmp_path):
+# … and one whose tip is older than that loses what lies in between. Since PR-B its history reads UNCHECKED.
+def test_c7_11_a_missing_state_with_a_ledger_older_than_the_lookback_reads_its_history_unchecked(live, tmp_path):
     before = backup_point(live, tmp_path)
     fire(live, T2, P2)
     fire(live, later(T2, days=10), P2)
@@ -316,6 +318,10 @@ def test_defect_c7_11_a_missing_state_with_a_ledger_older_than_the_lookback_lose
     cash_flows.state_path(live).unlink()
     now = later(T2, days=10, hours=1)
     fire(live, now, P2)
-    # Design: UNCHECKED (history UNVERIFIED), never PASS, until a re-read reaches the cutover.
+    # The flow is still gone (option C re-reads nothing), and the consistency check still passes; the new state's
+    # checkpoint was first observed after the cutover, so the history before it is UNVERIFIED: not ready.
     assert "pay:p2" not in keys(live)
     assert checks(live, now) == ("PASS", "PASS", 0)
+    ready = cash_flows.readiness(live, now=now, current=CURRENT_OK)
+    assert ready["checks"]["history_completeness"] == "UNCHECKED"
+    assert ready["history"]["reason"] == "checkpoint_after_cutover" and ready["ready"] is False

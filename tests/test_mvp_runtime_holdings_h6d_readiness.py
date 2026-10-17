@@ -10,16 +10,18 @@ import json
 
 from runtime.mvp_runtime.errors import ToolError
 from runtime.mvp_runtime.holdings import cash_flows
-from tests._h6d_support import (CUTOVER, CURRENT_OK, Feed, collect, ledger, ms, order, pay, posix_only, ready_fire,
-                                resolve, set_cutover)
+from tests._h6d_support import (CUTOVER, CURRENT_OK, Feed, collect, history_whole, ledger, ms, order, pay, posix_only,
+                                ready_fire, resolve, set_cutover)
 from tests.test_mvp_runtime_holdings_cash_flows import _store_fire
 
 DEPOSIT = {"id": "d1", "coin": "USDT", "amount": "100.5", "status": 1, "insertTime": ms(CUTOVER) - 600_000}
 READY_AT = "2026-10-17T00:00:00Z"
 
 
-def _ready_baseline(tmp_path):
-    """Every piece in by READY_AT: the boundary, a real row, epoch-0 counters, eight verified dates."""
+def _ready_baseline(tmp_path, monkeypatch):
+    """Every piece in by READY_AT: the boundary, a real row, epoch-0 counters, eight verified dates. The C7 PR-B
+    history judgement is held at PASS: these tests are about the other checks."""
+    history_whole(monkeypatch)
     set_cutover(tmp_path)
     collect(tmp_path, Feed(crypto_deposit=[DEPOSIT]), now="2026-10-09T04:00:00Z")
     state = cash_flows.load_state(tmp_path)
@@ -34,8 +36,8 @@ def _ready_baseline(tmp_path):
 
 
 # 36
-def test_a_past_pass_does_not_cover_a_source_failing_now(tmp_path):
-    _ready_baseline(tmp_path)
+def test_a_past_pass_does_not_cover_a_source_failing_now(tmp_path, monkeypatch):
+    _ready_baseline(tmp_path, monkeypatch)
     failing = Feed(pay=ToolError("TOOL_TRANSPORT", "x"))
     ready = ready_fire(tmp_path, "2026-10-17T01:00:00Z", failing, current={**CURRENT_OK, "binance": False})
     assert ready["checks"]["binance_access"] == "FAIL" and ready["ready"] is False
@@ -46,8 +48,8 @@ def test_a_past_pass_does_not_cover_a_source_failing_now(tmp_path):
         assert late["checks"]["current_health"] == "FAIL" and late["ready"] is False, part
 
 
-def test_a_source_skipped_for_the_budget_is_not_a_pass(tmp_path):
-    _ready_baseline(tmp_path)
+def test_a_source_skipped_for_the_budget_is_not_a_pass(tmp_path, monkeypatch):
+    _ready_baseline(tmp_path, monkeypatch)
     ticks = iter([0.0, 0.0, 0.0] + [100.0] * 50)
     cash_flows.collect_binance(Feed(), tmp_path, now="2026-10-17T01:00:00Z", now_ms=ms("2026-10-17T01:00:00Z"),
                                clock=lambda: next(ticks))
@@ -56,24 +58,24 @@ def test_a_source_skipped_for_the_budget_is_not_a_pass(tmp_path):
 
 
 # 37
-def test_a_past_pass_does_not_cover_a_schema_mismatch_now(tmp_path):
-    _ready_baseline(tmp_path)
+def test_a_past_pass_does_not_cover_a_schema_mismatch_now(tmp_path, monkeypatch):
+    _ready_baseline(tmp_path, monkeypatch)
     odd = Feed(crypto_deposit=[{"id": "x", "coin": "USDT", "status": 1}])
     ready = ready_fire(tmp_path, "2026-10-17T01:00:00Z", odd)
     assert ready["checks"]["binance_real_schema"] == "FAIL" and ready["ready"] is False
 
 
 # 38
-def test_readiness_returns_once_the_present_is_healthy_again(tmp_path):
-    _ready_baseline(tmp_path)
+def test_readiness_returns_once_the_present_is_healthy_again(tmp_path, monkeypatch):
+    _ready_baseline(tmp_path, monkeypatch)
     assert ready_fire(tmp_path, "2026-10-17T01:00:00Z", Feed(pay=ToolError("TOOL_TRANSPORT", "x")),
                       current={**CURRENT_OK, "binance": False})["ready"] is False
     assert ready_fire(tmp_path, "2026-10-17T02:00:00Z")["ready"] is True
 
 
 # 39
-def test_readiness_that_breaks_and_returns_is_a_new_epoch_told_again(tmp_path):
-    _ready_baseline(tmp_path)
+def test_readiness_that_breaks_and_returns_is_a_new_epoch_told_again(tmp_path, monkeypatch):
+    _ready_baseline(tmp_path, monkeypatch)
 
     def fire(at, feed=None, current=CURRENT_OK):
         collect(tmp_path, feed, now=at)
@@ -90,8 +92,8 @@ def test_readiness_that_breaks_and_returns_is_a_new_epoch_told_again(tmp_path):
 
 
 # 40
-def test_nothing_turns_h6c_on(tmp_path):
-    ready = _ready_baseline(tmp_path)
+def test_nothing_turns_h6c_on(tmp_path, monkeypatch):
+    ready = _ready_baseline(tmp_path, monkeypatch)
     collect(tmp_path, Feed(pay=[pay("p1", at="2026-10-17T00:30:00Z")]), now="2026-10-17T01:00:00Z")
     resolve(tmp_path, "pay:p1", "deposit")
     rows = ledger(tmp_path)

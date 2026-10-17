@@ -110,3 +110,11 @@ def resolve(state_dir, target: str, kind: str, **kw) -> dict:
 
 def hourly(start: str, count: int) -> list[str]:
     return [iso(ms(start) + i * 3_600_000) for i in range(count)]
+
+
+def history_whole(monkeypatch):
+    """C7 PR-B added ``history_completeness`` to the readiness. A test about the other checks holds it at PASS;
+    the history judgement itself is tested in ``test_mvp_runtime_holdings_c7_history.py``."""
+    monkeypatch.setattr(cash_flows, "history_completeness",
+                        lambda rows, state, *, now: ("PASS", {"reason": None, "toss": "CONTINUOUS",
+                                                              "binance": "COMPLETE"}))

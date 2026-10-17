@@ -58,7 +58,7 @@ import textwrap
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
@@ -116,6 +116,13 @@ EVENT_EPOCH = "toss_semantics_epoch_started"
 EVENT_SHADOW_DATE = "shadow_date_verified"
 EVENT_FIRST_FIRE = "first_verified_fire"
 EVENT_LEGACY = "legacy_state_imported"
+# C7 PR-B (Thomas 2026-10-17: D2 = option C). A stretch no collector read gets a line saying so, with the
+# reason, so a gap with a line is explained and a gap without one is not (HOLDINGS_LEDGER_CHECKPOINT §4 (a)).
+EVENT_TOSS_SKIPPED = "toss_window_skipped"
+EVENT_FLOW_SKIPPED = "flow_window_skipped"
+SKIP_SNAPSHOT_UNUSABLE = "snapshot_unusable"
+SKIP_CASH_POINT_BEHIND = "cash_point_behind_ledger"
+SKIP_BEYOND_DEPTH = "beyond_query_depth"
 NO_CUTOVER = "NO_CUTOVER"
 CUTOVER_REFUSED = "HOLDINGS_CASH_FLOW_CUTOVER_REFUSED"
 CUTOVER_EVENTS = (EVENT_CUTOVER_SET, EVENT_CUTOVER_MIGRATED)
@@ -161,12 +168,16 @@ REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
     EVENT_FIRST_FIRE: ("fire_at", "cutover_at", "cutover_generation"),
     EVENT_LEGACY: ("toss_evidence", "shadow_success_dates", "first_verified_fire_at", "cutover_at",
                    "cutover_generation", "provenance"),
+    EVENT_TOSS_SKIPPED: ("window_start", "window_end", "reason"),
+    EVENT_FLOW_SKIPPED: ("flow_source", "window_start", "window_end", "reason"),
 }
 ALLOWED_VALUES: dict[str, dict[str, frozenset]] = {
     EVENT_RESOLVED: {"kind": ALL_KINDS, "review_status": frozenset({"CLOSED"}),
                      "evidence_status": frozenset({"NOT_VALIDATED"}),
                      "accounting_eligibility": frozenset({"NOT_ELIGIBLE"})},
     EVENT_TOSS_AMENDED: {"kind": frozenset({"late_fill", "settlement_revised", "identity_unstable"})},
+    EVENT_TOSS_SKIPPED: {"reason": frozenset({SKIP_SNAPSHOT_UNUSABLE, SKIP_CASH_POINT_BEHIND})},
+    EVENT_FLOW_SKIPPED: {"reason": frozenset({SKIP_BEYOND_DEPTH})},
 }
 
 
@@ -231,6 +242,10 @@ def _ms(value: Any) -> int:
         return int(text)
     # Binance's withdraw history writes "YYYY-MM-DD HH:MM:SS" in UTC.
     return int(timeutil.parse_iso(text.replace(" ", "T") + ("" if text.endswith("Z") else "Z")).timestamp() * 1000)
+
+
+def _ms_iso(ms_value: int) -> str:
+    return timeutil.format_iso(datetime.fromtimestamp(ms_value / 1000, tz=timezone.utc))
 
 
 def _iso_ms(at: Any) -> int | None:
@@ -630,6 +645,7 @@ def collect_binance(feed: Any, state_dir: Path, *, now: str, now_ms: int | None 
     reads: dict[str, list[Mapping[str, Any]]] = {}
     health: dict[str, dict[str, Any]] = {}
     errors: dict[str, str] = {}
+    skipped: list[dict[str, Any]] = []
     ordered = [*CRITICAL_SOURCES, *(name for name in FLOW_SOURCES if name not in CRITICAL_SOURCES)]
     for source in ordered:
         _path, _fixed, _window, days = FLOW_SOURCES[source]
@@ -641,7 +657,8 @@ def collect_binance(feed: Any, state_dir: Path, *, now: str, now_ms: int | None 
             errors[source] = "READ_BUDGET"
             info["access"] = "SKIPPED READ_BUDGET"     # a past PASS must not stand for this fire
             continue
-        cursor = info.get("cursor_ms") or now_ms - START_LOOKBACK_MS
+        had_cursor = info.get("cursor_ms")
+        cursor = had_cursor or now_ms - START_LOOKBACK_MS
         start = max(cursor - OVERLAP_MS, now_ms - days * 86_400_000 + 60_000)
         try:
             reads[source] = list(feed.flow_history(source, start_ms=start, end_ms=now_ms))
@@ -650,6 +667,13 @@ def collect_binance(feed: Any, state_dir: Path, *, now: str, now_ms: int | None 
             errors[source] = exc.reason_code
             continue
         info["access"] = "PASS"
+        if not info.get("covered_from_ms"):
+            info["covered_from_ms"] = start      # PR-B: where this source's reading began (state, not ledger)
+        if had_cursor and had_cursor < start:
+            # The cursor fell behind the query depth: [cursor, start) is never read. Say so (C7 §12.3).
+            skipped.append({"event": EVENT_FLOW_SKIPPED, "source": "ledger", "flow_source": source,
+                            "source_event_key": f"{source}:skipped:{had_cursor}..{start}",
+                            "window_start": _ms_iso(had_cursor), "window_end": _ms_iso(start), "reason": SKIP_BEYOND_DEPTH})
     internal_ms: list[int] = []
     malformed_new: list[int] = [0]
 
@@ -657,7 +681,7 @@ def collect_binance(feed: Any, state_dir: Path, *, now: str, now_ms: int | None 
         built, internal = _normalize_reads(reads, health, existing, now_ms=now_ms)
         internal_ms.extend(internal)
         malformed_new[0] = sum(1 for r in built if r.get("event") == EVENT_MALFORMED)
-        return built
+        return [*built, *skipped]
 
     def patch(state: dict[str, Any], _after: list[dict[str, Any]]) -> None:
         sources = state.setdefault("sources", {})
@@ -741,7 +765,7 @@ def _row_time(row: Mapping[str, Any]) -> int | None:
 
 
 def set_cutover(state_dir: Path, *, at: str, requested_by: str, reason: str | None = None,
-                migrate: bool = False, shadow_started_at: str | None = None) -> dict[str, Any]:
+                migrate: bool = False, shadow_started_at: str | None = None, now: str | None = None) -> dict[str, Any]:
     """Record the accounting boundary once (Thomas 2026-10-09). A second call is refused; moving it needs
     ``migrate`` and a reason, and writes a ``cutover_migrated`` line naming the old and the new. The
     refusal is decided against the ledger, under its lock."""
@@ -765,7 +789,7 @@ def set_cutover(state_dir: Path, *, at: str, requested_by: str, reason: str | No
         if shadow_started_at and not state.get("shadow_started_at"):
             state["shadow_started_at"] = shadow_started_at
 
-    _commit(state_dir, now=timeutil.utc_now_iso(), rows=rows, patch=patch)
+    _commit(state_dir, now=now or timeutil.utc_now_iso(), rows=rows, patch=patch)
     return load_state(state_dir)
 
 
@@ -966,9 +990,10 @@ def flows_view(state_dir: Path) -> list[dict[str, Any]]:
 # Toss windows tile the stretch from the latest cutover to the last window? Not the Toss cash semantics, not
 # history completeness, not readiness; it writes nothing and enables nothing. Each window runs from the
 # previous fire's cash point to this fire, so a downtime is one long window, and a gap is a fire that
-# recorded no window (an unusable snapshot, a moved cache) — not proof that a record was lost. No ledger
-# line can explain a gap today (HOLDINGS_LEDGER_CHECKPOINT_V0.1.md §4, option (a) is not built), so every
-# gap is unexplained. Worst first: LEDGER_INVALID, UNCHECKED, UNEXPLAINED_GAP, INCOMPLETE_EVIDENCE.
+# recorded no window (an unusable snapshot, a moved cache) — not proof that a record was lost. Since C7 PR-B
+# such a fire writes a ``toss_window_skipped`` line naming the stretch and why; a gap a skipped line covers
+# is explained, and only an uncovered gap is UNEXPLAINED_GAP. Skipped lines never count as windows.
+# Worst first: LEDGER_INVALID, UNCHECKED, UNEXPLAINED_GAP, INCOMPLETE_EVIDENCE.
 TOSS_CONTINUOUS = "CONTINUOUS"
 TOSS_UNEXPLAINED_GAP = "UNEXPLAINED_GAP"
 TOSS_INCOMPLETE_EVIDENCE = "INCOMPLETE_EVIDENCE"
@@ -987,7 +1012,7 @@ def toss_continuity(rows: list[Mapping[str, Any]], *, now: str) -> dict[str, Any
                               "windows": 0, "windows_before_cutover": 0, "epochs": 0, "gaps": [], "gap_hours": 0.0,
                               "overlaps": 0, "duplicates": 0, "truncated": 0, "unreadable": 0, "amended_windows": 0,
                               "orphan_amendments": 0, "leading_hours": None, "longest_window_hours": None,
-                              "trailing_hours": None}
+                              "trailing_hours": None, "skipped": 0}
     if cutover_ms is None:
         result["reasons"] = ["empty_ledger" if not rows else "no_cutover"]
         return result
@@ -1014,21 +1039,40 @@ def toss_continuity(rows: list[Mapping[str, Any]], *, now: str) -> dict[str, Any
     result["amended_windows"] = len(amended & keys)
     result["orphan_amendments"] = len(amended - keys)
     result["epochs"] = len(epochs)
+    skips: list[tuple[int, int, str, str]] = []
+    for row in rows:
+        if row.get("event") != EVENT_TOSS_SKIPPED:
+            continue
+        start, end = _iso_ms(row.get("window_start")), _iso_ms(row.get("window_end"))
+        if start is None or end is None or end < start:
+            result["unreadable"] += 1
+            continue
+        if end > cutover_ms:
+            skips.append((max(start, cutover_ms), end, at if start < cutover_ms else str(row["window_start"]),
+                          str(row["window_end"])))
+    result["skipped"] = len(skips)
     windows.sort()
     seen: set[tuple[int, int]] = set()
     cursor: tuple[int, str] | None = None
+    unique: list[tuple[int, int, str, str]] = []
     for start, end, start_at, end_at in windows:
         if (start, end) in seen:
             result["duplicates"] += 1
             continue
         seen.add((start, end))
+        unique.append((start, end, start_at, end_at))
         result["windows"] += 1
-        if cursor is not None and start > cursor[0]:
-            result["gaps"].append({"from": cursor[1], "to": start_at, "hours": hours(start - cursor[0])})
-        elif cursor is not None and start < cursor[0]:
-            result["overlaps"] += 1
+        if cursor is not None and start < cursor[0]:
+            result["overlaps"] += 1                      # two observed windows over one stretch
         if cursor is None or end > cursor[0]:
             cursor = (end, end_at)
+    # Coverage: observed windows and named skips together; a gap is a stretch neither covers.
+    covered: tuple[int, str] | None = None
+    for start, end, start_at, end_at in sorted(unique + skips):
+        if covered is not None and start > covered[0]:
+            result["gaps"].append({"from": covered[1], "to": start_at, "hours": hours(start - covered[0])})
+        if covered is None or end > covered[0]:
+            covered = (end, end_at)
     reasons: list[str] = []
     if result["gaps"]:
         reasons.append("unexplained_gap")
@@ -1036,7 +1080,7 @@ def toss_continuity(rows: list[Mapping[str, Any]], *, now: str) -> dict[str, Any
     if not windows:
         reasons.append("no_window_since_cutover")
     else:
-        lead = windows[0][0] - cutover_ms
+        lead = min(start for start, _e, _s, _x in unique + skips) - cutover_ms
         result["leading_hours"] = hours(lead)
         result["longest_window_hours"] = hours(max(end - start for start, end, _s, _e in windows))
         result["trailing_hours"] = hours(max(0, (_iso_ms(now) or 0) - cursor[0])) if cursor else None
@@ -1255,11 +1299,16 @@ def collect_toss(feed: Any, snapshot: Any, state_dir: Path, *, now: str) -> dict
         if (on_file or {}).get("at") != (previous or {}).get("at"):
             raise _Moved()
         if not usable:
+            # No window, but the stretch since the last cash point is named and explained (C7 PR-B).
+            if previous and previous.get("at") and _iso_ms(previous["at"]) is not None:
+                return [_toss_skip(previous["at"], now, SKIP_SNAPSHOT_UNUSABLE)]
             return []
-        last_end = max((_iso_ms(r.get("window_end")) or 0 for r in existing if r.get("event") == EVENT_TOSS_WINDOW),
-                       default=0)
-        if last_end > (_iso_ms(previous["at"]) or 0):
-            return []      # the ledger has a later window than this cash point: a stale cache, start over
+        windows = [r for r in existing if r.get("event") == EVENT_TOSS_WINDOW and _iso_ms(r.get("window_end"))]
+        last = max(windows, key=lambda r: _iso_ms(r["window_end"]), default=None)
+        if last is not None and _iso_ms(last["window_end"]) > (_iso_ms(previous["at"]) or 0):
+            # The ledger has a later window than this cash point: a stale cache, start over from now. The
+            # stretch between that window's end and now gets no window; it is named, not left silent.
+            return [_toss_skip(str(last["window_end"]), now, SKIP_CASH_POINT_BEHIND)]
         return _toss_rows(existing, previous, current, orders, truncated, query, rate=rate, now=now)
 
     def patch(state: dict[str, Any], _after: list[dict[str, Any]]) -> None:
@@ -1270,6 +1319,11 @@ def collect_toss(feed: Any, snapshot: Any, state_dir: Path, *, now: str) -> dict
     except _Moved:
         return {"written": 0, "skipped": "cash point moved by another writer"}
     return {"written": len(written)}
+
+
+def _toss_skip(start: str, end: str, reason: str) -> dict[str, Any]:
+    return {"event": EVENT_TOSS_SKIPPED, "source": "toss", "source_event_key": f"toss:skipped:{start}..{end}",
+            "window_start": start, "window_end": end, "reason": reason}
 
 
 class _Moved(Exception):
@@ -1577,6 +1631,65 @@ def start_semantics_epoch(state_dir: Path, *, requested_by: str, reason: str, ch
     return written[0]
 
 
+# --- C7 PR-B: history completeness (Thomas 2026-10-17: D2 = option C) --------------------------------------
+# HOLDINGS_LEDGER_CHECKPOINT_V0.1.md §2: a separate readiness key from ``ledger_state_consistency``. That one
+# asks whether today's ledger continues what the state last saw; this one asks whether the history since the
+# cutover is whole. Under option C the cutover is moved to after the checkpoint exists, so "whole" is shown by
+# three things together, never by any one alone:
+# - the checkpoint was first observed at or before the cutover (``observed_at`` ≤ cutover), so every write
+#   since the cutover was checked against it (PR-A), and no detection stands;
+# - Toss: the observed windows and named skips tile the stretch since the cutover (``CONTINUOUS``);
+# - Binance: every history source began reading at or before the cutover, has read past it, and has no named
+#   skip (a cursor that fell behind the query depth) ending after it.
+# Anything else is UNCHECKED, with the reason. It is PASS or UNCHECKED, never upgraded by time or approval.
+HISTORY_COMPLETE = "COMPLETE"
+HISTORY_INCOMPLETE = "INCOMPLETE"
+
+
+def _binance_coverage(rows: list[Mapping[str, Any]], state: Mapping[str, Any], cutover_ms: int) -> dict[str, str]:
+    from .binance_wallet import FLOW_SOURCES
+
+    sources = state.get("sources") if isinstance(state.get("sources"), Mapping) else {}
+    late_skips = {str(r.get("flow_source")) for r in rows if r.get("event") == EVENT_FLOW_SKIPPED
+                  and (_iso_ms(r.get("window_end")) or 0) > cutover_ms}
+    out: dict[str, str] = {}
+    for name in FLOW_SOURCES:
+        info = sources.get(name) if isinstance(sources.get(name), Mapping) else {}
+        began, cursor = info.get("covered_from_ms"), info.get("cursor_ms")
+        whole = (isinstance(began, int) and began <= cutover_ms and isinstance(cursor, int) and cursor >= cutover_ms
+                 and name not in late_skips)
+        out[name] = HISTORY_COMPLETE if whole else HISTORY_INCOMPLETE
+    return out
+
+
+def history_completeness(rows: list[Mapping[str, Any]], state: Mapping[str, Any], *, now: str) -> tuple[str, dict[str, Any]]:
+    """``(PASS | UNCHECKED, detail)``. The detail names the first reason it is not PASS; no amount, no key."""
+    detail: dict[str, Any] = {"reason": None, "toss": None, "binance": None}
+    at = cutover_at(rows)
+    cutover_ms = _iso_ms(at) if at else None
+    checkpoint = state.get(CHECKPOINT_KEY)
+    if cutover_ms is None:
+        detail["reason"] = "no_cutover"
+    elif not isinstance(checkpoint, Mapping):
+        detail["reason"] = "no_checkpoint"                                   # D2: absent reads UNCHECKED
+    elif state.get(DETECTION_MARKER_KEY) is not None or ledger_problem(rows, state):
+        detail["reason"] = "ledger_state_inconsistent"
+    elif (_iso_ms(checkpoint.get("observed_at")) is None
+          or _iso_ms(checkpoint.get("observed_at")) > cutover_ms):
+        detail["reason"] = "checkpoint_after_cutover"                        # history before it: UNVERIFIED
+    if detail["reason"] is not None:
+        return UNCHECKED, detail
+    toss = toss_continuity(rows, now=now)
+    detail["toss"] = toss["status"]
+    binance = _binance_coverage(rows, state, cutover_ms)
+    detail["binance"] = HISTORY_COMPLETE if all(v == HISTORY_COMPLETE for v in binance.values()) else HISTORY_INCOMPLETE
+    if toss["status"] != TOSS_CONTINUOUS:
+        detail["reason"] = f"toss_{toss['status'].lower()}"
+    elif detail["binance"] != HISTORY_COMPLETE:
+        detail["reason"] = "binance_incomplete"
+    return (PASS if detail["reason"] is None else UNCHECKED), detail
+
+
 # --- readiness and what is told ---------------------------------------------------------------------------
 
 def readiness(state_dir: Path, *, now: str, current: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -1607,6 +1720,10 @@ def readiness(state_dir: Path, *, now: str, current: Mapping[str, Any] | None = 
     boundary = cutover_at(rows)
     checks["ledger_state_consistency"] = (PASS if state_ok and checks["ledger_chain"] == PASS
                                           and (state.get("cutover_at") or None) == boundary else FAIL)
+    history, history_detail = ((UNCHECKED, {"reason": "ledger_unreadable", "toss": None, "binance": None})
+                               if not (state_ok and checks["ledger_chain"] == PASS)
+                               else history_completeness(rows, state, now=now))
+    checks["history_completeness"] = history
     first_fire, dates = shadow_record(rows)
     checks["cutover_boundary"] = PASS if boundary and first_fire else WAITING
     sources = state.get("sources") or {}
@@ -1646,7 +1763,10 @@ def readiness(state_dir: Path, *, now: str, current: Mapping[str, Any] | None = 
             # R-3 (가-수정): ``absent`` and ``observed`` both mean the history before the checkpoint is
             # UNVERIFIED; a consistency PASS beside them is not a verified restore (PR-B's check).
             "checkpoint": checkpoint_basis(state),
-            "checkpoint_history": HISTORY_UNVERIFIED,   # nothing in PR-A verifies history (PR-B does)
+            # PR-B: the history since the cutover is VERIFIED only when history_completeness PASSes; the basis
+            # itself stays "observed" — the checkpoint never vouches for what came before it.
+            "checkpoint_history": "VERIFIED" if history == PASS else HISTORY_UNVERIFIED,
+            "history": history_detail,
             "next_step": "H6b-shadow (NAV per unit computed beside the board, no verdict)"}
 
 
