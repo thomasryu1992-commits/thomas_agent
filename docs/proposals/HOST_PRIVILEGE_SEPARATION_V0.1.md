@@ -2612,7 +2612,8 @@ Option C의 저장소 구현은 PR-B·PR-C로 main에 들어갔다. 이 문서(P
 - **C3b(#1234):** C4 계획 §2 P-3의 서비스 진입점이다. G·X는 `python -I -m runtime.mvp_runtime.deploy_runner.serve --role gate|actor --config …`로 시작하고, root 소유 닫힌 설정을 읽는다. 설정에는 실행 환경 지문(Python 버전과 배포 패키지 해시)이 있어 다르면 `RUNNER_ENVIRONMENT_MISMATCH`로 시작을 거부한다(C2X-12). 설치 도구(`scripts/ops/deploy_runner_install.py`)는 지문 계산, 소비 저장소 genesis, unit 렌더링, 설정 검사를 한다. 아무 호스트에도 설치되지 않았다.
 - **CR-8b:** Python 3.12.13, 출처 python-build-standalone x86_64. 2026-10-17 공개 릴리스 목록에서 `cpython-3.12.13+20260807-x86_64-unknown-linux-gnu-install_only.tar.gz`가 있음을 확인했다(3.12.13의 최신 빌드 릴리스 `20260807`). 그 뒤 3.12.14·3.12.15 빌드도 있다. 결정은 3.12.13이고, 운영 이미지의 Python도 3.12.13이다. SHA256은 C4 workflow가 고정한다.
 - **D-8:** C4는 GitHub Actions 임시 러너에서 한다. 러너는 작업마다 새로 만들어지고 끝나면 버려지는 VM이라 C4 계획 §3의 V1(별도 커널)에 가깝다. 운영 저장소의 Secret을 쓰지 않는다. 호스팅 러너에서 systemd unit을 실제로 띄울 수 있는지는 NOT_VERIFIED이고, workflow가 첫 실행에서 확인한다.
-- **아직 없는 것:** C4 실행 결과(모든 N 항목 NOT_TESTED), CLOCK-SOURCE·RUNNER-FETCH 결정, 운영 설치(C5·C6).
+- **아직 없는 것:** CLOCK-SOURCE·RUNNER-FETCH 결정, 운영 설치(C5·C6).
+- **C4 결과(2026-10-17, #1237 병합 `2766c26b`):** 임시 러너에서 FAIL 0, PASS 94, BLOCKED 3(CLOCK-SOURCE), NOT_TESTED 1, 누출 0건이다. C3b unit은 `-I` 아래에서 `.pth` 없이 import하지 못한다는 것이 드러났다. 세부는 C4 계획 §10에 있다. 운영 호스트 기준으로는 여전히 NOT_TESTED다.
 
 ## 5. 대안 비교
 
