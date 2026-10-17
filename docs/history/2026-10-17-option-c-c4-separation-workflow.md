@@ -4,7 +4,7 @@
 - `.github/workflows/option-c-c4-separation.yml`;
 - `scripts/ops/deploy_runner_c4.py` (the harness);
 - `tests/test_deploy_runner_c4_harness.py`;
-- the win32 skip ceiling 559 → 562 (three new tests need POSIX opens or AF_UNIX).
+- the win32 skip ceiling 559 → 563 (four new tests need POSIX opens, AF_UNIX or `cat`).
 
 **Decision and approval (Thomas 2026-10-17):**
 - `결정: CR-8b Python 3.12.13, 인터프리터 출처 python-build-standalone x86_64(SHA256 설치 기록 고정, 없으면 재보고); D-8 C4 환경 GitHub Actions 임시 러너(무료 한도 안, 비필수 workflow — CI 변경은 별도 승인)`.
@@ -107,6 +107,14 @@ The suite pins that refusal.
 - `send` returns codes only;
 - the workflow keeps the interpreter pinned and checked before extraction, uses no secret, keeps
   `contents: read` and `persist-credentials: false`, and pins every action to a commit.
+
+**The PR's first run (2026-10-17, run 39021716365).**
+- systemd was PID 1, and both units started under it.
+- The `serve --check` of both roles passed.
+- N-1–N-6 and N-14: all 64 probes PASS.
+- Then the harness stopped on its own bug: the signer passed `input=` beside `stdin=DEVNULL`, which
+  `subprocess` refuses with `ValueError`.
+- Fixed in this PR, with a test. The next run's results get their own record.
 
 **Not done.**
 - No run results are claimed here. The first run's results get their own record.

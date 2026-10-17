@@ -342,7 +342,9 @@ class Report:
 
 
 def _sh(argv: list[str], **kw: Any) -> subprocess.CompletedProcess:
-    return subprocess.run(argv, check=True, stdin=subprocess.DEVNULL, **kw)
+    if "input" not in kw:                     # ``input`` is the stdin; the two cannot both be given
+        kw["stdin"] = subprocess.DEVNULL
+    return subprocess.run(argv, check=True, **kw)
 
 
 def _as(account: str, argv: list[str], *, cwd: str = "/", env: dict[str, str] | None = None,
@@ -658,7 +660,7 @@ class Runner:
                 self.leak_sweep()
         except Exception as exc:  # noqa: BLE001 — the report says where it stopped; nothing after it counts
             where = " ".join(map(str, getattr(exc, "cmd", [])[:2]))
-            self.report.add("SETUP", "harness stopped", FAIL, f"{type(exc).__name__} {where}".strip())
+            self.report.add("SETUP", "harness stopped", FAIL, f"{type(exc).__name__} {where} {str(exc)[:160]}".strip())
         finally:
             self.write()
         return EXIT_FAILED if self.report.failed or not self.report.rows else EXIT_OK

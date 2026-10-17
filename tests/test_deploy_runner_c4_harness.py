@@ -209,3 +209,10 @@ def test_the_workflow_pins_the_interpreter_and_holds_no_secret():
     for line in text.splitlines():                                     # every action pinned to a commit
         if line.strip().startswith(("- uses:", "uses:")):
             assert re.search(r"@[0-9a-f]{40}\b", line), line
+
+
+@pytest.mark.skipif(os.name == "nt" or not Path("/bin/cat").exists(), reason="POSIX cat")
+def test_a_command_given_input_gets_it_as_its_stdin():
+    """The first runner pass stopped here: stdin=DEVNULL beside input= is a ValueError in subprocess."""
+    assert c4._sh(["/bin/cat"], input=b"signed bytes", capture_output=True).stdout == b"signed bytes"
+    assert c4._sh(["/bin/cat"], capture_output=True).stdout == b""
