@@ -1,0 +1,88 @@
+name: Option C C4 separation (throwaway runner)
+
+# C4 of Option C (docs/proposals/HOST_PRIVILEGE_SEPARATION_C4_PLAN_V0.1.md): the deploy runner's accounts,
+# files, sockets and units, tested under systemd on a GitHub-hosted runner that is thrown away after the job.
+# Thomas 2026-10-17: D-8 = GitHub Actions throwaway runner, within the free allowance, NOT a required check
+# (the five required checks are Thomas decision Q14, and this is not one); CR-8b = Python 3.12.13 from
+# python-build-standalone x86_64, SHA256 pinned below. The harness is scripts/ops/deploy_runner_c4.py.
+#
+# Nothing here touches the project's host, its .env, its images or its keys. The trust files carry a key
+# made on the runner for this job; the .env is a fake holding a sentinel that the leak sweep looks for.
+# No repository secret is used.
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/option-c-c4-separation.yml
+      - runtime/mvp_runtime/deploy_runner/**
+      - runtime/mvp_runtime/socket_door.py
+      - scripts/ops/deploy_runner*
+      - scripts/ops/deploy_runner_units/**
+      - schemas/deploy_*
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: option-c-c4-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  c4:
+    name: C4 separation (ubuntu-24.04, systemd)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PBS_RELEASE: "20260807"
+      PBS_FILE: "cpython-3.12.13+20260807-x86_64-unknown-linux-gnu-install_only.tar.gz"
+      PBS_SHA256: "5bd6f36fd7ef02b909234c94dca9994ef0da06ace3bc3cece4fe27870e9cdbbe"
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: systemd is PID 1 (otherwise C4 cannot run here — NOT_TESTED)
+        run: |
+          test "$(cat /proc/1/comm)" = systemd
+          systemctl is-system-running || true
+
+      - name: Download the interpreter and check its SHA256 before anything opens it
+        run: |
+          mkdir -p "$RUNNER_TEMP/pbs" && cd "$RUNNER_TEMP/pbs"
+          curl -fsSL --retry 3 -o pbs.tar.gz \
+            "https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_RELEASE}/${PBS_FILE//+/%2B}"
+          echo "${PBS_SHA256}  pbs.tar.gz" | sha256sum -c -
+
+      - name: Build the install at /opt/thomas-deploy/<sha> (root-owned)
+        run: |
+          set -euo pipefail
+          SHA="$(git rev-parse HEAD)"
+          INSTALL="/opt/thomas-deploy/${SHA}"
+          echo "INSTALL=${INSTALL}" >> "$GITHUB_ENV"
+          echo "SHA=${SHA}" >> "$GITHUB_ENV"
+          sudo mkdir -p "${INSTALL}/app"
+          sudo tar -xzf "$RUNNER_TEMP/pbs/pbs.tar.gz" -C "${INSTALL}"
+          git archive HEAD runtime schemas scripts | sudo tar -x -C "${INSTALL}/app"
+          sudo "${INSTALL}/python/bin/python3" -I -m venv "${INSTALL}/venv"
+          sudo "${INSTALL}/venv/bin/python" -I -m pip install --no-cache-dir --disable-pip-version-check -q \
+            -r requirements-validation.lock
+          # The units start `python -I -m runtime...`; -I keeps the working directory off sys.path, so the
+          # install's tree is put on it here, by a root-owned .pth in the install's own site-packages (C4 finding).
+          SITE="$(sudo "${INSTALL}/venv/bin/python" -I -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+          echo "${INSTALL}/app" | sudo tee "${SITE}/thomas_deploy_install.pth" > /dev/null
+          sudo chown -R root:root /opt/thomas-deploy
+          sudo chmod -R go-w /opt/thomas-deploy
+          sudo "${INSTALL}/venv/bin/python" -I -c 'import platform, runtime.mvp_runtime.deploy_runner.serve; print(platform.python_version())'
+
+      - name: Run C4 (N-1..N-14 and the leak sweep)
+        run: |
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT \
+            "${INSTALL}/venv/bin/python" -I -m scripts.ops.deploy_runner_c4 run --throwaway-runner \
+            --install-dir "${INSTALL}" --install-sha "${SHA}" --out "$RUNNER_TEMP/c4-out"
+
+      - name: Results (kinds and codes only)
+        if: always()
+        run: |
+          sudo cat "$RUNNER_TEMP/c4-out/c4-results.md" >> "$GITHUB_STEP_SUMMARY" || echo "no results written"
