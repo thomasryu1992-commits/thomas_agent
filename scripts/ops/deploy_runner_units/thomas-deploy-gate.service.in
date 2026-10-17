@@ -1,0 +1,39 @@
+# Option C deploy runner - G, the gatekeeper. Template: rendered by
+# `python -m scripts.ops.deploy_runner_install render-units`; installed by Thomas (C5/C6), never by Claude.
+# G holds no Docker access, no secret and no verifier (C2 section 0N, D-10a). Its socket admits the uids in
+# its config; the socket's group decides who can reach the file at all.
+[Unit]
+Description=Thomas deploy runner: gatekeeper (G)
+After=thomas-deploy-actor.service
+Requires=thomas-deploy-actor.service
+
+[Service]
+Type=simple
+User=@GATE_USER@
+Group=@GATE_GROUP@
+SupplementaryGroups=@ACTOR_GROUP@
+WorkingDirectory=@INSTALL_DIR@
+UMask=0077
+Environment=PATH=/usr/bin:/bin
+Environment=LANG=C
+UnsetEnvironment=MVP_BRIDGE_CLIENT_GID MVP_BRIDGE_CLIENT_UID PYTHONPATH PYTHONHOME DOCKER_HOST
+ExecStart=@INSTALL_DIR@/venv/bin/python -I -m runtime.mvp_runtime.deploy_runner.serve --role gate --config @CONFIG_DIR@/gate.json
+RuntimeDirectory=thomas-deploy-gate
+RuntimeDirectoryMode=0750
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=@GATE_DIR@
+
+[Install]
+WantedBy=multi-user.target

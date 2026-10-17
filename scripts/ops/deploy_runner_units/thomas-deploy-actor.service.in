@@ -1,0 +1,39 @@
+# Option C deploy runner - X, the actor. Template: rendered by
+# `python -m scripts.ops.deploy_runner_install render-units`; installed by Thomas (C5/C6), never by Claude.
+# X holds Docker access through the docker group: root-equivalent if X is compromised (CR-12:
+# NOT_PROTECTED). The unit narrows what the process can touch; it does not make that risk go away.
+[Unit]
+Description=Thomas deploy runner: actor (X)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=@ACTOR_USER@
+Group=@ACTOR_GROUP@
+SupplementaryGroups=docker
+WorkingDirectory=@INSTALL_DIR@
+UMask=0077
+Environment=PATH=/usr/bin:/bin
+Environment=LANG=C
+UnsetEnvironment=MVP_BRIDGE_CLIENT_GID MVP_BRIDGE_CLIENT_UID PYTHONPATH PYTHONHOME DOCKER_HOST
+ExecStart=@INSTALL_DIR@/venv/bin/python -I -m runtime.mvp_runtime.deploy_runner.serve --role actor --config @CONFIG_DIR@/actor.json
+RuntimeDirectory=thomas-deploy-actor
+RuntimeDirectoryMode=0750
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=@ACTOR_DIR@
+
+[Install]
+WantedBy=multi-user.target
