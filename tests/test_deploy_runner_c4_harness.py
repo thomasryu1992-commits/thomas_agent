@@ -218,3 +218,31 @@ def test_a_command_given_input_gets_it_as_its_stdin():
     """The first runner pass stopped here: stdin=DEVNULL beside input= is a ValueError in subprocess."""
     assert c4._sh(["/bin/cat"], input=b"signed bytes", capture_output=True).stdout == b"signed bytes"
     assert c4._sh(["/bin/cat"], capture_output=True).stdout == b""
+
+
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX") or os.name == "nt", reason="AF_UNIX")
+def test_rtt_reports_each_code_and_a_wall_time_and_nothing_else():
+    """CR-19 input: the round trip is a measurement, never a verdict, and carries no reply text."""
+    directory = Path(tempfile.mkdtemp(prefix="c4r"))
+    try:
+        path = directory / "s.sock"
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(str(path))
+        server.listen(3)
+
+        def serve():
+            for answer in (b'{"ok":true}\n', b'{"ok":false,"reason_code":"INSPECT_RATE_LIMITED","message":"x"}\n'):
+                conn, _ = server.accept()
+                conn.recv(65536)
+                conn.sendall(answer)
+                conn.close()
+
+        t = threading.Thread(target=serve)
+        t.start()
+        got = c4.rtt(str(path), b'{"proto":2}\n', count=2, spacing=0.01)
+        t.join(10)
+        server.close()
+        assert got["codes"] == ["OK", "INSPECT_RATE_LIMITED"] and set(got) == {"codes", "ms"}
+        assert all(isinstance(v, float) and v >= 0 for v in got["ms"])
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)

@@ -39,6 +39,7 @@ import json
 import os
 import platform
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
@@ -298,6 +299,20 @@ def send(path: str, payload: bytes, *, timeout: float = 180.0) -> dict[str, Any]
     return {"connected": True, "reply": {"ok": reply.get("ok"), "reason_code": reply.get("reason_code")}}
 
 
+def rtt(path: str, payload: bytes, *, count: int, spacing: float) -> dict[str, Any]:
+    """G→X round trips, as the caller sees them: each reply's code and its wall time in ms (CR-19 input)."""
+    codes, ms = [], []
+    for i in range(count):
+        if i:
+            time.sleep(spacing)
+        start = time.monotonic()
+        answer = send(path, payload, timeout=60)
+        ms.append(round((time.monotonic() - start) * 1000, 1))
+        reply = answer.get("reply")
+        codes.append(("OK" if reply.get("ok") else str(reply.get("reason_code"))) if isinstance(reply, dict) else "none")
+    return {"codes": codes, "ms": ms}
+
+
 def judge_case(case: Case, answer: dict[str, Any]) -> tuple[str, str]:
     reply = answer.get("reply")
     if case.expect == "NO_REPLY":
@@ -355,7 +370,8 @@ def _as(account: str, argv: list[str], *, cwd: str = "/", env: dict[str, str] | 
 
 
 class Runner:
-    def __init__(self, install_dir: Path, install_sha: str, out: Path) -> None:
+    def __init__(self, install_dir: Path, install_sha: str, out: Path, measure_repo: Path | None = None) -> None:
+        self.measure_repo = measure_repo
         self.install = install_dir
         self.sha = install_sha
         self.out = out
@@ -709,6 +725,53 @@ class Runner:
             if label == "tag" and done.returncode == 0:
                 subprocess.run(["/usr/bin/docker", "image", "rm", docker_argv.rollback_ref(1)], capture_output=True)
 
+    # -- measurements for CR-10, CR-11 and CR-19 (Thomas 2026-10-17): values, never verdicts ----------------
+    def measure_round_trips(self) -> None:
+        """Five inspections through the gate, 1.2 s apart (the actor's rate limit is 1 s)."""
+        CASES_DIR.mkdir(mode=0o755, exist_ok=True)
+        path = CASES_DIR / "rtt"
+        path.write_bytes(_frame("c4-rtt", "inspect_candidate", {"pr": PR}))
+        path.chmod(0o644)
+        done = _as(CLAUDE, [self.python, "-I", "-m", "scripts.ops.deploy_runner_c4", "rtt", "--socket",
+                            str(GATE_SOCKET), "--payload", str(path), "--count", "5", "--spacing", "1.2"])
+        try:
+            got = json.loads(done.stdout)
+            ms = sorted(got["ms"])
+            detail = f"median_ms={ms[len(ms) // 2]} max_ms={ms[-1]} codes={','.join(sorted(set(got['codes'])))}"
+        except (ValueError, KeyError, IndexError):
+            detail = f"unmeasured rc={done.returncode}"
+        self.report.add("CR-19", "G→X inspection round trip as the caller sees it", INFO, detail)
+
+    def measure_clock(self) -> None:
+        """The kernel's own error bounds (CR-11 input): maxerror and esterror in microseconds."""
+        from runtime.mvp_runtime.deploy_runner import clock_source
+
+        buffer = clock_source.Timex()
+        try:
+            state = clock_source._libc_adjtimex(buffer)
+            detail = f"state={state} maxerror_us={buffer.maxerror} esterror_us={buffer.esterror}"
+        except Exception as exc:  # noqa: BLE001
+            detail = f"unreadable {type(exc).__name__}"
+        self.report.add("CR-11", "the runner kernel's clock error bounds", INFO, detail)
+
+    def measure_builds(self, repo: Path) -> None:
+        """The real Dockerfile, built twice from a copy of the checkout: cold (no cache, base pulled), then warm
+        after one runtime file changes — what a typical prepare_candidate does on a host that has built before
+        (CR-19 input). Built by root to its own tags, removed afterwards; nothing of it reaches the actor."""
+        ctx = Path("/var/tmp/c4-measure")
+        shutil.copytree(repo, ctx, ignore=shutil.ignore_patterns(".git"))
+        for label, extra in (("cold", ["--no-cache"]), ("warm", ["--pull=false"])):
+            if label == "warm":
+                with (ctx / "runtime" / "mvp_runtime" / "__init__.py").open("a", encoding="ascii") as handle:
+                    handle.write("\n# c4 measure: one changed runtime file\n")
+            start = time.monotonic()
+            done = subprocess.run(["/usr/bin/docker", "image", "build", *extra, "--tag", f"c4-measure:{label}", str(ctx)],
+                                  stdin=subprocess.DEVNULL, capture_output=True, timeout=1200)
+            seconds = round(time.monotonic() - start, 1)
+            self.report.add("CR-19", f"the real Dockerfile, {label} build", INFO, f"rc={done.returncode} seconds={seconds}")
+        for label in ("cold", "warm"):
+            subprocess.run(["/usr/bin/docker", "image", "rm", f"c4-measure:{label}"], capture_output=True)
+
     @staticmethod
     def docker_state() -> list[str]:
         out = subprocess.run(["/usr/bin/docker", "image", "ls", "-a", "--no-trunc", "--format",
@@ -790,10 +853,14 @@ class Runner:
             _, gate_unit, actor_unit = self.files()
             if self.start():
                 self.host_tests(store, (gate_unit, actor_unit))
+                self.measure_round_trips()
                 self.socket_tests(store)
                 self.import_tests()
                 self.store_unreadable(store)
                 self.leak_sweep()
+                self.measure_clock()
+                if self.measure_repo is not None:
+                    self.measure_builds(self.measure_repo)
         except Exception as exc:  # noqa: BLE001 — the report says where it stopped; nothing after it counts
             where = " ".join(map(str, getattr(exc, "cmd", [])[:2]))
             self.report.add("SETUP", "harness stopped", FAIL, f"{type(exc).__name__} {where} {str(exc)[:160]}".strip())
@@ -822,12 +889,21 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--install-sha", required=True)
     r.add_argument("--out", required=True)
     r.add_argument("--throwaway-runner", action="store_true")
+    r.add_argument("--measure-repo", help="a checkout whose Dockerfile is built twice for CR-19 (optional)")
+    m = sub.add_parser("rtt")
+    m.add_argument("--socket", required=True)
+    m.add_argument("--payload", required=True)
+    m.add_argument("--count", type=int, default=5)
+    m.add_argument("--spacing", type=float, default=1.2)
     try:
         args = parser.parse_args(argv)
     except SystemExit:
         return EXIT_USAGE
     if args.command == "probe":
         print(json.dumps(probe(json.loads(args.checks))))
+        return EXIT_OK
+    if args.command == "rtt":
+        print(json.dumps(rtt(args.socket, Path(args.payload).read_bytes(), count=args.count, spacing=args.spacing)))
         return EXIT_OK
     if args.command == "send":
         print(json.dumps(send(args.socket, Path(args.payload).read_bytes())))
@@ -837,7 +913,8 @@ def main(argv: list[str] | None = None) -> int:
     except Refused as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return EXIT_REFUSED
-    return Runner(Path(args.install_dir), args.install_sha, Path(args.out)).run()
+    return Runner(Path(args.install_dir), args.install_sha, Path(args.out),
+                  Path(args.measure_repo) if args.measure_repo else None).run()
 
 
 if __name__ == "__main__":  # pragma: no cover
