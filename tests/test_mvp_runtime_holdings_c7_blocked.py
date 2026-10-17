@@ -388,24 +388,32 @@ def test_20_nothing_that_identifies_leaves(monkeypatch, tmp_path):
     assert note and digest not in note and key not in note
 
 
-def test_21_a_detection_marker_is_blocked_on_its_checkpoint_not_on_the_state(tmp_path):
+def test_21_a_checkpoint_refusal_is_keyed_on_its_checkpoint_not_on_the_state(tmp_path):
+    """PR-C: a marker PR-A left (or a mismatch) refuses the writes; the key is the checkpoint the refusal stands
+    on, so the state saves that go on meanwhile (readiness, told records) are not a new failure each fire."""
     d = lane(tmp_path)
-    marker = {"checkpoint": {"lines": 3, "sha256": "ab" * 32}}
 
     def plant(state, _after):
-        state[cash_flows.DETECTION_MARKER_KEY] = marker
+        state[cash_flows.DETECTION_MARKER_KEY] = {"checkpoint": {"lines": 3, "sha256": "ab" * 32}}
     cash_flows._commit(d, now=NOW, rows=lambda _e, _s: [], patch=plant)
+    kept = cash_flows.load_state(d)[cash_flows.CHECKPOINT_KEY]
     judged = cash_flows.blocked_state(d)
-    assert (judged["category"], judged["key"]) == ("marker", "v2:ckpt:3:" + "ab" * 8)
-    assert judged["reason_code"] == cash_flows.LEDGER_TAMPERED               # PR-A decides its own code
+    assert (judged["category"], judged["reason_code"]) == ("checkpoint", cash_flows.LEDGER_TAMPERED)
+    assert judged["key"] == f"v2:ckpt:refused:{kept['lines']}:{kept['sha256'][:16]}"   # the state's checkpoint first
     deliver(d, NOW)
-    cash_flows.collect_binance(Feed(pay=[pay("p2", at="2026-10-09T05:30:00Z")]), d, now=LATER, now_ms=ms(LATER))
-    assert cash_flows.blocked_alert(d, now=LATER)["alert"] is None            # writes go on; still one alert
+    with pytest.raises(ToolError):
+        cash_flows.collect_binance(Feed(pay=[pay("p2", at="2026-10-09T05:30:00Z")]), d, now=LATER, now_ms=ms(LATER))
+    cash_flows.update_readiness(d, now=LATER)                                  # the state's bytes move
+    assert cash_flows.blocked_alert(d, now=LATER)["alert"] is None            # still one alert
 
     def malformed(state, _after):
+        state.pop(cash_flows.CHECKPOINT_KEY)
         state[cash_flows.DETECTION_MARKER_KEY] = {"checkpoint": "?"}
-    cash_flows._commit(d, now=LATEST, rows=lambda _e, _s: [], patch=malformed)
-    assert cash_flows.blocked_state(d)["key"] == "v2:ckpt:malformed"
+    body = cash_flows.load_state(d)
+    malformed(body, None)
+    cash_flows._save_state(d, body)
+    end = cash_flows.verify(d)[-1]
+    assert cash_flows.blocked_state(d)["key"] == f"v2:ckpt:refused:{len(cash_flows.verify(d))}:{end['sha256'][:16]}"
 
 
 def test_22_the_blocked_path_reaches_no_trading_code():
@@ -501,13 +509,18 @@ def test_case_b_a_ledger_begun_after_the_failure_is_not_its_clearing(tmp_path):
 
 
 def test_case_b_a_ledger_gone_beside_a_readable_state_is_not_a_clearing(tmp_path):
-    """The missing ledger verifies vacuously (an empty chain): not BLOCKED, and not verified either."""
+    """The missing ledger verifies vacuously (an empty chain), but the state's checkpoint names lines it no
+    longer has: since PR-C that is a shorter ledger, refused like any other (§3), and told as that refusal —
+    never as the clearing of the broken chain told before."""
     d = lane(tmp_path)
     break_chain(d)
-    deliver(d, NOW)
+    told = deliver(d, NOW)
     cash_flows.ledger_path(d).unlink()
-    assert cash_flows.blocked_state(d) == {"blocked": False, "verified_since": None}
-    assert deliver(d, LATER) is None and _standing(d)["resolved_told_at"] is None
+    judged = cash_flows.blocked_state(d)
+    assert (judged["blocked"], judged["category"]) == (True, "checkpoint")
+    again = deliver(d, LATER)
+    assert again is not None and again[0] != told[0] and "해소" not in again[1]
+    assert _standing(d)["resolved_told_at"] is None
 
 
 def test_case_c_a_ledger_put_right_is_told_cleared_exactly_once(monkeypatch, tmp_path):

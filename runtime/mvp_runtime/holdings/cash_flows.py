@@ -123,6 +123,10 @@ EVENT_FLOW_SKIPPED = "flow_window_skipped"
 SKIP_SNAPSHOT_UNUSABLE = "snapshot_unusable"
 SKIP_CASH_POINT_BEHIND = "cash_point_behind_ledger"
 SKIP_BEYOND_DEPTH = "beyond_query_depth"
+# C7 PR-C (D3, Thomas 2026-10-11): the operator's adoption of a ledger the checkpoint refuses — the one line
+# a refused ledger may still take, written only by ``adopt_ledger`` at Thomas's terminal (C7 §7).
+EVENT_LEDGER_ADOPTED = "ledger_adopted"
+ADOPT_REFUSED = "HOLDINGS_CASH_FLOW_ADOPT_REFUSED"
 NO_CUTOVER = "NO_CUTOVER"
 CUTOVER_REFUSED = "HOLDINGS_CASH_FLOW_CUTOVER_REFUSED"
 CUTOVER_EVENTS = (EVENT_CUTOVER_SET, EVENT_CUTOVER_MIGRATED)
@@ -170,6 +174,8 @@ REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
                    "cutover_generation", "provenance"),
     EVENT_TOSS_SKIPPED: ("window_start", "window_end", "reason"),
     EVENT_FLOW_SKIPPED: ("flow_source", "window_start", "window_end", "reason"),
+    EVENT_LEDGER_ADOPTED: ("adopted", "replaced_checkpoint", "detector", "told_keys_dropped", "requested_by",
+                           "reason", "timestamp"),
 }
 ALLOWED_VALUES: dict[str, dict[str, frozenset]] = {
     EVENT_RESOLVED: {"kind": ALL_KINDS, "review_status": frozenset({"CLOSED"}),
@@ -178,6 +184,9 @@ ALLOWED_VALUES: dict[str, dict[str, frozenset]] = {
     EVENT_TOSS_AMENDED: {"kind": frozenset({"late_fill", "settlement_revised", "identity_unstable"})},
     EVENT_TOSS_SKIPPED: {"reason": frozenset({SKIP_SNAPSHOT_UNUSABLE, SKIP_CASH_POINT_BEHIND})},
     EVENT_FLOW_SKIPPED: {"reason": frozenset({SKIP_BEYOND_DEPTH})},
+    EVENT_LEDGER_ADOPTED: {"detector": frozenset({"checkpoint_ledger_shorter", "checkpoint_ledger_replaced",
+                                                  "checkpoint_malformed", "told_exception_missing",
+                                                  "detection_marker"})},
 }
 
 
@@ -383,6 +392,15 @@ def _append(state_dir: Path, rows: list[dict[str, Any]], *, now: str) -> list[di
 #   restored or lost state never turns into a verified one by being moved. ``absent`` and ``observed`` are
 #   both UNVERIFIED history; only a later step that verifies the history (PR-B, an operator adoption) may
 #   write another basis.
+#
+# C7 PR-C (D1, D3; Thomas 2026-10-17: refuse on a mismatch, adopt in two steps) turns detection into refusal.
+# A write that finds the ledger not continuing the checkpoint — or a PR-A marker still standing — raises
+# LEDGER_TAMPERED and writes nothing, to the ledger or the state, so nothing is laid on a mixed history. No
+# marker is written any more: ``blocked_state`` judges the refusal itself, and PR-D's alert tells it. Only
+# ``adopt_ledger`` (Thomas's terminal, two steps, C7 §7) writes past it, and an adoption restarts the
+# checkpoint's ``observed_at`` at the adoption: the adopted history is not the one first observed, so
+# ``history_completeness`` reads UNCHECKED until the cutover is moved past the adoption (D3: adoption alone
+# never passes the history).
 CHECKPOINT_KEY = "ledger_checkpoint"
 LEDGER_MISMATCH_DETECTED = "HOLDINGS_CASH_FLOW_LEDGER_MISMATCH_DETECTED"
 BASIS_OBSERVED = "observed"
@@ -432,36 +450,77 @@ def ledger_problem(rows: list[Mapping[str, Any]], state: Mapping[str, Any]) -> s
     return _checkpoint_problem(rows, state) or _told_key_problem(rows, state)
 
 
-def _apply_checkpoint(state: dict[str, Any], after: list[Mapping[str, Any]], problem: str | None,
-                      observed: tuple[int, str | None], *, now: str) -> None:
-    """After a write: move the checkpoint to the new end, or leave it frozen and keep the marker.
+DETECTORS = frozenset({CHECKPOINT_SHORTER, CHECKPOINT_REPLACED, CHECKPOINT_MALFORMED, TOLD_KEY_MISSING})
+MARKER_DETECTOR = "detection_marker"
 
-    ``observed`` is the ledger's length and last hash as the writer found it, before its own lines. A marker,
-    once set, stands until the operator adopts a ledger (PR-C, C7 §7): detection never clears itself, and the
-    checkpoint does not move while it stands."""
-    if state.get(DETECTION_MARKER_KEY) is not None:
+
+def standing_problem(rows: list[Mapping[str, Any]], state: Mapping[str, Any]) -> str | None:
+    """Why every ordinary write refuses (PR-C), or None: a PR-A marker that still stands — it stands until an
+    adoption, whatever the ledger reads now — else the first detector that fires."""
+    marker = state.get(DETECTION_MARKER_KEY)
+    if marker is not None:
+        reason = marker.get("reason") if isinstance(marker, Mapping) else None
+        return reason if reason in DETECTORS else MARKER_DETECTOR
+    return ledger_problem(rows, state)
+
+
+def _frozen_checkpoint(state: Mapping[str, Any]) -> dict[str, Any]:
+    """The checkpoint a refusal stands on: the state's, else a PR-A marker's, else none (``None`` values)."""
+    marker = state.get(DETECTION_MARKER_KEY)
+    for candidate in (state.get(CHECKPOINT_KEY), marker.get("checkpoint") if isinstance(marker, Mapping) else None):
+        if isinstance(candidate, Mapping) and (candidate.get("lines") is not None or candidate.get("sha256")):
+            return {"lines": candidate.get("lines"), "sha256": candidate.get("sha256")}
+    return {"lines": None, "sha256": None}
+
+
+def _unsaved_adoption(rows: list[Mapping[str, Any]], state: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """C7 §7.6: the adoption line the state never caught up with, or None.
+
+    An adoption appends its line and then saves the state. A stop in between leaves a state that still holds
+    the checkpoint the adoption replaced. When the last adoption line names exactly that checkpoint, the
+    ledger continues the adoption (the chain carries it) and the next write finishes it."""
+    adoption = next((row for row in reversed(rows) if row.get("event") == EVENT_LEDGER_ADOPTED), None)
+    if adoption is None:
+        return None
+    replaced = adoption.get("replaced_checkpoint")
+    if not isinstance(replaced, Mapping):
+        return None
+    if {"lines": replaced.get("lines"), "sha256": replaced.get("sha256")} != _frozen_checkpoint(state):
+        return None
+    return adoption
+
+
+def _told_keys_present(rows: list[Mapping[str, Any]], state: Mapping[str, Any]) -> tuple[list[str], int]:
+    """The told exception keys the ledger still holds, and how many it does not."""
+    exceptions = state.get("exceptions") if isinstance(state.get("exceptions"), Mapping) else {}
+    told = list(exceptions.get("told_keys") or [])
+    present = {_key_digest(str(row.get("source_event_key"))) for row in rows if row.get("event") in EXCEPTION_EVENTS}
+    kept = [key for key in told if key in present]
+    return kept, len(told) - len(kept)
+
+
+def _apply_adoption(state: dict[str, Any], after: list[Mapping[str, Any]], adoption: Mapping[str, Any], *,
+                    now: str) -> None:
+    """The state an adoption leaves: no marker, the lost told keys dropped, and a checkpoint at the new end
+    whose ``observed_at`` is the adoption (the adopted history is not the one first observed)."""
+    state.pop(DETECTION_MARKER_KEY, None)
+    kept, _dropped = _told_keys_present(after, state)
+    if isinstance(state.get("exceptions"), dict) and "told_keys" in state["exceptions"]:
+        state["exceptions"]["told_keys"] = kept
+    state[CHECKPOINT_KEY] = {"lines": len(after), "sha256": after[-1]["sha256"], "at": now,
+                             "basis": BASIS_OBSERVED, "observed_at": adoption.get("at") or now}
+
+
+def _apply_checkpoint(state: dict[str, Any], after: list[Mapping[str, Any]], *, now: str) -> None:
+    """After a write that the checkpoint allowed: move it to the new end. The basis and the first sighting
+    carry over unchanged: moving a checkpoint verifies the lines added since, never the history before
+    ``observed_at``."""
+    if not after:
         return
     previous = state.get(CHECKPOINT_KEY)
-    if problem is None:
-        if after:
-            # The basis and the first sighting carry over unchanged: moving a checkpoint verifies the lines
-            # added since, never the history before ``observed_at``.
-            observed_at = previous.get("observed_at") if isinstance(previous, Mapping) else None
-            state[CHECKPOINT_KEY] = {"lines": len(after), "sha256": after[-1]["sha256"], "at": now,
-                                     "basis": BASIS_OBSERVED, "observed_at": observed_at or now}
-        return
-    checkpoint = previous
-    usable = problem != CHECKPOINT_MALFORMED and isinstance(checkpoint, Mapping)
-    if not usable and checkpoint is None and observed[1] is not None:
-        # A told key went missing from a state with no checkpoint yet: freeze what was found.
-        checkpoint = state[CHECKPOINT_KEY] = {"lines": observed[0], "sha256": observed[1], "at": now,
-                                              "basis": BASIS_OBSERVED, "observed_at": now}
-        usable = True
-    frozen = checkpoint if usable else {"lines": observed[0], "sha256": observed[1]}
-    # PR-D reads this shape (``_marker_blocked``) and keys its alert on the frozen checkpoint. ``reason``
-    # names the detector.
-    state[DETECTION_MARKER_KEY] = {"reason_code": LEDGER_MISMATCH_DETECTED, "reason": problem, "since": now,
-                                   "checkpoint": {"lines": frozen.get("lines"), "sha256": frozen.get("sha256")}}
+    observed_at = previous.get("observed_at") if isinstance(previous, Mapping) else None
+    state[CHECKPOINT_KEY] = {"lines": len(after), "sha256": after[-1]["sha256"], "at": now,
+                             "basis": BASIS_OBSERVED, "observed_at": observed_at or now}
 
 
 def _commit(state_dir: Path, *, now: str,
@@ -471,16 +530,26 @@ def _commit(state_dir: Path, *, now: str,
 
     ``rows(existing, state)`` builds the lines from the verified ledger and the fresh state;
     ``patch(state, ledger_after)`` changes only the fields this writer owns. A crash between the append
-    and the save leaves the facts in the ledger and the cache behind; the next run re-derives them."""
+    and the save leaves the facts in the ledger and the cache behind; the next run re-derives them.
+
+    C7 PR-C: a ledger that does not continue the state's checkpoint, or a standing PR-A marker, refuses the
+    write with LEDGER_TAMPERED under both locks, before anything is built — nothing reaches the ledger or
+    the state. The one exception is an adoption whose state save was lost (§7.6): the write finishes it."""
     with _state_lock(state_dir):
         state = load_state(state_dir)
         after: list[dict[str, Any]] = []
-        found: list[tuple[str | None, tuple[int, str | None]]] = []
+        resumed: list[Mapping[str, Any]] = []
 
         def build(existing: list[dict[str, Any]]) -> list[Mapping[str, Any]]:
-            # Under both locks (C7 §3). Detect only: nothing here refuses the write.
-            found.append((ledger_problem(existing, state),
-                          (len(existing), existing[-1]["sha256"] if existing else None)))
+            # Under both locks (C7 §3).
+            problem = standing_problem(existing, state)
+            if problem is not None:
+                adoption = _unsaved_adoption(existing, state)
+                if adoption is None:
+                    raise ToolError(LEDGER_TAMPERED, f"the ledger does not continue the state's checkpoint "
+                                                     f"({problem}); nothing written. Only an adoption at "
+                                                     "Thomas's terminal (holdings_board --adopt-ledger) reopens it")
+                resumed.append(adoption)
             out = [*_legacy_import_rows(existing, state), *rows(existing, state)]
             after.extend(existing)
             return out
@@ -492,12 +561,117 @@ def _commit(state_dir: Path, *, now: str,
                 state.pop(name, None)
         state["cutover_at"] = cutover_at(after)
         state["cutover_ms"] = _iso_ms(state["cutover_at"]) if state["cutover_at"] else None
-        if found:
-            _apply_checkpoint(state, after, found[0][0], found[0][1], now=now)
+        if resumed:
+            _apply_adoption(state, after, resumed[0], now=now)
+        else:
+            _apply_checkpoint(state, after, now=now)
         if patch is not None:
             patch(state, after)
         _save_state(state_dir, state)
     return written
+
+
+# --- C7 PR-C: the operator's adoption (C7 §7, D3) -----------------------------------------------------------
+# Two steps at Thomas's terminal: the first reads and shows what would be adopted — the ledger's length and
+# the first 8 characters of its last hash, the checkpoint it would replace, the detector — and writes
+# nothing; the second takes those 8 characters back as ``confirm`` and, under both locks, re-verifies the
+# chain and refuses unless the ledger still ends there. The adoption line is append-only and erases nothing;
+# its key is ``ledger_adopted:<end hash>``, so a second run on the same end adds no line. Claude never runs
+# either step (D3). Nothing here names an amount, an asset or a venue event.
+_CONFIRM_LEN = 8
+
+
+def _short(digest: Any) -> str | None:
+    """The first 8 hex characters of a line hash (``sha256:<hex>``), the form step two takes back."""
+    if not isinstance(digest, str) or not digest:
+        return None
+    return digest.removeprefix("sha256:")[:_CONFIRM_LEN]
+
+
+def _adoption_conditions(*, interactive: bool, requested_by: str, reason: str) -> None:
+    if not interactive:
+        raise ToolError(ADOPT_REFUSED, "an adoption runs at an interactive terminal")
+    if not (requested_by or "").strip() or not (reason or "").strip():
+        raise ToolError(ADOPT_REFUSED, "an adoption needs --by and --reason")
+
+
+def _adoptable(rows: list[Mapping[str, Any]], state: Mapping[str, Any]) -> str:
+    """The detector an adoption would answer, or ADOPT_REFUSED with the reason it cannot."""
+    if legacy_import_refusal(rows, state):
+        raise ToolError(ADOPT_REFUSED, "a pre-H6d import is pending; an adoption does not answer it")
+    if not rows:
+        raise ToolError(ADOPT_REFUSED, "the ledger is empty; there is nothing to adopt")
+    problem = standing_problem(rows, state)
+    if problem is None:
+        raise ToolError(ADOPT_REFUSED, "the ledger continues the state's checkpoint; there is nothing to adopt")
+    return problem
+
+
+def adoption_preview(state_dir: Path, *, interactive: bool, requested_by: str, reason: str) -> dict[str, Any]:
+    """Step one: what an adoption would write, and the 8 characters step two needs. Writes nothing.
+
+    A chain that does not verify is not adoptable: ``verify`` raises LEDGER_TAMPERED here, as for any
+    reader."""
+    _adoption_conditions(interactive=interactive, requested_by=requested_by, reason=reason)
+    state = load_state(state_dir)
+    rows = verify(state_dir)
+    problem = _adoptable(rows, state)
+    frozen = _frozen_checkpoint(state)
+    _kept, dropped = _told_keys_present(rows, state)
+    return {"ledger_lines": len(rows), "confirm": _short(rows[-1]["sha256"]), "detector": problem,
+            "replaced_checkpoint": {"lines": frozen["lines"], "sha256": _short(frozen["sha256"])},
+            "told_keys_dropped": dropped}
+
+
+def adopt_ledger(state_dir: Path, *, confirm: str, requested_by: str, reason: str, interactive: bool,
+                 now: str | None = None) -> dict[str, Any]:
+    """Step two: adopt the ledger as it ends now, if it still ends where step one showed (``confirm``).
+
+    Under the state lock and then the ledger lock (the chain re-verified by ``_append_unique``): refuses
+    unless the end's first 8 characters equal ``confirm``. Writes one ``ledger_adopted`` line and then the
+    state: no marker, the told keys the ledger lost dropped (counted on the line), and the checkpoint at the
+    new end with ``observed_at`` at the adoption. ``history_completeness`` is not raised by this (D3). Run
+    again on the same end — the adoption line is now the end and names it — it writes no line and finishes
+    the state, which also covers a stop between the line and the save (§7.6)."""
+    _adoption_conditions(interactive=interactive, requested_by=requested_by, reason=reason)
+    typed = (confirm or "").strip().lower()
+    if len(typed) != _CONFIRM_LEN or any(c not in "0123456789abcdef" for c in typed):
+        raise ToolError(ADOPT_REFUSED, f"the confirmation is the {_CONFIRM_LEN} characters step one printed")
+    now = now or timeutil.utc_now_iso()
+    with _state_lock(state_dir):
+        state = load_state(state_dir)
+        before: list[dict[str, Any]] = []
+        earlier: list[Mapping[str, Any]] = []
+
+        def build(existing: list[dict[str, Any]]) -> list[Mapping[str, Any]]:
+            before.extend(existing)
+            last = existing[-1] if existing else None
+            adopted = last.get("adopted") if last is not None and last.get("event") == EVENT_LEDGER_ADOPTED else None
+            if isinstance(adopted, Mapping) and _short(adopted.get("sha256")) == typed:
+                earlier.append(last)                       # the same end, adopted before: no second line
+                return []
+            problem = _adoptable(existing, state)
+            if _short(last["sha256"]) != typed:
+                raise ToolError(ADOPT_REFUSED, "the ledger no longer ends where step one showed, or the "
+                                               "confirmation is wrong; nothing written")
+            _kept, dropped = _told_keys_present(existing, state)
+            return [{"event": EVENT_LEDGER_ADOPTED, "source": "operator",
+                     "source_event_key": f"{EVENT_LEDGER_ADOPTED}:{last['sha256']}",
+                     "adopted": {"lines": len(existing), "sha256": last["sha256"]},
+                     "replaced_checkpoint": _frozen_checkpoint(state), "detector": problem,
+                     "told_keys_dropped": dropped, "requested_by": requested_by.strip(),
+                     "reason": reason.strip(), "timestamp": now}]
+
+        written = _append_unique(state_dir, build, now=now)
+        after = [*before, *written]
+        adoption = written[0] if written else earlier[0]
+        state["cutover_at"] = cutover_at(after)
+        state["cutover_ms"] = _iso_ms(state["cutover_at"]) if state["cutover_at"] else None
+        _apply_adoption(state, after, adoption, now=now)
+        _save_state(state_dir, state)
+    return {"written": bool(written), "adopted_lines": adoption["adopted"]["lines"],
+            "adopted": _short(adoption["adopted"]["sha256"]), "detector": adoption["detector"],
+            "told_keys_dropped": adoption["told_keys_dropped"], "ledger_lines": len(after)}
 
 
 # --- what the ledger says: cutover, shadow dates, legacy --------------------------------------------------
@@ -1862,9 +2036,9 @@ def summary(state_dir: Path) -> dict[str, Any]:
 # LEDGER_LOCKED) are transient and never BLOCKED; the judgement takes no lock, so it never meets one.
 BLOCKED_TOLD_FILENAME = "holdings_cash_flow_blocked_told.json"
 BLOCKED_KEY_STATE = "v1:state"          # PR-D: every commit is refused, so the state file stays as it was
-BLOCKED_KEY_CHECKPOINT = "v2:ckpt"      # PR-A: a detect-only marker keys on its frozen checkpoint (§6)
-# The non-exception input PR-A leaves in the state (§3, readiness note R-2): ``_apply_checkpoint`` writes it.
-# Its reason code stays the §6 family code until R-2 is decided; ``reason`` names the detector.
+BLOCKED_KEY_CHECKPOINT = "v2:ckpt"      # a checkpoint refusal keys on the checkpoint it stands on (§6)
+# The marker PR-A's detect-only code left in the state (§3, readiness note R-2; ``reason`` names the
+# detector). Since PR-C nothing writes it: one that stands refuses every write until an adoption clears it.
 DETECTION_MARKER_KEY = "ledger_checkpoint_mismatch"
 BLOCKED_TOKEN_TOLD = "blocked"
 BLOCKED_TOKEN_RESOLVED = "resolved"
@@ -1891,19 +2065,21 @@ def _blocked(state_dir: Path, reason_code: str, category: str) -> dict[str, Any]
     return {"blocked": True, "reason_code": reason_code, "category": category, "key": key}
 
 
-def _marker_blocked(marker: Any) -> dict[str, Any]:
-    """A PR-A detection marker: keyed on the checkpoint it froze, never on the state's bytes, because the
-    writes go on while it stands (a state digest would be a new failure every fire)."""
-    checkpoint = marker.get("checkpoint") if isinstance(marker, Mapping) else None
-    lines = checkpoint.get("lines") if isinstance(checkpoint, Mapping) else None
-    digest = checkpoint.get("sha256") if isinstance(checkpoint, Mapping) else None
+def _refusal_blocked(rows: list[Mapping[str, Any]], state: Mapping[str, Any]) -> dict[str, Any]:
+    """C7 PR-C: the writes refuse on the checkpoint (a mismatch, or a PR-A marker still standing). Keyed on
+    the checkpoint the refusal stands on — the state's, else the marker's, else the ledger's end — never on
+    the state's bytes: readiness and the told records still save the state while the writes refuse, so a
+    state digest would be a new failure every fire. ``refused`` in the key keeps it apart from PR-A's
+    detect-only key, so a detection told before PR-C is told once more, as the refusal it now is."""
+    frozen = _frozen_checkpoint(state)
+    lines, digest = frozen["lines"], frozen["sha256"]
+    if lines is None and not digest and rows:
+        lines, digest = len(rows), rows[-1].get("sha256")
     if isinstance(lines, int) and lines >= 0 and isinstance(digest, str) and digest:
-        key = f"{BLOCKED_KEY_CHECKPOINT}:{lines}:{digest[:16]}"
+        key = f"{BLOCKED_KEY_CHECKPOINT}:refused:{lines}:{digest[:16]}"
     else:
-        key = f"{BLOCKED_KEY_CHECKPOINT}:malformed"
-    code = marker.get("reason_code") if isinstance(marker, Mapping) else None
-    return {"blocked": True, "reason_code": code if isinstance(code, str) and code else LEDGER_TAMPERED,
-            "category": "marker", "key": key}
+        key = f"{BLOCKED_KEY_CHECKPOINT}:refused:malformed"
+    return {"blocked": True, "reason_code": LEDGER_TAMPERED, "category": "checkpoint", "key": key}
 
 
 def blocked_state(state_dir: Path) -> dict[str, Any]:
@@ -1911,7 +2087,9 @@ def blocked_state(state_dir: Path) -> dict[str, Any]:
 
     ``{"blocked": False, "verified_since"}``, or ``{"blocked": True, "reason_code", "category", "key"}``
     where the category is one of ``verify`` (the chain), ``load_state`` (the cache), ``legacy`` (the
-    pending pre-H6d import), ``marker`` (a PR-A detection) or ``check`` (this judgement itself failed: a
+    pending pre-H6d import), ``checkpoint`` (PR-C: the writes refuse on the checkpoint, or on a PR-A marker
+    still standing; an adoption whose state save was lost is not BLOCKED, the next write finishes it) or
+    ``check`` (this judgement itself failed: a
     check that cannot run never reads as fine). No ledger and no state is a lane that never ran, not a
     failure. A missing state beside a readable ledger is the C7-11 recovery path, not BLOCKED.
 
@@ -1934,8 +2112,8 @@ def blocked_state(state_dir: Path) -> dict[str, Any]:
         refusal = legacy_import_refusal(rows, state)
         if refusal:
             return _blocked(state_dir, refusal, "legacy")
-        if state.get(DETECTION_MARKER_KEY) is not None:
-            return _marker_blocked(state[DETECTION_MARKER_KEY])
+        if standing_problem(rows, state) is not None and _unsaved_adoption(rows, state) is None:
+            return _refusal_blocked(rows, state)
     except Exception as exc:  # noqa: BLE001 — a judgement that cannot finish is BLOCKED, never fine
         return _blocked(state_dir, type(exc).__name__, "check")
     return {"blocked": False, "verified_since": rows[0].get("at") if rows else None}
@@ -1969,10 +2147,11 @@ def blocked_alert(state_dir: Path, *, now: str) -> dict[str, Any]:
     if judgement["blocked"]:
         if standing and told.get("key") == judgement["key"]:
             return {"alert": None, "note": note}
-        if judgement["category"] == "marker":
-            # C7 PR-A detects only (D1): the writes go on, so the message must not say they stopped.
-            what = ("원장과 상태가 서로 다른 시점에서 복원된 것으로 감지됐습니다. 쓰기는 계속되고(감지만), "
-                    "readiness는 FAIL입니다")
+        if judgement["category"] == "checkpoint":
+            # C7 PR-C: the writes refuse on the checkpoint, and only an adoption reopens them (D3).
+            what = ("원장과 상태가 서로 다른 시점에서 복원된 것으로 보여 원장·상태 쓰기가 거부되었습니다(아무것도 "
+                    "쓰지 않음). H6 기록과 예외 알림이 멈춰 있고, Thomas 터미널의 원장 채택(두 단계)으로만 다시 "
+                    "열립니다")
         else:
             what = "원장·상태 쓰기가 거부되어 H6 기록과 예외 알림이 멈춰 있습니다"
         text = (f"[보유 자산] H6 현금흐름 원장 BLOCKED — {judgement['reason_code']} ({judgement['category']}), "

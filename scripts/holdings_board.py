@@ -13,6 +13,8 @@
     python -m scripts.holdings_board --resolve KEY --kind deposit --by thomas --reason "..."   # terminal only
     python -m scripts.holdings_board --semantics-epoch --change-ref "#1203" --by thomas --reason "..."
     python -m scripts.holdings_board --toss-continuity              # do the Toss windows tile the stretch since the cutover
+    python -m scripts.holdings_board --adopt-ledger --by thomas --reason "..."                     # step one: what would be adopted
+    python -m scripts.holdings_board --adopt-ledger --by thomas --reason "..." --confirm 1a2b3c4d  # step two: adopt
 
 Read-only. It places nothing and has no flag that would let it.
 
@@ -76,8 +78,17 @@ service user, and only its first two lines leave it. Without a terminal on both 
 host-side root run, it is refused before the ledger is opened — slip guards against a pipe, a model's
 shell or a missing ``-it -u 10001``, not a boundary against root or the docker group.
 
+**``--adopt-ledger``** (C7 PR-C, D3, Thomas 2026-10-11/17) is the one way past a ledger the checkpoint refuses
+(every write answers ``HOLDINGS_CASH_FLOW_LEDGER_TAMPERED`` while it stands). Two runs: the first writes
+nothing and prints the ledger's length, the first 8 characters of its last hash, the checkpoint it would
+replace and the detector; the second, with ``--confirm`` and those 8 characters, re-checks under both locks
+that the ledger still ends there and writes one ``ledger_adopted`` line. It does not raise the history
+check: the adopted history is observed from the adoption on, so the cutover must be moved past it
+(``--cash-flow-cutover AT --migrate --reason``) before ``history_completeness`` can pass. Interactive
+terminal, ``--by`` and ``--reason``, the service user. No amount, asset or event key is printed.
+
 Claude does not run the live read, ``--local``, ``--unclassified``, ``--classify``, ``--unclassify``,
-``--flows``, ``--resolve``, ``--semantics-epoch`` or ``--toss-continuity`` (their output or input names holdings
+``--flows``, ``--resolve``, ``--semantics-epoch``, ``--toss-continuity`` or ``--adopt-ledger`` (their output or input names holdings
 or reads the local ledger, and would reach a model provider), and does not handle the keys.
 """
 
@@ -129,6 +140,9 @@ def main(argv: list[str] | None = None) -> int:
                       help="start a new Toss semantics epoch after a reconciliation change (Thomas, terminal only)")
     mode.add_argument("--toss-continuity", action="store_true",
                       help="whether the Toss windows tile the stretch since the cutover (C7 D2; terminal only)")
+    mode.add_argument("--adopt-ledger", action="store_true",
+                      help="adopt a ledger the checkpoint refuses, in two runs (C7 PR-C; Thomas, terminal only)")
+    parser.add_argument("--confirm", help="the 8 characters the first --adopt-ledger run printed (step two)")
     parser.add_argument("--kind", help="what the exception was (--resolve; --flows lists the allowed kinds)")
     parser.add_argument("--change-ref", help="the merged reconciliation change, #<PR> or a commit (--semantics-epoch)")
     parser.add_argument("--migrate", action="store_true", help="move an existing cutover (--cash-flow-cutover)")
@@ -177,6 +191,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.toss_continuity:
         return _toss_continuity()
+
+    if args.adopt_ledger:
+        return _adopt_ledger(args)
 
     if args.reset_peak:
         try:
@@ -301,6 +318,35 @@ def _toss_continuity() -> int:
         return EXIT_BLOCKED
     print(render_toss_continuity(result))
     return EXIT_BLOCKED if result["status"] == cash_flows.TOSS_LEDGER_INVALID else EXIT_OK
+
+
+def _adopt_ledger(args: argparse.Namespace) -> int:
+    """C7 PR-C, two runs. Refuses a host-side root run, a missing terminal, ``--by`` or ``--reason`` before
+    the ledger is read. Prints lengths, 8-character hash prefixes and the detector; no amount."""
+    from runtime.mvp_runtime.holdings import cash_flows
+
+    try:
+        assert_not_foreign_root_run()
+        if not args.confirm:
+            shown = cash_flows.adoption_preview(state_dir(), interactive=_interactive(), requested_by=args.by or "",
+                                                reason=args.reason or "")
+            replaced = shown["replaced_checkpoint"]
+            print(f"adopt-ledger (step one, nothing written): ledger {shown['ledger_lines']} lines ending "
+                  f"{shown['confirm']}; replaces checkpoint {replaced['lines']} lines / {replaced['sha256']}; "
+                  f"detector {shown['detector']}; told keys the ledger lost {shown['told_keys_dropped']}")
+            print(f"to adopt it, run again with --confirm {shown['confirm']} (the history check stays UNCHECKED "
+                  "until the cutover is moved past the adoption)")
+            return EXIT_OK
+        done = cash_flows.adopt_ledger(state_dir(), confirm=args.confirm, requested_by=args.by or "",
+                                       reason=args.reason or "", interactive=_interactive())
+    except MvpRuntimeError as exc:
+        print(f"refused ({exc.reason_code}): {exc}")
+        return EXIT_BLOCKED
+    print(f"adopt-ledger: {'adopted' if done['written'] else 'already adopted'} {done['adopted_lines']} lines "
+          f"ending {done['adopted']} ({done['detector']}; told keys dropped {done['told_keys_dropped']}); "
+          f"ledger now {done['ledger_lines']} lines. Writes resume; history_completeness stays UNCHECKED until "
+          "the cutover is moved past the adoption")
+    return EXIT_OK
 
 
 def _unclassified() -> int:
