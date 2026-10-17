@@ -328,6 +328,37 @@ def test_the_command_runner_uses_no_shell_and_a_fixed_environment(monkeypatch):
         commands.run_command(["/usr/bin/docker"], timeout_s=0)
 
 
+def test_docker_config_is_the_one_docker_variable_and_only_when_the_actor_names_it(monkeypatch):
+    """BUILD-HOME = A (Thomas 2026-10-17): BuildKit needs a writable directory; X has no home."""
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen.update(kw)
+
+        class R:
+            returncode, stdout = 0, b""
+        return R()
+
+    for name in ("DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "HOME"):
+        monkeypatch.setenv(name, "/elsewhere")
+    monkeypatch.setattr(commands.subprocess, "run", fake_run)
+    target = Path(os.path.abspath("/var/lib/thomas-deploy/actor/docker-config"))
+    commands.run_command(["/usr/bin/docker", "image", "build"], timeout_s=5, docker_config=target)
+    assert seen["env"] == {"PATH": "/usr/bin:/bin", "LANG": "C", "DOCKER_CONFIG": str(target)}
+
+
+@pytest.mark.parametrize("bad", ["relative/docker-config", "/var/lib/../etc", "/var//lib", "/var/lib/a b"])
+def test_a_docker_config_that_is_not_an_absolute_plain_path_starts_nothing(monkeypatch, bad):
+    def never(*a, **k):
+        raise AssertionError("a process started")
+
+    monkeypatch.setattr(commands.subprocess, "run", never)
+    if bad.startswith("/") and os.name == "nt":
+        pytest.skip("POSIX paths")
+    with pytest.raises(commands.CommandUnavailable):
+        commands.run_command(["/usr/bin/docker"], timeout_s=5, docker_config=bad)
+
+
 # --- the actor: policy, inspection, latch ----------------------------------------------------------
 
 @posix_only

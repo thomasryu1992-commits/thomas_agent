@@ -76,7 +76,9 @@ PRINCIPAL = "thomas-deploy-approver"
 NAMESPACE = "deploy-approval.v1@thomas-agent"
 HOST_LABEL = "c4-runner"
 PR = 4242
-ACTOR_DEADLINE_S = 5
+ACTOR_DEADLINE_S = 60      # a prepare builds an image; the frozen-actor case waits this long
+BASE_CTX = Path("/var/tmp/c4-base")
+GOOD_PR, BAD_PR = 4242, 4244
 PASS, FAIL, BLOCKED, NOT_TESTED, INFO = "PASS", "FAIL", "BLOCKED", "NOT_TESTED", "INFO"
 
 
@@ -138,7 +140,6 @@ def build_cases(sign: Callable[[bytes], str], sign_other: Callable[[bytes], str]
     good = approval_document(0, now=now, sha=sha, running_id=running_id)
     expired = approval_document(1, now=now, sha=sha, running_id=running_id, issued=timedelta(minutes=-20))
     elsewhere = approval_document(2, now=now, sha=sha, running_id=running_id, host_label="another-host")
-    valid = approval_document(3, now=now, sha=sha, running_id=running_id)
     return [
         Case("N-7", "unknown verb", _frame("c4-n7-1", "exec", {}), "VERB_NOT_PERMITTED"),
         Case("N-7", "extra argument key", _frame("c4-n7-2", "promote", {**promote, "tree": "/"}),
@@ -165,8 +166,6 @@ def build_cases(sign: Callable[[bytes], str], sign_other: Callable[[bytes], str]
         Case("N-10", "approval for another environment",
              _frame("c4-n10-3", "prepare_candidate", prep, elsewhere, sign(elsewhere)),
              "APPROVAL_ENVIRONMENT_MISMATCH"),
-        Case("P-5", "a valid approval stops at the clock", _frame("c4-p5-1", "prepare_candidate", prep, valid,
-                                                                   sign(valid)), "CLOCK_UNTRUSTED"),
         Case("N-12", "bytes that are not a frame", b"\x00\xffnot json\n", "MALFORMED_REQUEST"),
         Case("N-12", "a frame past the door's ceiling", b"{" + b"a" * 9000, "NO_REPLY"),
     ]
@@ -270,7 +269,7 @@ def probe(checks: list[dict[str, str]]) -> list[dict[str, str]]:
     return out
 
 
-def send(path: str, payload: bytes, *, timeout: float = 30.0) -> dict[str, Any]:
+def send(path: str, payload: bytes, *, timeout: float = 180.0) -> dict[str, Any]:
     """One frame to a socket; the reply's ``ok`` and ``reason_code`` only."""
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     client.settimeout(timeout)
@@ -566,12 +565,149 @@ class Runner:
         rows = len(store.read_bytes().splitlines())
         self.report.add("N-8..N-10", "the consumption store holds only its genesis row (nothing spent)",
                         PASS if rows == 1 else FAIL, f"{rows} rows")
-        for test, label in (("N-10", "measured binding (tree and running image) — after the clock check"),
-                            ("N-11", "reuse of a spent approval — nothing can be spent"),
-                            ("N-12", "Docker failure and timeout after the spend")):
-            self.report.add(test, label, BLOCKED, "CLOCK-SOURCE undecided: prepare stops at CLOCK_UNTRUSTED")
+        self.effect_tests(store, signer("thomas"))
         self.report.add("N-12", "an actor reply outside its schema", NOT_TESTED,
                         "needs a modified actor; covered by the C3a-3 synthetic tests")
+
+    # -- past the clock: the measured binding, the spend, its reuse, a failure after it ---------------------
+    def send_case(self, case: Case, name: str) -> str:
+        path = CASES_DIR / name
+        path.write_bytes(case.payload)
+        path.chmod(0o644)
+        done = _as(CLAUDE, [self.python, "-I", "-m", "scripts.ops.deploy_runner_c4", "send",
+                            "--socket", str(GATE_SOCKET), "--payload", str(path)])
+        answer = json.loads(done.stdout) if done.returncode == 0 else {"kind": "send_failed"}
+        result, got = judge_case(case, answer)
+        self.report.add(case.id, case.label, result, f"want {case.expect}, got {got}")
+        return got
+
+    @staticmethod
+    def image_id(ref: str) -> str | None:
+        done = subprocess.run(["/usr/bin/docker", "image", "inspect", "--format", "{{.Id}}", ref],
+                              capture_output=True, text=True)
+        return done.stdout.strip() if done.returncode == 0 else None
+
+    def docker_fixture(self) -> str:
+        """What the actor measures, made small: one image tagged ``latest`` (``FROM scratch``, so no pull) and
+        the eight service names as ``created`` containers of it under the compose project."""
+        from runtime.mvp_runtime.deploy_runner import docker_argv
+
+        BASE_CTX.mkdir(mode=0o755, exist_ok=True)
+        (BASE_CTX / "marker").write_text("c4 base\n", encoding="ascii")
+        (BASE_CTX / "Dockerfile").write_text('FROM scratch\nCOPY marker /marker\nCMD ["/marker"]\n', encoding="ascii")
+        _sh(["/usr/bin/docker", "image", "build", "-q", "--tag", docker_argv.latest_ref(), str(BASE_CTX)],
+            capture_output=True, timeout=300)
+        for name in docker_argv.RUNTIME_CONTAINERS:
+            _sh(["/usr/bin/docker", "container", "create", "--name", name, "--label",
+                 "com.docker.compose.project=thomas_agent", docker_argv.latest_ref()], capture_output=True, timeout=60)
+        return self.image_id(docker_argv.latest_ref()) or ""
+
+    @staticmethod
+    def tree(pr: int, dockerfile: str) -> str:
+        """The runner's own tree for ``pr``: root-owned, clean, ``HEAD`` = ``origin/main``. X reads it with no
+        HOME, so the system git config names it a safe directory (an install concern: C5)."""
+        d = TREES / str(pr)
+        d.mkdir(mode=0o755)
+        (d / "Dockerfile").write_text(dockerfile, encoding="ascii")
+        (d / "marker").write_text(f"c4 tree {pr}\n", encoding="ascii")
+        git = ["/usr/bin/git", "-C", str(d), "-c", "user.name=c4", "-c", "user.email=c4@invalid"]
+        _sh(git[:3] + ["init", "-q"], capture_output=True)
+        _sh(git + ["add", "-A"], capture_output=True)
+        _sh(git + ["commit", "-q", "-m", "c4"], capture_output=True)
+        head = _sh(git[:3] + ["rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        _sh(git[:3] + ["update-ref", "refs/remotes/origin/main", head], capture_output=True)
+        _sh(["/usr/bin/git", "config", "--system", "--add", "safe.directory", str(d)], capture_output=True)
+        _sh(["/usr/bin/chmod", "-R", "go-w", str(d)])
+        return head
+
+    def effect_tests(self, store: Path, sign: Callable[[bytes], str]) -> None:
+        from runtime.mvp_runtime.deploy_runner import clock_source, docker_argv
+
+        clock = clock_source.describe()
+        self.report.add("P-5", "the kernel's clock verdict on this runner (CLOCK-SOURCE = A)", INFO,
+                        " ".join(f"{k}={v}" for k, v in sorted(clock.items())))
+        if not clock.get("confirmed"):
+            for test, label in (("N-10", "measured binding"), ("N-11", "reuse of a spent approval"),
+                                ("N-12", "Docker failure after the spend")):
+                self.report.add(test, label, BLOCKED, "the runner's kernel does not report the clock synchronised")
+            return
+        running = self.docker_fixture()
+        head = self.tree(GOOD_PR, 'FROM scratch\nCOPY marker /marker\nCMD ["/marker"]\n')
+        bad_head = self.tree(BAD_PR, "FROM scratch\nCOPY absent-file /absent\n")
+        self.report.add("SETUP", "synthetic image, eight created containers, two runner trees",
+                        PASS if running.startswith("sha256:") else FAIL)
+        now = datetime.now(timezone.utc)
+
+        def case(test, label, n, *, request_id, pr=GOOD_PR, sha=head, running_id=running, args_sha=None, expect):
+            doc = approval_document(n, now=now, pr=pr, sha=sha, running_id=running_id)
+            frame = _frame(request_id, "prepare_candidate", {"pr": pr, "git_commit_sha": args_sha or sha}, doc,
+                           sign(doc))
+            return Case(test, label, frame, expect), doc
+
+        rows = lambda: len(store.read_bytes().splitlines())  # noqa: E731
+        c, _ = case("N-10", "approval for a commit the runner's tree is not at (measured)", 10,
+                    request_id="c4-n10-4", sha="e" * 40, expect="APPROVAL_BINDING_MISMATCH")
+        self.send_case(c, "n10-tree")
+        c, _ = case("N-10", "approval for another running image (measured)", 11, request_id="c4-n10-5",
+                    running_id="sha256:" + "b" * 64, expect="APPROVAL_BINDING_MISMATCH")
+        self.send_case(c, "n10-image")
+        self.report.add("N-10", "nothing spent and no tag made by a measured mismatch",
+                        PASS if rows() == 1 and self.image_id(docker_argv.rollback_ref(GOOD_PR)) is None else FAIL,
+                        f"{rows()} rows")
+        good, _ = case("P-5", "a valid approval passes the clock, is spent once, tags and builds", 12,
+                       request_id="c4-ok-1", expect="OK")
+        if self.send_case(good, "ok") != "OK":
+            self.diagnose_effect_failure()
+            for test, label in (("N-11", "reuse of a spent approval"), ("N-12", "Docker failure after the spend")):
+                self.report.add(test, label, BLOCKED, "the success path did not complete; see the P-5 row")
+            return
+        built = (self.image_id(docker_argv.rollback_ref(GOOD_PR)) == running
+                 and (self.image_id(docker_argv.candidate_ref(GOOD_PR)) or "").startswith("sha256:"))
+        self.report.add("P-5", "the rollback point is the running image and the candidate exists",
+                        PASS if built else FAIL, f"{rows()} rows")
+        self.send_case(Case("N-11", "the same request again replays", good.payload, "OK"), "replay")
+        reuse = Case("N-11", "the spent approval under a new request id, its tags still there",
+                     good.payload.replace(b'"c4-ok-1"', b'"c4-n11-1"'), "TAG_ALREADY_EXISTS")
+        self.send_case(reuse, "reuse-tags")
+        for ref in (docker_argv.rollback_ref(GOOD_PR), docker_argv.candidate_ref(GOOD_PR)):
+            _sh(["/usr/bin/docker", "image", "rm", ref], capture_output=True)
+        reuse = Case("N-11", "the spent approval under a new request id, tags removed",
+                     good.payload.replace(b'"c4-ok-1"', b'"c4-n11-2"'), "APPROVAL_ALREADY_CONSUMED")
+        self.send_case(reuse, "reuse")
+        self.report.add("N-11", "spent once: one consumption row beyond genesis", PASS if rows() == 2 else FAIL,
+                        f"{rows()} rows")
+        bad, _ = case("N-12", "a build that fails after the spend", 13, request_id="c4-n12-5", pr=BAD_PR,
+                      sha=bad_head, expect="FAILED_EFFECT_PARTIAL")
+        self.send_case(bad, "bad")
+        self.send_case(Case("N-12", "after a failure past the spend the runner is latched",
+                            _frame("c4-n12-6", "inspect_candidate", {"pr": GOOD_PR}), "RUNNER_LATCHED"), "latched")
+        self.report.add("N-12", "the failed spend is recorded, never retried", PASS if rows() == 3 else FAIL,
+                        f"{rows()} rows")
+
+    def diagnose_effect_failure(self) -> None:
+        """Why the spend's effect failed, as codes and Docker's first error line: the actor's own audit rows
+        (reason codes only), and the same tag and build re-run as X with the actor's exact environment."""
+        from runtime.mvp_runtime.deploy_runner import docker_argv
+
+        try:
+            rows = [json.loads(line) for line in (ACTOR_DIR / "audit.jsonl").read_text(encoding="ascii").splitlines()]
+            codes = [f"{r.get('execution_state')}:{r.get('reason_code')}" for r in rows[-4:]]
+        except (OSError, ValueError) as exc:
+            codes = [type(exc).__name__]
+        self.report.add("P-5", "the actor's last audit rows (state:reason)", INFO, " ".join(codes))
+        env = {"PATH": "/usr/bin:/bin", "LANG": "C"}
+        for label, argv in (("tag", docker_argv.tag_rollback_point(Path("/usr/bin/docker"),
+                                                                    self.image_id(docker_argv.latest_ref()) or "", 1)),
+                            ("build", docker_argv.build_candidate(Path("/usr/bin/docker"), TREES, GOOD_PR))):
+            done = subprocess.run([SETPRIV, f"--reuid={IDS[ACTOR]}", f"--regid={IDS[ACTOR]}", "--init-groups",
+                                   "--reset-env", "--",
+                                   "/usr/bin/env", "-i", *[f"{k}={v}" for k, v in env.items()], *argv],
+                                  cwd="/", stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=300)
+            lines = [ln for ln in done.stderr.splitlines() if ln.strip()]
+            self.report.add("P-5", f"the actor's {label} re-run as X with its environment", INFO,
+                            f"rc={done.returncode} {(lines[-1] if lines else '')[:200]}")
+            if label == "tag" and done.returncode == 0:
+                subprocess.run(["/usr/bin/docker", "image", "rm", docker_argv.rollback_ref(1)], capture_output=True)
 
     @staticmethod
     def docker_state() -> list[str]:

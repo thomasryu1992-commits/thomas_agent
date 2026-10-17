@@ -121,16 +121,18 @@ def test_every_frame_gets_the_code_the_harness_expects_and_nothing_reaches_docke
         result, got = c4.judge_case(case, {"connected": True, "reply": reply})
         assert result == c4.PASS, (case.id, case.label, got)
         seen.add(case.id)
-    assert seen == {"N-7", "N-8", "N-9", "N-10", "N-12", "P-5"}
+    assert seen == {"N-7", "N-8", "N-9", "N-10", "N-12"}
     assert docker_calls == []
     rows = (xdir / "consumed.jsonl").read_bytes().splitlines()
     assert len(rows) == 1                                   # nothing was spent: only the genesis row
 
 
-def test_the_valid_approval_is_the_only_one_that_reaches_the_clock():
-    labels = [c for c in c4.build_cases(lambda b: "sig", lambda b: "other", now=datetime.now(timezone.utc), sha=SHA,
-                                        running_id=RUNNING) if c.expect == "CLOCK_UNTRUSTED"]
-    assert [c.id for c in labels] == ["P-5"]
+def test_every_refusal_frame_is_refused_before_the_clock_so_none_spends_anything():
+    """The refusal set must stay refusals whatever the runner's clock says (CLOCK-SOURCE = A): the frames that
+    pass the clock are the effect tests', built on the runner against its own trees and images."""
+    cases = c4.build_cases(lambda b: "sig", lambda b: "other", now=datetime.now(timezone.utc), sha=SHA,
+                           running_id=RUNNING)
+    assert not [c for c in cases if c.expect in ("OK", "CLOCK_UNTRUSTED")]
 
 
 @pytest.mark.parametrize("environ, flag", [

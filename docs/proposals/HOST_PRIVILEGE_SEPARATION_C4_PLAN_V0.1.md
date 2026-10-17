@@ -1,6 +1,6 @@
 # 제안: Option C C4 — 비운영 환경에서 분리 검증 계획 (DRAFT v0.1)
 
-**상태:** PARTIALLY DECIDED 2026-10-17 — **2026-10-17(2):** 시험 workflow #1237이 병합됐다(`2766c26b`). 병합된 head의 실행(run 39023138344)에서 FAIL 0, PASS 94, BLOCKED 3(CLOCK-SOURCE), NOT_TESTED 1, 누출 0건이다(§10). 운영 호스트 기준으로는 여전히 아무것도 시험되지 않았다(C6). **2026-10-17:** D-8은 GitHub Actions 임시 러너(무료 한도 안, 비필수 workflow)로, CR-8b는 Python 3.12.13 python-build-standalone x86_64(SHA256 고정)로 정해졌다. C3b는 #1234로 병합됐다(P-3 충족). 열린 것: CLOCK-SOURCE, RUNNER-FETCH. 시험 workflow는 구현·PR 생성까지 승인됐고 실행 결과는 없다(`HOST_PRIVILEGE_SEPARATION_V0.1.md` §4.25.4). **원래 상태(작성 당시):** DRAFT 2026-10-16 — C4(운영과 무관한 환경에서 계정·권한 분리를 시험)의 계획이다. 환경(D-8), 그 환경의 자원·비용, 그리고 C4 전에 지어야 할 서비스 진입점(C3b)의 구현 승인이 정해지지 않았다. 이 문서는 아무것도 실행하지 않고 어떤 권한도 주지 않는다.
+**상태:** PARTIALLY DECIDED 2026-10-17 — **2026-10-17(2):** 시험 workflow #1237이 병합됐다(`2766c26b`). 병합된 head의 실행(run 39023138344)에서 FAIL 0, PASS 94, BLOCKED 3(CLOCK-SOURCE), NOT_TESTED 1, 누출 0건이다(§10). 운영 호스트 기준으로는 여전히 아무것도 시험되지 않았다(C6). **2026-10-17:** D-8은 GitHub Actions 임시 러너(무료 한도 안, 비필수 workflow)로, CR-8b는 Python 3.12.13 python-build-standalone x86_64(SHA256 고정)로 정해졌다. C3b는 #1234로 병합됐다(P-3 충족). 열린 것: RUNNER-FETCH(CLOCK-SOURCE는 2026-10-17 A로 정해짐, §8). 시험 workflow는 구현·PR 생성까지 승인됐고 실행 결과는 없다(`HOST_PRIVILEGE_SEPARATION_V0.1.md` §4.25.4). **원래 상태(작성 당시):** DRAFT 2026-10-16 — C4(운영과 무관한 환경에서 계정·권한 분리를 시험)의 계획이다. 환경(D-8), 그 환경의 자원·비용, 그리고 C4 전에 지어야 할 서비스 진입점(C3b)의 구현 승인이 정해지지 않았다. 이 문서는 아무것도 실행하지 않고 어떤 권한도 주지 않는다.
 
 **기준:** origin/main `4680754f`(C3a-2 #1228), 2026-10-16. 설계 권위는 `HOST_PRIVILEGE_SEPARATION_V0.1.md`(§4.6, §6 C4행)와 C2 명세 v0.5(명세 8, 8.1–8.3)다. 명세는 #1230이 저장소에 옮기는 중이다. 호스트, 운영 파일, `.env`, Docker에는 접근하지 않았다.
 
@@ -103,7 +103,7 @@ C3에서 이미 합성으로 다룬 항목은 C4에서 **권한과 실제 소켓
 | D-8 | C4 환경 | V1 임시 VM. 위치는 Mac 로컬 VM 또는 임시 클라우드 VM(이 호스트는 메모리 여유가 작다) | **2026-10-17 정해짐:** GitHub Actions 임시 러너(무료 한도 안, 비필수 workflow, CI 변경은 별도 승인) |
 | C4-RES | 자원·비용 | V1 위치에 따름. 클라우드면 금액을 먼저 확인 | D-8로 정해짐: GitHub Actions 무료 한도 안 |
 | C3b | 서비스 진입점·설치 도구·unit 구현과 PR | §2 P-3 범위로 구현 승인. 운영 설치는 제외 | **2026-10-17:** 구현 승인, #1234 병합 |
-| CLOCK-SOURCE | 시계 동기 출처 | §6에서 재고 정한다 | 미결정 |
+| CLOCK-SOURCE | 시계 동기 출처 | §6에서 재고 정한다 | **2026-10-17 정해짐:** A(커널 `adjtimex`, `STA_UNSYNC` 해제, maxerror ≤ 16초). 구현은 `deploy_runner/clock_source.py` |
 | RUNNER-FETCH | 자기 트리 fetch | C4에서는 쓰지 않는다. env 게이트 능력으로 따로 설계 | 미결정 |
 
 ## 9. 하지 않은 것

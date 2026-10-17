@@ -275,10 +275,37 @@ def test_a_latched_actor_still_starts_and_refuses_every_request(site):
 
 
 @posix_only
-def test_the_actor_is_built_with_clock_sync_unconfirmed(site):
-    actor, lock_fd = _actor(site)
+def test_the_actor_asks_its_clock_source_at_each_request(site):
+    """CLOCK-SOURCE = A (Thomas 2026-10-17): the served actor's answer is the kernel's, read at each ask."""
+    answers = iter([False, True])
+    actor, lock_fd = _actor(site, sync_confirmed=lambda: next(answers))
     try:
-        assert actor.config.sync_confirmed() is False                          # CLOCK-SOURCE is undecided
+        assert actor.config.sync_confirmed() is False and actor.config.sync_confirmed() is True
+    finally:
+        os.close(lock_fd)
+
+
+@posix_only
+def test_by_default_the_served_actor_uses_the_kernel_source():
+    import inspect
+
+    from runtime.mvp_runtime.deploy_runner import clock_source
+
+    default = inspect.signature(serve.build_actor).parameters["sync_confirmed"].default
+    assert default is clock_source.kernel_sync_confirmed
+
+
+@posix_only
+def test_the_served_actor_runs_its_commands_with_docker_config_in_its_own_records_directory(site):
+    """BUILD-HOME = A (Thomas 2026-10-17): the directory is X's private one, from the root-owned config."""
+    from runtime.mvp_runtime.deploy_runner import commands
+
+    cfg = config_mod.load_config(save(site, "actor"), role="actor", owner_uid=ME)
+    actor, lock_fd = serve.build_actor(cfg, verifier=FakeVerifier())
+    try:
+        run = actor.config.run
+        assert run.func is commands.run_command
+        assert run.keywords == {"docker_config": site["xdir"] / commands.DOCKER_CONFIG_DIR}
     finally:
         os.close(lock_fd)
 
