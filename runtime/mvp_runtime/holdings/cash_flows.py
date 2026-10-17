@@ -358,7 +358,20 @@ def _append(state_dir: Path, rows: list[dict[str, Any]], *, now: str) -> list[di
 # does not change every fire, and readiness reads FAIL. No checkpoint at all (every state saved before this
 # code, or a state file that was lost) is not judged here: the history check is PR-B's (readiness note R-3,
 # option (가); D2: absent reads UNCHECKED there). PR-A writes no ledger line of its own.
+#
+# R-2 and R-3 as Thomas decided them (2026-10-17):
+# - R-2: a detection carries its own code, LEDGER_MISMATCH_DETECTED, never LEDGER_TAMPERED. That code means
+#   a write was refused and nothing written; here the writes go on.
+# - R-3 (가-수정): every checkpoint records its ``basis``. PR-A only ever writes ``observed``: the checkpoint
+#   began where this code first saw the ledger (``observed_at``), so continuity since then is checked and the
+#   history before it is not. ``observed`` survives every move, so a checkpoint first recorded over a
+#   restored or lost state never turns into a verified one by being moved. ``absent`` and ``observed`` are
+#   both UNVERIFIED history; only a later step that verifies the history (PR-B, an operator adoption) may
+#   write another basis.
 CHECKPOINT_KEY = "ledger_checkpoint"
+LEDGER_MISMATCH_DETECTED = "HOLDINGS_CASH_FLOW_LEDGER_MISMATCH_DETECTED"
+BASIS_OBSERVED = "observed"
+HISTORY_UNVERIFIED = "UNVERIFIED"
 CHECKPOINT_SHORTER = "checkpoint_ledger_shorter"
 CHECKPOINT_REPLACED = "checkpoint_ledger_replaced"
 CHECKPOINT_MALFORMED = "checkpoint_malformed"
@@ -393,6 +406,12 @@ def _told_key_problem(rows: list[Mapping[str, Any]], state: Mapping[str, Any]) -
     return TOLD_KEY_MISSING if any(key not in present for key in told) else None
 
 
+def checkpoint_basis(state: Mapping[str, Any]) -> str:
+    """``absent`` or ``observed``. PR-A writes no other basis, so whatever else a state file says — no
+    basis, or one PR-A never wrote — reads ``observed``: the state cannot vouch for its own history."""
+    return "absent" if not isinstance(state.get(CHECKPOINT_KEY), Mapping) else BASIS_OBSERVED
+
+
 def ledger_problem(rows: list[Mapping[str, Any]], state: Mapping[str, Any]) -> str | None:
     """The first detector that fires for this ledger and state, or None."""
     return _checkpoint_problem(rows, state) or _told_key_problem(rows, state)
@@ -407,20 +426,26 @@ def _apply_checkpoint(state: dict[str, Any], after: list[Mapping[str, Any]], pro
     checkpoint does not move while it stands."""
     if state.get(DETECTION_MARKER_KEY) is not None:
         return
+    previous = state.get(CHECKPOINT_KEY)
     if problem is None:
         if after:
-            state[CHECKPOINT_KEY] = {"lines": len(after), "sha256": after[-1]["sha256"], "at": now}
+            # The basis and the first sighting carry over unchanged: moving a checkpoint verifies the lines
+            # added since, never the history before ``observed_at``.
+            observed_at = previous.get("observed_at") if isinstance(previous, Mapping) else None
+            state[CHECKPOINT_KEY] = {"lines": len(after), "sha256": after[-1]["sha256"], "at": now,
+                                     "basis": BASIS_OBSERVED, "observed_at": observed_at or now}
         return
-    checkpoint = state.get(CHECKPOINT_KEY)
+    checkpoint = previous
     usable = problem != CHECKPOINT_MALFORMED and isinstance(checkpoint, Mapping)
     if not usable and checkpoint is None and observed[1] is not None:
         # A told key went missing from a state with no checkpoint yet: freeze what was found.
-        checkpoint = state[CHECKPOINT_KEY] = {"lines": observed[0], "sha256": observed[1], "at": now}
+        checkpoint = state[CHECKPOINT_KEY] = {"lines": observed[0], "sha256": observed[1], "at": now,
+                                              "basis": BASIS_OBSERVED, "observed_at": now}
         usable = True
     frozen = checkpoint if usable else {"lines": observed[0], "sha256": observed[1]}
-    # PR-D reads this shape (``_marker_blocked``) and keys its alert on the frozen checkpoint. The code is
-    # the §6 family code until R-2 is decided; ``reason`` names the detector.
-    state[DETECTION_MARKER_KEY] = {"reason_code": LEDGER_TAMPERED, "reason": problem, "since": now,
+    # PR-D reads this shape (``_marker_blocked``) and keys its alert on the frozen checkpoint. ``reason``
+    # names the detector.
+    state[DETECTION_MARKER_KEY] = {"reason_code": LEDGER_MISMATCH_DETECTED, "reason": problem, "since": now,
                                    "checkpoint": {"lines": frozen.get("lines"), "sha256": frozen.get("sha256")}}
 
 
@@ -1618,8 +1643,10 @@ def readiness(state_dir: Path, *, now: str, current: Mapping[str, Any] | None = 
     return {"checks": checks, "toss_note": toss_why, "toss_epoch": toss_epoch(rows), "shadow_days": round(days, 1),
             "shadow_success_dates": len(dates), "exceptions": len(exceptions), "ready": ready,
             "open_exception_keys": sorted(exceptions),
-            # R-3: without a checkpoint a consistency PASS says nothing about a mixed restore (PR-B's check).
-            "checkpoint": "present" if isinstance(state.get(CHECKPOINT_KEY), Mapping) else "absent",
+            # R-3 (가-수정): ``absent`` and ``observed`` both mean the history before the checkpoint is
+            # UNVERIFIED; a consistency PASS beside them is not a verified restore (PR-B's check).
+            "checkpoint": checkpoint_basis(state),
+            "checkpoint_history": HISTORY_UNVERIFIED,   # nothing in PR-A verifies history (PR-B does)
             "next_step": "H6b-shadow (NAV per unit computed beside the board, no verdict)"}
 
 
@@ -1822,8 +1849,14 @@ def blocked_alert(state_dir: Path, *, now: str) -> dict[str, Any]:
     if judgement["blocked"]:
         if standing and told.get("key") == judgement["key"]:
             return {"alert": None, "note": note}
+        if judgement["category"] == "marker":
+            # C7 PR-A detects only (D1): the writes go on, so the message must not say they stopped.
+            what = ("원장과 상태가 서로 다른 시점에서 복원된 것으로 감지됐습니다. 쓰기는 계속되고(감지만), "
+                    "readiness는 FAIL입니다")
+        else:
+            what = "원장·상태 쓰기가 거부되어 H6 기록과 예외 알림이 멈춰 있습니다"
         text = (f"[보유 자산] H6 현금흐름 원장 BLOCKED — {judgement['reason_code']} ({judgement['category']}), "
-                f"{now} 확인. 원장·상태 쓰기가 거부되어 H6 기록과 예외 알림이 멈춰 있습니다. "
+                f"{now} 확인. {what}. "
                 "금액과 계정은 담지 않습니다. Thomas 터미널에서 원인을 확인해 주세요.")
         return {"alert": (f"{BLOCKED_TOKEN_TOLD}|{judgement['key']}", text), "note": note}
     if standing:

@@ -85,9 +85,12 @@ def assert_detected(d, now, reason):
     chain, consistency, _ = checks(d, now)
     assert (chain, consistency) == ("PASS", "FAIL")
     marker = cash_flows.load_state(d)[cash_flows.DETECTION_MARKER_KEY]
-    assert marker["reason"] == reason and marker["reason_code"] == cash_flows.LEDGER_TAMPERED
+    # R-2 (Thomas 2026-10-17): a detection carries its own code — LEDGER_TAMPERED means a refused write
+    assert marker["reason"] == reason and marker["reason_code"] == cash_flows.LEDGER_MISMATCH_DETECTED
     judged = cash_flows.blocked_state(d)
     assert (judged["blocked"], judged["category"]) == (True, "marker")
+    text = cash_flows.blocked_alert(d, now=now)["alert"][1]
+    assert cash_flows.LEDGER_MISMATCH_DETECTED in text and "거부" not in text and "쓰기는 계속" in text
 
 
 def assert_whole(d, now, exceptions):
@@ -219,7 +222,8 @@ def test_defect_c7_8_a_state_without_a_checkpoint_is_read_as_consistent(live, tm
     # absent, so this PASS is never read as a verified restore.
     now = later(T2, days=3, hours=1)
     assert checks(live, now)[:2] == ("PASS", "PASS")
-    assert cash_flows.readiness(live, now=now, current=CURRENT_OK)["checkpoint"] == "absent"
+    ready = cash_flows.readiness(live, now=now, current=CURRENT_OK)
+    assert (ready["checkpoint"], ready["checkpoint_history"]) == ("absent", "UNVERIFIED")
 
 
 # C7-9: a ledger whose chain is broken is refused, before and after a write; nothing is written.

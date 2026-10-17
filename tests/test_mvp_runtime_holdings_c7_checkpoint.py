@@ -163,8 +163,47 @@ def test_without_a_checkpoint_the_first_write_records_the_observed_end_and_says_
     assert ready["checkpoint"] == "absent" and ready["checks"]["ledger_state_consistency"] == "PASS"
     fire(tmp_path, T2, P2)
     assert checkpoint(tmp_path) == tip(tmp_path)
-    assert cash_flows.readiness(tmp_path, now=T2, current=CURRENT_OK)["checkpoint"] == "present"
+    ready = cash_flows.readiness(tmp_path, now=T2, current=CURRENT_OK)
+    assert (ready["checkpoint"], ready["checkpoint_history"]) == ("observed", "UNVERIFIED")   # R-3 (가-수정)
     assert not [r for r in ledger(tmp_path) if "checkpoint" in str(r.get("event"))]   # no ledger line of its own
+
+
+def test_an_observed_checkpoint_stays_observed_however_often_it_moves(tmp_path):
+    """R-3 (가-수정): moving verifies the lines added since ``observed_at``, never the history before it."""
+    set_cutover(tmp_path)
+    first = state(tmp_path)[cash_flows.CHECKPOINT_KEY]
+    assert (first["basis"], first["observed_at"]) == ("observed", first["at"])
+    for hours in range(1, 6):
+        fire(tmp_path, later(T1, hours), P2)
+    moved = state(tmp_path)[cash_flows.CHECKPOINT_KEY]
+    assert moved["lines"] > first["lines"] and moved["at"] != first["at"]
+    assert (moved["basis"], moved["observed_at"]) == ("observed", first["observed_at"])
+    ready = cash_flows.readiness(tmp_path, now=later(T1, 5), current=CURRENT_OK)
+    assert (ready["checkpoint"], ready["checkpoint_history"]) == ("observed", "UNVERIFIED")
+
+
+def test_a_state_cannot_vouch_for_its_own_history(tmp_path):
+    """Whatever basis a state file claims, PR-A reads the history as UNVERIFIED."""
+    set_cutover(tmp_path)
+    fire(tmp_path, T1)
+    for claimed in ("continued", "verified", "", None):
+        body = state(tmp_path)
+        body[cash_flows.CHECKPOINT_KEY]["basis"] = claimed
+        write_state(tmp_path, body)
+        ready = cash_flows.readiness(tmp_path, now=T1, current=CURRENT_OK)
+        assert (ready["checkpoint"], ready["checkpoint_history"]) == ("observed", "UNVERIFIED"), claimed
+
+
+def test_a_detection_never_carries_the_refusal_code(tmp_path):
+    set_cutover(tmp_path)
+    fire(tmp_path, T1)
+    body = state(tmp_path)
+    body[cash_flows.CHECKPOINT_KEY] = {"lines": 99, "sha256": "f" * 64, "basis": "observed", "observed_at": T1}
+    write_state(tmp_path, body)
+    fire(tmp_path, T2, P2)
+    marker = state(tmp_path)[cash_flows.DETECTION_MARKER_KEY]
+    assert marker["reason_code"] == cash_flows.LEDGER_MISMATCH_DETECTED != cash_flows.LEDGER_TAMPERED
+    assert cash_flows.blocked_state(tmp_path)["reason_code"] == cash_flows.LEDGER_MISMATCH_DETECTED
 
 
 def test_the_readiness_reads_the_state_before_the_ledger(tmp_path, monkeypatch):

@@ -4,11 +4,18 @@
 
 PR-A of `HOLDINGS_LEDGER_CHECKPOINT_V0.1.md` §10, built to the PR-A readiness note §3.2–§3.6 after PR-D
 (#1216, merged as `52b744e9`). D1 (Thomas 2026-10-11) set the order PR-D → A → B → C and the condition that PR-A
-detects only. Built inside Thomas's 8-hour autonomous grant (2026-10-16). Merge and deploy are each a
-separate approval.
+detects only.
 
-- **The checkpoint.** The state keeps `ledger_checkpoint = {lines, sha256, at}`: the ledger's length and
-  last hash as of the last write. Because the ledger is a chain, line N's hash proves lines 1…N.
+**Approval basis, stated as it stands.**
+- Built and opened on 2026-10-16 inside Thomas's 8-hour autonomous grant. That grant did not lift D1's
+  condition that each PR's implementation is approved separately, and no approval preceded the work.
+- On 2026-10-17 Thomas ratified keeping it, decided R-2 and R-3, and approved the corrections below.
+  The ratification is not recorded as a prior approval.
+- Merge is a separate approval. **Deploy: not before PR-B** (Thomas 2026-10-17), and Option A's hold
+  applies regardless.
+
+- **The checkpoint.** The state keeps `ledger_checkpoint = {lines, sha256, at, basis, observed_at}`: the
+  ledger's length and last hash as of the last write, and where the checkpoint began. Because the ledger is a chain, line N's hash proves lines 1…N.
   `_commit` moves the checkpoint to the new end after every write.
 - **Two detectors, under both locks** (inside `_commit`'s `build`):
   - **Checkpoint.** The ledger is shorter than N (`checkpoint_ledger_shorter`), or holds another line at
@@ -27,20 +34,36 @@ separate approval.
   - `ledger_state_consistency` FAILs on a marker or a live detection.
   - Readiness now reads the state **before** the ledger. A write between the two reads can then only
     lengthen the ledger past the checkpoint, never produce a false FAIL. A test runs that race.
-  - The readiness detail says `checkpoint: present|absent`.
+  - The readiness detail reports `checkpoint: absent|observed` and `checkpoint_history: UNVERIFIED`.
 
-**Two open decisions, held to their stand-ins rather than decided.**
-- **R-2 (the detection's reason code).** The marker carries `HOLDINGS_CASH_FLOW_LEDGER_TAMPERED`, the
-  §6 family code PR-D's merged code already falls back to. `reason` names the detector. No new reason
-  code is added.
-- **R-3 (telling a lost checkpoint from one never written).** Option (가) is kept: they are not told
-  apart, and PR-A writes no ledger line of its own.
-  - A state without a checkpoint is not judged; it is PR-B's history check (D2: UNCHECKED).
-  - The first write records the observed end.
-  - **Known limit until PR-B:** a state restored from before PR-A, or a lost state file, reads
-    consistency PASS. The readiness detail then says `checkpoint: absent`, so that PASS is never a
-    verified restore. Option (나) (`checkpoint_introduced`) would close this at the price of a new
-    ledger event.
+**R-2 and R-3, as Thomas decided them (2026-10-17).**
+- **R-2: a detection-only reason code.**
+  - The marker carries `HOLDINGS_CASH_FLOW_LEDGER_MISMATCH_DETECTED`, never `LEDGER_TAMPERED`, which
+    means a write was refused and nothing written.
+  - `reason` names the detector.
+  - PR-D's BLOCKED message for the marker category now says what is true: a mismatch was detected, the
+    writes go on, and readiness FAILs. The first version said the writes were refused. The other
+    categories keep their text (C7 §6: code, time and next action, no amount or account).
+- **R-3: (가-수정), basis recorded.**
+  - PR-A still writes no ledger line.
+  - Every checkpoint records `basis: observed` and `observed_at`, the moment this code first saw the
+    ledger. Both survive every move: moving verifies the lines added since `observed_at`, never the
+    history before it. So a checkpoint first recorded over a restored or lost state does not become
+    "verified" by being moved, which closes the gap the first version had: there, one write turned
+    `absent` into a present checkpoint.
+  - `absent` and `observed` are both **UNVERIFIED** history. PR-A never reports anything else, and
+    whatever basis a state file claims, it reads `observed`: the state cannot vouch for itself. Only a
+    later step that verifies the history (PR-B, an operator adoption) may write another basis.
+
+**Recorded, not decided: where this meets D2 and the readiness note.**
+- The readiness note says `ledger_state_consistency` keeps its meaning. D2 puts "no checkpoint, state
+  missing → UNCHECKED" in a separate key, `history_completeness`, which PR-B builds.
+- So with the checkpoint `absent` or `observed`, `ledger_state_consistency` can still be PASS, and
+  `ready` (all checks PASS) can still become true. The detail beside it says
+  `checkpoint_history: UNVERIFIED`.
+- Gating `ready` on the basis would change the readiness contract that D2 and the note fixed. It is
+  left to Thomas, not inferred here. Until PR-B, the decided "no deploy before PR-B" is what keeps this
+  from reaching operation.
 
 **Tests.**
 - `test_defect_c7_4` and `test_defect_c7_6` flip and are renamed.
@@ -49,18 +72,21 @@ separate approval.
   - C7-6 is detected.
   - Both assert that the flow is still lost and the writes go on.
 - `test_defect_c7_8` stays a defect for PR-B. It now strips the checkpoint to model a pre-PR-A state, and
-  asserts `checkpoint: absent`. `test_defect_c7_11` is unchanged.
-- New: `tests/test_mvp_runtime_holdings_c7_checkpoint.py`, 11 cases. It covers:
+  asserts `checkpoint: absent` with history UNVERIFIED. `test_defect_c7_11` is unchanged.
+- New: `tests/test_mvp_runtime_holdings_c7_checkpoint.py`, 14 cases. It covers:
   - recording and moving the checkpoint, and freezing it with a stable alert key while writes go on;
   - no self-clearing;
   - the told-key detector, including a resolved exception that is no loss;
   - malformed checkpoints, and the absent case;
   - the read order and its race;
-  - the checkpoint and the marker surviving every state-only writer.
-- **Fault injection** (scratch, outside the suite): 16 of 17 faults made a test fail. The one survivor
-  runs detection after the writer's own patch instead of before. A standing marker returns early, so
-  the order changes no outcome: an equivalent mutant.
+  - the checkpoint and the marker surviving every state-only writer;
+  - the R-2 and R-3 decisions: the code, the alert text, `observed` surviving moves, and a state file
+    unable to claim a verified basis.
+- **Fault injection** (scratch, outside the suite): 21 of 21 faults made a test fail. Six of them are
+  on the decisions: the code reverted, `observed_at` reset, a move promoting the basis, the state
+  vouching for its basis, observed read as verified, and the alert claiming a refusal. The first
+  version's one equivalent mutant (detection after the writer's patch) is no longer listed.
 
 **What this does not change.** No ledger format or event, no refusal, no cutover, no epoch, no H6b or
-H6c state. No door reads the new key. The board and the snapshot show the same readiness fields as
-before. No real ledger, state file or exchange was touched.
+H6c state. No door reads the new keys. The board and the snapshot show the same readiness fields as
+before: `checkpoint` and `checkpoint_history` are in `readiness()`'s detail, not in the stored snapshot. No real ledger, state file or exchange was touched.
