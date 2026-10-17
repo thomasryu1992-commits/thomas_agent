@@ -2568,6 +2568,8 @@ Option C의 저장소 구현은 PR-B·PR-C로 main에 들어갔다. 이 문서(P
 | C4 계획 병합 | `승인: C4 계획 #1232 squash 병합(head b03a4905, base c88708de; 문서만) (Thomas 2026-10-17)` | main `66e24fde` |
 | CR-8b·D-8 | `결정: CR-8b Python 3.12.13, 인터프리터 출처 python-build-standalone x86_64(SHA256 설치 기록 고정, 없으면 재보고); D-8 C4 환경 GitHub Actions 임시 러너(무료 한도 안, 비필수 workflow — CI 변경은 별도 승인) (Thomas 2026-10-17)` | §4.25.4 |
 | C4 workflow | `승인: C4 시험 workflow 구현 및 PR 생성(GitHub Actions 임시 러너, 비필수, Python 3.12.13 PBS SHA256 고정, N-1~N-14·누출 검사; 병합·운영 제외) (Thomas 2026-10-17)` | 위 D-8의 "CI 변경은 별도 승인"에 해당한다 |
+| CLOCK-SOURCE | `결정: CLOCK-SOURCE = A(커널 adjtimex, STA_UNSYNC 해제 + maxerror ≤ 16초), DESIGN_ONLY (Thomas 2026-10-17)` ("권고안대로 승인") | 실행기는 커널의 NTP 상태만 믿는다. chrony·timesyncd 어느 쪽이든 같다. 이 호스트는 chrony이고 timesyncd 표지 파일이 없어 그 안(C)은 제외했다 |
+| CLOCK-SOURCE 구현 | `승인: CLOCK-SOURCE A 구현(C3 코드 PR, serve 연결·합성 시험) 및 C4 하네스 확장(합성 트리·이미지·8개 컨테이너, N-10·N-11·N-12 재시험) PR 생성(병합·운영 설치 제외) (Thomas 2026-10-17)` | `deploy_runner/clock_source.py`. CR-10·11·19 값은 여전히 미정이다 |
 
 **정해지지 않은 것:** X 침해 위험의 운영상 수용, D-10b, CR-13, CR-15, CR-17(RECOVERY_INBOX는 우선 후보일 뿐), N2, D-5–D-9, D-12–D-16.
 
@@ -2612,7 +2614,7 @@ Option C의 저장소 구현은 PR-B·PR-C로 main에 들어갔다. 이 문서(P
 - **C3b(#1234):** C4 계획 §2 P-3의 서비스 진입점이다. G·X는 `python -I -m runtime.mvp_runtime.deploy_runner.serve --role gate|actor --config …`로 시작하고, root 소유 닫힌 설정을 읽는다. 설정에는 실행 환경 지문(Python 버전과 배포 패키지 해시)이 있어 다르면 `RUNNER_ENVIRONMENT_MISMATCH`로 시작을 거부한다(C2X-12). 설치 도구(`scripts/ops/deploy_runner_install.py`)는 지문 계산, 소비 저장소 genesis, unit 렌더링, 설정 검사를 한다. 아무 호스트에도 설치되지 않았다.
 - **CR-8b:** Python 3.12.13, 출처 python-build-standalone x86_64. 2026-10-17 공개 릴리스 목록에서 `cpython-3.12.13+20260807-x86_64-unknown-linux-gnu-install_only.tar.gz`가 있음을 확인했다(3.12.13의 최신 빌드 릴리스 `20260807`). 그 뒤 3.12.14·3.12.15 빌드도 있다. 결정은 3.12.13이고, 운영 이미지의 Python도 3.12.13이다. SHA256은 C4 workflow가 고정한다.
 - **D-8:** C4는 GitHub Actions 임시 러너에서 한다. 러너는 작업마다 새로 만들어지고 끝나면 버려지는 VM이라 C4 계획 §3의 V1(별도 커널)에 가깝다. 운영 저장소의 Secret을 쓰지 않는다. 호스팅 러너에서 systemd unit을 실제로 띄울 수 있는지는 NOT_VERIFIED이고, workflow가 첫 실행에서 확인한다.
-- **아직 없는 것:** CLOCK-SOURCE·RUNNER-FETCH 결정, 운영 설치(C5·C6).
+- **아직 없는 것:** RUNNER-FETCH 결정, CR-10·11·19 값, 운영 설치(C5·C6). CLOCK-SOURCE는 2026-10-17에 A로 정해졌다(§4.25.1).
 - **C4 결과(2026-10-17, #1237 병합 `2766c26b`):** 임시 러너에서 FAIL 0, PASS 94, BLOCKED 3(CLOCK-SOURCE), NOT_TESTED 1, 누출 0건이다. C3b unit은 `-I` 아래에서 `.pth` 없이 import하지 못한다는 것이 드러났다. 세부는 C4 계획 §10에 있다. 운영 호스트 기준으로는 여전히 NOT_TESTED다.
 
 ## 5. 대안 비교

@@ -19,8 +19,9 @@ In order, and any failure stops before a socket exists:
 ``--check`` runs 1–3 and exits without listening: what an install verifies before enabling a unit.
 Exit codes: 0 served or checked, 2 usage, 3 refused (the code, and nothing else, goes to stderr).
 
-Clock synchronisation has no decided source (CLOCK-SOURCE), so the actor is built with the default
-"not confirmed" and ``prepare_candidate`` answers ``CLOCK_UNTRUSTED``. Nothing here reads ``.env``.
+The actor confirms clock synchronisation from the kernel (``clock_source.kernel_sync_confirmed``,
+CLOCK-SOURCE = A, Thomas 2026-10-17); unreadable or unsynchronised keeps ``prepare_candidate`` at
+``CLOCK_UNTRUSTED``. Nothing here reads ``.env``.
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..cli_common import force_utf8_io
-from . import startup, trust
+from . import clock_source, startup, trust
 from .actor import Actor, ActorConfig, actor_refusal
 from .approval_verify import SshKeygenVerifier
 from .clock import check_time_policy
@@ -50,7 +51,8 @@ EXIT_REFUSED = 3
 
 
 def build_actor(config: RunnerConfig, *, now: datetime | None = None, run: Callable[..., Any] = run_command,
-                verifier: Any = None) -> tuple[Actor, int]:
+                verifier: Any = None, sync_confirmed: Callable[[], bool] = clock_source.kernel_sync_confirmed
+                ) -> tuple[Actor, int]:
     """X ready to serve, and the held instance lock's descriptor (keep it open for the process's life)."""
     a = config.actor
     policy = config.policy()
@@ -76,7 +78,7 @@ def build_actor(config: RunnerConfig, *, now: datetime | None = None, run: Calla
             git=Path(a["git_bin"]), runner_install_sha=config.install_sha, environment=config.environment,
             policy=policy, load_trust=load_trust, load_revoked_approvals=load_revoked,
             verifier=verifier or SshKeygenVerifier(Path(a["ssh_keygen_bin"]), a["principal"], exe_owner_uid=owner),
-            run=run, inspect_min_interval_s=float(a["inspect_min_interval_s"]))
+            run=run, inspect_min_interval_s=float(a["inspect_min_interval_s"]), sync_confirmed=sync_confirmed)
         return Actor(actor_config, result), lock_fd
     except BaseException:
         os.close(lock_fd)
