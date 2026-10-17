@@ -657,6 +657,7 @@ class Runner:
         good, _ = case("P-5", "a valid approval passes the clock, is spent once, tags and builds", 12,
                        request_id="c4-ok-1", expect="OK")
         if self.send_case(good, "ok") != "OK":
+            self.diagnose_effect_failure()
             for test, label in (("N-11", "reuse of a spent approval"), ("N-12", "Docker failure after the spend")):
                 self.report.add(test, label, BLOCKED, "the success path did not complete; see the P-5 row")
             return
@@ -682,6 +683,31 @@ class Runner:
                             _frame("c4-n12-6", "inspect_candidate", {"pr": GOOD_PR}), "RUNNER_LATCHED"), "latched")
         self.report.add("N-12", "the failed spend is recorded, never retried", PASS if rows() == 3 else FAIL,
                         f"{rows()} rows")
+
+    def diagnose_effect_failure(self) -> None:
+        """Why the spend's effect failed, as codes and Docker's first error line: the actor's own audit rows
+        (reason codes only), and the same tag and build re-run as X with the actor's exact environment."""
+        from runtime.mvp_runtime.deploy_runner import docker_argv
+
+        try:
+            rows = [json.loads(line) for line in (ACTOR_DIR / "audit.jsonl").read_text(encoding="ascii").splitlines()]
+            codes = [f"{r.get('execution_state')}:{r.get('reason_code')}" for r in rows[-4:]]
+        except (OSError, ValueError) as exc:
+            codes = [type(exc).__name__]
+        self.report.add("P-5", "the actor's last audit rows (state:reason)", INFO, " ".join(codes))
+        env = {"PATH": "/usr/bin:/bin", "LANG": "C"}
+        for label, argv in (("tag", docker_argv.tag_rollback_point(Path("/usr/bin/docker"),
+                                                                    self.image_id(docker_argv.latest_ref()) or "", 1)),
+                            ("build", docker_argv.build_candidate(Path("/usr/bin/docker"), TREES, GOOD_PR))):
+            done = subprocess.run([SETPRIV, f"--reuid={IDS[ACTOR]}", f"--regid={IDS[ACTOR]}", "--init-groups",
+                                   "--reset-env", "--",
+                                   "/usr/bin/env", "-i", *[f"{k}={v}" for k, v in env.items()], *argv],
+                                  cwd="/", stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=300)
+            lines = [ln for ln in done.stderr.splitlines() if ln.strip()]
+            self.report.add("P-5", f"the actor's {label} re-run as X with its environment", INFO,
+                            f"rc={done.returncode} {(lines[-1] if lines else '')[:200]}")
+            if label == "tag" and done.returncode == 0:
+                subprocess.run(["/usr/bin/docker", "image", "rm", docker_argv.rollback_ref(1)], capture_output=True)
 
     @staticmethod
     def docker_state() -> list[str]:
