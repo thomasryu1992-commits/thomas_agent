@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "deploy_runner_reply.v0.1.schema.json",
-  "title": "Option C deploy runner reply — what the gatekeeper answers a caller (reason codes from deploy_runner/reasons.py)",
+  "title": "Option C deploy runner reply — what the gatekeeper answers a caller (reason codes from deploy_runner/reasons.py); a FAILED_EFFECT_PARTIAL refusal may carry the measured ids only (C2 §5.2, §6.3)",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -48,6 +48,7 @@
         "AUDIT_WRITE_FAILED",
         "BUILD_FAILED",
         "CLOCK_UNTRUSTED",
+        "COMPOSE_PROJECT_MISMATCH",
         "CONSUMPTION_STORE_UNAVAILABLE",
         "CONSUMPTION_WRITE_FAILED",
         "CREDENTIALS_UNAVAILABLE",
@@ -146,10 +147,26 @@
           "reason_code",
           "reason"
         ],
-        "not": {
-          "required": [
-            "data"
-          ]
+        "if": {
+          "properties": {
+            "reason_code": {
+              "const": "FAILED_EFFECT_PARTIAL"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/partial_measurement"
+            }
+          }
+        },
+        "else": {
+          "not": {
+            "required": [
+              "data"
+            ]
+          }
         }
       }
     },
@@ -167,5 +184,57 @@
         }
       }
     }
-  ]
+  ],
+  "$defs": {
+    "partial_measurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pr",
+        "git_commit_sha",
+        "rollback_image_id",
+        "candidate_image_id"
+      ],
+      "properties": {
+        "pr": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999999
+        },
+        "git_commit_sha": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}\\Z"
+            }
+          ]
+        },
+        "rollback_image_id": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}\\Z"
+            }
+          ]
+        },
+        "candidate_image_id": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}\\Z"
+            }
+          ]
+        }
+      }
+    }
+  }
 }

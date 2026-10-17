@@ -137,6 +137,12 @@ SHARED_ACROSS_MODULES = frozenset({
     # resolved. STORE_ID_MISMATCH means the consumption store is not the one this install expects, read
     # by `consumption` and judged by `startup` when the install and the audit disagree.
     "REQUEST_ID_REUSED", "REQUEST_IN_FLIGHT", "RUNNER_STARTUP_BLOCKED", "STORE_ID_MISMATCH",
+    # Added 2026-10-16 with C3a-3. ARGUMENT_INVALID: a request value not in its accepted form, judged
+    # by `approval_verify.check_args` and again by `docker_argv` before any value reaches an argv.
+    # AUDIT_WRITE_FAILED: a runner record could not be written — the actor's audit (`audit_chain`) or
+    # the gatekeeper's intake log (`gate`); the reply sentence is the same and so is the operator's
+    # next step. REQUEST_ID_REQUIRED keeps `dispatch_bridge`'s meaning: this action needs a request_id.
+    "ARGUMENT_INVALID", "AUDIT_WRITE_FAILED", "REQUEST_ID_REQUIRED",
 })
 
 

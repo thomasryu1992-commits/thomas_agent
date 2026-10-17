@@ -732,12 +732,19 @@ def test_the_package_reads_no_env_file_and_drives_no_container():
 def test_the_package_imports_nothing_that_defaults_to_the_state_root():
     forbidden = {"paths", "store", "jsonl", "filelock", "state_guard", "control", "scheduler",
                  "bridge_idempotency", "socket_door", "holdings", "crypto", "knowledge"}
+    # C3a-3: the two sockets sit on the shared door transport, as the C2 design says (§0N). Only the
+    # door and the gatekeeper may import it, and neither may ask it for a default path.
+    transport = {"door.py", "gate.py"}
     for name, text in _sources().items():
+        if name in transport:
+            assert not any(isinstance(n, (ast.Attribute, ast.Name)) and "resolve_socket_path" in
+                           (getattr(n, "attr", None), getattr(n, "id", None)) for n in ast.walk(ast.parse(text))), name
         for node in ast.walk(ast.parse(text)):
             if isinstance(node, ast.ImportFrom):
                 module = node.module or ""
                 parts = set(module.split(".")) | {a.name for a in node.names}
-                assert not parts & forbidden, (name, module)
+                allowed = {"socket_door"} if name in transport else set()
+                assert not parts & (forbidden - allowed), (name, module)
             elif isinstance(node, ast.Import):
                 for a in node.names:
                     assert not set(a.name.split(".")) & forbidden, (name, a.name)
@@ -749,7 +756,7 @@ def test_only_the_verifier_starts_a_process_and_never_through_a_shell():
         uses = [n for n in ast.walk(tree) if isinstance(n, ast.Attribute) and n.attr in
                 {"run", "Popen", "call", "check_output", "system", "popen"}
                 and isinstance(n.value, ast.Name) and n.value.id in {"subprocess", "os"}]
-        if name != "approval_verify.py":
+        if name not in ("approval_verify.py", "commands.py"):  # ssh-keygen (C3a-1); the docker argv (C3a-3)
             assert not uses, name
         assert "shell=True" not in text, name
 
