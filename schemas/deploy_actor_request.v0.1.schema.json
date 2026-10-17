@@ -1,37 +1,19 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "deploy_actor_request.v0.1.schema.json",
-  "title": "Option C deploy runner — the message the gatekeeper forwards to the actor (C2 §0N, N1). The actor re-validates every field itself",
+  "title": "Option C deploy runner — thomas.actor_request.v1, the message G forwards to X (C2 §6.1b). X re-validates every field itself",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "proto",
-    "gate_intake_seq",
-    "client_id",
+    "schema",
     "request_id",
     "verb",
     "args",
-    "approval_document_b64",
-    "approval_signature"
+    "gate_intake_seq"
   ],
   "properties": {
-    "proto": {
-      "const": 1
-    },
-    "gate_intake_seq": {
-      "type": "integer",
-      "minimum": 1
-    },
-    "client_id": {
-      "anyOf": [
-        {
-          "type": "null"
-        },
-        {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9._:-]{1,64}\\Z"
-        }
-      ]
+    "schema": {
+      "const": "thomas.actor_request.v1"
     },
     "request_id": {
       "anyOf": [
@@ -77,28 +59,18 @@
       }
     },
     "approval_document_b64": {
-      "anyOf": [
-        {
-          "type": "null"
-        },
-        {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 2734
-        }
-      ]
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2734
     },
     "approval_signature": {
-      "anyOf": [
-        {
-          "type": "null"
-        },
-        {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 4096
-        }
-      ]
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "gate_intake_seq": {
+      "type": "integer",
+      "minimum": 1
     }
   }
 }

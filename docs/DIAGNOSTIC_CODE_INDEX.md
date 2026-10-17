@@ -6,8 +6,8 @@ Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **
 
 - **732** distinct codes across **1489** raise sites
 - **24** exception classes carry them
-- **85** codes are raised from more than one module (see below)
-- **174** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
+- **84** codes are raised from more than one module (see below)
+- **176** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
 - **40** raise sites carry a human-readable **message** where a code would go, so there is nothing to look up — a different gap from the line above, and counted apart from it
 
 ## Codes raised from more than one module
@@ -67,7 +67,6 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `ORDER_STAGE_REFUSED` | `live_execution.py`, `testnet_execution.py` |
 | `ORDER_TRANSPORT` | `live_execution.py`, `testnet_execution.py` |
 | `PATTERN_NOT_FOUND` | `programization.py`, `programization_cli.py` |
-| `PEER_NOT_PERMITTED` | `door.py`, `socket_door.py` |
 | `PERMISSION_DECISION_MISSING` | `approval.py`, `switch_bridge.py` |
 | `PLANNED_TASK_INVALID` | `prime.py`, `trial.py` |
 | `PLAN_INVALID` | `dispatch_bridge.py`, `workflow.py` |
@@ -119,7 +118,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `ACTIVATION_EXPIRED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | `assert_authorization` | `now >= authorization.expires_at` |
 | `ACTIVATION_REVOKED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | `assert_authorization` | `not record_path.is_file()` |
 | `ACTOR_PROFILE_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/pipeline_worker.py` | `apply_work` | `isinstance(raw_profile, str) and raw_profile.strip() in _ACTOR_PROFILES` |
-| `ACTOR_REPLY_INVALID` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/gate.py` | `serve` | `answer.get('request_id') != message['request_id'] and 'request_id' in answer` |
+| `ACTOR_REPLY_INVALID` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/gate.py` | `serve` | `answer['request_id'] not in (None, message['request_id'])` |
 | `ACTOR_UNAVAILABLE` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/gate.py` | `call_actor_socket` | `—` |
 | `ALREADY_CLASSIFIED` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | `classify_task` | `classification.get('classification_status') != 'UNCLASSIFIED'` |
 | `ALREADY_CONSUMED` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | `build_consumed_record` | `status == STATUS_CONSUMED` |
@@ -228,7 +227,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `ARGUMENT_INVALID` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/docker_argv.py` | `image_inspect` | `not isinstance(ref, str) or not (allowed.match(ref) or _IMAGE_ID.match(ref))` |
 | `ARGUMENT_INVALID` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/docker_argv.py` | `tree_path` | `not root.is_absolute()` |
 | `ARGUMENT_NOT_ACCEPTED` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | `apply_command` | `expected_state is not None and command != CMD_RESUME` |
-| `ARGUMENT_NOT_ACCEPTED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_handle` | `message['approval_document_b64'] is not None or message['approval_signature'] is not None` |
+| `ARGUMENT_NOT_ACCEPTED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_handle` | `'approval_document_b64' in message or 'approval_signature' in message` |
 | `ARGUMENT_NOT_ACCEPTED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/approval_verify.py` | `check_args` | `set(args) - allowed` |
 | `ARGUMENT_NOT_ACCEPTED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/gate.py` | `check_frame` | `set(frame) - FRAME_KEYS` |
 | `ARGUMENT_NOT_ACCEPTED` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | `apply_dispatch` | `unexpected` |
@@ -334,6 +333,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `CLOCK_UNTRUSTED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/clock.py` | `check_clock` | `last_seen_wall is not None and now_wall < last_seen_wall - timedelta(seconds=policy.backstep_to…` |
 | `CLOCK_UNTRUSTED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/clock.py` | `check_clock` | `mono_elapsed < 0 or abs(wall_elapsed - mono_elapsed) > policy.clock_jump_s` |
 | `CLOCK_UNTRUSTED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/clock.py` | `check_clock` | `not sync_confirmed` |
+| `COMPOSE_PROJECT_MISMATCH` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_measure_images` | `parts[3] != self.config.environment.project` |
 | `CONSUMED_NOT_PROMOTED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | `consume_approval` | `—` |
 | `CONSUMED_UNAUDITED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | `consume_approval` | `—` |
 | `CONSUMPTION_DISABLED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | `consume` | `—` |
@@ -1106,7 +1106,6 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `PDF_TEXT_TOO_LARGE` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/pdf_text.py` | `_extract_with_pypdf` | `total > MAX_TEXT_CHARS` |
 | `PDF_TOO_LARGE` | `KnowledgeBlocked` | `runtime/mvp_runtime/knowledge/pdf_text.py` | `_check_pdf_bytes` | `len(data) > MAX_PDF_BYTES` |
 | `PEER_CREDENTIALS_UNAVAILABLE` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | `authorize_peer` | `creds is None` |
-| `PEER_NOT_PERMITTED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/door.py` | `peer_uid` | `creds[1] not in self.allowed_client_uids` |
 | `PEER_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | `authorize_peer` | `creds[1] not in self.allowed_client_uids` |
 | `PERMISSION_DECISION_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | `apply_command` | `permission_decision is None` |
 | `PERMISSION_DECISION_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | `validate_spendable_approval` | `permission_decision is None` |
@@ -1318,7 +1317,6 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `ROTATION_PARTIAL` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | `_execute` | `summary['failures']` |
 | `ROUTE_NOT_SUPPORTED` | `KernelBlocked` | `runtime/read_only_kernel/router.py` | `select_route` | `routing.get('selected_route') != 'ROLE'` |
 | `ROUTE_NOT_SUPPORTED` | `KernelBlocked` | `runtime/read_only_kernel/worker_port.py` | `invoke_worker` | `route.selected_route != 'ROLE'` |
-| `RUNNER_ENVIRONMENT_MISMATCH` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_measure_images` | `parts[3] != self.config.environment.project` |
 | `RUNNER_ERROR` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/request_state.py` | `_validate` | `—` |
 | `RUNNER_ERROR` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/request_state.py` | `finish` | `prior is None or prior['state'] != CLAIMED or prior['request_sha256'] != request_sha256` |
 | `RUNNER_ERROR` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/request_state.py` | `finish` | `state not in TERMINAL` |
@@ -1328,6 +1326,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/clock.py` | `check_time_policy` | `policy.max_lifetime_s < max(policy.deadlines_s.values())` |
 | `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/door.py` | `__init__` | `—` |
 | `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/door.py` | `__init__` | `not uids or any((not isinstance(u, int) or isinstance(u, bool) or u < 0 for u in uids))` |
+| `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/door.py` | `__init__` | `peer_refusal not in ('PEER_NOT_PERMITTED', 'ACTOR_PEER_NOT_PERMITTED')` |
 | `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/latch.py` | `_validate` | `—` |
 | `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/latch.py` | `read` | `—` |
 | `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/latch.py` | `set` | `—` |

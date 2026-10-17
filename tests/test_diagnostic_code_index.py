@@ -141,10 +141,8 @@ SHARED_ACROSS_MODULES = frozenset({
     # by `approval_verify.check_args` and again by `docker_argv` before any value reaches an argv.
     # AUDIT_WRITE_FAILED: a runner record could not be written — the actor's audit (`audit_chain`) or
     # the gatekeeper's intake log (`gate`); the reply sentence is the same and so is the operator's
-    # next step. PEER_NOT_PERMITTED keeps the meaning `socket_door` gives it (the kernel-reported uid is
-    # not on the list); the runner's `door` only makes the list literal. REQUEST_ID_REQUIRED keeps
-    # `dispatch_bridge`'s meaning: this action needs a request_id.
-    "ARGUMENT_INVALID", "AUDIT_WRITE_FAILED", "PEER_NOT_PERMITTED", "REQUEST_ID_REQUIRED",
+    # next step. REQUEST_ID_REQUIRED keeps `dispatch_bridge`'s meaning: this action needs a request_id.
+    "ARGUMENT_INVALID", "AUDIT_WRITE_FAILED", "REQUEST_ID_REQUIRED",
 })
 
 

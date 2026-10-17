@@ -14,11 +14,15 @@ as ``gate_intake_seq`` only so an operator can line the two records up.
 Order per frame:
 
 1. the peer's uid, on the kernel's answer, against G's literal list (``door.RunnerDoor``);
-2. the frame: closed keys, ``proto`` 2, well-formed ``client_id``/``request_id``, a known verb and
-   its closed arguments (``check_args``) — no approval is opened here;
+2. the frame (§6.1a): closed keys — ``proto`` 2, ``client_id``, ``request_id``, ``verb``, ``args``, and
+   for an operational action ``approval_document`` (the signed bytes as base64 text) and
+   ``approval_signature`` — a known verb and its closed arguments (``check_args``). No approval is
+   opened here;
 3. ``FORWARDED`` written and ``fsync``-ed, then the actor called with a deadline;
-4. the actor's reply held to ``deploy_actor_reply``; the caller's reply built from it and held to
-   ``deploy_runner_reply``; anything else is ``ACTOR_REPLY_INVALID`` / ``REPLY_SCHEMA_INVALID``;
+4. the actor's reply held to ``deploy_actor_reply`` (``thomas.actor_reply.v1``); the caller's reply built
+   from it — the table's sentence for a refusal, the measured ids for ``FAILED_EFFECT_PARTIAL``, never
+   X's ``state`` — and held to ``deploy_runner_reply``; anything else is ``ACTOR_REPLY_INVALID`` /
+   ``REPLY_SCHEMA_INVALID``;
 5. ``ANSWERED`` with the code that went out.
 """
 
@@ -46,8 +50,8 @@ INTAKE_SCHEMA = "deploy_gate_intake.v0.1.schema.json"
 ACTOR_REPLY_SCHEMA = "deploy_actor_reply.v0.1.schema.json"
 RUNNER_REPLY_SCHEMA = "deploy_runner_reply.v0.1.schema.json"
 PROTO = 2
-ACTOR_PROTO = 1
-FRAME_KEYS = frozenset({"proto", "client_id", "request_id", "verb", "args", "approval_document_b64",
+ACTOR_SCHEMA = "thomas.actor_request.v1"
+FRAME_KEYS = frozenset({"proto", "client_id", "request_id", "verb", "args", "approval_document",
                         "approval_signature"})
 _TOKEN = re.compile(r"^[A-Za-z0-9._:-]{1,128}\Z")
 _CLIENT = re.compile(r"^[A-Za-z0-9._:-]{1,64}\Z")
@@ -65,8 +69,9 @@ def _row_hash(row: dict[str, Any]) -> str:
     return integrity.sha256_value({k: v for k, v in row.items() if k != "row_sha256"})
 
 
-def check_frame(frame: Any) -> dict[str, Any]:
-    """The caller's frame, held to its closed shape. Raises the code a malformed frame earns."""
+def check_frame(frame: Any) -> tuple[dict[str, Any], str | None]:
+    """The caller's frame, held to its closed shape: the message for X (§6.1b, without the sequence
+    number) and the ``client_id``, which stays with G. Raises the code a malformed frame earns."""
     if not isinstance(frame, dict):
         raise RunnerRefused("MALFORMED_REQUEST")
     if set(frame) - FRAME_KEYS:
@@ -82,13 +87,17 @@ def check_frame(frame: Any) -> dict[str, Any]:
     if "verb" not in frame or "args" not in frame:
         raise RunnerRefused("MALFORMED_REQUEST")
     args = check_args(frame["verb"], frame["args"])
-    document = frame.get("approval_document_b64")
+    document = frame.get("approval_document")
     signature = frame.get("approval_signature")
     for value, ceiling in ((document, MAX_DOCUMENT_B64), (signature, MAX_SIGNATURE_BYTES)):
         if value is not None and (not isinstance(value, str) or not 1 <= len(value) <= ceiling):
             raise RunnerRefused("APPROVAL_MALFORMED")
-    return {"proto": ACTOR_PROTO, "client_id": client_id, "request_id": request_id, "verb": frame["verb"],
-            "args": args, "approval_document_b64": document, "approval_signature": signature}
+    message: dict[str, Any] = {"schema": ACTOR_SCHEMA, "request_id": request_id, "verb": frame["verb"], "args": args}
+    if document is not None:
+        message["approval_document_b64"] = document
+    if signature is not None:
+        message["approval_signature"] = signature
+    return message, client_id
 
 
 class IntakeLog:
@@ -118,14 +127,14 @@ class IntakeLog:
         return rows
 
     def append(self, *, event: str, now: str, peer_uid: int, frame: dict[str, Any] | None,
-               reason_code: str | None) -> int:
+               reason_code: str | None, client_id: str | None = None) -> int:
         fd = open_private(self._dir, INTAKE_FILE, os.O_RDWR | os.O_APPEND, code=_LOG, create=True)
         try:
             lock_exclusive(fd, code=_LOG)
             rows = self._verified(fd)
             row: dict[str, Any] = {
                 "seq": len(rows) + 1, "recorded_at": now, "event": event, "peer_uid": peer_uid,
-                "client_id": frame["client_id"] if frame else None,
+                "client_id": client_id,
                 "request_id": frame["request_id"] if frame else None,
                 "verb": frame["verb"] if frame else None,
                 "frame_sha256": integrity.sha256_value(frame) if frame else None,
@@ -174,29 +183,40 @@ class Gate:
         stamp = _stamp(self.config.wall_now())
         request_id = frame.get("request_id") if isinstance(frame, dict) else None
         try:
-            message = check_frame(frame)
+            message, client_id = check_frame(frame)
         except RunnerRefused as exc:
             self.log.append(event="REFUSED", now=stamp, peer_uid=peer_uid, frame=None, reason_code=exc.reason_code)
             return self._out(refusal_reply(exc.reason_code, request_id=request_id), frame)
-        seq = self.log.append(event="FORWARDED", now=stamp, peer_uid=peer_uid, frame=message, reason_code=None)
+        seq = self.log.append(event="FORWARDED", now=stamp, peer_uid=peer_uid, frame=message, reason_code=None,
+                              client_id=client_id)
         try:
             answer = self.config.call_actor(self.config.actor_socket, {**message, "gate_intake_seq": seq},
                                             deadline_s=self.config.actor_deadline_s)
             _validate(answer, ACTOR_REPLY_SCHEMA, "ACTOR_REPLY_INVALID")
-            if answer.get("request_id") != message["request_id"] and "request_id" in answer:
+            # X echoes the id or, when it refused before reading one (peer, frame, busy), says none.
+            if answer["request_id"] not in (None, message["request_id"]):
                 raise RunnerRefused("ACTOR_REPLY_INVALID")
-            reply = self._out(dict(answer), frame)
-            if not reply["ok"]:
-                # Rebuilt, never relayed: the sentence a caller reads is the table's, not the actor's.
-                reply = self._out({**refusal_reply(answer["reason_code"], request_id=message["request_id"],
-                                                   error_ref=answer.get("error_ref")),
-                                   "replayed": answer["replayed"]}, frame)
+            reply = self._from_actor(answer, message, frame)
             _validate(reply, RUNNER_REPLY_SCHEMA, "REPLY_SCHEMA_INVALID")
         except RunnerRefused as exc:
             reply = self._out(refusal_reply(exc.reason_code, request_id=message["request_id"]), frame)
         self.log.append(event="ANSWERED", now=_stamp(self.config.wall_now()), peer_uid=peer_uid, frame=message,
-                        reason_code=None if reply["ok"] else reply["reason_code"])
+                        reason_code=None if reply["ok"] else reply["reason_code"], client_id=client_id)
         return reply
+
+    def _from_actor(self, answer: dict[str, Any], message: dict[str, Any], frame: Any) -> dict[str, Any]:
+        """The caller's reply, rebuilt from X's: X's ``state`` stays between G and X (§6.1a has no such
+        field), and a refusal's sentence is the table's, never X's."""
+        if answer["ok"]:
+            reply: dict[str, Any] = {"ok": True, "data": answer["data"], "replayed": answer["replayed"]}
+            if message["request_id"] is not None:
+                reply["request_id"] = message["request_id"]
+            return self._out(reply, frame)
+        reply = {**refusal_reply(answer["reason_code"], request_id=message["request_id"]),
+                 "replayed": answer["replayed"]}
+        if answer["reason_code"] == "FAILED_EFFECT_PARTIAL" and "data" in answer:
+            reply["data"] = answer["data"]          # the measured ids, schema-checked on both sides
+        return self._out(reply, frame)
 
     @staticmethod
     def _out(reply: dict[str, Any], frame: Any) -> dict[str, Any]:

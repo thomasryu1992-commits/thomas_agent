@@ -29,6 +29,7 @@ from runtime.mvp_runtime.deploy_runner import (actor as actor_mod, approval_veri
 from runtime.mvp_runtime.deploy_runner.audit_chain import AuditLog
 from runtime.mvp_runtime.deploy_runner.reasons import RunnerRefused
 from runtime.read_only_kernel import integrity
+from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 
 PACKAGE = Path(actor_mod.__file__).resolve().parent
 SCHEMAS = av.SCHEMAS_DIR
@@ -212,8 +213,13 @@ def message(verb="prepare_candidate", *, request_id="req-1", seq=1, document="de
         document, signature = None, None
     elif document == "default":
         document = approval_b64(verb)
-    return {"proto": 1, "gate_intake_seq": seq, "client_id": "test-client", "request_id": request_id,
-            "verb": verb, "args": base_args, "approval_document_b64": document, "approval_signature": signature}
+    msg = {"schema": "thomas.actor_request.v1", "request_id": request_id, "verb": verb, "args": base_args,
+           "gate_intake_seq": seq}
+    if document is not None:
+        msg["approval_document_b64"] = document
+    if signature is not None:
+        msg["approval_signature"] = signature
+    return msg
 
 
 def handle(actor, msg, uid=4242):
@@ -341,7 +347,18 @@ def test_inspection_reports_fixed_fields_and_needs_no_approval(xdir):
     reply = handle(actor, message("inspect_candidate"))
     assert reply["ok"] and reply["data"]["tags"] == {"latest": LATEST, "candidate": None, "rollback_pre": None}
     assert reply["data"]["running"]["thomas-switch-bridge"] is None
+    names = [c["name"] for c in reply["data"]["containers"]]
+    assert "thomas-switch-bridge" not in names and len(names) == 7          # absent: null, no entry (§6.2)
+    assert reply["state"] is None                                            # an inspection claims nothing
     assert host.effects() == [] and states(xdir) == ["INSPECT"]
+
+
+@posix_only
+@pytest.mark.parametrize("docker_state", ["removing", "absent", "Running", ""])
+def test_a_container_state_outside_the_specified_six_is_image_state_unavailable(xdir, docker_state):
+    actor, host = make_actor(xdir)
+    host.containers["thomas-operator"] = (RUNNING, docker_state, "healthy", "thomas_agent")
+    assert handle(actor, message("inspect_candidate"))["reason_code"] == "IMAGE_STATE_UNAVAILABLE"
 
 
 @posix_only
@@ -397,7 +414,11 @@ def test_a_latch_file_that_cannot_be_read_counts_as_latched(xdir):
 @pytest.mark.parametrize("change", [
     lambda m: m.update(verified=True),                          # a field G might add to vouch for it
     lambda m: m.pop("gate_intake_seq"),
-    lambda m: m.update(proto=2),
+    lambda m: m.update(schema="thomas.actor_request.v2"),
+    lambda m: m.pop("schema"),
+    lambda m: m.update(client_id="test-client"),               # §6.1b carries no client_id to X
+    lambda m: m.update(approval_document_b64=None),             # optional keys are absent, never null
+    lambda m: m.pop("request_id"),
     lambda m: m.update(gate_intake_seq=0),
     lambda m: m["args"].update(extra="x"),
     lambda m: m.update(verb="run"),
@@ -509,9 +530,9 @@ def test_a_refusal_before_the_spend_replays_on_resend(xdir):
     (lambda h: h.containers.update({"thomas-operator": (BUILT, "running", "healthy", "thomas_agent")}),
      "RUNNING_IMAGES_INCONSISTENT"),
     (lambda h: h.containers.update({"thomas-operator": (RUNNING, "running", "healthy", "other_project")}),
-     "RUNNER_ENVIRONMENT_MISMATCH"),
+     "COMPOSE_PROJECT_MISMATCH"),
     (lambda h: h.containers.update({"thomas-operator": (RUNNING, "running", "healthy", "")}),
-     "RUNNER_ENVIRONMENT_MISMATCH"),
+     "COMPOSE_PROJECT_MISMATCH"),
     (lambda h: h.containers.pop("thomas-operator"), "RUNNING_IMAGES_INCONSISTENT"),
     (lambda h: h.tags.update({docker_argv.candidate_ref(PR): BUILT}), "TAG_ALREADY_EXISTS"),
     (lambda h: h.tags.update({docker_argv.rollback_ref(PR): RUNNING}), "TAG_ALREADY_EXISTS"),
@@ -547,6 +568,39 @@ def test_a_revoked_approval_is_refused(xdir):
     assert host.calls == []
 
 
+@posix_only
+def test_the_reply_state_is_the_request_record(xdir):
+    """§6.1b ``state``: X's request record for this id, or null when no record answers it."""
+    actor, host = make_actor(xdir)
+    done = handle(actor, message())
+    assert (done["ok"], done["state"], done["replayed"]) == (True, "completed", False)
+    again = handle(actor, message())
+    assert (again["state"], again["replayed"]) == ("completed", True)
+    assert handle(actor, message(pr=PR + 1))["state"] is None                   # REQUEST_ID_REUSED: not its record
+    host.tree["status"] = " M x\n"
+    refused = handle(actor, message(request_id="req-2"))
+    assert (refused["reason_code"], refused["state"]) == ("TREE_NOT_CLEAN", "refused_before_consume")
+    assert handle(actor, message(request_id="req-2"))["state"] == "refused_before_consume"   # replayed
+
+
+@posix_only
+def test_a_request_still_claimed_answers_in_flight_with_state_claimed(xdir):
+    actor, _ = make_actor(xdir)
+    msg = message(request_id="req-9")
+    fingerprint = integrity.sha256_value({k: v for k, v in msg.items() if k != "gate_intake_seq"})
+    actor.requests.begin("req-9", fingerprint, now=STAMP)
+    reply = handle(actor, message(request_id="req-9", seq=5))
+    assert (reply["reason_code"], reply["state"]) == ("REQUEST_IN_FLIGHT", "claimed")
+
+
+@posix_only
+def test_a_refusal_before_any_record_has_no_state(xdir):
+    latch.Latch(xdir).set(reason_code="RECONCILED_UNKNOWN", request_id=None, now=STAMP)
+    actor, _ = make_actor(xdir)
+    reply = handle(actor, message())
+    assert (reply["reason_code"], reply["state"], reply["request_id"]) == ("RUNNER_LATCHED", None, "req-1")
+
+
 # --- after the spend: never a retry, always a latch ------------------------------------------------
 
 @posix_only
@@ -559,7 +613,11 @@ def test_a_revoked_approval_is_refused(xdir):
 def test_a_failure_after_the_spend_is_partial_latches_and_never_reruns(xdir, fail, code, effects):
     actor, host = make_actor(xdir)
     host.fail.update(fail)
-    assert handle(actor, message())["reason_code"] == code
+    reply = handle(actor, message())
+    assert reply["reason_code"] == code and reply["state"] == "partial"
+    # the measured ids only, validated forms (§5.2, §6.3)
+    assert reply["data"] == {"pr": PR, "git_commit_sha": SHA, "rollback_image_id": host.tags.get(docker_argv.rollback_ref(PR)),
+                             "candidate_image_id": host.tags.get(docker_argv.candidate_ref(PR))}
     assert host.effects() == effects and len(spent(xdir)) == 1
     assert states(xdir)[-2:] == ["FAILED_EFFECT_PARTIAL", "LATCH_SET"]
     assert latch.Latch(xdir).read()["reason_code"] == code
@@ -668,10 +726,13 @@ def test_an_audit_that_fails_from_the_spend_onward_ends_unknown_and_latched(xdir
 # --- the gatekeeper --------------------------------------------------------------------------------
 
 def frame(base_verb="prepare_candidate", **over):
+    """The caller's frame (§6.1a): ``approval_document`` carries the signed bytes as base64 text."""
     msg = message(base_verb)
-    out = {k: msg[k] for k in ("client_id", "request_id", "verb", "args", "approval_document_b64",
-                               "approval_signature")}
-    out["proto"] = 2
+    out = {"proto": 2, "client_id": "test-client", "request_id": msg["request_id"], "verb": msg["verb"],
+           "args": msg["args"]}
+    if "approval_document_b64" in msg:
+        out["approval_document"] = msg["approval_document_b64"]
+        out["approval_signature"] = msg["approval_signature"]
     out.update(over)
     return out
 
@@ -686,6 +747,7 @@ class FakeActor:
         if self.raise_code:
             raise RunnerRefused(self.raise_code)
         return self.reply if self.reply is not None else {"ok": True, "request_id": msg["request_id"],
+                                                           "state": "completed",
                                                            "data": {"pr": PR, "git_commit_sha": SHA,
                                                                     "rollback_image_id": RUNNING,
                                                                     "candidate_image_id": BUILT},
@@ -709,18 +771,23 @@ def test_the_gate_logs_forwarded_before_calling_the_actor_and_answers_in_the_run
     assert reply["ok"] and reply["proto"] == 2 and reply["client_id"] == "test-client"
     assert fake.logged_before == [["FORWARDED"]]
     sent = fake.messages[0]
-    assert sent["gate_intake_seq"] == 1 and sent["proto"] == 1
+    assert sent["gate_intake_seq"] == 1 and sent["schema"] == "thomas.actor_request.v1"
+    assert "client_id" not in sent and "state" not in reply                 # attribution stays with G
     schema_cache.validate_against_schema(sent, SCHEMAS / actor_mod.REQUEST_SCHEMA, "actor request")
     rows = gate_mod.IntakeLog(gdir).read()
     assert [(r["event"], r["peer_uid"]) for r in rows] == [("FORWARDED", 5000), ("ANSWERED", 5000)]
+    assert {r["client_id"] for r in rows} == {"test-client"}
 
 
 @posix_only
 def test_the_gate_forwards_the_approval_unopened(gdir):
     """G holds no verifier: an unsigned or garbled approval is the actor's to refuse."""
     fake = FakeActor(gdir)
-    make_gate(gdir, fake).serve(frame(approval_document_b64=None, approval_signature=None), 5000)
-    assert fake.messages[0]["approval_document_b64"] is None
+    make_gate(gdir, fake).serve(frame(approval_document=None, approval_signature=None), 5000)
+    assert "approval_document_b64" not in fake.messages[0] and "approval_signature" not in fake.messages[0]
+    garbled = frame(approval_document="not base64!", approval_signature="not armored")
+    make_gate(gdir, fake).serve(garbled, 5000)
+    assert fake.messages[1]["approval_document_b64"] == "not base64!"
     assert not any("verif" in name.lower() for name in vars(gate_mod))
 
 
@@ -735,8 +802,9 @@ def test_the_gate_forwards_the_approval_unopened(gdir):
     ({"client_id": "x" * 65}, "MALFORMED_REQUEST"),
     ({"request_id": "has space"}, "MALFORMED_REQUEST"),
     ({"approval_signature": "s" * 4097}, "APPROVAL_MALFORMED"),
-    ({"approval_document_b64": "A" * 2735}, "APPROVAL_MALFORMED"),  # C2 §1.3: 2,048 bytes as base64
-    ({"approval_document_b64": ""}, "APPROVAL_MALFORMED"),
+    ({"approval_document": "A" * 2735}, "APPROVAL_MALFORMED"),  # C2 §1.3: 2,048 bytes as base64
+    ({"approval_document": ""}, "APPROVAL_MALFORMED"),
+    ({"approval_document_b64": "AAAA"}, "ARGUMENT_NOT_ACCEPTED"),   # the actor's key is not the caller's
 ])
 def test_a_malformed_frame_is_refused_at_the_gate_without_reaching_the_actor(gdir, over, code):
     fake = FakeActor(gdir)
@@ -747,11 +815,20 @@ def test_a_malformed_frame_is_refused_at_the_gate_without_reaching_the_actor(gdi
 
 @posix_only
 @pytest.mark.parametrize("reply", [
-    {"ok": True, "data": {"pr": PR, "secret": "x"}, "replayed": False},
-    {"ok": False, "reason_code": "SIGNATURE_INVALID", "reason": "ssh-keygen said /etc/x", "replayed": False,
-     "debug": "/root/.ssh"},
-    {"ok": False, "reason_code": "NOT_A_CODE", "reason": "x", "replayed": False},
-    {"ok": True, "data": None, "replayed": False},
+    {"ok": True, "request_id": None, "state": None, "data": {"pr": PR, "secret": "x"}, "replayed": False},
+    {"ok": False, "request_id": None, "state": None, "reason_code": "SIGNATURE_INVALID",
+     "reason": "ssh-keygen said /etc/x", "replayed": False},                  # X sends no sentence
+    {"ok": False, "request_id": None, "state": None, "reason_code": "SIGNATURE_INVALID", "replayed": False,
+     "error_ref": "/root/.ssh"},
+    {"ok": False, "request_id": None, "state": None, "reason_code": "NOT_A_CODE", "replayed": False},
+    {"ok": False, "request_id": None, "state": "pending", "reason_code": "RUNNER_BUSY", "replayed": False},
+    {"ok": False, "request_id": None, "state": None, "reason_code": "BUILD_FAILED", "replayed": False,
+     "data": {"pr": PR, "git_commit_sha": None, "rollback_image_id": None, "candidate_image_id": None}},
+    {"ok": False, "request_id": None, "state": "partial", "reason_code": "FAILED_EFFECT_PARTIAL", "replayed": False,
+     "data": {"pr": PR, "git_commit_sha": None, "rollback_image_id": None, "candidate_image_id": "latest /root"}},
+    {"ok": True, "request_id": None, "state": None, "data": None, "replayed": False},
+    {"ok": True, "request_id": "req-other", "state": "completed", "replayed": False,
+     "data": {"pr": PR, "git_commit_sha": SHA, "rollback_image_id": RUNNING, "candidate_image_id": BUILT}},
     ["not", "an", "object"],
 ])
 def test_an_actor_reply_outside_its_schema_never_reaches_the_caller(gdir, reply):
@@ -762,10 +839,32 @@ def test_an_actor_reply_outside_its_schema_never_reaches_the_caller(gdir, reply)
 
 @posix_only
 def test_an_actor_refusal_is_retold_with_the_table_sentence(gdir):
-    reply = {"ok": False, "reason_code": "SIGNATURE_INVALID", "reason": "something the actor made up",
+    reply = {"ok": False, "reason_code": "SIGNATURE_INVALID", "state": "refused_before_consume",
              "replayed": False, "request_id": "req-1"}
     out = runner_reply_ok(make_gate(gdir, FakeActor(gdir, reply=reply)).serve(frame(), 5000))
-    assert out["reason"] == reasons.RESPONSE_TEXT["SIGNATURE_INVALID"]
+    assert out["reason"] == reasons.RESPONSE_TEXT["SIGNATURE_INVALID"] and "state" not in out
+
+
+@posix_only
+def test_a_partial_failure_reaches_the_caller_with_the_measured_ids_only(gdir):
+    measured = {"pr": PR, "git_commit_sha": SHA, "rollback_image_id": RUNNING, "candidate_image_id": None}
+    reply = {"ok": False, "reason_code": "FAILED_EFFECT_PARTIAL", "state": "partial", "replayed": False,
+             "request_id": "req-1", "data": measured}
+    out = runner_reply_ok(make_gate(gdir, FakeActor(gdir, reply=reply)).serve(frame(), 5000))
+    assert out["reason_code"] == "FAILED_EFFECT_PARTIAL" and out["data"] == measured
+    assert set(out) == {"ok", "reason_code", "reason", "request_id", "replayed", "data", "proto", "client_id"}
+
+
+def test_the_caller_reply_schema_takes_data_on_a_refusal_only_for_a_partial_failure():
+    schema = SCHEMAS / gate_mod.RUNNER_REPLY_SCHEMA
+    measured = {"pr": PR, "git_commit_sha": None, "rollback_image_id": None, "candidate_image_id": None}
+    partial = {**reasons.refusal_reply("FAILED_EFFECT_PARTIAL"), "data": measured}
+    schema_cache.validate_against_schema(partial, schema, "reply")
+    for bad in ({**reasons.refusal_reply("BUILD_FAILED"), "data": measured},
+                {**partial, "data": {**measured, "stdout": "x"}},
+                {**partial, "data": {**measured, "candidate_image_id": "thomas-agent-runtime:latest"}}):
+        with pytest.raises(RuntimeSchemaError):
+            schema_cache.validate_against_schema(bad, schema, "reply")
 
 
 @posix_only
@@ -838,7 +937,8 @@ def test_end_to_end_through_g_and_x_sockets(xdir, gdir, sockdir, monkeypatch):
     monkeypatch.setenv("MVP_BRIDGE_CLIENT_UID", "")  # the environment names nobody; the doors still check
     me = os.getuid()
     actor, host = make_actor(xdir)
-    x = door.RunnerDoor(sockdir / "x.sock", lambda f, uid: actor.handle(f, peer_uid=uid), allowed_uids={me})
+    x = door.RunnerDoor(sockdir / "x.sock", lambda f, uid: actor.handle(f, peer_uid=uid), allowed_uids={me},
+                        peer_refusal="ACTOR_PEER_NOT_PERMITTED", refuse=actor_mod.actor_refusal)
     g_logic = gate_mod.Gate(gate_mod.GateConfig(directory=gdir, actor_socket=sockdir / "x.sock",
                                                 actor_deadline_s=10, wall_now=lambda: NOW))
     g = door.RunnerDoor(sockdir / "g.sock", g_logic.serve, allowed_uids={me})
@@ -854,18 +954,33 @@ def test_end_to_end_through_g_and_x_sockets(xdir, gdir, sockdir, monkeypatch):
 
 
 @sockets_only
-def test_a_peer_not_on_the_literal_list_is_refused_whatever_the_environment_says(sockdir, monkeypatch):
+@pytest.mark.parametrize("which", ["gate", "actor"])
+def test_a_peer_not_on_the_literal_list_is_refused_whatever_the_environment_says(sockdir, monkeypatch, which):
+    """§6.1a/§6.1b: G answers PEER_NOT_PERMITTED in the caller's shape, X ACTOR_PEER_NOT_PERMITTED in its own."""
     me = os.getuid()
     monkeypatch.setenv("MVP_BRIDGE_CLIENT_UID", str(me))
     served = []
+    kw = ({} if which == "gate" else {"peer_refusal": "ACTOR_PEER_NOT_PERMITTED", "refuse": actor_mod.actor_refusal})
     x = door.RunnerDoor(sockdir / "x.sock", lambda f, uid: served.append(f) or {"ok": True},
-                        allowed_uids={me + 1})
+                        allowed_uids={me + 1}, **kw)
     _serve(x)
     try:
         reply = _call(sockdir / "x.sock", b"{}\n")
-        assert reply == reasons.refusal_reply("PEER_NOT_PERMITTED") and served == []
     finally:
         x.shutdown(), x.server_close()
+    assert served == []
+    if which == "gate":
+        assert reply == reasons.refusal_reply("PEER_NOT_PERMITTED")
+    else:
+        assert reply == actor_mod.actor_refusal("ACTOR_PEER_NOT_PERMITTED")
+        schema_cache.validate_against_schema(reply, SCHEMAS / actor_mod.REPLY_SCHEMA, "actor reply")
+
+
+@sockets_only
+def test_a_door_refuses_a_peer_refusal_code_that_is_not_one_of_the_two(sockdir):
+    with pytest.raises(RunnerRefused):
+        door.RunnerDoor(sockdir / "x.sock", lambda f, uid: {}, allowed_uids={os.getuid()},
+                        peer_refusal="RUNNER_ERROR")
 
 
 @sockets_only
@@ -889,6 +1004,23 @@ def test_an_unexpected_exception_leaves_as_the_generic_code_and_nothing_else(soc
     finally:
         x.shutdown(), x.server_close()
     assert reply["reason_code"] == "RUNNER_ERROR" and set(reply) == {"ok", "reason_code", "reason", "error_ref"}
+    assert "secret" not in json.dumps(reply) and "secret" not in capsys.readouterr().err
+
+
+@sockets_only
+def test_an_unexpected_exception_at_the_actor_socket_answers_in_the_actor_shape(sockdir, capsys):
+    def explode(f, uid):
+        raise ValueError("/root/secret-path token=abc")
+
+    x = door.RunnerDoor(sockdir / "x.sock", explode, allowed_uids={os.getuid()},
+                        peer_refusal="ACTOR_PEER_NOT_PERMITTED", refuse=actor_mod.actor_refusal)
+    _serve(x)
+    try:
+        reply = _call(sockdir / "x.sock", b"{}\n")
+    finally:
+        x.shutdown(), x.server_close()
+    schema_cache.validate_against_schema(reply, SCHEMAS / actor_mod.REPLY_SCHEMA, "actor reply")
+    assert reply == actor_mod.actor_refusal("RUNNER_ERROR")                   # no sentence, no reference
     assert "secret" not in json.dumps(reply) and "secret" not in capsys.readouterr().err
 
 

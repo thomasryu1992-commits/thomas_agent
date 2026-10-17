@@ -86,7 +86,11 @@ def tag_rollback_point(docker: Path, running_image_id: str, pr: int) -> list[str
 
 
 def build_candidate(docker: Path, trees_root: Path, pr: int) -> list[str]:
-    """Build the runner's own tree into this PR's candidate tag. No build args, no secrets, no pull."""
+    """Build the runner's own tree into this PR's candidate tag. No build args, no secrets, no forced pull.
+
+    ``--pull=false`` only skips refreshing a base image already present: a missing base image is still
+    fetched, and the Dockerfile's own steps (``apt-get``) reach the network during the build. The build
+    is an effect the specification accepts (§6.3); no request value shapes it."""
     return [str(docker), "image", "build", "--pull=false", "--tag", candidate_ref(pr),
             str(tree_path(trees_root, pr))]
 

@@ -16,6 +16,12 @@ One request, in order (§3.1a):
    tag the measured running image as the rollback point and build the runner's own tree;
 5. any failure after the spend ends as ``FAILED_EFFECT_PARTIAL`` or ``EFFECT_STATE_UNKNOWN`` and latches.
 
+Replies are ``thomas.actor_reply.v1`` (§6.1b): ``{ok, reason_code, request_id, state, data, replayed}``.
+``state`` is this request's record in X's request store — ``claimed``, ``completed``,
+``refused_before_consume``, ``unknown`` or ``partial`` — or null when no record answers it (an
+inspection, which claims nothing, or a refusal before any claim). A ``FAILED_EFFECT_PARTIAL`` refusal
+carries the measured ids and nothing else (§5.2, §6.3); every other refusal carries no data.
+
 C3a-3 boundary: the runner's tree must already exist (no clone, no fetch — a network read is not
 decided); ``.env`` is never read; ``validate_candidate``, ``promote`` and ``rollback`` are not
 implemented, only refused. Clock synchronisation has no decided source yet, so the default answer is
@@ -45,12 +51,13 @@ from .commands import CommandTimeout, CommandUnavailable, run_command
 from .consumption import ConsumptionStore
 from .latch import Latch
 from .private_files import lock_exclusive, open_private
-from .reasons import RunnerRefused, refusal_reply
-from .request_state import COMPLETED, PARTIAL, REFUSED_BEFORE_CONSUME, UNKNOWN, RequestStore
+from .reasons import RunnerRefused, response_code
+from .request_state import CLAIMED, COMPLETED, PARTIAL, REFUSED_BEFORE_CONSUME, UNKNOWN, RequestStore
 from .startup import StartupResult
 from .trust import TrustMaterial
 
 REQUEST_SCHEMA = "deploy_actor_request.v0.1.schema.json"
+MESSAGE_SCHEMA = "thomas.actor_request.v1"
 REPLY_SCHEMA = "deploy_actor_reply.v0.1.schema.json"
 POLICY_BLOCKED_VERBS = frozenset({"validate_candidate", "promote", "rollback"})
 # CR-7: the operational verbs this build may perform. A code constant, by decision; empty in C3a.
@@ -59,12 +66,37 @@ OPERATION_LOCK_FILE = "operation.lock"
 SIGNER_PRINCIPAL = "thomas-deploy-approver"
 _SHA = re.compile(r"^[0-9a-f]{40}\Z")
 _IMAGE = re.compile(r"^sha256:[0-9a-f]{64}\Z")
-_STATES = frozenset({"created", "running", "paused", "restarting", "removing", "exited", "dead"})
+_STATES = frozenset({"running", "exited", "restarting", "paused", "created", "dead"})   # §6.2, closed
+_REQUEST_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}\Z")
+# What a refusal from the request store says about the request it found.
+_BEGIN_STATES = {"REQUEST_IN_FLIGHT": CLAIMED, "EFFECT_STATE_UNKNOWN": UNKNOWN, "FAILED_EFFECT_PARTIAL": PARTIAL}
 _HEALTH = frozenset({"healthy", "unhealthy", "starting", "none"})
 
 
 def _stamp(now: datetime) -> str:
     return now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def actor_refusal(code: Any, *, request_id: Any = None, state: str | None = None,
+                  data: dict[str, Any] | None = None, error_ref: Any = None) -> dict[str, Any]:
+    """X's refusal in ``thomas.actor_reply.v1``. No sentence and no error reference travel to G: G answers
+    the caller with the table's sentence for the code (``error_ref`` is accepted for the door's signature
+    and dropped; the reference stays in X's own log line)."""
+    rc = response_code(code)
+    reply: dict[str, Any] = {"ok": False, "reason_code": rc, "state": state, "replayed": False,
+                             "request_id": request_id if isinstance(request_id, str) and _REQUEST_ID.match(request_id)
+                             else None}
+    if rc == "FAILED_EFFECT_PARTIAL" and data is not None:
+        reply["data"] = data
+    return reply
+
+
+class _Refused(RunnerRefused):
+    """A refusal that knows the request record it found."""
+
+    def __init__(self, reason_code: str, state: str | None) -> None:
+        super().__init__(reason_code)
+        self.state = state
 
 
 @dataclass
@@ -105,18 +137,17 @@ class Actor:
         try:
             return self._handle(message, peer_uid)
         except RunnerRefused as exc:
-            return self._refusal(exc.reason_code, message)
+            return self._refusal(exc.reason_code, message, state=getattr(exc, "state", None))
 
     @staticmethod
-    def _refusal(code: str, message: Any) -> dict[str, Any]:
+    def _refusal(code: str, message: Any, *, state: str | None = None,
+                 data: dict[str, Any] | None = None) -> dict[str, Any]:
         request_id = message.get("request_id") if isinstance(message, dict) else None
-        return {**refusal_reply(code, request_id=request_id), "replayed": False}
+        return actor_refusal(code, request_id=request_id, state=state, data=data)
 
-    def _ok(self, message: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
-        reply: dict[str, Any] = {"ok": True, "data": data, "replayed": False}
-        if message["request_id"] is not None:
-            reply["request_id"] = message["request_id"]
-        return reply
+    @staticmethod
+    def _ok(message: dict[str, Any], data: dict[str, Any], *, state: str | None) -> dict[str, Any]:
+        return {"ok": True, "request_id": message["request_id"], "state": state, "data": data, "replayed": False}
 
     def _handle(self, message: Any, peer_uid: int | None) -> dict[str, Any]:
         if not self._latched:
@@ -135,8 +166,10 @@ class Actor:
         verb = message["verb"]
         args = check_args(verb, message["args"])
         now = self.config.wall_now()
+        # §6.1b carries no client_id to X: X's audit keeps it null, and G's intake row (same
+        # gate_intake_seq) is where the attribution lives (GAP-2).
         base = {"request_id": message["request_id"], "action": verb, "caller_uid": peer_uid,
-                "client_id": message["client_id"], "gate_intake_seq": message["gate_intake_seq"],
+                "client_id": None, "gate_intake_seq": message["gate_intake_seq"],
                 "store_id": self.startup.store_id}
 
         if verb in POLICY_BLOCKED_VERBS and verb not in OPERATIONAL_VERBS_ENABLED:
@@ -146,7 +179,7 @@ class Actor:
 
         if verb == "inspect_candidate":
             # A read: no approval, no claim, nothing to replay (D-4). Each one is audited.
-            if message["approval_document_b64"] is not None or message["approval_signature"] is not None:
+            if "approval_document_b64" in message or "approval_signature" in message:
                 raise RunnerRefused("ARGUMENT_NOT_ACCEPTED")
             return self._inspect(message, args, base, now)
 
@@ -157,7 +190,10 @@ class Actor:
 
         if request_id is None:
             raise RunnerRefused("REQUEST_ID_REQUIRED")
-        begun = self.requests.begin(request_id, fingerprint, now=_stamp(now))
+        try:
+            begun = self.requests.begin(request_id, fingerprint, now=_stamp(now))
+        except RunnerRefused as exc:
+            raise _Refused(exc.reason_code, _BEGIN_STATES.get(exc.reason_code)) from None
         if begun.replay is not None:
             return dict(begun.replay, replayed=True)
         self.audit.append(execution_state="RECEIVED", validation_result="NOT_REQUIRED", now=_stamp(now), **base)
@@ -179,7 +215,7 @@ class Actor:
                               reason_code=exc.reason_code, **base)
             return self._refusal(exc.reason_code, message)
         self.audit.append(execution_state="INSPECT", validation_result="NOT_REQUIRED", now=_stamp(now), **base)
-        return self._ok(message, {"pr": args["pr"], **data, "measured_at": _stamp(now)})
+        return self._ok(message, {"pr": args["pr"], **data, "measured_at": _stamp(now)}, state=None)
 
     def _run(self, argv: list[str], *, timeout_s: float = 30.0) -> tuple[int, str]:
         try:
@@ -203,15 +239,15 @@ class Actor:
         for name in docker_argv.RUNTIME_CONTAINERS:
             code, out = self._run(docker_argv.container_inspect(self.config.docker, name))
             if code != 0:
-                containers.append({"name": name, "state": "absent", "health": "none"})
-                running[name] = None
+                running[name] = None             # absent: null in ``running``, no entry in ``containers`` (§6.2)
                 continue
             parts = out.rstrip("\n").split(" ")
             if len(parts) != 4 or not _IMAGE.match(parts[0]) or parts[1] not in _STATES or parts[2] not in _HEALTH:
                 raise RunnerRefused("IMAGE_STATE_UNAVAILABLE")
             if parts[3] != self.config.environment.project:
-                # The container answering to this name belongs to another compose project (§6.3 item 7).
-                raise RunnerRefused("RUNNER_ENVIRONMENT_MISMATCH")
+                # The container answering to this name belongs to another compose project (§6.3 item 7;
+                # the code is the C2 revision of 2026-10-17).
+                raise RunnerRefused("COMPOSE_PROJECT_MISMATCH")
             containers.append({"name": name, "state": parts[1], "health": parts[2]})
             running[name] = parts[0]
         latest = self._image_id(docker_argv.latest_ref())
@@ -244,8 +280,8 @@ class Actor:
         trust = cfg.load_trust()
         revoked = cfg.load_revoked_approvals()
         return verify_deploy_approval(action="prepare_candidate", args=args,
-                                      document_b64=message["approval_document_b64"],
-                                      signature=message["approval_signature"], environment=cfg.environment,
+                                      document_b64=message.get("approval_document_b64"),
+                                      signature=message.get("approval_signature"), environment=cfg.environment,
                                       trust=trust, verifier=cfg.verifier, policy=cfg.policy,
                                       now=cfg.wall_now(), revoked_approvals=revoked)
 
@@ -327,15 +363,15 @@ class Actor:
             if candidate is None:
                 raise RunnerRefused("POST_CHECK_FAILED")
         except RunnerRefused as exc:
-            return self._fail_after_spend(message, signed, fingerprint, exc.reason_code, pr=pr)
+            return self._fail_after_spend(message, signed, fingerprint, exc.reason_code, pr=pr, head=head)
         target["candidate_image_id"] = candidate
         data = {"pr": pr, "git_commit_sha": head, "rollback_image_id": running_id, "candidate_image_id": candidate}
-        reply = self._ok(message, data)
+        reply = self._ok(message, data, state=COMPLETED)
         try:
             self.audit.append(execution_state="COMPLETED", validation_result="PASS", now=_stamp(cfg.wall_now()),
                               target=target, **signed)
         except RunnerRefused:
-            return self._fail_after_spend(message, signed, fingerprint, "AUDIT_WRITE_FAILED", pr=pr)
+            return self._fail_after_spend(message, signed, fingerprint, "AUDIT_WRITE_FAILED", pr=pr, head=head)
         self.requests.finish(message["request_id"], fingerprint, COMPLETED, now=_stamp(cfg.wall_now()), result=reply)
         return reply
 
@@ -344,31 +380,35 @@ class Actor:
     def _refuse_before_consume(self, message, base, fingerprint, code) -> dict[str, Any]:
         """Nothing spent, nothing done: the request ends refused, and a resend replays the refusal."""
         now = _stamp(self.config.wall_now())
-        reply = self._refusal(code, message)
+        reply = self._refusal(code, message, state=REFUSED_BEFORE_CONSUME)
         self.audit.append(execution_state="REFUSED", validation_result="REFUSED", now=now, reason_code=reply["reason_code"],
                           **base)
         self.requests.finish(message["request_id"], fingerprint, REFUSED_BEFORE_CONSUME, now=now, result=reply)
         return reply
 
-    def _fail_after_spend(self, message, signed, fingerprint, cause, *, pr=None, known_absent=False) -> dict[str, Any]:
+    def _fail_after_spend(self, message, signed, fingerprint, cause, *, pr=None, head=None,
+                          known_absent=False) -> dict[str, Any]:
         """The approval is spent and the outcome is not a clean success: never a retry, always a latch.
 
         ``known_absent`` — nothing was started, but a record the startup check cross-checks could not be
         written, so the records already disagree: the request ends ``unknown`` and the runner latches
         on ``RECONCILIATION_MISMATCH``, as the next startup would. Otherwise the actor re-measures: a
         measurement makes it PARTIAL (what is there is recorded), none makes it UNKNOWN. Neither ever
-        becomes success, and a resend of either never runs again."""
+        becomes success, and a resend of either never runs again. A PARTIAL reply carries the measured ids
+        (validated forms only: a PR number, a commit hash, ``sha256:`` image ids), never Docker's text."""
         cfg = self.config
         now = _stamp(cfg.wall_now())
         request_id = message["request_id"]
-        target = None
+        target = data = None
         if known_absent:
             state, code, audit_state, latch_code = UNKNOWN, cause, "FAILED_NOT_STARTED", "RECONCILIATION_MISMATCH"
         else:
             try:
                 tags = self._measure_images(pr)["tags"]
-                target = {"pr": pr, "git_commit_sha": None, "candidate_image_id": tags["candidate"],
+                target = {"pr": pr, "git_commit_sha": head, "candidate_image_id": tags["candidate"],
                           "rollback_image_id": tags["rollback_pre"]}
+                data = {"pr": pr, "git_commit_sha": head, "rollback_image_id": tags["rollback_pre"],
+                        "candidate_image_id": tags["candidate"]}
                 state, code = PARTIAL, "FAILED_EFFECT_PARTIAL"
             except RunnerRefused:
                 state, code = UNKNOWN, "EFFECT_STATE_UNKNOWN"
@@ -378,7 +418,7 @@ class Actor:
             self.audit.append(execution_state=audit_state, validation_result="PASS", now=now, reason_code=cause,
                               target=target, **signed)
         except RunnerRefused:
-            state, code = UNKNOWN, "EFFECT_STATE_UNKNOWN"
+            state, code, data = UNKNOWN, "EFFECT_STATE_UNKNOWN", None
         try:
             record = self.latch.set(reason_code=latch_code, request_id=request_id, now=now)
             self.audit.append(execution_state="LATCH_SET", validation_result="NOT_REQUIRED", now=now,
@@ -390,4 +430,4 @@ class Actor:
             self.requests.finish(request_id, fingerprint, state, now=now, result=None)
         except RunnerRefused:
             pass  # left claimed: the next startup turns it to unknown
-        return self._refusal(code, message)
+        return self._refusal(code, message, state=state, data=data)
