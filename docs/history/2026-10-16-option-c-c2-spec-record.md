@@ -21,5 +21,13 @@ one document by its hash, and the closed contract (binding fields and reason cod
 against it. Rewording it while moving it would leave two texts and a question about which one was
 approved. Later status lives in the header and in §4.25, never in the body.
 
+**Approval basis, stated as it stands.**
+- Thomas had said that a CR-16 documents PR needs its own explicit approval (2026-10-16). This PR was
+  opened inside the 8-hour autonomous grant without one.
+- On 2026-10-17 he ratified keeping it, without recording that as a prior approval, and approved the
+  contract-alignment edits.
+- Those edits are §4.25.1's three new rows, §4.25.3 rewritten to the corrected C3a-3 contract, and the
+  record header's note of the one C2 revision (`COMPOSE_PROJECT_MISMATCH`).
+
 **What this does not do.** It grants nothing: no install, no account change, no operation. It
 settles none of the open decisions in §4.25.1.

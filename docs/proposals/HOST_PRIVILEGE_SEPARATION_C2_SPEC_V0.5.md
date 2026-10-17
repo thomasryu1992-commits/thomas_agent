@@ -1,6 +1,6 @@
 # 기록: Option C Phase C2 승인 검증 인터페이스 명세 v0.5 (C2-FINAL 확정본)
 
-**상태:** DECIDED 2026-10-16 — C2 설계 완료(`승인: C2-FINAL C2 설계 완료 확정, DESIGN_ONLY (Thomas 2026-10-16)`). 승인 결속 필드와 reason code는 닫혔다. 구현은 C3a로 나눠 진행 중이다: C3a-1 #1227·C3a-2 #1228은 MERGED, C3a-3 #1229는 병합 승인 대기다. 설치·계정 분리·운영(C4–C8)은 하나도 승인되지 않았다. 확정 뒤의 결정(D-10a, CR-12 T3 조건부, TYPE-B-KEY K1, D-3 C3a 범위, CR-8)과 구현 중 드러난 차이는 `HOST_PRIVILEGE_SEPARATION_V0.1.md` §4.25에 있다.
+**상태:** DECIDED 2026-10-16 — C2 설계 완료(`승인: C2-FINAL C2 설계 완료 확정, DESIGN_ONLY (Thomas 2026-10-16)`). 승인 결속 필드와 reason code는 닫혔다. 구현은 C3a로 나눠 진행 중이다: C3a-1 #1227·C3a-2 #1228은 MERGED, C3a-3 #1229는 병합 승인 대기다. 설치·계정 분리·운영(C4–C8)은 하나도 승인되지 않았다. 확정 뒤의 결정(D-10a, CR-12 T3 조건부, TYPE-B-KEY K1, D-3 C3a 범위, CR-8)과 구현 중 드러난 차이는 `HOST_PRIVILEGE_SEPARATION_V0.1.md` §4.25에 있다. **C2 개정 1건(Thomas 2026-10-17):** 응답 code `COMPOSE_PROJECT_MISMATCH`(§6.3-7 라벨 불일치)를 추가한다. 같은 날 정의된 actor 응답 `state` 값도 §4.25.3에 있다. 아래 본문은 바꾸지 않았다.
 
 **이 파일에 대하여:**
 - 아래 본문은 Thomas가 C2-FINAL로 확정한 scratchpad 원문(`C2_SPEC_V0.5.md`, md5 `5d096745`)을 **한 글자도 바꾸지 않고** 옮긴 것이다(CR-16).
