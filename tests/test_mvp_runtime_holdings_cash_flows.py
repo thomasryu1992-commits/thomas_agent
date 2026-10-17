@@ -18,6 +18,7 @@ import pytest
 
 from runtime.mvp_runtime.errors import ToolError
 from runtime.mvp_runtime.holdings import binance_wallet, cash_flows, combined
+from tests._h6d_support import history_whole
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 NOW = "2026-10-09T03:00:00Z"
@@ -423,7 +424,8 @@ def test_readiness_waits_and_enables_nothing(tmp_path):
                                           "current_health")} == {"UNCHECKED"} and later["ready"] is False
 
 
-def test_readiness_is_ready_only_when_every_piece_is_in(tmp_path):
+def test_readiness_is_ready_only_when_every_piece_is_in(tmp_path, monkeypatch):
+    history_whole(monkeypatch)                 # C7 PR-B: this test is about the other checks
     cash_flows.set_cutover(tmp_path, at=NOW, requested_by="claude")
     _collect(tmp_path, Feed(crypto_deposit=[DEPOSIT]))
     state = cash_flows.load_state(tmp_path)
@@ -627,7 +629,8 @@ def test_the_first_verified_fire_is_marked_after_the_fire_never_by_the_read(tmp_
     assert cash_flows.shadow_record(cash_flows.verify(tmp_path)) == (LATER, ["2026-10-09"])
 
 
-def test_seven_elapsed_days_without_seven_verified_dates_is_still_running(tmp_path):
+def test_seven_elapsed_days_without_seven_verified_dates_is_still_running(tmp_path, monkeypatch):
+    history_whole(monkeypatch)                 # C7 PR-B: this test is about the other checks
     _ready_but_for(tmp_path, dates=(9, 10, 11))
     ready = _ready_at(tmp_path, "2026-10-20T00:00:00Z")                           # eleven days elapsed
     assert ready["checks"]["shadow_observation"] == "RUNNING" and ready["shadow_success_dates"] == 3
@@ -643,7 +646,8 @@ def test_seven_verified_dates_before_seven_elapsed_days_is_still_running(tmp_pat
     assert ready["shadow_success_dates"] == 7 and ready["checks"]["shadow_observation"] == "RUNNING"
 
 
-def test_the_ready_baseline_passes(tmp_path):
+def test_the_ready_baseline_passes(tmp_path, monkeypatch):
+    history_whole(monkeypatch)                 # C7 PR-B: this test is about the other checks
     _ready_but_for(tmp_path)
     ready = _ready_at(tmp_path, "2026-10-17T00:00:00Z")
     assert ready["ready"] is True and ready["exceptions"] == 0
@@ -663,7 +667,8 @@ def test_a_held_event_after_the_cutover_blocks_the_readiness(tmp_path, source, r
     assert ready["ready"] is False
 
 
-def test_a_held_event_before_the_cutover_does_not_block(tmp_path):
+def test_a_held_event_before_the_cutover_does_not_block(tmp_path, monkeypatch):
+    history_whole(monkeypatch)                 # C7 PR-B: this test is about the other checks
     _ready_but_for(tmp_path)
     pay = {"transactionId": "p0", "amount": "5", "currency": "USDT", "transactionTime": NOW_MS - 60_000}
     _collect(tmp_path, Feed(pay=[pay]), now="2026-10-09T05:00:00Z", now_ms=LATER_MS + 3_600_000)
