@@ -85,6 +85,26 @@ window numbers) are still deferred.
   reported and not fixed here.
 - N-11 and N-12 stay BLOCKED until it is.
 
+**The fix (BUILD-HOME = A).**
+
+Thomas 2026-10-17:
+- `결정: BUILD-HOME = A(실행기 명령 환경에 DOCKER_CONFIG=<X 기록 디렉터리>/docker-config 추가, 값은 root 소유 설정에서;
+  DOCKER_HOST 등 그 밖의 DOCKER_*는 계속 차단), git safe.directory는 C5 설치 절차에 포함, DESIGN_ONLY`;
+- `승인: BUILD-HOME A 구현을 #1240에 커밋으로 추가(합성 시험·결함 주입, C4 재실행으로 P-5·N-11·N-12 확인; 병합·운영 설치 제외)`.
+
+What changed:
+- `commands.run_command` takes `docker_config`. The environment is then exactly `PATH`, `LANG` and
+  `DOCKER_CONFIG`. A path that is not absolute and plain (checked before `Path` folds `//`) starts nothing.
+- `serve.build_actor` passes `<X's records directory>/docker-config`, from the root-owned configuration.
+  X's records directory is X's own 0700 directory and the unit's only writable path, so the unit does not
+  change.
+- No code enumerates that directory, so the subdirectory does not disturb the startup check.
+- Every other `DOCKER_*` stays out, `HOME` included.
+- Fault injection: 6 of 6 caught (the variable missing, `DOCKER_HOST` leaking, the parent environment
+  inherited, the path unchecked, serve unwired, a directory outside X's records).
+- The git `safe.directory` entry belongs to the C5 install procedure; the harness writes it on the runner.
+- win32 skip ceiling 566 → 570.
+
 **Tests.**
 - `tests/test_mvp_runtime_deploy_runner_clock_source.py`:
   - every kernel answer is held to its verdict with an injected `adjtimex` (read mode asserted);

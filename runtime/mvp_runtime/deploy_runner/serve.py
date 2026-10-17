@@ -27,6 +27,7 @@ CLOCK-SOURCE = A, Thomas 2026-10-17); unreadable or unsynchronised keeps ``prepa
 from __future__ import annotations
 
 import argparse
+import functools
 import os
 import signal
 import sys
@@ -39,7 +40,7 @@ from . import clock_source, startup, trust
 from .actor import Actor, ActorConfig, actor_refusal
 from .approval_verify import SshKeygenVerifier
 from .clock import check_time_policy
-from .commands import run_command
+from .commands import DOCKER_CONFIG_DIR, run_command
 from .config import RunnerConfig, check_environment, load_anchor, load_config
 from .door import RunnerDoor
 from .gate import Gate, GateConfig
@@ -50,10 +51,15 @@ EXIT_USAGE = 2
 EXIT_REFUSED = 3
 
 
-def build_actor(config: RunnerConfig, *, now: datetime | None = None, run: Callable[..., Any] = run_command,
+def build_actor(config: RunnerConfig, *, now: datetime | None = None, run: Callable[..., Any] | None = None,
                 verifier: Any = None, sync_confirmed: Callable[[], bool] = clock_source.kernel_sync_confirmed
                 ) -> tuple[Actor, int]:
-    """X ready to serve, and the held instance lock's descriptor (keep it open for the process's life)."""
+    """X ready to serve, and the held instance lock's descriptor (keep it open for the process's life).
+
+    By default X's commands run with ``DOCKER_CONFIG`` at ``<its records directory>/docker-config``
+    (BUILD-HOME = A): the directory comes from the root-owned configuration."""
+    if run is None:
+        run = functools.partial(run_command, docker_config=config.directory / DOCKER_CONFIG_DIR)
     a = config.actor
     policy = config.policy()
     check_time_policy(policy)

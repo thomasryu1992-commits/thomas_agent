@@ -295,6 +295,21 @@ def test_by_default_the_served_actor_uses_the_kernel_source():
     assert default is clock_source.kernel_sync_confirmed
 
 
+@posix_only
+def test_the_served_actor_runs_its_commands_with_docker_config_in_its_own_records_directory(site):
+    """BUILD-HOME = A (Thomas 2026-10-17): the directory is X's private one, from the root-owned config."""
+    from runtime.mvp_runtime.deploy_runner import commands
+
+    cfg = config_mod.load_config(save(site, "actor"), role="actor", owner_uid=ME)
+    actor, lock_fd = serve.build_actor(cfg, verifier=FakeVerifier())
+    try:
+        run = actor.config.run
+        assert run.func is commands.run_command
+        assert run.keywords == {"docker_config": site["xdir"] / commands.DOCKER_CONFIG_DIR}
+    finally:
+        os.close(lock_fd)
+
+
 # --- the entry point ---------------------------------------------------------------------------------
 
 @posix_only
