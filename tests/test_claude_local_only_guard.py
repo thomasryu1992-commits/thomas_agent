@@ -230,7 +230,8 @@ def test_without_the_guard_the_wrapper_still_refuses_a_holdings_reference(tmp_pa
 
 TERMINAL_ONLY = ("--full", "--local", "--unclassified", "--classify binance:X=coin", "--unclassify binance:X",
                  "--reset-peak --reason r", "--cash-flow-cutover 2026-10-09T00:00:00Z", "--flows",
-                 "--resolve pay:x --kind deposit", "--semantics-epoch --change-ref '#1'", "--toss-continuity")
+                 "--resolve pay:x --kind deposit", "--semantics-epoch --change-ref '#1'", "--toss-continuity",
+                 "--adopt-ledger --by t --reason r --confirm 1a2b3c4d")
 
 
 def _board_modes() -> set[str]:

@@ -83,7 +83,7 @@ if [[ $kind == command || $kind == raw ]]; then
   if [[ $flat =~ $root_ref ]] && [[ $flat =~ $recursive ]]; then
     deny "a recursive read of the state root"
   fi
-  [[ $flat =~ holdings_board[^\;\&\|]*--(full|local|unclassified|classify|unclassify|reset-peak|cash-flow-cutover|migrate|shadow-started|flows|resolve|semantics-epoch|toss-continuity)([^a-z-]|$) ]] \
+  [[ $flat =~ holdings_board[^\;\&\|]*--(full|local|unclassified|classify|unclassify|reset-peak|cash-flow-cutover|migrate|shadow-started|flows|resolve|semantics-epoch|toss-continuity|adopt-ledger)([^a-z-]|$) ]] \
     && deny "a terminal-only holdings_board mode"
   if [[ $flat =~ (^|[^a-zA-Z0-9_])python[0-9.]*([[:space:]]|$) ]] \
     && [[ $flat =~ mvp_runtime\.holdings|mvp_runtime[[:space:]]+import[[:space:]]+holdings ]]; then
