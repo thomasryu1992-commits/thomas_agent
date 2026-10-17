@@ -1,6 +1,6 @@
 # 제안: holdings 원장 체크포인트 — 시점이 섞인 복원을 PASS로 받지 않는다 (DRAFT)
 
-**상태:** PARTIALLY DECIDED 2026-10-11 — 열린 것: D2의 Toss 연속성 증명 방식과 cutover 유지 여부. A안이 조건부 우선 검토안이고, B안은 비추천, C안은 대안이며, 최종 cutover 결정은 미승인이다(§12.2–§12.3). 정해진 것(Thomas 2026-10-11, 설계 방향이며 구현 승인이 아니다): C7을 H6c의 선행 조건으로 둔다. D1은 PR-D → A → B → C 순서에 다섯 조건을 붙여 동의했다. D2는 `history_completeness`를 별도 키로 두고 체크포인트 없음·상태 누락을 UNCHECKED로 판정한다. D3은 두 단계 채택에 동의했다. D4는 다섯 검증 뒤로 조건을 붙였다. 각 PR의 구현·머지·배포는 따로 승인한다. H6d-min(#1205)의 원장과 상태 파일이 서로 다른 시점에서 복원되면 기록이 조용히 사라지고 readiness는 PASS로 남는다(C7). 원장 사슬·체크포인트·이력 완전성을 세 검사로 나누고, 축소·교체는 거부하며 Thomas에게 알리고, 이력은 재수집 증거로만 복구로 판정하는 설계다(3차 검토, 같은 날). 회귀 테스트(`tests/test_mvp_runtime_holdings_c7_partial_restore.py`)가 오늘의 결함을 고정한다. 구현은 §10의 다섯 PR로, §12의 Thomas 결정 뒤에 한다. **2026-10-17 구현 현황:** PR-0 #1210, PR-D #1216(2026-10-12 병합, 배포 HOLD), PR-A #1231(2026-10-17 병합, R-2·R-3 결정 §12.4, PR-B 전 배포 금지)이 main에 있다. 남은 것은 PR-B(D2 결정 뒤 설계)와 PR-C이고, 어느 PR도 운영에 배포되지 않았다. 열린 결정 하나를 §12.4에 기록했다(UNVERIFIED 체크포인트 옆의 readiness PASS).
+**상태:** DECIDED 2026-10-17 — **2026-10-17:** D2가 C안으로 정해져(E-1이 A안 기각 조건 둘을 충족) D1–D4가 모두 정해졌다. PR-B #1235가 C안으로 병합됐다(§12.5). 남은 구현은 PR-C다. 운영 반영(PR-A·PR-B 함께 배포, Thomas의 cutover 이동, shadow 관찰 재시작)은 각각 별도 승인이고 하지 않았다. **이전 상태(2026-10-11, PARTIALLY DECIDED):** 열린 것: D2의 Toss 연속성 증명 방식과 cutover 유지 여부. A안이 조건부 우선 검토안이고, B안은 비추천, C안은 대안이며, 최종 cutover 결정은 미승인이다(§12.2–§12.3). 정해진 것(Thomas 2026-10-11, 설계 방향이며 구현 승인이 아니다): C7을 H6c의 선행 조건으로 둔다. D1은 PR-D → A → B → C 순서에 다섯 조건을 붙여 동의했다. D2는 `history_completeness`를 별도 키로 두고 체크포인트 없음·상태 누락을 UNCHECKED로 판정한다. D3은 두 단계 채택에 동의했다. D4는 다섯 검증 뒤로 조건을 붙였다. 각 PR의 구현·머지·배포는 따로 승인한다. H6d-min(#1205)의 원장과 상태 파일이 서로 다른 시점에서 복원되면 기록이 조용히 사라지고 readiness는 PASS로 남는다(C7). 원장 사슬·체크포인트·이력 완전성을 세 검사로 나누고, 축소·교체는 거부하며 Thomas에게 알리고, 이력은 재수집 증거로만 복구로 판정하는 설계다(3차 검토, 같은 날). 회귀 테스트(`tests/test_mvp_runtime_holdings_c7_partial_restore.py`)가 오늘의 결함을 고정한다. 구현은 §10의 다섯 PR로, §12의 Thomas 결정 뒤에 한다. **2026-10-17 구현 현황:** PR-0 #1210, PR-D #1216(2026-10-12 병합, 배포 HOLD), PR-A #1231(2026-10-17 병합, R-2·R-3 결정 §12.4, PR-B 전 배포 금지)이 main에 있다. 그 뒤 PR-B #1235(2026-10-17 병합, C안)도 main에 들어왔다. 남은 것은 PR-C이고, 어느 PR도 운영에 배포되지 않았다. §12.4에 기록한 열린 결정(UNVERIFIED 체크포인트 옆의 readiness PASS)은 PR-B가 닫았다(§12.5).
 
 > 이 문서는 아무것도 바꾸지 않는다. 운영 상태 파일에 체크포인트를 쓰거나 이전하지 않는다.
 > 사실 확인 기준: `origin/main` = `3bbbe04d` (2026-10-09), 운영 `candidate-1205`. 코드 인용은 그 트리다.
@@ -300,7 +300,8 @@ H6d-min에서 원장이 권위이고, 상태 파일은 캐시다. 그런데 상�
 
 - **결정 (Thomas 2026-10-11): 부분 동의.**
   - 정해진 것: `history_completeness`는 `ledger_state_consistency`와 분리한다. 체크포인트 없음과 상태 누락은 UNCHECKED로 판정한다.
-  - **열린 것:** Toss 연속성 증명 방식((a) 또는 (b))과 cutover 유지 여부. 조사 결과와 선택지는 §12.2에 있다.
+  - **열린 것(2026-10-11):** Toss 연속성 증명 방식((a) 또는 (b))과 cutover 유지 여부. 조사 결과와 선택지는 §12.2에 있다.
+- **결정 (Thomas 2026-10-17): C안.** E-1 결과로 A안이 기각됐다. 원문과 PR-B 구현은 §12.5에 있다.
 
 - **원문:** `history_completeness`를 별도 readiness 키로 둘지, `ledger_state_consistency`에 합칠지 정한다.
   - Toss 연속성 증명은 (a) 건너뛴 창 기록과 (b) 체크포인트 이후로 한정하고 cutover를 옮기는 것 중에서 고른다.
@@ -651,5 +652,30 @@ LOCAL_ONLY 파일과 원장 원문은 읽지 않았다. 근거는 네 가지다.
 - 막으려면 readiness 계약을 바꿔야 한다. 그런데 D2와 준비 노트(R-3)는 이 판정을 PR-B의 `history_completeness` 키에 두었다.
 - 권고(Claude): PR-B에 맡긴다. "PR-B 전 배포 금지"가 그 사이 운영 노출을 막는다.
 - 대안: 지금 `basis`로 `ready`를 막는다. readiness 계약 변경이라 별도 승인이 필요하다.
+- **닫힘(2026-10-17):** PR-B가 `ready`에 `history_completeness`를 요구한다. 체크포인트가 UNVERIFIED인 동안 `ready`는 거짓이다(§12.5).
 
 **기록:** `docs/history/2026-10-16-c7-pr-a-checkpoint-detection.md`.
+
+### 12.5 D2 결정과 PR-B 구현 (2026-10-17)
+
+**원문:**
+- `승인: C7 D2 증거 E-1 실행(Thomas 터미널, tool-1212, 읽기 전용·네트워크 없음; 전역 Guard 상태 확인 후) (Thomas 2026-10-17)`
+- `결정: C7 D2 = C안(E-1 unexplained_gap·no_window_before_first로 A안 기각), PR-B는 C안으로 설계 (Thomas 2026-10-17)`
+- `승인: C7 PR-B(C안: history_completeness, observed_at·cutover 규칙, 이벤트 호환 시험) 구현 및 PR 생성(병합·배포·cutover 이동 제외) (Thomas 2026-10-17)`
+- `승인: C7 PR-B #1235 squash 병합(head 7d6846de, base 66e24fde; 배포·cutover 이동 제외) (Thomas 2026-10-17)` → main `9c477b19`.
+
+**E-1 결과.** Thomas가 자기 터미널에서 실행했고, 공유한 것은 상태 단어뿐이다: `reasons`가 `unexplained_gap`, `no_window_before_first`, `trailing` 0.7 h. 판정 첫 줄은 공유되지 않았다. D2 결정 패킷 §6의 A안 거부 조건 중 둘(설명 없는 빈틈, 첫 창 이전 창 없음)에 해당한다. trailing 값은 참고 정보이고 판정에 쓰지 않았다(패킷 §5). Claude는 원장을 읽지 않았다.
+
+**C안이 뜻하는 것.** cutover를 체크포인트(PR-A)가 시작된 시점 뒤로 옮긴다. 새 cutover 이후의 이력은 증명할 수 있고, 그 이전 구간은 영구히 판정 밖이다. 재수집, 이체 조회 깊이 확대, E-2 probe, 약 2027-04-01 시간 제약은 필요 없다.
+
+**PR-B가 지은 것** (`docs/history/2026-10-17-c7-pr-b-history-completeness.md`):
+- 건너뛴 창을 이름으로 남긴다: Toss `toss_window_skipped`(`snapshot_unusable`, `cash_point_behind_ledger`), 바이낸스 `flow_window_skipped`(`beyond_query_depth`). 출처마다 읽기 시작점(`covered_from_ms`)을 상태에 둔다.
+- `history_completeness`(별도 키, D2 2026-10-11): 체크포인트 `observed_at` ≤ cutover, 감지 없음, Toss `CONTINUOUS`, 바이낸스 출처 모두 cutover를 덮을 때만 PASS. 아니면 UNCHECKED이고 시간이나 승인으로 올라가지 않는다.
+- `ready`는 이 검사를 요구하고, `checkpoint_history`는 이 검사가 PASS일 때만 VERIFIED다. §12.4의 열린 결정이 여기서 닫혔다.
+
+**운영 반영 경로(하지 않음, 각각 별도 승인):**
+1. Option A의 HOLD가 허락할 때 PR-A와 PR-B를 함께 배포한다.
+2. Thomas가 자기 터미널에서 cutover를 체크포인트 뒤로 옮긴다(`--migrate --reason`).
+3. 새 cutover부터 shadow 관찰(7일·7일자)이 다시 시작된다.
+
+**남은 것:** PR-C(불일치 시 쓰기 거부 `LEDGER_TAMPERED`, D3 두 단계 채택 명령).
