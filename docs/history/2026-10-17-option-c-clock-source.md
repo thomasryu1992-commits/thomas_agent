@@ -70,6 +70,21 @@ window numbers) are still deferred.
 - X runs `docker image build` with no `HOME`. Whether the CLI or BuildKit needs a writable home is
   NOT_VERIFIED until the run.
 
+**What this PR's runs found (runs 39027923410 and 39028074862).**
+- The kernel source confirmed the runner's clock (state 0, `STA_UNSYNC` clear, maxerror within the limit).
+- The synthetic fixture came up.
+- Both measured mismatches refused before the spend, with nothing spent and no tag.
+- The valid approval was spent and the rollback point tagged. Then the build failed
+  (`FAILED_EFFECT_PARTIAL`, audit cause `BUILD_FAILED`), and the actor latched, as designed.
+- Re-run as X with the actor's exact environment (`PATH`, `LANG` only):
+  - the tag succeeds;
+  - the build fails with `ERROR: mkdir /nonexistent: permission denied`. Docker's BuildKit client needs a
+    writable home, and X has none.
+- **This is a defect in the runner as designed (C3a's fixed command environment against X's account), not
+  in the harness.** Fixing it is a decision: the command environment, X's home, or the builder. It is
+  reported and not fixed here.
+- N-11 and N-12 stay BLOCKED until it is.
+
 **Tests.**
 - `tests/test_mvp_runtime_deploy_runner_clock_source.py`:
   - every kernel answer is held to its verdict with an injected `adjtimex` (read mode asserted);
