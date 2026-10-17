@@ -9,6 +9,8 @@ is Thomas's, at C5/C6, as root on the target host. Claude does not run this on a
         --config-dir /etc/thomas-deploy --gate-user <G> --gate-group <G group> --actor-user <X> --actor-group <X group> \
         --gate-dir /var/lib/thomas-deploy/gate --actor-dir /var/lib/thomas-deploy/actor
     python -m scripts.ops.deploy_runner_install check-config --role actor --config /etc/thomas-deploy/actor.json
+    cd /opt/thomas-deploy/<sha>/app && ../venv/bin/python -m scripts.ops.deploy_runner_install link-install --app /opt/thomas-deploy/<sha>/app
+    python -m scripts.ops.deploy_runner_install trust-tree --tree /var/lib/thomas-deploy/trees/<PR>
 
 - ``fingerprint`` prints, from the interpreter it runs under, the value a config's ``fingerprint`` must hold
   (CR-8 condition 6). Run it with the installed interpreter so the expectation is measured, not typed.
@@ -18,6 +20,16 @@ is Thomas's, at C5/C6, as root on the target host. Claude does not run this on a
 - ``render-units`` fills the two unit templates. Every value is held to a closed form; a template that keeps
   a placeholder, or an output file that already exists, refuses.
 - ``check-config`` is the service's own start check without listening (``serve --check``).
+- ``link-install`` (C5 preparation, Thomas 2026-10-17) writes ``thomas_deploy_install.pth`` into the
+  site-packages of the interpreter it runs under, naming the install's tree. The units start ``python -I``,
+  which keeps the working directory off ``sys.path``, and the repository has no package metadata, so
+  without it a unit cannot import ``runtime`` (C4's finding). It runs without ``-I`` from the tree itself,
+  the one time the tree is importable that way. Never over an existing file.
+- ``trust-tree`` adds one runner tree to the system git configuration's ``safe.directory``. X runs ``git``
+  with no ``HOME`` against a root-owned tree, which git otherwise refuses as dubious ownership. One exact
+  path per call, never a wildcard; a path already listed is left as it is.
+- ``genesis`` also makes ``<directory>/docker-config`` (0700, the actor's): the actor's commands run with
+  ``DOCKER_CONFIG`` there (BUILD-HOME = A), and BuildKit needs it writable.
 
 Every path must be absolute, and none may lie under the runtime state root: this tool never touches
 ``.runtime_governance_state``.
@@ -31,10 +43,14 @@ import os
 import re
 import secrets
 import stat
+import subprocess
 import sys
+import sysconfig
 from pathlib import Path
+from typing import Callable
 
 from runtime.mvp_runtime.deploy_runner import consumption, private_files, serve
+from runtime.mvp_runtime.deploy_runner.commands import DOCKER_CONFIG_DIR
 
 try:  # module form from the repo root, or the script's own directory on sys.path
     from scripts.lib.utctime import utc_now
@@ -101,10 +117,52 @@ def genesis(directory: Path, *, install_sha: str, owner_uid: int | None, now: st
             os.fsync(fd)
         finally:
             os.close(fd)
+        try:
+            os.mkdir(DOCKER_CONFIG_DIR, 0o700, dir_fd=dir_fd)
+        except FileExistsError:
+            raise InstallRefused("a docker-config directory already exists; an install never reuses one") from None
+        if owner != os.geteuid():
+            os.chown(DOCKER_CONFIG_DIR, owner, -1, dir_fd=dir_fd, follow_symlinks=False)
         os.fsync(dir_fd)
     finally:
         os.close(dir_fd)
     return store_id
+
+
+PTH_NAME = "thomas_deploy_install.pth"
+
+
+def link_install(app: Path, site_packages: Path) -> Path:
+    """Write the ``.pth`` naming ``app`` into ``site_packages``. ``app`` must hold the runner's package."""
+    app = _abs(str(app))
+    if not (app / "runtime" / "mvp_runtime" / "deploy_runner" / "serve.py").is_file():
+        raise InstallRefused("the app directory does not hold the runner's tree")
+    target = Path(site_packages) / PTH_NAME
+    try:
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    except FileExistsError:
+        raise InstallRefused("a .pth already exists; an install never replaces one") from None
+    try:
+        os.write(fd, (str(app) + "\n").encode("ascii"))
+        os.fchmod(fd, 0o644)
+    finally:
+        os.close(fd)
+    return target
+
+
+def trust_tree(tree: Path, *, git: str = "/usr/bin/git",
+               run: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> bool:
+    """Add ``tree`` to the system ``safe.directory`` list; False when it is already there."""
+    path = str(_abs(str(tree)))
+    listed = run([git, "config", "--system", "--get-all", "safe.directory"], stdin=subprocess.DEVNULL,
+                 capture_output=True, text=True, env={"PATH": "/usr/bin:/bin", "LANG": "C"}, check=False)
+    if path in (listed.stdout or "").splitlines():
+        return False
+    done = run([git, "config", "--system", "--add", "safe.directory", path], stdin=subprocess.DEVNULL,
+               capture_output=True, text=True, env={"PATH": "/usr/bin:/bin", "LANG": "C"}, check=False)
+    if done.returncode != 0:
+        raise InstallRefused("git could not record the safe directory")
+    return True
 
 
 def render_units(out: Path, values: dict[str, str]) -> list[Path]:
@@ -149,6 +207,10 @@ def main(argv: list[str] | None = None) -> int:
     for flag in ("out", "install-dir", "config-dir", "gate-user", "gate-group", "actor-user", "actor-group",
                  "gate-dir", "actor-dir"):
         r.add_argument(f"--{flag}", required=True)
+    li = sub.add_parser("link-install")
+    li.add_argument("--app", required=True)
+    tt = sub.add_parser("trust-tree")
+    tt.add_argument("--tree", required=True)
     c = sub.add_parser("check-config")
     c.add_argument("--role", choices=("gate", "actor"), required=True)
     c.add_argument("--config", required=True)
@@ -159,6 +221,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "fingerprint":
             print(json.dumps(environment_fingerprint(), sort_keys=True))
+            return EXIT_OK
+        if args.command == "link-install":
+            print(link_install(Path(args.app), Path(sysconfig.get_paths()["purelib"])))
+            return EXIT_OK
+        if args.command == "trust-tree":
+            print("added" if trust_tree(Path(args.tree)) else "already listed")
             return EXIT_OK
         if args.command == "genesis":
             print(genesis(_abs(args.dir), install_sha=args.install_sha, owner_uid=args.owner_uid))
