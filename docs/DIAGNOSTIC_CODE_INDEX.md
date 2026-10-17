@@ -4,11 +4,11 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **732** distinct codes across **1489** raise sites
+- **733** distinct codes across **1496** raise sites
 - **24** exception classes carry them
 - **84** codes are raised from more than one module (see below)
 - **176** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
-- **40** raise sites carry a human-readable **message** where a code would go, so there is nothing to look up — a different gap from the line above, and counted apart from it
+- **42** raise sites carry a human-readable **message** where a code would go, so there is nothing to look up — a different gap from the line above, and counted apart from it
 
 ## Codes raised from more than one module
 
@@ -82,7 +82,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `RESPONSE_TRUNCATED` | `validator.py`, `worker.py` |
 | `ROLE_DEFINITION_INVALID` | `assignment.py`, `planner.py` |
 | `ROUTE_NOT_SUPPORTED` | `router.py`, `worker_port.py` |
-| `RUNNER_STARTUP_BLOCKED` | `clock.py`, `door.py`, `latch.py`, `startup.py` |
+| `RUNNER_STARTUP_BLOCKED` | `clock.py`, `config.py`, `door.py`, `latch.py`, `startup.py` |
 | `SCHEDULES_UNAVAILABLE` | `dispatch_bridge.py`, `store_reads.py` |
 | `SECRET_IN_CANDIDATE` | `memory.py`, `programization.py` |
 | `STORE_ID_MISMATCH` | `consumption.py`, `startup.py` |
@@ -1317,6 +1317,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `ROTATION_PARTIAL` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | `_execute` | `summary['failures']` |
 | `ROUTE_NOT_SUPPORTED` | `KernelBlocked` | `runtime/read_only_kernel/router.py` | `select_route` | `routing.get('selected_route') != 'ROLE'` |
 | `ROUTE_NOT_SUPPORTED` | `KernelBlocked` | `runtime/read_only_kernel/worker_port.py` | `invoke_worker` | `route.selected_route != 'ROLE'` |
+| `RUNNER_ENVIRONMENT_MISMATCH` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/config.py` | `check_environment` | `(measured or environment_fingerprint()) != config.fingerprint` |
 | `RUNNER_ERROR` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/request_state.py` | `_validate` | `—` |
 | `RUNNER_ERROR` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/request_state.py` | `finish` | `prior is None or prior['state'] != CLAIMED or prior['request_sha256'] != request_sha256` |
 | `RUNNER_ERROR` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/request_state.py` | `finish` | `state not in TERMINAL` |
@@ -1324,6 +1325,12 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `RUNNER_LATCHED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_handle` | `self._latched` |
 | `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/clock.py` | `check_time_policy` | `not policy.deadlines_s or any((not isinstance(v, int) or isinstance(v, bool) or v <= 0 for v in…` |
 | `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/clock.py` | `check_time_policy` | `policy.max_lifetime_s < max(policy.deadlines_s.values())` |
+| `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/config.py` | `_strict_json` | `—` |
+| `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/config.py` | `load_anchor` | `—` |
+| `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/config.py` | `load_anchor` | `not keys` |
+| `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/config.py` | `load_config` | `—` |
+| `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/config.py` | `load_config` | `any(('..' in Path(p).parts or '//' in p for p in _paths(body)))` |
+| `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/config.py` | `load_config` | `body['role'] != role` |
 | `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/door.py` | `__init__` | `—` |
 | `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/door.py` | `__init__` | `not uids or any((not isinstance(u, int) or isinstance(u, bool) or u < 0 for u in uids))` |
 | `RUNNER_STARTUP_BLOCKED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/door.py` | `__init__` | `peer_refusal not in ('PEER_NOT_PERMITTED', 'ACTOR_PEER_NOT_PERMITTED')` |

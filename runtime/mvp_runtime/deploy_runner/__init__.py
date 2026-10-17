@@ -13,6 +13,9 @@ installed.
   sockets on the shared door transport, with a literal uid list), ``docker_argv`` (the closed argv
   templates) and ``commands`` (the one place a process is started, by argv, with a fixed
   environment).
+- C3b — starting a service: ``config`` (the root-owned per-service configuration, closed schema, and the
+  environment fingerprint) and ``serve`` (the entry point a systemd unit runs with ``python -I``). The
+  install tool and the unit templates live in ``scripts/ops/``. Nothing is installed or enabled.
 
 What the package does not do: read ``.env`` or any secret, fetch from a network, run a container,
 or touch the runtime state root. ``validate_candidate``, ``promote`` and ``rollback`` are refused by
