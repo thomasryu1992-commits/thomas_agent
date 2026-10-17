@@ -1,6 +1,6 @@
 # 제안: Option C C4 — 비운영 환경에서 분리 검증 계획 (DRAFT v0.1)
 
-**상태:** PARTIALLY DECIDED 2026-10-17 — **2026-10-17:** D-8은 GitHub Actions 임시 러너(무료 한도 안, 비필수 workflow)로, CR-8b는 Python 3.12.13 python-build-standalone x86_64(SHA256 고정)로 정해졌다. C3b는 #1234로 병합됐다(P-3 충족). 열린 것: CLOCK-SOURCE, RUNNER-FETCH. 시험 workflow는 구현·PR 생성까지 승인됐고 실행 결과는 없다(`HOST_PRIVILEGE_SEPARATION_V0.1.md` §4.25.4). **원래 상태(작성 당시):** DRAFT 2026-10-16 — C4(운영과 무관한 환경에서 계정·권한 분리를 시험)의 계획이다. 환경(D-8), 그 환경의 자원·비용, 그리고 C4 전에 지어야 할 서비스 진입점(C3b)의 구현 승인이 정해지지 않았다. 이 문서는 아무것도 실행하지 않고 어떤 권한도 주지 않는다.
+**상태:** PARTIALLY DECIDED 2026-10-17 — **2026-10-17(2):** 시험 workflow #1237이 병합됐다(`2766c26b`). 병합된 head의 실행(run 39023138344)에서 FAIL 0, PASS 94, BLOCKED 3(CLOCK-SOURCE), NOT_TESTED 1, 누출 0건이다(§10). 운영 호스트 기준으로는 여전히 아무것도 시험되지 않았다(C6). **2026-10-17:** D-8은 GitHub Actions 임시 러너(무료 한도 안, 비필수 workflow)로, CR-8b는 Python 3.12.13 python-build-standalone x86_64(SHA256 고정)로 정해졌다. C3b는 #1234로 병합됐다(P-3 충족). 열린 것: CLOCK-SOURCE, RUNNER-FETCH. 시험 workflow는 구현·PR 생성까지 승인됐고 실행 결과는 없다(`HOST_PRIVILEGE_SEPARATION_V0.1.md` §4.25.4). **원래 상태(작성 당시):** DRAFT 2026-10-16 — C4(운영과 무관한 환경에서 계정·권한 분리를 시험)의 계획이다. 환경(D-8), 그 환경의 자원·비용, 그리고 C4 전에 지어야 할 서비스 진입점(C3b)의 구현 승인이 정해지지 않았다. 이 문서는 아무것도 실행하지 않고 어떤 권한도 주지 않는다.
 
 **기준:** origin/main `4680754f`(C3a-2 #1228), 2026-10-16. 설계 권위는 `HOST_PRIVILEGE_SEPARATION_V0.1.md`(§4.6, §6 C4행)와 C2 명세 v0.5(명세 8, 8.1–8.3)다. 명세는 #1230이 저장소에 옮기는 중이다. 호스트, 운영 파일, `.env`, Docker에는 접근하지 않았다.
 
@@ -109,3 +109,45 @@ C3에서 이미 합성으로 다룬 항목은 C4에서 **권한과 실제 소켓
 ## 9. 하지 않은 것
 
 VM·계정·소켓·unit 생성, Docker 실행, 시험 실행, 키 생성. 운영 호스트, `.env`, 상태 파일, holdings 파일 접근. 이 문서는 계획이고 실행 승인이 아니다.
+
+## 10. 결과 (2026-10-17, GitHub Actions 임시 러너)
+
+**기록 승인:** Thomas 2026-10-17, "C4 실행 결과와 C7 §12의 PR-C 결정 기록을 문서로 남기는 일 … 승인할게".
+
+**실행:** workflow `option-c-c4-separation.yml`, run 39023138344, head `0f945bce`(#1237의 병합 head, main `2766c26b`의 트리).
+- 러너는 `ubuntu-24.04`이고 systemd가 PID 1이다.
+- 인터프리터는 python-build-standalone 3.12.13이고 SHA256 `5bd6f36f…cdbbe`로 확인했다.
+- 결과는 값이 아니라 종류와 code만 남겼다(§7).
+- 같은 결과가 run 39022491162(head `89310e7d`)에서도 나왔다. 첫 실행(run 39021716365)은 하네스 자체의 버그로 소켓 시험 전에 멈췄다(#1237 이력).
+
+| ID | 결과 | 근거(종류) |
+|---|---|---|
+| 설치 | PASS 5 | 3.12.13; 두 역할의 `serve --check`; systemd 아래 두 unit active |
+| N-1 | PASS 1 | `claude-c4`의 가짜 `.env` 읽기: denied |
+| N-2 | PASS 3 | `claude-c4`·G의 Docker 소켓 연결: denied. X는 연결된다(대조) |
+| N-3 | PASS 3 | 세 계정의 `sudo -n true`: 거부 |
+| N-4 | PASS 17 | 설치본·venv·트리·X 기록에 쓰기: denied. X는 자기 기록 디렉터리에만 쓸 수 있다 |
+| N-5 | PASS 6 | X·G의 `/proc/<pid>/environ` 읽기와 `ptrace`: denied |
+| N-6 | PASS 2 | 합성 상태 루트 쓰기와 holdings 디렉터리 접근: denied |
+| N-7 | PASS 4 | 모르는 verb `VERB_NOT_PERMITTED`; 추가 인자 키·프레임 키 `ARGUMENT_NOT_ACCEPTED`; 경로를 PR로 `ARGUMENT_INVALID` |
+| N-8 | PASS 3 | promote `OPERATION_BLOCKED_BY_POLICY`; 서명 없는 prepare `APPROVAL_REQUIRED`; 신뢰하지 않는 키 `SIGNATURE_INVALID` |
+| N-9 | PASS 1 | 만료된 승인 `APPROVAL_EXPIRED` |
+| N-10 | PASS 3, BLOCKED 1 | 다른 PR·커밋 `APPROVAL_BINDING_MISMATCH`, 다른 환경 `APPROVAL_ENVIRONMENT_MISMATCH`. 실제로 측정한 결속(트리·실행 이미지)은 BLOCKED |
+| P-5 | PASS 1 | 유효한 승인은 시계 검사에서 멈춘다: `CLOCK_UNTRUSTED` |
+| N-11 | BLOCKED 1 | 쓴 승인을 다시 쓰는 경우. 아무것도 소비될 수 없다 |
+| N-12 | PASS 4, BLOCKED 1, NOT_TESTED 1 | 프레임 아님 `MALFORMED_REQUEST`; 상한 초과 프레임은 응답 없음; 멈춘 X는 `ACTOR_UNAVAILABLE`; 읽을 수 없는 소비 저장소는 X 기동 거부(종료 3). 소비 뒤 Docker 실패는 BLOCKED. 스키마 밖 응답은 NOT_TESTED(C3a-3 합성 시험이 다룸) |
+| N-7..N-12 | PASS 2 | 모든 거부 앞뒤로 Docker 이미지·태그가 같다. 소비 저장소에는 genesis 1행뿐이다 |
+| N-13 | PASS 6 | 두 서비스 모두 `-I`, `PYTHONPATH`·`PYTHONHOME` 없음, cwd는 설치본. 심어 둔 같은 이름 모듈을 import하지 않는다. 그 모듈이 있어도 재시작된다 |
+| N-14 | PASS 32 | 세 계정이 신뢰 파일·설정·소비 저장소·unit에 덧붙이기, `/etc/thomas-deploy`·`/etc/systemd/system`에 생성: denied |
+| 누출 | PASS 1 | 감시값과 합성 개인키를 9개 출력에서 찾았다: 0건 |
+
+**BLOCKED인 이유:** CLOCK-SOURCE가 정해지지 않아, 서명이 유효한 `prepare_candidate`는 모두 lock·측정·소비 전에 `CLOCK_UNTRUSTED`로 멈춘다(§2 P-5). 이 항목들은 CLOCK-SOURCE가 정해지고 시계 출처가 연결된 뒤 다시 실행한다.
+
+**발견:** C3b의 unit은 `WorkingDirectory=<설치본>`에서 `python -I -m runtime…`로 시작한다.
+- Python 3.12의 `-I`는 작업 디렉터리를 `sys.path`에 넣지 않는다.
+- 저장소에는 패키지 메타데이터가 없다.
+- 그래서 C3b가 내보낸 그대로의 unit은 `runtime`을 import하지 못한다.
+
+workflow는 설치본의 site-packages에 root 소유 `.pth`를 둬서 해결했다. 설치 도구가 이 파일을 쓸지는 C5 결정이다.
+
+**§7 완료 기준에 대한 판정:** 완료가 아니다. FAIL과 누출은 0건이지만, BLOCKED 3건이 남았고 §6의 값(마감 시간, 시계 출처, 소켓 왕복)은 아직 재지 않았다.
