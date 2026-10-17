@@ -1,6 +1,6 @@
 # 제안: 호스트 권한 분리 (Option C) — Claude 계정, 배포 실행기, 승인 결속 (DRAFT v0.1)
 
-**상태:** PARTIALLY DECIDED 2026-10-16 — **2026-10-16(3):** Option C의 저장소 구현은 main에 있다. PR-B #1223(`8979e702`)과 PR-C #1224(`0b6fd69c`)는 MERGED이고, 두 PR 모두 PR CI·main CI 필수 5개가 SUCCESS다. 운영 배포는 없고 운영 적용은 HOLD, Claude read-bridge는 BLOCKED다. 명시 확정: D-11 a1(코드)·c1·d2·f2·e2(저장소 구현), crypto 예외(보안 버그 수정만), E-01 E1-a(문서만), E-02–E-04(코드 병합). 잠정: D-1·D-3·D-11 b3. 미해결: 실제 OS 권한 분리, read door 운영화, R-08, 진단 파일 격리, 배포(§4.24). **2026-10-16(2):** D-11 e2는 EXPLICITLY_APPROVED(저장소 내부 보안 구현만)이고, crypto 연구 중단 예외는 보안 버그 수정에 한정해 APPROVED됐으며, E-01은 E1-a(문서만), E-02–E-04는 저장소 보안 수정만 APPROVED됐다. 구현과 합성 시험은 끝났고 PR-C는 아직 만들지 않았다(§4.23). D-1·D-3·D-11 b3는 PROVISIONALLY_ACCEPTED다. **2026-10-16(1):** Thomas가 D-11 a1(코드 부분)·c1·d2·f2를 저장소 구현 범위로 명시 확정했다(EXPLICITLY_APPROVED). 이를 구현한 PR-B #1223은 squash 병합됐다(MERGED, main `8979e702`, PR·main CI 필수 5개 통과). 운영 적용은 HOLD이고 배포는 없으며 Claude read-bridge 접근은 BLOCKED다. 그때 D-11 e2는 아직 PROVISIONALLY_ACCEPTED였고 PR-C(scheduler e2)와 PR-A(이 문서)는 만들어지지 않았다(§4.22). 이전 상태(2026-10-15): 명시 결정은 Option A(2026-10-12)와 2026-10-15 지시(보안 검토 R-01 대안 (a) 단일 프로필, R-02 감사 범위, S-1·S-2 문구 정정. 저장소 안 코드·문서·합성 시험 한정)뿐이다(§4.18). 2026-10-13 권고 일괄 수용 지시를 근거로 D-11 a1·b3·c1·d2·e2(e-1–e-3 포함)·f2, D-1 대안 C, D-3 §4.3 범위 한정을 구현 방향으로 해석했으며, 항목별 명시적 확정은 대기 중이다(PROVISIONALLY_ACCEPTED, §4.17). 구현은 커밋하지 않았고 IMPLEMENTED_PENDING_REVIEW다. 운영 권한(OPERATIONALLY_AUTHORIZED)은 어떤 항목에도 없고 Claude read-bridge 접근은 BLOCKED다. R-03 결과 Claude 프로필은 투영된 2개 읽기만 서비스한다(§4.18.3). 2026-10-15 2차 지시로 2개 유지·4개 보류, 4개의 응답 계약 설계(SCRATCH 검증), R-07 구현, 무응답 연결의 감사 공백 유지, R-08 문서화를 EXPLICITLY_APPROVED 범위(저장소 안)로 진행했다. 4개를 프로필에 넣는 것은 별도 승인 대기다(§4.19). 2026-10-15 3차 지시로 R3-5(프로필 door 오류 응답을 코드별 고정 문구로), R3-1(heartbeat 구조화 실패 코드와 계약), R3-2(`ControlState` 기반 runtime_status 계약)를 저장소 안에 구현했다. 두 계약 모두 프로필에는 등록하지 않았다(§4.20). 열린 결정: D-2, D-4, D-5–D-10, D-12–D-16, Claude 계정 uid·gid, 요청 로그 디렉터리, 진단 파일 경로, 커밋·PR, 모든 운영 단계(C5·C6). 이전 상태(2026-10-12 DRAFT): 운영 Secret 정책은 Option A(현 정책 유지)로 결정됐다(Thomas 2026-10-12. 3-1·3-2 REJECT, B′ 미채택, Rollback 비상 권한과 운영 배포 NOT_GRANTED, DEPLOYMENT_HOLD). 이 문서는 장기 방향인 Option C를 실제로 추진하기 위한 설계다. Claude 세션을 root가 아니고 docker 그룹 밖인 계정으로 옮기고, 배포는 Claude가 고칠 수 없는 실행기가 고정된 동작만 수행하게 하고, 운영 변경 동작은 SHA·이미지 id에 결속된 Thomas 승인 없이는 거부한다. 권고안은 대안 C(§5): 최소 기능의 전용 실행기를 두고, 전송과 감사는 기존 socket door와 audit 라이브러리를 재사용한다. 대안 선택(D-1)은 PROVISIONALLY_ACCEPTED(대안 C, 항목별 확정 대기)이고 승인 채널(D-2, 권고 SSH 서명)은 미결정이다. 이 문서는 운영 권한을 주지 않는다. 호스트 계정·권한 변경, 실행기 설치, 부정 시험 실행은 각각 따로 승인받는다(§6). 결정 항목은 D-1–D-16이다(§8). 2026-10-13 C1: Claude의 root·Docker 의존 작업 30개를 정리하고 대체 경로를 정했다(§4.7: A 5, B 6, C 8, D 13, E 3, 일부 중복. W-14·W-15는 2026-10-13 소스 대조로 판정, §4.8.1. W-11·W-12는 dispatch door와 대조했으나 동등하지 않아 E 유지, §4.8.2. W-13은 READY 경로를 대조했으나 부분 동등이라 E 유지, §4.8.3. W-20은 사용처별 B·C·D로 판정, §4.8.4. W-30은 D로 재분류, §4.12.3. D-11 권고를 전용 인스턴스로 바꿨다, §4.12.1. 승인 전 검증에서 `scheduler_events`의 factory 실패 문구가 예외 메시지를 싣는 것을 확인했다, §4.12.4. 그 문구의 네 갈래 흐름, Claude용 최소 응답 계약, D-11 승인 조건 3단계, 테스트 X-1–X-10을 명세했다, §4.12.5. 2026-10-13 구현 준비: scheduler 읽기 응답 계약 v1(§4.13, 저장소 밖 참조 구현으로 10개 시험 통과와 결함 주입 검출 확인), D-11 결정 패킷(§4.14), W-11–W-13·W-30·D-16 정리(§4.15, D-16 정규식 대조)). read-bridge로 대체되는 읽기는 4건이지만 Claude 계정은 그 소켓에 아직 닿지 못한다(§4.8). cron 3줄과 Mac SSH 계정은 NOT_VERIFIED다(§4.9). Claude가 고칠 수 있는 스크립트가 지금 `.env`의 봇 토큰을 읽는다는 것을 찾았다(§4.9, D-12). 승인 서명의 위조 저항과 검증 우회를 나눠 과도한 주장을 고쳤다(§4.10).
+**상태:** PARTIALLY DECIDED 2026-10-16 — **2026-10-16(4):** C2(승인 검증 인터페이스) 설계가 완료됐다(C2-FINAL, DESIGN_ONLY). 명세는 `HOST_PRIVILEGE_SEPARATION_C2_SPEC_V0.5.md`에 원문 그대로 옮겼다. 그 뒤 D-10a·CR-12 T3(조건부)·TYPE-B-KEY K1·D-3 C3a 범위·CR-8이 DESIGN_ONLY로 정해졌다. 실행기 코드는 C3a로 나눠 들어가고 있다: C3a-1 #1227·C3a-2 #1228 MERGED, C3a-3 #1229 병합 승인 대기. #1229는 사전 승인 없이 만들어졌고 2026-10-17에 사후 추인됐다(소급 승인 아님). 같은 날 C2 계약에 맞춘 수정이 승인됐고, C2 최소 개정 하나(`COMPOSE_PROJECT_MISMATCH` 신설)가 결정됐다. 설치·계정 분리·운영은 승인되지 않았다(§4.25). **2026-10-16(3):** Option C의 저장소 구현은 main에 있다. PR-B #1223(`8979e702`)과 PR-C #1224(`0b6fd69c`)는 MERGED이고, 두 PR 모두 PR CI·main CI 필수 5개가 SUCCESS다. 운영 배포는 없고 운영 적용은 HOLD, Claude read-bridge는 BLOCKED다. 명시 확정: D-11 a1(코드)·c1·d2·f2·e2(저장소 구현), crypto 예외(보안 버그 수정만), E-01 E1-a(문서만), E-02–E-04(코드 병합). 잠정: D-1·D-3·D-11 b3. 미해결: 실제 OS 권한 분리, read door 운영화, R-08, 진단 파일 격리, 배포(§4.24). **2026-10-16(2):** D-11 e2는 EXPLICITLY_APPROVED(저장소 내부 보안 구현만)이고, crypto 연구 중단 예외는 보안 버그 수정에 한정해 APPROVED됐으며, E-01은 E1-a(문서만), E-02–E-04는 저장소 보안 수정만 APPROVED됐다. 구현과 합성 시험은 끝났고 PR-C는 아직 만들지 않았다(§4.23). D-1·D-3·D-11 b3는 PROVISIONALLY_ACCEPTED다. **2026-10-16(1):** Thomas가 D-11 a1(코드 부분)·c1·d2·f2를 저장소 구현 범위로 명시 확정했다(EXPLICITLY_APPROVED). 이를 구현한 PR-B #1223은 squash 병합됐다(MERGED, main `8979e702`, PR·main CI 필수 5개 통과). 운영 적용은 HOLD이고 배포는 없으며 Claude read-bridge 접근은 BLOCKED다. 그때 D-11 e2는 아직 PROVISIONALLY_ACCEPTED였고 PR-C(scheduler e2)와 PR-A(이 문서)는 만들어지지 않았다(§4.22). 이전 상태(2026-10-15): 명시 결정은 Option A(2026-10-12)와 2026-10-15 지시(보안 검토 R-01 대안 (a) 단일 프로필, R-02 감사 범위, S-1·S-2 문구 정정. 저장소 안 코드·문서·합성 시험 한정)뿐이다(§4.18). 2026-10-13 권고 일괄 수용 지시를 근거로 D-11 a1·b3·c1·d2·e2(e-1–e-3 포함)·f2, D-1 대안 C, D-3 §4.3 범위 한정을 구현 방향으로 해석했으며, 항목별 명시적 확정은 대기 중이다(PROVISIONALLY_ACCEPTED, §4.17). 구현은 커밋하지 않았고 IMPLEMENTED_PENDING_REVIEW다. 운영 권한(OPERATIONALLY_AUTHORIZED)은 어떤 항목에도 없고 Claude read-bridge 접근은 BLOCKED다. R-03 결과 Claude 프로필은 투영된 2개 읽기만 서비스한다(§4.18.3). 2026-10-15 2차 지시로 2개 유지·4개 보류, 4개의 응답 계약 설계(SCRATCH 검증), R-07 구현, 무응답 연결의 감사 공백 유지, R-08 문서화를 EXPLICITLY_APPROVED 범위(저장소 안)로 진행했다. 4개를 프로필에 넣는 것은 별도 승인 대기다(§4.19). 2026-10-15 3차 지시로 R3-5(프로필 door 오류 응답을 코드별 고정 문구로), R3-1(heartbeat 구조화 실패 코드와 계약), R3-2(`ControlState` 기반 runtime_status 계약)를 저장소 안에 구현했다. 두 계약 모두 프로필에는 등록하지 않았다(§4.20). 열린 결정: D-2, D-4, D-5–D-10, D-12–D-16, Claude 계정 uid·gid, 요청 로그 디렉터리, 진단 파일 경로, 커밋·PR, 모든 운영 단계(C5·C6). 이전 상태(2026-10-12 DRAFT): 운영 Secret 정책은 Option A(현 정책 유지)로 결정됐다(Thomas 2026-10-12. 3-1·3-2 REJECT, B′ 미채택, Rollback 비상 권한과 운영 배포 NOT_GRANTED, DEPLOYMENT_HOLD). 이 문서는 장기 방향인 Option C를 실제로 추진하기 위한 설계다. Claude 세션을 root가 아니고 docker 그룹 밖인 계정으로 옮기고, 배포는 Claude가 고칠 수 없는 실행기가 고정된 동작만 수행하게 하고, 운영 변경 동작은 SHA·이미지 id에 결속된 Thomas 승인 없이는 거부한다. 권고안은 대안 C(§5): 최소 기능의 전용 실행기를 두고, 전송과 감사는 기존 socket door와 audit 라이브러리를 재사용한다. 대안 선택(D-1)은 PROVISIONALLY_ACCEPTED(대안 C, 항목별 확정 대기)이고 승인 채널(D-2, 권고 SSH 서명)은 미결정이다. 이 문서는 운영 권한을 주지 않는다. 호스트 계정·권한 변경, 실행기 설치, 부정 시험 실행은 각각 따로 승인받는다(§6). 결정 항목은 D-1–D-16이다(§8). 2026-10-13 C1: Claude의 root·Docker 의존 작업 30개를 정리하고 대체 경로를 정했다(§4.7: A 5, B 6, C 8, D 13, E 3, 일부 중복. W-14·W-15는 2026-10-13 소스 대조로 판정, §4.8.1. W-11·W-12는 dispatch door와 대조했으나 동등하지 않아 E 유지, §4.8.2. W-13은 READY 경로를 대조했으나 부분 동등이라 E 유지, §4.8.3. W-20은 사용처별 B·C·D로 판정, §4.8.4. W-30은 D로 재분류, §4.12.3. D-11 권고를 전용 인스턴스로 바꿨다, §4.12.1. 승인 전 검증에서 `scheduler_events`의 factory 실패 문구가 예외 메시지를 싣는 것을 확인했다, §4.12.4. 그 문구의 네 갈래 흐름, Claude용 최소 응답 계약, D-11 승인 조건 3단계, 테스트 X-1–X-10을 명세했다, §4.12.5. 2026-10-13 구현 준비: scheduler 읽기 응답 계약 v1(§4.13, 저장소 밖 참조 구현으로 10개 시험 통과와 결함 주입 검출 확인), D-11 결정 패킷(§4.14), W-11–W-13·W-30·D-16 정리(§4.15, D-16 정규식 대조)). read-bridge로 대체되는 읽기는 4건이지만 Claude 계정은 그 소켓에 아직 닿지 못한다(§4.8). cron 3줄과 Mac SSH 계정은 NOT_VERIFIED다(§4.9). Claude가 고칠 수 있는 스크립트가 지금 `.env`의 봇 토큰을 읽는다는 것을 찾았다(§4.9, D-12). 승인 서명의 위조 저항과 검증 우회를 나눠 과도한 주장을 고쳤다(§4.10).
 
 **기준:** origin/main `1b45ed57`(#1222), 2026-10-12. 저장소의 소스·문서·테스트를 읽었다. 호스트는 메타데이터만 읽었다:
 - `id`, `getent group docker`, uid 1000 이상 계정 목록, `sudo` 위치, `/etc/sudoers.d`·`/etc/cron.d`·`/etc/systemd/system`의 파일 이름
@@ -218,7 +218,7 @@ crontab은 다시 읽지 않았다.
 | 동작 | 하는 일 | Docker 효과 | 승인 |
 |---|---|---|---|
 | `inspect_candidate(pr)` | 실행 중 이미지 id, `candidate-<pr>`·`rollback-pre-<pr>`·`latest` id, `thomas-` 컨테이너 이름·health. env·Mounts는 돌려주지 않음 | 읽기 | 없음(메타데이터 읽기) — §8 D-4 |
-| `prepare_candidate(pr)` | 자기 트리 생성, 첫 preflight, `rollback-pre-<pr>` 태그, `candidate-<pr>` 빌드 | 태그·빌드 | 필요 |
+| `prepare_candidate(pr)` | 자기 트리 측정(clean, HEAD = `origin/main`), 실행 중 이미지 측정(여덟 서비스가 한 이미지, compose project 라벨 대조), 태그 비어 있음 확인, 측정한 실행 중 이미지 id로 `rollback-pre-<pr>` 태그, `candidate-<pr>` 빌드. compose config(bind source 검사)는 `validate_candidate`로 옮긴다(2026-10-16 정정, §4.25.3) | 태그·빌드 | 필요 |
 | `validate_candidate(pr)` | D-10 격리로 `c7_blocked_selftest` 같은 등록된 자가검증 실행, `--promote --tree` preflight를 실행기 안에서 실행. 판정 줄만 돌려줌 | 읽기 + 격리 실행 | 필요(Secret을 실행기 안에서 처리하므로) |
 | `promote(pr, sha, candidate_id, rollback_id, request_id)` | 직전 preflight 재실행, STOP 0이면 `latest` 태그 + `compose up -d`, 사후 확인 | 운영 변경 | 필요(결속) |
 | `rollback(pr, rollback_id, request_id)` | `rollback-pre-<pr>`를 `latest`로, 같은 compose, 사후 확인 | 운영 변경 | 필요(결속) |
@@ -250,7 +250,7 @@ crontab은 다시 읽지 않았다.
 
 ### 4.6 C-6 분리 검증 (부정 시험 명세)
 
-각 시험의 결과는 PASS / FAIL / NOT_TESTED / BLOCKED 중 하나다. **현재 모두 NOT_TESTED다.** 호스트 시험(N-1–N-6)은 계정 분리 후 `claude` 계정으로 실행하고(C4·C6), 실행기 시험(N-7–N-12)은 합성 fixture로 먼저 실행한다(C3).
+각 시험의 결과는 PASS / FAIL / NOT_TESTED / BLOCKED 중 하나다. **운영 호스트 기준으로는 모두 NOT_TESTED다.** 호스트 시험(N-1–N-6)은 계정 분리 후 `claude` 계정으로 실행하고(C4·C6), 실행기 시험(N-7–N-12)은 합성 fixture로 먼저 실행한다(C3). 실행기 설치 시험(N-13·N-14, 아래 C1 추가분)은 C4에서 시작해 C6에서 운영 호스트로 반복하고, N-15는 관리 설정 위치(D-13)가 정해진 뒤 C6에서 실행한다(2026-10-16 번호 정정). 2026-10-16 현재 C3a 합성 시험이 `prepare_candidate` 기준으로 N-7–N-12를 다룬다(§4.25.2). `promote`·`rollback`은 구현되지 않아 그 경로의 N-8–N-11은 NOT_TESTED다.
 
 | # | 시험 | 방법 | PASS 조건 | BLOCKED 조건 |
 |---|---|---|---|---|
@@ -2544,6 +2544,62 @@ Option C의 저장소 구현은 PR-B·PR-C로 main에 들어갔다. 이 문서(P
 - **승인:** 생성과 병합은 각각 Thomas의 별도 승인이 필요하다.
 - **잠정 결정:** 병합해도 잠정 결정(D-1, D-3, D-11 b3)은 확정되지 않는다.
 
+### 4.25 C2 완료와 C3a 구현 진행 (2026-10-16)
+
+#### 4.25.1 결정 기록
+
+| 결정 | 승인 문구(원문) | 범위 |
+|---|---|---|
+| C2 착수 | D-1 대안 C·D-2 R2·D-3(C2 명세 범위)·D-4·CR-1–CR-5 명시 승인, D-10 보류 | DESIGN_ONLY |
+| N1 | N1-1–N1-8 명시 승인(G/X 분리, 최종 판정은 X에만) | DESIGN_ONLY. 원문은 명세 머리말 |
+| GAP | `승인: GAP-1A~1C, GAP-2A~2C, C2-COMPLETE DESIGN_ONLY (Thomas 2026-10-16)` | DESIGN_ONLY |
+| C2-FINAL | `승인: C2-FINAL C2 설계 완료 확정, DESIGN_ONLY (Thomas 2026-10-16)` | 명세 v0.5(md5 `5d096745`) 확정 |
+| D-10a | `승인: D-10a G·X 비root 전용 계정, X Docker root 동등 위험 유지, DESIGN_ONLY (Thomas 2026-10-16)` | D-10b(`.env` 접근)는 미결정 |
+| CR-12 | `승인: CR-12 T3 설치본 앵커 조건부 채택(Docker argv 조건 1–3, X 침해 NOT_PROTECTED), DESIGN_ONLY (Thomas 2026-10-16)` | 조건 1–3은 C3a-3 시험이 고정 |
+| TYPE-B-KEY | `승인: TYPE-B-KEY K1 같은 키+namespace 제한, C5 전 K2 재검토, DESIGN_ONLY (Thomas 2026-10-16)` | — |
+| D-3 | `승인: D-3 C3a 범위(Secret 경로 없음, validate·promote·rollback 미구현), DESIGN_ONLY — 구현 승인 아님 (Thomas 2026-10-16)` | — |
+| CR-8 | `승인: CR-8 8a/8b 분리, CR-10·11·19 불변식만 C3·값은 C4 측정 후, DESIGN_ONLY (Thomas 2026-10-16)` | — |
+| 사후 추인 | `추인: PR #1229·#1230·#1231·#1232의 기존 산출물 보존 및 승인된 수정 작업 허용. 과거에 사전 승인이 있었던 것으로 소급 기록하지 않음. 병합·배포 제외 (Thomas 2026-10-17)` | 네 PR은 2026-10-16 8시간 자율 위임 안에서 만들어졌다. 그 위임은 C3 구현과 문서 PR(CR-16)에 필요한 별도 명시 승인을 대신하지 않는다 |
+| C3a-3 계약 정합·C2 최소 개정 | `승인: #1229 계약 일치 수정 및 PR 갱신. 항목 1·3a·3b·5는 C2 명세 우선. 3c는 요청 상태 enum 정의. 항목 2는 COMPOSE_PROJECT_MISMATCH 신설을 위한 최소 C2 계약 개정. 항목 4는 FAILED_EFFECT_PARTIAL에 승인된 비밀정보가 아닌 측정값만 포함하도록 응답 스키마 수정. 병합 제외 (Thomas 2026-10-17)` | C2 개정은 reply code 하나뿐이다(§4.25.3). 명세 원문은 바꾸지 않았다 |
+| 문서 정합 | `승인: #1230·#1232의 계약 정합성 문서 수정 및 PR 갱신. 병합 제외 (Thomas 2026-10-17)` | — |
+
+**정해지지 않은 것:** X 침해 위험의 운영상 수용, D-10b, CR-13, CR-15, CR-17(RECOVERY_INBOX는 우선 후보일 뿐), N2, D-5–D-9, D-12–D-16.
+
+#### 4.25.2 C3a 구현
+
+| 단계 | 내용 | PR | 상태 |
+|---|---|---|---|
+| C3a-1 | 승인 검증, 닫힌 reason code와 고정 문구, 신뢰 파일(T3), 시간 규칙 | #1227 | MERGED `8358369d` |
+| C3a-2 | 소비 저장소, 요청 상태, 감사 체인, LATCH, 시작 대조 | #1228 | MERGED `4680754f` |
+| C3a-3 | G·X와 두 소켓, `inspect_candidate`·`prepare_candidate`, 닫힌 Docker argv | #1229 | 열림. 2026-10-17 계약 정합 수정 반영, 병합 승인 대기 |
+
+- 각 단계의 근거와 수치는 `docs/history/2026-10-16-deploy-runner-c3a-*.md`에 있다.
+- **승인 근거:** C3a-1·C3a-2는 구현 전에 한 줄 승인이 있었다. C3a-3에는 없었다. C3a-3는 8시간 자율 위임 안에서 만들어졌고, 2026-10-17에 사후 추인됐다. 추인은 사전 승인으로 기록하지 않는다.
+- 코드는 어떤 서비스에도 연결되지 않았고 설치되지 않았다. 운영 상태는 §4.24와 같다: DEPLOYMENT_HOLD, NO_APPROVED_EXECUTION_PATH, OPTION_C_EXECUTOR는 저장소 코드만 있고 미설치.
+
+#### 4.25.3 C3a-3와 명세의 정합 (2026-10-17 수정 반영)
+
+2026-10-17 검토에서 #1229 첫 판이 닫힌 계약과 다른 곳 다섯을 찾았다. Thomas가 명세 우선으로 수정을 승인했고, 수정이 반영됐다.
+
+| 항목 | 명세 | 첫 판 | 수정 뒤 |
+|---|---|---|---|
+| X 소켓 peer 거부 | §6.1b·N1X-03: `ACTOR_PEER_NOT_PERMITTED` | `PEER_NOT_PERMITTED` | 명세대로. G 소켓은 `PEER_NOT_PERMITTED`. 소켓마다 자기 응답 형식을 쓴다 |
+| compose 라벨 불일치 | §6.3-7은 대조를 요구하지만 code가 없었다 | `RUNNER_ENVIRONMENT_MISMATCH`(§9의 시작 지문 전용 code)를 빌려 씀 | **C2 최소 개정(Thomas 2026-10-17):** 응답 code `COMPOSE_PROJECT_MISMATCH` 하나를 새로 둔다. code 표에서 나오는 C3a-1 응답·감사 enum과 C3a-2 LATCH enum에 추가됐다 |
+| 요청·응답 필드 | §6.1a: `approval_document`. §6.1b: `thomas.actor_request.v1` `{schema, request_id, verb, args, approval_document_b64?, approval_signature?, gate_intake_seq}`, `thomas.actor_reply.v1` `{ok, reason_code, request_id, state, data, replayed}` | `approval_document_b64`, `proto`·`client_id`, `reason`·`error_ref`, `state` 없음 | 명세대로. X 감사의 `client_id`는 null이고, 귀속은 같은 `gate_intake_seq`의 G 접수 기록에 있다(GAP-2) |
+| `state` 값 | §6.1b에 값 정의가 없었다 | — | **정의(2026-10-17):** X 요청 기록의 상태(`claimed`, `completed`, `refused_before_consume`, `unknown`, `partial`). 기록이 없으면(inspect, claim 전 거부) null. G는 호출자에게 넘기지 않는다(§6.1a에 없음) |
+| 부분 실패 응답 | §5.2·§6.3: `FAILED_EFFECT_PARTIAL` 응답 `data`에 측정 id만 | 응답은 code만. C3a-1 응답 스키마가 거부 응답의 `data`를 금지했다 | 명세대로. `{pr, git_commit_sha, rollback_image_id, candidate_image_id}`, 값은 검증된 형식이거나 null. C3a-1 `deploy_runner_reply.v0.1`은 이 닫힌 모양을 `FAILED_EFFECT_PARTIAL`에만 허용한다 |
+| inspect 상태 enum | §6.2: 6개 값 | `absent`·`removing` 추가 | 명세대로. 다른 값은 `IMAGE_STATE_UNAVAILABLE`. 없는 컨테이너는 `running`에서 null이고 `containers`에는 넣지 않는다 |
+
+**명세와 아직 다른 것(결정 대기, 바뀌지 않음):**
+| 항목 | 명세 | 구현 | 이유 |
+|---|---|---|---|
+| `environment_file` 라벨 | §6.3-7 | 대조하지 않음 | 비교할 설치 시점 기대값이 없다(C4) |
+| 자기 트리 | §4.3: GitHub에서 직접 fetch | 트리가 미리 있어야 한다. `ORIGIN_FETCH_FAILED`는 발생 지점이 없다 | fetch는 새 network 능력이라 별도 결정이 필요하다 |
+| 시계 동기 | CR-10·11·19 값은 C4 측정 후 | 동기 확인 출처가 없으면 `prepare_candidate`는 `CLOCK_UNTRUSTED` | 불변식만 C3에 둔다(CR-8) |
+| `FRAME_TOO_LARGE` | 응답 code | 공용 전송이 너무 큰 프레임을 응답 없이 닫는다. 발생 지점이 없다 | §4.19.4의 "응답 없이 끝난 연결"과 같은 공백 |
+
+- **빌드와 네트워크:** `--pull=false`는 이미 있는 base 이미지만 새로 받지 않게 한다. 없는 base 이미지는 받고, Dockerfile의 `apt-get` 단계는 빌드 중에 네트워크를 쓴다. 이 효과는 §6.3이 받아들인 것이고, 요청 값이 바꿀 수 없다.
+
 ## 5. 대안 비교
 
 | 기준 | A 기존 구성요소만 | B 기존 도구 보강 + 제한 계정(sudo wrapper) | **C 최소 전용 실행기 (권고)** | D 별도 호스트·VM |
@@ -2572,15 +2628,15 @@ Option C의 저장소 구현은 PR-B·PR-C로 main에 들어갔다. 이 문서(P
 | **C1** 계정·권한 경계 설계 | C0 | Claude 작업 목록 전수, 대체 경로 표, read-bridge 대조, 자동화 영향, 승인 보안 가정 | §4.7–§4.11 (2026-10-13 작성) | 정적, 문서 테스트 | §4.11의 8개 기준. **문서 작업은 완료, cron 3줄·E 3건은 미확인** | 대체 경로가 없는 필수 작업 발견 → Thomas 판단(현재 없음) | cron 3줄·Mac SSH 계정·볼트 경로 증거(Thomas 제공 또는 확인 승인) |
 | **C2** 승인 검증 인터페이스 | C0, D-2 | 선택한 채널의 결속 문서·reason code·소비 경로 | 인터페이스 명세 | 합성 승인으로 N-8–N-11 명세 | 승인 결속 필드와 거부 코드가 닫힘 | 선택한 채널이 결속 조건을 못 채움 | D-2 결정. 새 동작 유형·스키마의 Reuse-first 예외 |
 | **C3** 실행기 구현과 합성 시험 | C2, D-3 | 실행기 코드(동작 목록, 응답 스키마, argv 실행, 감사). Docker는 가짜 `run`으로 | 코드 + 테스트 PR | N-7–N-12 합성, 누출 검사, 닫힌 동작 고정 테스트 | CI 5개 통과, 부정 시험 PASS | 합성 누출 1건이라도 발견 | 코드 PR·병합. **설치·활성화는 아님** |
-| **C4** 비운영 환경에서 분리 검증 | C3 | 운영과 무관한 VM·컨테이너에 `claude`·`thomas-deploy` 계정과 가짜 `.env`를 만들어 N-1–N-12 실행 | 시험 기록 | N-1–N-12 | 모두 PASS | FAIL 1건 | 비운영 환경 사용(자원) |
+| **C4** 비운영 환경에서 분리 검증 | C3 | 운영과 무관한 VM·컨테이너에 `claude`·`thomas-deploy` 계정과 가짜 `.env`를 만들어 N-1–N-14 실행(N-15는 D-13 뒤 C6) | 시험 기록 | N-1–N-14 | 모두 PASS | FAIL 1건 | 비운영 환경 사용(자원) |
 | **C5** 운영 호스트 변경 계획 검토 | C4 | 계정 생성, 그룹, `.env` 모드·사본 처리, 실행기 설치, systemd, 앱 SSH 사용자, cron 이전, CLAUDE.md·skill 개정안 | 변경 계획서 + 되돌리기 절차 | 정적 | 각 변경의 되돌리기가 정해짐 | 되돌릴 수 없는 단계 발견 | 계획 승인 |
-| **C6** 분리 실행 후 부정 시험 | C5 승인 | Thomas가 호스트 변경을 수행. Claude는 `claude` 계정에서 N-1–N-6 실행 | 시험 기록 | N-1–N-12(운영 호스트) | 모두 PASS, root Claude 프로세스 0 | FAIL → 즉시 root 경로 금지 유지, 원인 보고 | **호스트 계정·권한 변경(운영)**, 실행기 활성화 |
+| **C6** 분리 실행 후 부정 시험 | C5 승인 | Thomas가 호스트 변경을 수행. Claude는 `claude` 계정에서 N-1–N-6, N-13–N-15 실행 | 시험 기록 | N-1–N-15(운영 호스트) | 모두 PASS, root Claude 프로세스 0 | FAIL → 즉시 root 경로 금지 유지, 원인 보고 | **호스트 계정·권한 변경(운영)**, 실행기 활성화 |
 | **C7** 새 기준선 candidate 검증 계획 | C6 | 새 main SHA로 `prepare_candidate`·`validate_candidate` 계획 | 계획서 | — | 승인 대상 SHA·이미지가 정해짐 | 기준선 이동 | 계획 승인 |
 | **C8** 운영 preflight와 배포 | C7 | 실행기 `validate_candidate` → `promote` | 배포 기록 | 사후 확인 | 사후 확인 통과 | STOP 1건 | **운영 preflight 승인, 배포 승인, Rollback 범위·기간** — 각각 따로 |
 
 ## 7. 배포 전제조건 체크리스트 (C8 진입 전)
 
-- [ ] C6 부정 시험 N-1–N-12 모두 PASS (운영 호스트)
+- [ ] C6 부정 시험 N-1–N-15 모두 PASS (운영 호스트)
 - [ ] root로 도는 Claude 프로세스 0 (`ps -eo user,comm`)
 - [ ] 실행기 설치본 SHA = Thomas가 검토한 origin/main SHA
 - [ ] 승인 채널(D-2) 운영 중, 결속·만료·소비 확인
@@ -2594,16 +2650,16 @@ Option C의 저장소 구현은 PR-B·PR-C로 main에 들어갔다. 이 문서(P
 
 | # | 결정 | 권고 기본값 | 상태 |
 |---|---|---|---|
-| D-1 | 대안 선택(§5 A/B/C/D) | C | PROVISIONALLY_ACCEPTED(2026-10-13 권고 일괄 수용 지시의 해석, 항목별 확정 대기): C(§4.17) |
-| D-2 | 승인 채널(§4.4 R1/R2/R3) | R2(SSH 서명). 승인 출처의 증명이 가장 강하고(서명은 root도 위조 못 함), 호스트에 이미 Thomas 공개키가 있다. R1은 Telegram 편의가 크지만 신뢰 기반이 root·uid 10001이 쓸 수 있는 호스트 파일이다. 어느 쪽도 root 침해에는 소용이 없다(§4.10) | 미결정 |
-| D-3 | 새 구성요소의 Reuse-first 예외: 실행기, 배포 동작 유형, 응답 스키마 | §4.3 범위로 한정해 승인 | PROVISIONALLY_ACCEPTED(2026-10-13 권고 일괄 수용 지시의 해석, 항목별 확정 대기): §4.3 범위(§4.17) |
-| D-4 | `inspect_candidate`를 승인 없이 허용할지 | 허용(지정 메타데이터, env·Mounts 제외) | 미결정 |
+| D-1 | 대안 선택(§5 A/B/C/D) | C | PROVISIONALLY_ACCEPTED(2026-10-13 권고 일괄 수용 지시의 해석, 항목별 확정 대기): C(§4.17). **2026-10-16:** 대안 C DESIGN_ONLY 승인(C2 착수 승인), N1-1로 유지(§4.25.1). 운영 권한은 없음 |
+| D-2 | 승인 채널(§4.4 R1/R2/R3) | R2(SSH 서명). 승인 출처의 증명이 가장 강하고(서명은 root도 위조 못 함), 호스트에 이미 Thomas 공개키가 있다. R1은 Telegram 편의가 크지만 신뢰 기반이 root·uid 10001이 쓸 수 있는 호스트 파일이다. 어느 쪽도 root 침해에는 소용이 없다(§4.10) | **2026-10-16:** R2 DESIGN_ONLY 승인(C2 착수 승인). 키 유형은 TYPE-B-KEY K1(§4.25.1) |
+| D-3 | 새 구성요소의 Reuse-first 예외: 실행기, 배포 동작 유형, 응답 스키마 | §4.3 범위로 한정해 승인 | PROVISIONALLY_ACCEPTED(2026-10-13 권고 일괄 수용 지시의 해석, 항목별 확정 대기): §4.3 범위(§4.17). **2026-10-16:** C3a 범위 DESIGN_ONLY 승인(Secret 경로 없음, validate·promote·rollback 미구현)(§4.25.1) |
+| D-4 | `inspect_candidate`를 승인 없이 허용할지 | 허용(지정 메타데이터, env·Mounts 제외) | **2026-10-16:** DESIGN_APPROVED(C2 착수 승인). C3a-3에서 고정 필드·속도 제한으로 구현(#1229) |
 | D-5 | Claude가 실행기 감사 기록을 읽을지 | 허용(메타데이터뿐) | 미결정 |
 | D-6 | `.env` 백업 사본 3개 처리 | 호스트 밖 보관 후 삭제 | 미결정 |
 | D-7 | `claude` 계정의 GitHub 자격 범위 | 현재와 같은 저장소 범위, `workflow` 권한 없음(현재와 같음) | 미결정 |
 | D-8 | 비운영 검증 환경(C4) | 임시 VM 또는 rootless 컨테이너 안의 systemd | 미결정 |
 | D-9 | 상태 CLI 대체 경로(C1) | 읽기는 read-bridge에 있는 것만, 쓰기는 Thomas | 미결정 |
-| D-10 | 실행기가 `.env`·상태 파일에 닿는 방법(§4.2 E1/E2/E3) | E1(root 실행). docker 그룹이 이미 root와 같기 때문 | 미결정 |
+| D-10 | 실행기가 `.env`·상태 파일에 닿는 방법(§4.2 E1/E2/E3) | E1(root 실행). docker 그룹이 이미 root와 같기 때문 | **2026-10-16:** D-10a DESIGN_ONLY 승인 — G·X 모두 비root 전용 계정, X의 Docker = root 동등 위험은 유지. `.env` 접근(D-10b)은 미결정(§4.25.1) |
 | D-11 | Claude 계정이 read-bridge에 닿는 방법(§4.8 a–d, §4.12.1) | (d)(= §4.14 a1) Claude 전용 read-bridge 인스턴스: 소켓은 `bridge/` 밖, uid 허용 목록은 그 서비스의 리터럴, Claude는 다른 door에 닿지 않는다. 이전 권고 (a)는 허용 목록 변수가 네 door에 공유되므로 철회(2026-10-13). 승인 전 검증(§4.12.4) 결과로 붙는 조건: uid와 gid 둘 다 리터럴, `scheduler_events`의 허용 필드 투영(factory 실패 문구에 예외 메시지가 들어감), 요청 로그, `:ro`는 읽기 목록 축소 없이는 불가. 정책 actor는 따로 정한다. 승인 조건은 필수(a–f)·구현·운영 검증으로 나눴고, 투영(c) 없이는 Claude를 받지 않는다(§4.12.5). 결정 패킷: §4.14, 권고 조합 a1+b3+c1+d2+e2(별도)+f2. 투영 구현 명세는 §4.13 | PROVISIONALLY_ACCEPTED(2026-10-13 권고 일괄 수용 지시의 해석, 항목별 확정 대기): a1·b3·c1·d2·e2·f2(§4.17). 구현은 IMPLEMENTED_PENDING_REVIEW. f2는 2개만 구현(§4.18.3). 하위 값 대기(§4.17.5, §4.18.6) **2026-10-16:** a1(코드)·c1·d2·f2 EXPLICITLY_APPROVED(저장소 구현), PR-B MERGED(`8979e702`). b3는 PROVISIONALLY_ACCEPTED. e2는 2026-10-16 EXPLICITLY_APPROVED(저장소 보안 구현), PR-C MERGED(`0b6fd69c`). 운영 단계는 모두 미승인(§4.24.3). 운영 단계는 모두 미승인 |
 | D-12 | `hermes-notify.sh`처럼 Secret을 읽는 Claude 디렉터리의 스크립트 | root 소유 위치로 옮기고 Mac 자동화 전용. 분리 전이라도 옮기는 것을 권고(§4.9) | 미결정 |
 | D-13 | Guard·hook을 Claude가 쓸 수 없는 관리 설정에 둘지 | 둔다. 위치와 우선순위는 C5에서 확인 | 미결정 |
