@@ -14,4 +14,11 @@ environment with a fake `.env` and synthetic keys.
 The plan maps N-1–N-14, the C2X/N1X/GAPX candidates that need real permissions, and the values
 CR-8b/CR-10/11/19 wait on.
 
+**Approval basis, stated as it stands.**
+- Opened on 2026-10-16 inside the 8-hour autonomous grant, with no explicit approval for the repository
+  change.
+- Ratified on 2026-10-17 (not recorded as a prior approval).
+- The only edits since: N1X-03's expected code is now `ACTOR_PEER_NOT_PERMITTED` (C2 §6.1b, as the
+  corrected #1229 answers), and P-2's status.
+
 **What it does not do.** It runs nothing, creates nothing, and grants nothing.

@@ -23,7 +23,7 @@ C3의 합성 시험이 증명하지 못하는 것만 C4에서 시험한다. 계�
 | # | 조건 | 상태 |
 |---|---|---|
 | P-1 | C3a-1·C3a-2 병합 | 완료(#1227 `8358369d`, #1228 `4680754f`) |
-| P-2 | C3a-3(G·X·소켓·argv) 병합 | #1229 병합 승인 대기 |
+| P-2 | C3a-3(G·X·소켓·argv) 병합 | #1229. 2026-10-17 계약 정합 수정 뒤 병합 승인 대기 |
 | P-3 | **C3b: 서비스 진입점.** 설치 설정(root 소유 파일)을 읽어 `ActorConfig`·`GateConfig`를 만들고, 시작 대조(`startup.reconcile`)를 돌리고, 두 소켓을 연다. 설치 도구가 소비 저장소 genesis를 쓴다. systemd unit 두 개(`python -I`, 고정 cwd, 최소 env) | **없음.** C3a에는 진입점이 없다. 구현 승인 필요(§8) |
 | P-4 | 환경(D-8)과 자원 | 미결정(§3) |
 | P-5 | 시계 동기 출처(CLOCK-SOURCE) | 미결정. 없으면 `prepare_candidate`는 `CLOCK_UNTRUSTED`다. C4는 그 거부 자체를 시험하고, 출처 후보를 측정한다(§6) |
@@ -74,7 +74,7 @@ C3에서 이미 합성으로 다룬 항목은 C4에서 **권한과 실제 소켓
 | C2X-06·N1X-12 | CONSUMED 직후 X를 `SIGKILL` → 재시작 | `RECONCILED_UNKNOWN`, LATCH, 모든 요청 `RUNNER_LATCHED` | 감사 행 |
 | C2X-11 | umask 000에서 X 기록 쓰기 | 파일 모드 0600 유지 | `stat` |
 | C2X-12 | 다른 Python 버전으로 unit 시작 | `RUNNER_ENVIRONMENT_MISMATCH`(C3b가 검사를 넣을 때) | code |
-| N1X-03 | `claude-c4`로 actor.sock 직접 연결 | 소켓 파일 권한에서 거부, 연결되더라도 `PEER_NOT_PERMITTED` | 예외 종류, code |
+| N1X-03 | `claude-c4`로 actor.sock 직접 연결 | 소켓 파일 권한에서 거부. 연결되더라도 `ACTOR_PEER_NOT_PERMITTED`(명세 6.1b, X의 응답 형식) | 예외 종류, code |
 | N1X-16 | G 쪽 신뢰 사본 변조 | X 판정 무변화 | code |
 | N1X-17 | X 계정으로 설치본 쓰기 | 거부(D-10a: X 비root) | 예외 종류 |
 | N1X-18 | X 침해 시 Docker 권한 상승 | **시험하지 않는다.** NOT_PROTECTED의 문서화 대상이다. 시연은 별도 승인 | — |
