@@ -47,6 +47,7 @@ def test_anything_else_is_not_confirmed(answer):
     assert cs.kernel_sync_confirmed(adjtimex=answer) is False
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="struct timex is the Linux LP64 layout")
 def test_the_buffer_is_large_enough_for_the_kernel_to_write_into():
     # struct timex is 208 bytes on LP64 Linux; a short buffer would let the kernel write past it.
     assert ctypes.sizeof(cs.Timex) >= 208
