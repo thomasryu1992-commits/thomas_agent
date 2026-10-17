@@ -1,6 +1,6 @@
 # 제안: Thomas Agent 목표 아키텍처 — 7개 계층의 지도와 증거 관문 로드맵 (DRAFT v0.1)
 
-**상태:** DRAFT 2026-10-11 — 최종 목표(승인된 범위 안의 자율 투자 운영)와 지금의 운영 제한을 한 장에 묶은 지도다. 새 실행 권한이나 정책 권위를 만들지 않으며, 각 줄의 권위는 줄마다 적은 소유 문서에 있다. Thomas의 검토를 기다린다. 결정이 필요한 것은 여섯 가지다: 포트폴리오 전체 위험 한도가 주문을 막는지(D-A1), 실행 단계를 자산군별로 어떻게 적용하는지(D-A2), LIVE_SCALED 진입 규칙(D-A3), 크립토 현물 주문을 어느 단계에서 다루는지(D-A4), C7 D2(D-A5, **우선 해결 대상** — C7 PR-B 설계보다 먼저), IV–RV 측정을 지을지(D-A6). 전역 LOCAL_ONLY Guard의 갱신 완료는 이 문서 기준으로 미확인(PENDING)이다.
+**상태:** DRAFT 2026-10-11 — **2026-10-17 사실 정정:** C7 PR-D #1216과 PR-A #1231이 병합됐다(배포 없음). C7의 남은 구현은 PR-B·PR-C다. H6는 H6a·H6b·H6d-min이 지어졌고 H6b-shadow·H6c가 남았다. 최종 목표(승인된 범위 안의 자율 투자 운영)와 지금의 운영 제한을 한 장에 묶은 지도다. 새 실행 권한이나 정책 권위를 만들지 않으며, 각 줄의 권위는 줄마다 적은 소유 문서에 있다. Thomas의 검토를 기다린다. 결정이 필요한 것은 여섯 가지다: 포트폴리오 전체 위험 한도가 주문을 막는지(D-A1), 실행 단계를 자산군별로 어떻게 적용하는지(D-A2), LIVE_SCALED 진입 규칙(D-A3), 크립토 현물 주문을 어느 단계에서 다루는지(D-A4), C7 D2(D-A5, **우선 해결 대상** — C7 PR-B 설계보다 먼저), IV–RV 측정을 지을지(D-A6). 전역 LOCAL_ONLY Guard의 갱신 완료는 이 문서 기준으로 미확인(PENDING)이다.
 
 **기준:** origin/main `71226ab7` (#1212), 2026-10-11. 운영 상태는 읽기 전용 명령으로만 확인했다: `live_readiness`, `register_execution_stage --show`, `holdings_board` 기본 렌더.
 **입력:** Thomas의 7계층 구상과 다섯 가지 답(2026-10-11, 모두 기본값 채택).
@@ -79,7 +79,7 @@
 | 연구 일시 중지 | cohort 1 마감 **2027-03-22**까지 `crypto/`에 새 템플릿·가설·시험 금지(예외 목록 있음) | `CLAUDE.md`, `SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md` |
 | 통합 보드 | 범위 v1(토스, 바이낸스 선물·현물·Simple Earn)의 NAV가 완전하다. 낙폭은 알림만(-20%), 목표 대비 이탈은 표시만 | `holdings_board`, `MULTI_ASSET_EXPANSION_V0.1.md` P2, `TOTAL_ASSET_ALLOCATION_V0.1.md` Q9 |
 | H6 현금흐름 | shadow 원장 운영 중. 판정에는 쓰지 않는다. H6b-shadow, H6c 모두 미승인 | `PORTFOLIO_CASH_FLOW_LEDGER_V0.1.md` |
-| C7 | 설계와 D1–D4 패킷까지 있다. **미구현.** D2 부분 결정 | `HOLDINGS_LEDGER_CHECKPOINT_V0.1.md` §12 |
+| C7 | PR-0 #1210, PR-D #1216, PR-A #1231 병합(2026-10-17). **운영 배포 없음**(PR-D HOLD, PR-A는 PR-B 전 배포 금지). 남은 것: PR-B(D2 뒤), PR-C. D2 부분 결정 | `HOLDINGS_LEDGER_CHECKPOINT_V0.1.md` §12, §12.4 |
 | 병합된 것 | #1211(결정 기록), #1212(Toss 연속성 진단, 터미널 전용). #1212는 **실제 원장에서 아직 실행하지 않았다** | git |
 | 전역 LOCAL_ONLY Guard | **PENDING — 이 문서 기준으로는 미확인.** #1212 본문은 `GLOBAL_GUARD_PENDING`이고, 저장소에는 갱신과 다섯 항목 검증의 완료 기록이 없다. 확인이 필요한 사실로 남긴다 | #1212 본문 |
 
@@ -95,8 +95,8 @@
 |---|---|
 | 소유 | `MULTI_ASSET_EXPANSION_V0.1.md`(P1·P2), `TOTAL_ASSET_ALLOCATION_V0.1.md`, `PORTFOLIO_CASH_FLOW_LEDGER_V0.1.md`(H6), `HOLDINGS_LEDGER_CHECKPOINT_V0.1.md`(C7) |
 | 지어진 것 | `holdings/`: 계좌 읽기(`toss_account`, `binance_wallet`), 합산·낙폭 알림(`combined`), 목표 대비 이탈 표시(`allocation`), 외부 경계(`disclosure`), 분류(`classification`), 기준선 로그(`baseline_log`), 현금흐름 shadow 원장과 readiness(`cash_flows`), Toss 연속성 진단(#1212). 크립토 선물 계정은 `crypto/account.py`가 따로 읽는다 |
-| 안 지어진 것 | unit 회계(입출금과 성과 분리, H6b-shadow·H6c). C7 체크포인트. 계좌별·전체 수익률. 주식 포지션의 원가·손익 회계. 옵션 포지션 표현 |
-| 지금 막는 것 | H6b_shadow_ready(7일·7일자, Toss 현금 의미, 예외 0건). **C7 D2(D-A5)**: C7 PR-B의 재수집·이력 판정 설계보다 먼저 정해야 한다. **C7 구현**(PR-D → A → B → C, H6c의 선행 조건, #1211 Q3). 순서는 §6 G1a–G1d |
+| 안 지어진 것 | unit 회계(입출금과 성과 분리, H6b-shadow·H6c). C7 이력 판정·채택(PR-B·PR-C. 체크포인트 감지 PR-A는 지어짐, 배포 없음). 계좌별·전체 수익률. 주식 포지션의 원가·손익 회계. 옵션 포지션 표현 |
+| 지금 막는 것 | H6b_shadow_ready(7일·7일자, Toss 현금 의미, 예외 0건). **C7 D2(D-A5)**: C7 PR-B의 재수집·이력 판정 설계보다 먼저 정해야 한다. **C7 구현**(PR-D → A → B → C, H6c의 선행 조건, #1211 Q3. 2026-10-17 기준 PR-D·PR-A 병합, B·C 남음). 순서는 §6 G1a–G1d |
 
 ### ② Market Intelligence — 시장 분석
 

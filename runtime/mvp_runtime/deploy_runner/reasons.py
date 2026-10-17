@@ -77,6 +77,9 @@ RESPONSE_TEXT: Mapping[str, str] = MappingProxyType({
     "IMAGE_STATE_UNAVAILABLE": "the image state could not be measured",
     "RUNNING_IMAGES_INCONSISTENT": "the running services are not on one image",
     "TAG_ALREADY_EXISTS": "a tag this action would create already exists",
+    # C2 revision (Thomas 2026-10-17, the one code it adds): §6.3 item 7 compares the running services'
+    # compose project label and the specification named no code for a mismatch.
+    "COMPOSE_PROJECT_MISMATCH": "a running service does not belong to this environment's compose project",
     "ROLLBACK_POINT_MISSING": "the rollback point does not exist",
     # policy
     "OPERATION_BLOCKED_BY_POLICY": "this action is blocked by the current operating policy",
