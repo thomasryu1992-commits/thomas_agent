@@ -1,6 +1,6 @@
 # 제안: Option C C6b 선행 조건 1 — Claude 전용 read door의 운영화 설계 (DRAFT v0.1)
 
-**상태:** DECIDED 2026-10-19 — RD-1–RD-4가 권고안 A로 정해졌다(아래 결정). 다음 단계는 RD-4 순서다. ① 코드 PR(클라이언트·compose 서비스·시험)은 같은 날 구현 승인을 받았다. ② 호스트 디렉터리, ③ 배포 1회, ④ O-1–O-9 검증은 각각 별도 승인이다. compose·배포·호스트 변경은 이 문서의 범위가 아니다. **원래 상태(작성 당시):** DRAFT 2026-10-19 — 결정 4건(RD-1–RD-4)이 Thomas를 기다렸다.
+**상태:** IMPLEMENTED 2026-10-19 — **운영 반영(2026-10-19):** RD-4 ①–④가 끝났다. ① 코드 #1254(`2113f6e1`)와 preflight `--first-start` #1255(`0785d9c2`)가 병합됐다. ② Thomas가 호스트 디렉터리를 만들었다. ③ 운영 배포 1회(candidate-1255, 10:56:57Z, HOLD 1회 해제)가 끝났다. ④ O-1–O-9 검증 결과는 §5에 있다. health-watch 호스트 사본은 새 명단으로 재설치됐다. C6b 선행 조건 1이 갖춰졌다. C6b 실행은 별도 승인이다. **결정 당시 상태:** DECIDED 2026-10-19 — RD-1–RD-4가 권고안 A로 정해졌다(아래 결정). 다음 단계는 RD-4 순서다. ① 코드 PR(클라이언트·compose 서비스·시험)은 같은 날 구현 승인을 받았다. ② 호스트 디렉터리, ③ 배포 1회, ④ O-1–O-9 검증은 각각 별도 승인이다. compose·배포·호스트 변경은 이 문서의 범위가 아니다. **원래 상태(작성 당시):** DRAFT 2026-10-19 — 결정 4건(RD-1–RD-4)이 Thomas를 기다렸다.
 
 **결정(2026-10-19):** `결정: C6b read door RD-1=A(읽기 2개로 운영화, holdings·readiness는 C6b 뒤 Thomas가 전달, 보류 4개는 계약 구현 뒤 각각 승인), RD-2=A(/var/lib/thomas-claude-door/{sock,log}), RD-3=A(로그 보존은 b8에서 크기 확인 뒤), RD-4=A(코드 PR → 호스트 디렉터리 → 배포 1회 → O-1~O-9, 단계별 승인) (Thomas 2026-10-19)`
 
@@ -108,6 +108,33 @@
 **RD-4. 진행 단위.**
 - **A(권고):** ① 코드 PR(클라이언트, compose 서비스, 시험; 병합은 승인) → ② 호스트 디렉터리(Thomas) → ③ 배포 1회(승인, deploy 스킬) → ④ O-1–O-9 검증. 각 단계를 따로 승인한다.
 - B: ①–④를 승인 하나로 묶는다.
+
+## 5. 운영 검증 결과 (O-1–O-9, 2026-10-19 11:05Z)
+
+**승인:** `승인: read door 운영 검증 O-1~O-9(claude 계정 setpriv 연결·root/hermes 거부·배너·:ro·요청 로그 확인; 읽기 전용, 결과 문서 PR 생성, 병합 제외) (Thomas 2026-10-19)`
+
+**방법:**
+- 연결 시험은 표준 라이브러리만 쓰는 작은 시험 코드를 `setpriv`로 해당 uid가 되어 돌렸다.
+- dispatch·switch·knowledge door에는 요청을 보내지 않고 연결만 시도했다. 일을 시작할 수 있는 door이기 때문이다.
+- 응답은 `ok`·`reason_code`·데이터 키 이름만 출력했고, 상태 내용은 출력하지 않았다.
+
+| # | 결과 | 근거 |
+|---|---|---|
+| O-1 | PASS | `/var/lib/thomas-claude-door/sock` 10001:2101(`claude`) 0750, `read.sock` 10001:2101 0660 |
+| O-2 | PASS | uid 2101이 공유 door 4개(read·dispatch·switch·knowledge)에 연결하면 `EACCES`다. 설계가 기대한 `PEER_NOT_PERMITTED`보다 앞에서 막힌다. `/root`가 0700이고 상태 루트도 0700(uid 10001)이라 소켓까지 가지 못한다. 네 door의 `MVP_BRIDGE_CLIENT_UID`는 모두 10000이다 |
+| O-3 | PASS | hermes 컨테이너의 마운트는 `/root/hermes-trial/data`와 `bridge/` 둘뿐이고, Claude door 경로는 없다. 호스트에서 uid 10000이 Claude 소켓에 연결하면 `EACCES`다(디렉터리 0750, 그룹 2101) |
+| O-4 | PASS | 기동 배너: `reads=['scheduler_events', 'schedules']`, `uids=[2101]`, `profile=claude`, `projection=v1`, `request_log=on`, `uid_allowlist=required`. §4.14.3의 "6개"는 2026-10-15 이전 기준이고, 지금 기대값은 2개다 |
+| O-5 | PASS | 실행 중 마운트: 상태 루트 `RW=false`. 소켓·로그 디렉터리만 `RW=true`다 |
+| O-6 | PASS | uid 2101에서 `schedules` → `ok=True`(키 `as_of`, `disabled_count`, `enabled`, `projection`), `scheduler_events` → `ok=True`(키 `active_file_total`, `as_of`, `count`, `events`, `projection`). door는 닫힌 스키마를 통과한 응답만 보내므로 `ok=True`가 스키마 통과다. 같은 uid의 보류 읽기 `holdings_status` → `VERB_NOT_PERMITTED` |
+| O-7 | PASS | 요청 로그 5줄(`DOOR_OPENED`, 2101 `schedules ok`, 2101 `scheduler_events ok`, 0 `PEER_NOT_PERMITTED`, 2101 `holdings_status VERB_NOT_PERMITTED`). root(uid 0)는 거부되고 기록된다. uid 2101은 로그 디렉터리를 읽지도 쓰지도 못하고, 소켓 디렉터리에도 쓰지 못한다. 시험 뒤 두 디렉터리에 새 파일은 없었다 |
+| O-8 | NOT_TESTED | 합성 실패를 넣는 운영 절차가 없다. 실제 factory 실패가 생긴 뒤 Thomas가 원장과 응답을 대조한다 |
+| O-9 | NOT_TESTED | e2(다음 factory 실패의 원장 형태)는 실제 실패가 생겨야 확인된다(Thomas) |
+
+**함께 한 일:**
+- health-watch 호스트 사본(`/root/backups/health-watch.sh`)을 재설치했다.
+  - 기존 사본은 저장소의 #1254 이전 판과 같았고, 새 판과의 차이는 명단 한 줄뿐이었다.
+  - 기존 사본은 `health-watch.sh.bak-20261019`로 남겼다.
+  - 재설치 뒤 `--dry-run` 결과는 "OK — 10개 컨테이너 정상"이다.
 
 ## 4. 이 문서가 하지 않은 것
 
