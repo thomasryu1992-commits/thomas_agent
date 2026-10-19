@@ -41,6 +41,7 @@ import platform
 import secrets
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -444,6 +445,23 @@ class Runner:
             "ACTOR_USER": ACTOR, "ACTOR_GROUP": ACTOR, "GATE_DIR": str(GATE_DIR), "ACTOR_DIR": str(ACTOR_DIR)})
         return store_id, units[0], units[1]
 
+    def install_tool_checks(self) -> None:
+        """What the install tool must have left (C5 preparation): the ``.pth`` naming the tree, and the
+        actor's private ``docker-config`` directory from ``genesis``."""
+        import sysconfig
+
+        from runtime.mvp_runtime.deploy_runner.commands import DOCKER_CONFIG_DIR
+        from scripts.ops.deploy_runner_install import PTH_NAME
+
+        pth = Path(sysconfig.get_paths()["purelib"]) / PTH_NAME
+        ok = pth.is_file() and pth.read_text(encoding="ascii").strip() == str(self.app) and pth.stat().st_uid == 0
+        self.report.add("SETUP", "install tool: the .pth names the install's tree (root-owned)", PASS if ok else FAIL)
+        d = ACTOR_DIR / DOCKER_CONFIG_DIR
+        st = d.lstat() if d.exists() else None
+        ok = st is not None and stat.S_ISDIR(st.st_mode) and stat.S_IMODE(st.st_mode) == 0o700 and st.st_uid == IDS[ACTOR]
+        self.report.add("SETUP", "install tool: genesis made the actor's docker-config (0700, X's)",
+                        PASS if ok else FAIL)
+
     @staticmethod
     def _write(path: Path, text: str) -> None:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
@@ -621,7 +639,7 @@ class Runner:
     @staticmethod
     def tree(pr: int, dockerfile: str) -> str:
         """The runner's own tree for ``pr``: root-owned, clean, ``HEAD`` = ``origin/main``. X reads it with no
-        HOME, so the system git config names it a safe directory (an install concern: C5)."""
+        HOME, so the install tool's ``trust-tree`` names it in the system git config's ``safe.directory``."""
         d = TREES / str(pr)
         d.mkdir(mode=0o755)
         (d / "Dockerfile").write_text(dockerfile, encoding="ascii")
@@ -632,7 +650,9 @@ class Runner:
         _sh(git + ["commit", "-q", "-m", "c4"], capture_output=True)
         head = _sh(git[:3] + ["rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
         _sh(git[:3] + ["update-ref", "refs/remotes/origin/main", head], capture_output=True)
-        _sh(["/usr/bin/git", "config", "--system", "--add", "safe.directory", str(d)], capture_output=True)
+        from scripts.ops import deploy_runner_install as install
+
+        install.trust_tree(d)                    # the install tool's step (C5 preparation), not a hand edit
         _sh(["/usr/bin/chmod", "-R", "go-w", str(d)])
         return head
 
@@ -851,6 +871,7 @@ class Runner:
         try:
             self.accounts()
             _, gate_unit, actor_unit = self.files()
+            self.install_tool_checks()
             if self.start():
                 self.host_tests(store, (gate_unit, actor_unit))
                 self.measure_round_trips()

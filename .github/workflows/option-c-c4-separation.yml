@@ -69,9 +69,10 @@ jobs:
           sudo "${INSTALL}/venv/bin/python" -I -m pip install --no-cache-dir --disable-pip-version-check -q \
             -r requirements-validation.lock
           # The units start `python -I -m runtime...`; -I keeps the working directory off sys.path, so the
-          # install's tree is put on it here, by a root-owned .pth in the install's own site-packages (C4 finding).
-          SITE="$(sudo "${INSTALL}/venv/bin/python" -I -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
-          echo "${INSTALL}/app" | sudo tee "${SITE}/thomas_deploy_install.pth" > /dev/null
+          # install tool names the tree in a root-owned .pth (C4 finding; C5 preparation). It runs from the
+          # tree without -I, the one time the tree is importable that way.
+          ( cd "${INSTALL}/app" && sudo "${INSTALL}/venv/bin/python" -m scripts.ops.deploy_runner_install \
+              link-install --app "${INSTALL}/app" )
           sudo chown -R root:root /opt/thomas-deploy
           sudo chmod -R go-w /opt/thomas-deploy
           sudo "${INSTALL}/venv/bin/python" -I -c 'import platform, runtime.mvp_runtime.deploy_runner.serve; print(platform.python_version())'

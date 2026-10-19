@@ -16,6 +16,7 @@ import os
 import shutil
 import socket
 import stat
+import subprocess
 import tempfile
 import threading
 from datetime import datetime, timezone
@@ -414,6 +415,98 @@ def test_genesis_refuses_an_unsafe_target(tmp_path, problem):
         sha = "E" * 40
     with pytest.raises(install.InstallRefused):
         install.genesis(d, install_sha=sha, owner_uid=owner)
+
+
+# C5 preparation (Thomas 2026-10-17): what C4 found an install must also do.
+
+@posix_only
+def test_genesis_makes_the_actors_private_docker_config_directory(tmp_path):
+    """BUILD-HOME = A: the actor's commands run with DOCKER_CONFIG there; BuildKit needs it writable."""
+    from runtime.mvp_runtime.deploy_runner.commands import DOCKER_CONFIG_DIR
+
+    d = private_dir(tmp_path / "x")
+    install.genesis(d, install_sha=INSTALL_SHA, owner_uid=None)
+    made = d / DOCKER_CONFIG_DIR
+    assert made.is_dir() and not made.is_symlink() and stat.S_IMODE(made.stat().st_mode) == 0o700
+    assert made.stat().st_uid == ME
+
+
+@posix_only
+def test_genesis_never_reuses_a_docker_config_directory_and_writes_no_store_beside_it(tmp_path):
+    from runtime.mvp_runtime.deploy_runner.commands import DOCKER_CONFIG_DIR
+
+    d = private_dir(tmp_path / "x")
+    (d / DOCKER_CONFIG_DIR).mkdir(mode=0o700)
+    with pytest.raises(install.InstallRefused):
+        install.genesis(d, install_sha=INSTALL_SHA, owner_uid=None)
+
+
+def _app(tmp_path):
+    app = tmp_path / "app"
+    (app / "runtime" / "mvp_runtime" / "deploy_runner").mkdir(parents=True)
+    (app / "runtime" / "mvp_runtime" / "deploy_runner" / "serve.py").write_text("", encoding="ascii")
+    site = tmp_path / "site"
+    site.mkdir()
+    return app, site
+
+
+@posix_only
+def test_link_install_names_the_tree_in_a_pth_once(tmp_path):
+    app, site = _app(tmp_path)
+    written = install.link_install(app, site)
+    assert written == site / install.PTH_NAME and written.read_text(encoding="ascii") == f"{app}\n"
+    assert stat.S_IMODE(written.stat().st_mode) == 0o644
+    with pytest.raises(install.InstallRefused):
+        install.link_install(app, site)                                         # never replaced
+    assert written.read_text(encoding="ascii") == f"{app}\n"
+
+
+@posix_only
+@pytest.mark.parametrize("problem", ["not_the_tree", "relative", "dotdot", "state_root"])
+def test_link_install_refuses_a_directory_that_is_not_the_runners_tree(tmp_path, problem):
+    app, site = _app(tmp_path)
+    target = {"not_the_tree": str(tmp_path / "site"), "relative": "app", "dotdot": f"{app}/../app",
+              "state_root": f"{tmp_path}/.runtime_governance_state/app"}[problem]
+    with pytest.raises(install.InstallRefused):
+        install.link_install(Path(target), site)
+    assert not (site / install.PTH_NAME).exists()
+
+
+class _Git:
+    def __init__(self, listed="", rc=0):
+        self.listed, self.rc, self.calls = listed, rc, []
+
+    def __call__(self, argv, **kw):
+        self.calls.append((argv, kw))
+        out = self.listed if "--get-all" in argv else ""
+        return subprocess.CompletedProcess(argv, 0 if "--get-all" in argv else self.rc, out, "")
+
+
+@posix_only
+def test_trust_tree_adds_exactly_that_path_once_with_a_fixed_argv():
+    git = _Git()
+    assert install.trust_tree(Path("/var/lib/thomas-deploy/trees/4242"), run=git) is True
+    argv, kw = git.calls[-1]
+    assert argv == ["/usr/bin/git", "config", "--system", "--add", "safe.directory", "/var/lib/thomas-deploy/trees/4242"]
+    assert kw["env"] == {"PATH": "/usr/bin:/bin", "LANG": "C"} and "shell" not in kw
+    listed = _Git(listed="/var/lib/thomas-deploy/trees/4242\n")
+    assert install.trust_tree(Path("/var/lib/thomas-deploy/trees/4242"), run=listed) is False
+    assert len(listed.calls) == 1                                               # nothing added twice
+
+
+@posix_only
+@pytest.mark.parametrize("tree", ["*", "trees/4242", "/var/lib/../etc", "/var//lib"])
+def test_trust_tree_refuses_a_wildcard_or_a_path_that_is_not_absolute_and_plain(tree):
+    git = _Git()
+    with pytest.raises(install.InstallRefused):
+        install.trust_tree(Path(tree) if tree != "/var//lib" else tree, run=git)
+    assert git.calls == []
+
+
+@posix_only
+def test_trust_tree_refuses_when_git_does_not_record_it():
+    with pytest.raises(install.InstallRefused):
+        install.trust_tree(Path("/var/lib/thomas-deploy/trees/1"), run=_Git(rc=1))
 
 
 VALUES = {"INSTALL_DIR": "/opt/thomas-deploy/" + INSTALL_SHA, "CONFIG_DIR": "/etc/thomas-deploy",
