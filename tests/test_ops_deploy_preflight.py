@@ -410,6 +410,9 @@ def test_the_required_checks_all_still_run():
 
 # --- the services compose up would touch (Thomas 2026-10-12) -------------------------------------------------
 
+# Claude's read door (Option C C6b prerequisite 1) is a ninth runtime service, outside EIGHT: the stacks below
+# model the host as it runs before that door's first deploy.
+CLAUDE_DOOR = "thomas-claude-read-bridge"
 EIGHT = ("thomas-operator", "thomas-scheduler", "thomas-scheduler-maint", "thomas-read-bridge",
          "thomas-dispatch-bridge", "thomas-pipeline-worker", "thomas-knowledge-bridge", "thomas-switch-bridge")
 
@@ -483,7 +486,7 @@ def _bind_sources() -> dict[str, list[str]]:
 # The variables the bind sources may be built from: paths only, never a credential. What each resolves
 # to lives in .env, which only the volume check at deploy time sees.
 PATH_VARIABLES = {"THOMAS_STATE_DIR", "THOMAS_CORE_ACTIVATIONS_DIR", "THOMAS_CORE_APPROVALS_DIR",
-                  "THOMAS_WORKSPACE_DIR", "THOMAS_BLOG_VAULT_DIR", "HERMES_DATA_DIR"}
+                  "THOMAS_WORKSPACE_DIR", "THOMAS_BLOG_VAULT_DIR", "HERMES_DATA_DIR", "THOMAS_CLAUDE_DOOR_DIR"}
 
 
 def test_every_bind_source_is_a_path_variable_with_a_default():
@@ -500,9 +503,12 @@ def test_every_bind_source_is_a_path_variable_with_a_default():
 def test_every_runtime_service_mounts_the_state_root_from_the_one_variable():
     compose = _raw_compose()
     runtime = {n: s for n, s in compose["services"].items() if s.get("image") == "thomas-agent-runtime"}
-    assert {s.get("container_name") for s in runtime.values()} == set(EIGHT)
+    assert {s.get("container_name") for s in runtime.values()} == {*EIGHT, CLAUDE_DOOR}
+    state = "${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state"
     for name, spec in runtime.items():
-        assert "${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state" in spec["volumes"], name
+        # Claude's read door alone mounts it read-only (C6b read door, RD decision f2, Thomas 2026-10-19).
+        wanted = state + ":ro" if spec.get("container_name") == CLAUDE_DOOR else state
+        assert wanted in spec["volumes"], name
 
 
 def test_an_unset_state_variable_is_caught_by_the_volume_check():

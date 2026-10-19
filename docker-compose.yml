@@ -487,6 +487,55 @@ services:
       # value if a machine genuinely needs a second peer; it is comma-separated.
       MVP_BRIDGE_CLIENT_UID: ${MVP_BRIDGE_CLIENT_UID:-10000}
 
+  # Claude's own read door (Option C C6b prerequisite 1; design and decisions RD-1..RD-4, Thomas 2026-10-19:
+  # docs/proposals/HOST_PRIVILEGE_SEPARATION_C6B_READ_DOOR_V0.1.md). The same read door under the `claude`
+  # profile: two reads with projected replies, every answer logged. Its shape is the decision, pinned in
+  # tests/test_claude_read_door_service.py:
+  # - uid and gid are literals, never the ${MVP_BRIDGE_CLIENT_*} the other doors share, so the `claude`
+  #   account (2101) reaches this door only and the assistant (10000) never reaches it (D-11 a1);
+  # - the socket lives outside bridge/, the only state directory hermes mounts;
+  # - the state root is mounted read-only (f2); the request log is a host directory Claude cannot open (d2).
+  # The host directories (THOMAS_CLAUDE_DOOR_DIR, default /var/lib/thomas-claude-door) exist before the first
+  # start (root makes them, RD-4 step 2): sock/ 10001:2101 0750
+  # (the door re-asserts group and mode), log/ 10001:10001 0700. A missing one is created root-owned by
+  # Docker, and the door then refuses to listen rather than serving without its log.
+  claude-read-bridge:
+    image: thomas-agent-runtime
+    build: .
+    container_name: thomas-claude-read-bridge
+    restart: unless-stopped
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state:ro
+      - ${THOMAS_CLAUDE_DOOR_DIR:-/var/lib/thomas-claude-door}/sock:/claude-door
+      - ${THOMAS_CLAUDE_DOOR_DIR:-/var/lib/thomas-claude-door}/log:/claude-door-log
+    healthcheck:
+      test: ["CMD", "test", "-S", "/claude-door/read.sock"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    command:
+      - python
+      - -m
+      - runtime.mvp_runtime.read_bridge_cli
+      - --profile
+      - claude
+      - --socket
+      - /claude-door/read.sock
+      - --request-log
+      - /claude-door-log/requests.jsonl
+    group_add:
+      - "2101"
+    environment:
+      MVP_BRIDGE_CLIENT_GID: "2101"
+      MVP_BRIDGE_CLIENT_UID: "2101"
+
   # The dispatch door. The assistant's third lane: switch-bridge stops and starts the runtime, read-bridge
   # looks at it, this one *starts* bounded work — analysis/research/translation/content tasks
   # that run the ordinary pipeline at permission P3. `runtime/mvp_runtime/dispatch_bridge.py`

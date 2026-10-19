@@ -86,6 +86,7 @@ SERVICES=(
   thomas-pipeline-worker
   thomas-knowledge-bridge
   thomas-switch-bridge
+  thomas-claude-read-bridge
   hermes
 )
 
