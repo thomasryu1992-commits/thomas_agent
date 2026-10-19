@@ -2607,7 +2607,7 @@ Option C의 저장소 구현은 PR-B·PR-C로 main에 들어갔다. 이 문서(P
 |---|---|---|---|
 | `environment_file` 라벨 | §6.3-7 | 대조하지 않음 | 비교할 설치 시점 기대값이 없다(C4) |
 | 자기 트리 | §4.3: GitHub에서 직접 fetch | 트리가 미리 있어야 한다. `ORIGIN_FETCH_FAILED`는 발생 지점이 없다 | fetch는 새 network 능력이라 별도 결정이 필요하다 |
-| 시계 동기 | CR-10·11·19 값은 C4 측정 후 | 동기 확인 출처가 없으면 `prepare_candidate`는 `CLOCK_UNTRUSTED` | 불변식만 C3에 둔다(CR-8) |
+| 시계 동기 | CR-10·11·19 값은 C4 측정 후 | 동기 확인 출처가 없으면 `prepare_candidate`는 `CLOCK_UNTRUSTED` | 불변식만 C3에 둔다(CR-8). **2026-10-17 해소:** 출처는 커널 `adjtimex`다(CLOCK-SOURCE = A, #1240). **2026-10-19:** 값은 수명 900초, prepare 마감 300초, 발급 오차 60초, 점프·역행 5초로 정해졌다(#1244, §4.25.1) |
 | `FRAME_TOO_LARGE` | 응답 code | 공용 전송이 너무 큰 프레임을 응답 없이 닫는다. 발생 지점이 없다 | §4.19.4의 "응답 없이 끝난 연결"과 같은 공백 |
 
 - **빌드와 네트워크:** `--pull=false`는 이미 있는 base 이미지만 새로 받지 않게 한다. 없는 base 이미지는 받고, Dockerfile의 `apt-get` 단계는 빌드 중에 네트워크를 쓴다. 이 효과는 §6.3이 받아들인 것이고, 요청 값이 바꿀 수 없다.
@@ -2617,7 +2617,7 @@ Option C의 저장소 구현은 PR-B·PR-C로 main에 들어갔다. 이 문서(P
 - **C3b(#1234):** C4 계획 §2 P-3의 서비스 진입점이다. G·X는 `python -I -m runtime.mvp_runtime.deploy_runner.serve --role gate|actor --config …`로 시작하고, root 소유 닫힌 설정을 읽는다. 설정에는 실행 환경 지문(Python 버전과 배포 패키지 해시)이 있어 다르면 `RUNNER_ENVIRONMENT_MISMATCH`로 시작을 거부한다(C2X-12). 설치 도구(`scripts/ops/deploy_runner_install.py`)는 지문 계산, 소비 저장소 genesis, unit 렌더링, 설정 검사를 한다. 아무 호스트에도 설치되지 않았다.
 - **CR-8b:** Python 3.12.13, 출처 python-build-standalone x86_64. 2026-10-17 공개 릴리스 목록에서 `cpython-3.12.13+20260807-x86_64-unknown-linux-gnu-install_only.tar.gz`가 있음을 확인했다(3.12.13의 최신 빌드 릴리스 `20260807`). 그 뒤 3.12.14·3.12.15 빌드도 있다. 결정은 3.12.13이고, 운영 이미지의 Python도 3.12.13이다. SHA256은 C4 workflow가 고정한다.
 - **D-8:** C4는 GitHub Actions 임시 러너에서 한다. 러너는 작업마다 새로 만들어지고 끝나면 버려지는 VM이라 C4 계획 §3의 V1(별도 커널)에 가깝다. 운영 저장소의 Secret을 쓰지 않는다. 호스팅 러너에서 systemd unit을 실제로 띄울 수 있는지는 NOT_VERIFIED이고, workflow가 첫 실행에서 확인한다.
-- **아직 없는 것:** RUNNER-FETCH 결정, CR-10·11·19 값, 운영 설치(C5·C6). CLOCK-SOURCE는 2026-10-17에 A로 정해졌다(§4.25.1).
+- **아직 없는 것:** RUNNER-FETCH 결정, 운영 설치(C5·C6). CLOCK-SOURCE는 2026-10-17에 A로, CR-10·11·19 값은 2026-10-19에 정해졌다(§4.25.1, #1244).
 - **C4 결과(2026-10-17, #1237 병합 `2766c26b`):** 임시 러너에서 FAIL 0, PASS 94, BLOCKED 3(CLOCK-SOURCE), NOT_TESTED 1, 누출 0건이다. C3b unit은 `-I` 아래에서 `.pth` 없이 import하지 못한다는 것이 드러났다. 세부는 C4 계획 §10에 있다. 운영 호스트 기준으로는 여전히 NOT_TESTED다.
 
 #### 4.25.5 운영 배포 1회, #1240·#1241 (2026-10-17)
@@ -2637,11 +2637,11 @@ Option C의 저장소 구현은 PR-B·PR-C로 main에 들어갔다. 이 문서(P
   - 설치 도구에 `link-install`(`.pth`)과 `trust-tree`(git `safe.directory`)를 더했다.
   - `genesis`가 `docker-config`(0700, X 소유)도 만든다.
   - C4 workflow와 하네스가 이 도구를 쓴다. 러너 결과(run 39046415908): FAIL 0, PASS 108.
-- **#1242(열림):** CR-10·11·19 측정 하네스. 첫 값(run 39047104974, GitHub 러너):
+- **#1242(2026-10-19 병합 `50dcc534`):** CR-10·11·19 측정 하네스. 첫 값(run 39047104974, GitHub 러너):
   - 실제 Dockerfile 빌드: 캐시 없이 14.5초, 캐시 있을 때 1.7초;
   - G→X 왕복: 중앙값 138ms, 최대 1,095ms;
   - 커널 maxerror: 3.5ms.
-- **아직 없는 것:** CR-10·11·19 값, RUNNER-FETCH, 운영 설치(C5 본작업·C6).
+- **아직 없는 것:** RUNNER-FETCH, 운영 설치(C5 본작업·C6). CR-10·11·19 값은 2026-10-19에 정해졌다(§4.25.1, #1244).
 
 ## 5. 대안 비교
 
