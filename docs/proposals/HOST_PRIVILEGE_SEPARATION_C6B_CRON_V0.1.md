@@ -1,6 +1,9 @@
 # 제안: Option C C6b 선행 조건 3 — root crontab 15줄 분류 (DRAFT v0.1)
 
-**상태:** DRAFT 2026-10-19 — C6b 선행 조건 3(C5 계획 §4)의 분류 결과다. 결정 4건(K-1–K-4)이 Thomas를 기다린다. 이 문서가 바꾼 호스트 설정은 없다.
+**상태:** DECIDED 2026-10-19 — K-1–K-4가 권고안대로 정해졌다(아래 결정). 분류 문서는 #1250(`3fce85c3`)으로 병합됐다. 실제 crontab 변경은 C6b의 b6 단계이고 C6b 실행 승인 뒤에 한다. 이 문서가 바꾼 호스트 설정은 없다. **원래 상태(작성 당시):** DRAFT 2026-10-19 — 결정 4건(K-1–K-4)이 Thomas를 기다렸다.
+
+**결정(2026-10-19):** Thomas가 "권고안대로 승인할게"로 아래 줄을 승인했다(줄 문구는 Claude가 제시했다).
+- `결정: C6b cron K-1=A(검색광고 키는 root에 두고 kw-pipeline만 root cron), K-2=A(claude 홈에 볼트 사본, push 자격 별도 발급), K-3=A(측정 로그 3개를 /var/lib/thomas-measure root:claude 0750으로), K-4=holdout 줄 삭제·crontab 백업은 root cron으로 (Thomas 2026-10-19)`
 
 **승인:** `승인: C6b 선행 3 cron 15줄 분류(스크립트 코드 읽기, .env·상태 파일 읽기 제외, 결과 문서 PR; 병합 제외) (Thomas 2026-10-19)`
 

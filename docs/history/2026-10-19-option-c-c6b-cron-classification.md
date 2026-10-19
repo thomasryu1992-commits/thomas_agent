@@ -17,3 +17,5 @@ environment line, only the variable name. The scripts' code was read. `.env` and
 - 1 job is retired: the holdout split finished on 2026-08-08 and has logged "nothing to do" daily since.
 - K-3 asks where the three measurement logs Claude reads go once `/root` is closed to it.
 - K-4 records the retirement, and moves the root-crontab vault backup to root.
+
+**Decided the same day** (Thomas 2026-10-19, "권고안대로"): K-1 to K-4 as recommended, A, A, A and the clean-up. The proposal's status line moves to DECIDED. The crontab itself changes only at C6b's b6, after C6b is approved.
