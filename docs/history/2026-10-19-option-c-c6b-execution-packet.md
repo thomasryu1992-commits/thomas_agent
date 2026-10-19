@@ -29,3 +29,6 @@ Nothing was run, and nothing on the host, the Mac or GitHub was changed.
   confirmation.
 
 The commands are drafts. Each will be re-checked on the host at execution time before it is handed over.
+
+**Decided the same day** (Thomas 2026-10-19): E-1, E-2 and E-3 all as recommended (A). The status line moves to
+PARTIALLY DECIDED, because P-1 to P-6 each still wait on an approval.
