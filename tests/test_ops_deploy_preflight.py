@@ -456,6 +456,52 @@ def test_any_service_difference_warns_first_and_stops_the_promote(capsys, runnin
     assert "DEPLOY_PREFLIGHT=STOP" in captured.out and SECRET not in captured.out + captured.err
 
 
+def _stack_adding(*added, **over):
+    """A tree whose compose adds services the host does not run yet, on a host running the eight and hermes."""
+    names = [*EIGHT, *added]
+    services = {name: {"container_name": name, "environment": {"TELEGRAM_BOT_TOKEN": SECRET}, "volumes": [
+        {"type": "bind", "source": pf.STATE_SOURCE, "target": "/app/.runtime_governance_state"}]} for name in names}
+    services["hermes"] = {"container_name": "hermes", "volumes": []}
+    over.setdefault("running_names", [*EIGHT, "hermes"])
+    return _promote_host(compose_raw=json.dumps({"services": services}), **over)
+
+
+def _first_start(run, promote, *names):
+    return [r for r in pf.preflight(run, 42, TREE, promote=promote, now=NOW, first_start=frozenset(names))
+            if r.name == "services"]
+
+
+def test_a_service_the_tree_adds_stops_the_promote_unless_named_as_its_first_start(capsys):
+    """Thomas 2026-10-19: Claude's read door is the first service added since the check began to stop the promote."""
+    assert {r.level for r in _services(_stack_adding(CLAUDE_DOOR), True)} == {"STOP"}
+    (named,) = _first_start(_stack_adding(CLAUDE_DOOR), True, CLAUDE_DOOR)
+    assert named.level == "WARN" and CLAUDE_DOOR in named.message and "first time" in named.message
+    assert pf.main(["42", "--promote", "--tree", TREE, "--first-start", CLAUDE_DOOR],
+                   run=_stack_adding(CLAUDE_DOOR)) == 0
+    assert "DEPLOY_PREFLIGHT=OK" in capsys.readouterr().out
+
+
+def test_first_start_lets_through_only_the_container_it_names():
+    other = "thomas-other-new"
+    levels = {r.level for r in _first_start(_stack_adding(CLAUDE_DOOR, other), True, CLAUDE_DOOR)}
+    assert levels == {"STOP", "WARN"}
+
+
+@pytest.mark.parametrize("name, running", [
+    (CLAUDE_DOOR, [*EIGHT, "hermes", CLAUDE_DOOR]),     # already running: the flag is stale
+    ("thomas-claude-read-bridgee", [*EIGHT, "hermes"]),  # a typo: not in the compose file
+    ("thomas-scheduler", [*EIGHT, "hermes"]),           # running service named as new
+], ids=["already-running", "typo", "running-service"])
+def test_a_first_start_name_that_is_not_exactly_a_new_container_stops_the_promote(name, running):
+    results = _first_start(_stack_adding(CLAUDE_DOOR, running_names=running), True, name)
+    assert any(r.level == "STOP" and "--first-start" in r.message for r in results)
+
+
+def test_first_start_needs_a_tree(capsys):
+    with pytest.raises(SystemExit):
+        pf.main(["42", "--first-start", CLAUDE_DOOR], run=_stack())
+
+
 def test_a_failed_container_list_is_not_read_as_an_empty_one():
     (failed,) = _services(_stack(running_names=None), True)
     (empty,) = [r for r in _services(_stack(running_names=[]), True) if "not running" in r.message]

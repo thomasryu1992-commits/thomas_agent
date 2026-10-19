@@ -45,7 +45,9 @@ JSON, or the scheduler state that does not come back is unverified: a STOP where
 the step (the tags before tagging; everything at ``--promote``, which compose up follows), a WARN on
 the first run only where the existing check already warns on a known fact. At ``--promote`` a known
 difference stops too: compose labels other than ``-p thomas_agent --env-file …/.env``, and a
-``thomas-`` container set other than the tree's compose services (Thomas 2026-10-12).
+``thomas-`` container set other than the tree's compose services (Thomas 2026-10-12). The one opening is
+``--first-start CONTAINER``, for a service the tree adds: that container's first start is a WARN, and a name
+that is not exactly such a container stops (Thomas 2026-10-19, for Claude's read door).
 """
 
 from __future__ import annotations
@@ -219,7 +221,8 @@ def check_primary_checkout(run: Runner) -> Result:
                   f"compose from it: use a clean worktree of origin/main")
 
 
-def check_tree(run: Runner, tree: str, promote: bool = False) -> list[Result]:
+def check_tree(run: Runner, tree: str, promote: bool = False,
+               first_start: frozenset[str] = frozenset()) -> list[Result]:
     results: list[Result] = []
     status = _out(run, ["git", "-C", tree, "status", "--porcelain"])
     head = _out(run, ["git", "-C", tree, "rev-parse", "HEAD"])
@@ -281,7 +284,13 @@ def check_tree(run: Runner, tree: str, promote: bool = False) -> list[Result]:
                                  "recreate, start or orphan is unverified")]
     running = set(listed.split())
     gone = sorted(n for n in running if n.startswith("thomas-") and n not in wanted)
-    new = sorted(wanted - running)
+    new = sorted(wanted - running - first_start)
+    # --first-start names a container the operator knows this deploy starts for the first time (a service the
+    # tree adds). Only such a name is let through, and only while it is exactly that: a name that is already
+    # running or that this compose file does not carry is a stale or mistyped flag, and stops the run, so the
+    # flag can never quietly widen what the promote accepts.
+    starting = sorted(first_start & (wanted - running))
+    misnamed = sorted(first_start - (wanted - running))
     # At the promote a difference means compose up does more than recreate what runs: it starts a
     # service that was down, or leaves a thomas- container this file no longer names (Thomas
     # 2026-10-12). Containers of other projects (no thomas- prefix) stay out of the comparison.
@@ -290,7 +299,13 @@ def check_tree(run: Runner, tree: str, promote: bool = False) -> list[Result]:
         results.append(Result(level, "services", f"running but not in this compose file: {', '.join(gone)}"))
     if new:
         results.append(Result(level, "services", f"in this compose file but not running: {', '.join(new)}"))
-    if not gone and not new:
+    if misnamed:
+        results.append(Result(level, "services", f"--first-start names what this compose file does not start "
+                                                 f"for the first time (already running, or not in it): "
+                                                 f"{', '.join(misnamed)}"))
+    if starting:
+        results.append(Result("WARN", "services", f"starts for the first time (--first-start): {', '.join(starting)}"))
+    if not gone and not new and not misnamed and not starting:
         results.append(Result("PASS", "services", f"{len(wanted)} services match the running containers"))
     return results
 
@@ -375,7 +390,7 @@ def check_scheduled_fires(run: Runner, now: datetime, promote: bool) -> Result:
 
 
 def preflight(run: Runner, pr: int, tree: str | None, promote: bool = False,
-              now: datetime | None = None) -> list[Result]:
+              now: datetime | None = None, first_start: frozenset[str] = frozenset()) -> list[Result]:
     run(["git", "-C", PRIMARY, "fetch", "-q", "origin", "main"])
     results = [check_pr_merged(run, pr)]
     if promote:
@@ -385,7 +400,7 @@ def preflight(run: Runner, pr: int, tree: str | None, promote: bool = False,
     results += [check_compose_labels(run, promote), check_primary_checkout(run),
                 check_scheduled_fires(run, now or datetime.now(timezone.utc), promote)]
     if tree:
-        results += check_tree(run, tree, promote)
+        results += check_tree(run, tree, promote, first_start)
     return results
 
 
@@ -395,10 +410,15 @@ def main(argv: Sequence[str] | None = None, run: Runner = run_command) -> int:
     parser.add_argument("--tree", help="the clean origin/main worktree you will build and compose from")
     parser.add_argument("--promote", action="store_true",
                         help="the run immediately before the promote: your tags exist, nothing redeployed since")
+    parser.add_argument("--first-start", action="append", default=[], metavar="CONTAINER",
+                        help="a container this deploy starts for the first time (a service the tree adds); "
+                             "repeatable. Reported as a WARN instead of stopping the promote")
     args = parser.parse_args(argv)
     if args.promote and not args.tree:
         parser.error("--promote needs --tree: the promote is followed by compose from that tree")
-    results = preflight(run, args.pr, args.tree, args.promote)
+    if args.first_start and not args.tree:
+        parser.error("--first-start needs --tree: it is checked against that tree's compose services")
+    results = preflight(run, args.pr, args.tree, args.promote, first_start=frozenset(args.first_start))
     for r in results:
         print(f"[{r.level}] {r.name}: {r.message}")
     stops = sum(r.level == "STOP" for r in results)
