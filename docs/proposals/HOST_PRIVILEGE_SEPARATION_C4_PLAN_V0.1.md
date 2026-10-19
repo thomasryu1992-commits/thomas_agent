@@ -90,6 +90,14 @@ C3에서 이미 합성으로 다룬 항목은 C4에서 **권한과 실제 소켓
 | 시계 동기 출처 | `timedatectl show -p NTPSynchronized` 등의 읽기 결과와 실패 모양 | CR-11, CLOCK-SOURCE |
 | 소켓 왕복 지연 | G→X 왕복 | G의 actor 마감(`actor_deadline_s`) |
 
+**측정과 결정 (2026-10-17 측정, 2026-10-19 결정).**
+- #1242의 러너 실행(run 39047104974)에서 잰 값이다. GitHub 러너 기준이며 운영 호스트 값이 아니다:
+  - 실제 Dockerfile 빌드: 캐시 없이 14.5초, 런타임 파일 하나만 바뀌었을 때 1.7초;
+  - G→X 검사 왕복: 중앙값 138ms, 최대 1,095ms;
+  - 커널 maxerror: 3.5ms.
+- 결정: `결정: CR-10 max_lifetime 900초, CR-19 prepare_candidate 마감 300초(validate·promote·rollback은 구현 시 재결정, 임시 300초), CR-11 issue_skew 60초·clock_jump 5초·backstep 5초, DESIGN_ONLY — C5 설치 설정에 적용, 운영 호스트 첫 설치 시험에서 재확인 (Thomas 2026-10-19)`.
+- 운영 호스트(메모리 4GB)에서 캐시 없는 빌드가 300초를 넘으면 prepare는 마감 초과로 실행기를 잠근다. 안전한 방향의 실패다. 첫 운영 설치 시험(C5)에서 다시 확인한다.
+
 ## 7. 완료 기준과 중단
 
 - **완료:** §5의 C4 항목이 모두 PASS이고, 누출 0건이며, §6의 값이 기록됐다.
