@@ -2574,6 +2574,7 @@ Option C의 저장소 구현은 PR-B·PR-C로 main에 들어갔다. 이 문서(P
 | C5 준비 | `승인: C5 준비 — 설치 도구에 .pth·git safe.directory·docker-config 처리 추가, C4 workflow가 설치 도구를 쓰도록 변경, PR 생성(병합·운영 설치 제외) (Thomas 2026-10-17)` | 설치 도구에 `link-install`·`trust-tree`를 더하고, `genesis`가 `docker-config`도 만든다. 운영 설치(C5 본작업)는 별도 승인이다 |
 | CR-10·11·19 | `결정: CR-10 max_lifetime 900초, CR-19 prepare_candidate 마감 300초(validate·promote·rollback은 구현 시 재결정, 임시 300초), CR-11 issue_skew 60초·clock_jump 5초·backstep 5초, DESIGN_ONLY — C5 설치 설정에 적용, 운영 호스트 첫 설치 시험에서 재확인 (Thomas 2026-10-19)` ("권고안대로 승인") | 근거: #1242의 러너 측정(실제 Dockerfile 빌드는 캐시 없이 14.5초·캐시 있을 때 1.7초, G→X 왕복 중앙값 138ms·최대 1.1초, 커널 maxerror 3.5ms). 수명 15분은 거버넌스 정책 `RELEASE_DEPLOYMENT: 15`와 같다. "남은 수명 ≥ 마감" 규칙 때문에 서명 뒤 요청까지 10분 창이 생긴다. 값은 root 소유 설치 설정에 들어가고 코드는 바뀌지 않는다. 운영 호스트 빌드 시간은 재지 않았다 |
 | C5 | `결정: C5 범위 = A(한 계획서에 C6a 실행기 설치·C6b Claude 계정 이전 두 단계, 단계별 되돌리기 포함); D-10b = 없음(promote 구현 시 재결정), RUNNER-FETCH = 첫 설치는 Thomas가 설치 도구 단계로 트리 준비, D-5·D-6·D-7·D-9·D-12·D-13·D-14·D-15·D-16 = 문서 권고 기본값, DESIGN_ONLY (Thomas 2026-10-19)` | 계획서는 `HOST_PRIVILEGE_SEPARATION_C5_PLAN_V0.1.md`다. 호스트 변경(C6a·C6b)은 각각 별도 승인이다. D-6의 `.env` 사본은 3개가 아니라 5개로 확인됐다(계획서 §1) |
+| C5 계획 승인 | `승인: C5 계획(HOST_PRIVILEGE_SEPARATION_C5_PLAN_V0.1.md, main 4ed633b4) 승인 — C6a·C6b 실행은 각각 별도 승인 (Thomas 2026-10-19)` | C5 완료. 기록: `승인: C5 계획 승인 기록 문서 PR 생성(계획서 상태 줄·Option C §4.25.1, 병합 제외) (Thomas 2026-10-19)` |
 
 **정해지지 않은 것:** X 침해 위험의 운영상 수용, D-10b, CR-13, CR-15, CR-17(RECOVERY_INBOX는 우선 후보일 뿐), N2, D-5–D-9, D-12–D-16.
 
