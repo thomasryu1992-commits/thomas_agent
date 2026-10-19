@@ -1,6 +1,6 @@
 # 제안: Option C C5 — 운영 호스트 변경 계획(C6a 실행기 설치, C6b Claude 계정 이전)과 되돌리기 (DRAFT v0.1)
 
-**상태:** DECIDED 2026-10-19 — **계획 승인(2026-10-19):** `승인: C5 계획(HOST_PRIVILEGE_SEPARATION_C5_PLAN_V0.1.md, main 4ed633b4) 승인 — C6a·C6b 실행은 각각 별도 승인 (Thomas 2026-10-19)`. C5가 끝났다. 실행(C6a, C6b)은 아직이고 각각 별도 승인이다. **원래 상태(작성 당시):** DRAFT 2026-10-19 — C5(운영 호스트 변경 계획 검토)의 계획서다. C5의 완료 기준은 Thomas가 이 계획을 승인하는 것이고, 승인돼도 호스트는 바뀌지 않는다. 실제 변경은 C6a(실행기 설치)와 C6b(Claude 계정 이전)이며 각각 별도 승인이다. 이 문서를 쓰면서 호스트에서는 메타데이터만 읽었다. `.env`와 상태 파일의 내용은 읽지 않았다.
+**상태:** DECIDED 2026-10-19 — **C6a 실행(2026-10-19 10:00Z):** 설치가 끝났다. 운영 dry-run(main `1bad6dc1`) 통과 뒤 Thomas가 서버 셸에서 실행했고, §3의 a0–a8 결과는 Option C §4.25.5에 적었다. **C6b 선행 조건:** 2(배포 주체)와 3(cron 분류, `HOST_PRIVILEGE_SEPARATION_C6B_CRON_V0.1.md`)이 정해졌다. 1(read door 운영화)은 설계 중이다. C6b 실행은 별도 승인이다. **계획 승인(2026-10-19):** `승인: C5 계획(HOST_PRIVILEGE_SEPARATION_C5_PLAN_V0.1.md, main 4ed633b4) 승인 — C6a·C6b 실행은 각각 별도 승인 (Thomas 2026-10-19)`. C5가 끝났다. 실행(C6a, C6b)은 아직이고 각각 별도 승인이다. **원래 상태(작성 당시):** DRAFT 2026-10-19 — C5(운영 호스트 변경 계획 검토)의 계획서다. C5의 완료 기준은 Thomas가 이 계획을 승인하는 것이고, 승인돼도 호스트는 바뀌지 않는다. 실제 변경은 C6a(실행기 설치)와 C6b(Claude 계정 이전)이며 각각 별도 승인이다. 이 문서를 쓰면서 호스트에서는 메타데이터만 읽었다. `.env`와 상태 파일의 내용은 읽지 않았다.
 
 **기준:** origin/main `6047ca27`(#1245), 2026-10-19. 설계 권위는 `HOST_PRIVILEGE_SEPARATION_V0.1.md`(§6 로드맵 C5·C6, §8 결정)와 C2 명세 v0.5다. C4 결과는 `HOST_PRIVILEGE_SEPARATION_C4_PLAN_V0.1.md` §10과 #1240·#1241·#1242의 러너 실행에 있다.
 
@@ -96,10 +96,10 @@ C6b는 C6a보다 훨씬 넓다. Claude가 root를 잃으면 지금 Claude가 하
 
 **선행 조건(각각 별도 결정·승인):**
 1. **Claude 전용 read door의 운영화(D-11 a1).** Claude는 상태 디렉터리를 직접 읽지 못한다(`/root` 0700, 상태는 uid 10001). 지금 `docker exec`로 하는 읽기(holdings 집계 보드 등)는 Claude 전용 read-bridge 인스턴스로 옮겨야 한다. 코드는 #1223에 있지만, compose 서비스 추가와 배포는 아직이다.
-2. **배포 주체의 변경.** `claude`는 docker를 쓰지 못하므로 deploy 스킬을 실행할 수 없다.
+2. **배포 주체의 변경.** `claude`는 docker를 쓰지 못하므로 deploy 스킬을 실행할 수 없다. **정해짐(2026-10-19):** `결정: C6b 선행 2 배포 주체 = C6b 뒤 배포·rollback은 Thomas가 deploy 스킬로 직접, Claude는 PR·검증과 실행기 prepare_candidate 요청까지 (Thomas 2026-10-19)`.
    - 실행기가 `promote`를 구현하기 전까지 배포와 rollback은 Thomas가 직접 한다(deploy 스킬 절차 그대로).
    - Claude는 PR과 검증까지 하고, 실행기에는 `prepare_candidate`만 요청한다.
-3. **cron 분류.** §1의 15줄을 스크립트 내용으로 분류한다. 분류 기준은 root·docker·`.env`가 필요한지다. 이 계획서에서는 경로만 읽었다. 분류는 C6b 준비의 첫 단계이고 스크립트 내용(코드)을 읽어야 한다.
+3. **cron 분류.** **정해짐(2026-10-19):** `HOST_PRIVILEGE_SEPARATION_C6B_CRON_V0.1.md`(K-1–K-4 권고안).  §1의 15줄을 스크립트 내용으로 분류한다. 분류 기준은 root·docker·`.env`가 필요한지다. 이 계획서에서는 경로만 읽었다. 분류는 C6b 준비의 첫 단계이고 스크립트 내용(코드)을 읽어야 한다.
 
 **단계 (Thomas, root):**
 
