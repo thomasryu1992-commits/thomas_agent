@@ -1,6 +1,8 @@
 # 제안: Option C C6b 선행 조건 1 — Claude 전용 read door의 운영화 설계 (DRAFT v0.1)
 
-**상태:** DRAFT 2026-10-19 — C6b 선행 조건 1(C5 계획 §4)의 설계 패킷이다. 결정 4건(RD-1–RD-4)이 Thomas를 기다린다. compose·배포·호스트 변경은 이 문서의 범위가 아니다.
+**상태:** DECIDED 2026-10-19 — RD-1–RD-4가 권고안 A로 정해졌다(아래 결정). 다음 단계는 RD-4 순서다. ① 코드 PR(클라이언트·compose 서비스·시험)은 같은 날 구현 승인을 받았다. ② 호스트 디렉터리, ③ 배포 1회, ④ O-1–O-9 검증은 각각 별도 승인이다. compose·배포·호스트 변경은 이 문서의 범위가 아니다. **원래 상태(작성 당시):** DRAFT 2026-10-19 — 결정 4건(RD-1–RD-4)이 Thomas를 기다렸다.
+
+**결정(2026-10-19):** `결정: C6b read door RD-1=A(읽기 2개로 운영화, holdings·readiness는 C6b 뒤 Thomas가 전달, 보류 4개는 계약 구현 뒤 각각 승인), RD-2=A(/var/lib/thomas-claude-door/{sock,log}), RD-3=A(로그 보존은 b8에서 크기 확인 뒤), RD-4=A(코드 PR → 호스트 디렉터리 → 배포 1회 → O-1~O-9, 단계별 승인) (Thomas 2026-10-19)`
 
 **승인:** `승인: C6b 선행 1 Claude 전용 read door 운영화 설계 패킷 작성(문서만, compose·배포 제외) (Thomas 2026-10-19)`
 

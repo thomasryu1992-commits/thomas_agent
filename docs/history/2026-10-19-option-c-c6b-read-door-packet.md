@@ -19,3 +19,8 @@ regenerated `STATUS.md`. No code, compose or host change.
 - RD-1 recommends going ahead with two reads and having Thomas relay holdings and readiness after C6b. Even with its
   contract, `holdings_status` carries freshness only.
 - RD-2 to RD-4 cover the directories, the request-log retention and how the work is split.
+
+**Decided the same day** (Thomas 2026-10-19): RD-1 to RD-4 = A. The door runs with two reads, and Thomas relays
+holdings and readiness after C6b. The four held reads each join after their contract and their own approval. The
+directories are under `/var/lib/thomas-claude-door`. Retention is decided after b8 measures the log. The work goes in
+the order code PR, host directories, one deploy, then O-1 to O-9, each step approved separately.
