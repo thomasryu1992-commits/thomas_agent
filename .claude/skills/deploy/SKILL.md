@@ -29,6 +29,10 @@ check exists). A `STOP` means stop and report. Never work around one.
    until its next interval). Wait for its `fired`/`failed` event and run this step again. Factory
    fires run daily around 08:09–08:52 UTC; at `--promote` a factory fire due within 10 minutes
    also stops.
+   A `services` STOP saying "in this compose file but not running" is a service down, or one the
+   merged tree adds. Only when the merge adds it, and Thomas approved that deploy, add
+   `--first-start <container>` for it. That container then shows as a WARN, and a name that is not
+   exactly a new container still stops.
 7. **Promote and up**, in one step:
    `docker tag thomas-agent-runtime:candidate-<N> thomas-agent-runtime:latest && docker compose -p thomas_agent --env-file /root/thomas_agent/.env -f /root/deploy-<N>/docker-compose.yml up -d`
 8. **Verify:**
