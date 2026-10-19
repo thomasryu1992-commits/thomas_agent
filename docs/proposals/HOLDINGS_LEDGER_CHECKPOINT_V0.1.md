@@ -1,6 +1,6 @@
 # 제안: holdings 원장 체크포인트 — 시점이 섞인 복원을 PASS로 받지 않는다 (DRAFT)
 
-**상태:** IMPLEMENTED 2026-10-17 — **2026-10-17(2):** PR-C #1238이 병합돼(`460b6d6f`) §10의 다섯 PR이 모두 main에 있다(§12.6). 운영에는 아무것도 배포되지 않았다. 배포, Thomas의 cutover 이동, 채택 실행은 각각 운영 단계다. **2026-10-17:** D2가 C안으로 정해져(E-1이 A안 기각 조건 둘을 충족) D1–D4가 모두 정해졌다. PR-B #1235가 C안으로 병합됐다(§12.5). 남은 구현은 PR-C다. 운영 반영(PR-A·PR-B 함께 배포, Thomas의 cutover 이동, shadow 관찰 재시작)은 각각 별도 승인이고 하지 않았다. **이전 상태(2026-10-11, PARTIALLY DECIDED):** 열린 것: D2의 Toss 연속성 증명 방식과 cutover 유지 여부. A안이 조건부 우선 검토안이고, B안은 비추천, C안은 대안이며, 최종 cutover 결정은 미승인이다(§12.2–§12.3). 정해진 것(Thomas 2026-10-11, 설계 방향이며 구현 승인이 아니다): C7을 H6c의 선행 조건으로 둔다. D1은 PR-D → A → B → C 순서에 다섯 조건을 붙여 동의했다. D2는 `history_completeness`를 별도 키로 두고 체크포인트 없음·상태 누락을 UNCHECKED로 판정한다. D3은 두 단계 채택에 동의했다. D4는 다섯 검증 뒤로 조건을 붙였다. 각 PR의 구현·머지·배포는 따로 승인한다. H6d-min(#1205)의 원장과 상태 파일이 서로 다른 시점에서 복원되면 기록이 조용히 사라지고 readiness는 PASS로 남는다(C7). 원장 사슬·체크포인트·이력 완전성을 세 검사로 나누고, 축소·교체는 거부하며 Thomas에게 알리고, 이력은 재수집 증거로만 복구로 판정하는 설계다(3차 검토, 같은 날). 회귀 테스트(`tests/test_mvp_runtime_holdings_c7_partial_restore.py`)가 오늘의 결함을 고정한다. 구현은 §10의 다섯 PR로, §12의 Thomas 결정 뒤에 한다. **2026-10-17 구현 현황:** PR-0 #1210, PR-D #1216(2026-10-12 병합, 배포 HOLD), PR-A #1231(2026-10-17 병합, R-2·R-3 결정 §12.4, PR-B 전 배포 금지)이 main에 있다. 그 뒤 PR-B #1235(2026-10-17 병합, C안)도 main에 들어왔다. 남은 것은 PR-C이고, 어느 PR도 운영에 배포되지 않았다. §12.4에 기록한 열린 결정(UNVERIFIED 체크포인트 옆의 readiness PASS)은 PR-B가 닫았다(§12.5).
+**상태:** IMPLEMENTED 2026-10-17 — **2026-10-17(3):** 운영에 배포됐다(`candidate-1238`, 10:34Z). Thomas가 cutover를 2026-10-17T11:35:00Z로 옮겼고, 12:34Z 실행에서 `history_completeness`가 PASS가 됐다. shadow 관찰은 새 cutover부터 다시 시작했다(§12.7). **2026-10-17(2):** PR-C #1238이 병합돼(`460b6d6f`) §10의 다섯 PR이 모두 main에 있다(§12.6). 운영에는 아무것도 배포되지 않았다. 배포, Thomas의 cutover 이동, 채택 실행은 각각 운영 단계다. **2026-10-17:** D2가 C안으로 정해져(E-1이 A안 기각 조건 둘을 충족) D1–D4가 모두 정해졌다. PR-B #1235가 C안으로 병합됐다(§12.5). 남은 구현은 PR-C다. 운영 반영(PR-A·PR-B 함께 배포, Thomas의 cutover 이동, shadow 관찰 재시작)은 각각 별도 승인이고 하지 않았다. **이전 상태(2026-10-11, PARTIALLY DECIDED):** 열린 것: D2의 Toss 연속성 증명 방식과 cutover 유지 여부. A안이 조건부 우선 검토안이고, B안은 비추천, C안은 대안이며, 최종 cutover 결정은 미승인이다(§12.2–§12.3). 정해진 것(Thomas 2026-10-11, 설계 방향이며 구현 승인이 아니다): C7을 H6c의 선행 조건으로 둔다. D1은 PR-D → A → B → C 순서에 다섯 조건을 붙여 동의했다. D2는 `history_completeness`를 별도 키로 두고 체크포인트 없음·상태 누락을 UNCHECKED로 판정한다. D3은 두 단계 채택에 동의했다. D4는 다섯 검증 뒤로 조건을 붙였다. 각 PR의 구현·머지·배포는 따로 승인한다. H6d-min(#1205)의 원장과 상태 파일이 서로 다른 시점에서 복원되면 기록이 조용히 사라지고 readiness는 PASS로 남는다(C7). 원장 사슬·체크포인트·이력 완전성을 세 검사로 나누고, 축소·교체는 거부하며 Thomas에게 알리고, 이력은 재수집 증거로만 복구로 판정하는 설계다(3차 검토, 같은 날). 회귀 테스트(`tests/test_mvp_runtime_holdings_c7_partial_restore.py`)가 오늘의 결함을 고정한다. 구현은 §10의 다섯 PR로, §12의 Thomas 결정 뒤에 한다. **2026-10-17 구현 현황:** PR-0 #1210, PR-D #1216(2026-10-12 병합, 배포 HOLD), PR-A #1231(2026-10-17 병합, R-2·R-3 결정 §12.4, PR-B 전 배포 금지)이 main에 있다. 그 뒤 PR-B #1235(2026-10-17 병합, C안)도 main에 들어왔다. 남은 것은 PR-C이고, 어느 PR도 운영에 배포되지 않았다. §12.4에 기록한 열린 결정(UNVERIFIED 체크포인트 옆의 readiness PASS)은 PR-B가 닫았다(§12.5).
 
 > 이 문서는 아무것도 바꾸지 않는다. 운영 상태 파일에 체크포인트를 쓰거나 이전하지 않는다.
 > 사실 확인 기준: `origin/main` = `3bbbe04d` (2026-10-09), 운영 `candidate-1205`. 코드 인용은 그 트리다.
@@ -709,3 +709,45 @@ LOCAL_ONLY 파일과 원장 원문은 읽지 않았다. 근거는 네 가지다.
 1. PR-A·B·C를 함께 배포한다. PR-D도 아직 배포되지 않았다.
 2. 첫 쓰기가 체크포인트를 `observed`로 기록한다. 그 뒤 Thomas가 터미널에서 cutover를 그 시각 뒤로 옮긴다(`--cash-flow-cutover AT --migrate --reason`). Claude는 Guard 때문에 이 모드를 실행하지 못한다.
 3. 새 cutover부터 shadow 관찰(7일·7일자)이 다시 시작된다.
+
+이 세 단계는 2026-10-17에 모두 이뤄졌다(§12.7).
+
+### 12.7 운영 반영 (2026-10-17)
+
+**원문:**
+- `승인: 운영 배포 origin/main 460b6d6f 이후 main(C7 PR-A·B·C·D, #1212, Option C #1223·#1224 HOLD 해제, C3a·C3b 코드 포함) 1회, Claude가 deploy 스킬로 실행(Option A DEPLOYMENT_HOLD 이번 1회 해제; cutover 이동·채택은 Thomas 터미널, rollback 별도 승인) (Thomas 2026-10-17)`
+- 기록: `승인: 배포·cutover 기록 문서 PR 생성(C7 §12·Option C, 병합 제외)`와 `승인: 배포·cutover 기록 문서 편집에 편집 도구 사용 허용(cutover 명령 인용 포함, 원장·상태·LOCAL_ONLY 파일 읽기 금지 유지, Guard 변경 없음)`. 두 줄의 날짜는 2026-10-17로 쓰여 있다. 첫 줄은 2026-10-17에, 둘째 줄은 2026-10-19에 Thomas가 "권고안대로 승인"했다.
+
+**배포** (deploy 스킬 절차):
+- origin/main `460b6d6f`(#1238)을 `candidate-1238`(`56cbd5b1`)로 빌드했다.
+- 운영 중이던 이미지(`candidate-1210`, `67d9b622`)에 `rollback-pre-1238` 태그를 붙였다.
+- 10:34:12Z에 promote했다.
+- 사전 확인:
+  - `live_positions/*.json` 0개;
+  - preflight 두 번(빌드 전, promote 직전) 모두 OK;
+  - 진행 중인 실행 없음.
+- 8개 서비스가 새 이미지로 healthy다. hermes는 이미지 전용이라 다시 만들지 않았다.
+- 이미지 안에서 확인한 것:
+  - `--adopt-ledger`·`--confirm` 모드가 있다;
+  - 실행기 모듈이 Python 3.12.13에서 import된다;
+  - 비대화형 `--adopt-ledger`는 원장을 읽기 전에 `ADOPT_REFUSED`로 거부된다.
+
+  마지막 확인은 상태가 마운트되지 않은 일회용 컨테이너에서 했다. 아무것도 읽거나 쓰지 않았지만, D3("Claude는 채택 명령을 실행하지 않는다")의 취지에 맞지 않는 호출이라 당시 보고했다.
+
+**cutover 이동** (Thomas, 서버 셸):
+- 명령: `docker exec -u 10001 thomas-scheduler-maint python -m scripts.holdings_board --cash-flow-cutover 2026-10-17T11:35:00Z --migrate --reason "C7 D2 option C: cutover past the PR-A/B/C checkpoint (deploy 2026-10-17)" --by thomas`.
+- 출력: `cash-flow cutover: 2026-10-17T11:35:00Z (shadow started 2026-10-09T03:33:54Z)`. `shadow_started_at`은 처음 한 번만 기록되는 필드라 그대로다.
+- 11:35Z는 배포 뒤 첫 쓰기(11:34:02Z 실행)가 체크포인트를 기록한 직후다.
+
+**결과** (집계 보드, 검사 이름과 값만):
+
+| 시점 | ledger_chain | ledger_state_consistency | history_completeness | shadow_observation | cutover_boundary |
+|---|---|---|---|---|---|
+| 11:34:02Z 실행(배포 뒤 첫 실행) | PASS | PASS | UNCHECKED(체크포인트가 cutover 뒤에 관찰됨, 예상) | PASS | PASS |
+| 12:34:14Z 실행(cutover 이동 뒤) | PASS | PASS | **PASS** | RUNNING(0일) | WAITING |
+| 15:55Z쯤 보드 | — | PASS | PASS | RUNNING(0.2일) | PASS |
+
+- BLOCKED나 쓰기 거부는 없었다. `toss_cash_semantics`는 이전처럼 WAITING이다.
+- `ready`는 거짓이다. shadow 7일·7일자가 차면 `H6b_shadow_ready`가 알려진다. H6c는 그 뒤 별도 결정이다.
+
+**rollback:** 하지 않았다. `rollback-pre-1238`이 남아 있고, 실행은 별도 승인이다.

@@ -32,7 +32,7 @@ jobs:
   c4:
     name: C4 separation (ubuntu-24.04, systemd)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 35
     env:
       PBS_RELEASE: "20260807"
       PBS_FILE: "cpython-3.12.13+20260807-x86_64-unknown-linux-gnu-install_only.tar.gz"
@@ -81,7 +81,8 @@ jobs:
         run: |
           sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT \
             "${INSTALL}/venv/bin/python" -I -m scripts.ops.deploy_runner_c4 run --throwaway-runner \
-            --install-dir "${INSTALL}" --install-sha "${SHA}" --out "$RUNNER_TEMP/c4-out"
+            --install-dir "${INSTALL}" --install-sha "${SHA}" --out "$RUNNER_TEMP/c4-out" \
+            --measure-repo "$GITHUB_WORKSPACE"
 
       - name: Results (kinds and codes only)
         if: always()
