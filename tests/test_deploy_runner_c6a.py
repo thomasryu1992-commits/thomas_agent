@@ -70,6 +70,33 @@ class FakeHost(c6a.Host):
         return self.root
 
 
+@pytest.fixture(autouse=True)
+def _never_the_real_host(monkeypatch):
+    """No test reaches the network or creates, moves or removes a runner path, even when a broken guard lets a step run.
+
+    2026-10-19: a fault-injection mutation ("dry run acts") ran a2 for real from the dry-run test. It downloaded the
+    interpreter and left an empty ``/opt/thomas-deploy/aaa…`` on the production host, which the real preflight then
+    refuses ("already exists"). The same mutation, run without ``-x``, then ran u4 from the uninstall test and removed it.
+    """
+    roots = tuple(str(root) for root in (c6a.OPT, c6a.CONFIG_DIR, c6a.LIB, c6a.UNIT_DIR))
+
+    def guarded(real, verb):
+        def call(path, *a, **k):
+            if str(path).startswith(roots):
+                raise AssertionError(f"a test tried to {verb} {path}")
+            return real(path, *a, **k)
+        return call
+
+    def no_network(*_a, **_k):
+        raise AssertionError("a test reached the network")
+
+    monkeypatch.setattr(c6a.urllib.request, "urlopen", no_network)
+    monkeypatch.setattr(c6a.Path, "mkdir", guarded(c6a.Path.mkdir, "create"))
+    monkeypatch.setattr(c6a.Path, "unlink", guarded(c6a.Path.unlink, "remove"))
+    monkeypatch.setattr(c6a.shutil, "rmtree", guarded(c6a.shutil.rmtree, "remove"))
+    monkeypatch.setattr(c6a.shutil, "move", guarded(c6a.shutil.move, "move"))
+
+
 def _plan(tmp_path, keys_text, fp, **kw):
     pub = tmp_path / "authorized_keys"
     pub.write_text(keys_text, encoding="ascii")
