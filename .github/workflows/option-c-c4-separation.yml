@@ -33,10 +33,6 @@ jobs:
     name: C4 separation (ubuntu-24.04, systemd)
     runs-on: ubuntu-24.04
     timeout-minutes: 35
-    env:
-      PBS_RELEASE: "20260807"
-      PBS_FILE: "cpython-3.12.13+20260807-x86_64-unknown-linux-gnu-install_only.tar.gz"
-      PBS_SHA256: "5bd6f36fd7ef02b909234c94dca9994ef0da06ace3bc3cece4fe27870e9cdbbe"
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -48,41 +44,44 @@ jobs:
           test "$(cat /proc/1/comm)" = systemd
           systemctl is-system-running || true
 
-      - name: Download the interpreter and check its SHA256 before anything opens it
-        run: |
-          mkdir -p "$RUNNER_TEMP/pbs" && cd "$RUNNER_TEMP/pbs"
-          curl -fsSL --retry 3 -o pbs.tar.gz \
-            "https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_RELEASE}/${PBS_FILE//+/%2B}"
-          echo "${PBS_SHA256}  pbs.tar.gz" | sha256sum -c -
-
-      - name: Build the install at /opt/thomas-deploy/<sha> (root-owned)
+      - name: Synthetic signing keys, made on this runner and never leaving it
         run: |
           set -euo pipefail
+          sudo install -d -m 700 /root/c4-keys
+          for n in thomas attacker; do sudo ssh-keygen -q -t ed25519 -N "" -C c4-synthetic -f "/root/c4-keys/$n"; done
+          echo "FP=$(sudo ssh-keygen -lf /root/c4-keys/thomas.pub | awk '{print $2}')" >> "$GITHUB_ENV"
           SHA="$(git rev-parse HEAD)"
-          INSTALL="/opt/thomas-deploy/${SHA}"
-          echo "INSTALL=${INSTALL}" >> "$GITHUB_ENV"
           echo "SHA=${SHA}" >> "$GITHUB_ENV"
-          sudo mkdir -p "${INSTALL}/app"
-          sudo tar -xzf "$RUNNER_TEMP/pbs/pbs.tar.gz" -C "${INSTALL}"
-          git archive HEAD runtime schemas scripts | sudo tar -x -C "${INSTALL}/app"
-          sudo "${INSTALL}/python/bin/python3" -I -m venv "${INSTALL}/venv"
-          sudo "${INSTALL}/venv/bin/python" -I -m pip install --no-cache-dir --disable-pip-version-check -q \
-            -r requirements-validation.lock
-          # The units start `python -I -m runtime...`; -I keeps the working directory off sys.path, so the
-          # install tool names the tree in a root-owned .pth (C4 finding; C5 preparation). It runs from the
-          # tree without -I, the one time the tree is importable that way.
-          ( cd "${INSTALL}/app" && sudo "${INSTALL}/venv/bin/python" -m scripts.ops.deploy_runner_install \
-              link-install --app "${INSTALL}/app" )
-          sudo chown -R root:root /opt/thomas-deploy
-          sudo chmod -R go-w /opt/thomas-deploy
-          sudo "${INSTALL}/venv/bin/python" -I -c 'import platform, runtime.mvp_runtime.deploy_runner.serve; print(platform.python_version())'
+          echo "INSTALL=/opt/thomas-deploy/${SHA}" >> "$GITHUB_ENV"
 
-      - name: Run C4 (N-1..N-14 and the leak sweep)
+      # C6a (Thomas 2026-10-19): the install is the script Thomas runs on the production host — the interpreter
+      # (its SHA256 checked before it is opened), the accounts, the files, the units — run here first.
+      - name: Install with the C6a script (dry run, then for real)
+        run: |
+          set -euo pipefail
+          sudo git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          ARGS=(--repo "$GITHUB_WORKSPACE" --sha "$SHA" --host-label c4-runner \
+                --signer-fingerprint "$FP" --pubkey-file /root/c4-keys/thomas.pub)
+          sudo python3 scripts/ops/deploy_runner_c6a.py install "${ARGS[@]}" --dry-run
+          sudo python3 scripts/ops/deploy_runner_c6a.py install "${ARGS[@]}"
+          sudo python3 scripts/ops/deploy_runner_c6a.py status
+
+      - name: Run C4 (N-1..N-14 and the leak sweep) against that install
         run: |
           sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT \
-            "${INSTALL}/venv/bin/python" -I -m scripts.ops.deploy_runner_c4 run --throwaway-runner \
+            "${INSTALL}/venv/bin/python" -I -m scripts.ops.deploy_runner_c4 run --throwaway-runner --installed \
             --install-dir "${INSTALL}" --install-sha "${SHA}" --out "$RUNNER_TEMP/c4-out" \
             --measure-repo "$GITHUB_WORKSPACE"
+
+      - name: Reverse it with the C6a script, and check nothing is left
+        if: always()
+        run: |
+          set -euo pipefail
+          sudo python3 scripts/ops/deploy_runner_c6a.py uninstall --backup /root/c6-backup-c4 --dry-run
+          sudo python3 scripts/ops/deploy_runner_c6a.py uninstall --backup /root/c6-backup-c4
+          sudo python3 scripts/ops/deploy_runner_c6a.py status --expect-absent
+          echo "| C6A | uninstall left no account, path, socket or active unit | PASS | status --expect-absent |" \
+            | sudo tee -a "$RUNNER_TEMP/c4-out/c4-results.md" > /dev/null
 
       - name: Results (kinds and codes only)
         if: always()

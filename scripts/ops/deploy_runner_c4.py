@@ -371,8 +371,10 @@ def _as(account: str, argv: list[str], *, cwd: str = "/", env: dict[str, str] | 
 
 
 class Runner:
-    def __init__(self, install_dir: Path, install_sha: str, out: Path, measure_repo: Path | None = None) -> None:
+    def __init__(self, install_dir: Path, install_sha: str, out: Path, measure_repo: Path | None = None,
+                 installed: bool = False) -> None:
         self.measure_repo = measure_repo
+        self.installed = installed
         self.install = install_dir
         self.sha = install_sha
         self.out = out
@@ -444,6 +446,21 @@ class Runner:
             "INSTALL_DIR": str(self.install), "CONFIG_DIR": str(CONFIG_DIR), "GATE_USER": GATE, "GATE_GROUP": GATE,
             "ACTOR_USER": ACTOR, "ACTOR_GROUP": ACTOR, "GATE_DIR": str(GATE_DIR), "ACTOR_DIR": str(ACTOR_DIR)})
         return store_id, units[0], units[1]
+
+    def test_fixtures(self) -> None:
+        """What only the tests need: the fake ``.env`` with its sentinel and the synthetic state root. The keys
+        were made before the install (the install reads the signer's public key)."""
+        for d, mode, owner in ((SITE, 0o755, 0), (STATE_ROOT, 0o700, STATE_UID), (HOLDINGS, 0o700, STATE_UID)):
+            d.mkdir(parents=True, exist_ok=True)
+            os.chown(d, owner, owner)
+            d.chmod(mode)
+        fd = os.open(FAKE_ENV, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.write(fd, f"C4_FAKE_SECRET={self.sentinel}\n".encode("ascii"))
+        finally:
+            os.close(fd)
+        if not (KEYS / "thomas").is_file() or not (KEYS / "attacker").is_file():
+            raise RuntimeError("the synthetic keys were not made before the install")
 
     def install_tool_checks(self) -> None:
         """What the install tool must have left (C5 preparation): the ``.pth`` naming the tree, and the
@@ -869,10 +886,19 @@ class Runner:
                         PASS if platform.python_version() == PYTHON_VERSION and sys.flags.isolated else FAIL)
         store = ACTOR_DIR / "consumed.jsonl"
         try:
-            self.accounts()
-            _, gate_unit, actor_unit = self.files()
+            if self.installed:
+                # C6a: the install, the accounts and the units came from scripts/ops/deploy_runner_c6a.py —
+                # the script Thomas runs on the production host. Only the test fixtures are made here.
+                self.test_fixtures()
+                gate_unit, actor_unit = UNIT_DIR / "thomas-deploy-gate.service", UNIT_DIR / "thomas-deploy-actor.service"
+                self.report.add("SETUP", "installed by deploy_runner_c6a.py (the C6a script)", PASS)
+                started = self._wait_active() and self._wait_socket(GATE_SOCKET) and self._wait_socket(ACTOR_SOCKET)
+            else:
+                self.accounts()
+                _, gate_unit, actor_unit = self.files()
+                started = None
             self.install_tool_checks()
-            if self.start():
+            if started if started is not None else self.start():
                 self.host_tests(store, (gate_unit, actor_unit))
                 self.measure_round_trips()
                 self.socket_tests(store)
@@ -911,6 +937,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--out", required=True)
     r.add_argument("--throwaway-runner", action="store_true")
     r.add_argument("--measure-repo", help="a checkout whose Dockerfile is built twice for CR-19 (optional)")
+    r.add_argument("--installed", action="store_true",
+                   help="the runner was installed by deploy_runner_c6a.py; make only the test fixtures")
     m = sub.add_parser("rtt")
     m.add_argument("--socket", required=True)
     m.add_argument("--payload", required=True)
@@ -935,7 +963,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"refused: {exc}", file=sys.stderr)
         return EXIT_REFUSED
     return Runner(Path(args.install_dir), args.install_sha, Path(args.out),
-                  Path(args.measure_repo) if args.measure_repo else None).run()
+                  Path(args.measure_repo) if args.measure_repo else None, installed=args.installed).run()
 
 
 if __name__ == "__main__":  # pragma: no cover
