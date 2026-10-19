@@ -199,12 +199,17 @@ def test_send_returns_the_reply_code_only_and_names_a_silent_close():
         shutil.rmtree(directory, ignore_errors=True)
 
 
-def test_the_workflow_pins_the_interpreter_and_holds_no_secret():
+def test_the_workflow_installs_tests_and_reverses_with_the_c6a_script_and_holds_no_secret():
+    """Since C6a (Thomas 2026-10-19) the install is the script Thomas runs on the host; the interpreter's pin
+    and its check-before-open live there (``tests/test_deploy_runner_c6a.py``)."""
+    from scripts.ops import deploy_runner_c6a as c6a
+
     text = WORKFLOW.read_text(encoding="utf-8").replace("\r\n", "\n")      # a Windows checkout may convert
-    sha = re.search(r'PBS_SHA256: "([0-9a-f]+)"', text)
-    assert sha and len(sha.group(1)) == 64
-    assert f"cpython-{c4.PYTHON_VERSION}+" in text and "x86_64-unknown-linux-gnu-install_only" in text
-    assert text.index("sha256sum -c") < text.index("tar -xzf")          # checked before anything opens it
+    assert c6a.PYTHON_VERSION == c4.PYTHON_VERSION
+    install, run, reverse = (text.index("deploy_runner_c6a.py install"), text.index("deploy_runner_c4 run"),
+                             text.index("deploy_runner_c6a.py uninstall"))
+    assert install < run < reverse and "--installed" in text and "status --expect-absent" in text
+    assert text.index("install \"${ARGS[@]}\" --dry-run") < text.index("install \"${ARGS[@]}\"\n")
     assert "secrets." not in text and "persist-credentials: false" in text
     assert re.search(r"^permissions:\n  contents: read\n\n", text, re.M)
     assert "--throwaway-runner" in text and "scripts.ops.deploy_runner_c4 run" in text

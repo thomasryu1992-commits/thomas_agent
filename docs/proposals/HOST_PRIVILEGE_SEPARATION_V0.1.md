@@ -2643,6 +2643,7 @@ Option C의 저장소 구현은 PR-B·PR-C로 main에 들어갔다. 이 문서(P
   - 실제 Dockerfile 빌드: 캐시 없이 14.5초, 캐시 있을 때 1.7초;
   - G→X 왕복: 중앙값 138ms, 최대 1,095ms;
   - 커널 maxerror: 3.5ms.
+- **C6a 방식(2026-10-19):** `결정: C6a 실행 방식 = A(Claude가 설치·되돌리기 스크립트 PR, Thomas가 서버 셸에서 실행), 서명 키 = Thomas가 root authorized_keys 4개 중 지문으로 선택(K1), host_label = ubuntu-4gb-sin-1, DESIGN_ONLY (Thomas 2026-10-19)`. `승인: C6a 설치·되돌리기 스크립트 구현 및 PR 생성(--dry-run, 단계별 확인·중단, 합성 시험과 C4 러너 검증; 운영 실행·병합 제외) (Thomas 2026-10-19)`. 스크립트는 `scripts/ops/deploy_runner_c6a.py`(install·status·uninstall)다. 서명 키는 지문 하나로 지정하고, 스크립트가 root `authorized_keys`에서 그 줄을 찾는다. C4 workflow가 이 스크립트로 설치·시험·되돌리기를 한다. 운영 실행은 별도 승인이다.
 - **아직 없는 것:** RUNNER-FETCH, 운영 설치(C5 본작업·C6). CR-10·11·19 값은 2026-10-19에 정해졌다(§4.25.1, #1244).
 
 ## 5. 대안 비교
