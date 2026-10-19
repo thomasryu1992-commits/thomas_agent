@@ -2572,6 +2572,7 @@ Option C의 저장소 구현은 PR-B·PR-C로 main에 들어갔다. 이 문서(P
 | CLOCK-SOURCE 구현 | `승인: CLOCK-SOURCE A 구현(C3 코드 PR, serve 연결·합성 시험) 및 C4 하네스 확장(합성 트리·이미지·8개 컨테이너, N-10·N-11·N-12 재시험) PR 생성(병합·운영 설치 제외) (Thomas 2026-10-17)` | `deploy_runner/clock_source.py`. CR-10·11·19 값은 여전히 미정이다 |
 | BUILD-HOME | `결정: BUILD-HOME = A(실행기 명령 환경에 DOCKER_CONFIG=<X 기록 디렉터리>/docker-config 추가, 값은 root 소유 설정에서; DOCKER_HOST 등 그 밖의 DOCKER_*는 계속 차단), git safe.directory는 C5 설치 절차에 포함, DESIGN_ONLY (Thomas 2026-10-17)` | C4에서 X의 `docker image build`가 홈이 없어 실패했다(`mkdir /nonexistent`). 명령 환경 불변식은 "`PATH`·`LANG`, 그리고 `DOCKER_CONFIG` 하나"로 바뀐다 |
 | C5 준비 | `승인: C5 준비 — 설치 도구에 .pth·git safe.directory·docker-config 처리 추가, C4 workflow가 설치 도구를 쓰도록 변경, PR 생성(병합·운영 설치 제외) (Thomas 2026-10-17)` | 설치 도구에 `link-install`·`trust-tree`를 더하고, `genesis`가 `docker-config`도 만든다. 운영 설치(C5 본작업)는 별도 승인이다 |
+| CR-10·11·19 | `결정: CR-10 max_lifetime 900초, CR-19 prepare_candidate 마감 300초(validate·promote·rollback은 구현 시 재결정, 임시 300초), CR-11 issue_skew 60초·clock_jump 5초·backstep 5초, DESIGN_ONLY — C5 설치 설정에 적용, 운영 호스트 첫 설치 시험에서 재확인 (Thomas 2026-10-19)` ("권고안대로 승인") | 근거: #1242의 러너 측정(실제 Dockerfile 빌드는 캐시 없이 14.5초·캐시 있을 때 1.7초, G→X 왕복 중앙값 138ms·최대 1.1초, 커널 maxerror 3.5ms). 수명 15분은 거버넌스 정책 `RELEASE_DEPLOYMENT: 15`와 같다. "남은 수명 ≥ 마감" 규칙 때문에 서명 뒤 요청까지 10분 창이 생긴다. 값은 root 소유 설치 설정에 들어가고 코드는 바뀌지 않는다. 운영 호스트 빌드 시간은 재지 않았다 |
 
 **정해지지 않은 것:** X 침해 위험의 운영상 수용, D-10b, CR-13, CR-15, CR-17(RECOVERY_INBOX는 우선 후보일 뿐), N2, D-5–D-9, D-12–D-16.
 
