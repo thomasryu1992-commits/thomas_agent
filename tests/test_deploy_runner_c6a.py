@@ -8,6 +8,7 @@ where it is proven against systemd and Docker.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -18,6 +19,8 @@ from runtime.mvp_runtime import schema_cache
 from runtime.mvp_runtime.deploy_runner.approval_verify import SCHEMAS_DIR
 from scripts.ops import deploy_runner_c6a as c6a
 
+# The script installs on a Linux host (paths like /etc/thomas-deploy, /proc/1/comm); Windows has none of it.
+pytestmark = pytest.mark.skipif(os.name == "nt", reason="the C6a script installs on a Linux host")
 SSH_KEYGEN = shutil.which("ssh-keygen")
 needs_keygen = pytest.mark.skipif(SSH_KEYGEN is None, reason="needs ssh-keygen")
 SHA = "a" * 40
@@ -173,7 +176,6 @@ def test_an_uninstall_dry_run_lists_u1_to_u5_in_order_and_changes_nothing(tmp_pa
 
 
 @needs_keygen
-@pytest.mark.skipif(not Path("/etc/passwd").exists(), reason="a0 records /etc/passwd (POSIX host)")
 def test_an_interpreter_whose_sha256_does_not_match_is_never_extracted(tmp_path, monkeypatch):
     line, fp = _key(tmp_path, "k")
     plan = _plan(tmp_path, line + "\n", fp)

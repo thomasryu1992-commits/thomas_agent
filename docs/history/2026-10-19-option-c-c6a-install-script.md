@@ -5,7 +5,7 @@
 - the C4 workflow and harness (`--installed`);
 - new `tests/test_deploy_runner_c6a.py` and one changed harness test;
 - an Option C decision row;
-- the win32 skip ceiling 586 → 587.
+- the win32 skip ceiling 586 → 607 (the whole new test module is POSIX-only: 21 cases).
 
 **Decision and approval** (Thomas 2026-10-19):
 - `결정: C6a 실행 방식 = A(Claude가 설치·되돌리기 스크립트 PR, Thomas가 서버 셸에서 실행), 서명 키 = Thomas가 root
