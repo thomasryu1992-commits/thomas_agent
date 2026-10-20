@@ -262,6 +262,11 @@
 - **필요한 테스트.** (해제 뒤) `tests/test_mvp_runtime_crypto_hypothesis_trial.py`.
 - **우선순위.** P1.
 - **구현 권고.** DEFER(D3). "candidate 수 ↓, 품질 ↑"라는 목표는 선택 보정·탐색 예산·가문 소진으로 이미 추구하고 있다.
+- **D3 해제 뒤 (2026-10-20):**
+  - **트라이얼 쪽은 지었다.** 제안자의 `rationale`이 트라이얼 큐(`proposer.pending_trial_proposals`)와 트라이얼 행의 `trial_source`에
+    실린다. 이제 `proposal_id`로 거슬러 찾지 않아도 된다.
+  - **템플릿 쪽은 보류했다(판정: 적용 가능, 효과 낮음).** 템플릿 44개에 한 줄씩 근거를 다는 일이다. 근거는 builder 주석에만 있어서,
+    지어내지 않으려면 family마다 주석을 확인해 옮겨야 한다. 판정 시점을 바꾸지 않고 추적성만 늘린다.
 
 ### §8. Stress Cost 백테스트 (P1) — PARTIALLY_IMPLEMENTED
 

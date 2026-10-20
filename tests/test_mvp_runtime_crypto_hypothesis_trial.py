@@ -363,3 +363,25 @@ def test_the_board_and_the_funnel_render_over_a_store_holding_a_trial(tmp_path, 
     assert render_status_text(build_status(tmp_path, now="2026-09-25T09:00:00Z"))
     assert funnel_script.main([], root=tmp_path) == 0
     assert capsys.readouterr().out
+
+
+# --- the proposer's rationale rides to the trial row (GAP §7, D3 lifted 2026-10-20) ---------------
+
+def test_the_queue_and_the_trial_row_carry_the_proposers_rationale():
+    from runtime.mvp_runtime.crypto import proposer
+
+    spec = _proposal_spec(family="proposed_r_long", timeframe="1h")
+    accepted = {**_accepted(spec), "rationale": "Shorts squeezed after a funding flip overshoot."}
+    queue = proposer.pending_trial_proposals([_proposal_row("2026-09-20T06:18:00Z", [accepted])],
+                                             timeframe="1h", now=QNOW)
+    assert [q["rationale"] for q in queue] == ["Shorts squeezed after a funding flip overshoot."]
+    # An accepted proposal without one reads as an empty sentence, never a missing key.
+    bare = proposer.pending_trial_proposals([_proposal_row("2026-09-20T06:18:00Z", [_accepted(spec)])],
+                                            timeframe="1h", now=QNOW)
+    assert bare[0]["rationale"] == ""
+
+    snapshot, cohort = _cohort()
+    trial_spec = _proposal_spec()
+    result = _run(snapshot, cohort, trials=[{**_queued(trial_spec), "rationale": "why it should work"}])
+    row = next(c for c in result["candidates"] if factory.is_trial(c))
+    assert row["trial_source"]["rationale"] == "why it should work"
