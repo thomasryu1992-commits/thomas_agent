@@ -694,6 +694,38 @@ def holdout_reused(record: Mapping[str, Any]) -> bool:
     return isinstance(parents, (list, tuple)) and any(isinstance(p, str) and p for p in parents)
 
 
+# The OI features whose daily readings were aligned on their period-START label while carrying the
+# period CLOSE until 2026-10-20 (``features.OI_READING_KNOWN_AFTER_HOURS``): on a sub-daily frame every
+# bar of day D read day D's close, so mint, holdout and the daily cohort walk saw it up to ~23 h early.
+OI_LOOKAHEAD_FEATURES = frozenset({"open_interest_change_pct", "open_interest_zscore"})
+# The instant the fixed alignment started running on this host: the restart after its deploy. Until a
+# follow-up records that instant, None — every affected lineage's evidence counts as pre-fix, which
+# only withholds (Thomas 2026-10-20: flag, never re-judge; re-judging waits for the epoch boundary).
+OI_FIX_EFFECTIVE_AT: str | None = None
+
+
+def oi_lookahead_affected(record: Mapping[str, Any]) -> bool:
+    """Was this lineage's evidence produced while its OI feature could see the day's close early?
+
+    A spec whose entry reads an OI change or z-score, on any timeframe but 1d (on 1d the reading
+    is known at the bar's close, where the entry is), minted before :data:`OI_FIX_EFFECTIVE_AT`.
+    Keyed on the features the entry names, not the family, so a proposer or crossover child that
+    reads them is covered without an edit here. Like :func:`holdout_reused` it is derived at read
+    time: the stores are sealed, and the flag only ever withholds a confirmation."""
+    spec = record.get("strategy_spec") or {}
+    if not isinstance(spec, Mapping) or spec.get("timeframe") == "1d":
+        return False
+    conditions = ((spec.get("entry_rules") or {}).get("conditions")) or []
+    names = {str(value) for cond in conditions if isinstance(cond, Mapping)
+             for value in (cond.get("feature"), cond.get("value_from")) if value}
+    if not names & OI_LOOKAHEAD_FEATURES:
+        return False
+    if OI_FIX_EFFECTIVE_AT is None:
+        return True
+    created = record.get("created_at_utc")
+    return not isinstance(created, str) or created < OI_FIX_EFFECTIVE_AT
+
+
 def candidate_quality(
     record: Mapping[str, Any], *, attempts: int | None = None
 ) -> dict[str, Any]:
@@ -742,6 +774,11 @@ def candidate_quality(
     # D3 B). Every door that reads a holdout reads this status, so the cap sits here and nowhere else.
     reused = holdout_reused(record)
     if reused and holdout_state == HOLDOUT_CONFIRMED:
+        holdout_state = HOLDOUT_UNDERPOWERED
+    # Nor does a holdout scored while the OI feature looked ahead (Thomas 2026-10-20). Same cap,
+    # same place, for the same reason: every door reads this status.
+    lookahead = oi_lookahead_affected(record)
+    if lookahead and holdout_state == HOLDOUT_CONFIRMED:
         holdout_state = HOLDOUT_UNDERPOWERED
     # The verdict is RECOMPUTED from the stored components, never read back as a label.
     #
@@ -795,6 +832,7 @@ def candidate_quality(
         "verdict_rank": verdict_rank(verdict),
         "holdout_status": holdout_state,
         "holdout_reused": reused,
+        "oi_lookahead": lookahead,
         "expectancy_t": round(t_stat, 6) if t_stat is not None else None,
         "attempts_in_context": attempts,
         # The bar this t had to clear given how many candidates it was drawn from. Reported

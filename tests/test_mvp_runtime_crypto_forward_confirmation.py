@@ -424,3 +424,26 @@ def _shift_date(day_offset):
     from datetime import datetime, timedelta, timezone
     return (datetime(2026, 1, 1, tzinfo=timezone.utc)
             + timedelta(days=day_offset - 1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# --- the OI lookahead flag (Thomas 2026-10-20) ------------------------------------------------------
+
+def _oi_record(timeframe):
+    record = _record(timeframe=timeframe)
+    record["strategy_spec"] = {**record["strategy_spec"], "entry_rules": {"conditions": [
+        {"feature": "open_interest_change_pct", "operator": ">", "value": 0.02}]}}
+    return record
+
+
+def test_a_pre_fix_sub_daily_oi_lineage_cannot_arm_live_on_a_confirmed_forward_record():
+    record = _oi_record("4h")
+    rows = _spread_outcomes()
+    assert fc.judge_forward(record, rows)["status"] == fc.FORWARD_CONFIRMED   # the judge is unchanged
+    with pytest.raises(ToolError) as exc:
+        fc.assert_live_tier_confirmed([record], outcomes=rows, observed_lineages=1)
+    assert exc.value.reason_code == "CANDIDATE_UNCONFIRMED_FOR_LIVE"
+    assert "oi_lookahead" in str(exc.value)
+
+
+def test_a_daily_oi_lineage_still_arms_live():
+    fc.assert_live_tier_confirmed([_oi_record("1d")], outcomes=_spread_outcomes(), observed_lineages=1)
