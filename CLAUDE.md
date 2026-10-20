@@ -79,8 +79,10 @@ core thin while lanes grow, stated as rules:
     rules stay as they are.
   - A switch that names its own decision stays closed until that decision, e.g.
     `positioning_store.MINTING_DECIDED`.
-  - Gates that carry the date 2027-03-22 elsewhere keep it: P3 stocks (`MULTI_ASSET_EXPANSION_V0.1.md` §5)
-    and D5, no LIVE_AUTONOMOUS before then. Moving either is its own decision.
+  - Two gates dropped the date the same day (Thomas 2026-10-20), each by its own decision. P3 stocks no longer
+    waits for 2027-03-22, and its other conditions stand (`MULTI_ASSET_EXPANSION_V0.1.md` §5). D5 now reads:
+    no LIVE_AUTONOMOUS until the first FORWARD_CONFIRMED lineage exists, and its questions are asked then
+    (`RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md`). Neither approves a climb, an order path or a gate reopening.
 
   The IV–RV measurement (Thomas 2026-10-06) no longer needs its exemption. Building it is still its own approval
   (`THOMAS_AGENT_TARGET_ARCHITECTURE_V0.1.md` D-A6), and its data source is a new network read, named at the env-only
