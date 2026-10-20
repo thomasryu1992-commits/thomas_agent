@@ -378,3 +378,47 @@ def test_the_live_door_names_a_reused_holdout_as_underpowered():
         assert_live_tier_confirmed([child], outcomes=[], observed_lineages=1)
     assert refused.value.reason_code == "CANDIDATE_UNCONFIRMED_FOR_LIVE"
     assert f"holdout={HOLDOUT_UNDERPOWERED}" in str(refused.value)
+
+
+# --- a holdout scored while OI looked ahead confirms nothing (Thomas 2026-10-20) ------------------
+
+def _with_spec(record, *, timeframe, feature):
+    spec = dict(record["strategy_spec"])
+    spec["timeframe"] = timeframe
+    spec["entry_rules"] = {"conditions": [{"feature": feature, "operator": ">", "value": 0.02}]}
+    return {**record, "strategy_spec": spec, "created_at_utc": "2026-09-01T00:00:00Z"}
+
+
+@pytest.mark.parametrize("feature", ["open_interest_change_pct", "open_interest_zscore"])
+def test_a_sub_daily_oi_holdout_reads_underpowered_until_the_fix_instant(monkeypatch, feature):
+    from runtime.mvp_runtime.crypto import candidate_ranking
+    from runtime.mvp_runtime.crypto.candidate_ranking import candidate_quality
+
+    record = _with_spec(_scored_record(_tail(expectancy=_CLEARS)), timeframe="4h", feature=feature)
+    capped = candidate_quality(record)
+    assert capped["oi_lookahead"] is True
+    assert capped["holdout_status"] == HOLDOUT_UNDERPOWERED and capped["verdict"] == PROVISIONAL
+    # Once the fix's instant is recorded, a lineage minted after it is judged as any other.
+    monkeypatch.setattr(candidate_ranking, "OI_FIX_EFFECTIVE_AT", "2026-08-01T00:00:00Z")
+    assert candidate_quality(record)["holdout_status"] == HOLDOUT_CONFIRMED
+    monkeypatch.setattr(candidate_ranking, "OI_FIX_EFFECTIVE_AT", "2026-10-21T00:00:00Z")
+    assert candidate_quality(record)["holdout_status"] == HOLDOUT_UNDERPOWERED
+
+
+@pytest.mark.parametrize("timeframe,feature", [("1d", "open_interest_change_pct"), ("4h", "rsi")])
+def test_daily_or_non_oi_holdouts_are_untouched(timeframe, feature):
+    """On 1d the reading is known at the bar's close, where the entry is; a spec that reads no OI
+    feature was never exposed."""
+    from runtime.mvp_runtime.crypto.candidate_ranking import candidate_quality
+
+    quality = candidate_quality(_with_spec(_scored_record(_tail(expectancy=_CLEARS)),
+                                           timeframe=timeframe, feature=feature))
+    assert quality["oi_lookahead"] is False and quality["holdout_status"] == HOLDOUT_CONFIRMED
+
+
+def test_the_oi_cap_only_ever_withholds():
+    from runtime.mvp_runtime.crypto.candidate_ranking import candidate_quality
+
+    record = _with_spec(_scored_record(_tail(expectancy=-_CLEARS)), timeframe="1h",
+                        feature="open_interest_zscore")
+    assert candidate_quality(record)["holdout_status"] == HOLDOUT_CONTRADICTED

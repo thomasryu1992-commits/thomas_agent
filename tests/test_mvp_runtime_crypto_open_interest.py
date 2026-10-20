@@ -57,7 +57,9 @@ def _oi_series(values):
 
 def test_normalized_derivatives_are_computed_from_the_series():
     row = latest_feature_row(_snapshot(_oi_series([1000 + 50 * i for i in range(40)])))
-    assert row["open_interest"] == pytest.approx(1000 + 50 * 39)
+    # The last bar opens on day 40, when day 39's reading is the newest KNOWN one: day 40's is
+    # its own close, known only when the bar has closed (OI_READING_KNOWN_AFTER_HOURS).
+    assert row["open_interest"] == pytest.approx(1000 + 50 * 38)
     assert row["open_interest_change_pct"] > 0          # OI still climbing
     assert row["open_interest_zscore"] is not None
 
@@ -70,12 +72,13 @@ def test_change_is_measured_between_READINGS_not_between_bars():
     conditions intersected on 0 of 12,000, so the families could not fire at all.
 
     Here: four hourly bars per daily reading. Every bar must carry the last KNOWN daily
-    change, not 0.0 for the three bars that merely repeat it."""
+    change, not 0.0 for the three bars that merely repeat it. (Bars from day 3: a day's bars
+    read the day before, so day 2's bars would read day 1, which has no change yet.)"""
     candles = [{
         "open_time": f"2026-07-{d:02d}T{h:02d}:00:00Z",
         "close_time": f"2026-07-{d:02d}T{h + 1:02d}:00:00Z",
         "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10.0,
-    } for d in (2, 3, 4) for h in (0, 1, 2, 3)]
+    } for d in (3, 4, 5) for h in (0, 1, 2, 3)]
     oi = [{"timestamp": f"2026-07-{d:02d}T00:00:00Z", "open_interest": v}
           for d, v in ((1, 1000.0), (2, 1100.0), (3, 1210.0), (4, 1331.0))]
 
@@ -379,3 +382,49 @@ def test_the_funding_gate_reopens_when_the_feed_catches_up(monkeypatch):
     monkeypatch.setattr(market_data, "FUNDING_MAX_PAGES", 40)
     assert template_space._funding_feed_reaches("1h") is True
     assert template_space.FUNDING_FAMILIES <= {t.family for t in factory.templates_for_timeframe("1h")}
+
+
+# --- point in time (fixed 2026-10-20) ------------------------------------------------------------
+
+def _hourly(days, hours=range(24)):
+    return [{
+        "open_time": f"2026-07-{d:02d}T{h:02d}:00:00Z",
+        "close_time": (f"2026-07-{d:02d}T{h + 1:02d}:00:00Z" if h < 23 else f"2026-07-{d + 1:02d}T00:00:00Z"),
+        "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10.0,
+    } for d in days for h in hours]
+
+
+def _daily_oi(days):
+    # One level per day, distinct, so a row's value names the reading it carries.
+    return [{"timestamp": f"2026-07-{d:02d}T00:00:00Z", "open_interest": 1000.0 + d} for d in days]
+
+
+def test_a_bar_never_reads_a_daily_reading_before_it_is_known():
+    """The defect fixed 2026-10-20. The vendor labels a daily row with its START and carries its
+    CLOSE, so the row labelled day D is known at D+1 00:00. Every hourly bar of day D must read
+    day D-1's level, and the first bar of D+1 the level of day D."""
+    candles = _hourly((5, 6))
+    rows = build_feature_rows({"symbol": "BTCUSDT", "timeframe": "1h", "candles": candles,
+                               "open_interest": _daily_oi(range(1, 8))})
+    by_open = {c["open_time"]: r["open_interest"] for c, r in zip(candles, rows)}
+    assert {by_open[f"2026-07-05T{h:02d}:00:00Z"] for h in range(24)} == {1004.0}
+    assert {by_open[f"2026-07-06T{h:02d}:00:00Z"] for h in range(24)} == {1005.0}
+
+
+def test_replay_and_live_read_the_same_reading_on_every_bar():
+    """What the fix is for: the replay frame (built later, with every daily row present) and the
+    live read (made at the bar's close, after the vendor drops the still-forming day) must give a
+    bar the same OI. Live is simulated with the parser's own rule: rows labelled at or after the
+    current day's start are dropped (``market_data._parse_open_interest``)."""
+    candles = _hourly((5, 6))
+    events = _daily_oi(range(1, 8))
+    replay = build_feature_rows({"symbol": "BTCUSDT", "timeframe": "1h", "candles": candles,
+                                 "open_interest": events})
+    for i, candle in enumerate(candles):
+        day_start = candle["close_time"][:10] + "T00:00:00Z"
+        live_events = [e for e in events if e["timestamp"] < day_start]
+        live = build_feature_rows({"symbol": "BTCUSDT", "timeframe": "1h", "candles": candles[: i + 1],
+                                   "open_interest": live_events})[-1]
+        assert live["open_interest"] == replay[i]["open_interest"], candle["open_time"]
+        assert live["open_interest_change_pct"] == replay[i]["open_interest_change_pct"], candle["open_time"]
+
