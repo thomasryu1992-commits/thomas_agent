@@ -530,7 +530,8 @@ def coverage_summary(root: Path | None = None, *, symbols: Iterable[str]) -> dic
 # the day the store covered the replay window the positioning families would mint on the next fire,
 # with nobody deciding. That was harmless while the store could only grow a day a day (2029), and it
 # stops being harmless once a backfill can fill it in an afternoon: minting a new family is new
-# research machinery, paused until cohort 1's close (review D3). So minting needs BOTH: coverage,
+# research machinery, which needs its own decision (review D3 paused it; Thomas lifted D3 on 2026-10-20, and
+# this flag stays his). So minting needs BOTH: coverage,
 # which the data decides, and this flag, which only Thomas does — changed in a PR that cites the
 # decision, never by a threshold. Coverage stays measured and shown exactly as before.
 MINTING_DECIDED = False

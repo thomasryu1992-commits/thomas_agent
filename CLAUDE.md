@@ -70,29 +70,24 @@ core thin while lanes grow, stated as rules:
   `.claude/hooks/guard-local-only.sh` and the `Read` deny rules in `.claude/settings.json` are a
   tripwire, **not a boundary**. Claude runs as root and the docker group reaches every mount, so this
   rule is what holds until OS separation exists (`docs/history/2026-10-09-local-only-guard.md`).
-- **Crypto research machinery is paused until cohort 1's close on 2027-03-22** (Thomas 2026-09-26,
-  review D3; scope and end restated 2026-10-01). No new templates, hypotheses or trials in `crypto/`,
-  and no reallocation of the mint budget across families. A first FORWARD_CONFIRMED before that date
-  does not end the pause; it triggers E1/E2 (`docs/REMAINING_WORK.md` §L). Exempt:
-  - bug fixes;
-  - the slippage measurement (review C2);
-  - 1h mining on all five symbols (C3);
-  - the PR7 split work;
-  - measurement and display that change no judgement and that no door reads, e.g. entry-refusal
-    counters or a member-minus-twin readout;
-  - tightening cohort membership, such as a cross-cohort sibling rule;
-  - the read-only multi-account board (P1 of `docs/proposals/MULTI_ASSET_EXPANSION_V0.1.md`, Thomas
-    2026-10-02 D4) and its alert-only P2 drawdown line (Thomas 2026-10-07): no order path, no judgement
-    changed, and no door reads it;
-  - the IV–RV measurement (§4.3 of that proposal, Thomas 2026-10-06): read-only observation of
-    implied minus realized volatility. It is not a hypothesis, template or trial, opens no option
-    position, changes no judgement, and no door reads it. Its data source is a new network read, so it
-    is named at the env-only gate when it is built; this exemption is not that approval.
+- **Crypto research machinery is open again** (Thomas 2026-10-20, lifting review D3). New templates,
+  hypotheses and trials in `crypto/`, and reallocating the mint budget across families, are allowed again.
+  Each still goes PR → gates, and a new network read still goes through the env-only gate. Three things
+  did not move with it:
+  - Judgement rules loosen only at a research-epoch boundary (`RESEARCH_EPOCH_V0.1.md` Q3): each cohort's
+    close, the first on 2027-03-22 (Thomas 2026-10-06). Entry criteria, FORWARD_CONFIRMED and the holdout
+    rules stay as they are.
+  - A switch that names its own decision stays closed until that decision, e.g.
+    `positioning_store.MINTING_DECIDED`.
+  - Gates that carry the date 2027-03-22 elsewhere keep it: P3 stocks (`MULTI_ASSET_EXPANSION_V0.1.md` §5)
+    and D5, no LIVE_AUTONOMOUS before then. Moving either is its own decision.
 
-  Judgement rules loosen only at a research-epoch boundary (`RESEARCH_EPOCH_V0.1.md` Q3): each cohort's close,
-  the first on 2027-03-22 (Thomas 2026-10-06). Record:
-  `docs/proposals/SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md`, "결정 (Thomas 2026-09-26)" and
-  "결정 (Thomas 2026-10-01)".
+  The IV–RV measurement (Thomas 2026-10-06) no longer needs its exemption. Building it is still its own approval
+  (`THOMAS_AGENT_TARGET_ARCHITECTURE_V0.1.md` D-A6), and its data source is a new network read, named at the env-only
+  gate when built.
+
+  Record: `docs/proposals/SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md`, "결정 (Thomas 2026-10-20)". The pause
+  it lifts is in "결정 (Thomas 2026-09-26)" and "결정 (Thomas 2026-10-01)".
 - **Never run state-writing CLIs on the host as root.** Services run as uid 10001 and mount
   `.runtime_governance_state/`; a root run leaves files the service can no longer write and
   fails later, in another process, with nothing pointing back at the cause. Use
