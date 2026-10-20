@@ -452,3 +452,29 @@ def test_the_board_says_nothing_when_no_strategy_was_excluded(tmp_path):
     status = build_status(tmp_path, now=NOW)
     assert status["regime_excluded_cycles"] == {}
     assert "regime 배제" not in render_status_text(status)
+
+
+def test_a_replayed_trade_opens_at_its_entry_bars_close_not_its_exit():
+    """E2's input: `opened_at_utc` is the entry bar's close, before the bar the trade closed on.
+    An exit-time stamp would make the two equal and fail here."""
+    from runtime.mvp_runtime.crypto import backtest
+    from runtime.mvp_runtime.crypto.cost import CostModel
+    from runtime.mvp_runtime.crypto.features import build_feature_rows
+    from runtime.mvp_runtime.crypto.market_data import MockMarketDataCollector, collect_market_data
+
+    snapshot, _ = collect_market_data("ETHUSDT", "1h", collector=MockMarketDataCollector(), now=NOW, limit=400)
+    rows = build_feature_rows(snapshot)
+    closes = [c["close_time"] for c in snapshot["candles"]]
+    outcomes = []
+    for n in range(8):
+        for minted in factory.generate_batch(f"GEN-{n:03d}", seed=n, symbol="ETHUSDT", timeframe="1h")["specs"]:
+            outcomes = backtest._replay(StrategySpec.from_dict(minted), rows, snapshot["candles"],
+                                        cost=CostModel())[0]
+            if outcomes:
+                break
+        if outcomes:
+            break
+    assert outcomes, "no minted spec traded on the mock frame"
+    for outcome in outcomes:
+        assert outcome["opened_at_utc"] in closes
+        assert outcome["opened_at_utc"] < outcome["created_at_utc"]   # opened before it closed
