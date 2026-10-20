@@ -82,6 +82,10 @@ core thin while lanes grow, stated as rules:
   - Gates that carry the date 2027-03-22 elsewhere keep it: P3 stocks (`MULTI_ASSET_EXPANSION_V0.1.md` §5)
     and D5, no LIVE_AUTONOMOUS before then. Moving either is its own decision.
 
+  The IV–RV measurement (Thomas 2026-10-06) no longer needs its exemption. Building it is still its own approval
+  (`THOMAS_AGENT_TARGET_ARCHITECTURE_V0.1.md` D-A6), and its data source is a new network read, named at the env-only
+  gate when built.
+
   Record: `docs/proposals/SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md`, "결정 (Thomas 2026-10-20)". The pause
   it lifts is in "결정 (Thomas 2026-09-26)" and "결정 (Thomas 2026-10-01)".
 - **Never run state-writing CLIs on the host as root.** Services run as uid 10001 and mount
