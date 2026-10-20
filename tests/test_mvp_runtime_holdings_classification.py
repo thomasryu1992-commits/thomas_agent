@@ -300,7 +300,12 @@ def test_the_currency_line_reaches_the_local_board_and_never_the_doors_file(monk
     assert "currency_exposure" not in outward["allocation"]
     assert set(local["allocation"]["currency_exposure"]) == allocation.CURRENCY_KEYS
     assert not any(line.startswith("currency") for line in board.render_allocation(outward["allocation"]))
-    assert any(line.startswith("currency") and "USD" in line for line in board.render_allocation(local["allocation"]))
+    # The commands themselves: the terminal's --local board shows it; the doors' view does not.
+    local_board = store.load_local_view(now=NOW, root=tmp_path).splitlines()
+    assert any(line.startswith("currency") and "USD" in line for line in local_board)
+    door_text, door_data = store.load_holdings_view(now=NOW, root=tmp_path)
+    assert not any(line.startswith("currency") for line in door_text.splitlines())
+    assert "currency_exposure" not in json.dumps(door_data)
 
 
 def test_classify_takes_an_optional_currency(monkeypatch, tmp_path):

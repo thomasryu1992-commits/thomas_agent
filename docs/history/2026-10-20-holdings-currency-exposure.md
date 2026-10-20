@@ -22,4 +22,4 @@
   cases and the boundary (local file has it, doors' file does not). Six planted faults were each caught.
   The full suite has 3 failures; two pipeline tests fail on `main` too, and the third was the diagnostic index,
   regenerated here.
-- **Not seen:** the real board. Claude does not read the local file; Thomas sees the line on `--full`.
+- **Not seen:** the real board. Claude does not read the local file; Thomas sees the line on `--local` (the stored local file), not on the live `--full` read.
