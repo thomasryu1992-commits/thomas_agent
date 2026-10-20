@@ -142,3 +142,25 @@ def test_list_collects_no_market_data(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(measure, "_build_snapshot", lambda *a, **k: pytest.fail("--list collected data"))
     assert measure.main(["--list"]) == 0
     assert "1 sub-daily OI candidate(s)" in capsys.readouterr().out
+
+
+def test_a_context_builds_its_frames_once_per_alignment_not_once_per_candidate(monkeypatch, tmp_path, capsys):
+    """A 15m frame is 96,000 bars and this runs inside the live scheduler container: three candidates
+    in one context must cost two frame builds (L and F), not six."""
+    builds = []
+    real = measure.build_replay_frame
+
+    def counting(snapshot):
+        builds.append(features.OI_READING_KNOWN_AFTER_HOURS)
+        return real(snapshot)
+
+    monkeypatch.setattr(measure, "build_replay_frame", counting)
+    monkeypatch.setattr(measure, "_repo_root", lambda: tmp_path)
+    records = [_record("cand_a"), _record("cand_b", feature="open_interest_zscore"),
+               {**_record("cand_c"), "strategy_spec": {**_spec_dict(), "strategy_id": "S-OI-3"}}]
+    monkeypatch.setattr(measure.pool_state, "read_candidates", lambda root: records)
+    monkeypatch.setattr(measure, "_build_snapshot", lambda symbol, timeframe, now, root: _snapshot())
+    assert measure.main(["--json"]) == 0
+    assert sorted(builds) == [0, 24]
+    assert len(json.loads(capsys.readouterr().out)["candidates"]) == 3
+
