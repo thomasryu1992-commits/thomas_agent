@@ -1,6 +1,6 @@
 # 제안: Option C C6b — Claude 계정 이전 실행 패킷 (DRAFT v0.1)
 
-**상태:** DECIDED 2026-10-20 — **실행 중(2026-10-20):** 실행 승인을 받았다(아래 §6). b2·b3·b4·b5가 끝났고, b6은 사본까지 준비했다. b6의 crontab 설치는 b1 직전 마지막 root 작업이고, 그다음 b1(Mac 접속 사용자 변경)과 b8이 남았다. b7은 따로 확인한다. 준비 작업 P-1–P-6은 모두 끝났다(P-1–P-3·P-4b 적용, P-4 사본, P-5 토큰, P-6 #1258). **이전 상태:** PARTIALLY DECIDED 2026-10-19 — E-1–E-3이 권고안 A로 정해졌다(아래 결정). 준비 작업 P-1–P-6은 각각 승인을 기다리고, P-6(b8 시험 스크립트)은 같은 날 코드 PR 생성 승인을 받았다. C6b 실행은 별도 승인이다. 이 문서는 아무것도 실행하지 않았다. **원래 상태(작성 당시):** DRAFT 2026-10-19 — 결정 3건(E-1–E-3)과 준비 작업 6건(P-1–P-6)이 실행 승인보다 먼저였다.
+**상태:** DECIDED 2026-10-20 — **b7 외 완료(2026-10-20):** b2–b6, b1, b8이 끝났다. b8은 `claude` 세션에서 `C6B_CHECKS=PASS`(41행)이다(아래 §6). b7(`.env` 사본 5개를 호스트 밖으로)만 따로 확인을 기다린다. **이전 상태(실행 중, 2026-10-20):** 실행 승인을 받았다(아래 §6). b2·b3·b4·b5가 끝났고, b6은 사본까지 준비했다. b6의 crontab 설치는 b1 직전 마지막 root 작업이고, 그다음 b1(Mac 접속 사용자 변경)과 b8이 남았다. b7은 따로 확인한다. 준비 작업 P-1–P-6은 모두 끝났다(P-1–P-3·P-4b 적용, P-4 사본, P-5 토큰, P-6 #1258). **이전 상태:** PARTIALLY DECIDED 2026-10-19 — E-1–E-3이 권고안 A로 정해졌다(아래 결정). 준비 작업 P-1–P-6은 각각 승인을 기다리고, P-6(b8 시험 스크립트)은 같은 날 코드 PR 생성 승인을 받았다. C6b 실행은 별도 승인이다. 이 문서는 아무것도 실행하지 않았다. **원래 상태(작성 당시):** DRAFT 2026-10-19 — 결정 3건(E-1–E-3)과 준비 작업 6건(P-1–P-6)이 실행 승인보다 먼저였다.
 
 **결정(2026-10-19):** `결정: C6b E-1=A(b2–b6 → b1 → b8 → b7), E-2=A(claude 계정 새 로그인, 자격 파일 복사 안 함), E-3=A(hermes-notify.sh는 /root에 그대로, claude 사본 제외) (Thomas 2026-10-19)`
 
@@ -185,9 +185,9 @@ Mac:   scp root@<서버>:/root/env-copies-20261019.tar.age root@<서버>:/root/e
 | b3 | `/home/claude/.claude`(0700)에 P-4 사본(CLAUDE.md, settings 2개, hooks, skills, scripts)과 글꼴 `/home/claude/.fonts`를 넣었다. `/root`를 가리키는 링크는 0개다. `chown -Rh`로 링크 대상은 건드리지 않았다. 로컬 git에 경로 치환을 커밋했다(scripts `b3dedc3`, skills `9035283`). 메모리는 b1 직전에 복사한다 |
 | b4 | Thomas가 `su - claude -c 'bash ~/c6b-b4.sh'`로 실행했다. gh 로그인, `gh auth setup-git`, git 신원, `thomas_agent`·`thomas-obsidian` clone을 했다. 자격 파일은 `claude` 0600이고, 두 원격 모두 인증 조회가 된다. 가상환경은 Claude가 `claude`로 설치했다 |
 | b5 | `claude` 사본에 `hermes-notify.sh`가 없다. root 사본은 `claude`가 읽지도 실행하지도 못한다 |
-| b6 | `/home/claude/loc-trend/`(run.sh는 REPO·OUT만 바꿈, 기록 72줄 복사)를 준비했다. root crontab에서 두 줄을 빼고 `claude` crontab에 두 줄을 넣는 새 판을 만들었다. 설치는 b1 직전 마지막 root 작업이다. `claude` 쪽 원고 작업이 앱이 설치하는 실행 파일(`~/.claude/remote/ccd-cli`)을 쓰기 때문이다 |
-| b1 | Thomas(Mac). 남음 |
-| b8 | `claude` 세션에서 `python3 -I ~/thomas_agent/scripts/ops/c6b_checks.py`와 guard 수동 확인. 남음 |
+| b6 | `/home/claude/loc-trend/`(run.sh는 REPO·OUT만 바꿈, 기록 72줄 복사)를 준비했다. root crontab에서 두 줄을 빼고 `claude` crontab에 두 줄을 넣는 새 판을 만들었다. b1 직전 마지막 root 작업으로 설치했다. `claude` crontab에는 08:25 loc-trend와 23:02 blog-daily-draft 두 줄이 있다. `claude` 쪽 원고 작업은 앱이 설치하는 실행 파일(`~/.claude/remote/ccd-cli`)을 쓴다. 두 작업의 첫 실행은 아직 확인하지 않았다 |
+| b1 | Thomas가 Mac 앱의 접속 사용자를 `claude`로 바꿨다. 새 세션에서 `id`는 `uid=2101(claude) gid=2101(claude) groups=2101(claude),2102(thomas-deploy-gate)`이다 |
+| b8 | **`C6B_CHECKS=PASS`(41행, 실패 0)** — `claude` 세션, `python3 -I ~/thomas_agent/scripts/ops/c6b_checks.py --json ~/c6b-b8.json`(main `57d6bfc8` 판). N-1–N-6, N-13–N-15의 거부 행이 모두 `denied`였다. managed guard는 root 소유이고, holdings 읽기를 단독으로 넣었을 때 거부했다. read door `schedules`와 실행기 `inspect_candidate`는 둘 다 `ok`였다. 처음 세 번은 "root로 도는 Claude 프로세스" 한 행만 FAIL이었다. 전환 결함이 아니라 전제조건(옛 root 세션 종료) 미충족이었다. 1차에는 root `ccd-cli`가 11개였다(10-15부터 떠 있던 root 원격 서버의 자식). Thomas가 앱에서 세션을 닫은 2차에도, 앱 목록에 없던 10-16 세션 2개가 남았다. 3차에는 그 둘이 꺼진 뒤 같은 root 원격 서버가 04:10:54Z에 새 세션 하나를 띄웠다. Thomas가 그 세션까지 끄고 4차에 PASS가 나왔다. 그래서 b1을 되돌리지 않았다. 수동 확인도 했다. 이 세션에서 holdings 경로 `Read`는 거부됐다. 다만 guard가 managed·user·project 세 층에 모두 등록돼 있어 실제 거부가 어느 층에서 나왔는지는 메시지로 가릴 수 없다. managed 층의 판정은 스크립트의 단독 공급 행이 근거다. `claude_read.py schedules`는 `ok`였다. **남은 위험:** PASS 시점에 root 원격 서버 프로세스 2개(`--serve`, `--bridge`)가 아직 떠 있었다. 앱이 root 연결로 다시 붙으면 root 세션이 또 생길 수 있다. 같은 행을 다시 확인하려면 Thomas가 `ps -u root -o args \| grep -c '[c]cd-cli'`(기대 0)를 실행한다 |
 | b7 | 따로 확인. 남음 |
 
 ## 4. C6b 뒤 바뀌는 운영 (C5 계획 §5 요약)
