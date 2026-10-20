@@ -63,11 +63,34 @@ def test_the_alignment_switch_is_restored_even_on_error():
 def test_legacy_and_fixed_alignment_give_different_holdouts_on_the_same_window():
     snapshot = _snapshot()
     spec = StrategySpec.from_dict(_spec_dict())
-    legacy = measure.holdout_of(spec, [snapshot], known_after_hours=0)
-    fixed = measure.holdout_of(spec, [snapshot], known_after_hours=24)
+    legacy, _ = measure.holdout_of(spec, [snapshot], known_after_hours=0)
+    fixed, _ = measure.holdout_of(spec, [snapshot], known_after_hours=24)
     assert legacy and fixed and legacy["bars"] == fixed["bars"]          # same window
     assert legacy["closed_count"] > 0 and fixed["closed_count"] > 0
     assert (legacy["period_trades"], legacy["total_R"]) != (fixed["period_trades"], fixed["total_R"])
+
+
+def test_every_feature_build_of_a_replay_runs_under_the_requested_alignment(monkeypatch):
+    """L must be legacy throughout: a rebuild anywhere in the replay at the restored constant would
+    make it a mix that the L-vs-F comparison could not see."""
+    from runtime.mvp_runtime.crypto import backtest
+
+    seen = []
+    real = backtest.build_feature_rows
+
+    def spy(snapshot):
+        seen.append(features.OI_READING_KNOWN_AFTER_HOURS)
+        return real(snapshot)
+
+    monkeypatch.setattr(backtest, "build_feature_rows", spy)
+    measure.holdout_of(StrategySpec.from_dict(_spec_dict()), [_snapshot()], known_after_hours=0)
+    assert seen and set(seen) == {0}
+
+
+def test_the_selection_covers_every_timeframe_the_flag_covers():
+    from runtime.mvp_runtime.crypto import market_data
+
+    assert set(measure.SUB_DAILY) == set(market_data.TIMEFRAMES) - {"1d"}
 
 
 def _block(expectancy, n, periods):
@@ -104,6 +127,7 @@ def test_a_run_reports_both_alignments_and_writes_nothing(monkeypatch, tmp_path,
     report = json.loads(capsys.readouterr().out)
     assert set(report["pooled"]) == {"L", "F"} and report["known_after_hours"] == {"L": 0, "F": 24}
     assert report["reading"] in {"KEPT", "VANISHED", "WEAKENED"}
+    assert {"confirmed", "robust"} <= set(report["pooled"]["F"])
     row = report["candidates"][0]
     assert row["candidate_id"] == "cand_oi" and {row["L_status"], row["F_status"]} <= {
         robustness.HOLDOUT_CONFIRMED, robustness.HOLDOUT_UNDERPOWERED, robustness.HOLDOUT_CONTRADICTED,

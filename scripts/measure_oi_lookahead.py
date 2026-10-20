@@ -17,9 +17,12 @@ today's: a different draw from the stored one, the same draw for (L) and (F).
 (``rescore_stale_holdout_candidates._build_snapshot``). It writes nothing: no candidate, no verdict, no
 state. Its output is a report for Thomas to paste into the record. Run in the container, module form::
 
-    docker exec thomas-scheduler python -m scripts.measure_oi_lookahead --list
+    docker exec thomas-scheduler python -m scripts.measure_oi_lookahead --list   # the container with the OI feed
     docker exec thomas-scheduler python -m scripts.measure_oi_lookahead            # lines
     docker exec thomas-scheduler python -m scripts.measure_oi_lookahead --json     # the full report
+
+If every row prints "starved", the container lacks the OI feed (``MVP_LIQUIDATION_FEED``): it is set on
+``thomas-scheduler`` and ``thomas-scheduler-maint``.
 
 **Reading** (pre-registered, judged on F): edge kept when the pooled per-trade mean net R is above 0 and
 the pooled period-level 95% lower bound is above 0 and at least half of L's CONFIRMED stay CONFIRMED in
@@ -43,7 +46,7 @@ from runtime.mvp_runtime import timeutil
 from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE
 from runtime.mvp_runtime.errors import ToolBlocked, ToolError
 from runtime.mvp_runtime.paths import repo_root as _repo_root
-from runtime.mvp_runtime.crypto import candidate_identity, features, pool_state, robustness
+from runtime.mvp_runtime.crypto import candidate_identity, features, market_data, pool_state, robustness
 from runtime.mvp_runtime.crypto.backtest import backtest_spec_pooled
 from runtime.mvp_runtime.crypto.candidate_ranking import OI_LOOKAHEAD_FEATURES
 from runtime.mvp_runtime.crypto.factory import build_replay_frame, unsuppliable_features
@@ -51,7 +54,8 @@ from runtime.mvp_runtime.crypto.strategy import StrategySpec
 from scripts.rescore_stale_holdout_candidates import _build_snapshot
 
 LEGACY_KNOWN_AFTER_HOURS = 0   # the reading keyed at its label: the alignment before the fix
-SUB_DAILY = ("15m", "1h", "4h")
+# Every timeframe but 1d: the flag's own rule (`candidate_ranking.oi_lookahead_affected`).
+SUB_DAILY = tuple(tf for tf in market_data.TIMEFRAMES if tf != "1d")
 
 
 def _oi_entry(spec: Mapping[str, Any]) -> bool:
@@ -89,13 +93,18 @@ def oi_alignment(known_after_hours: int) -> Iterator[None]:
         features.OI_READING_KNOWN_AFTER_HOURS = saved
 
 
-def holdout_of(spec: StrategySpec, snapshots: Sequence[Mapping[str, Any]], *, known_after_hours: int) -> dict[str, Any] | None:
-    """The spec's holdout block under one alignment, or None when a frame cannot supply its features."""
+def holdout_of(spec: StrategySpec, snapshots: Sequence[Mapping[str, Any]], *,
+               known_after_hours: int) -> tuple[dict[str, Any], str | None] | None:
+    """The spec's holdout block and robustness verdict under one alignment, or None when a frame
+    cannot supply its features. The whole replay runs inside the alignment, so nothing it builds
+    can fall back to the other one."""
     with oi_alignment(known_after_hours):
         frames = [build_replay_frame(snapshot) for snapshot in snapshots]
-    if any(unsuppliable_features(spec, frame.rows) for frame in frames):
-        return None
-    return dict(backtest_spec_pooled(spec, snapshots, frames=frames).get("holdout") or {})
+        if any(unsuppliable_features(spec, frame.rows) for frame in frames):
+            return None
+        evidence = backtest_spec_pooled(spec, snapshots, frames=frames)
+    verdict = (evidence.get("robustness") or {}).get("verdict")
+    return dict(evidence.get("holdout") or {}), (str(verdict) if verdict is not None else None)
 
 
 def summarize(blocks: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -183,11 +192,12 @@ def main(argv: list[str] | None = None) -> int:
         legs = [snapshots[(symbol, timeframe)] for symbol in scope]
         for record in group:
             spec = StrategySpec.from_dict(record["strategy_spec"])
-            legacy = holdout_of(spec, legs, known_after_hours=LEGACY_KNOWN_AFTER_HOURS)
-            fixed = holdout_of(spec, legs, known_after_hours=features.OI_READING_KNOWN_AFTER_HOURS)
-            if legacy is None or fixed is None:
+            legacy_run = holdout_of(spec, legs, known_after_hours=LEGACY_KNOWN_AFTER_HOURS)
+            fixed_run = holdout_of(spec, legs, known_after_hours=features.OI_READING_KNOWN_AFTER_HOURS)
+            if legacy_run is None or fixed_run is None:
                 rows.append({"candidate_id": candidate_identity.candidate_id(record), "starved": True})
                 continue
+            (legacy, legacy_verdict), (fixed, fixed_verdict) = legacy_run, fixed_run
             blocks["L"].append(legacy)
             blocks["F"].append(fixed)
             rows.append({
@@ -197,10 +207,14 @@ def main(argv: list[str] | None = None) -> int:
                 **{f"{tag}_{key}": block.get(key) for tag, block in (("L", legacy), ("F", fixed))
                    for key in ("closed_count", "expectancy")},
                 "L_status": robustness.holdout_status(legacy), "F_status": robustness.holdout_status(fixed),
+                "L_verdict": legacy_verdict, "F_verdict": fixed_verdict,
             })
     legacy_sum, fixed_sum = summarize(blocks["L"]), summarize(blocks["F"])
     kept = sum(1 for row in rows if row.get("L_status") == robustness.HOLDOUT_CONFIRMED
                and row.get("F_status") == robustness.HOLDOUT_CONFIRMED)
+    # Counted beside CONFIRMED, as pre-registered; reported only, the reading does not use it.
+    for tag, summary in (("L", legacy_sum), ("F", fixed_sum)):
+        summary["robust"] = sum(1 for row in rows if row.get(f"{tag}_verdict") == robustness.ROBUST)
     report = {"measured_at": now, "known_after_hours": {"L": LEGACY_KNOWN_AFTER_HOURS,
                                                         "F": features.OI_READING_KNOWN_AFTER_HOURS},
               "candidates": rows, "pooled": {"L": legacy_sum, "F": fixed_sum},
@@ -219,7 +233,7 @@ def main(argv: list[str] | None = None) -> int:
         s = report["pooled"][tag]
         print(f"pooled {tag}: {s['candidates']} candidates, {s['trades']} trades, mean {s['mean_net_r']}, "
               f"period lower 95% {s['period_lower_95']} over {s['periods_traded']} periods, "
-              f"{s['confirmed']} CONFIRMED")
+              f"{s['confirmed']} CONFIRMED, {s['robust']} ROBUST")
     print(f"CONFIRMED in L that stay CONFIRMED in F: {kept}")
     print(f"reading (pre-registered, on F): {report['reading']}")
     return EXIT_OK
