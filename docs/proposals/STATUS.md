@@ -4,7 +4,7 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **75**건: `DRAFT` 4 · `PARTIALLY DECIDED` 9 · `DECIDED` 15 · `IMPLEMENTED` 40 · `SUPERSEDED` 1 · `RECORD` 6
+제안서 **76**건: `DRAFT` 4 · `PARTIALLY DECIDED` 9 · `DECIDED` 15 · `IMPLEMENTED` 40 · `SUPERSEDED` 1 · `RECORD` 7
 
 ## Thomas 결정 대기 (13)
 
@@ -103,7 +103,7 @@
 |---|---|---|---|
 | [LIVE_OUTCOME_CORRECTION_RECORD_V0.1.md](LIVE_OUTCOME_CORRECTION_RECORD_V0.1.md) | `SUPERSEDED` | 2026-08-23 | `LIVE_OUTCOME_CORRECTION_RECORD_V0.2.md`가 대신한다. 이 설계는 구현된 적 없다. |
 
-## 측정 기록 (6)
+## 측정 기록 (7)
 
 결정할 것이 없는 관측 기록.
 
@@ -115,3 +115,4 @@
 | [SYSTEM_SCORECARD_V0.2.md](SYSTEM_SCORECARD_V0.2.md) | `RECORD` | 2026-10-06 | v0.1(2026-10-05, 6/10)의 질문 여섯 개가 모두 처리된 뒤 같은 기준으로 다시 잰 점수다. 종합 7/10. 결정할 것은 없고, 다음 점수를 움직일 지점을 적는다. |
 | [SYSTEM_SCORECARD_V0.3.md](SYSTEM_SCORECARD_V0.3.md) | `RECORD` | 2026-10-06 | v0.2(같은 날 05:30Z, 7/10) 뒤 같은 기준으로 다시 잰 점수다. 종합 7/10 그대로다(평균 7.0 → 7.1, 추기 2에서 7.3). 개발 프로세스가 7에서 8로, 추기 2에서 9로 올랐다. 결정할 것은 없다. |
 | [TOTAL_ASSET_ALLOCATION_VALIDATION_V0.1.md](TOTAL_ASSET_ALLOCATION_VALIDATION_V0.1.md) | `RECORD` | 2026-10-07 | 중립형 배분을 2005-01~2026-09 원화 월간 실데이터로 검증했다. 결론 다섯 가지가 2023년 이전 구간에서도 유지됐다: 환노출, 금 13, 5/25 밴드, 국고채 3년 중심이 낫다는 것, 그리고 BTC가 꼬리 위험을 가장 크게 키운다는 것이다. 이 결과로 생긴 질문 Q6–Q10은 `TOTAL_ASSET_ALLOCATION_V0.1.md` §11에 있다. |
+| [TOTAL_ASSET_ALLOCATION_FX_MEASUREMENT_V0.1.md](TOTAL_ASSET_ALLOCATION_FX_MEASUREMENT_V0.1.md) | `RECORD` | 2026-10-20 | D-C 1단계 측정을 마쳤다. 사전 등록(§1–§3)은 데이터를 받기 전에 커밋했다(`c7bf2c4b`, 07:04Z). 사전 등록 기준으로 미국채 네 변형 중 어느 것도 구조적 개선이 아니다. U½-환노출은 구조적 악화이고, 나머지 셋은 혼재다. 변동성은 같은 수준이고 최대낙폭(2022년)이 커진다. 환노출 미국채는 금융위기 구간 수익을 크게 올린다. 원·엔 민감도는 모든 변형에서 원·달러와 구분되지 않는다. 다음은 D-C 2단계, Thomas의 D-A 결정이다. |
