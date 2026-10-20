@@ -1,6 +1,6 @@
 # 제안: 손실 브레이커 4개 — 사다리의 의미를 고정하고 단위를 갱신한다 (DRAFT v0.1)
 
-**상태:** PARTIALLY DECIDED 2026-10-06 — (a)(b)(d)는 첫 forward cohort 판정(2027-03-22) 때 묻는다. 그때까지 크립토 라이브는
+**상태:** PARTIALLY DECIDED 2026-10-20 — **2026-10-20:** 관문을 날짜에서 조건으로 바꿨다. (a)(b)(d)는 첫 FORWARD_CONFIRMED 계보가 생길 때 묻고, 그때까지 LIVE_AUTONOMOUS로 올리지 않는다(아래 결정 절). **이전 상태(2026-10-06):** (a)(b)(d)는 첫 forward cohort 판정(2027-03-22) 때 묻는다. 그때까지 크립토 라이브는
 LIVE_AUTONOMOUS로 올리지 않고 현재 값을 유지한다(Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q6). 관문이 "슬리피지 실측 뒤"에서
 "첫 판정 때"로 바뀌어 순환이 없어졌다. **값은 하나도 바뀌지 않았다.**
 **부모:** `docs/REMAINING_WORK.md` §G1 — 이 네 상수를 `INHERITED`(이전 시스템 `config/settings.py`에서
@@ -154,4 +154,27 @@ import statistics; print('stop unit:', abs(statistics.median(stops)))
 - **그날의 질문은 미리 적어 둔다.** PAPER에서는 fill이 쌓이지 않으므로 2027-03-22에도 표본은 지금과 같을 것이다(손절 n=12,
   진입 n=3, 2026-09-28 §F8). 그래서 그날 실제로 고를 것은 둘 중 하나다. 지금 표본으로 잠정값을 정하고 `LIVE_AUTONOMOUS` 뒤 표본이
   차면 다시 정하거나(Q6의 (a)), 라이브를 계속 올리지 않는 것이다. 확정 계보가 생기지 않았다면 뒤쪽이 자연스럽다.
+- `SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md` D5는 이 결정과 같다.
+
+## 결정 (Thomas 2026-10-20) — D5: 날짜 대신 조건
+
+`결정: D5를 날짜(2027-03-22)에서 조건으로 — 첫 FORWARD_CONFIRMED 계보가 생길 때 (a)(b)(d)를 묻는다 (Thomas 2026-10-20)`. 같은 날
+크립토 연구 일시 중지(D3)가 풀렸고, Thomas는 날짜에 묶인 관문을 함께 다시 정했다.
+
+- **새 관문:** (a)(b)(d)는 **첫 FORWARD_CONFIRMED 계보가 생길 때** 묻는다.
+  - LIVE 문은 FORWARD_CONFIRMED만 받는다. 그래서 그 전에는 LIVE_AUTONOMOUS로 올릴 이유도, 물을 이유도 없다.
+  - 2026-10-06 결정이 날짜를 고른 것도 "그날 확정 계보가 있을지"를 보려는 것이었다. 이 결정은 그 계보 자체를 조건으로 삼는다.
+- **그대로인 것:**
+  - 그때까지 크립토 라이브는 LIVE_AUTONOMOUS로 올리지 않는다. 현재 값도 유지한다.
+  - `SIGNED_TESTNET`은 이 결정의 대상이 아니다.
+  - 그날의 질문은 2026-10-06 절에 적은 그대로다. 표본이 손절 n=12, 진입 n=3에 멈춰 있으므로, 그날 고를 것은 둘 중 하나다.
+    지금 표본으로 잠정값을 정하고 LIVE_AUTONOMOUS 뒤에 다시 정하거나, 라이브를 계속 올리지 않는 것이다.
+  - 실제로 오르는 일은 다음 셋을 모두 따로 지나야 한다:
+    - G2a: 전략 승격;
+    - G2b: 한 칸씩, signed testnet cycle 지정;
+    - G2c: live 게이트 재개.
+    이 결정은 그 어느 것도 승인하지 않는다.
+- **N4와의 관계:** `FORWARD_COHORT_EXPANSION_V0.1.md` N4는 Decision 2 B 재심(판정 규칙)을 1차 cohort 마감에 묶는다. 이 결정은 판정
+  규칙을 바꾸지 않는다. FORWARD_CONFIRMED는 지금 규칙 그대로 판정된다.
+- **같은 날짜, 같은 사건:** 첫 FORWARD_CONFIRMED는 `REMAINING_WORK.md` §L의 E1·E2도 발동한다. D5의 질문은 그 착수와 같은 때에 온다.
 - `SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md` D5는 이 결정과 같다.
