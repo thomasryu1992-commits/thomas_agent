@@ -208,3 +208,114 @@ def test_unclassified_lists_ids_and_no_amount(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "1 wallet asset(s): binance:SOL" in out and "LINK" not in out.split("unclassified")[1].split("\n")[0]
     assert "5.25" not in out and "5250" not in out
+
+
+# --- D-C step 3: won/dollar exposure, local only (Thomas 2026-10-20) -------------------------------
+
+def test_an_entry_may_name_its_currency_and_a_file_without_one_reads_as_before(tmp_path):
+    classification.apply(tmp_path, assign={"binance:SOL": "coin"}, now=NOW)
+    assert dict(classification.load(tmp_path).currencies) == {}
+    loaded = classification.apply(tmp_path, assign={"toss:domestic:T10": "bonds"},
+                                  currency={"toss:domestic:T10": "usd"}, now=NOW)
+    assert dict(loaded.currencies) == {"toss:domestic:T10": "usd"} and loaded.entries["binance:SOL"] == "coin"
+    raw = json.loads(classification.path(tmp_path).read_text(encoding="utf-8"))
+    assert raw["entries"]["toss:domestic:T10"]["currency"] == "usd" and "currency" not in raw["entries"]["binance:SOL"]
+    again = classification.apply(tmp_path, assign={"toss:domestic:T10": "bonds"}, now=NOW)
+    assert dict(again.currencies) == {}   # re-entered without a currency: the old one does not linger
+
+
+@pytest.mark.parametrize("currency", [{"toss:domestic:T10": "jpy"}, {"binance:OTHER": "usd"}])
+def test_a_currency_it_cannot_place_is_refused_before_anything_is_written(tmp_path, currency):
+    with pytest.raises(ToolError) as exc:
+        classification.apply(tmp_path, assign={"toss:domestic:T10": "bonds"}, currency=currency)
+    assert exc.value.reason_code == classification.CLASSIFICATION_REFUSED
+    assert not classification.path(tmp_path).exists()
+
+
+def test_a_file_with_an_unknown_currency_is_unreadable_and_names_no_entry(tmp_path):
+    classification.path(tmp_path).write_text(json.dumps({
+        "record_type": classification.RECORD_TYPE, "mapping_version": 1,
+        "entries": {"toss:domestic:T10": {"asset_class": "bonds", "currency": "jpy"}}}), encoding="utf-8")
+    with pytest.raises(ToolError) as exc:
+        classification.load(tmp_path)
+    assert exc.value.reason_code == classification.CLASSIFICATION_UNREADABLE and "T10" not in str(exc.value)
+
+
+def _toss_with(*holdings, usd_cash=0.0):
+    from runtime.mvp_runtime.holdings.model import Holding
+    rows = tuple(Holding(market="domestic", symbol=symbol, name="x", quantity=1.0, value=value,
+                         unrealized_pnl=0.0, currency="KRW") for symbol, value in holdings)
+    snap = HoldingsSnapshot(account="****", broker="toss", domestic=None, overseas=None, holdings=rows,
+                            collected_at=NOW, latency_ms=0, usd_krw_rate=RATE)
+    return snap, {"krw_cash": 100_000.0, "usd_cash_krw": usd_cash}
+
+
+def test_exposure_follows_the_class_default_and_an_entry_overrides_it():
+    snap, view = _toss_with(("KB3", 200_000.0), ("UST", 100_000.0), ("GLH", 50_000.0), usd_cash=30_000.0)
+    entries = classification.Classification(
+        2, {"toss:domestic:KB3": "bonds", "toss:domestic:UST": "bonds", "toss:domestic:GLH": "global_equity"},
+        {"toss:domestic:KB3": "krw", "toss:domestic:UST": "usd", "toss:domestic:GLH": "krw"})
+    wallet = _wallet(BTC=10.0, USDT=2.0)
+    block = allocation.allocate(snap, view, {**_block(wallet), "crypto_futures_krw": 5_000.0}, wallet, entries)
+    exposure = block["currency_exposure"]
+    # won: Toss KRW cash, the won bond, the hedged (krw-tagged) equity fund
+    assert exposure["rows"]["krw"]["krw"] == 100_000.0 + 200_000.0 + 50_000.0
+    # dollar: the won-listed Treasury fund, Toss USD cash, the futures margin, BTC and the stablecoin
+    assert exposure["rows"]["usd"]["krw"] == 100_000.0 + 30_000.0 + 5_000.0 + 12.0 * RATE
+    assert exposure["complete"] is True and exposure["notes"] == []
+    assert exposure["total_krw"] == block["total_krw"]
+    assert sum(row["weight_pct"] for row in exposure["rows"].values()) == pytest.approx(100.0, abs=0.02)
+
+
+def test_a_bond_without_a_currency_leaves_the_line_partial_not_guessed():
+    snap, view = _toss_with(("KB3", 200_000.0))
+    entries = classification.Classification(1, {"toss:domestic:KB3": "bonds"})
+    wallet = _wallet(BTC=10.0)
+    block = allocation.allocate(snap, view, _block(wallet), wallet, entries)
+    exposure = block["currency_exposure"]
+    assert block["complete"] is True                       # the class table does not depend on it
+    assert exposure["complete"] is False and exposure["rows"]["usd"]["weight_pct"] is None
+    assert "1 bond(s) without a currency entry" in exposure["notes"][0]
+    assert exposure["rows"]["krw"]["krw"] == 100_000.0     # the untagged bond is in neither row
+
+
+def test_a_partial_allocation_gives_no_currency_weights():
+    block = _allocate(_wallet(BTC=10.0, SOL=5.0))          # SOL unclassified
+    assert block["complete"] is False
+    assert block["currency_exposure"]["complete"] is False
+    assert "allocation partial" in block["currency_exposure"]["notes"][0]
+
+
+def test_the_currency_line_reaches_the_local_board_and_never_the_doors_file(monkeypatch, tmp_path, gate_open):
+    from runtime.mvp_runtime.holdings import board
+    from tests.test_mvp_runtime_holdings import _binance_file, _toss as fake_toss
+
+    _binance_file(tmp_path, margin=100.0, monkeypatch=monkeypatch)
+    fake_toss(monkeypatch)
+    wallet = _wallet(BTC=10.0, USDT=3.0)
+    monkeypatch.setattr(binance_wallet, "read_wallet", lambda **_kw: (wallet, None))
+    store.refresh(now=NOW, root=tmp_path)
+    outward = json.loads(store.snapshot_path(tmp_path).read_text(encoding="utf-8"))
+    local = json.loads(store.local_path(tmp_path).read_text(encoding="utf-8"))
+    assert "currency_exposure" not in outward["allocation"]
+    assert set(local["allocation"]["currency_exposure"]) == allocation.CURRENCY_KEYS
+    assert not any(line.startswith("currency") for line in board.render_allocation(outward["allocation"]))
+    # The commands themselves: the terminal's --local board shows it; the doors' view does not.
+    local_board = store.load_local_view(now=NOW, root=tmp_path).splitlines()
+    assert any(line.startswith("currency") and "USD" in line for line in local_board)
+    door_text, door_data = store.load_holdings_view(now=NOW, root=tmp_path)
+    assert not any(line.startswith("currency") for line in door_text.splitlines())
+    assert "currency_exposure" not in json.dumps(door_data)
+
+
+def test_classify_takes_an_optional_currency(monkeypatch, tmp_path):
+    from runtime.mvp_runtime.cli_common import EXIT_BLOCKED
+    from scripts import holdings_board
+
+    monkeypatch.setattr(store, "_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(holdings_board, "assert_not_foreign_root_run", lambda *a, **k: None)
+    assert holdings_board.main(["--classify", "toss:domestic:T10=bonds:usd", "binance:SOL=coin"]) == 0
+    loaded = classification.load(store.state_dir(tmp_path))
+    assert dict(loaded.currencies) == {"toss:domestic:T10": "usd"} and loaded.entries["binance:SOL"] == "coin"
+    assert holdings_board.main(["--classify", "toss:domestic:T10=bonds:jpy"]) == EXIT_BLOCKED
+    assert classification.load(store.state_dir(tmp_path)).mapping_version == 1
