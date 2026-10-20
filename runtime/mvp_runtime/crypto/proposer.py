@@ -188,6 +188,9 @@ def pending_trial_proposals(
             "family": proposal.get("family"),
             "strategy_rule_hash": rule_hash,
             "proposed_at": record.get("created_at"),
+            # The proposer's one-sentence why, carried so a trial row can say it without a join
+            # through `proposal_id` (CRYPTO_SYSTEM_IMPROVEMENT_GAP §7, first when D3 lifted).
+            "rationale": str(proposal.get("rationale") or ""),
             "spec": dict(spec),
         })
     return queue

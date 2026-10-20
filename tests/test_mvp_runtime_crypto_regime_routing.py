@@ -233,6 +233,31 @@ def test_backtest_evidence_records_which_regime_produced_what():
     assert sum(cell["trades"] for cell in per_regime.values()) == evidence["closed_count"]
     for cell in per_regime.values():
         assert set(cell) == {"trades", "total_r"}
+    # E2: the opening dates ride beside it, one list per regime that traded, never inside it.
+    dates = evidence["regime_breakdown"]["entry_dates"]
+    assert set(dates) == set(per_regime)
+    for regime, days in dates.items():
+        assert days == sorted(set(days)) and all(len(d) == 10 and d[4] == "-" for d in days)
+        assert 1 <= len(days) <= per_regime[regime]["trades"]
+
+
+def test_entry_dates_are_the_entry_bars_close_and_never_projected_into_the_admission():
+    """E2 is measurement: a trade opens at its entry bar's CLOSE, and the dates stay out of what
+    the pool entry carries and the approval artifact hashes (`strategy_artifact`)."""
+    from runtime.mvp_runtime.crypto import backtest, strategy_artifact
+
+    outcomes = [{"entry_regime": "TREND_UP", "opened_at_utc": "2026-07-02T04:00:00Z"},
+                {"entry_regime": "TREND_UP", "opened_at_utc": "2026-07-02T08:00:00Z"},
+                {"entry_regime": None, "opened_at_utc": "2026-07-03T00:00:00Z"},
+                {"entry_regime": "RANGE", "opened_at_utc": None}]
+    assert backtest._entry_dates_by_regime(outcomes) == {"TREND_UP": ["2026-07-02"],
+                                                         "UNCLEAR": ["2026-07-03"]}
+    candidate = {"backtest_evidence": {"regime_breakdown": {
+        "per_regime": {"TREND_UP": {"trades": 2, "total_r": 1.0}},
+        "entry_dates": {"TREND_UP": ["2026-07-02"]}}}}
+    admission = strategy_artifact.admission_evidence(candidate)
+    assert admission["regime_evidence"] == {"TREND_UP": {"trades": 2, "total_r": 1.0}}
+    assert "entry_dates" not in repr(admission)
 
 
 def test_promotion_copies_the_regime_evidence_onto_the_entry(monkeypatch, tmp_path):
