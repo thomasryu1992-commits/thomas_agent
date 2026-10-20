@@ -262,6 +262,17 @@ def funding_charges_per_bar(
     return charges, (FUNDING_SOURCE_PARTIAL if uncovered else FUNDING_SOURCE_VENUE)
 
 
+def _entry_dates_by_regime(outcomes: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """Sorted, distinct ``YYYY-MM-DD`` opening dates per entry regime (UNCLEAR included, as the
+    breadth fields count it). A trade whose opening time is unknown is left out."""
+    dates: dict[str, set[str]] = {}
+    for outcome in outcomes:
+        opened = outcome.get("opened_at_utc")
+        if isinstance(opened, str) and len(opened) >= 10:
+            dates.setdefault(str(outcome.get("entry_regime") or "UNCLEAR"), set()).add(opened[:10])
+    return {regime: sorted(days) for regime, days in sorted(dates.items())}
+
+
 def _replay(
     spec: StrategySpec, rows: list[dict[str, Any]], candles: list[Mapping[str, Any]],
     *, cost: CostModel, funding: list[float] | None = None, offset: int = 0,
@@ -321,6 +332,9 @@ def _replay(
                     "created_at_utc": candle.get("close_time"),
                     "strategy_id": spec.strategy_id,
                     "entry_regime": entry_regime,
+                    # When the trade opened: its entry bar's close, where the position starts. E2
+                    # (REMAINING_WORK §L) counts market episodes from this, under any definition.
+                    "opened_at_utc": candles[position["entry_index"]].get("close_time"),
                     "closed_at_bar": offset + i,
                     "exit_resolution": resolution,
                 }
@@ -868,6 +882,14 @@ def backtest_spec_pooled(
             regime: {"trades": regime_trades[regime], "total_r": round(total, 8)}
             for regime, total in sorted(regime_r.items())
         },
+        # E2 (REMAINING_WORK §L; D3 lifted 2026-10-20): the UTC dates trades opened on, per entry
+        # regime. A label count cannot tell three regimes inside one market episode from three
+        # episodes; dates can, under whatever episode definition is decided later, so none is
+        # baked in here. Measurement only: no score, verdict or door reads it. A sibling of
+        # `per_regime` rather than inside it, because `per_regime` is projected into the pool
+        # entry and hashed into the approval artifact (`strategy_artifact`), and dates would
+        # bloat the one and change the other.
+        "entry_dates": _entry_dates_by_regime(outcomes),
     }
 
     # Intrabar ambiguity: trades where a single bar touched both SL and TP. The

@@ -233,6 +233,31 @@ def test_backtest_evidence_records_which_regime_produced_what():
     assert sum(cell["trades"] for cell in per_regime.values()) == evidence["closed_count"]
     for cell in per_regime.values():
         assert set(cell) == {"trades", "total_r"}
+    # E2: the opening dates ride beside it, one list per regime that traded, never inside it.
+    dates = evidence["regime_breakdown"]["entry_dates"]
+    assert set(dates) == set(per_regime)
+    for regime, days in dates.items():
+        assert days == sorted(set(days)) and all(len(d) == 10 and d[4] == "-" for d in days)
+        assert 1 <= len(days) <= per_regime[regime]["trades"]
+
+
+def test_entry_dates_are_the_entry_bars_close_and_never_projected_into_the_admission():
+    """E2 is measurement: a trade opens at its entry bar's CLOSE, and the dates stay out of what
+    the pool entry carries and the approval artifact hashes (`strategy_artifact`)."""
+    from runtime.mvp_runtime.crypto import backtest, strategy_artifact
+
+    outcomes = [{"entry_regime": "TREND_UP", "opened_at_utc": "2026-07-02T04:00:00Z"},
+                {"entry_regime": "TREND_UP", "opened_at_utc": "2026-07-02T08:00:00Z"},
+                {"entry_regime": None, "opened_at_utc": "2026-07-03T00:00:00Z"},
+                {"entry_regime": "RANGE", "opened_at_utc": None}]
+    assert backtest._entry_dates_by_regime(outcomes) == {"TREND_UP": ["2026-07-02"],
+                                                         "UNCLEAR": ["2026-07-03"]}
+    candidate = {"backtest_evidence": {"regime_breakdown": {
+        "per_regime": {"TREND_UP": {"trades": 2, "total_r": 1.0}},
+        "entry_dates": {"TREND_UP": ["2026-07-02"]}}}}
+    admission = strategy_artifact.admission_evidence(candidate)
+    assert admission["regime_evidence"] == {"TREND_UP": {"trades": 2, "total_r": 1.0}}
+    assert "entry_dates" not in repr(admission)
 
 
 def test_promotion_copies_the_regime_evidence_onto_the_entry(monkeypatch, tmp_path):
@@ -427,3 +452,29 @@ def test_the_board_says_nothing_when_no_strategy_was_excluded(tmp_path):
     status = build_status(tmp_path, now=NOW)
     assert status["regime_excluded_cycles"] == {}
     assert "regime 배제" not in render_status_text(status)
+
+
+def test_a_replayed_trade_opens_at_its_entry_bars_close_not_its_exit():
+    """E2's input: `opened_at_utc` is the entry bar's close, before the bar the trade closed on.
+    An exit-time stamp would make the two equal and fail here."""
+    from runtime.mvp_runtime.crypto import backtest
+    from runtime.mvp_runtime.crypto.cost import CostModel
+    from runtime.mvp_runtime.crypto.features import build_feature_rows
+    from runtime.mvp_runtime.crypto.market_data import MockMarketDataCollector, collect_market_data
+
+    snapshot, _ = collect_market_data("ETHUSDT", "1h", collector=MockMarketDataCollector(), now=NOW, limit=400)
+    rows = build_feature_rows(snapshot)
+    closes = [c["close_time"] for c in snapshot["candles"]]
+    outcomes = []
+    for n in range(8):
+        for minted in factory.generate_batch(f"GEN-{n:03d}", seed=n, symbol="ETHUSDT", timeframe="1h")["specs"]:
+            outcomes = backtest._replay(StrategySpec.from_dict(minted), rows, snapshot["candles"],
+                                        cost=CostModel())[0]
+            if outcomes:
+                break
+        if outcomes:
+            break
+    assert outcomes, "no minted spec traded on the mock frame"
+    for outcome in outcomes:
+        assert outcome["opened_at_utc"] in closes
+        assert outcome["opened_at_utc"] < outcome["created_at_utc"]   # opened before it closed

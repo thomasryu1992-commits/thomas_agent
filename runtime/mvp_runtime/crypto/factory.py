@@ -1210,6 +1210,7 @@ def _screen_trials(
             "family": proposal.get("family"),
             "strategy_rule_hash": proposal.get("strategy_rule_hash"),
             "proposed_at": proposal.get("proposed_at"),
+            "rationale": proposal.get("rationale"),
         }
 
         def _refuse(reason: str, **detail: Any) -> None:
