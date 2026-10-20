@@ -30,7 +30,8 @@ def _paths(tmp_path: Path) -> c6b.Paths:
     return c6b.Paths(checkout=tmp_path / "checkout", env_copies=(tmp_path / "copy-1", tmp_path / "copy-2"),
                      docker_socket=tmp_path / "docker.sock", opt=tmp_path / "opt", config_dir=tmp_path / "etc-td",
                      lib=tmp_path / "lib", unit_dir=tmp_path / "units", gate_socket=tmp_path / "gate.sock",
-                     managed_dir=tmp_path / "claude-code", door_socket=tmp_path / "door.sock")
+                     managed_dir=tmp_path / "claude-code", door_socket=tmp_path / "door.sock",
+                     capture_root=tmp_path / "capture", capture_program=tmp_path / "sbin" / "thomas-capture-door")
 
 
 def _run(env="", workdir="/opt/thomas-deploy/x/app", program="/opt/thomas-deploy/x/venv/bin/python", pid="2147483646",
@@ -66,8 +67,10 @@ def _checks(tmp_path, *, outcome="denied", run=None, answers=None, **kw) -> c6b.
     (paths.opt / "abc").mkdir(parents=True, exist_ok=True)
     checks = c6b.Checks(paths=paths, ops={op: (lambda target, o=outcome: o) for op in c6b.c4.OPS},
                         run=run or _run(), access=lambda path, mode: False, owner_uid=os.getuid(), **kw)
-    answers = answers or {"door": {"ok": True}, "gate": {"ok": True, "reason_code": None}}
+    answers = {"door": {"ok": True}, "gate": {"ok": True, "reason_code": None},
+               "capture": {"ok": False, "reason": c6b.CAPTURE_PROBE_REASON}, **(answers or {})}
     checks.ask = lambda path, frame: answers["door" if path == paths.door_socket else "gate"]
+    checks.capture_round_trip = lambda: answers["capture"]
     checks.no_root_claude = lambda proc=None: checks.report.add("root", "Claude processes running as root", c6b.PASS)
     return checks
 
@@ -92,8 +95,8 @@ def test_every_refusal_denied_and_both_doors_answering_passes(tmp_path, capsys):
     out = tmp_path / "rows.json"
     assert c6b.main(["--json", str(out)], checks=_checks(tmp_path), euid=c6b.CLAUDE_UID) == c6b.EXIT_OK
     rows = json.loads(out.read_text(encoding="utf-8"))
-    assert {r["id"] for r in rows} == {"N-1", "N-2", "N-3", "N-4", "N-5", "N-6", "N-13", "N-14", "N-15",
-                                       "guard", "root", "door", "gate"}
+    assert {r["id"] for r in rows} == {"N-1", "N-2", "N-3", "N-4", "N-5", "N-6", "N-13", "N-14", "N-15", "N-16",
+                                       "guard", "root", "door", "gate", "capture"}
     assert "C6B_CHECKS=PASS" in capsys.readouterr().out
 
 
@@ -118,6 +121,8 @@ def test_the_production_targets_are_the_hosts():
     assert p.checkout == Path("/root/thomas_agent") and len(p.env_copies) == 5
     assert p.state_root == Path("/root/thomas_agent/.runtime_governance_state")
     assert p.door_socket == Path("/var/lib/thomas-claude-door/sock/read.sock")
+    assert p.capture_root == Path("/var/lib/thomas-capture")
+    assert p.capture_program == Path("/usr/local/sbin/thomas-capture-door")
     assert p.gate_socket == Path("/run/thomas-deploy-gate/gate.sock")
     assert p.managed_dir == Path("/etc/claude-code")
 
@@ -215,6 +220,57 @@ def test_both_doors_must_answer_this_account(tmp_path, door, gate, failed):
     checks = _checks(tmp_path, answers={"door": door, "gate": gate})
     checks.reached()
     assert [r["id"] for r in _failed(checks.report)] == failed
+
+
+@pytest.mark.parametrize("cap, failed", [
+    ({"ok": False, "reason": "문지기 거절: non_global_address"}, []),
+    (None, ["capture"]),                                                      # the door never answered
+    ({"ok": False, "reason": "캡처 문지기 없음"}, ["capture"]),
+    ({"ok": True, "status": 200}, ["capture"]),                               # it took a capture it must refuse
+])
+def test_the_capture_door_must_refuse_the_probe(tmp_path, cap, failed):
+    checks = _checks(tmp_path, answers={"capture": cap})
+    checks.reached()
+    assert [r["id"] for r in _failed(checks.report)] == failed
+
+
+def test_n16_covers_the_door_side_claude_must_not_touch(tmp_path):
+    checks = _checks(tmp_path)
+    checks.refusals()
+    p = checks.paths
+    labels = {r["label"] for r in checks.report.rows if r["id"] == "N-16"}
+    assert labels == {f"read {p.capture_root / 'req'}", f"create {p.capture_root / 'out'}", f"traverse {p.capture_root / 'work'}",
+                      f"append {p.capture_program}", f"create {p.capture_program.parent}",
+                      *(f"append {p.unit_dir / u}" for u in c6b.CAPTURE_UNITS)}
+
+
+@posix_only
+def test_the_round_trip_drops_a_whole_request_and_reads_the_answer(tmp_path):
+    """The real method against a fake door: the request appears under its final name only, and the answer is read."""
+    import threading
+    paths = _paths(tmp_path)
+    (paths.capture_root / "req").mkdir(parents=True)
+    (paths.capture_root / "out").mkdir()
+    seen = {}
+
+    def door():
+        for _ in range(200):
+            names = [n for n in os.listdir(paths.capture_root / "req") if not n.startswith(".")]
+            if names:
+                req = json.loads((paths.capture_root / "req" / names[0]).read_text(encoding="utf-8"))
+                seen.update(req)
+                (paths.capture_root / "out" / names[0]).write_text(
+                    json.dumps({"ok": False, "reason": c6b.CAPTURE_PROBE_REASON}, ensure_ascii=False), encoding="utf-8")
+                return
+            threading.Event().wait(0.05)
+
+    t = threading.Thread(target=door)
+    t.start()
+    got = c6b.Checks(paths=paths).capture_round_trip()
+    t.join()
+    assert got == {"ok": False, "reason": c6b.CAPTURE_PROBE_REASON}
+    assert seen["url"] == c6b.CAPTURE_PROBE_URL and set(seen) == {"id", "url", "text", "click"}
+    assert not [n for n in os.listdir(paths.capture_root / "req") if n.startswith(".")]
 
 
 def test_the_script_names_no_secret_and_sends_no_mutating_verb():
