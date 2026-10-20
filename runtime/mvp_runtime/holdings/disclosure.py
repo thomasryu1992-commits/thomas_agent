@@ -47,8 +47,9 @@ LOCAL_ONLY_COMBINED_KEYS = frozenset({
     "crypto_earn_krw",
     "crypto_classes_krw",
 })
-# The allocation block's sub-class figure: local only.
-LOCAL_ONLY_ALLOCATION_KEYS = frozenset({"cash_stablecoin_krw"})
+# The allocation block's sub-class figure, and its won/dollar split (a second breakdown of the same money,
+# D-C step 3, Thomas 2026-10-20): local only.
+LOCAL_ONLY_ALLOCATION_KEYS = frozenset({"cash_stablecoin_krw", "currency_exposure"})
 # Added to the allocation block outside: which rows were withheld (names only).
 WITHHELD_KEY = "withheld"
 

@@ -13,6 +13,11 @@ from his terminal (``scripts/holdings_board.py --classify``). Running that comma
 each entry records when, and the file carries a ``mapping_version`` that moves on every change. No
 door reads this file; the allocation block carries only the version.
 
+**Currency (D-C step 3, Thomas 2026-10-20).** An entry may also name the currency the instrument is
+exposed to (:data:`CURRENCIES`), for the local-only currency line (``allocation``). It is optional, and
+an entry without it takes its class's default. A bond needs it, because a bond class has no single
+currency. The field is additive: a file without it reads as before.
+
 **Fail closed.** A file that exists but does not parse, or carries an unknown class, raises
 :data:`CLASSIFICATION_UNREADABLE`; the allocation then treats every entry as absent and says so, so the
 band verdict stays withheld rather than resting on a guess.
@@ -37,12 +42,16 @@ CLASSIFICATION_REFUSED = "HOLDINGS_CLASSIFICATION_REFUSED"
 # The classes an entry may name: the allocation's own, less the engine margin, which is a balance and
 # never an instrument (`allocation.ENGINE_MARGIN`). Repeated by value; a test pins it to the authority.
 ASSIGNABLE_CLASSES = frozenset({"global_equity", "domestic_equity", "bonds", "gold", "coin", "cash"})
+# The exposure an entry may name. No yen: the D-C measurement found it indistinguishable from the dollar,
+# and nothing yen-denominated is held (Thomas 2026-10-20).
+CURRENCIES = frozenset({"krw", "usd"})
 
 
 @dataclass(frozen=True)
 class Classification:
     mapping_version: int = 0
     entries: Mapping[str, str] = field(default_factory=dict)
+    currencies: Mapping[str, str] = field(default_factory=dict)
 
 
 def path(state_dir: Path) -> Path:
@@ -75,23 +84,35 @@ def load(state_dir: Path) -> Classification:
     if not isinstance(body, dict) or body.get("record_type") != RECORD_TYPE:
         raise ToolError(CLASSIFICATION_UNREADABLE, f"{FILENAME} is not a {RECORD_TYPE} record")
     entries: dict[str, str] = {}
+    currencies: dict[str, str] = {}
     for instrument, row in (body.get("entries") or {}).items():
         asset_class = row.get("asset_class") if isinstance(row, dict) else None
-        if not _valid_id(str(instrument)) or asset_class not in ASSIGNABLE_CLASSES:
+        currency = row.get("currency") if isinstance(row, dict) else None
+        if (not _valid_id(str(instrument)) or asset_class not in ASSIGNABLE_CLASSES
+                or (currency is not None and currency not in CURRENCIES)):
             # Names the count, never the entry: the entry is a holding.
             raise ToolError(CLASSIFICATION_UNREADABLE, f"{FILENAME} carries an entry that is not valid")
         entries[str(instrument)] = str(asset_class)
+        if currency is not None:
+            currencies[str(instrument)] = str(currency)
     version = body.get("mapping_version")
     if not isinstance(version, int) or version < 0:
         raise ToolError(CLASSIFICATION_UNREADABLE, f"{FILENAME} has no mapping_version")
-    return Classification(mapping_version=version, entries=entries)
+    return Classification(mapping_version=version, entries=entries, currencies=currencies)
 
 
 def apply(state_dir: Path, *, assign: Mapping[str, str] | None = None, remove: tuple[str, ...] = (),
-          now: str | None = None) -> Classification:
-    """Add, change or remove entries and move the version once. Refuses an id or class it cannot place,
-    before anything is written. The terminal command is the only caller."""
+          currency: Mapping[str, str] | None = None, now: str | None = None) -> Classification:
+    """Add, change or remove entries and move the version once. Refuses an id, class or currency it
+    cannot place, before anything is written. ``currency`` names the exposure of entries in ``assign``;
+    an assigned entry without one is written without one. The terminal command is the only caller."""
     assign = dict(assign or {})
+    currency = dict(currency or {})
+    for instrument, code in currency.items():
+        if instrument not in assign:
+            raise ToolError(CLASSIFICATION_REFUSED, "a currency goes with its entry: ID=CLASS:CURRENCY")
+        if code not in CURRENCIES:
+            raise ToolError(CLASSIFICATION_REFUSED, f"currency must be one of {', '.join(sorted(CURRENCIES))}")
     for instrument, asset_class in assign.items():
         if not _valid_id(instrument):
             raise ToolError(CLASSIFICATION_REFUSED, "an id must be binance:<ASSET> or toss:<market>:<SYMBOL>")
@@ -109,7 +130,8 @@ def apply(state_dir: Path, *, assign: Mapping[str, str] | None = None, remove: t
         for instrument in remove:
             raw.pop(instrument, None)
         for instrument, asset_class in assign.items():
-            raw[instrument] = {"asset_class": asset_class, "approved_at": stamp}
+            raw[instrument] = {"asset_class": asset_class, "approved_at": stamp,
+                               **({"currency": currency[instrument]} if instrument in currency else {})}
         body = {"record_type": RECORD_TYPE, "mapping_version": current.mapping_version + 1,
                 "updated_at": stamp, "entries": raw}
         tmp = target.with_suffix(".tmp")

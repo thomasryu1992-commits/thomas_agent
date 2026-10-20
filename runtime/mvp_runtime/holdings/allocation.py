@@ -27,6 +27,17 @@ anything else is unclassified.
 same declared scope as the P2 total: when ``combined.portfolio_nav_complete`` is not true — a declared
 source left out (the wallet's gate off included), a part not fully valued, a stale futures file — the
 block is partial and gives no weight and no band.
+
+**Currency exposure, local only** (D-C step 3 of ``TOTAL_ASSET_ALLOCATION_V0.1.md``, Thomas 2026-10-20).
+The same money split into won and dollar exposure, for the terminal board. It is a second breakdown, so
+it never leaves the process (``disclosure.LOCAL_ONLY_ALLOCATION_KEYS``; H3's one-table rule).
+- **Assignment.** Each class has a default currency (:data:`CURRENCY_DEFAULT`), and Thomas's entry may
+  name another, e.g. a domestic-listed US Treasury ETF is ``bonds`` exposed to ``usd``. Every Binance
+  asset defaults to the dollar.
+- **Bonds.** They have no default: an untagged bond leaves the line partial rather than guessed.
+- **Exposure, not listing currency.** A won-listed ETF of US Treasuries is dollar exposure.
+- **No yen line.** The D-C measurement found yen sensitivity indistinguishable from the dollar, and nothing
+  yen-denominated is held.
 """
 
 from __future__ import annotations
@@ -69,6 +80,21 @@ BAND_GROUPS: Mapping[str, tuple[str, ...]] = {
     ENGINE_MARGIN: (ENGINE_MARGIN,),
 }
 
+# D-C step 3: the currency a class is exposed to when an entry names none. ``None``: no default, an entry
+# must name it (a bond may be won or dollar). Gold is priced in dollars, and a won-listed gold ETF still
+# follows it; a hedged fund is an entry naming ``krw``. Cash is won here; its dollar parts (Toss USD cash,
+# stablecoins) are placed as such where they are read.
+CURRENCY_DEFAULT: Mapping[str, str | None] = {
+    GLOBAL_EQUITY: "usd",
+    DOMESTIC_EQUITY: "krw",
+    BONDS: None,
+    GOLD: "usd",
+    COIN: "usd",
+    CASH: "krw",
+    ENGINE_MARGIN: "usd",
+}
+CURRENCY_ROWS = ("krw", "usd")
+
 # Toss symbol -> class. Empty by decision (Thomas 2026-10-07): a code is added when it is bought.
 CLASSIFICATION: Mapping[str, str] = {}
 
@@ -90,7 +116,10 @@ ALLOCATION_KEYS = frozenset({
     "notes",
     # H5a: the classification file's version this block was placed with (a number, no entry).
     "mapping_version",
+    # D-C step 3: won/dollar exposure. Local only (``disclosure.LOCAL_ONLY_ALLOCATION_KEYS``).
+    "currency_exposure",
 })
+CURRENCY_KEYS = frozenset({"complete", "total_krw", "rows", "notes"})
 CLASS_ROW_KEYS = frozenset({"krw", "weight_pct", "target_pct", "drift_pp"})
 BAND_ROW_KEYS = frozenset({"weight_pct", "target_pct", "band_pp", "drift_pp", "outside"})
 
@@ -138,6 +167,17 @@ def allocate_with_parts(snapshot: HoldingsSnapshot, toss_view: Mapping[str, Any]
     the built-in placement is a conflict, and the block is partial. ``classification_error`` is the
     reason the file could not be read: every entry is then absent and the block partial."""
     entries = dict(classification.entries) if classification else {}
+    currencies = dict(classification.currencies) if classification else {}
+    exposure = {code: 0.0 for code in CURRENCY_ROWS}
+    untagged = 0
+
+    def expose(name: str, instrument: str, value: float, default: str | None) -> None:
+        nonlocal untagged
+        code = currencies.get(instrument) or default
+        if code is None:
+            untagged += 1
+        else:
+            exposure[code] += value
     krw = {name: 0.0 for name in CLASSES}
     instruments: dict[str, set[str]] = {name: set() for name in (*CLASSES, UNCLASSIFIED)}
     cash_parts: dict[str, int] = {name: 0 for name in (*CLASSES, UNCLASSIFIED)}
@@ -174,17 +214,20 @@ def allocate_with_parts(snapshot: HoldingsSnapshot, toss_view: Mapping[str, Any]
             unclassified_krw += value
         else:
             krw[name] += value
-    for key in ("krw_cash", "usd_cash_krw"):
+            expose(name, toss_id(holding.market, holding.symbol), value, CURRENCY_DEFAULT[name])
+    for key, code in (("krw_cash", "krw"), ("usd_cash_krw", "usd")):
         cash = toss_view.get(key)
         if isinstance(cash, (int, float)):
             krw[CASH] += cash
             cash_parts[CASH] += 1 if cash else 0
+            exposure[code] += cash
 
     block = combined_block or {}
     futures = block.get("crypto_futures_krw")
     if block.get("crypto_status") == "ok" and isinstance(futures, (int, float)):
         krw[ENGINE_MARGIN] += futures
         cash_parts[ENGINE_MARGIN] += 1 if futures else 0   # a USDT margin balance, not an instrument
+        exposure["usd"] += futures
     else:
         gaps.append(f"binance futures {block.get('crypto_status') or 'not combined'}")
     wallet_status = block.get("crypto_wallet_status")
@@ -207,6 +250,7 @@ def allocate_with_parts(snapshot: HoldingsSnapshot, toss_view: Mapping[str, Any]
                 unclassified_krw += value
                 continue
             krw[name] += value
+            expose(name, wallet_id(asset), value, "usd")
             if wallet_class == "stable":
                 stable_krw += value
     elif wallet_status == "ok" and isinstance(wallet_classes, dict):
@@ -222,6 +266,7 @@ def allocate_with_parts(snapshot: HoldingsSnapshot, toss_view: Mapping[str, Any]
                 unclassified_krw += value
                 continue
             krw[name] += value
+            exposure["usd"] += value
             if wallet_class == "stable":
                 stable_krw += value
     elif wallet_status in (None, "not_configured"):
@@ -267,6 +312,7 @@ def allocate_with_parts(snapshot: HoldingsSnapshot, toss_view: Mapping[str, Any]
                             "drift_pp": drift, "outside": abs(drift) > band_pp(target)}
         outside = [group for group, row in bands.items() if row["outside"]]
     parts = {name: Part(krw[name], frozenset(instruments[name]), cash_parts[name]) for name in CLASSES}
+    currency_block = _currency_exposure(exposure, complete=complete, untagged=untagged)
     parts[UNCLASSIFIED] = Part(unclassified_krw, frozenset(instruments[UNCLASSIFIED]), 0)
     return {
         "complete": complete,
@@ -279,4 +325,22 @@ def allocate_with_parts(snapshot: HoldingsSnapshot, toss_view: Mapping[str, Any]
         "unclassified_krw": unclassified_krw,
         "notes": notes,
         "mapping_version": classification.mapping_version if classification else 0,
+        "currency_exposure": currency_block,
     }, parts
+
+
+def _currency_exposure(exposure: Mapping[str, float], *, complete: bool, untagged: int) -> dict[str, Any]:
+    """D-C step 3: won and dollar exposure, local only. Weights only when the allocation itself is complete
+    and every bond names its currency; otherwise the amounts show, partial, and the note says why."""
+    gaps = []
+    if not complete:
+        gaps.append("allocation partial")
+    if untagged:
+        gaps.append(f"{untagged} bond(s) without a currency entry")
+    total = sum(exposure.values())
+    whole = not gaps and total > 0
+    rows = {code: {"krw": exposure[code],
+                   "weight_pct": round(exposure[code] / total * 100.0, 2) if whole else None}
+            for code in CURRENCY_ROWS}
+    return {"complete": whole, "total_krw": total if total > 0 else None, "rows": rows,
+            "notes": [f"partial ({'; '.join(gaps)}): no weights"] if gaps else []}

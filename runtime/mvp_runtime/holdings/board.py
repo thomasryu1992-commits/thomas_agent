@@ -262,6 +262,17 @@ def render_allocation(block: dict[str, Any]) -> list[str]:
         lines.append(f"{'withheld':12}: {', '.join(block['withheld'])} (single-holding rule)")
     if block.get("cash_stablecoin_krw"):
         lines.append(f"{'cash note':12}: includes exchange stablecoins {krw(block.get('cash_stablecoin_krw'))}")
+    exposure = block.get("currency_exposure")
+    if isinstance(exposure, dict):   # local board only: the stored snapshot never carries it (H3)
+        rows = exposure.get("rows") or {}
+        cells = []
+        for code in ("krw", "usd"):
+            row = rows.get(code) or {}
+            weight = row.get("weight_pct")
+            cells.append(f"{code.upper()} {krw(row.get('krw'))}"
+                         + (f" ({weight:.1f}%)" if isinstance(weight, (int, float)) else ""))
+        lines.append(f"{'currency':12}: " + ", ".join(cells) + " (exposure, not listing currency)")
+        lines.extend(f"{'currency':12}: {note}" for note in exposure.get("notes") or [])
     lines.extend(f"{'note':12}: {note}" for note in block.get("notes") or [])
     return lines
 

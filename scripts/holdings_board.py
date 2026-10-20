@@ -40,7 +40,9 @@ single-holding rule (``holdings/disclosure.py``). No network. Terminal only, lik
 reads the Binance wallet live in this process (the lane's gate and read key, so run it in scheduler-maint)
 and prints the ids of the held assets that neither the sub-class map nor an entry places, with the file's
 version — names only, no amount. Toss codes are on ``--full``'s board. ``--classify ID=CLASS`` writes
-entries to the host-local classification file (``holdings/classification.py``) and ``--unclassify ID``
+entries to the host-local classification file (``holdings/classification.py``). ``ID=CLASS:CURRENCY``
+(``krw`` or ``usd``) also names the exposure for the local currency line, and a bond needs it (D-C step 3,
+Thomas 2026-10-20). ``--unclassify ID``
 removes them; each moves ``mapping_version`` once, and the next ``holdings_refresh`` fire uses it. Both
 write governed state, so they run as the service user (``docker exec -u 10001 thomas-scheduler-maint
 ...``) and refuse a host-side root run. The ids are holdings: these commands are Thomas's, on his
@@ -130,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
                       help="forget the combined peak and the drawdown told-state (after a deposit/withdrawal)")
     mode.add_argument("--unclassified", action="store_true",
                       help="wallet assets no class places, read live (terminal only; names, no amounts)")
-    mode.add_argument("--classify", nargs="+", metavar="ID=CLASS",
+    mode.add_argument("--classify", nargs="+", metavar="ID=CLASS[:CURRENCY]",
                       help="add or change classification entries (Thomas, as the service user)")
     mode.add_argument("--unclassify", nargs="+", metavar="ID", help="remove classification entries")
     mode.add_argument("--cash-flow-cutover", metavar="AT", help="record the cash-flow ledger's boundary (once)")
@@ -156,13 +158,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.classify or args.unclassify:
         try:
             assert_not_foreign_root_run()
-            assign = {}
+            assign, currency = {}, {}
             for item in args.classify or ():
-                instrument, sep, asset_class = item.partition("=")
+                instrument, sep, value = item.partition("=")
                 if not sep:
-                    raise ToolError(classification.CLASSIFICATION_REFUSED, f"expected ID=CLASS, got {item!r}")
+                    raise ToolError(classification.CLASSIFICATION_REFUSED,
+                                    f"expected ID=CLASS[:CURRENCY], got {item!r}")
+                asset_class, colon, code = value.partition(":")
                 assign[instrument.strip()] = asset_class.strip()
-            result = classification.apply(state_dir(), assign=assign, remove=tuple(args.unclassify or ()))
+                if colon:
+                    currency[instrument.strip()] = code.strip()
+            result = classification.apply(state_dir(), assign=assign, currency=currency,
+                                          remove=tuple(args.unclassify or ()))
         except MvpRuntimeError as exc:
             print(f"refused ({exc.reason_code}): {exc}")
             return EXIT_BLOCKED
