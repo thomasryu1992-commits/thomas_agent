@@ -93,18 +93,32 @@ def oi_alignment(known_after_hours: int) -> Iterator[None]:
         features.OI_READING_KNOWN_AFTER_HOURS = saved
 
 
-def holdout_of(spec: StrategySpec, snapshots: Sequence[Mapping[str, Any]], *,
-               known_after_hours: int) -> dict[str, Any] | None:
-    """The spec's holdout block under one alignment, or None when a frame cannot supply its features.
-    The whole replay runs inside the alignment, so nothing it builds can fall back to the other one.
-    The robustness verdict is not read: only ``candidate_ranking.candidate_quality`` opens that block
+def holdouts(specs: Sequence[StrategySpec], snapshots: Sequence[Mapping[str, Any]], *,
+             known_after_hours: int) -> list[dict[str, Any] | None]:
+    """Each spec's holdout block under one alignment, or None for a spec a frame cannot supply.
+
+    The frames depend on the snapshots and the alignment, never on the spec, so they are built ONCE
+    here and every spec of the context replays over them: a 15m frame is 96,000 bars and about 12 s,
+    and this runs inside the live scheduler container. The whole replay runs inside the alignment, so
+    nothing it builds can fall back to the other one. The robustness verdict is not read: only
+    ``candidate_ranking.candidate_quality`` opens that block
     (``test_only_candidate_quality_reads_the_stored_robustness_block``), and the reading does not use it."""
+    out: list[dict[str, Any] | None] = []
     with oi_alignment(known_after_hours):
         frames = [build_replay_frame(snapshot) for snapshot in snapshots]
-        if any(unsuppliable_features(spec, frame.rows) for frame in frames):
-            return None
-        evidence = backtest_spec_pooled(spec, snapshots, frames=frames)
-    return dict(evidence.get("holdout") or {})
+        for spec in specs:
+            if any(unsuppliable_features(spec, frame.rows) for frame in frames):
+                out.append(None)
+                continue
+            evidence = backtest_spec_pooled(spec, snapshots, frames=frames)
+            out.append(dict(evidence.get("holdout") or {}))
+    return out
+
+
+def holdout_of(spec: StrategySpec, snapshots: Sequence[Mapping[str, Any]], *,
+               known_after_hours: int) -> dict[str, Any] | None:
+    """One spec's holdout block under one alignment (:func:`holdouts` for a single spec)."""
+    return holdouts([spec], snapshots, known_after_hours=known_after_hours)[0]
 
 
 def summarize(blocks: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -181,7 +195,14 @@ def main(argv: list[str] | None = None) -> int:
     snapshots: dict[tuple[str, str], dict[str, Any]] = {}
     rows: list[dict[str, Any]] = []
     blocks: dict[str, list[dict[str, Any]]] = {"L": [], "F": []}
-    for (scope, timeframe), group in sorted(by_context.items()):
+    # Timeframe by timeframe, so the snapshot cache only ever holds one timeframe's legs (the pooled
+    # 4h context reuses the single-symbol 4h snapshots); progress goes to stderr, never into --json.
+    ordered = sorted(by_context.items(), key=lambda item: (item[0][1], item[0][0]))
+    for done, ((scope, timeframe), group) in enumerate(ordered, start=1):
+        if any(tf != timeframe for _, tf in snapshots):
+            snapshots.clear()
+        print(f"  [{done}/{len(ordered)}] {'+'.join(scope)} {timeframe}: {len(group)} candidate(s)",
+              file=sys.stderr, flush=True)
         try:
             for symbol in scope:
                 if (symbol, timeframe) not in snapshots:
@@ -190,10 +211,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {'+'.join(scope)} {timeframe}: BLOCKED ({exc.reason_code})", file=sys.stderr)
             return EXIT_BLOCKED
         legs = [snapshots[(symbol, timeframe)] for symbol in scope]
-        for record in group:
-            spec = StrategySpec.from_dict(record["strategy_spec"])
-            legacy = holdout_of(spec, legs, known_after_hours=LEGACY_KNOWN_AFTER_HOURS)
-            fixed = holdout_of(spec, legs, known_after_hours=features.OI_READING_KNOWN_AFTER_HOURS)
+        specs = [StrategySpec.from_dict(record["strategy_spec"]) for record in group]
+        legacy_blocks = holdouts(specs, legs, known_after_hours=LEGACY_KNOWN_AFTER_HOURS)
+        fixed_blocks = holdouts(specs, legs, known_after_hours=features.OI_READING_KNOWN_AFTER_HOURS)
+        for record, legacy, fixed in zip(group, legacy_blocks, fixed_blocks):
             if legacy is None or fixed is None:
                 rows.append({"candidate_id": candidate_identity.candidate_id(record), "starved": True})
                 continue
