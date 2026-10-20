@@ -1,0 +1,10 @@
+# Capture door (Y3 (가), Thomas 2026-10-20): start one pass whenever claude drops a request. scripts/ops/capture_door.py
+[Unit]
+Description=Thomas capture door: request queue
+
+[Path]
+DirectoryNotEmpty=/var/lib/thomas-capture/req
+MakeDirectory=no
+
+[Install]
+WantedBy=paths.target
