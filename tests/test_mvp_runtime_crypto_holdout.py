@@ -422,3 +422,17 @@ def test_the_oi_cap_only_ever_withholds():
     record = _with_spec(_scored_record(_tail(expectancy=-_CLEARS)), timeframe="1h",
                         feature="open_interest_zscore")
     assert candidate_quality(record)["holdout_status"] == HOLDOUT_CONTRADICTED
+
+
+def test_the_recorded_fix_instant_splits_pre_and_post_fix_mints():
+    """The deployed restart instant (2026-10-20T13:59:47.909Z, rounded up): a sub-daily OI lineage
+    minted in or before that second stays flagged; one minted after it is judged as any other."""
+    from runtime.mvp_runtime.crypto.candidate_ranking import candidate_quality
+
+    record = _with_spec(_scored_record(_tail(expectancy=_CLEARS)), timeframe="4h",
+                        feature="open_interest_change_pct")
+    before = candidate_quality({**record, "created_at_utc": "2026-10-20T13:59:47Z"})
+    after = candidate_quality({**record, "created_at_utc": "2026-10-20T13:59:48Z"})
+    assert before["oi_lookahead"] is True and before["holdout_status"] == HOLDOUT_UNDERPOWERED
+    assert after["oi_lookahead"] is False and after["holdout_status"] == HOLDOUT_CONFIRMED
+

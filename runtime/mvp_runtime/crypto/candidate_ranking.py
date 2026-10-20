@@ -698,10 +698,12 @@ def holdout_reused(record: Mapping[str, Any]) -> bool:
 # period CLOSE until 2026-10-20 (``features.OI_READING_KNOWN_AFTER_HOURS``): on a sub-daily frame every
 # bar of day D read day D's close, so mint, holdout and the daily cohort walk saw it up to ~23 h early.
 OI_LOOKAHEAD_FEATURES = frozenset({"open_interest_change_pct", "open_interest_zscore"})
-# The instant the fixed alignment started running on this host: the restart after its deploy. Until a
-# follow-up records that instant, None — every affected lineage's evidence counts as pre-fix, which
-# only withholds (Thomas 2026-10-20: flag, never re-judge; re-judging waits for the epoch boundary).
-OI_FIX_EFFECTIVE_AT: str | None = None
+# The instant the fixed alignment started running on this host: the restart after its deploy
+# (`candidate-1271`, thomas-scheduler StartedAt 2026-10-20T13:59:47.909Z, rounded UP to the next second so
+# a row stamped within that second counts as pre-fix — the side that only withholds). None would mean
+# "not deployed yet": every affected lineage counts as pre-fix (Thomas 2026-10-20: flag, never re-judge;
+# re-judging waits for the epoch boundary).
+OI_FIX_EFFECTIVE_AT: str | None = "2026-10-20T13:59:48Z"
 
 
 def oi_lookahead_affected(record: Mapping[str, Any]) -> bool:

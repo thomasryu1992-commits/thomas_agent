@@ -227,6 +227,9 @@ S1은 자기 관문을 그대로 따른다. 검증하다가 아래 버그가 나
   - **실행:** 읽기 전용 스크립트 `scripts/measure_oi_lookahead.py`(2026-10-20 지음). Thomas가 #1269 배포 뒤 컨테이너에서 돌린다:
     `docker exec thomas-scheduler python -m scripts.measure_oi_lookahead --list`로 대상을 본 다음, `--json`으로 결과를 받는다.
     결과와 판정(KEPT·WEAKENED·VANISHED)은 이 절 아래에 적는다.
+- **배포와 기준 시각 (2026-10-20):**
+  - Thomas가 `candidate-1271`(main `4dc3e689`, #1269·#1270·#1271 포함)을 배포했다. 스케줄러 재시작 시각은 13:59:47.909Z다.
+  - `OI_FIX_EFFECTIVE_AT`은 그다음 초인 `2026-10-20T13:59:48Z`다. 그 초 안에 찍힌 기록은 수정 전으로 셈한다.
   - **사전 등록과 다른 점 (스크립트를 지으며 정했다, 측정 전):**
     - "날짜 클러스터 구간"은 **구간(period) 클러스터 구간**으로 계산한다. 홀드아웃 블록에는 거래별 시각이 없고, 구간별 R 합계
       (`period_r`)만 남는다. 그래서 같은 timeframe의 후보들을 구간 번호별로 더한 다음 `robustness`의 구간 규칙(t 구간)을 쓴다.
