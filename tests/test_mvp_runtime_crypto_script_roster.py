@@ -75,6 +75,7 @@ SCRIPTS: dict[str, str] = {
     "scripts/list_resting_orders.py": READ,
     "scripts/family_period_test.py": READ,
     "scripts/measure_live_slippage.py": READ,
+    "scripts/measure_oi_lookahead.py": READ,               # paired L/F replay, prints a report
     "scripts/paired_family_window_check.py": READ,
     "scripts/pooled_mint_check.py": READ,
     "scripts/probe_signal_rate.py": READ,
