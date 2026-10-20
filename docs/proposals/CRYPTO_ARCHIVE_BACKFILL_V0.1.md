@@ -231,7 +231,9 @@ S1은 자기 관문을 그대로 따른다. 검증하다가 아래 버그가 나
     - "날짜 클러스터 구간"은 **구간(period) 클러스터 구간**으로 계산한다. 홀드아웃 블록에는 거래별 시각이 없고, 구간별 R 합계
       (`period_r`)만 남는다. 그래서 같은 timeframe의 후보들을 구간 번호별로 더한 다음 `robustness`의 구간 규칙(t 구간)을 쓴다.
       시장 구간이 단위라는 점은 같다.
-    - CONFIRMED와 함께 ROBUST도 L·F 각각 센다. 판정 규칙에는 쓰지 않는다.
+    - ROBUST는 세지 않는다. 사전 등록은 함께 세겠다고 했지만, 저장소 규칙상 robustness 블록은 `candidate_ranking.candidate_quality`만
+      연다(`test_only_candidate_quality_reads_the_stored_robustness_block`). 그 함수를 쓰면 같은 날 넣은 미래 참조 표시가 결과를 덮는다.
+      판정 규칙은 ROBUST를 쓰지 않으므로 판정은 바뀌지 않는다.
     - 대상은 표시 규칙과 같게 1d를 뺀 모든 timeframe이다.
     - OI 피드 env(`MVP_LIQUIDATION_FEED`)가 있는 `thomas-scheduler`에서 돌린다. 모든 행이 starved로 나오면 피드가 없는 컨테이너다.
 

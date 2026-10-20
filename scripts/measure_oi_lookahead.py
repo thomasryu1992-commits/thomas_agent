@@ -94,17 +94,17 @@ def oi_alignment(known_after_hours: int) -> Iterator[None]:
 
 
 def holdout_of(spec: StrategySpec, snapshots: Sequence[Mapping[str, Any]], *,
-               known_after_hours: int) -> tuple[dict[str, Any], str | None] | None:
-    """The spec's holdout block and robustness verdict under one alignment, or None when a frame
-    cannot supply its features. The whole replay runs inside the alignment, so nothing it builds
-    can fall back to the other one."""
+               known_after_hours: int) -> dict[str, Any] | None:
+    """The spec's holdout block under one alignment, or None when a frame cannot supply its features.
+    The whole replay runs inside the alignment, so nothing it builds can fall back to the other one.
+    The robustness verdict is not read: only ``candidate_ranking.candidate_quality`` opens that block
+    (``test_only_candidate_quality_reads_the_stored_robustness_block``), and the reading does not use it."""
     with oi_alignment(known_after_hours):
         frames = [build_replay_frame(snapshot) for snapshot in snapshots]
         if any(unsuppliable_features(spec, frame.rows) for frame in frames):
             return None
         evidence = backtest_spec_pooled(spec, snapshots, frames=frames)
-    verdict = (evidence.get("robustness") or {}).get("verdict")
-    return dict(evidence.get("holdout") or {}), (str(verdict) if verdict is not None else None)
+    return dict(evidence.get("holdout") or {})
 
 
 def summarize(blocks: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -192,12 +192,11 @@ def main(argv: list[str] | None = None) -> int:
         legs = [snapshots[(symbol, timeframe)] for symbol in scope]
         for record in group:
             spec = StrategySpec.from_dict(record["strategy_spec"])
-            legacy_run = holdout_of(spec, legs, known_after_hours=LEGACY_KNOWN_AFTER_HOURS)
-            fixed_run = holdout_of(spec, legs, known_after_hours=features.OI_READING_KNOWN_AFTER_HOURS)
-            if legacy_run is None or fixed_run is None:
+            legacy = holdout_of(spec, legs, known_after_hours=LEGACY_KNOWN_AFTER_HOURS)
+            fixed = holdout_of(spec, legs, known_after_hours=features.OI_READING_KNOWN_AFTER_HOURS)
+            if legacy is None or fixed is None:
                 rows.append({"candidate_id": candidate_identity.candidate_id(record), "starved": True})
                 continue
-            (legacy, legacy_verdict), (fixed, fixed_verdict) = legacy_run, fixed_run
             blocks["L"].append(legacy)
             blocks["F"].append(fixed)
             rows.append({
@@ -207,14 +206,10 @@ def main(argv: list[str] | None = None) -> int:
                 **{f"{tag}_{key}": block.get(key) for tag, block in (("L", legacy), ("F", fixed))
                    for key in ("closed_count", "expectancy")},
                 "L_status": robustness.holdout_status(legacy), "F_status": robustness.holdout_status(fixed),
-                "L_verdict": legacy_verdict, "F_verdict": fixed_verdict,
             })
     legacy_sum, fixed_sum = summarize(blocks["L"]), summarize(blocks["F"])
     kept = sum(1 for row in rows if row.get("L_status") == robustness.HOLDOUT_CONFIRMED
                and row.get("F_status") == robustness.HOLDOUT_CONFIRMED)
-    # Counted beside CONFIRMED, as pre-registered; reported only, the reading does not use it.
-    for tag, summary in (("L", legacy_sum), ("F", fixed_sum)):
-        summary["robust"] = sum(1 for row in rows if row.get(f"{tag}_verdict") == robustness.ROBUST)
     report = {"measured_at": now, "known_after_hours": {"L": LEGACY_KNOWN_AFTER_HOURS,
                                                         "F": features.OI_READING_KNOWN_AFTER_HOURS},
               "candidates": rows, "pooled": {"L": legacy_sum, "F": fixed_sum},
@@ -233,7 +228,7 @@ def main(argv: list[str] | None = None) -> int:
         s = report["pooled"][tag]
         print(f"pooled {tag}: {s['candidates']} candidates, {s['trades']} trades, mean {s['mean_net_r']}, "
               f"period lower 95% {s['period_lower_95']} over {s['periods_traded']} periods, "
-              f"{s['confirmed']} CONFIRMED, {s['robust']} ROBUST")
+              f"{s['confirmed']} CONFIRMED")
     print(f"CONFIRMED in L that stay CONFIRMED in F: {kept}")
     print(f"reading (pre-registered, on F): {report['reading']}")
     return EXIT_OK

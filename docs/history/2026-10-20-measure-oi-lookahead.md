@@ -6,7 +6,8 @@
     `rescore_stale_holdout_candidates._build_snapshot`, the factory's own feeds): once with the legacy alignment
     (`OI_READING_KNOWN_AFTER_HOURS` = 0) and once with the fixed one (24).
   - **Report.** Per candidate: holdout trades, expectancy and status under both. Pooled: per-trade mean, the
-    period-level 95% lower bound over period subtotals summed by index, and CONFIRMED counts. Plus the
+    period-level 95% lower bound over period subtotals summed by index, and CONFIRMED counts. ROBUST is not
+    counted: only `candidate_quality` may open the robustness block, and the reading does not use it. Plus the
     pre-registered reading: KEPT, WEAKENED or VANISHED.
 - **Why paired on today's window:** the stored holdouts were scored on older windows, so comparing them to a
   replay would mix the lookahead with the window change. L and F differ only in the OI alignment.

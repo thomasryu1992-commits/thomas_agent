@@ -63,8 +63,8 @@ def test_the_alignment_switch_is_restored_even_on_error():
 def test_legacy_and_fixed_alignment_give_different_holdouts_on_the_same_window():
     snapshot = _snapshot()
     spec = StrategySpec.from_dict(_spec_dict())
-    legacy, _ = measure.holdout_of(spec, [snapshot], known_after_hours=0)
-    fixed, _ = measure.holdout_of(spec, [snapshot], known_after_hours=24)
+    legacy = measure.holdout_of(spec, [snapshot], known_after_hours=0)
+    fixed = measure.holdout_of(spec, [snapshot], known_after_hours=24)
     assert legacy and fixed and legacy["bars"] == fixed["bars"]          # same window
     assert legacy["closed_count"] > 0 and fixed["closed_count"] > 0
     assert (legacy["period_trades"], legacy["total_R"]) != (fixed["period_trades"], fixed["total_R"])
@@ -127,7 +127,7 @@ def test_a_run_reports_both_alignments_and_writes_nothing(monkeypatch, tmp_path,
     report = json.loads(capsys.readouterr().out)
     assert set(report["pooled"]) == {"L", "F"} and report["known_after_hours"] == {"L": 0, "F": 24}
     assert report["reading"] in {"KEPT", "VANISHED", "WEAKENED"}
-    assert {"confirmed", "robust"} <= set(report["pooled"]["F"])
+    assert "confirmed" in report["pooled"]["F"]
     row = report["candidates"][0]
     assert row["candidate_id"] == "cand_oi" and {row["L_status"], row["F_status"]} <= {
         robustness.HOLDOUT_CONFIRMED, robustness.HOLDOUT_UNDERPOWERED, robustness.HOLDOUT_CONTRADICTED,
