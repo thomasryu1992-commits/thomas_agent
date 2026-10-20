@@ -55,6 +55,7 @@ series — the property that makes replay-live parity hold on differently-sized 
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 from . import indicators
@@ -87,6 +88,14 @@ FUNDING_Z_MIN_PERIODS = 10  # the source's looser min_periods, now counted in se
 OI_CHANGE_PERIOD = 1        # OI READINGS between the two reads a change compares (feed cadence, not bars)
 OI_Z_WINDOW = 30            # OI readings the z-score judges the current level against
 OI_Z_MIN_PERIODS = 10
+# When a daily OI reading becomes KNOWN, relative to its label. The vendor labels a row with
+# its period's START and carries the period's CLOSE (``market_data._parse_open_interest``;
+# on the hourly series the archive comparison put store t = archive t+1h, correlation 0.94,
+# ``CRYPTO_ARCHIVE_BACKFILL_V0.1.md`` §1). So the row labelled D 00:00 is first knowable at
+# D+1 00:00. Aligning it on its label let every 1h/4h bar of day D read day D's close, up to
+# ~23 h early in replay, while live (which drops the forming day) read D-1 (fixed 2026-10-20,
+# Thomas: bug fix, evidence produced before it is flagged, not re-judged).
+OI_READING_KNOWN_AFTER_HOURS = 24
 LIQ_MA_WINDOW = 50          # liquidation spike baseline window
 LIQ_MA_MIN_PERIODS = 10
 
@@ -212,6 +221,20 @@ DAY_TYPE_VALUES = frozenset({"WEEKDAY", "WEEKEND"})
 # "ASIA". A constant that a mined condition can match on is the `liquidation_spike_ratio`
 # hazard, so the column goes None instead: no session, no session-conditioned entry.
 MAX_SESSION_BAR_MINUTES = 4 * 60
+
+
+def _oi_known_at(label: Any) -> str | None:
+    """The instant a daily OI reading labelled ``label`` (its period's start) becomes known:
+    the period's end. None for an unparseable label, which then aligns nowhere."""
+    from .. import timeutil as _timeutil
+
+    if not isinstance(label, str):
+        return None
+    try:
+        known = _timeutil.parse_iso(label) + timedelta(hours=OI_READING_KNOWN_AFTER_HOURS)
+    except (ValueError, TypeError):
+        return None
+    return _timeutil.format_iso(known)
 
 
 def _asof_align(
@@ -1015,8 +1038,12 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         events = sorted(events, key=lambda e: str(e.get("timestamp") or ""))
         levels = [e.get("open_interest") for e in events]
         derived = _open_interest_event_columns(levels)
+        # Keyed by when the reading is KNOWN (label + one period), the `_htf_columns` rule: an
+        # event is keyed by the first instant it can be known and matched on the bar's OPEN, so
+        # replay and live see the same reading. Derivation above stays on the label order.
         enriched = [
-            {**event, "open_interest_change_pct": change, "open_interest_zscore": z}
+            {**event, "timestamp": _oi_known_at(event.get("timestamp")),
+             "open_interest_change_pct": change, "open_interest_zscore": z}
             for event, change, z in zip(events, derived["change_pct"], derived["zscore"])
         ]
         aligned = _asof_align(
