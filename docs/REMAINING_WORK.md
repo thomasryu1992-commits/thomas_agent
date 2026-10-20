@@ -5248,8 +5248,15 @@ When it fires, raise E1 first. It is small and reversible.
     the null arm's same-timeframe count, which the board already shows.
   - `robustness.holdout_status` has the same shape (`robustness.py:484-495`) but a 300–600-day
     window, so it is out of scope unless measured otherwise.
-- [ ] **E2 — regime-episode identity on candidate evidence.**
-  - **Today:** `factory` keeps `per_regime` totals per label and no trade times, so
+- [x] **E2 — regime-episode identity on candidate evidence.** *(Built 2026-10-20, D3 lifted: measurement only.)*
+  - **What was built:** `backtest` stamps each replayed trade with `opened_at_utc` (its entry bar's close).
+    `regime_breakdown.entry_dates` records the distinct opening dates per entry regime.
+  - **No definition was decided.** Dates let any episode definition be applied later. `regime_breadth` still
+    counts labels.
+  - **Why `entry_dates` is a sibling of `per_regime`:** `per_regime` is projected into pool entries and hashed into
+    the approval artifact.
+  - **Scope:** new mints only; nothing backfills.
+  - **Today (as written 2026-09-28):** `factory` keeps `per_regime` totals per label and no trade times, so
     `robustness.regime_breadth` counts labels, and no per-candidate episode count is possible.
   - **The ask:** stamp each replayed trade's opening episode (or bar time) into the evidence, so
     breadth can count episodes and the RECORD's §2 can be computed per candidate. New mints only:
