@@ -1,6 +1,6 @@
 # 제안: Option C C6b 선행 조건 3 — root crontab 15줄 분류 (DRAFT v0.1)
 
-**상태:** DECIDED 2026-10-19 — K-1–K-4가 권고안대로 정해졌다(아래 결정). 분류 문서는 #1250(`3fce85c3`)으로 병합됐다. 실제 crontab 변경은 C6b의 b6 단계이고 C6b 실행 승인 뒤에 한다. 이 문서가 바꾼 호스트 설정은 없다. **원래 상태(작성 당시):** DRAFT 2026-10-19 — 결정 4건(K-1–K-4)이 Thomas를 기다렸다.
+**상태:** DECIDED 2026-10-19 — **정정(2026-10-20):** 12번 kw-weekly는 `claude`로 옮기지 않고 root에 남는다. `kw-pipeline.py run`을 돌려 검색광고 키가 필요하고, K-1 A가 키를 root에만 두기 때문이다(C6b P-4 준비 중 확인). 이전 가능은 2줄(5·13)이다. K-1–K-4가 권고안대로 정해졌다(아래 결정). 분류 문서는 #1250(`3fce85c3`)으로 병합됐다. 실제 crontab 변경은 C6b의 b6 단계이고 C6b 실행 승인 뒤에 한다. 이 문서가 바꾼 호스트 설정은 없다. **원래 상태(작성 당시):** DRAFT 2026-10-19 — 결정 4건(K-1–K-4)이 Thomas를 기다렸다.
 
 **결정(2026-10-19):** Thomas가 "권고안대로 승인할게"로 아래 줄을 승인했다(줄 문구는 Claude가 제시했다).
 - `결정: C6b cron K-1=A(검색광고 키는 root에 두고 kw-pipeline만 root cron), K-2=A(claude 홈에 볼트 사본, push 자격 별도 발급), K-3=A(측정 로그 3개를 /var/lib/thomas-measure root:claude 0750으로), K-4=holdout 줄 삭제·crontab 백업은 root cron으로 (Thomas 2026-10-19)`
@@ -18,7 +18,7 @@
 
 15줄은 환경 변수 1줄과 작업 14줄이다.
 - **root 유지:** 10줄. docker, `.env`, 상태 파일, uid 10000 디렉터리 가운데 하나 이상이 필요하다.
-- **`claude`로 이전 가능:** 3줄. 그중 2줄은 K-1(검색광고 키)과 K-2(볼트 위치)가 정해져야 옮길 수 있다.
+- **`claude`로 이전 가능:** 3줄. 그중 2줄은 K-1(검색광고 키)과 K-2(볼트 위치)가 정해져야 옮길 수 있다. **2026-10-20 정정:** 2줄(5·13). 12번 kw-weekly는 root 유지(§2).
 - **폐기:** 1줄. 08-08에 할 일을 마쳤다.
 
 ## 1. 분류 기준
@@ -41,10 +41,10 @@ C5 계획 §4의 기준을 그대로 쓴다. root·docker·`.env`가 필요하�
 | 9 | 매일 07:40 | `/root/backups/rotate-hermes-mcp-log.sh` | uid 10000 소유 hermes 로그 디렉터리에 쓴다 | root 유지 |
 | 10 | 매일 08:00 | `/root/backups/backup-watch.sh` | `.env`의 제어 봇 토큰, 상태 파일 `operator_registration.json`, 백업 디렉터리 | root 유지 |
 | 11 | 10분마다 | `/root/backups/health-watch.sh` | `docker inspect`·`docker ps`, `.env`의 제어 봇 토큰 | root 유지 |
-| 12 | 토 21:30 | `/root/.claude/scripts/kw-weekly.sh` | Naver 검색광고 키(`.env`에서 이름으로 찾음), 볼트 `git pull/push` | **`claude`로 이전 가능, 단 K-1·K-2 뒤** |
+| 12 | 토 21:30 | `/root/.claude/scripts/kw-weekly.sh` | Naver 검색광고 키(`.env`에서 이름으로 찾음), 볼트 `git pull/push` | **root 유지(2026-10-20 정정).** 처음에는 "`claude`로 이전 가능, 단 K-1·K-2 뒤"로 분류했다. 그러나 이 작업은 `kw-pipeline.py run`을 돌리므로 검색광고 키가 필요하고, K-1 A는 키를 root에만 둔다 |
 | 13 | 매일 23:02 | `/root/.claude/scripts/blog-daily-draft.sh` | 무인 Claude 실행(`HOME=/root`), kw-pipeline(같은 키), 볼트 push, 스크립트·스킬 로컬 git 자동 커밋, root crontab 사본을 볼트에 백업 | **`claude`로 이전 가능, 단 K-1·K-2 뒤.** crontab 백업 부분은 root에 남긴다(K-4) |
 
-합계: root 유지 10줄(백업 4줄 포함), 이전 가능 3줄(5·12·13), 폐기 1줄(2), 환경 변수 1줄.
+합계: root 유지 11줄(백업 4줄 포함, 12번 정정 반영), 이전 가능 2줄(5·13), 폐기 1줄(2), 환경 변수 1줄. (처음 합계는 root 10, 이전 가능 3이었다.)
 
 ## 3. 결정할 것
 
