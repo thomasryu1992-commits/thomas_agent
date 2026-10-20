@@ -22,6 +22,8 @@ What it checks:
   - N-6: the state root and holdings;
   - N-14: the runner's trust files and units;
   - N-15: the managed settings.
+  - N-16: the capture door's own side (2026-10-20). ``claude`` may drop a request in ``req/`` but not list it. It
+    may not create in ``out/``, enter ``work/``, or change the root-owned door program or its two units.
 - **Configuration:**
   - N-13: the runner units carry no import path ``claude`` can write.
   - The managed-settings hooks point at root-owned copies under ``/etc/claude-code/hooks``.
@@ -29,7 +31,10 @@ What it checks:
   - No Claude process runs as root.
 - **Reached:**
   - Claude's read door answers ``schedules``;
-  - the deploy gate answers ``inspect_candidate`` (anything but ``PEER_NOT_PERMITTED`` or no answer).
+  - the deploy gate answers ``inspect_candidate`` (anything but ``PEER_NOT_PERMITTED`` or no answer);
+  - the capture door answers a request it must refuse (``https://localhost/``: ``non_global_address``). One
+    round trip proves the drop, the path unit, the validation and the result read-back, with no Docker run and
+    no outside fetch.
 
 Exit 0 when every row is PASS, 1 on any FAIL, 2 when not run as the ``claude`` account. Run as root, every
 refusal would be a false pass.
@@ -40,9 +45,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import socket
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -58,6 +65,10 @@ EXIT_OK, EXIT_FAILED, EXIT_USAGE = 0, 1, 2
 PASS, FAIL = c4.PASS, c4.FAIL
 SYSTEMCTL, BASH = "/usr/bin/systemctl", "/bin/bash"
 UNITS = ("thomas-deploy-actor.service", "thomas-deploy-gate.service")
+CAPTURE_UNITS = ("thomas-capture-door.path", "thomas-capture-door.service")
+CAPTURE_PROBE_URL = "https://localhost/"            # the door must refuse it: localhost resolves to a non-global address
+CAPTURE_PROBE_REASON = "문지기 거절: non_global_address"
+CAPTURE_WAIT = 60
 
 
 @dataclass(frozen=True)
@@ -78,6 +89,8 @@ class Paths:
     gate_socket: Path = Path("/run/thomas-deploy-gate/gate.sock")
     managed_dir: Path = Path("/etc/claude-code")
     door_socket: Path = Path("/var/lib/thomas-claude-door/sock/read.sock")
+    capture_root: Path = Path("/var/lib/thomas-capture")
+    capture_program: Path = Path("/usr/local/sbin/thomas-capture-door")
 
     @property
     def state_root(self) -> Path:
@@ -136,6 +149,13 @@ class Checks:
         self.expect("N-14", "create", p.unit_dir)
         self.expect("N-15", "append", p.managed_dir / "managed-settings.json")
         self.expect("N-15", "create", p.managed_dir / "hooks")
+        self.expect("N-16", "read", p.capture_root / "req")          # opening the directory = listing it
+        self.expect("N-16", "create", p.capture_root / "out")
+        self.expect("N-16", "traverse", p.capture_root / "work")
+        self.expect("N-16", "append", p.capture_program)
+        self.expect("N-16", "create", p.capture_program.parent)
+        for unit in CAPTURE_UNITS:
+            self.expect("N-16", "append", p.unit_dir / unit)
 
     # -- configuration -------------------------------------------------------------------------------------
     def import_paths(self) -> None:
@@ -220,6 +240,29 @@ class Checks:
         finally:
             client.close()
 
+    def capture_round_trip(self) -> dict[str, Any] | None:
+        """Drop one request the door must refuse and read its answer → the result record, or None if none came."""
+        root = self.paths.capture_root
+        rid = secrets.token_hex(16)
+        part = root / "req" / f".{rid}.tmp"
+        try:
+            fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump({"id": rid, "url": CAPTURE_PROBE_URL, "text": "c6b-b8", "click": ""}, f)
+            os.rename(part, root / "req" / f"{rid}.json")
+        except OSError:
+            return None
+        result = root / "out" / f"{rid}.json"
+        deadline = time.monotonic() + CAPTURE_WAIT
+        while time.monotonic() < deadline:
+            try:
+                return json.loads(result.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                time.sleep(1)
+            except (OSError, ValueError):
+                return None
+        return None
+
     def reached(self) -> None:
         p = self.paths
         door = self.ask(p.door_socket, {"command": "schedules", "client_id": "c6b-b8"})
@@ -230,6 +273,10 @@ class Checks:
         through = gate is not None and gate.get("reason_code") != "PEER_NOT_PERMITTED"
         self.report.add("gate", "inspect_candidate through the gate", PASS if through else FAIL,
                         "no answer" if gate is None else f"ok={gate.get('ok')} reason_code={gate.get('reason_code')}")
+        cap = self.capture_round_trip()
+        refused = cap is not None and cap.get("ok") is False and cap.get("reason") == CAPTURE_PROBE_REASON
+        self.report.add("capture", f"capture door refuses {CAPTURE_PROBE_URL}", PASS if refused else FAIL,
+                        f"no answer in {CAPTURE_WAIT}s" if cap is None else f"ok={cap.get('ok')} reason={cap.get('reason')}")
 
     def all(self) -> c4.Report:
         self.refusals()
