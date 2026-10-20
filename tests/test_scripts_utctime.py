@@ -57,8 +57,11 @@ def test_no_script_has_gone_back_to_hand_rolling_the_chain():
     """The four-call chain is what §G4b removed. `build_i0_4_contract_set_lock.py` keeps its copy
     on purpose — it is a frozen i0.4 artifact builder that nothing invokes and that imports neither
     `lib` nor `runtime`, so giving it an import would cost it its standalone property to remove a
-    line that has no caller. Everything else must be gone; a new one here is a regression."""
-    allowed = {"scripts/build_i0_4_contract_set_lock.py", "scripts/lib/utctime.py"}
+    line that has no caller. `scripts/ops/capture_door.py` keeps one for the same standalone reason: it is
+    installed as a single root-owned file (`/usr/local/sbin/thomas-capture-door`) with no repository on its
+    path, and its stamp only prefixes its own log line, never a record compared against another stamp.
+    Everything else must be gone; a new one here is a regression."""
+    allowed = {"scripts/build_i0_4_contract_set_lock.py", "scripts/lib/utctime.py", "scripts/ops/capture_door.py"}
     chain = re.compile(r"datetime\.now\(timezone\.utc\)\.replace\(microsecond=0\)\.isoformat\(\)")
     strf = re.compile(r'strftime\(\s*["\']%Y-%m-%dT%H:%M:%SZ["\']\s*\)')
     offenders = []

@@ -1,0 +1,19 @@
+# Capture door (Y3 (가), Thomas 2026-10-20): one pass over the requests, as root, from a root-owned copy of
+# scripts/ops/capture_door.py. No PrivateTmp, and the work directory is never under /tmp: dockerd resolves -v
+# paths in the host's mount namespace. ProtectHome keeps the door out of /home entirely.
+[Unit]
+Description=Thomas capture door: one pass over capture requests
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /usr/local/sbin/thomas-capture-door --root /var/lib/thomas-capture --owner claude
+Environment=DOCKER_CONFIG=/var/lib/thomas-capture/docker-config
+TimeoutStartSec=20min
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/thomas-capture
+ReadWritePaths=-/run/docker.sock
+NoNewPrivileges=yes
+UMask=0077
