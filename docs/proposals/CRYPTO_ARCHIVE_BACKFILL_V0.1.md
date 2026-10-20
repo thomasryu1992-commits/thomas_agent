@@ -224,5 +224,7 @@ S1은 자기 관문을 그대로 따른다. 검증하다가 아래 버그가 나
     - **약화:** 그 밖의 경우.
   - **이 측정이 하지 않는 것:** 저장된 판정을 바꾸지 않는다. 기록만 하고, 새 계보를 만들지 않는다.
   - **결과를 쓰는 곳:** 2단계 항목 4(family 재배분)와 단계 3의 재검토 입력이다.
-  - **실행:** 읽기 전용 스크립트를 후속 PR로 짓고, Thomas가 컨테이너에서 돌린다.
+  - **실행:** 읽기 전용 스크립트 `scripts/measure_oi_lookahead.py`(2026-10-20 지음). Thomas가 #1269 배포 뒤 컨테이너에서 돌린다:
+    `docker exec thomas-scheduler python -m scripts.measure_oi_lookahead --list`로 대상을 본 다음, `--json`으로 결과를 받는다.
+    결과와 판정(KEPT·WEAKENED·VANISHED)은 이 절 아래에 적는다.
 
