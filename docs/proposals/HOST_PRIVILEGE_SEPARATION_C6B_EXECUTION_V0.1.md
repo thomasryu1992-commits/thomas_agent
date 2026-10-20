@@ -56,7 +56,7 @@ Claude가 root를 잃는 단계다. 되돌릴 수 없는 것은 b7(`.env` 사본
 
 P-4에서 고칠 대상은 다음과 같다.
 - **Claude hook 네 개**(`/root/.claude/settings.json`): `vault-autopush.sh`, `vault-guard.sh`, `session-start-check.sh`, `pgrep-wait-guard.sh`. LOCAL_ONLY guard는 b2의 관리 설정이 맡는다.
-- **`claude` cron 세 작업이 쓰는 스크립트:** loc-trend, kw-weekly, blog-daily-draft와 그들이 부르는 `vault.sh`, `kw-pipeline.py` 등.
+- **`claude` cron 두 작업이 쓰는 스크립트:** loc-trend, blog-daily-draft와 그들이 부르는 `vault.sh`, `kw-pipeline.py`(`slotc`만. 검색광고 키를 쓰지 않는다) 등. kw-weekly는 root에 남는다(2026-10-20 정정, cron 분류 문서 12번).
 - **범위:** `/root/.claude/scripts`의 65개 중 41개가 `/root/`를 담고 있다. 실제로 고칠 것은 위 대상이 부르는 것만이고, 목록은 P-4에서 만든다.
 
 ## 3. 단계 (E-1 A 순서)
@@ -104,17 +104,12 @@ python3 -m venv ~/thomas_agent/.venv && ~/thomas_agent/.venv/bin/python -m pip i
 
 ### b6 — cron (Thomas, root. P-1–P-3 뒤)
 - 바꾸기 전에 `crontab -l > /root/c6-backup-2026-10-19/crontab.pre-b6`로 사본을 남긴다.
-- **root crontab에서 뺄 것:**
-  - loc-trend, kw-weekly, blog-daily-draft(`claude`로 이동);
-  - holdout split(K-4).
-- **root crontab에 넣을 것:**
-  - kw-pipeline(P-1);
-  - 볼트 crontab 백업(P-3).
+- **root crontab에서 뺄 것:** loc-trend, blog-daily-draft(`claude`로 이동). 두 줄이다(2026-10-20 정정: kw-weekly는 root에 남는다).
+- **이미 끝난 것(P-1–P-3, 2026-10-20 적용):** holdout split 삭제(K-4), kw-pipeline(`kw-daily.sh`)과 볼트 crontab 백업(`server-scripts-backup.sh`) 추가.
 - **`claude` crontab(`crontab -u claude`)에 넣을 것:**
   - loc-trend(`/home/claude/thomas_agent`);
-  - kw-weekly;
   - blog-daily-draft(`/home/claude/.claude/scripts/`).
-- 나머지 10줄은 그대로 둔다(분류 문서 §2).
+- 나머지 줄은 그대로 둔다(분류 문서 §2, 12번 정정 반영).
 - **확인:** 각 작업의 다음 실행 기록(로그 파일의 새 줄).
 - **되돌리기:** `crontab /root/c6-backup-2026-10-19/crontab.pre-b6`; `crontab -r -u claude`.
 
