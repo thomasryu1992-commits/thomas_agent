@@ -96,6 +96,12 @@ OI_Z_MIN_PERIODS = 10
 # ~23 h early in replay, while live (which drops the forming day) read D-1 (fixed 2026-10-20,
 # Thomas: bug fix, evidence produced before it is flagged, not re-judged).
 OI_READING_KNOWN_AFTER_HOURS = 24
+# The daily liquidation rows share the vendor, the endpoint family and the convention: labelled with the
+# day's START (``CoinalyzeLiquidationFeed._parse`` drops the row whose label is today's start as still
+# forming) and carrying the day's TOTAL. They were aligned on the label, so a 1h/4h bar of day D read day
+# D's total in replay. Found 2026-10-21 by the point-in-time contract test while writing it (E3); fixed the
+# same way. Live is unchanged (it never holds the forming day); a 1d bar now reads D-1, as OI does.
+LIQUIDATION_READING_KNOWN_AFTER_HOURS = 24
 LIQ_MA_WINDOW = 50          # liquidation spike baseline window
 LIQ_MA_MIN_PERIODS = 10
 
@@ -223,18 +229,24 @@ DAY_TYPE_VALUES = frozenset({"WEEKDAY", "WEEKEND"})
 MAX_SESSION_BAR_MINUTES = 4 * 60
 
 
-def _oi_known_at(label: Any) -> str | None:
-    """The instant a daily OI reading labelled ``label`` (its period's start) becomes known:
-    the period's end. None for an unparseable label, which then aligns nowhere."""
+def _known_after(label: Any, hours: int) -> str | None:
+    """The instant a reading labelled ``label`` becomes known, ``hours`` after the label. None for an
+    unparseable label, which then aligns nowhere."""
     from .. import timeutil as _timeutil
 
     if not isinstance(label, str):
         return None
     try:
-        known = _timeutil.parse_iso(label) + timedelta(hours=OI_READING_KNOWN_AFTER_HOURS)
+        known = _timeutil.parse_iso(label) + timedelta(hours=hours)
     except (ValueError, TypeError):
         return None
     return _timeutil.format_iso(known)
+
+
+def _oi_known_at(label: Any) -> str | None:
+    """The instant a daily OI reading labelled ``label`` (its period's start) becomes known:
+    the period's end. The constant is read at call time (``measure_oi_lookahead`` switches it)."""
+    return _known_after(label, OI_READING_KNOWN_AFTER_HOURS)
 
 
 def _asof_align(
@@ -996,8 +1008,12 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
 
     has_liq_series = "liquidations" in snapshot
     if has_liq_series:
-        aligned = _asof_align(bar_times, snapshot.get("liquidations") or [],
-                              ("long_liquidation", "short_liquidation"))
+        # Keyed by when the day's total is KNOWN (label + one day), the open-interest rule.
+        known = [
+            {**event, "timestamp": _known_after(event.get("timestamp"), LIQUIDATION_READING_KNOWN_AFTER_HOURS)}
+            for event in (snapshot.get("liquidations") or []) if isinstance(event, dict)
+        ]
+        aligned = _asof_align(bar_times, known, ("long_liquidation", "short_liquidation"))
         long_liq, short_liq = aligned["long_liquidation"], aligned["short_liquidation"]
         liq_total = [
             (l + s) if (l is not None and s is not None) else None
