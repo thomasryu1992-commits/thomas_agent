@@ -382,14 +382,15 @@ def assert_live_tier_confirmed(
     for record in records:
         quality = candidate_ranking.candidate_quality(record)
         forward = judge_forward(record, outcome_rows, z=bar)
-        if forward["status"] == FORWARD_CONFIRMED and not quality["oi_lookahead"]:
+        if forward["status"] == FORWARD_CONFIRMED and not quality["evidence_invalid"]:
             continue
         if forward["status"] == FORWARD_CONFIRMED:
-            # The forward stream of a pre-fix OI lineage includes walked and seeded replays whose
-            # bars read the day's OI close early (Thomas 2026-10-20: flagged, not re-judged).
+            # The forward stream of a lineage whose evidence is INVALID includes walked and seeded replays
+            # whose bars read a daily vendor reading early (OI: Thomas 2026-10-20; liquidations: 2026-10-21).
+            # Read through `candidate_ranking.evidence_standing`, so a new INVALID reason closes this door too.
             unconfirmed.append(
                 f"{quality['candidate_id']} ({record.get('strategy_id')}): forward=FORWARD_CONFIRMED "
-                "but its OI evidence predates the 2026-10-20 lookahead fix (oi_lookahead)")
+                f"but its evidence is INVALID ({', '.join(quality['evidence_invalid'])})")
             continue
         unconfirmed.append(
             f"{quality['candidate_id']} ({record.get('strategy_id')}): "
