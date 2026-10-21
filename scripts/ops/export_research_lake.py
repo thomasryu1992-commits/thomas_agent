@@ -29,7 +29,6 @@ not from the primary checkout (which can be far behind ``origin/main``). Install
 from __future__ import annotations
 
 import argparse
-import grp
 import hashlib
 import json
 import os
@@ -118,6 +117,8 @@ def export(src: Path, dest: Path, *, now: float, keep: int = DEFAULT_KEEP,
         raise ValueError(f"source must be the crypto state directory, got {src}")
     if dest == src or src in dest.parents or dest in src.parents:
         raise ValueError("destination and source must not contain each other")
+    if group:
+        import grp  # Unix only; imported here so the module (and its tests) load anywhere
     gid = grp.getgrnam(group).gr_gid if group else None
     files, skipped = plan(src)
     total = sum(p.stat().st_size for p in files)

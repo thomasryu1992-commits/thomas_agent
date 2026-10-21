@@ -18,7 +18,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "ops"))
 import export_research_lake as lake  # noqa: E402
 
-NOW = 1_792_499_000.0  # 2026-10-20T…Z, fixed so ids are deterministic
+NOW = 1_792_499_000.0
+# The export runs from root's cron on the Linux host: symlinks, modes and ownership are POSIX. The
+# allowlist tests stay platform-independent.
+posix_only = pytest.mark.skipif(sys.platform != "linux", reason="the export runs on the Linux host only")  # 2026-10-20T…Z, fixed so ids are deterministic
 
 
 def _owners():
@@ -91,6 +94,7 @@ def _state(tmp_path: Path) -> tuple[Path, Path]:
     return crypto, tmp_path / "lake"
 
 
+@posix_only
 def test_a_snapshot_holds_the_allowed_files_and_nothing_else(tmp_path):
     crypto, dest = _state(tmp_path)
     before = {p.name: p.read_bytes() for p in crypto.iterdir() if p.is_file() and not p.is_symlink()}
@@ -107,6 +111,7 @@ def test_a_snapshot_holds_the_allowed_files_and_nothing_else(tmp_path):
     assert before == {p.name: p.read_bytes() for p in crypto.iterdir() if p.is_file() and not p.is_symlink()}
 
 
+@posix_only
 def test_the_manifest_hashes_what_was_written_and_the_modes_are_group_read_only(tmp_path):
     crypto, dest = _state(tmp_path)
     status = lake.export(crypto, dest, now=NOW, group=None)
@@ -120,6 +125,7 @@ def test_the_manifest_hashes_what_was_written_and_the_modes_are_group_read_only(
     assert os.readlink(dest / lake.CURRENT) == status["snapshot"]
 
 
+@posix_only
 def test_only_the_newest_snapshots_are_kept_and_current_moves(tmp_path):
     crypto, dest = _state(tmp_path)
     ids = [lake.export(crypto, dest, now=NOW + 3600 * k, keep=2, group=None)["snapshot"] for k in range(4)]
@@ -130,6 +136,7 @@ def test_only_the_newest_snapshots_are_kept_and_current_moves(tmp_path):
     assert (dest / "notes").is_dir()
 
 
+@posix_only
 def test_over_the_size_cap_nothing_is_written_and_the_status_says_why(tmp_path):
     crypto, dest = _state(tmp_path)
     status = lake.export(crypto, dest, now=NOW, max_bytes=10, group=None)
@@ -137,6 +144,7 @@ def test_over_the_size_cap_nothing_is_written_and_the_status_says_why(tmp_path):
     assert json.loads((dest / lake.STATUS).read_text(encoding="utf-8"))["result"] == status["result"]
 
 
+@posix_only
 @pytest.mark.parametrize("make_src,make_dest", [
     (lambda t: t / "state", lambda t: t / "lake"),                     # not the crypto directory
     (lambda t: t / "state" / "crypto", lambda t: t / "state" / "crypto" / "lake"),   # dest inside src
@@ -147,6 +155,7 @@ def test_a_misconfigured_run_is_refused(tmp_path, make_src, make_dest):
         lake.export(make_src(tmp_path), make_dest(tmp_path), now=NOW, group=None)
 
 
+@posix_only
 def test_main_with_explicit_paths(tmp_path, capsys):
     crypto, dest = _state(tmp_path)
     assert lake.main(["--src", str(crypto), "--dest", str(dest), "--group", ""]) == 0
