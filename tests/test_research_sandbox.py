@@ -70,9 +70,52 @@ def test_an_empty_cache_is_a_loud_failure_and_coinalyze_is_absent(tmp_path):
         with pytest.raises(ToolError) as exc:
             call()
         assert exc.value.reason_code == lake.LAKE_EMPTY
-    feed = lake.LakeLiquidationFeed(None)
-    with pytest.raises(ToolError):
-        feed.open_interest_history("BTCUSDT", days=10, timeout_seconds=1)
+    for feed in (lake.LakeLiquidationFeed(None), lake.LakeLiquidationFeed(tmp_path)):
+        for call in (lambda: feed.open_interest_history("BTCUSDT", days=10, timeout_seconds=1),
+                     lambda: feed.liquidation_history("BTCUSDT", days=10, timeout_seconds=1)):
+            with pytest.raises(ToolError) as exc:
+                call()
+            assert exc.value.reason_code == lake.LAKE_NO_COINALYZE
+
+
+def _stored_daily(root: Path) -> tuple[Path, list, list]:
+    """What the runtime's factory would have kept from one Coinalyze fetch, in a lake-shaped directory."""
+    from runtime.mvp_runtime.crypto import coinalyze_daily_store, state
+    days = [market_data.BinanceFuturesCollector._iso(T0 - (5 - i) * 24 * H) for i in range(5)]
+    oi = [{"timestamp": t, "open_interest": 1000.0 + i} for i, t in enumerate(days)]
+    liq = [{"timestamp": t, "long_liquidation": 1.0 + i, "short_liquidation": 2.0 + i} for i, t in enumerate(days)]
+    result = coinalyze_daily_store.record("BTCUSDT", open_interest=oi, liquidations=liq,
+                                          now="2026-10-21T00:00:00Z", root=root)
+    assert result == {"status": "recorded", "written": {"open_interest": 5, "liquidations": 5}}
+    return state.state_dir(root), oi, liq
+
+
+def test_the_coinalyze_feed_serves_what_the_runtime_kept_in_the_vendor_shapes(tmp_path):
+    directory, oi, liq = _stored_daily(tmp_path)
+    feed = lake.LakeLiquidationFeed(directory)
+    assert feed.feed_id != "none"   # attach_feeds and oi_store skip a feed whose id is "none"
+    assert feed.open_interest_history("BTCUSDT", days=10, timeout_seconds=1) == oi
+    assert feed.liquidation_history("btcusdt", days=3, timeout_seconds=1) == liq[-3:]
+    with pytest.raises(ToolError) as exc:
+        feed.open_interest_history("ETHUSDT", days=10, timeout_seconds=1)
+    assert exc.value.reason_code == lake.LAKE_NO_COINALYZE
+    with pytest.raises(ToolError) as exc:   # the hourly series is oi_store's, never served from the daily rows
+        feed.open_interest_history("BTCUSDT", days=10, timeout_seconds=1, interval=market_data.OI_INTERVAL_1H)
+    assert exc.value.reason_code == lake.LAKE_NO_COINALYZE
+
+
+def test_attach_feeds_puts_the_lake_rows_on_the_frame_and_keeps_nothing(tmp_path):
+    from runtime.mvp_runtime.crypto import coinalyze_daily_store, feed_assembly
+    directory, oi, liq = _stored_daily(tmp_path / "lake")
+    run_root = tmp_path / "run"
+    snapshot: dict = {"symbol": "BTCUSDT", "timeframe": "1h"}
+    codes, status = feed_assembly.attach_feeds(snapshot, collector=lake.LakeCollector(tmp_path / "cache"),
+                                               liquidation_feed=lake.LakeLiquidationFeed(directory),
+                                               now="2026-10-21T00:00:00Z", root=run_root)
+    assert (status["open_interest"], status["liquidations"]) == ("ok", "ok")
+    assert snapshot["open_interest"] == oi and snapshot["liquidations"] == liq
+    assert "coinalyze_daily" not in status
+    assert coinalyze_daily_store.read_rows("open_interest", root=run_root) == []
 
 
 def test_install_swaps_the_selectors_and_the_mock_refuses(monkeypatch, tmp_path):

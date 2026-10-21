@@ -68,6 +68,8 @@ ALLOWED: tuple[str, ...] = (
     "open_interest_1h.jsonl",
     "positioning_history.jsonl",
     "orderbook_depth.jsonl",
+    "coinalyze_open_interest_1d.jsonl",
+    "coinalyze_liquidations_1d.jsonl",
 )
 SNAPSHOT_ID = re.compile(r"^\d{8}T\d{6}Z$")
 MANIFEST = "manifest.json"
