@@ -436,3 +436,88 @@ def test_the_recorded_fix_instant_splits_pre_and_post_fix_mints():
     assert before["oi_lookahead"] is True and before["holdout_status"] == HOLDOUT_UNDERPOWERED
     assert after["oi_lookahead"] is False and after["holdout_status"] == HOLDOUT_CONFIRMED
 
+
+
+# --- evidence standing: one authority, every consumer (Thomas 2026-10-21, E1) --------------------------
+
+def _invalid(record=None, *, cid="cand_invalid"):
+    """A pre-fix 4h row whose entry reads an OI change: its numbers were computed with lookahead."""
+    base = record if record is not None else _scored_record(_tail(expectancy=_CLEARS))
+    return {**_with_spec(base, timeframe="4h", feature="open_interest_change_pct"), "candidate_id": cid}
+
+
+def _valid(record=None, *, cid="cand_valid"):
+    base = record if record is not None else _scored_record(_tail(expectancy=_CLEARS))
+    return {**_with_spec(base, timeframe="4h", feature="rsi"), "candidate_id": cid}
+
+
+def test_each_reason_has_one_kind_and_every_reason_caps_a_confirmation():
+    from runtime.mvp_runtime.crypto import candidate_ranking as cr
+
+    assert cr.evidence_standing(_invalid()) == {"invalid": ("oi_lookahead",), "biased": ()}
+    child = _valid(_scored_record(_tail(expectancy=_CLEARS), parents=["cand_a"]))
+    assert cr.evidence_standing(child) == {"invalid": (), "biased": ("holdout_reused",)}
+    rescored = {**_valid(), "rescore_reason": cr.OI_LOOKAHEAD_RESCORE_REASON}
+    assert cr.evidence_standing(rescored) == {"invalid": (), "biased": ("oi_lookahead_rescore",)}
+    assert cr.evidence_standing(_valid()) == {"invalid": (), "biased": ()}
+    # A re-score of a lookahead row is minted after the fix, so the OI flag alone would pass it; its
+    # spec was still chosen by the contaminated numbers, so its holdout confirms nothing.
+    assert cr.candidate_quality(rescored)["holdout_status"] == HOLDOUT_UNDERPOWERED
+    assert cr.candidate_quality(_valid())["holdout_status"] == HOLDOUT_CONFIRMED
+    assert set(cr.EVIDENCE_REASON_KINDS.values()) == {cr.EVIDENCE_INVALID, cr.EVIDENCE_BIASED}
+
+
+def test_an_invalid_row_ranks_after_every_valid_one_whatever_its_numbers(monkeypatch):
+    from runtime.mvp_runtime.crypto import candidate_ranking as cr
+
+    flat = _tail(expectancy=0.0)
+    better = _invalid(_scored_record(flat), cid="cand_a")
+    better["backtest_evidence"] = {**better["backtest_evidence"], "win_count": 300, "expectancy": 0.6}
+    plain = _valid(_scored_record(flat), cid="cand_z")
+    monkeypatch.setattr(cr, "OI_FIX_EFFECTIVE_AT", "2026-08-01T00:00:00Z")   # not flagged: its numbers lead
+    assert [r["candidate_id"] for r in cr.rank_candidates([plain, better])] == ["cand_a", "cand_z"]
+    monkeypatch.setattr(cr, "OI_FIX_EFFECTIVE_AT", "2026-10-20T13:59:48Z")   # flagged: after every valid row
+    assert [r["candidate_id"] for r in cr.rank_candidates([plain, better])] == ["cand_z", "cand_a"]
+
+
+def test_an_invalid_row_cannot_parent_even_with_the_best_score(monkeypatch):
+    from runtime.mvp_runtime.crypto import candidate_ranking as cr
+
+    best = {**_invalid(), "champion_score": 0.99, "strategy_rule_hash": "rh_invalid"}
+    other = {**_valid(), "champion_score": 0.50, "strategy_rule_hash": "rh_valid"}
+    assert [r["candidate_id"] for r in factory.rank_fusion_parents([best, other])] == ["cand_valid"]
+    monkeypatch.setattr(cr, "OI_FIX_EFFECTIVE_AT", "2026-08-01T00:00:00Z")
+    assert [r["candidate_id"] for r in factory.rank_fusion_parents([best, other])] == ["cand_invalid", "cand_valid"]
+
+
+def test_an_invalid_row_cannot_centre_the_search_even_with_the_best_score(monkeypatch):
+    from runtime.mvp_runtime.crypto import candidate_ranking as cr, generator
+
+    def centred(params, score, *, invalid):
+        row = (_invalid if invalid else _valid)()
+        spec = {**row["strategy_spec"], "strategy_family": "oi_squeeze_long"}
+        evidence = {**row["backtest_evidence"], "closed_count": generator.ELITE_EVIDENCE_MIN_TRADES + 10}
+        return {**row, "strategy_spec": spec, "backtest_evidence": evidence,
+                "champion_score": score, "mint_params": params}
+
+    rows = [centred({"x": 9.0}, 0.99, invalid=True), centred({"x": 5.0}, 0.50, invalid=False)]
+    pick = lambda: generator.elite_base_params(rows, family="oi_squeeze_long", symbol="BTCUSDT",  # noqa: E731
+                                               timeframe="4h", fallback={"x": 1.0})
+    assert pick() == {"x": 5.0}
+    monkeypatch.setattr(cr, "OI_FIX_EFFECTIVE_AT", "2026-08-01T00:00:00Z")
+    assert pick() == {"x": 9.0}
+
+
+def test_an_invalid_row_is_refused_an_observation_slot_and_the_refusal_names_why():
+    from runtime.mvp_runtime.crypto.pool_admission import assert_observation_entry_bar
+    from runtime.mvp_runtime.errors import ToolError
+
+    with pytest.raises(ToolError) as refused:
+        assert_observation_entry_bar([_invalid()])
+    assert "evidence=INVALID(oi_lookahead)" in str(refused.value)
+    try:
+        assert_observation_entry_bar([_valid()])
+    except ToolError as other:      # it may fail other terms; never this one
+        assert "evidence=INVALID" not in str(other)
+    # A row already holding a slot is a restatement, not an entrant: E1 refuses entry, it evicts nobody.
+    assert_observation_entry_bar([_invalid()], occupying_candidate_ids=frozenset({"cand_invalid"}))

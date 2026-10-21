@@ -972,7 +972,8 @@ def assert_observation_entry_bar(
     Terms, all required: FULL depth among the RECORDED depths (SHALLOW is ranked and
     promotable elsewhere, but a slot is spent on the current window or not at all), at
     least `OBSERVATION_MIN_BACKTEST_CLOSED` backtest closes, positive expectancy at the
-    CURRENT rates, and a holdout that is thin or better (`_observation_holdout_term`).
+    CURRENT rates, a holdout that is thin or better (`_observation_holdout_term`), and
+    evidence that is not INVALID (`candidate_ranking.evidence_standing`).
     Rows whose ``candidate_id`` is already occupying a slot are restatements, not entrants,
     and pass untouched.
 
@@ -1003,6 +1004,10 @@ def assert_observation_entry_bar(
         holdout_term = _observation_holdout_term(record)
         if holdout_term is not None:
             terms.append(holdout_term)
+        # A slot's product is forward evidence on a row its backtest recommended. An INVALID backtest
+        # recommended nothing (`candidate_ranking.evidence_standing`), and every term above read it.
+        if quality["evidence_invalid"]:
+            terms.append(f"evidence=INVALID({','.join(quality['evidence_invalid'])})")
         if terms:
             failures.append(f"{quality['candidate_id']} ({record.get('strategy_id')}): "
                             + ", ".join(terms))
