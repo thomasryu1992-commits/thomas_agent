@@ -10,9 +10,12 @@ which serves the same three public series from what ``fetch_public`` stored:
   ``_parse_derivative_page``) over the raw rows the venue returned, so the sandbox cannot read a row
   differently from production.
 
-The keyed Coinalyze series (open interest, liquidations) come from the research lake snapshot once
-the runtime stores them (step 3). Until then :class:`LakeLiquidationFeed` raises, so ``attach_feeds``
-marks the feed degraded and every OI feature is None: an OI spec is "starved", never fed a stand-in.
+The keyed Coinalyze daily series (open interest, liquidations) come from the research lake snapshot,
+where the runtime keeps the rows its factory and live cycle already fetched (step 3,
+``coinalyze_daily_store``). :class:`LakeLiquidationFeed` serves them in the vendor feed's row shapes, read
+back by the store's own reader. A symbol the lake has no rows for, an hourly request, or no lake at all
+raises, so ``attach_feeds`` marks the feed degraded and every OI feature is None: an OI spec is
+"starved", never fed a stand-in.
 
 :func:`install` swaps the runtime's two selectors and makes the network-free mock collector refuse,
 so a script that selects its collector by name cannot quietly measure synthetic data.
@@ -29,7 +32,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
-from runtime.mvp_runtime.crypto import market_data
+from runtime.mvp_runtime.crypto import coinalyze_daily_store, market_data
 from runtime.mvp_runtime.errors import ToolError
 
 SOURCE = "research_lake"
@@ -123,18 +126,34 @@ class LakeCollector:
 
 
 class LakeLiquidationFeed:
-    """The keyed Coinalyze series. Absent until the runtime stores them (RESEARCH_SANDBOX step 3), so
-    both reads raise and the runtime marks the feed degraded: OI features are None, never stand-ins."""
+    """The keyed Coinalyze daily series, as the runtime stored them (RESEARCH_SANDBOX step 3).
+
+    Same row shapes and trim as ``CoinalyzeLiquidationFeed`` (oldest first, the last ``days``), so a frame
+    built here is the frame production built from the same fetch. Rows keep the vendor's label (the period
+    start) and value (its close); ``features`` aligns them by when they are known, as it does live."""
+
+    feed_id = SOURCE
 
     def __init__(self, lake: Path | None):
         self._lake = lake
 
+    def _rows(self, series: str, symbol: str, days: int, fields: tuple[str, ...]) -> list[dict[str, Any]]:
+        if self._lake is None:
+            raise ToolError(LAKE_NO_COINALYZE, "the research sandbox was started without a lake snapshot")
+        rows = coinalyze_daily_store.read_rows(series, symbol=str(symbol).strip().upper(), directory=self._lake)
+        if not rows:
+            raise ToolError(LAKE_NO_COINALYZE, f"the research lake carries no Coinalyze {series} for {symbol}")
+        return [{"timestamp": row["timestamp"], **{field: row[field] for field in fields}}
+                for row in rows][-int(days):]
+
     def open_interest_history(self, symbol: str, *, days: int, timeout_seconds: int,
                               interval: str = market_data.OI_INTERVAL_DAILY) -> list[dict[str, Any]]:
-        raise ToolError(LAKE_NO_COINALYZE, "the research lake carries no Coinalyze open interest yet")
+        if interval != market_data.OI_INTERVAL_DAILY:
+            raise ToolError(LAKE_NO_COINALYZE, f"the research lake keeps the daily open interest, not {interval!r}")
+        return self._rows("open_interest", symbol, days, ("open_interest",))
 
     def liquidation_history(self, symbol: str, *, days: int, timeout_seconds: int) -> list[dict[str, Any]]:
-        raise ToolError(LAKE_NO_COINALYZE, "the research lake carries no Coinalyze liquidations yet")
+        return self._rows("liquidations", symbol, days, ("long_liquidation", "short_liquidation"))
 
 
 def install(*, cache: Path, lake: Path | None) -> None:

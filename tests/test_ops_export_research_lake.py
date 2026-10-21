@@ -26,8 +26,8 @@ posix_only = pytest.mark.skipif(sys.platform != "linux", reason="the export runs
 
 def _owners():
     from runtime.mvp_runtime.crypto import (
-        counterfactual, forward_book, forward_cohort, forward_cohort_null, forward_trial, oi_store,
-        orderbook_store, paper, pool_state, positioning_store,
+        coinalyze_daily_store, counterfactual, forward_book, forward_cohort, forward_cohort_null, forward_trial,
+        oi_store, orderbook_store, paper, pool_state, positioning_store,
     )
     return {
         pool_state.CANDIDATES_FILENAME,
@@ -41,6 +41,7 @@ def _owners():
         paper.OUTCOMES_FILENAME, paper.POSITION_FILENAME,
         counterfactual.OUTCOMES_FILENAME, counterfactual.BOOK_FILENAME,
         oi_store.OI_1H_FILENAME, positioning_store.POSITIONING_FILENAME, orderbook_store.ORDERBOOK_FILENAME,
+        coinalyze_daily_store.OI_1D_FILENAME, coinalyze_daily_store.LIQUIDATIONS_1D_FILENAME,
     }
 
 

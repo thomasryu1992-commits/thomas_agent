@@ -68,7 +68,7 @@ Claude가 비밀을 보지 않고도 측정을 혼자 반복하게 한다. 키�
     - forward 장부: `forward_outcomes.jsonl`, `forward_positions.json`
     - 페이퍼·반사실: `paper_outcomes.jsonl`, `paper_position.json`, `counterfactual_outcomes.jsonl`, `counterfactual_positions.json`
     - 시장 데이터 저장소: `open_interest_1h.jsonl`, `positioning_history.jsonl`, `orderbook_depth.jsonl`
-    - 3단계 뒤 추가: Coinalyze 일간 저장소
+    - Coinalyze 일간 저장소(3단계): `coinalyze_open_interest_1d.jsonl`, `coinalyze_liquidations_1d.jsonl`
   - **제외 (목록에 없으므로 복사되지 않음):**
     - 계좌·실거래: `account_*`, `live_*`, `live_trading_budget.json`, `crypto_risk_limits.json`, `pre_order_risk_snapshots.jsonl`
     - 실행 단계: `execution_stage*`
@@ -105,7 +105,7 @@ Claude가 비밀을 보지 않고도 측정을 혼자 반복하게 한다. 키�
 - **15m은 돌리지 않는다.** 래퍼가 `--timeframe 15m` 인자를 거부한다. 피처 계산을 바꾸기 전까지 그렇다.
 - **수집기:** `scripts/research/lake.py`가 `MarketDataCollector`와 같은 메서드를 구현한다.
   - `collect`, `funding_history`, `derivative_price_klines`는 §4.2의 캐시에서 읽는다.
-  - `open_interest_history`, `liquidation_history`는 연구 데이터 저장소에서 읽는다(3단계 뒤).
+  - `open_interest_history`, `liquidation_history`는 연구 데이터 저장소의 Coinalyze 일간 저장소에서 읽는다. 행 모양과 개수 자르기는 운영 피드와 같다. 행이 없는 심볼, 시간 단위 요청, 스냅샷이 없는 실행은 오류를 내므로 OI 피처는 비고, 대체값은 들어가지 않는다.
   - 기존 측정 스크립트는 이 수집기를 주입받아 그대로 돈다. 운영 코드는 바꾸지 않는다.
 
 ### 4.4 결과의 두 등급
@@ -158,4 +158,7 @@ Claude가 비밀을 보지 않고도 측정을 혼자 반복하게 한다. 키�
 | 3 | 런타임이 Coinalyze 일간 OI·청산을 저장소에 쌓는다. 내보내기 목록에 추가한다 | Claude(PR), Thomas(배포) | 저장소가 차고 스냅샷에 들어간다 |
 | 4 | `measure_oi_lookahead`를 샌드박스에서 끝까지 돌린다(4h·1h) | Claude | Thomas 손 없이 결과와 판정이 기록된다 |
 
-**진행 (2026-10-20):** 1단계부터 시작한다.
+**진행 (2026-10-21):**
+- 1·2단계: 병합(#1274, #1275). 내보내기 설치는 Thomas 몫이다.
+- 3단계: 저장(#1276) 병합, 배포는 Thomas 몫이다. 내보내기 목록과 `LakeLiquidationFeed` 연결은 이 후속 PR에서 한다.
+- 4단계: 배포 뒤 저장소가 차고 스냅샷에 들어가면 시작한다.
