@@ -728,6 +728,59 @@ def oi_lookahead_affected(record: Mapping[str, Any]) -> bool:
     return not isinstance(created, str) or created < OI_FIX_EFFECTIVE_AT
 
 
+
+# --- Evidence standing: the ONE authority for "may this row's numbers be used" (Thomas 2026-10-21) ---
+#
+# Each flag above used to be read by whichever consumer someone remembered: the OI flag capped the
+# verdict and the LIVE door, and every steering input (parents, search centres, ranking, observation
+# entry) went on reading the contaminated numbers. A flag per defect and a decision per consumer is how
+# that happens, and the next defect would have asked the same question again. So a reason names its
+# KIND once, here, and every consumer asks this function, never a flag:
+#
+# - INVALID: the numbers were computed wrong. The row is no evidence at all: not a parent, not a search
+#   centre, ranked after every valid row, refused an observation slot. That covers its in-sample
+#   `champion_score` too, which a holdout-only filter would have left steering the search.
+# - BIASED: the numbers are right but were already spent choosing the row. It may still steer the
+#   search; its holdout cannot confirm it.
+#
+# Both kinds cap a holdout CONFIRMED at UNDERPOWERED (`candidate_quality`). Neither grants anything.
+EVIDENCE_INVALID = "INVALID"
+EVIDENCE_BIASED = "BIASED"
+REASON_OI_LOOKAHEAD = "oi_lookahead"
+REASON_HOLDOUT_REUSED = "holdout_reused"
+REASON_OI_LOOKAHEAD_RESCORE = "oi_lookahead_rescore"
+# The `rescore_reason` a re-score of an OI-lookahead row carries (RESEARCH_SANDBOX step 4 follow-up, E2).
+# Its evidence is replayed under the fixed alignment, so it is valid; its spec was chosen by the
+# contaminated numbers, so it is biased. Keyed on the field the re-score writes rather than on the
+# source row, so the predicate stays a function of one record; a record can only withhold with it.
+OI_LOOKAHEAD_RESCORE_REASON = "oi_lookahead_fixed_alignment"
+EVIDENCE_REASON_KINDS: dict[str, str] = {
+    REASON_OI_LOOKAHEAD: EVIDENCE_INVALID,
+    REASON_HOLDOUT_REUSED: EVIDENCE_BIASED,
+    REASON_OI_LOOKAHEAD_RESCORE: EVIDENCE_BIASED,
+}
+
+
+def evidence_standing(record: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
+    """``{"invalid": reasons, "biased": reasons}`` for one stored row, each sorted. Pure, read-time."""
+    reasons = []
+    if oi_lookahead_affected(record):
+        reasons.append(REASON_OI_LOOKAHEAD)
+    if holdout_reused(record):
+        reasons.append(REASON_HOLDOUT_REUSED)
+    if record.get("rescore_reason") == OI_LOOKAHEAD_RESCORE_REASON:
+        reasons.append(REASON_OI_LOOKAHEAD_RESCORE)
+    return {
+        "invalid": tuple(sorted(r for r in reasons if EVIDENCE_REASON_KINDS[r] == EVIDENCE_INVALID)),
+        "biased": tuple(sorted(r for r in reasons if EVIDENCE_REASON_KINDS[r] == EVIDENCE_BIASED)),
+    }
+
+
+def evidence_invalid(record: Mapping[str, Any]) -> bool:
+    """True when any reason says this row's numbers were computed wrong (see :func:`evidence_standing`)."""
+    return bool(evidence_standing(record)["invalid"])
+
+
 def candidate_quality(
     record: Mapping[str, Any], *, attempts: int | None = None
 ) -> dict[str, Any]:
@@ -772,15 +825,14 @@ def candidate_quality(
         holdout_status(holdout_block) if isinstance(holdout_block, Mapping) and holdout_block
         else stored_holdout_state
     )
-    # A reused holdout confirms nothing (Thomas 2026-09-30, SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE
-    # D3 B). Every door that reads a holdout reads this status, so the cap sits here and nowhere else.
-    reused = holdout_reused(record)
-    if reused and holdout_state == HOLDOUT_CONFIRMED:
-        holdout_state = HOLDOUT_UNDERPOWERED
-    # Nor does a holdout scored while the OI feature looked ahead (Thomas 2026-10-20). Same cap,
-    # same place, for the same reason: every door reads this status.
-    lookahead = oi_lookahead_affected(record)
-    if lookahead and holdout_state == HOLDOUT_CONFIRMED:
+    # A holdout confirms nothing when its row's evidence standing names any reason: reused
+    # (Thomas 2026-09-30, SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE D3 B), scored while the OI feature
+    # looked ahead (Thomas 2026-10-20), or re-scored from such a row (2026-10-21). Every door that reads
+    # a holdout reads this status, so the cap sits here and nowhere else.
+    standing = evidence_standing(record)
+    reused = REASON_HOLDOUT_REUSED in standing["biased"]
+    lookahead = REASON_OI_LOOKAHEAD in standing["invalid"]
+    if (standing["invalid"] or standing["biased"]) and holdout_state == HOLDOUT_CONFIRMED:
         holdout_state = HOLDOUT_UNDERPOWERED
     # The verdict is RECOMPUTED from the stored components, never read back as a label.
     #
@@ -835,6 +887,8 @@ def candidate_quality(
         "holdout_status": holdout_state,
         "holdout_reused": reused,
         "oi_lookahead": lookahead,
+        "evidence_invalid": list(standing["invalid"]),
+        "evidence_biased": list(standing["biased"]),
         "expectancy_t": round(t_stat, 6) if t_stat is not None else None,
         "attempts_in_context": attempts,
         # The bar this t had to clear given how many candidates it was drawn from. Reported
@@ -893,7 +947,8 @@ def candidate_quality(
 def rank_candidates(records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Candidates ordered for the promotion decision, latest-wins per lineage.
 
-    Deterministic total order: **cost basis tier first**, then robustness verdict tier (the
+    Deterministic total order: rows whose evidence is INVALID (:func:`evidence_standing`) after every
+    valid row, then **cost basis tier**, then robustness verdict tier (the
     anti-overfit first-pass), then the **evidence depth tier**, then ``edge_quality``
     (win-rate × realized reward:risk) descending, then ``expectancy`` descending, then
     ``candidate_id`` ascending so a tie never depends on store order. Re-appends of a lineage
@@ -935,11 +990,13 @@ def rank_candidates(records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     # a key it does not charge would face a bar computed without its own attempt in it.
     pooled_keys = pooled_context_keys(list(by_cid.values()))
 
-    def _key(record: Mapping[str, Any]) -> tuple[int, int, int, int, float, float, str]:
+    def _key(record: Mapping[str, Any]) -> tuple[bool, int, int, int, int, float, float, str]:
         q = candidate_quality(
             record, attempts=attempts.get(attempt_context_key(record, pooled_keys=pooled_keys))
         )
-        return (q["cost_basis_rank"], q["verdict_rank"], q["selection_rank"],
+        # INVALID evidence leads, ahead of the cost basis: a cheap basis flatters a number, an invalid
+        # one is not a number at all. Such rows sort after every valid row (`evidence_standing`).
+        return (bool(q["evidence_invalid"]), q["cost_basis_rank"], q["verdict_rank"], q["selection_rank"],
                 q["evidence_depth_rank"], -q["edge_quality"], -q["expectancy"],
                 str(record["candidate_id"]))
 

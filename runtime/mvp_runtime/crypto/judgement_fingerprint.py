@@ -32,17 +32,19 @@ from runtime.read_only_kernel import integrity
 
 from .. import timeutil
 from ..policy_fingerprint import CHANGED, FIRST_SEEN, UNCHANGED, fingerprints_dir
-from . import backtest, cost, forward_confirmation, market_data, pool_admission, robustness
+from . import backtest, candidate_ranking, cost, forward_confirmation, market_data, pool_admission, robustness
 
 JUDGEMENT_RULES_VERSION = "judgement_rules.v1"
 # The record's file name under the policy fingerprints directory, beside the per-service policy ones.
 FINGERPRINT_NAME = "judgement_rules"
 
-# In the scope but not in `tunables.TUNABLES`, which indexes scalars: the scorer's component
-# weights and the promotion door's three admitted sets.
+# In the scope but not in `tunables.TUNABLES`, which indexes numeric scalars: the scorer's component
+# weights, the promotion door's three admitted sets, and the instant before which a lookahead-feature
+# row's evidence is INVALID (`candidate_ranking.OI_FIX_EFFECTIVE_AT`, a timestamp; its premise is in
+# its own comment there).
 NOT_INDEXED = frozenset({
     "WEIGHTS", "PROMOTABLE_COST_BASIS_RANKS", "PROMOTABLE_EVIDENCE_DEPTH_RANKS",
-    "PROMOTABLE_DERIVATION_TYPES",
+    "PROMOTABLE_DERIVATION_TYPES", "OI_FIX_EFFECTIVE_AT",
 })
 
 
@@ -68,6 +70,8 @@ def judgement_rules() -> dict[str, Any]:
         "MIN_FACTORY_BARS": market_data.MIN_FACTORY_BARS,
         # selection correction
         "SELECTION_ALPHA": robustness.SELECTION_ALPHA,
+        # evidence standing: which rows' numbers are INVALID (Thomas 2026-10-21, decision 2 of the OI re-score)
+        "OI_FIX_EFFECTIVE_AT": candidate_ranking.OI_FIX_EFFECTIVE_AT,
         # forward
         "FORWARD_SLICE_WIDTH_DAYS": forward_confirmation.FORWARD_SLICE_WIDTH_DAYS,
         "MIN_FORWARD_TRADES_1D": forward_confirmation.MIN_FORWARD_TRADES_1D,
