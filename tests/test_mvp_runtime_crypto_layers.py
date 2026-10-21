@@ -124,7 +124,7 @@ LAYER: dict[str, str] = {
     # store: the read path of a record written above the layers that read it, and what that read applies
     "live_ledger": "store", "live_correction": "store",
     # market: what the venue and the vendors say
-    "market_data": "market", "candle_archive": "market", "oi_store": "market", "orderbook_store": "market",
+    "market_data": "market", "candle_archive": "market", "oi_store": "market", "coinalyze_daily_store": "market", "orderbook_store": "market",
     "positioning_store": "market", "features": "market", "account": "market", "live_filters": "market",
     "account_store": "market", "feed_assembly": "market", "cohort_retention": "market",
     # strategy: what a strategy is, and how one is generated and judged
