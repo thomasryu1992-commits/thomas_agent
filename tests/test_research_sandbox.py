@@ -21,6 +21,9 @@ from runtime.mvp_runtime.errors import ToolError
 from scripts.research import fetch_public, lake
 
 ROOT = Path(__file__).resolve().parents[1]
+# The sandbox lives on the Linux host (systemd --user, AF_UNIX, bash). Its pure-Python parts are tested
+# everywhere; the socket guard and the runner only where they can run.
+linux_only = pytest.mark.skipif(sys.platform != "linux", reason="the research sandbox runs on the Linux host only")
 H = 3_600_000
 T0 = 1_760_000_000_000 - (1_760_000_000_000 % H)   # an hour boundary, ms
 
@@ -191,6 +194,7 @@ def test_kline_weights_follow_the_venue_table():
 
 # --- the sandbox has no network -----------------------------------------------------------------------
 
+@linux_only
 def test_the_sandbox_site_blocks_inet_and_keeps_unix_sockets(tmp_path):
     site = ROOT / "scripts" / "research" / "sandbox_site"
     code = (
@@ -274,6 +278,7 @@ def test_the_memory_cap_kills_an_oversized_run(sandbox):
     assert out.returncode != 0
 
 
+@linux_only
 def test_the_runner_refuses_15m_a_real_state_dir_and_a_dirty_official_run(sandbox):
     code, env, _ = sandbox
     out = subprocess.run([RUNNER, "--code", str(code), "--", "python", "-c", "1", "--timeframe", "15m"],
