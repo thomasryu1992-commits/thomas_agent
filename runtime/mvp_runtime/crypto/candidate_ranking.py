@@ -706,6 +706,40 @@ OI_LOOKAHEAD_FEATURES = frozenset({"open_interest_change_pct", "open_interest_zs
 OI_FIX_EFFECTIVE_AT: str | None = "2026-10-20T13:59:48Z"
 
 
+# The daily liquidation rows had the same defect, found 2026-10-21 by the point-in-time contract test (#1281,
+# `features.LIQUIDATION_READING_KNOWN_AFTER_HOURS`): labelled with the day's start, carrying its total, and
+# aligned on the label, so a sub-daily replay read the day's liquidations early.
+LIQUIDATION_LOOKAHEAD_FEATURES = frozenset({
+    "liquidation_spike_ratio", "liquidation_total", "long_liquidation", "short_liquidation",
+})
+# The restart after that fix deployed (`candidate-1282`, thomas-scheduler StartedAt
+# 2026-10-21T09:04:44.514Z), rounded UP to the next second like `OI_FIX_EFFECTIVE_AT`.
+LIQUIDATION_FIX_EFFECTIVE_AT: str | None = "2026-10-21T09:04:45Z"
+
+
+def _sub_daily_entry_reads(record: Mapping[str, Any], names: frozenset[str], fixed_at: str | None) -> bool:
+    """A spec whose entry reads one of ``names``, on any timeframe but 1d, minted before ``fixed_at``
+    (None: not deployed yet, so every such lineage counts as pre-fix)."""
+    spec = record.get("strategy_spec") or {}
+    if not isinstance(spec, Mapping) or spec.get("timeframe") == "1d":
+        return False
+    conditions = ((spec.get("entry_rules") or {}).get("conditions")) or []
+    read = {str(value) for cond in conditions if isinstance(cond, Mapping)
+            for value in (cond.get("feature"), cond.get("value_from")) if value}
+    if not read & names:
+        return False
+    if fixed_at is None:
+        return True
+    created = record.get("created_at_utc")
+    return not isinstance(created, str) or created < fixed_at
+
+
+def liquidation_lookahead_affected(record: Mapping[str, Any]) -> bool:
+    """Was this lineage's evidence produced while its liquidation feature could see the day's total early?
+    The OI rule (:func:`oi_lookahead_affected`) for the liquidation columns and their own fix instant."""
+    return _sub_daily_entry_reads(record, LIQUIDATION_LOOKAHEAD_FEATURES, LIQUIDATION_FIX_EFFECTIVE_AT)
+
+
 def oi_lookahead_affected(record: Mapping[str, Any]) -> bool:
     """Was this lineage's evidence produced while its OI feature could see the day's close early?
 
@@ -714,18 +748,7 @@ def oi_lookahead_affected(record: Mapping[str, Any]) -> bool:
     Keyed on the features the entry names, not the family, so a proposer or crossover child that
     reads them is covered without an edit here. Like :func:`holdout_reused` it is derived at read
     time: the stores are sealed, and the flag only ever withholds a confirmation."""
-    spec = record.get("strategy_spec") or {}
-    if not isinstance(spec, Mapping) or spec.get("timeframe") == "1d":
-        return False
-    conditions = ((spec.get("entry_rules") or {}).get("conditions")) or []
-    names = {str(value) for cond in conditions if isinstance(cond, Mapping)
-             for value in (cond.get("feature"), cond.get("value_from")) if value}
-    if not names & OI_LOOKAHEAD_FEATURES:
-        return False
-    if OI_FIX_EFFECTIVE_AT is None:
-        return True
-    created = record.get("created_at_utc")
-    return not isinstance(created, str) or created < OI_FIX_EFFECTIVE_AT
+    return _sub_daily_entry_reads(record, OI_LOOKAHEAD_FEATURES, OI_FIX_EFFECTIVE_AT)
 
 
 
@@ -747,6 +770,7 @@ def oi_lookahead_affected(record: Mapping[str, Any]) -> bool:
 EVIDENCE_INVALID = "INVALID"
 EVIDENCE_BIASED = "BIASED"
 REASON_OI_LOOKAHEAD = "oi_lookahead"
+REASON_LIQUIDATION_LOOKAHEAD = "liquidation_lookahead"
 REASON_HOLDOUT_REUSED = "holdout_reused"
 REASON_OI_LOOKAHEAD_RESCORE = "oi_lookahead_rescore"
 # The `rescore_reason` a re-score of an OI-lookahead row carries (RESEARCH_SANDBOX step 4 follow-up, E2).
@@ -756,6 +780,7 @@ REASON_OI_LOOKAHEAD_RESCORE = "oi_lookahead_rescore"
 OI_LOOKAHEAD_RESCORE_REASON = "oi_lookahead_fixed_alignment"
 EVIDENCE_REASON_KINDS: dict[str, str] = {
     REASON_OI_LOOKAHEAD: EVIDENCE_INVALID,
+    REASON_LIQUIDATION_LOOKAHEAD: EVIDENCE_INVALID,
     REASON_HOLDOUT_REUSED: EVIDENCE_BIASED,
     REASON_OI_LOOKAHEAD_RESCORE: EVIDENCE_BIASED,
 }
@@ -766,6 +791,8 @@ def evidence_standing(record: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
     reasons = []
     if oi_lookahead_affected(record):
         reasons.append(REASON_OI_LOOKAHEAD)
+    if liquidation_lookahead_affected(record):
+        reasons.append(REASON_LIQUIDATION_LOOKAHEAD)
     if holdout_reused(record):
         reasons.append(REASON_HOLDOUT_REUSED)
     if record.get("rescore_reason") == OI_LOOKAHEAD_RESCORE_REASON:

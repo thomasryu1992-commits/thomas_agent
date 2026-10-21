@@ -447,3 +447,31 @@ def test_a_pre_fix_sub_daily_oi_lineage_cannot_arm_live_on_a_confirmed_forward_r
 
 def test_a_daily_oi_lineage_still_arms_live():
     fc.assert_live_tier_confirmed([_oi_record("1d")], outcomes=_spread_outcomes(), observed_lineages=1)
+
+
+# --- the liquidation lookahead flag (2026-10-21), read through evidence standing ------------------------
+
+def _liq_record(timeframe):
+    record = _record(timeframe=timeframe)
+    record["strategy_spec"] = {**record["strategy_spec"], "entry_rules": {"conditions": [
+        {"feature": "liquidation_spike_ratio", "operator": ">", "value": 2.0}]}}
+    return record
+
+
+def test_a_pre_fix_sub_daily_liquidation_lineage_cannot_arm_live():
+    from runtime.mvp_runtime.crypto import candidate_ranking as cr
+    record = _liq_record("1h")
+    assert cr.evidence_standing(record)["invalid"] == ("liquidation_lookahead",)
+    rows = _spread_outcomes()
+    assert fc.judge_forward(record, rows)["status"] == fc.FORWARD_CONFIRMED
+    with pytest.raises(ToolError) as exc:
+        fc.assert_live_tier_confirmed([record], outcomes=rows, observed_lineages=1)
+    assert "INVALID (liquidation_lookahead)" in str(exc.value)
+
+
+def test_a_daily_or_post_fix_liquidation_lineage_still_arms_live(monkeypatch):
+    from runtime.mvp_runtime.crypto import candidate_ranking as cr
+    fc.assert_live_tier_confirmed([_liq_record("1d")], outcomes=_spread_outcomes(), observed_lineages=1)
+    monkeypatch.setattr(cr, "LIQUIDATION_FIX_EFFECTIVE_AT", "2000-01-01T00:00:00Z")   # minted after the fix
+    assert cr.evidence_standing(_liq_record("1h"))["invalid"] == ()
+    fc.assert_live_tier_confirmed([_liq_record("1h")], outcomes=_spread_outcomes(), observed_lineages=1)
