@@ -7,6 +7,9 @@
 # - No network (sandbox_site/sitecustomize.py), no secrets (empty environment), no live state: the code
 #   tree's state directory is a link to a per-run copy of the lake snapshot's research files.
 # - Refuses a code tree that holds a real state directory, and any 15m argument.
+# - Refuses to START inside the factory window (08:00-09:00 UTC, `fetch_public.FACTORY_WINDOW_UTC`) or in the
+#   30 minutes before it: a run takes ~10 minutes, and the 2026-10-21 re-score ran 08:12-08:21 beside the
+#   factory. The cap and nice keep a run from starving it; not starting there keeps it from sharing at all.
 # - --official: the tree must be clean and its HEAD on origin/main (merged, reviewed code only).
 # - Every run is recorded under ~/research/runs/<run id>/ (command, sha, dirty, lake id, exit, times).
 set -euo pipefail
@@ -24,6 +27,15 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ $# -gt 0 ] || { echo "no command" >&2; exit 2; }
+
+# RESEARCH_NOW_UTC (HH:MM) exists for the test of this rule; nothing else sets it.
+now_hm="${RESEARCH_NOW_UTC:-$(date -u +%H:%M)}"
+now_min=$(( 10#${now_hm%%:*} * 60 + 10#${now_hm##*:} ))
+window_start=$(( 8 * 60 )); window_end=$(( 9 * 60 )); lead=30
+if [ "$now_min" -ge $(( window_start - lead )) ] && [ "$now_min" -lt "$window_end" ]; then
+  echo "refused: $now_hm UTC is in or within ${lead} min of the factory window (08:00-09:00 UTC); start after 09:00" >&2
+  exit 2
+fi
 
 lake_root="${RESEARCH_LAKE_ROOT:-/var/lib/thomas-measure/research-lake}"
 cache="${RESEARCH_CACHE:-$HOME/research/cache}"
