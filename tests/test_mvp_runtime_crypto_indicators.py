@@ -50,6 +50,11 @@ SOURCE_DEVIATIONS = {
     # rule the source predates. The source's bar-space series re-counted each settlement once
     # per bar, so the same |z| threshold meant a 16.7-day norm at 4h and a 100-day norm at 1d.
     "funding_zscore",
+    # 2026-10-21 (Thomas, E3 of CRYPTO_ARCHIVE_BACKFILL_V0.1 "결정 (Thomas 2026-10-21)"): a daily
+    # liquidation row is labelled with its day's START and carries the day's TOTAL, so it is keyed
+    # by when it is known (label + 24 h), the open-interest rule. The source aligned it on the label;
+    # on this 1d fixture each bar now reads the previous day's total, as live always did.
+    "liquidation_spike_ratio", "liquidation_total", "long_liquidation", "short_liquidation",
 }
 
 
