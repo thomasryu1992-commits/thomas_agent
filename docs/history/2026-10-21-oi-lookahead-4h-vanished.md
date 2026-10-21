@@ -23,3 +23,7 @@
     this merge, and its result goes under the 4h one.
 - **Why per timeframe:** `summarize` sums the period subtotals of every block it is handed. A combined
   `--timeframe 4h --timeframe 1h` run would mix the two timeframes' periods, so each reading comes from its own run.
+- **1h, official (added after #1278):** VANISHED.
+  - Same lake (`20261021T041701Z`), main `217d39c1`, run `20261021T050751Z-3301259`. It matched the preliminary run
+    to the digit.
+  - L: +0.093R, 4 CONFIRMED. F: −0.053R, 2 CONFIRMED, none of them L's.
