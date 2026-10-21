@@ -1789,6 +1789,8 @@ def _execute(
                 built, collector=collector, timeframe=timeframe, now=now, root=repo_root,
                 liquidation_feed=liquidation_feed, candle_target=factory_candle_target,
                 candle_cache=candle_cache,
+                # RESEARCH_SANDBOX step 3: the factory keeps the daily vendor rows it fetched.
+                record_vendor_daily=True,
             )
             return built
 
