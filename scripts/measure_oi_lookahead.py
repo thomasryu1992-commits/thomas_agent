@@ -195,12 +195,15 @@ def main(argv: list[str] | None = None) -> int:
     snapshots: dict[tuple[str, str], dict[str, Any]] = {}
     rows: list[dict[str, Any]] = []
     blocks: dict[str, list[dict[str, Any]]] = {"L": [], "F": []}
-    # Timeframe by timeframe, so the snapshot cache only ever holds one timeframe's legs (the pooled
-    # 4h context reuses the single-symbol 4h snapshots); progress goes to stderr, never into --json.
+    # The cache holds only the legs a context still ahead needs: the pooled 4h context reuses the
+    # single-symbol 4h snapshots, and every other snapshot is dropped once its last context has run. A
+    # 1h snapshot carries 24,000 bars plus its reference and cross-section legs, so holding all five
+    # (2026-10-21) took the research sandbox past its 700M cap. Progress goes to stderr, never into --json.
     ordered = sorted(by_context.items(), key=lambda item: (item[0][1], item[0][0]))
     for done, ((scope, timeframe), group) in enumerate(ordered, start=1):
-        if any(tf != timeframe for _, tf in snapshots):
-            snapshots.clear()
+        needed = {(symbol, tf) for (later, tf), _ in ordered[done - 1:] for symbol in later}
+        for key in [key for key in snapshots if key not in needed]:
+            del snapshots[key]
         print(f"  [{done}/{len(ordered)}] {'+'.join(scope)} {timeframe}: {len(group)} candidate(s)",
               file=sys.stderr, flush=True)
         try:
@@ -228,6 +231,8 @@ def main(argv: list[str] | None = None) -> int:
                    for key in ("closed_count", "expectancy")},
                 "L_status": robustness.holdout_status(legacy), "F_status": robustness.holdout_status(fixed),
             })
+        # Nothing of this context may outlive it: the next context's snapshot builds while these are dead.
+        del legs, specs, legacy_blocks, fixed_blocks
     legacy_sum, fixed_sum = summarize(blocks["L"]), summarize(blocks["F"])
     kept = sum(1 for row in rows if row.get("L_status") == robustness.HOLDOUT_CONFIRMED
                and row.get("F_status") == robustness.HOLDOUT_CONFIRMED)
