@@ -75,7 +75,11 @@ SCRIPTS: dict[str, str] = {
     "scripts/list_resting_orders.py": READ,
     "scripts/family_period_test.py": READ,
     "scripts/measure_live_slippage.py": READ,
-    "scripts/measure_oi_lookahead.py": READ,               # paired L/F replay, prints a report
+    "scripts/measure_oi_lookahead.py": READ,
+    # The research sandbox (RESEARCH_SANDBOX_V0.1): no state written; fetch_public writes only the sandbox's
+    # own cache under ~/research, outside the state root, from the venue's public endpoints.
+    "scripts/research/fetch_public.py": READ,
+    "scripts/research/lake.py": READ,               # paired L/F replay, prints a report
     "scripts/paired_family_window_check.py": READ,
     "scripts/pooled_mint_check.py": READ,
     "scripts/probe_signal_rate.py": READ,
