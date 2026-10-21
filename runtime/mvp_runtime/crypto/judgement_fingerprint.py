@@ -39,12 +39,12 @@ JUDGEMENT_RULES_VERSION = "judgement_rules.v1"
 FINGERPRINT_NAME = "judgement_rules"
 
 # In the scope but not in `tunables.TUNABLES`, which indexes numeric scalars: the scorer's component
-# weights, the promotion door's three admitted sets, and the instant before which a lookahead-feature
-# row's evidence is INVALID (`candidate_ranking.OI_FIX_EFFECTIVE_AT`, a timestamp; its premise is in
+# weights, the promotion door's three admitted sets, and the instants before which a lookahead-feature
+# row's evidence is INVALID (`candidate_ranking.OI_FIX_EFFECTIVE_AT` and `LIQUIDATION_FIX_EFFECTIVE_AT`, timestamps; each premise is in
 # its own comment there).
 NOT_INDEXED = frozenset({
     "WEIGHTS", "PROMOTABLE_COST_BASIS_RANKS", "PROMOTABLE_EVIDENCE_DEPTH_RANKS",
-    "PROMOTABLE_DERIVATION_TYPES", "OI_FIX_EFFECTIVE_AT",
+    "PROMOTABLE_DERIVATION_TYPES", "OI_FIX_EFFECTIVE_AT", "LIQUIDATION_FIX_EFFECTIVE_AT",
 })
 
 
@@ -72,6 +72,7 @@ def judgement_rules() -> dict[str, Any]:
         "SELECTION_ALPHA": robustness.SELECTION_ALPHA,
         # evidence standing: which rows' numbers are INVALID (Thomas 2026-10-21, decision 2 of the OI re-score)
         "OI_FIX_EFFECTIVE_AT": candidate_ranking.OI_FIX_EFFECTIVE_AT,
+        "LIQUIDATION_FIX_EFFECTIVE_AT": candidate_ranking.LIQUIDATION_FIX_EFFECTIVE_AT,
         # forward
         "FORWARD_SLICE_WIDTH_DAYS": forward_confirmation.FORWARD_SLICE_WIDTH_DAYS,
         "MIN_FORWARD_TRADES_1D": forward_confirmation.MIN_FORWARD_TRADES_1D,
