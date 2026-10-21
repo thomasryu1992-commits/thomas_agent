@@ -164,3 +164,52 @@ def test_a_context_builds_its_frames_once_per_alignment_not_once_per_candidate(m
     assert sorted(builds) == [0, 24]
     assert len(json.loads(capsys.readouterr().out)["candidates"]) == 3
 
+
+
+def test_a_snapshot_lives_only_while_a_context_still_ahead_needs_it(monkeypatch, tmp_path, capsys):
+    """The 1h run of 2026-10-21 died at the sandbox's 700M cap holding every 1h snapshot at once. Each
+    (symbol, timeframe) is built once, the pooled context reuses the singles, and when a context replays
+    only the snapshots a context still ahead needs are alive."""
+    import gc
+    import weakref
+
+    class Snap(dict):
+        pass
+
+    live: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
+    built: list[tuple[str, str]] = []
+    seen: list[tuple[tuple[str, ...], str, set]] = []
+
+    at_build: dict[tuple[str, str], set] = {}
+
+    def build(symbol, timeframe, now, root):
+        gc.collect()
+        at_build[(symbol, timeframe)] = set(live.keys())
+        built.append((symbol, timeframe))
+        snap = Snap(symbol=symbol)
+        live[(symbol, timeframe)] = snap
+        return snap
+
+    def replay(specs, legs, *, known_after_hours):
+        gc.collect()
+        seen.append((tuple(leg["symbol"] for leg in legs), specs[0].timeframe, set(live.keys())))
+        return [None] * len(specs)
+
+    pooled = ("BTCUSDT", "ETHUSDT")
+    records = [_record("c1", scope=("BTCUSDT",)), _record("c2", scope=pooled), _record("c3", scope=("ETHUSDT",)),
+               _record("c4", timeframe="1h", scope=("BTCUSDT",)), _record("c5", timeframe="1h", scope=("ETHUSDT",)),
+               _record("c6", timeframe="1h", scope=("SOLUSDT",))]
+    monkeypatch.setattr(measure, "_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(measure.pool_state, "read_candidates", lambda root: records)
+    monkeypatch.setattr(measure, "_build_snapshot", build)
+    monkeypatch.setattr(measure, "holdouts", replay)
+    assert measure.main(["--json"]) == 0
+    assert sorted(built) == sorted(set(built)) and len(built) == 5
+    alive = {(scope, tf): keys for scope, tf, keys in seen}   # L and F see the same set
+    assert alive[(("BTCUSDT",), "1h")] == {("BTCUSDT", "1h")}
+    assert alive[(("ETHUSDT",), "1h")] == {("ETHUSDT", "1h")}
+    assert alive[(("SOLUSDT",), "1h")] == {("SOLUSDT", "1h")}
+    assert alive[(pooled, "4h")] == {("BTCUSDT", "4h"), ("ETHUSDT", "4h")}
+    assert alive[(("ETHUSDT",), "4h")] == {("ETHUSDT", "4h")}
+    # A new 1h snapshot builds with the previous context's already dead, not held by its legs.
+    assert at_build[("ETHUSDT", "1h")] == set() and at_build[("SOLUSDT", "1h")] == set()
