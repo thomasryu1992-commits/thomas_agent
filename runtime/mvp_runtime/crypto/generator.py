@@ -38,6 +38,7 @@ from typing import Any, Mapping, Sequence
 from runtime.read_only_kernel import integrity
 
 from . import features, indicators, market_data
+from .candidate_ranking import evidence_invalid
 from .trade_plan import ASSUMED_LEVERAGE, MAINTENANCE_MARGIN_RATE, liquidation_price
 from .robustness import MIN_HOLDOUT_TRADES
 from .strategy import SCHEMA_VERSION, SpecParseError, StrategySpec
@@ -565,6 +566,10 @@ def _best_mint_params(
         # `champion_score` cannot see the holdout, so the maximum over the store lands on a row
         # the tail refuted about half the time. See `holdout_permits_centring`.
         if not holdout_permits_centring(record):
+            continue
+        # A centre "claims nothing", but it is chosen by `champion_score`, and an INVALID row's score was
+        # computed wrong: it would aim the next generation at a region only the defect made look good.
+        if evidence_invalid(record):
             continue
         # `>` not `>=`: on a tie the EARLIER record wins, so the centre does not drift with
         # store order among equals.

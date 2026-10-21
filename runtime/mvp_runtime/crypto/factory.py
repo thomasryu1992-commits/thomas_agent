@@ -62,6 +62,7 @@ from typing import Any, Callable, Mapping, Sequence
 from runtime.read_only_kernel import integrity
 
 from . import market_data
+from .candidate_ranking import evidence_invalid
 from .candidate_identity import candidate_id, derive_candidate_id
 from .robustness import MIN_HOLDOUT_TRADES
 from .strategy import SpecParseError, StrategySpec
@@ -773,6 +774,10 @@ def rank_fusion_parents(
         # Applied BEFORE the latest-wins collapse below, so a lineage is judged on the row being
         # considered rather than on whichever of its re-scores happened to carry a holdout.
         if not holdout_permits_parenting(record):
+            continue
+        # Nor may a row whose numbers were computed wrong: its `champion_score` ranks it below, and
+        # that score saw what the holdout saw (`candidate_ranking.evidence_standing`, INVALID).
+        if evidence_invalid(record):
             continue
         cid = candidate_id(record)
         rule_hash = record.get("strategy_rule_hash")
