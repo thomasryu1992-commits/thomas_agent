@@ -170,6 +170,7 @@ def _collect_context(
         # The live cycle is the accumulator: it runs on the 15-minute cadence the positioning
         # store's hourly throttle is sized for, and it is the one path that always has a root.
         accumulate=True,
+        record_vendor_daily=True,
     )
     reason_codes.extend(feed_reasons)
 

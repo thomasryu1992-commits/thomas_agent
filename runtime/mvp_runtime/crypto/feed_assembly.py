@@ -202,6 +202,7 @@ def attach_feeds(
     now: str,
     root: Path | None = None,
     accumulate: bool = False,
+    record_vendor_daily: bool = False,
 ) -> tuple[list[str], dict[str, str]]:
     """Fetch the C9 derivative feeds onto ``snapshot`` (mutating it). Degrade-only.
 
@@ -329,6 +330,17 @@ def attach_feeds(
             snapshot["open_interest"] = []
             status["open_interest"] = "degraded"
             reason_codes.append(OPEN_INTEREST_DEGRADED)
+        # RESEARCH_SANDBOX step 3: keep the daily rows just fetched, so a sandbox without the key can
+        # replay them. No new request; only the scheduler's factory and live cycle opt in, so operator
+        # and measurement scripts stay read-only. Degrade-only, like everything else here.
+        if record_vendor_daily:
+            from . import coinalyze_daily_store
+            daily = coinalyze_daily_store.record(
+                symbol, now=now, root=root,
+                open_interest=snapshot["open_interest"] if status["open_interest"] == "ok" else None,
+                liquidations=snapshot["liquidations"] if status["liquidations"] == "ok" else None,
+            )
+            status["coinalyze_daily"] = str(daily["status"])
         # The hourly series, accumulated into a store the runtime retains itself. It feeds
         # NOTHING here — `snapshot` is untouched, so the features, the backtest and the live
         # router all keep reading the daily series above and stay identical to each other.
@@ -546,6 +558,7 @@ def attach_mining_legs(
     liquidation_feed: Any | None = None,
     candle_target: Any = None,
     candle_cache: Any | None = None,
+    record_vendor_daily: bool = False,
 ) -> None:
     """Every leg **the factory mines on**, in one place. Mutating, degrade-only, never raises.
 
@@ -602,7 +615,7 @@ def attach_mining_legs(
     Optional, and absent means exactly the previous behaviour.
     """
     attach_feeds(snapshot, collector=collector, liquidation_feed=liquidation_feed,
-                 now=now, root=root, accumulate=False)
+                 now=now, root=root, accumulate=False, record_vendor_daily=record_vendor_daily)
     depth = candle_target(timeframe) if candle_target is not None else None
     higher = HIGHER_TIMEFRAME.get(timeframe)
     attach_htf(snapshot, collector=collector, now=now,

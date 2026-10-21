@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **734** distinct codes across **1506** raise sites
+- **735** distinct codes across **1507** raise sites
 - **24** exception classes carry them
 - **84** codes are raised from more than one module (see below)
 - **176** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -333,6 +333,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `CLOCK_UNTRUSTED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/clock.py` | `check_clock` | `last_seen_wall is not None and now_wall < last_seen_wall - timedelta(seconds=policy.backstep_to…` |
 | `CLOCK_UNTRUSTED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/clock.py` | `check_clock` | `mono_elapsed < 0 or abs(wall_elapsed - mono_elapsed) > policy.clock_jump_s` |
 | `CLOCK_UNTRUSTED` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/clock.py` | `check_clock` | `not sync_confirmed` |
+| `COINALYZE_DAILY_SYMBOL_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/coinalyze_daily_store.py` | `append_rows` | `not name` |
 | `COMPOSE_PROJECT_MISMATCH` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_measure_images` | `parts[3] != self.config.environment.project` |
 | `CONSUMED_NOT_PROMOTED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | `consume_approval` | `—` |
 | `CONSUMED_UNAUDITED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | `consume_approval` | `—` |
