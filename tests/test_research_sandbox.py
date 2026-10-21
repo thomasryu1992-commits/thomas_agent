@@ -335,3 +335,23 @@ def test_the_runner_refuses_15m_a_real_state_dir_and_a_dirty_official_run(sandbo
     out = subprocess.run([RUNNER, "--official", "--code", str(code), "--", "true"], env=env,
                          capture_output=True, text=True, timeout=60)
     assert out.returncode == 2 and "clean tree" in out.stderr
+
+
+@linux_only
+def test_the_runner_never_starts_in_or_just_before_the_factory_window(tmp_path):
+    """The bounds come from `fetch_public.FACTORY_WINDOW_UTC`, so the runner and the fetch cannot disagree."""
+    start, end = (h * 60 for h in fetch_public.FACTORY_WINDOW_UTC)
+
+    def run_at(minute: int) -> subprocess.CompletedProcess:
+        env = {**os.environ, "RESEARCH_NOW_UTC": f"{minute // 60:02d}:{minute % 60:02d}",
+               "RESEARCH_LAKE_ROOT": str(tmp_path / "no-lake")}
+        return subprocess.run(["bash", str(ROOT / "scripts" / "research" / "sandbox_run.sh"), "--", "true"],
+                              cwd=ROOT, env=env, capture_output=True, text=True)
+
+    for minute in (start - 30, start, start + 12, end - 1):
+        refused = run_at(minute)
+        assert refused.returncode == 2 and "factory window" in refused.stderr, minute
+        assert "no lake snapshot" not in refused.stderr, minute   # it stopped there, not further on
+    for minute in (start - 31, end, end + 60):
+        allowed = run_at(minute)
+        assert "factory window" not in allowed.stderr, minute   # it goes on, and stops at the missing lake
