@@ -229,7 +229,16 @@ DAY_TYPE_VALUES = frozenset({"WEEKDAY", "WEEKEND"})
 MAX_SESSION_BAR_MINUTES = 4 * 60
 
 
-def _known_after(label: Any, hours: int) -> str | None:
+def _period_seconds(period: Any) -> int | None:
+    """``"15m"`` / ``"1h"`` / ``"1d"`` as seconds, or None. The interval grammar, not a table: the venue's
+    accepted periods stay `market_data.POSITIONING_PERIOD_SECONDS`, and a test holds the two equal."""
+    if not isinstance(period, str) or len(period) < 2 or not period[:-1].isdigit():
+        return None
+    unit = {"m": 60, "h": 3600, "d": 86400}.get(period[-1])
+    return int(period[:-1]) * unit if unit and int(period[:-1]) > 0 else None
+
+
+def _known_after(label: Any, hours: float) -> str | None:
     """The instant a reading labelled ``label`` becomes known, ``hours`` after the label. None for an
     unparseable label, which then aligns nowhere."""
     from .. import timeutil as _timeutil
@@ -591,7 +600,7 @@ def _positioning_columns(bar_times: list[str], snapshot: dict[str, Any]) -> dict
     **Alignment is backward as-of** (:func:`_asof_align`), the funding and open-interest rule —
     not the exact open-time join the derivative-price and cross-section legs use. The store keeps
     an HOURLY series on its own cadence, independent of the bar grid, so a bar carries the last
-    reading at or before its open. Substituting the exact join here would blank every bar that is
+    reading the runtime HOLDS at its open: row T from T + period, when the collector first keeps it. Substituting the exact join here would blank every bar that is
     not on an hour boundary; substituting as-of over THERE would fabricate a basis for a bar the
     venue skipped. Three grids, three rules, each named where it applies.
 
@@ -611,6 +620,7 @@ def _positioning_columns(bar_times: list[str], snapshot: dict[str, Any]) -> dict
 
     # One reading per (series, timestamp), so the three series can be paired by time.
     by_series: dict[str, dict[str, float]] = {}
+    period_of: dict[str, Any] = {}
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -621,6 +631,7 @@ def _positioning_columns(bar_times: list[str], snapshot: dict[str, Any]) -> dict
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             continue
         by_series.setdefault(series, {})[stamp] = float(value)
+        period_of[stamp] = row.get("period")
 
     top_position = by_series.get("top_position") or {}
     global_account = by_series.get("global_account") or {}
@@ -639,7 +650,12 @@ def _positioning_columns(bar_times: list[str], snapshot: dict[str, Any]) -> dict
 
     events = [
         {
-            "timestamp": stamp,
+            # Keyed by when THIS RUNTIME holds the reading: the collector keeps a row only once its
+            # period has closed (`market_data._parse_positioning_page`), so live first sees row T at
+            # T + period. Replay keyed on the label read it up to one period sooner on a frame finer
+            # than the period (Thomas 2026-10-21: replay follows live). An unknown period aligns nowhere.
+            "timestamp": (_known_after(stamp, seconds / 3600)
+                          if (seconds := _period_seconds(period_of.get(stamp))) else None),
             "positioning_divergence": divergence[i],
             "positioning_divergence_zscore": zscore[i],
             "positioning_divergence_change": change[i],

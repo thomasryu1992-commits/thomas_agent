@@ -605,8 +605,12 @@ def test_a_missing_leg_makes_the_divergence_indeterminate_not_zero(tmp_path):
 def test_a_bar_between_two_readings_carries_the_EARLIER_one(tmp_path):
     """**Backward as-of, the funding and open-interest rule — not the exact open-time join the
     derivative-price and cross-section legs use.** The store keeps an hourly series on its own
-    cadence, so a 15m bar at :15 must carry the reading at :00. An exact join would blank three
-    bars in four; a FORWARD fill would leak a reading the bar could not have known."""
+    cadence, so every 15m bar of an hour carries the same reading. An exact join would blank three
+    bars in four; a FORWARD fill would leak a reading the bar could not have known.
+
+    Which reading: the one the runtime HOLDS by then. The collector keeps row T only once its hour
+    has closed, so the bars of hour 01 carry the 00:00 reading and none the 01:00 one (Thomas
+    2026-10-21: replay follows live)."""
     from runtime.mvp_runtime.crypto.cycle import attach_positioning
     from runtime.mvp_runtime.crypto.features import build_feature_rows
 
@@ -617,14 +621,14 @@ def test_a_bar_between_two_readings_carries_the_EARLIER_one(tmp_path):
                   "long_ratio": value, "short_ratio": 1.0 - value}],
                 root=tmp_path, symbol="ETHUSDT", series=series,
             )
-    quarter = [{"open_time": f"2026-07-01T00:{m:02d}:00Z", "close_time": f"2026-07-01T00:{m + 15:02d}:00Z",
+    quarter = [{"open_time": f"2026-07-01T01:{m:02d}:00Z", "close_time": f"2026-07-01T01:{m + 15:02d}:00Z",
                 "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10.0}
                for m in (0, 15, 30, 45)]
     snapshot = {"symbol": "ETHUSDT", "timeframe": "15m", "candles": quarter}
     attach_positioning(snapshot, root=tmp_path)
     rows = build_feature_rows(snapshot)
     assert [r["positioning_divergence"] for r in rows] == [pytest.approx(0.10)] * 4, (
-        "every bar in the hour must carry that hour's reading, and none the next hour's"
+        "every bar of hour 01 must carry the 00:00 reading, the newest the runtime holds, and none the 01:00 one"
     )
 
 
@@ -645,7 +649,8 @@ def test_the_change_is_measured_over_READINGS_not_over_bars(tmp_path):
                   "long_ratio": value, "short_ratio": 1.0 - value}],
                 root=tmp_path, symbol="ETHUSDT", series=series,
             )
-    snapshot = {"symbol": "ETHUSDT", "timeframe": "1h", "candles": _hourly_candles(hours)}
+    # One bar more than readings: the newest reading is held from the hour after its label.
+    snapshot = {"symbol": "ETHUSDT", "timeframe": "1h", "candles": _hourly_candles(hours + 1)}
     attach_positioning(snapshot, root=tmp_path)
     rows = build_feature_rows(snapshot)
     # The newest reading is 0.20 above the one POSITIONING_CHANGE_PERIODS readings earlier.
@@ -975,3 +980,45 @@ def test_the_board_says_covered_is_not_open(tmp_path, monkeypatch):
     monkeypatch.setattr(positioning_store, "coverage_summary", lambda root=None, **kw: dict(_COVERED))
     text = render_status_text(build_status(tmp_path, now="2026-10-03T00:00:00Z"))
     assert "포지셔닝 1000.0/1000일 (커버 충족·생성 닫힘(결정 전)" in text
+
+
+# --- replay follows live (Thomas 2026-10-21) ----------------------------------------------------------------
+
+def test_the_period_grammar_is_the_collectors_table():
+    from runtime.mvp_runtime.crypto import features, market_data
+    for period, seconds in market_data.POSITIONING_PERIOD_SECONDS.items():
+        assert features._period_seconds(period) == seconds, period
+    for bad in (None, "", "h", "0h", "1w", "1.5h", 3600):
+        assert features._period_seconds(bad) is None, bad
+
+
+def test_every_bar_reads_exactly_the_newest_row_the_collector_holds_at_its_open():
+    """The collector keeps a positioning row only once its period has closed; replay must not read a row
+    sooner than that, on any frame. Checked with the collector's own page parser, bar by bar on a 15m grid
+    (the finest the factory mines, and finer than the hourly rows)."""
+    import json as _json
+
+    from runtime.mvp_runtime import timeutil
+    from runtime.mvp_runtime.crypto import market_data
+    from runtime.mvp_runtime.crypto.features import build_feature_rows
+
+    hour_ms = market_data.POSITIONING_PERIOD_SECONDS["1h"] * 1000
+    base_ms = 1_782_864_000_000 - (1_782_864_000_000 % hour_ms)        # an hour boundary
+    labels = [base_ms + k * hour_ms for k in range(6)]
+    page = _json.dumps([{"timestamp": t, "longAccount": str(0.5 + 0.01 * k), "shortAccount": "0.5"}
+                        for k, t in enumerate(labels)])
+    parser = market_data.BinanceFuturesCollector()
+    iso = lambda ms: timeutil.format_iso(timeutil.parse_iso("1970-01-01T00:00:00Z")  # noqa: E731
+                                         + __import__("datetime").timedelta(milliseconds=ms))
+    rows = [{"series": series, "period": "1h", "timestamp": iso(t), "long_ratio": 0.5 + 0.01 * k,
+             "short_ratio": 0.5} for k, t in enumerate(labels)
+            for series in ("top_position", "global_account")]
+    quarter_ms = hour_ms // 4
+    opens = [base_ms + q * quarter_ms for q in range(len(labels) * 4)]
+    candles = [{"open_time": iso(o), "close_time": iso(o + quarter_ms), "open": 1.0, "high": 1.0,
+                "low": 1.0, "close": 1.0, "volume": 1.0} for o in opens]
+    features_rows = build_feature_rows({"candles": candles, "positioning": rows})
+    for bar_open, row in zip(opens, features_rows):
+        held = parser._parse_positioning_page(page, series="top_position", now_ms=bar_open, period_ms=hour_ms)
+        expected = held[max(held)]["long_ratio"] if held else None
+        assert row["positioning_top_long"] == (pytest.approx(expected) if expected is not None else None), iso(bar_open)
