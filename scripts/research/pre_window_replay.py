@@ -132,8 +132,15 @@ def _trades(spec: StrategySpec, windows: Sequence[Any], *, seed: str | None = No
     return out
 
 
+def twin_seeds(seed: str, count: int) -> list[str]:
+    """The twin's draws: its own seed when ``count`` is 1 (the decided rule), else ``seed|1``..``seed|count``
+    (``MINT_REALLOCATION_PRE_WINDOW_V0.1.md`` §5, the confirmation run). Their trades are pooled, so the
+    twin's mean is over all draws and one lucky or unlucky draw no longer sets the difference."""
+    return [seed] if count == 1 else [f"{seed}|{k}" for k in range(1, count + 1)]
+
+
 def replay(root: Path, entries: Sequence[Mapping[str, Any]], *,
-           say: Any = lambda *_a, **_k: None) -> list[dict[str, Any]]:
+           say: Any = lambda *_a, **_k: None, seeds: int = 1) -> list[dict[str, Any]]:
     """One row per (member, window): its trades and its twin's, or why it was not replayed."""
     by_context: dict[tuple[tuple[str, ...], str], list[Mapping[str, Any]]] = defaultdict(list)
     for entry in entries:
@@ -166,7 +173,8 @@ def replay(root: Path, entries: Sequence[Mapping[str, Any]], *,
                 rows.append({
                     "candidate_id": entry["member"]["candidate_id"], "window": label, "status": "replayed",
                     "member": _trades(spec, windows),
-                    "twin": _trades(twin_spec, windows, seed=str(entry["twin"]["seed"])),
+                    "twin": [trade for draw in twin_seeds(str(entry["twin"]["seed"]), seeds)
+                             for trade in _trades(twin_spec, windows, seed=draw)],
                 })
             del frames, windows
     return rows
@@ -240,7 +248,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pre_window_replay", description=__doc__.splitlines()[0])
     parser.add_argument("--list", action="store_true", help="print the fixed population and exit; replays nothing")
     parser.add_argument("--json", action="store_true", help="print the whole report as JSON")
+    parser.add_argument("--twin-seeds", type=int, default=1, metavar="K",
+                        help="pool each twin over K seeded draws (default 1, the decided rule; 8 for the "
+                             "MINT_REALLOCATION_PRE_WINDOW confirmation run)")
     args = parser.parse_args(argv)
+    if args.twin_seeds < 1:
+        print("--twin-seeds must be at least 1", file=sys.stderr)
+        return EXIT_USAGE
     # The sandbox's sitecustomize installs the lake selectors; anywhere else the runtime's collector would
     # reach the venue, and the as-of cut would not exist.
     if getattr(market_data.select_market_data_collector, "__module__", "") != lake.__name__:
@@ -262,10 +276,11 @@ def main(argv: list[str] | None = None) -> int:
             m = e["member"]
             print(f"  {m['timeframe']:3s} {m['candidate_id']} {m['strategy_family']:28s} twin {e['twin']['null_id']}")
         return EXIT_OK
-    rows = replay(root, entries, say=print)
+    rows = replay(root, entries, say=print, seeds=args.twin_seeds)
     report = {
         "measured_at": timeutil.utc_now_iso(),
         **provenance(),
+        "twin_seeds": args.twin_seeds,
         "population": [{"candidate_id": e["member"]["candidate_id"], "null_id": e["twin"]["null_id"],
                         "timeframe": e["member"]["timeframe"], "strategy_family": e["member"]["strategy_family"]}
                        for e in entries],
