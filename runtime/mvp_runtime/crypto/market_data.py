@@ -1396,6 +1396,16 @@ class BinanceFuturesCollector:
         reading for that same timestamp would be discarded as a duplicate. Dropping it is what
         makes the accumulation converge on the venue's own numbers.
 
+        Measured 2026-10-21 (162 polls, BTCUSDT, all three series, 5m and 1h): the premise does not
+        hold. A row labelled T is published 1.5-5 minutes after T and its value never moved afterwards,
+        inside or after its period, so it is a reading AT T, not a forming aggregate of [T, T+period).
+        The drop costs nothing in correctness; it makes this collector hold row T one period later than
+        the venue publishes it. Replay aligns on the label, so on a frame finer than the period (15m
+        against 1h rows) replay reads a row up to one period before live would. That is not a lookahead
+        (the row was public before the bar closed; `tests/test_mvp_runtime_crypto_point_in_time.py`),
+        but it is a replay/live difference to settle before positioning minting opens
+        (`docs/history/2026-10-21-positioning-availability.md`).
+
         ``longShortRatio`` is not returned even though the venue sends it: it is exactly
         ``longAccount / shortAccount``, so storing it alongside both legs creates a third field
         that can disagree with the other two after rounding. The legs are what the venue

@@ -22,11 +22,10 @@ from typing import Any, Callable
 import pytest
 
 from runtime.mvp_runtime import timeutil
-from runtime.mvp_runtime.crypto import features, positioning_store
-from runtime.mvp_runtime.crypto.market_data import MockMarketDataCollector, collect_market_data
+from runtime.mvp_runtime.crypto import features
+from runtime.mvp_runtime.crypto.market_data import HIGHER_TIMEFRAME, MockMarketDataCollector, collect_market_data
 
 NOW = "2026-10-20T12:00:00Z"
-TF_HOURS = 4
 
 
 def _shift(stamp: str, hours: float) -> str:
@@ -38,9 +37,18 @@ def _candles(symbol: str, timeframe: str, limit: int) -> list[dict[str, Any]]:
     return snapshot["candles"]
 
 
-def _full_snapshot() -> dict[str, Any]:
-    """Every leg the factory attaches, on a 4h frame, with values that move on every reading."""
-    candles = _candles("ETHUSDT", "4h", 600)
+# Each frame the factory mines below 1d, deep enough that every warm-up fills: a leak shorter than one bar
+# is invisible on that frame (the bar's own close already knows it), so each timeframe is checked on its own.
+TF_HOURS = {"4h": 4, "1h": 1, "15m": 0.25}
+BARS = {"4h": 600, "1h": 1200, "15m": 2400}
+
+
+def _full_snapshot(timeframe: str = "4h") -> dict[str, Any]:
+    """Every leg the factory attaches, on one frame, with values that move on every reading."""
+    bars = BARS[timeframe]
+    higher = HIGHER_TIMEFRAME[timeframe]
+    htf_bars = int(bars * TF_HOURS[timeframe] / {"1d": 24, "4h": 4, "1h": 1}[higher]) + 60
+    candles = _candles("ETHUSDT", timeframe, bars)
     first, last = candles[0]["open_time"], candles[-1]["close_time"]
     days = []
     day = timeutil.parse_iso(first[:10] + "T00:00:00Z")
@@ -52,16 +60,21 @@ def _full_snapshot() -> dict[str, Any]:
     while timeutil.format_iso(stamp) <= last:
         settlements.append(timeutil.format_iso(stamp))
         stamp += timedelta(hours=8)
+    hours = []
+    stamp = timeutil.parse_iso(first)
+    while timeutil.format_iso(stamp) <= last:
+        hours.append(timeutil.format_iso(stamp))
+        stamp += timedelta(hours=1)
     grid = [{"timestamp": c["open_time"], "value": c["close"] * (1 + 0.001 * math.sin(i))}
             for i, c in enumerate(candles)]
     return {
         "symbol": "ETHUSDT",
-        "timeframe": "4h",
+        "timeframe": timeframe,
         "candles": candles,
-        "htf_candles": _candles("ETHUSDT", "1d", 130),
+        "htf_candles": _candles("ETHUSDT", higher, htf_bars),
         "reference_symbol": "BTCUSDT",
-        "reference_candles": _candles("BTCUSDT", "4h", 600),
-        "peer_candles": {sym: _candles(sym, "4h", 600) for sym in ("BTCUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT")},
+        "reference_candles": _candles("BTCUSDT", timeframe, bars),
+        "peer_candles": {sym: _candles(sym, timeframe, bars) for sym in ("BTCUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT")},
         "mark_prices": grid,
         "index_prices": [{**g, "value": g["value"] * 0.999} for g in grid],
         "premium_index": [{"timestamp": g["timestamp"], "value": 0.0001 * math.cos(i)} for i, g in enumerate(grid)],
@@ -70,6 +83,10 @@ def _full_snapshot() -> dict[str, Any]:
                           for i, d in enumerate(days)],
         "liquidations": [{"timestamp": d, "long_liquidation": 1e5 * (1.5 + math.sin(i)),
                           "short_liquidation": 1e5 * (1.5 + math.cos(i))} for i, d in enumerate(days)],
+        "positioning": [{"series": series, "period": "1h", "timestamp": h,
+                         "long_ratio": 0.5 + 0.1 * math.sin(i / (k + 2)), "short_ratio": 0.5}
+                        for i, h in enumerate(hours)
+                        for k, series in enumerate(("top_position", "global_account", "top_account"))],
     }
 
 
@@ -78,13 +95,26 @@ def _close(row: dict[str, Any]) -> str:
 
 
 def _grid_close(row: dict[str, Any]) -> str:
-    return _shift(row["timestamp"], TF_HOURS)
+    """Placeholder: a grid row closes one bar of ITS frame after it opens, so `_cut` resolves it."""
+    raise AssertionError("resolved in _cut, which knows the frame")
+
+
+GRID = frozenset({"mark_prices", "index_prices", "premium_index"})
 
 
 def _daily_vendor(row: dict[str, Any]) -> str:
     """Coinalyze daily rows: labelled with the day's START, carrying its close or total
     (`market_data.CoinalyzeLiquidationFeed._parse` / `_parse_open_interest` drop the forming day)."""
     return _shift(row["timestamp"], 24)
+
+
+def _positioning(row: dict[str, Any]) -> str:
+    """Binance `/futures/data/*LongShort*Ratio` rows: a reading AT the label, published a few minutes after
+    it and never revised. Measured 2026-10-21 09:47-10:38 UTC (162 polls of BTCUSDT, all three series, 5m
+    and 1h): the 10:00 1h row first appeared between +94 s and +213 s and kept its value through 20 polls
+    inside its hour; 5m rows appeared within +7..+293 s; no row's value ever moved
+    (`docs/history/2026-10-21-positioning-availability.md`). Ten minutes is that maximum with margin."""
+    return _shift(row["timestamp"], 10 / 60)
 
 
 # When each series' row is known in the world. The vendor's semantics, stated here independently of
@@ -100,13 +130,13 @@ AVAILABLE_AT: dict[str, Callable[[dict[str, Any]], str]] = {
     "funding": lambda row: row["timestamp"],   # the settlement instant: the rate is fixed then
     "open_interest": _daily_vendor,
     "liquidations": _daily_vendor,
+    "positioning": _positioning,
 }
 # Read, but not time series.
 METADATA = frozenset({"symbol", "reference_symbol", "timeframe"})
-# Read, and NOT yet declared, with the reason it is safe today. The positioning rows store no fetch time,
-# so whether their label is a period start or a point reading is not measured; no spec may read them
-# while `positioning_store.MINTING_DECIDED` is False (pinned below).
-UNVERIFIED = frozenset({"positioning"})
+# Read, and NOT yet declared. Empty since positioning was measured (2026-10-21); a key added here must
+# say why it is safe without a declaration.
+UNVERIFIED: frozenset[str] = frozenset()
 
 
 def _cut(snapshot: dict[str, Any], cutoff: str) -> dict[str, Any]:
@@ -116,6 +146,9 @@ def _cut(snapshot: dict[str, Any], cutoff: str) -> dict[str, Any]:
             out[key] = value
         elif key == "peer_candles":
             out[key] = {sym: [r for r in rows if AVAILABLE_AT[key](r) <= cutoff] for sym, rows in value.items()}
+        elif key in GRID:
+            step = TF_HOURS[snapshot["timeframe"]]
+            out[key] = [r for r in value if _shift(r["timestamp"], step) <= cutoff]
         else:
             out[key] = [r for r in value if AVAILABLE_AT[key](r) <= cutoff]
     return out
@@ -170,20 +203,15 @@ def test_every_series_the_features_read_declares_when_its_rows_are_known():
     assert UNVERIFIED <= recorder.asked, "an UNVERIFIED key is no longer read; drop it from the list"
 
 
-def test_positioning_stays_unverified_only_while_no_spec_may_read_it():
-    assert positioning_store.MINTING_DECIDED is False, (
-        "positioning minting is open: measure whether a positioning row's label is its period's start or a "
-        "point reading, declare it in AVAILABLE_AT, and drop it from UNVERIFIED")
-
-
-def test_no_feature_row_depends_on_anything_known_after_its_close():
-    snapshot = _full_snapshot()
-    # The contract is only as strong as the columns it sees filled: every leg but positioning must carry
-    # values late in the frame, or a leak there would compare None with None and pass.
+@pytest.mark.parametrize("timeframe", sorted(BARS))
+def test_no_feature_row_depends_on_anything_known_after_its_close(timeframe):
+    snapshot = _full_snapshot(timeframe)
+    # The contract is only as strong as the columns it sees filled: every leg must carry values late in
+    # the frame, or a leak there would compare None with None and pass.
     late = features.build_feature_rows(snapshot)[-5]
-    empty = sorted(k for k, v in late.items() if v is None and "positioning" not in k)
+    empty = sorted(k for k, v in late.items() if v is None)
     assert not empty, f"columns the fixture leaves empty: {empty}"
-    leaks = _leaks(snapshot)
+    leaks = _leaks(snapshot, cuts={"4h": 20, "1h": 12, "15m": 8}[timeframe])
     assert not leaks, "look-ahead:\n" + "\n".join(leaks[:20])
 
 
