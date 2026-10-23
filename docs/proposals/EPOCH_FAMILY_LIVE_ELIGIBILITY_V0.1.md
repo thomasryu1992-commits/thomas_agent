@@ -1,6 +1,6 @@
 # 제안: 에포크 경계에서 LIVE 자격의 증거 단위를 계보에서 family로 넓힌다 (DRAFT v0.1)
 
-**상태:** DRAFT 2026-10-23 — Thomas 결정 넷(§8)을 기다린다. 에포크 경계 규칙이라 결정돼도 2027-03-22 전에는 아무것도 바뀌지 않는다. 지금 바뀌는 코드, 문, 판정은 없다.
+**상태:** DECIDED 2026-10-23 — Q1 예, Q2 family 수로 보정, Q3 forward 최상 계보, Q4 아니오(Thomas). 에포크 경계 규칙이라 2027-03-22 전에는 아무것도 바뀌지 않는다. 적용 코드(`assert_live_tier_confirmed`의 family 경로)는 그날의 판정 뒤에 별도 PR로 짓는다.
 
 **대상:** LIVE 문(`forward_confirmation.assert_live_tier_confirmed`)이 받아들이는 증거의 단위.
 - 지금 규칙은 `SELECTION_MULTIPLICITY_AND_HOLDOUT_REUSE_V0.1.md` D1 C(Thomas 2026-09-30)다. "LIVE는 계보 하나의 FORWARD_CONFIRMED가 필수"다.
@@ -133,3 +133,19 @@
 | **Q4** | 지정가 진입 결정을 함께 다시 여는가 | **아니오.** LEAD family가 브레이크아웃 계열이라 체결 편향이 우위를 깎을 수 있다 |
 
 결정되면 결정 절에 적는다. 적용은 2027-03-22 판정일에 한 번이다.
+
+## 결정 (Thomas 2026-10-23) — 권고대로
+
+"승인: #1296 Q1 예, Q2 family 수로 보정, Q3 forward 최상 계보, Q4 아니오 / #1296 병합 (Thomas 2026-10-23)."
+
+- **Q1 예:** 에포크 경계에서 LIVE 자격의 증거 단위로 family를 받아들인다. §3의 1(H2 1단계 진입 정보)과 2(합산 순 R 하한 > 0)를 모두 통과해야 한다.
+- **Q2:** 2번의 다중 비교는 그 경계에서 검정한 family 수로 보정한다(`selection_adjusted_z`).
+- **Q3:** 자격 family의 LIVE 후보는 forward 기록이 가장 좋은 계보다. 자기 기록이 CONTRADICTED가 아니고 평균이 0보다 커야 한다. H2 2단계(Holm)는 요구하지 않는다.
+- **Q4 아니오:** 지정가 진입 결정은 다시 열지 않는다.
+- **적용:**
+  - 처음 읽는 날은 2027-03-22(1차 cohort 마감)이고, 이후 cohort 마감마다 한 번씩 읽는다.
+  - 자격은 승격 문에 올릴 자격일 뿐이다. D5 질문, Thomas 승인, 실행 단계 사다리, 실거래 게이트는 그대로다.
+- **남은 구현:**
+  - (1) 경계 전에 2번 계산을 `selection_evidence verdict`에 표시용으로 더한다(측정).
+  - (2) 경계 판정 뒤 `assert_live_tier_confirmed`에 family 경로를 더한다. 실거래 경로 코드라 별도 승인이 필요하다.
+
