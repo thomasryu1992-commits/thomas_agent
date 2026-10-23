@@ -127,3 +127,23 @@ def test_every_report_carries_the_fingerprint_and_the_pinned_snapshot(monkeypatc
     stamp = pwr.provenance()
     assert stamp == {"judgement_fingerprint": judgement_fingerprint.judgement_fingerprint()["short"],
                      "lake_snapshot": "20261023T041701Z"}
+
+
+def test_one_seed_is_the_decided_rule_and_k_seeds_pool_k_named_draws(cache, tmp_path):
+    entry = _entry("c_multi")
+    single = pwr.replay(tmp_path, [entry])[0]
+    assert pwr.replay(tmp_path, [entry], seeds=1)[0] == single            # the default is unchanged
+    assert pwr.twin_seeds("c1|x", 1) == ["c1|x"]
+    assert pwr.twin_seeds("c1|x", 3) == ["c1|x|1", "c1|x|2", "c1|x|3"]
+    pooled = pwr.replay(tmp_path, [entry], seeds=3)[0]
+    assert pooled["member"] == single["member"]                           # only the twin changes
+    expected = []
+    for draw in pwr.twin_seeds(entry["twin"]["seed"], 3):
+        expected += pwr.replay(tmp_path, [{**entry, "twin": {**entry["twin"], "seed": draw}}])[0]["twin"]
+    assert pooled["twin"] == expected and len(pooled["twin"]) > len(single["twin"])
+
+
+def test_a_twin_seed_count_below_one_is_refused(capsys, monkeypatch):
+    monkeypatch.setattr(pwr.market_data, "select_market_data_collector",
+                        type("F", (), {"__module__": pwr.lake.__name__})())
+    assert pwr.main(["--twin-seeds", "0"]) == pwr.EXIT_USAGE
