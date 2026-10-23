@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -36,9 +37,35 @@ from runtime.mvp_runtime.crypto import coinalyze_daily_store, market_data
 from runtime.mvp_runtime.errors import ToolError
 
 SOURCE = "research_lake"
+# The instant every read is cut at, or None for "now" (PRE_WINDOW_REPLAY_V0.1 §6). Set through
+# :func:`as_of`, so a replay of 2021 sees exactly what a collector running at the end of 2021 would have held:
+# candles and price series closed before it (the runtime parser's own `now_ms` rule), funding settled by
+# it, and Coinalyze daily rows whose day had closed by it.
+_AS_OF_MS: int | None = None
 LAKE_EMPTY = "RESEARCH_LAKE_EMPTY"
 LAKE_NO_COINALYZE = "RESEARCH_LAKE_NO_COINALYZE"
 MOCK_REFUSED = "RESEARCH_SANDBOX_MOCK_REFUSED"
+
+
+@contextmanager
+def as_of(instant: str | None) -> Iterator[None]:
+    """Cut every lake read at ``instant`` (ISO UTC) for the duration; None restores "now"."""
+    global _AS_OF_MS
+    saved = _AS_OF_MS
+    _AS_OF_MS = None if instant is None else int(_parse_iso(instant).timestamp() * 1000)
+    try:
+        yield
+    finally:
+        _AS_OF_MS = saved
+
+
+def _now_ms() -> int:
+    return _AS_OF_MS if _AS_OF_MS is not None else int(time.time() * 1000)
+
+
+def _parse_iso(value: str):  # noqa: ANN202 - datetime
+    from runtime.mvp_runtime import timeutil
+    return timeutil.parse_iso(value)
 
 
 def klines_path(cache: Path, symbol: str, timeframe: str) -> Path:
@@ -96,7 +123,7 @@ class LakeCollector:
         rows = _by_open_time(read_rows(klines_path(self._cache, symbol, timeframe)))
         if not rows:
             raise ToolError(LAKE_EMPTY, f"no cached {symbol} {timeframe} candles; run fetch_public first")
-        parsed = self._parser._parse(json.dumps(rows), now_ms=int(time.time() * 1000))
+        parsed = self._parser._parse(json.dumps(rows), now_ms=_now_ms())
         window = [candle for _, candle in sorted(parsed, key=lambda pair: pair[0])][-limit:]
         return market_data.MarketSnapshot(
             symbol=symbol, timeframe=timeframe, candles=window, source=self.source, is_synthetic=False,
@@ -108,6 +135,8 @@ class LakeCollector:
         for item in read_rows(funding_path(self._cache, symbol)):
             try:
                 stamp = int(item["fundingTime"])
+                if stamp > _now_ms():
+                    continue
                 keyed[stamp] = {"timestamp": self._parser._iso(stamp), "funding_rate": float(item["fundingRate"])}
             except (TypeError, ValueError, KeyError):
                 continue
@@ -120,7 +149,7 @@ class LakeCollector:
         rows = _by_open_time(read_rows(derivative_path(self._cache, kind, symbol, timeframe)))
         if not rows:
             raise ToolError(LAKE_EMPTY, f"no cached {symbol} {timeframe} {kind} prices; run fetch_public first")
-        closes = self._parser._parse_derivative_page(json.dumps(rows), kind=kind, now_ms=int(time.time() * 1000))
+        closes = self._parser._parse_derivative_page(json.dumps(rows), kind=kind, now_ms=_now_ms())
         ordered = [{"timestamp": self._parser._iso(stamp), "value": closes[stamp]} for stamp in sorted(closes)]
         return ordered[-limit:]
 
@@ -141,6 +170,9 @@ class LakeLiquidationFeed:
         if self._lake is None:
             raise ToolError(LAKE_NO_COINALYZE, "the research sandbox was started without a lake snapshot")
         rows = coinalyze_daily_store.read_rows(series, symbol=str(symbol).strip().upper(), directory=self._lake)
+        # A day's row exists once the day has closed (the vendor drops the forming day): label + 24 h.
+        rows = [row for row in rows
+                if int(_parse_iso(str(row["timestamp"])).timestamp() * 1000) + 86_400_000 <= _now_ms()]
         if not rows:
             raise ToolError(LAKE_NO_COINALYZE, f"the research lake carries no Coinalyze {series} for {symbol}")
         return [{"timestamp": row["timestamp"], **{field: row[field] for field in fields}}

@@ -79,7 +79,8 @@ SCRIPTS: dict[str, str] = {
     # The research sandbox (RESEARCH_SANDBOX_V0.1): no state written; fetch_public writes only the sandbox's
     # own cache under ~/research, outside the state root, from the venue's public endpoints.
     "scripts/research/fetch_public.py": READ,
-    "scripts/research/lake.py": READ,               # paired L/F replay, prints a report
+    "scripts/research/lake.py": READ,
+    "scripts/research/pre_window_replay.py": READ,  # sandbox-only replay of cohort members and twins, prints a report               # paired L/F replay, prints a report
     "scripts/paired_family_window_check.py": READ,
     "scripts/pooled_mint_check.py": READ,
     "scripts/probe_signal_rate.py": READ,
