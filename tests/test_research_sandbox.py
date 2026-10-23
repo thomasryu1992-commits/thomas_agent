@@ -367,8 +367,11 @@ def sandbox(tmp_path):
     venv = tmp_path / "venv"
     (venv / "bin").mkdir(parents=True)
     (venv / "bin" / "python").symlink_to(sys.executable)
+    # A fixed noon clock: the runner refuses to start 07:30-09:00 UTC (#1284), and these tests are about
+    # everything else it does. Without this they failed whenever the suite ran in that window, on this host
+    # only (CI has no user systemd and skips them), as they did on 2026-10-23 at 07:38.
     env = {**os.environ, "RESEARCH_LAKE_ROOT": str(lake_root), "RESEARCH_CACHE": str(tmp_path / "cache"),
-           "RESEARCH_VENV": str(venv), "RESEARCH_RUNS": str(tmp_path / "runs")}
+           "RESEARCH_VENV": str(venv), "RESEARCH_RUNS": str(tmp_path / "runs"), "RESEARCH_NOW_UTC": "12:00"}
     return code, env, tmp_path / "runs"
 
 
