@@ -293,3 +293,60 @@ def test_stage_two_runs_only_inside_a_family_stage_one_passes(monkeypatch):
 def test_a_calibration_over_q_withholds_stage_one_and_skips_stage_two(monkeypatch):
     block, seen_m = _synthetic_verdict(monkeypatch, any_pass_rate=0.101)
     assert block["stage1_withheld"] is True and block["lineages"] == {} and seen_m == []
+
+
+# --- family net R (EPOCH_FAMILY_LIVE_ELIGIBILITY_V0.1 §3 test 2), display only ------------------------------
+
+def test_the_one_sided_mean_is_the_pair_mean_against_a_zero_twin():
+    from scripts.forward_cohort import clustered_pair_mean
+    member = [(f"d{i:03d}", 0.3 + (0.5 if i % 3 else -0.4)) for i in range(15)]
+    pair = clustered_pair_mean([(member, [(d, 0.0) for d, _ in member])])
+    one = se.clustered_mean(member)
+    assert one["mean_net_r"] == pytest.approx(pair["mean_diff_r"])
+    assert one["ci_low_r"] == pytest.approx(pair["ci_low_r"]) and one["ci_high_r"] == pytest.approx(pair["ci_high_r"])
+
+
+def test_family_net_leaves_out_invalid_members_and_siblings_and_corrects_by_families(monkeypatch, tmp_path):
+    from runtime.mvp_runtime.crypto.robustness import selection_adjusted_z
+
+    def member(cid, family, timeframe="1h"):
+        return {"candidate_id": cid, "strategy_family": family, "timeframe": timeframe, "symbol_scope": ["BTCUSDT"]}
+
+    def trades(days, value, start=0):
+        return [(f"d{start + i:03d}", value + (0.05 if i % 2 else -0.05)) for i in range(days)]
+
+    pairs = [
+        (member("c_up", "breakout"), (trades(20, 0.5), [])),
+        (member("c_up_sib", "breakout"), (trades(20, -3.0, start=100), [])),       # sibling: left out
+        (member("c_oi", "oi_squeeze_long"), (trades(20, 5.0, start=200), [])),     # INVALID: left out
+        (member("c_flat", "trend_pullback"), (trades(20, 0.0, start=300), [])),
+        (member("c_thin", "mean_reversion"), (trades(3, 2.0, start=400), [])),     # under the day floor
+    ]
+    records = [{"candidate_id": cid, "created_at_utc": "2026-10-22T00:00:00Z",
+                "strategy_spec": {"timeframe": "1h", "entry_rules": {"conditions": [{"feature": "rsi"}]}}}
+               for cid in ("c_up", "c_up_sib", "c_flat", "c_thin")]
+    records.append({"candidate_id": "c_oi", "created_at_utc": "2026-09-01T00:00:00Z",
+                    "strategy_spec": {"timeframe": "1h", "entry_rules": {"conditions": [
+                        {"feature": "open_interest_change_pct"}]}}})
+    monkeypatch.setattr(se, "member_twin_pairs", lambda root: pairs)
+    monkeypatch.setattr(se, "read_candidates", lambda root: records)
+    monkeypatch.setattr(se.forward_cohort, "read_cohorts", lambda root: [])
+    monkeypatch.setattr(se.forward_cohort, "sibling_of", lambda cohorts: {"c_up_sib": "c_up"})
+    net = se.family_net_r(tmp_path)
+    assert net["left_out"] == {"invalid": 1, "sibling": 1}
+    rows = {r["family"]: r for r in net["rows"]}
+    assert "open_interest" not in rows
+    assert net["families_tested"] == 2 and net["z_family"] == pytest.approx(selection_adjusted_z(2))
+    assert rows[se.economic_family("breakout")]["net_above_zero"] is True
+    assert rows[se.economic_family("trend_pullback")]["net_above_zero"] is False
+    thin = rows[se.economic_family("mean_reversion")]
+    assert thin["tested"] is False and thin["net_above_zero"] is False
+
+
+def test_family_net_is_printed_as_display_only(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(se, "family_net_r", lambda root, min_days: {
+        "families_tested": 0, "min_days": min_days, "z_family": 1.96, "left_out": {"invalid": 0, "sibling": 0},
+        "rows": []})
+    assert se.main(["family-net", "--min-days", "4"], root=tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "display only" in out and "families with ≥4 days" in out

@@ -317,6 +317,68 @@ def family_evidence(root: Path, *, q: float = DEFAULT_Q, min_days: int = MIN_FAM
     return out
 
 
+# --- the family's own money (EPOCH_FAMILY_LIVE_ELIGIBILITY_V0.1 §3 test 2), display only -------------------
+#
+# Decided 2026-10-23 for the epoch boundary: a family can beat its twins and still lose money, so LIVE
+# eligibility needs its members' pooled net R above zero too, day-clustered, corrected by the number of
+# families tested. Until the boundary nothing reads this: it is printed beside stage 1 so the boundary reads
+# a number people have watched, never one computed for the first time on the day.
+
+def clustered_mean(trades: Sequence[tuple[str, float]], *, z: float = CONFIDENCE_Z) -> dict[str, Any] | None:
+    """Pooled per-trade mean of ``trades`` ((settlement day, net R)) with a ``z`` interval clustered by day:
+    one side of :func:`scripts.forward_cohort.clustered_pair_mean`, the same variance."""
+    if not trades:
+        return None
+    n = len(trades)
+    mean = sum(net for _, net in trades) / n
+    by_day: dict[str, float] = {}
+    for day, net in trades:
+        by_day[day] = by_day.get(day, 0.0) + net / n
+    days = len(by_day)
+    se = None
+    if days >= 2:
+        share = mean / days
+        se = math.sqrt(days / (days - 1) * sum((c - share) ** 2 for c in by_day.values()))
+    return {"trades": n, "days": days, "mean_net_r": mean, "se_r": se,
+            "ci_low_r": None if se is None else mean - z * se, "ci_high_r": None if se is None else mean + z * se}
+
+
+def family_net_r(root: Path, *, min_days: int = MIN_FAMILY_DAYS) -> dict[str, Any]:
+    """Each timeframe × economic family's members' pooled net R. Members whose evidence is INVALID
+    (`candidate_ranking.evidence_standing`) and siblings marked by `forward_cohort.sibling_of` are left out.
+    ``z_family`` is `robustness.selection_adjusted_z` over the families with at least ``min_days`` days."""
+    from runtime.mvp_runtime.crypto.candidate_ranking import evidence_invalid
+    from runtime.mvp_runtime.crypto.robustness import selection_adjusted_z
+
+    latest = {candidate_id(record): record for record in read_candidates(root)}
+    siblings = forward_cohort.sibling_of(forward_cohort.read_cohorts(root))
+    groups: dict[tuple[str, str], list[tuple[str, float]]] = {}
+    left_out = {"invalid": 0, "sibling": 0}
+    for member, (member_trades, _twin) in member_twin_pairs(root):
+        cid = str(member.get("candidate_id"))
+        record = latest.get(cid)
+        if record is None or evidence_invalid(record):
+            left_out["invalid"] += 1
+            continue
+        if cid in siblings:
+            left_out["sibling"] += 1
+            continue
+        key = (str(member.get("timeframe")), economic_family(member.get("strategy_family")))
+        groups.setdefault(key, []).extend(member_trades)
+    summaries = {key: clustered_mean(trades) for key, trades in groups.items()}
+    tested = [key for key, summary in summaries.items() if summary is not None and summary["days"] >= min_days]
+    z_family = selection_adjusted_z(len(tested))
+    rows = []
+    for (timeframe, family), summary in sorted(summaries.items()):
+        if summary is None:
+            continue
+        low = None if summary["se_r"] is None else summary["mean_net_r"] - z_family * summary["se_r"]
+        rows.append({"timeframe": timeframe, "family": family, **summary,
+                     "tested": (timeframe, family) in tested, "low_at_z_family": low,
+                     "net_above_zero": bool((timeframe, family) in tested and low is not None and low > 0)})
+    return {"families_tested": len(tested), "min_days": min_days, "z_family": z_family, "left_out": left_out,
+            "rows": rows}
+
 # --- verdict: the hierarchical judgement, once per epoch boundary ------------------------------
 
 def family_markers_sha256() -> str:
@@ -513,6 +575,17 @@ def _print_families(evidence: Mapping[str, Any], *, q: float, min_days: int) -> 
                   f"p {'-' if g['p'] is None else format(g['p'], '.4f')}  {mark}")
 
 
+def _print_family_net(net: Mapping[str, Any]) -> None:
+    print(f"family net R (display only; EPOCH_FAMILY_LIVE_ELIGIBILITY test 2, read at the epoch boundary). Members' "
+          f"pooled net R, clustered by settlement day; lower bound at z {net['z_family']:.2f} "
+          f"(selection-adjusted over {net['families_tested']} families with ≥{net['min_days']} days); "
+          f"left out: {net['left_out']['invalid']} INVALID, {net['left_out']['sibling']} sibling.")
+    for row in net["rows"]:
+        mark = "·" if not row["tested"] else ("NET>0" if row["net_above_zero"] else "-")
+        print(f"    {row['timeframe']:<3} {row['family']:<24} {row['trades']:>4} trades {row['days']:>3} days  "
+              f"{_signed(row['mean_net_r'])}  low {_signed(row['low_at_z_family'])}  {mark}")
+
+
 def _print_verdict(evidence: Mapping[str, Any]) -> None:
     rule, boundary, s1 = evidence["rule"], evidence["boundary"], evidence["s1"]
     print(f"verdict {rule['version']} at {boundary['cohort_id']}'s close {boundary['close_utc']} "
@@ -552,6 +625,10 @@ def main(argv: list[str] | None = None, *, root: Path | None = None, now: str | 
     fam.add_argument("--min-days", type=int, default=MIN_FAMILY_DAYS)
     fam.add_argument("--draws", type=int, default=DEFAULT_DRAWS)
     fam.add_argument("--json", action="store_true")
+    net = sub.add_parser("family-net", help="each family's pooled net R vs zero, display only "
+                                            "(EPOCH_FAMILY_LIVE_ELIGIBILITY test 2)")
+    net.add_argument("--min-days", type=int, default=MIN_FAMILY_DAYS)
+    net.add_argument("--json", action="store_true")
     ver = sub.add_parser("verdict", help="the hierarchical judgement at a cohort's close (refuses before it)")
     ver.add_argument("--cohort", help="the cohort whose close to read (default: the latest closed)")
     ver.add_argument("--json", action="store_true")
@@ -561,6 +638,9 @@ def main(argv: list[str] | None = None, *, root: Path | None = None, now: str | 
         if args.command == "null-control":
             evidence = null_control_evidence(base, now=now or timeutil.utc_now_iso())
             printer = _print_null_control
+        elif args.command == "family-net":
+            evidence = family_net_r(base, min_days=args.min_days)
+            printer = _print_family_net
         elif args.command == "verdict":
             evidence = verdict(base, now=now or timeutil.utc_now_iso(), cohort_id=args.cohort)
             printer = _print_verdict
