@@ -886,3 +886,19 @@ def test_workflow_inputs_are_refused_when_malformed(tmp_path, captured_run_task,
 
 def test_the_assistant_cannot_send_workflow_inputs_through_the_door():
     assert "workflow_inputs" not in dispatch_bridge._ALLOWED_KEYS and "workflow_inputs" in pipeline_worker._ALLOWED_KEYS
+
+
+# --- a kill that lands mid-run stops the next effect (outside review 3.2, 2026-10-23) ----------------
+
+def test_the_run_gets_a_halt_check_that_reads_the_switch_when_it_is_called(tmp_path, captured_run_task):
+    """The worker checked the switch when the frame arrived; the run also gets a check it calls before
+    each external effect, and that check reads the switch at call time, not a copy from the start."""
+    store = ControlStore(tmp_path)
+    pipeline_worker.apply_work(_valid(), control_store=store)
+    halt_check = captured_run_task[0]["halt_check"]
+    halt_check()                                            # still running: no refusal
+    control.apply_command(store, control.CMD_KILL, actor="test", now=NOW,
+                          reason="mid-run halt", ledger=FakeLedger())
+    with pytest.raises(ControlBlocked) as exc:
+        halt_check()
+    assert exc.value.reason_code == store.load().refusal_reason_code()
