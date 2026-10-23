@@ -1320,6 +1320,29 @@ def trial_status(block: Mapping[str, Any] | None) -> str | None:
     return status
 
 
+
+# The pre-window tilt (Thomas 2026-10-23, `MINT_REALLOCATION_PRE_WINDOW_V0.1.md` B). On 2020–2023, which no 1h/4h
+# lineage had seen, breakout / breakdown x volatility-expansion entries beat their coin-flip twins
+# (`PRE_WINDOW_REPLAY_V0.1.md`; confirmed on eight twin seeds for 1h, 2 of 3 LEADs). So on 1h and 4h, half of the
+# shortfall draw goes to these six families' rotation and the other half keeps taking the next library slice.
+# Fusion still has first refusal and the fire's volume is unchanged. This moves where the search looks, never a
+# verdict: a tilted row is judged exactly like any other, and a lead is not evidence for a door.
+# Reverting is emptying `MINT_TILT_TIMEFRAMES`; the reversal conditions are §5 of the proposal.
+MINT_TILT_FAMILIES = frozenset({
+    "breakout", "breakdown_short", "bollinger_breakout", "bollinger_breakdown_short",
+    "volatility_expansion_long", "volatility_expansion_short",
+})
+MINT_TILT_TIMEFRAMES = frozenset({"1h", "4h"})
+
+
+def tilt_slots(topup_requested: int, *, timeframe: str, rotation_index: int | None) -> int:
+    """How many of the shortfall draw's slots go to ``MINT_TILT_FAMILIES``: half, and on an odd count the
+    extra slot alternates with the context's fire count so the tilt is exactly half over two fires."""
+    if timeframe not in MINT_TILT_TIMEFRAMES or topup_requested <= 0:
+        return 0
+    half, odd = divmod(int(topup_requested), 2)
+    return half + (odd if (rotation_index or 0) % 2 else 0)
+
 def run_factory(
     snapshot: Mapping[str, Any],
     *,
@@ -1659,9 +1682,17 @@ def run_factory(
     # produces that can be judged at all: `robustness.MIN_HOLDOUT_TRADES` was cleared by 84 of
     # a fire's rows on 07-31 and by 5 of 20 on 08-06.
     topup_requested = max(0, fusion_pairs - len(fused))
+    # The tilted share only exists where the tilt families can be minted in this context at all.
+    tilt_family_set = MINT_TILT_FAMILIES & {
+        t.family for t in templates_for_timeframe(
+            timeframe, symbol=symbol, positioning_eligible=positioning_eligible, venue=venue)}
+    tilt_requested = tilt_slots(topup_requested, timeframe=timeframe, rotation_index=rotation_index) \
+        if tilt_family_set else 0
+    plain_requested = topup_requested - tilt_requested
     topup_accepted = 0
+    tilt_accepted = 0
     topup_rejected: list[dict[str, Any]] = []
-    if topup_requested:
+    if plain_requested:
         topup = generate_batch(
             generation_id, seed=int(candles_sha.split(":", 1)[1][8:16], 16), count=count,
             start_index=count + len(fused) + 1,
@@ -1677,10 +1708,31 @@ def run_factory(
             rotation_index=topup_slice,
             symbol_scope=scope,
         )
-        kept = topup["specs"][:topup_requested]
+        kept = topup["specs"][:plain_requested]
         topup_accepted = len(kept)
         topup_rejected = topup["rejected"]
         _score_draw(kept, topup["params"])
+    if tilt_requested:
+        # The tilted half: the same draw over the tilt families only, with its own cursor over that
+        # shorter list and the next eight hex digits of the window hash for its seed.
+        tilt = generate_batch(
+            generation_id, seed=int(candles_sha.split(":", 1)[1][16:24], 16), count=tilt_requested,
+            start_index=count + len(fused) + topup_accepted + 1,
+            symbol=symbol,
+            timeframe=timeframe,
+            elite_params=centres,
+            known_rule_hashes=frozenset(fire_hashes),
+            positioning_eligible=positioning_eligible,
+            venue=venue,
+            rotation_index=rotation_index,
+            symbol_scope=scope,
+            families=frozenset(tilt_family_set),
+        )
+        kept = tilt["specs"][:tilt_requested]
+        tilt_accepted = len(kept)
+        topup_rejected = [*topup_rejected, *tilt["rejected"]]
+        _score_draw(kept, tilt["params"])
+        topup_accepted += tilt_accepted
 
     # After every rotation draw, so a trial never takes a hash the rotation would have minted and
     # the fire's own rows are exactly what they were without it.
@@ -1740,6 +1792,8 @@ def run_factory(
         # discarded"; `fused_count + seeded_topup_count == fusion_pairs` whenever the draw
         # itself was complete.
         "seeded_topup_count": topup_accepted,
+        # The part of it drawn from `MINT_TILT_FAMILIES` (0 off 1h/4h); `seeded_topup_count` includes it.
+        "tilted_topup_count": tilt_accepted,
         "fusion_rejected": fusion_rejected,
         # ``None`` exactly when the fusion path executed, so an empty ``fusion_rejected`` beside a
         # ``None`` here is the one reading that means "fusion looked and the store had no pair".

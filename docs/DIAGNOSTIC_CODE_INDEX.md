@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **735** distinct codes across **1507** raise sites
+- **736** distinct codes across **1508** raise sites
 - **24** exception classes carry them
 - **84** codes are raised from more than one module (see below)
 - **176** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -539,6 +539,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `FRONTDESK_ROLE_UNRESOLVED` | `OperatorBlocked` | `runtime/mvp_runtime/frontdesk.py` | `_require_active_role` | `—` |
 | `FRONTDESK_ROLE_UNRESOLVED` | `OperatorBlocked` | `runtime/mvp_runtime/frontdesk.py` | `_require_active_role` | `—` |
 | `FRONTDESK_ROLE_UNRESOLVED` | `OperatorBlocked` | `runtime/mvp_runtime/frontdesk.py` | `_require_active_role` | `len(entries) != 1` |
+| `GENERATOR_NO_MINTABLE_FAMILY` | `ToolError` | `runtime/mvp_runtime/crypto/generator.py` | `generate_batch` | `not templates` |
 | `GUARD_NOT_APPROVED` | `SubmitRefused` | `runtime/mvp_runtime/crypto/live_execution.py` | `submit_and_reconcile` | `not (isinstance(guard_verdict, Mapping) and guard_verdict.get('approved') is True)` |
 | `HOLDINGS_CASH_FLOW_ADOPT_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `_adoptable` | `legacy_import_refusal(rows, state)` |
 | `HOLDINGS_CASH_FLOW_ADOPT_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `_adoptable` | `not rows` |

@@ -37,6 +37,7 @@ from typing import Any, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
+from ..errors import ToolError
 from . import features, indicators, market_data
 from .candidate_ranking import evidence_invalid
 from .trade_plan import ASSUMED_LEVERAGE, MAINTENANCE_MARGIN_RATE, liquidation_price
@@ -785,8 +786,13 @@ def generate_batch(
     venue: str = market_data.BINANCE_FUTURES,
     symbol_scope: Sequence[str] | None = None,
     probe_stop_ceiling: float | None = None,
+    families: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """Produce ``count`` validated, distinct candidate specs (source mechanics).
+
+    ``families`` narrows the rotation to those template families, in library order, and the cursor
+    walks that shorter list. ``run_factory`` passes it for the tilted half of the shortfall draw
+    (``MINT_TILT_FAMILIES``); every other caller leaves it None and draws from the whole library.
 
     ``symbol_scope`` widens the minted specs from ``[symbol]`` to a cohort — one hypothesis at
     N symbols' data rather than N hypotheses at one symbol's each. ``symbol`` still selects the
@@ -813,6 +819,11 @@ def generate_batch(
     templates = templates_for_timeframe(
         timeframe, symbol=symbol, positioning_eligible=positioning_eligible, venue=venue
     )
+    if families is not None:
+        templates = [t for t in templates if t.family in families]
+        if not templates:
+            raise ToolError("GENERATOR_NO_MINTABLE_FAMILY",
+                            "none of the requested families is mintable in this context")
     # Which slice of the family list THIS run mints. Without it the picker was
     # ``templates[len(accepted) % len(templates)]``, and since a batch is four specs
     # that selected templates[0..3] on every run ever: 228 of 228 factory candidates

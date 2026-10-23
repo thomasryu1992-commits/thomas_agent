@@ -4290,3 +4290,51 @@ def test_a_pooled_fire_fuses_cohort_parents_end_to_end(tmp_path, monkeypatch):
         assert candidate["strategy_spec"]["symbol_scope"] == _COHORT
     # The store's lineage guard accepts a pooled child of pooled parents.
     assert pool.append_candidates(result["candidates"], root=tmp_path) == len(result["candidates"])
+
+
+# --- the pre-window tilt (Thomas 2026-10-23, MINT_REALLOCATION_PRE_WINDOW_V0.1 B) ---------------------------
+
+from runtime.mvp_runtime.crypto.factory import MINT_TILT_FAMILIES, tilt_slots  # noqa: E402
+
+
+@pytest.mark.parametrize("requested,index,expected", [
+    (4, 0, 2), (4, 1, 2), (3, 0, 1), (3, 1, 2), (1, 0, 0), (1, 1, 1), (0, 1, 0),
+])
+def test_the_tilt_is_half_the_shortfall_and_alternates_the_odd_slot(requested, index, expected):
+    assert tilt_slots(requested, timeframe="4h", rotation_index=index) == expected
+    assert tilt_slots(requested, timeframe="1h", rotation_index=index) == expected
+    assert tilt_slots(requested, timeframe="1d", rotation_index=index) == 0          # 1d had no pre-window test
+
+
+def test_a_family_filter_draws_only_those_families_and_refuses_an_empty_one():
+    batch = generator.generate_batch("GEN-777", seed=7, count=6, timeframe="4h", families=MINT_TILT_FAMILIES)
+    assert batch["specs"] and {s["strategy_family"] for s in batch["specs"]} <= MINT_TILT_FAMILIES
+    from runtime.mvp_runtime.errors import ToolError
+    with pytest.raises(ToolError) as refused:
+        generator.generate_batch("GEN-777", seed=7, count=2, timeframe="4h", families=frozenset({"no_such"}))
+    assert refused.value.reason_code == "GENERATOR_NO_MINTABLE_FAMILY"
+
+
+def _declined_fusion_on(tmp_path, timeframe):
+    parents = _two_durable_parents(tmp_path)
+    snapshot = {**_trending_snapshot(), "timeframe": timeframe}
+    return run_factory(snapshot, active_pool={"active_strategies": []}, existing_candidates=parents,
+                       now=NOW, count=4, fusion_pairs=4)                 # production's slice and pairs
+
+
+def test_on_4h_half_the_shortfall_is_drawn_from_the_tilt_families(tmp_path):
+    result = _declined_fusion_on(tmp_path, "4h")
+    assert result["fused_count"] == 0, "the fixture must exercise the declined-fusion path"
+    assert result["seeded_topup_count"] == 4                     # volume unchanged: fused + topup == pairs
+    assert result["tilted_topup_count"] == 2                     # half of four
+    # Draw indices run batch (1-4), plain shortfall (5-6), tilted shortfall (7-8): `start_index` numbering.
+    tilted = [c for c in result["candidates"] if c["strategy_id"] in {"S007", "S008"}]
+    assert tilted, "at least one tilted row must survive scoring for this check to mean anything"
+    assert {c["strategy_spec"]["strategy_family"] for c in tilted} <= MINT_TILT_FAMILIES
+    hashes = [c["strategy_rule_hash"] for c in result["candidates"]]
+    assert len(set(hashes)) == len(hashes)                       # the tilted draw shares the duplicate guard
+
+
+def test_off_1h_and_4h_nothing_is_tilted(tmp_path):
+    result = _declined_fusion_on(tmp_path, "1d")
+    assert result["seeded_topup_count"] == 4 and result["tilted_topup_count"] == 0
