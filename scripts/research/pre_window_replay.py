@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections import defaultdict
 from datetime import timedelta
@@ -214,6 +215,16 @@ def read(entries: Sequence[Mapping[str, Any]], rows: Sequence[Mapping[str, Any]]
     return report
 
 
+def provenance() -> dict[str, Any]:
+    """What the result was read under (§4): the judgement-rule fingerprint and the lake snapshot the sandbox
+    pinned. The first official run (2026-10-23) printed neither; this stamps both on every report."""
+    from runtime.mvp_runtime.crypto import judgement_fingerprint
+
+    snapshot = os.environ.get("RESEARCH_LAKE")
+    return {"judgement_fingerprint": judgement_fingerprint.judgement_fingerprint()["short"],
+            "lake_snapshot": Path(snapshot).name if snapshot else None}
+
+
 def reading(family: Mapping[str, Any], positive_windows: int) -> str:
     """PRE_WINDOW_REPLAY_V0.1 §4: LEAD, NULL or ANTI for one family."""
     mean = family.get("mean_diff_r")
@@ -254,6 +265,7 @@ def main(argv: list[str] | None = None) -> int:
     rows = replay(root, entries, say=print)
     report = {
         "measured_at": timeutil.utc_now_iso(),
+        **provenance(),
         "population": [{"candidate_id": e["member"]["candidate_id"], "null_id": e["twin"]["null_id"],
                         "timeframe": e["member"]["timeframe"], "strategy_family": e["member"]["strategy_family"]}
                        for e in entries],

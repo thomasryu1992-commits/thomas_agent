@@ -119,3 +119,11 @@ def test_read_runs_the_decided_stage_and_names_the_overall_result():
 def test_outside_the_sandbox_it_refuses(capsys):
     assert pwr.main(["--list"]) != 0
     assert "research sandbox only" in capsys.readouterr().err
+
+
+def test_every_report_carries_the_fingerprint_and_the_pinned_snapshot(monkeypatch):
+    from runtime.mvp_runtime.crypto import judgement_fingerprint
+    monkeypatch.setenv("RESEARCH_LAKE", "/var/lib/thomas-measure/research-lake/20261023T041701Z")
+    stamp = pwr.provenance()
+    assert stamp == {"judgement_fingerprint": judgement_fingerprint.judgement_fingerprint()["short"],
+                     "lake_snapshot": "20261023T041701Z"}
