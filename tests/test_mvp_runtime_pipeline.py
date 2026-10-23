@@ -698,6 +698,7 @@ class _SpySearchTool(MockSearchTool):
         return super().search(query, max_results=max_results, timeout_seconds=timeout_seconds)
 
 
+@requires_local_core
 def test_search_query_replaces_the_request_as_the_web_query():
     spy = _SpySearchTool()
     r = run_task(REQUEST, provider=MockProvider(), search_tool=spy, now=NOW,
@@ -707,6 +708,7 @@ def test_search_query_replaces_the_request_as_the_web_query():
     assert r["records"]["tool_use"]["query"] == "스티커제작업체"
 
 
+@requires_local_core
 def test_without_search_query_the_request_is_the_query_as_before():
     plain, blank = _SpySearchTool(), _SpySearchTool()
     run_task(REQUEST, provider=MockProvider(), search_tool=plain, now=NOW)
