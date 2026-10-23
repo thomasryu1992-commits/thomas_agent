@@ -25,6 +25,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import deque
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -130,8 +131,12 @@ def _closed(rows: list[list[Any]], now_ms: int) -> list[list[Any]]:
 
 
 def fill_klines(budget: Budget, path: Path, *, endpoint: str, params: dict[str, Any], timeframe: str,
-                depth: int, page: int = PAGE) -> int:
-    """Page a klines-shaped series into ``path``: backward to ``depth`` bars when empty, else forward."""
+                depth: int, page: int = PAGE, since_ms: int | None = None) -> int:
+    """Page a klines-shaped series into ``path``: backward to ``depth`` bars when empty, else forward.
+
+    ``since_ms`` then extends the series BACKWARD from its oldest held bar until a bar at or before
+    ``since_ms`` is held or the venue has nothing older (PRE_WINDOW_REPLAY_V0.1 §6). Same budget, same
+    closed-bar rule; a held bar is never asked for again."""
     cached = lake._by_open_time(lake.read_rows(path))
     now_ms = int(budget.clock() * 1000)
     new: dict[int, list[Any]] = {}
@@ -161,11 +166,23 @@ def fill_klines(budget: Budget, path: Path, *, endpoint: str, params: dict[str, 
                 break
             end = oldest - 1
     held = {int(r[0]) for r in cached}
+    if since_ms is not None:
+        known = held | set(new)
+        end = (min(known) - 1) if known else None
+        while end is not None and end >= since_ms:
+            rows = _closed(budget.get(endpoint, {**params, "limit": page, "endTime": end},
+                                      weight=kline_weight(page)), now_ms)
+            rows = [r for r in rows if int(r[0]) <= end]
+            if not rows:
+                break
+            for row in rows:
+                new[int(row[0])] = row
+            end = min(int(r[0]) for r in rows) - 1
     return _append(path, [new[k] for k in sorted(new) if k not in held])
 
 
 def fill_funding(budget: Budget, path: Path, *, symbol: str,
-                 records: int = market_data.DEFAULT_FUNDING_RECORDS) -> int:
+                 records: int = market_data.DEFAULT_FUNDING_RECORDS, since_ms: int | None = None) -> int:
     held = {int(item["fundingTime"]) for item in lake.read_rows(path)
             if isinstance(item, dict) and "fundingTime" in item}
     new: dict[int, dict[str, Any]] = {}
@@ -192,11 +209,22 @@ def fill_funding(budget: Budget, path: Path, *, symbol: str,
             if end is not None and oldest >= end:
                 break
             end = oldest - 1
+    if since_ms is not None:
+        known = held | set(new)
+        end = (min(known) - 1) if known else None
+        while end is not None and end >= since_ms:
+            rows = budget.get("fundingRate", {"symbol": symbol, "limit": FUNDING_PAGE, "endTime": end}, weight=1)
+            rows = [r for r in rows if int(r["fundingTime"]) <= end]
+            if not rows:
+                break
+            for row in rows:
+                new[int(row["fundingTime"])] = row
+            end = min(int(r["fundingTime"]) for r in rows) - 1
     return _append(path, [new[k] for k in sorted(new) if k not in held])
 
 
 def run(budget: Budget, cache: Path, *, symbols: Iterable[str], timeframes: Iterable[str],
-        kinds: Iterable[str], say: Callable[[str], None] = print) -> dict[str, int]:
+        kinds: Iterable[str], say: Callable[[str], None] = print, since_ms: int | None = None) -> dict[str, int]:
     written: dict[str, int] = {}
     for symbol in symbols:
         for timeframe in timeframes:
@@ -206,7 +234,7 @@ def run(budget: Budget, cache: Path, *, symbols: Iterable[str], timeframes: Iter
             key = f"klines {symbol} {timeframe}"
             written[key] = fill_klines(budget, lake.klines_path(cache, symbol, timeframe), endpoint="klines",
                                        params={"symbol": symbol, "interval": timeframe}, timeframe=timeframe,
-                                       depth=depth)
+                                       depth=depth, since_ms=since_ms)
             say(f"  {key}: +{written[key]}")
             for kind in kinds:
                 param = market_data.DERIVATIVE_KLINE_SYMBOL_PARAMS[kind]
@@ -214,10 +242,10 @@ def run(budget: Budget, cache: Path, *, symbols: Iterable[str], timeframes: Iter
                 written[key] = fill_klines(budget, lake.derivative_path(cache, kind, symbol, timeframe),
                                            endpoint=market_data.DERIVATIVE_KLINE_PATHS[kind],
                                            params={param: symbol, "interval": timeframe}, timeframe=timeframe,
-                                           depth=depth, page=DERIVATIVE_PAGE)
+                                           depth=depth, page=DERIVATIVE_PAGE, since_ms=since_ms)
                 say(f"  {key}: +{written[key]}")
         key = f"funding {symbol}"
-        written[key] = fill_funding(budget, lake.funding_path(cache, symbol), symbol=symbol)
+        written[key] = fill_funding(budget, lake.funding_path(cache, symbol), symbol=symbol, since_ms=since_ms)
         say(f"  {key}: +{written[key]}")
     return written
 
@@ -231,7 +259,17 @@ def main(argv: list[str] | None = None) -> int:
                         help=f"repeatable; default {', '.join(ALLOWED_TIMEFRAMES)}")
     parser.add_argument("--kind", action="append", dest="kinds", default=None,
                         help="derivative price series (mark/index/premium); default all three")
+    parser.add_argument("--since", default=None, metavar="YYYY-MM-DD",
+                        help="also extend each series backward to this UTC date (PRE_WINDOW_REPLAY_V0.1, Thomas "
+                             "2026-10-23 Q3: public data back to 2019)")
     args = parser.parse_args(argv)
+    since_ms = None
+    if args.since:
+        try:
+            since_ms = int(datetime.strptime(args.since, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000)
+        except ValueError:
+            print(f"--since takes YYYY-MM-DD, not {args.since!r}", file=sys.stderr)
+            return 2
     timeframes = args.timeframes or list(ALLOWED_TIMEFRAMES)
     refused = [tf for tf in timeframes if tf not in ALLOWED_TIMEFRAMES]
     if refused:
@@ -241,7 +279,8 @@ def main(argv: list[str] | None = None) -> int:
     budget = Budget()
     try:
         written = run(budget, Path(args.cache), symbols=args.symbols or market_data.CROSS_SECTION_UNIVERSE,
-                      timeframes=timeframes, kinds=args.kinds or tuple(market_data.DERIVATIVE_KLINE_PATHS))
+                      timeframes=timeframes, kinds=args.kinds or tuple(market_data.DERIVATIVE_KLINE_PATHS),
+                      since_ms=since_ms)
     except Stop as exc:
         print(f"stopped after {budget.requests} request(s): {exc}", file=sys.stderr)
         return 3

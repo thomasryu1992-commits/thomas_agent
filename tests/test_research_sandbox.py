@@ -118,6 +118,43 @@ def test_attach_feeds_puts_the_lake_rows_on_the_frame_and_keeps_nothing(tmp_path
     assert coinalyze_daily_store.read_rows("open_interest", root=run_root) == []
 
 
+
+def test_an_as_of_cut_never_serves_a_row_known_after_it_on_any_series(tmp_path):
+    """PRE_WINDOW_REPLAY_V0.1 §6: a replay of a past year must see what a collector at that instant held.
+    Candles and price series closed before the cut, funding settled by it, Coinalyze days closed by it."""
+    from runtime.mvp_runtime.crypto import coinalyze_daily_store, state
+
+    iso = market_data.BinanceFuturesCollector._iso
+    D = 24 * H
+    _write(lake.klines_path(tmp_path, "BTCUSDT", "1h"), [_kline(T0 + i * H, 100.0 + i) for i in range(48)])
+    _write(lake.derivative_path(tmp_path, "mark", "BTCUSDT", "1h"), [_kline(T0 + i * H, 50.0 + i) for i in range(48)])
+    _write(lake.funding_path(tmp_path, "BTCUSDT"),
+           [{"symbol": "BTCUSDT", "fundingTime": T0 + i * 8 * H, "fundingRate": "0.0001"} for i in range(6)])
+    day0 = T0 - (T0 % D)
+    days = [iso(day0 + k * D) for k in range(3)]
+    coinalyze_daily_store.record("BTCUSDT", open_interest=[{"timestamp": d, "open_interest": 1.0} for d in days],
+                                 liquidations=None, now="2026-10-21T00:00:00Z", root=tmp_path / "lake")
+    feed = lake.LakeLiquidationFeed(state.state_dir(tmp_path / "lake"))
+    collector = lake.LakeCollector(tmp_path)
+
+    cut = T0 + 20 * H + H // 2                                  # half-way through bar 20
+    with lake.as_of(iso(cut)):
+        candles = collector.collect("BTCUSDT", "1h", limit=1000, timeout_seconds=1).candles
+        marks = collector.derivative_price_klines("BTCUSDT", "1h", kind="mark", limit=1000, timeout_seconds=1)
+        funding = collector.funding_history("BTCUSDT", records=1000, timeout_seconds=1)
+        try:
+            oi = feed.open_interest_history("BTCUSDT", days=10, timeout_seconds=1)
+        except ToolError:
+            oi = []
+    assert candles[-1].open_time == iso(T0 + 19 * H)           # bar 20 had not closed
+    assert marks[-1]["timestamp"] == iso(T0 + 19 * H)
+    assert funding[-1]["timestamp"] == iso(T0 + 16 * H)       # settlements at 0, 8, 16 h
+    held_days = [d for k, d in enumerate(days) if day0 + k * D + D <= cut]
+    assert held_days and [r["timestamp"] for r in oi] == held_days   # exactly the days closed by the cut
+    # And outside the context nothing is cut: the latest rows come back.
+    assert collector.collect("BTCUSDT", "1h", limit=1000, timeout_seconds=1).candles[-1].open_time == iso(T0 + 47 * H)
+    assert len(feed.open_interest_history("BTCUSDT", days=10, timeout_seconds=1)) == 3
+
 def test_install_swaps_the_selectors_and_the_mock_refuses(monkeypatch, tmp_path):
     for name in ("select_market_data_collector", "select_liquidation_feed"):
         monkeypatch.setattr(market_data, name, getattr(market_data, name))
@@ -198,6 +235,53 @@ def test_a_later_fill_only_asks_forward_and_never_rewrites(tmp_path):
     assert written == 10 and all("startTime" in u for u in venue.urls)
     assert len(lake._by_open_time(lake.read_rows(path))) == 40 and len(path.read_text().splitlines()) == 40
 
+
+
+def test_since_extends_backward_from_the_oldest_held_bar_and_never_re_asks(tmp_path):
+    """PRE_WINDOW_REPLAY_V0.1 §6 (Thomas 2026-10-23 Q3): extend a filled cache back to a date."""
+    now_ms = NOON * 1000
+    history = [_kline(now_ms - (60 - i) * H, float(i)) for i in range(60)]
+    path = lake.klines_path(tmp_path, "BTCUSDT", "1h")
+    _write(path, history[40:])                                           # the cache holds the newest 20
+    venue = FakeVenue(history)
+    since = history[12][0]
+    fetch_public.fill_klines(_budget(venue, Clock(NOON)), path, endpoint="klines",
+                             params={"symbol": "BTCUSDT", "interval": "1h"}, timeframe="1h",
+                             depth=25, page=10, since_ms=since)
+    stored = lake._by_open_time(lake.read_rows(path))
+    assert stored[0][0] <= since and [r[0] for r in stored] == sorted({r[0] for r in stored})
+    assert len(list(lake.read_rows(path))) == len(stored)               # nothing written twice
+    from urllib.parse import parse_qs, urlparse
+    ends = [int(parse_qs(urlparse(u).query)["endTime"][0]) for u in venue.urls if "endTime=" in u]
+    assert ends and max(ends) < history[40][0]                          # never asked for a held bar
+
+
+def test_since_extends_funding_backward_too(tmp_path):
+    items = [{"symbol": "BTCUSDT", "fundingTime": T0 + i * 8 * H, "fundingRate": "0.0001"} for i in range(30)]
+
+    def venue(url):
+        from urllib.parse import parse_qs, urlparse
+        q = {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
+        rows = items
+        if "startTime" in q:
+            rows = [r for r in rows if r["fundingTime"] >= int(q["startTime"])][: int(q["limit"])]
+        else:
+            if "endTime" in q:
+                rows = [r for r in rows if r["fundingTime"] <= int(q["endTime"])]
+            rows = rows[-int(q["limit"]):]
+        return 200, {"X-MBX-USED-WEIGHT-1M": "10"}, json.dumps(rows)
+
+    path = lake.funding_path(tmp_path, "BTCUSDT")
+    _write(path, items[20:])
+    fetch_public.fill_funding(_budget(venue, Clock(NOON)), path, symbol="BTCUSDT",
+                              since_ms=items[5]["fundingTime"])
+    held = sorted(int(r["fundingTime"]) for r in lake.read_rows(path))
+    assert held[0] <= items[5]["fundingTime"] and len(held) == len(set(held))
+
+
+def test_since_takes_a_date_and_refuses_anything_else(capsys):
+    assert fetch_public.main(["--since", "2019/09/01", "--symbol", "BTCUSDT"]) == 2
+    assert "YYYY-MM-DD" in capsys.readouterr().err
 
 def test_the_minute_budget_waits_instead_of_spending(tmp_path):
     clock = Clock(NOON)
