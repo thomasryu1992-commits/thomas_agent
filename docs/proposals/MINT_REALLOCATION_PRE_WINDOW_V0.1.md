@@ -1,6 +1,6 @@
 # 제안: 채굴 창 이전 재생의 LEAD를 mint 배분에 반영하는가 (DRAFT v0.1)
 
-**상태:** DECIDED 2026-10-23 — Q1 B, Q2 1h·4h, Q3 하지 않음(Thomas). 확인 측정(쌍둥이 여덟 seed)을 먼저 돌리고, 통과하면 topup 변경을 별도 PR로 올린다. 판정, 홀드아웃, 문, 템플릿 목록은 바꾸지 않는다.
+**상태:** DECIDED 2026-10-23 — Q1 B, Q2 1h·4h, Q3 하지 않음(Thomas). **확인 측정 통과(2026-10-23)**: 1h 두 family가 다시 LEAD이고, 4h `hybrid(fused)`는 NULL이다. topup 기울이기를 지었다(`factory.MINT_TILT_FAMILIES`). 판정, 홀드아웃, 문, 템플릿 목록은 바꾸지 않는다.
 
 **대상:** 1h·4h factory의 topup 슬롯이 어느 family로 가는가.
 - 근거는 `PRE_WINDOW_REPLAY_V0.1.md`의 결과다. 2026-10-23 결정 Q2는 이 결과를 "mint 재배분 제안의 입력으로만" 쓰기로 했다.
@@ -115,4 +115,38 @@
 - **Q2:** 1h와 4h에 적용한다. 1d는 그대로다.
 - **Q3:** OI family는 rotation에 남긴다.
 - **확인 측정 도구:** `scripts/research/pre_window_replay.py --twin-seeds 8`. 쌍둥이를 `seed|1`..`seed|8`로 뽑아 거래를 모은다. 기본값 1은 정식 실행과 같은 규칙이다.
+
+## 확인 측정 결과 (2026-10-23, 정식 실행): 통과
+
+**실행:**
+- `sandbox_run.sh --official -- pre_window_replay --twin-seeds 8`로 돌렸다. 실행 기록은 `20261023T090103Z-295250`이다.
+- 코드는 main `5424da04`(#1293), 데이터 스냅샷은 `20261023T081701Z`, 판정 지문은 `f50dfce1c444`다.
+- 보고서가 지문과 스냅샷, `twin_seeds = 8`을 직접 찍었다.
+
+| family | seed 1 (정식, 10-23 04:50) | 8 seed (확인) | 판정 |
+|---|---|---|---|
+| 1h `hybrid(fused)` | +0.167 | +0.146 [+0.027, +0.264], p 0.016 | **LEAD** |
+| 1h `volatility_expansion` | +0.168 | +0.114 [+0.044, +0.183], p 0.001 | **LEAD** |
+| 4h `hybrid(fused)` | +0.190 | +0.094 [−0.013, +0.200], p 0.085 | NULL (BH 불통과) |
+
+- **§5 기준:** 셋 중 둘이 LEAD이므로 **통과**다.
+- **1h:**
+  - 다른 family 둘도 새로 LEAD가 됐다. `breakout(bollinger)`가 +0.094(8쌍)이고, `time_of_day`는 1쌍이다.
+  - 1h 전체 차이는 +0.092R [+0.032, +0.153]이고, 40쌍 중 33개가 앞섰다.
+  - 보정 거짓 통과율은 0.013이다.
+- **4h:**
+  - 전체 차이는 +0.057R [+0.014, +0.100]이고, 63쌍 중 51개가 앞섰다.
+  - LEAD family는 없다. 규칙상 4h는 "이전 구간에서 진입 시점 우위 없음"이다.
+
+**뜻하는 것:**
+- 1h의 단서는 쌍둥이 추첨을 여덟 번으로 늘려도 남았다.
+- 4h는 전체로는 양수지만 family 하나로 모아 말할 만큼 강하지 않다.
+- 결정 Q2는 1h·4h 모두였다. 그래서 기울이기는 둘 다에 지었다. 다만 4h의 근거가 이 측정에서 약해졌으므로, 병합할 때 4h를 뺄지 Thomas가 정할 수 있게 PR에 적는다. 빼려면 `MINT_TILT_TIMEFRAMES`에서 "4h"를 지우면 된다.
+
+**지은 것 (§3 B):**
+- **`factory.tilt_slots`:** 1h·4h에서 topup 슬롯의 절반을 계산한다. 홀수 슬롯 하나는 맥락의 발사 차례에 따라 번갈아 간다.
+- **기울인 추첨:** `generate_batch(families=MINT_TILT_FAMILIES)`로 여섯 family만 따로 rotation한다. seed는 창 해시의 다음 여덟 자리다.
+- 나머지 절반은 예전처럼 다음 library 조각으로 간다. 교배가 먼저 쓰고 발사 물량이 그대로인 것도 같다.
+- 발사 결과에 `tilted_topup_count`를 기록하고, `seeded_topup_count`가 그것을 포함한다.
+- **되돌리기:** `MINT_TILT_TIMEFRAMES`를 비우면 된다. §5의 30일 기계적 확인과 되돌림 조건은 그대로다.
 
