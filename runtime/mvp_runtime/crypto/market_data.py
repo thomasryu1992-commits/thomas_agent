@@ -1400,11 +1400,9 @@ class BinanceFuturesCollector:
         hold. A row labelled T is published 1.5-5 minutes after T and its value never moved afterwards,
         inside or after its period, so it is a reading AT T, not a forming aggregate of [T, T+period).
         The drop costs nothing in correctness; it makes this collector hold row T one period later than
-        the venue publishes it. Replay aligns on the label, so on a frame finer than the period (15m
-        against 1h rows) replay reads a row up to one period before live would. That is not a lookahead
-        (the row was public before the bar closed; `tests/test_mvp_runtime_crypto_point_in_time.py`),
-        but it is a replay/live difference to settle before positioning minting opens
-        (`docs/history/2026-10-21-positioning-availability.md`).
+        the venue publishes it. Replay follows that (Thomas 2026-10-21): `features` keys row T at
+        T + period, so no frame reads a row before this collector would hold it
+        (`docs/history/2026-10-23-positioning-replay-follows-live.md`).
 
         ``longShortRatio`` is not returned even though the venue sends it: it is exactly
         ``longAccount / shortAccount``, so storing it alongside both legs creates a third field
