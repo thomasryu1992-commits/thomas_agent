@@ -178,6 +178,21 @@ PROGRESS_STAGES: tuple[str, ...] = (
 )
 
 
+def _enter_stage(on_progress: Any, halt_check: Callable[[], None] | None, stage: str) -> None:
+    """Re-check the runtime switch, then report the stage.
+
+    Every stage in :data:`PROGRESS_STAGES` reaches outside this process: the search tool, a model
+    call, or the controlled write. The door checked the switch when the run started, but a kill
+    that lands mid-run must stop the NEXT effect rather than wait for the run to end (outside
+    review 3.2, 2026-10-23: "after a kill, a running task must create no new unapproved external
+    effect"). ``halt_check`` raises :class:`errors.ControlBlocked`, which the outer
+    ``except MvpRuntimeError`` turns into a BLOCK. Unlike ``on_progress`` it is a hook, not a
+    notification: its exception is the point, so it is not swallowed."""
+    if halt_check is not None:
+        halt_check()
+    _progress(on_progress, stage)
+
+
 def _progress(on_progress: Any, stage: str) -> None:
     """Report one stage, and never let reporting cost the run.
 
@@ -968,6 +983,7 @@ def run_task(
     on_progress: Callable[[str], None] | None = None,
     budget_profile: str | None = None,
     search_query: str | None = None,
+    halt_check: Callable[[], None] | None = None,
     **intake_kwargs: Any,
 ) -> dict[str, Any]:
     """Run one task end-to-end. Returns a structured result; never raises for a
@@ -1151,7 +1167,7 @@ def run_task(
         # "문단" and GPT prompts for '스티커제작업체' (bcp_b02b7c5579faabd23420, 2026-09-30).
         query = ((search_query or "").strip()
                  or plan["task"].get("request", {}).get("normalized_goal") or raw_request)
-        _progress(on_progress, STEP_SEARCH)
+        _enter_stage(on_progress, halt_check, STEP_SEARCH)
         try:
             search_hits, tool_use = run_search(query, tool=search_tool, now=now)
         except ToolBlocked as exc:
@@ -1168,6 +1184,8 @@ def run_task(
         # keeps.
         keyword_rows: list[dict[str, Any]] = []
         if keyword_seeds is not None:
+            if halt_check is not None:
+                halt_check()            # the keyword brief is network egress too
             keyword_rows, keyword_record = naver_research.run_keyword_brief(
                 keyword_seeds, now=now)
             records["keyword_research"] = keyword_record
@@ -1192,7 +1210,7 @@ def run_task(
         role_prompt, role_output_keys = _role_execution(
             plan, search_hits=search_hits, memory_entries=memory_entries,
             validated_entries=validated_entries, keyword_rows=keyword_rows)
-        _progress(on_progress, STEP_ANALYSIS_WORKER)
+        _enter_stage(on_progress, halt_check, STEP_ANALYSIS_WORKER)
         agent_output, invocation = run_analysis_worker(
             plan["task"], plan["role_assignment"], provider=specialist_provider, created_at=now,
             search_hits=search_hits, memory_entries=memory_entries,
@@ -1202,7 +1220,7 @@ def run_task(
         records["agent_output"] = agent_output
         records["invocation"] = invocation
 
-        _progress(on_progress, STEP_AUTOMATIC_VALIDATION)
+        _enter_stage(on_progress, halt_check, STEP_AUTOMATIC_VALIDATION)
         validation = validate_agent_output(agent_output, plan["task"], plan["role_assignment"],
                                            now=now, repo_root=repo_root,
                                            required_role_output_keys=role_output_keys)
@@ -1225,7 +1243,7 @@ def run_task(
         # and a trial's `independent_result` is worth more than the tokens it costs.
         independent_validation_result = validator_invocation = reviewer_outage = None
         if validate_run and validation["validation"]["result"] == "PASS":
-            _progress(on_progress, STEP_INDEPENDENT_VALIDATION)
+            _enter_stage(on_progress, halt_check, STEP_INDEPENDENT_VALIDATION)
             independent_validation_result, validator_invocation, reviewer_outage = _run_reviewer(
                 plan, agent_output, validator_provider=validator_provider, now=now, repo_root=repo_root,
             )
@@ -1248,7 +1266,7 @@ def run_task(
         revision = None
         revision_spend = _RevisionSpend()
         if revise and outcome == "REVISE":
-            _progress(on_progress, STEP_REVISION)
+            _enter_stage(on_progress, halt_check, STEP_REVISION)
             attempt = _revise_once(
                 plan, records,
                 raw_request=raw_request, validation=validation,
@@ -1284,7 +1302,7 @@ def run_task(
         # that claims a file exists when it does not.
         write_use = None
         if write_path is not None and outcome == "PASS":
-            _progress(on_progress, STEP_CONTROLLED_WRITE)
+            _enter_stage(on_progress, halt_check, STEP_CONTROLLED_WRITE)
             _write_result, write_use = run_write(
                 write_path,
                 render_response(

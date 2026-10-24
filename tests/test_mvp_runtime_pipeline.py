@@ -714,3 +714,60 @@ def test_without_search_query_the_request_is_the_query_as_before():
     run_task(REQUEST, provider=MockProvider(), search_tool=plain, now=NOW)
     run_task(REQUEST, provider=MockProvider(), search_tool=blank, now=NOW, search_query="  ")
     assert plain.queries == blank.queries and plain.queries[0].strip()
+
+
+# --- a kill that lands mid-run stops the next effect (outside review 3.2, 2026-10-23) ----------------
+
+def test_entering_a_stage_rechecks_the_halt_first_and_never_swallows_it():
+    from runtime.mvp_runtime import pipeline
+    from runtime.mvp_runtime.errors import ControlBlocked
+
+    reported: list[str] = []
+
+    def halted():
+        raise ControlBlocked("RUNTIME_KILLED", "killed mid-run")
+
+    with pytest.raises(ControlBlocked):
+        pipeline._enter_stage(reported.append, halted, pipeline.STEP_ANALYSIS_WORKER)
+    assert reported == []                                   # stopped before the stage, not after it
+    pipeline._enter_stage(reported.append, lambda: None, pipeline.STEP_SEARCH)
+    pipeline._enter_stage(lambda _s: 1 / 0, None, pipeline.STEP_SEARCH)   # a broken notifier still costs nothing
+    assert reported == [pipeline.STEP_SEARCH]
+
+
+class _CountingProvider(MockProvider):
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def generate(self, prompt, *, max_output_tokens, timeout_seconds):
+        self.calls += 1
+        return super().generate(prompt, max_output_tokens=max_output_tokens, timeout_seconds=timeout_seconds)
+
+
+@requires_local_core
+def test_a_kill_after_the_search_blocks_the_run_before_any_model_call():
+    from runtime.mvp_runtime.errors import ControlBlocked
+
+    provider = _CountingProvider()
+    checks = {"n": 0}
+
+    def halt_after_first_stage():
+        checks["n"] += 1
+        if checks["n"] > 1:                                  # the search stage ran; then the kill landed
+            raise ControlBlocked("RUNTIME_KILLED", "killed mid-run")
+
+    r = run_task(REQUEST, provider=provider, search_tool=_SpySearchTool(), now=NOW,
+                 halt_check=halt_after_first_stage)
+    assert r["status"] == "BLOCKED" and r["block"]["reason_code"] == "RUNTIME_KILLED"
+    assert provider.calls == 0                               # no model call after the kill
+    assert checks["n"] == 2
+
+
+@requires_local_core
+def test_an_unhalted_run_checks_the_switch_before_every_effect_stage():
+    seen = {"n": 0}
+    r = run_task(REQUEST, provider=MockProvider(), search_tool=_SpySearchTool(), now=NOW,
+                 halt_check=lambda: seen.__setitem__("n", seen["n"] + 1))
+    assert r["status"] == "COMPLETED"
+    assert seen["n"] >= 3                                    # search, analysis, automatic validation at least
