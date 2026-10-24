@@ -1366,8 +1366,12 @@ def run_content_ideation(
     writer: Any = None,
     published_source: Any = None,
     keyword_queue: Any = None,
+    halt_check: Any = None,
 ) -> dict[str, Any]:
     """Research -> pick -> draft -> score -> package. Returns the sheet the scheduler renders.
+
+    ``halt_check`` reaches every ``run_task`` this makes (``pipeline._enter_stage``), so a halt that
+    lands between or inside its runs stops the next external effect.
 
     Raises ``ToolError`` when a governed run blocks or no keyword qualifies; the scheduler
     turns that into the fire's status, which is the same shape a blocked data-review fire has.
@@ -1384,6 +1388,7 @@ def run_content_ideation(
         raise ToolError("IDEATION_INPUTS_REQUIRED", "no keyword seeds and no target= override")
     resolved = dict(providers or {})
     common: dict[str, Any] = {
+        "halt_check": halt_check,
         "provider": resolved.get("provider"),
         "validator_provider": resolved.get("validator_provider"),
         "search_tool": resolved.get("search_tool"),

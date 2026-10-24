@@ -287,11 +287,12 @@ def test_every_declared_stage_is_actually_emitted_by_run_task():
     constants = {value: name for name, value in vars(pipeline).items()
                  if name.startswith("STEP_") and isinstance(value, str)}
     for stage in pipeline.PROGRESS_STAGES:
-        assert f"_progress(on_progress, {constants[stage]})" in body, stage
+        # Emitted through `_enter_stage`, which re-checks the halt first (outside review 3.2, 2026-10-23).
+        assert f"_enter_stage(on_progress, halt_check, {constants[stage]})" in body, stage
     # ...and nothing is emitted that was never declared.
     emitted = {constants[s] for s in pipeline.PROGRESS_STAGES}
     for name in constants.values():
-        if f"_progress(on_progress, {name})" in body:
+        if f"_enter_stage(on_progress, halt_check, {name})" in body or f"_progress(on_progress, {name})" in body:
             assert name in emitted, name
 
 

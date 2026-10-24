@@ -198,6 +198,17 @@ MAX_FRAME_BYTES = 64 * 1024
 ProviderSelector = Callable[[], dict[str, Any]]
 
 
+
+def _assert_running(control_store: ControlStore) -> None:
+    """The switch, read now. Checked when a frame arrives AND before each external effect of the run
+    it starts (``run_task``'s ``halt_check``), so a halt that lands mid-run stops the next effect."""
+    state = control_store.load()
+    if not state.execution_allowed:
+        raise ControlBlocked(
+            state.refusal_reason_code(),
+            f"runtime is {state.mode}; new work is blocked until an authenticated resume",
+        )
+
 def socket_path(root: Path | None = None) -> Path:
     """The socket path, overridable per-deployment via ``MVP_PIPELINE_WORKER_SOCKET``."""
     return socket_door.resolve_socket_path(SOCKET_ENV, SOCKET_REL, root)
@@ -315,12 +326,7 @@ def apply_work(
     # The door checked this before forwarding; checked again so a halt that lands mid-flight
     # still stops the run, and so this engine refuses on its own even if a frame ever arrives
     # by a path that is not the door.
-    state = control_store.load()
-    if not state.execution_allowed:
-        raise ControlBlocked(
-            state.refusal_reason_code(),
-            f"runtime is {state.mode}; new work is blocked until an authenticated resume",
-        )
+    _assert_running(control_store)
 
     resolved = providers or {}
     client_id = socket_door.client_id_of(request)
@@ -351,6 +357,7 @@ def apply_work(
     try:
         result = run_task(
             text.strip(),
+            halt_check=lambda: _assert_running(control_store),
             request_kind=kind,
             keyword_seeds=naver_keywords,
             independent_validation=independent_validation,
@@ -559,12 +566,7 @@ def _apply_job(
 
     # Same halt binding as a dispatch: this process is an execution door too, and a job that
     # spends model quota is new work.
-    state = control_store.load()
-    if not state.execution_allowed:
-        raise ControlBlocked(
-            state.refusal_reason_code(),
-            f"runtime is {state.mode}; new work is blocked until an authenticated resume",
-        )
+    _assert_running(control_store)
 
     resolved = providers or {}
     if job == JOB_CONTENT_IDEATION:
@@ -591,6 +593,7 @@ def _apply_job(
             "job": job,
             **blog_content.run_content_ideation(
                 inputs,
+                halt_check=lambda: _assert_running(control_store),
                 providers=providers or {},
                 ledger=ledger,
                 working_memory=working_memory,

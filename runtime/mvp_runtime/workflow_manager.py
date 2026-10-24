@@ -8,7 +8,9 @@ for the worker is the manager. A loop failure is a bridge failure — v2 and v3 
 which is today's failure shape — and never reaches the scheduler lanes or the operator.
 
 **One tick.** Lapse overdue leases (``expire_overdue``); if the runtime is PAUSED/KILLED, claim
-nothing (in-flight attempts run to their end — the worker checked the switch when it started);
+nothing (an in-flight attempt is not killed outright, but its run re-reads the switch before each
+external effect — search, model call, keyword brief, controlled write — and BLOCKs at the next one;
+outside review 3.2, 2026-10-23);
 otherwise claim as many READY steps as there are free slots and hand each to the worker over
 the internal socket, in its own thread, as the v2 dispatch frame the worker already speaks
 (``request``/``kind``/``reason``/``naver_keywords``/``client_id``). The attempt frame that
