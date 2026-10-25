@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from runtime.mvp_runtime.crypto import pool, robustness
+from runtime.mvp_runtime.crypto.candidate_ranking import evidence_invalid
 
 # The single-symbol 4h baseline this replaces, measured 2026-08-08 over the stored rows.
 SINGLE_SYMBOL_4H_MEDIAN_TRADES = 9
@@ -90,9 +91,14 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  GUARD DEFECT: {pool.candidate_id(record)} claims "
                       f"{len(_scope(record))} symbols and replayed {symbols}")
 
-        confirmed = [r for r in rows
-                     if robustness.holdout_status(_holdout(r)) == "CONFIRMED"]
-        print(f"  CONFIRMED: {len(confirmed)}/{len(rows)}")
+        # INVALID evidence cannot confirm (`candidate_ranking.evidence_standing`): a lookahead lifts the
+        # holdout with the rest of the replay. Counted, never listed as a confirmation (2026-10-25).
+        holdout_confirmed = [r for r in rows
+                             if robustness.holdout_status(_holdout(r)) == robustness.HOLDOUT_CONFIRMED]
+        confirmed = [r for r in holdout_confirmed if not evidence_invalid(r)]
+        invalid = len(holdout_confirmed) - len(confirmed)
+        print(f"  CONFIRMED: {len(confirmed)}/{len(rows)}"
+              + (f"   ({invalid} more on INVALID evidence, left out)" if invalid else ""))
         for record in confirmed:
             holdout = _holdout(record)
             prior_r = holdout.get("prior_window_r") or []

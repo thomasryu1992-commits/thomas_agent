@@ -1564,7 +1564,7 @@ def test_scheduler_factory_fire_appends_candidates_and_ledgers(tmp_path):
     # that would mean the fusion half of the budget had been discarded.
     # (mock collector data is fine for MINING, not for trading)
     assert len(candidates) == 8
-    assert summary["results"][0]["status"].startswith("generated=8/8 fused=0 topup=4")
+    assert summary["results"][0]["status"].startswith("generated=8/8 fused=0 topup=4 tilted=")
     # What ablation did rides the same line: the lattice spends replays with no cadence
     # change, and the status line is where that spend and its yield are legible per fire.
     assert " ablated=" in summary["results"][0]["status"]
@@ -4334,6 +4334,16 @@ def test_on_4h_half_the_shortfall_is_drawn_from_the_tilt_families(tmp_path):
     assert {c["strategy_spec"]["strategy_family"] for c in tilted} <= MINT_TILT_FAMILIES
     hashes = [c["strategy_rule_hash"] for c in result["candidates"]]
     assert len(set(hashes)) == len(hashes)                       # the tilted draw shares the duplicate guard
+
+
+def test_the_fire_status_line_carries_the_tilted_part_of_the_topup(tmp_path):
+    """The event log is where a fire is read back from (the lake carries no fire results), so the tilted
+    count rides the status line beside `topup=` (2026-10-25: the tilt check had to infer it from slot order)."""
+    from runtime.mvp_runtime.scheduler import _factory_status_line
+    result = _declined_fusion_on(tmp_path, "4h")
+    line = _factory_status_line(result)
+    assert f"topup={result['seeded_topup_count']} tilted={result['tilted_topup_count']} " in line
+    assert result["tilted_topup_count"] == 2
 
 
 def test_off_1h_and_4h_nothing_is_tilted(tmp_path):

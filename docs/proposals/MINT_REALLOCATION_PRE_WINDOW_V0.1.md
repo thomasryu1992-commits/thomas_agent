@@ -1,6 +1,6 @@
 # 제안: 채굴 창 이전 재생의 LEAD를 mint 배분에 반영하는가 (DRAFT v0.1)
 
-**상태:** DECIDED 2026-10-25 — Q1 B, Q2 1h·4h, Q3 하지 않음(Thomas 2026-10-23), Q4 예: 기계적 확인은 11-14에 한 번 읽고 교배 수는 보고만 한다(Thomas 2026-10-25). 틸트 뒤 BTCUSDT 1h에서 family 10개가 끊기던 결함은 #1300으로 고쳤다(`factory.shortfall_slice_start`). **확인 측정 통과(2026-10-23)**: 1h 두 family가 다시 LEAD이고, 4h `hybrid(fused)`는 NULL이다. topup 기울이기를 지었다(`factory.MINT_TILT_FAMILIES`). 판정, 홀드아웃, 문, 템플릿 목록은 바꾸지 않는다.
+**상태:** PARTIALLY DECIDED 2026-10-25 — **Q4a(4h 사전 등록값 35.7%→37.5% 정정) 확인 대기.** Q1 B, Q2 1h·4h, Q3 하지 않음(Thomas 2026-10-23), Q4 예: 기계적 확인은 11-14에 한 번 읽고 교배 수는 보고만 한다(Thomas 2026-10-25). 틸트 뒤 BTCUSDT 1h에서 family 10개가 끊기던 결함은 #1300으로 고쳤다(`factory.shortfall_slice_start`). **확인 측정 통과(2026-10-23)**: 1h 두 family가 다시 LEAD이고, 4h `hybrid(fused)`는 NULL이다. topup 기울이기를 지었다(`factory.MINT_TILT_FAMILIES`). 판정, 홀드아웃, 문, 템플릿 목록은 바꾸지 않는다.
 
 **대상:** 1h·4h factory의 topup 슬롯이 어느 family로 가는가.
 - 근거는 `PRE_WINDOW_REPLAY_V0.1.md`의 결과다. 2026-10-23 결정 Q2는 이 결과를 "mint 재배분 제안의 입력으로만" 쓰기로 했다.
@@ -161,7 +161,7 @@
 - BTCUSDT 1h는 family가 40개(8의 배수)다. 그래서 batch는 짝수 slice만, shortfall은 홀수 slice만 돈다. 같은 꼬리가 매 발사마다 잘린다.
 - 그 결과 family 10개가 BTCUSDT 1h에서 다시 mint되지 않는다: `macd_cross_up/down`, `bollinger_breakout`, `bollinger_breakdown_short`, `oi_squeeze_short`, `oi_unwind_long`, `premium_fade_long/short`, `funding_momentum_long/short`.
   - bollinger 둘은 틸트 추첨으로는 계속 나온다.
-- 나머지 1h 네 context와 4h는 family가 42개라 모든 family가 고르게 0.75배가 된다.
+- 나머지 1h 네 context와 4h는 family가 42개라 모든 family가 고르게 0.75배가 된다. **(정정 2026-10-25: 4h 묶음은 40개다. 아래 "정정" 절)**
 - 교배가 슬롯을 가져간 발사에서도 같은 손실이 있었다. 다만 틸트 전에는 드물었다.
 
 **고친 것 (`factory.shortfall_slice_start`):**
@@ -175,7 +175,7 @@
 - 10-24부터 21번이면 11-13 발사까지다. 바퀴 중간에 읽으면 rotation 위치에 끌린다. 10-24 하루만 보면 1h가 45%였다.
 - **사전 등록 (교배 0 가정):**
   - 1h는 36%다(BTCUSDT 37.5%, 수정 배포 전이면 35.0%; 나머지 35.7%).
-  - 4h는 35.7%다.
+  - 4h는 35.7%다. **(정정 2026-10-25: 37.5%. 아래 "정정" 절, Q4a)**
   - 허용 폭은 ±10%p다. 발사당 mint는 8이다.
 - **교배 수는 기준에서 빼고 숫자만 보고한다.**
   - 한 발사 안에서 교배가 topup보다 먼저 돌아서, 틸트가 교배 수를 바꿀 수 없다.
@@ -195,3 +195,20 @@
   - 교배 수는 기준이 아니고 숫자만 보고한다.
 - 되돌림 조건(2027-03-22 H2 판정, 다음 이전 구간 재생)은 그대로다.
 - 결함 수정(#1300)은 배포된 발사부터 적용된다. 그 전 BTCUSDT 1h 발사는 35.0% 기준으로 본다.
+
+## 정정 (2026-10-25, 검증 중 발견) — 4h 묶음 발사는 family 40개
+
+- **틀린 것:** 위 "2026-10-25 추가" 절과 #1300은 4h 묶음 발사의 library를 42개로 보고 "결함 영향 없음", 기대 몫 35.7%로 적었다.
+  묶음 발사는 snapshot의 `symbol`(BTCUSDT)로 template을 고르므로, BTCUSDT 1h와 같은 40개다. 계산에서 cohort의 첫 심볼(BNBUSDT)을
+  쓴 것이 원인이다.
+- **뜻:**
+  - 4h도 같은 꼬리 결함을 가졌다. 틸트 이후 #1300 배포 전까지 4h 발사는 10-24 한 번이다.
+  - #1300이 4h도 고쳤다. 10-25 4h 발사(GEN-1164)의 S005–S006은 `oi_squeeze_short`·`oi_unwind_long`이다. 수정 규칙의
+    기대값(rotation_index 76, 시작 2)과 같고, 예전 규칙이었다면 `htf_pullback_long`·`oi_squeeze_long`이었다 [확인, 레이크
+    `20261025T121701Z`].
+  - 같은 날 1h 발사 두 개(GEN-1161, GEN-1166)도 기대값과 8슬롯 모두 같다(둘 다 시작 0이라 예전 규칙과 구분되지 않는다).
+- **4h 사전 등록값:** family 40개 기준 기대 몫은 37.5%다(1h BTCUSDT와 같은 계산). 허용 폭 ±10%p는 그대로다.
+
+| 결정 | 질문 | 권고 |
+|---|---|---|
+| **Q4a** | 11-14 읽기의 4h 기대 몫을 35.7%에서 37.5%로 바로잡는가 | **예.** 같은 규칙에 맞는 library 크기를 넣은 계산 정정이다. 허용 폭과 읽는 날은 그대로다 |
