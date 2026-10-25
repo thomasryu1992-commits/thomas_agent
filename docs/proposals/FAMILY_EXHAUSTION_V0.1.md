@@ -1,7 +1,8 @@
 # 제안: family 소진(`SEARCH_EXHAUSTED`) — 상태가 아니라 측정으로 (DRAFT v0.1)
 
-**상태:** DECIDED 2026-09-26 — Q1 B·Q2·Q3 결정, §6 확인 완료(1h는 5심볼 모두가 의도). 남은 구현: Q1 B의 퍼널 family
-소진 절(30일 CONFIRMED·마지막 CONFIRMED). 1h 5심볼 민팅은 이미 돌고 있었다(§6 정정, 2026-09-26).
+**상태:** IMPLEMENTED 2026-10-25 — Q1 B·Q2·Q3 결정(2026-09-24), §6 확인 완료(1h는 5심볼 모두가 의도, 2026-09-26).
+Q1 B의 퍼널 family 소진 절을 지었다(`strategy_funnel.family_exhaustion`, 2026-10-25). CONFIRMED는 INVALID가 아닌 증거만
+센다. §0의 신호였던 OI family CONFIRMED는 뒤에 OI lookahead로 모두 INVALID가 됐다(아래 "구현 (2026-10-25)" 절).
 **참고:** 이 문서의 나머지는 결정 당시의 근거로 남긴다.
 **성격:** 외부 "Crypto Live Trading Follow-up Fix Plan" §20~21(Family Exhaustion)에 대한 답이다.
 계획서의 규칙을 운영 저장소에 그대로 대 보면 **rotation family 44개 중 42개가 소진으로
@@ -178,3 +179,17 @@ A는 기각한다.
   이미 충족돼 있어 실행하지 않았다(Thomas 2026-09-26: 현재 상태 유지). 1h를 풀링하지 않는 이유는
   F9 그대로다: 풀링된 행은 5심볼 범위라 기존 전략과 겹쳐 승격이 막히고(`POOL_CONTEXT_CAP_EXCEEDED`), 방향 조절이
   컨텍스트 단위에서 타임프레임 단위로 줄어든다.
+
+## 구현 (2026-10-25)
+
+- `strategy_funnel.family_exhaustion`이 §3 B의 표를 퍼널 보고서의 `FAMILIES` 절로 낸다(`scripts.strategy_funnel`, `--json`의
+  `families`). 읽기 전용이고, 보드에는 올리지 않는다(§7).
+- **열:** 30일 생성 행, 30일 CONFIRMED, 마지막 CONFIRMED, CONFIRMED 계보 수, forward 구성원과 성숙도.
+- **세는 기준:**
+  - 후보 하나는 한 번만 센다. 판정은 마지막 행으로 한다.
+  - 재채점 행(`rescored_from_candidate_id`)은 생성으로 세지 않는다. 날짜는 원본의 생성 시각을 따른다.
+- **CONFIRMED:** 홀드아웃을 오늘 규칙으로 다시 계산하고(`robustness.holdout_status`), 증거가 INVALID인 행은 뺀다
+  (`candidate_ranking.evidence_standing`). 뺀 수는 절 머리에 적고, BIASED는 세되 `b`로 표시한다.
+- **§0을 다시 읽을 것:** §0과 §1의 "OI family 7행 CONFIRMED"는 OI lookahead가 고쳐지기 전 증거다(2026-10-20 수정).
+  지금 기준으로는 INVALID다(퍼널 머리의 "14 INVALID CONFIRMED left out"). 2026-10-25 실행에서 남은 CONFIRMED는
+  `oi_unwind_short` 재채점 2행(원본 생성 10-12, 계보 1개)이고, 둘 다 BIASED다. 나머지 family의 30일 CONFIRMED는 0이다.
