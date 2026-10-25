@@ -135,6 +135,7 @@ def test_the_four_sections_say_what_happened_in_the_window():
     assert "crypto_factory (schedule_f) — FACTORY_CHILD" in text and "TOSS_DOWN" not in text
     assert "crypto_factory (schedule_f) 실패 1 · 중단 1" in text
     assert "스케줄 분석 실행 1건" in text
+    assert "이벤트 기록이" not in text          # a row from before the window: the week is covered
     # Feedback: in-window verdicts, per lane by trace, against the runs delivered.
     assert "/feedback 2건 (전달 1건 대비): GOOD 1 · BAD 1 · NOTE 0" in text
     assert "[content.general] BAD 1" in text and "[research.general] GOOD 1" in text
@@ -173,6 +174,7 @@ def test_a_short_event_history_says_how_far_back_it_counted():
 def test_an_empty_week_renders_plainly():
     text = mr.render(_report(ledger=FakeLedger(), schedules=FakeSchedules([]), approval_store=FakeApprovals([])))
     assert "비크립토 레인: 기간 안에 실행된 요청이 없습니다." in text
+    assert "(기록된 스케줄러 이벤트가 없습니다)" in text
     assert "■ 대기 승인\n  없음" in text and "지금 실패 중: 없음" in text and "/feedback 0건" in text
 
 

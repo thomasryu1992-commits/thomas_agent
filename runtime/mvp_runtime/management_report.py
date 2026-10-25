@@ -101,12 +101,16 @@ def read_schedules(schedules: Any, ledger: Any, *, since: str) -> dict[str, Any]
     )
     fires: dict[tuple[str, str], Counter] = defaultdict(Counter)
     analyses = 0
-    earliest: str | None = None
+    # The oldest row READ, in or before the window: a row older than `since` means the history
+    # covers the whole window; only a history that starts inside it is reported as short.
+    oldest: str | None = None
     for event in ledger.iter_events_with_archive(SCHEDULER_FILE, appended_since=since):
         created = str(event.get("created_at") or "")
-        if not created or created < since:
+        if not created:
             continue
-        earliest = created if earliest is None or created < earliest else earliest
+        oldest = created if oldest is None or created < oldest else oldest
+        if created < since:
+            continue
         action = event.get("action")
         key = (str(event.get("kind") or "?"), str(event.get("schedule_id") or "?"))
         if action in ("failed", "abandoned"):
@@ -119,7 +123,7 @@ def read_schedules(schedules: Any, ledger: Any, *, since: str) -> dict[str, Any]
         key=lambda row: (-(row["failed"] + row["abandoned"]), row["kind"], row["schedule_id"]),
     )
     return {"failing": failing, "failed_fires": failed_fires, "scheduled_analyses": analyses,
-            "earliest_event": earliest}
+            "history_from": oldest}
 
 
 def read_feedback(ledger: Any, *, since: str, until: str, lanes: Mapping[str, Mapping[str, Any]] | None) -> dict[str, Any]:
@@ -238,8 +242,10 @@ def render(report: Mapping[str, Any]) -> str:
                       for r in s["failed_fires"]]
         else:
             lines.append("  기간 중 실패한 fire: 없음")
-        if s["earliest_event"] and s["earliest_event"] > timeutil.plus_minutes(report["since"], 24 * 60):
-            lines.append(f"  (이벤트 기록이 {_kst(s['earliest_event'])}부터만 있어 그 이후만 셌습니다)")
+        if s["history_from"] is None:
+            lines.append("  (기록된 스케줄러 이벤트가 없습니다)")
+        elif s["history_from"] > report["since"]:
+            lines.append(f"  (이벤트 기록이 {_kst(s['history_from'])}부터만 있어 그 이후만 셌습니다)")
         lines.append(f"  스케줄 분석 실행 {s['scheduled_analyses']}건 — 결과는 보내지지 않고 /result로만 볼 수 있습니다")
 
     lines += ["", "■ 피드백"]
