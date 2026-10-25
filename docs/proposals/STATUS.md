@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **80**건: `DRAFT` 3 · `PARTIALLY DECIDED` 10 · `DECIDED` 16 · `IMPLEMENTED` 43 · `SUPERSEDED` 1 · `RECORD` 7
+제안서 **80**건: `DRAFT` 3 · `PARTIALLY DECIDED` 9 · `DECIDED` 17 · `IMPLEMENTED` 43 · `SUPERSEDED` 1 · `RECORD` 7
 
-## Thomas 결정 대기 (13)
+## Thomas 결정 대기 (12)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -24,9 +24,8 @@
 | [MULTI_ASSET_EXPANSION_V0.1.md](MULTI_ASSET_EXPANSION_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-20 | **2026-10-20:** P3 관문에서 "연구 일시 중지 종료(2027-03-22)" 조건을 뺐다. D3 해제와 함께 정했다(아래 결정 절). 나머지 P3 조건은 그대로다. **이전 상태(2026-10-08):** 열린 것: §6 D2 비교 기준 비준(P4 때). 부록 C(바이낸스 현물·Simple Earn 조회) 판단 문장은 Thomas가 2026-10-08에 확인했다(강도 잠정). **H2(평가 완전성, 2026-10-08, 아래 결정 절)가 지어졌다: 보드의 합계는 선언 범위 v1(토스·바이낸스 선물·현물·Simple Earn)이 모두 들어가고 평가·신선도 검사를 통과할 때만 portfolio NAV다. 지갑이 꺼진 지금은 INCOMPLETE이고, 고점·낙폭 알림·비중 판정이 멈춘다(Thomas가 알고 고름). 지갑은 H3·H4 뒤에 켠다. H1-c(2026-10-08) 끝. H3-min(반출 경계, 2026-10-08, 아래 결정 절): 저장 스냅샷에는 단일 종목 금액을 숨긴 자산군 표 하나만 남는다. H4-min(2026-10-08): coherence와 reconciliation이 필수 검사가 됐다. 지갑 활성화(2026-10-08 08:18Z): 첫 실행(08:33Z)에서 다섯 검사 모두 PASS, `portfolio_nav_complete=true`, 범위 v1 고점이 새로 잡혔다.** 피드는 2026-10-07에 지어졌다(`holdings/binance_wallet.py`, P2 합산 블록에 합류). **BLOCKER (H1-a, 2026-10-07): 계정 키를 scheduler-maint와 공유하던 A안을 철회했다. 그 키는 주문 키와 같다. H1-b(2026-10-08)로 전용 읽기 전용 키(`BINANCE_READ_API_*`)를 들였고 지갑도 그 키만 읽는다. H2–H4가 끝나기 전에는 지갑을 켜지 않는다.** D1–D4 결정(2026-10-02): (A) 자산 관리 먼저, 옵션은 조건부, 읽기 전용 보드는 연구 일시 중지 중 허용. 2026-10-07 Thomas: 첫 계좌를 토스증권으로 바꿨다(부록 B, 잠정). P1(토스 보드·`/holdings`·Hermes `holdings_status`)이 운영 중이다. **P2 결정(2026-10-07, 아래 결정 절): 알림만, 낙폭 한도 고점 대비 -20%, 바이낸스(엔진 증거금) 비중 한도 없음, USDT 환산은 토스 매매기준율.** P2의 낙폭 한도가 `holdings/combined.py`로 지어졌다. `TOTAL_ASSET_ALLOCATION_V0.1.md`의 5/25 밴드(Q2)와 BTC 위험 기여도 상한(Q4)은 P2의 한도 후보에서 뺐다(Thomas 2026-10-07): 시스템은 비중 한도를 두지 않는다. 목표 대비 이탈 표시(그 문서 Q9·§11.1)가 보드에 지어졌다(2026-10-07, 표시만). §6 D2 비교 기준 비준은 P4 때 한다. IV–RV 측정은 연구 일시 중지의 예외로 허용됐다(2026-10-06, 아래 결정 절). |
 | [RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md](RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-20 | **2026-10-20:** 관문을 날짜에서 조건으로 바꿨다. (a)(b)(d)는 첫 FORWARD_CONFIRMED 계보가 생길 때 묻고, 그때까지 LIVE_AUTONOMOUS로 올리지 않는다(아래 결정 절). **이전 상태(2026-10-06):** (a)(b)(d)는 첫 forward cohort 판정(2027-03-22) 때 묻는다. 그때까지 크립토 라이브는 LIVE_AUTONOMOUS로 올리지 않고 현재 값을 유지한다(Thomas 2026-10-06, `SYSTEM_SCORECARD_V0.1.md` Q6). 관문이 "슬리피지 실측 뒤"에서 "첫 판정 때"로 바뀌어 순환이 없어졌다. **값은 하나도 바뀌지 않았다.** |
 | [TOTAL_ASSET_ALLOCATION_V0.1.md](TOTAL_ASSET_ALLOCATION_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-20 | **2026-10-20(3):** D-C 3단계가 정해지고 지어졌다. 원·달러 노출을 Thomas의 터미널 보드에만 보인다(H3 때문에 반출하지 않는다). 엔 줄은 없다(아래 결정 절). D-C의 세 단계가 모두 끝났다. **2026-10-20(2):** 미국채 수단은 국내 상장 ETF(7–10년, 환노출)다. 계좌는 Q3의 채권 배치를 따른다. D-D 답: 토스증권은 IRP를 제공하지 않는다. 그 비용은 Q3 재검토 조건에 넣었다(아래 결정 절). **2026-10-20:** D-A가 정해졌다. 채권 37 중 ¼(9.25)을 미국채 7–10년물, 환노출로 담는다(아래 결정 절). 목표 상수는 바뀌지 않는다. 열린 것: 미국채의 수단·계좌와 토스증권 IRP 제공 여부(D-D), D-C 3단계(통화별 노출 표시). **이전 상태(2026-10-16):** 열린 것: 미국채의 몫·만기·환헤지 여부·계좌(원·달러·엔 환율 측정 뒤 Thomas가 정한다)와 토스증권 IRP 제공 여부(Thomas 확인 대기). 2026-10-16 결정(아래 결정 절): 채권에 미국채를 함께 담고, 퇴직연금은 이 배분의 범위 밖이며, 원·달러·엔 환율 변동을 측정 → 표시 순서로 반영한다. 목표 수치는 미국채 몫이 정해질 때까지 그대로다. Q1–Q10 결정(2026-10-07). Q1·Q2·Q4 권고대로(중립형 배분, 5/25 밴드 월 점검, BTC 위험 기여도 상한 25%). Q3은 권고와 달리 토스 하나로 유지하고, 금은 토스증권 금 ETF로 담는다. Q5는 엔진 비중 0%에서 시작해 증거에 따라 늘리며 연구 일시 중지(D3)는 풀지 않는다. 실데이터 검증(`TOTAL_ASSET_ALLOCATION_VALIDATION_V0.1.md`) 뒤 Q6–Q10도 권고대로 결정했다 (§11): BTC 5 → 2.5%(줄인 몫은 현금), 국내주식 10% 유지, 국고채 3년 중심, 목표 대비 이탈은 표시만(D4 안), BTC 현물은 수동 입력·바이낸스 잔고는 목표 0%의 "엔진 증거금". 현재 목표: 주식 40·국고채 37·금 13·BTC 2.5·현금 7.5. 이탈 표시는 지어졌다 (§11.1, `holdings/allocation.py`, 2026-10-07). 남은 것: Q5의 첫 증액 질문(cohort 1 판정, 2027-03-22). 밴드(Q2)와 BTC 상한(Q4)은 P2의 한도 후보에서 뺐다(Thomas 2026-10-07, Q4 아래): 시스템은 비중 한도를 짓지 않는다. |
-| [MINT_REALLOCATION_PRE_WINDOW_V0.1.md](MINT_REALLOCATION_PRE_WINDOW_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-25 | **Q4a(4h 사전 등록값 35.7%→37.5% 정정) 확인 대기.** Q1 B, Q2 1h·4h, Q3 하지 않음(Thomas 2026-10-23), Q4 예: 기계적 확인은 11-14에 한 번 읽고 교배 수는 보고만 한다(Thomas 2026-10-25). 틸트 뒤 BTCUSDT 1h에서 family 10개가 끊기던 결함은 #1300으로 고쳤다(`factory.shortfall_slice_start`). **확인 측정 통과(2026-10-23)**: 1h 두 family가 다시 LEAD이고, 4h `hybrid(fused)`는 NULL이다. topup 기울이기를 지었다(`factory.MINT_TILT_FAMILIES`). 판정, 홀드아웃, 문, 템플릿 목록은 바꾸지 않는다. |
 
-## 결정됨 — 구현 남음 (16)
+## 결정됨 — 구현 남음 (17)
 
 결정은 끝났고 결정된 것이 아직 다 지어지지 않았다. 결정이 만든 구현 대기열이다.
 
@@ -48,6 +47,7 @@
 | [RESEARCH_SANDBOX_V0.1.md](RESEARCH_SANDBOX_V0.1.md) | `DECIDED` | 2026-10-20 | 아래 기본값으로 정했다(Thomas 2026-10-20). 이 문서가 짓는 것은 네 단계다. 1 연구 데이터 내보내기, 2 샌드박스 도구, 3 Coinalyze 일간 데이터 저장, 4 샌드박스에서 OI 측정을 끝까지 돌리는 검증. 진행은 §8에 적는다. |
 | [EPOCH_FAMILY_LIVE_ELIGIBILITY_V0.1.md](EPOCH_FAMILY_LIVE_ELIGIBILITY_V0.1.md) | `DECIDED` | 2026-10-23 | Q1 예, Q2 family 수로 보정, Q3 forward 최상 계보, Q4 아니오(Thomas). 에포크 경계 규칙이라 2027-03-22 전에는 아무것도 바뀌지 않는다. 적용 코드(`assert_live_tier_confirmed`의 family 경로)는 그날의 판정 뒤에 별도 PR로 짓는다. |
 | [PRE_WINDOW_REPLAY_V0.1.md](PRE_WINDOW_REPLAY_V0.1.md) | `DECIDED` | 2026-10-23 | Q1–Q3 권고대로(Thomas): 대상은 cohort 구성원만, 결과는 mint 재배분 제안의 입력으로만, 공개 데이터는 2019년까지 받는다. **정식 결과(2026-10-23): 1h·4h 모두 LEAD_FOUND다.** 1h `hybrid(fused)`·`volatility_expansion`, 4h `hybrid(fused)`가 LEAD이고, 1h 차이는 해마다 줄었다. 두 번째 쌍둥이 seed에서는 크기가 줄어 가장자리다(아래 결과 절). 판정, 문, 템플릿, mint 비중은 바꾸지 않는다. 다음은 재배분 안이다. |
+| [MINT_REALLOCATION_PRE_WINDOW_V0.1.md](MINT_REALLOCATION_PRE_WINDOW_V0.1.md) | `DECIDED` | 2026-10-25 | **Q4a 예: 11-14 읽기의 4h 기대 몫은 37.5%다(Thomas 2026-10-25).** Q1 B, Q2 1h·4h, Q3 하지 않음(Thomas 2026-10-23), Q4 예: 기계적 확인은 11-14에 한 번 읽고 교배 수는 보고만 한다(Thomas 2026-10-25). 틸트 뒤 BTCUSDT 1h에서 family 10개가 끊기던 결함은 #1300으로 고쳤다(`factory.shortfall_slice_start`). **확인 측정 통과(2026-10-23)**: 1h 두 family가 다시 LEAD이고, 4h `hybrid(fused)`는 NULL이다. topup 기울이기를 지었다(`factory.MINT_TILT_FAMILIES`). 판정, 홀드아웃, 문, 템플릿 목록은 바꾸지 않는다. |
 
 ## 구현됨 (43)
 
