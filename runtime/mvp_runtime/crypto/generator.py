@@ -787,8 +787,13 @@ def generate_batch(
     symbol_scope: Sequence[str] | None = None,
     probe_stop_ceiling: float | None = None,
     families: frozenset[str] | None = None,
+    slice_start: int = 0,
 ) -> dict[str, Any]:
     """Produce ``count`` validated, distinct candidate specs (source mechanics).
+
+    ``slice_start`` starts the draw that many families into its rotation slice. ``run_factory`` passes it for
+    a shortfall draw that keeps only part of its slice, so the part it keeps turns with the cursor instead of
+    always being the slice's head (see :func:`factory.shortfall_slice_start`).
 
     ``families`` narrows the rotation to those template families, in library order, and the cursor
     walks that shorter list. ``run_factory`` passes it for the tilted half of the shortfall draw
@@ -847,6 +852,7 @@ def generate_batch(
         generation_id, seed, count, len(templates), rotation_index=rotation_index,
         phase=context_rotation_phase(symbol, timeframe, count=count, total=len(templates)),
     )
+    offset = (offset + int(slice_start)) % len(templates)
     # Which parity of this batch takes the elite centre. Per FIRE rather than fixed, because
     # `offset` is a multiple of `count` and `total` is always even, so the accept index alone
     # gave every family the same centre forever — see `_elite_flip` and the note above

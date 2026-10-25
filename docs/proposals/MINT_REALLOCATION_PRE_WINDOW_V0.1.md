@@ -1,6 +1,6 @@
 # 제안: 채굴 창 이전 재생의 LEAD를 mint 배분에 반영하는가 (DRAFT v0.1)
 
-**상태:** DECIDED 2026-10-23 — Q1 B, Q2 1h·4h, Q3 하지 않음(Thomas). **확인 측정 통과(2026-10-23)**: 1h 두 family가 다시 LEAD이고, 4h `hybrid(fused)`는 NULL이다. topup 기울이기를 지었다(`factory.MINT_TILT_FAMILIES`). 판정, 홀드아웃, 문, 템플릿 목록은 바꾸지 않는다.
+**상태:** PARTIALLY DECIDED 2026-10-23 — Q1 B, Q2 1h·4h, Q3 하지 않음(Thomas). **Q4(확인 읽기를 11-14로) 결정 대기(2026-10-25)**: 틸트 뒤 BTCUSDT 1h에서 family 10개가 끊기는 결함을 찾아 고쳤다(`factory.shortfall_slice_start`). **확인 측정 통과(2026-10-23)**: 1h 두 family가 다시 LEAD이고, 4h `hybrid(fused)`는 NULL이다. topup 기울이기를 지었다(`factory.MINT_TILT_FAMILIES`). 판정, 홀드아웃, 문, 템플릿 목록은 바꾸지 않는다.
 
 **대상:** 1h·4h factory의 topup 슬롯이 어느 family로 가는가.
 - 근거는 `PRE_WINDOW_REPLAY_V0.1.md`의 결과다. 2026-10-23 결정 Q2는 이 결과를 "mint 재배분 제안의 입력으로만" 쓰기로 했다.
@@ -150,3 +150,37 @@
 - 발사 결과에 `tilted_topup_count`를 기록하고, `seeded_topup_count`가 그것을 포함한다.
 - **되돌리기:** `MINT_TILT_TIMEFRAMES`를 비우면 된다. §5의 30일 기계적 확인과 되돌림 조건은 그대로다.
 
+## 2026-10-25 추가: shortfall 꼬리 결함과 확인 읽기 날짜
+
+**틸트는 설계대로 돈다 [확인, 레이크 `20261025T041701Z`]:**
+- 10-24의 1h 발사 다섯 번과 4h 발사 한 번 모두, S007–S008이 여섯 family였다.
+- 1d 발사에는 여섯 family가 없었다. 발사당 mint는 모두 8이다.
+
+**결함 [확인, 코드의 rotation 함수로 시뮬레이션]:**
+- 일반 shortfall은 slice `2k+1`의 앞 두 family만 남긴다.
+- BTCUSDT 1h는 family가 40개(8의 배수)다. 그래서 batch는 짝수 slice만, shortfall은 홀수 slice만 돈다. 같은 꼬리가 매 발사마다 잘린다.
+- 그 결과 family 10개가 BTCUSDT 1h에서 다시 mint되지 않는다: `macd_cross_up/down`, `bollinger_breakout`, `bollinger_breakdown_short`, `oi_squeeze_short`, `oi_unwind_long`, `premium_fade_long/short`, `funding_momentum_long/short`.
+  - bollinger 둘은 틸트 추첨으로는 계속 나온다.
+- 나머지 1h 네 context와 4h는 family가 42개라 모든 family가 고르게 0.75배가 된다.
+- 교배가 슬롯을 가져간 발사에서도 같은 손실이 있었다. 다만 틸트 전에는 드물었다.
+
+**고친 것 (`factory.shortfall_slice_start`):**
+- 남기는 부분의 시작 위치를, 그 slice를 방문할 때마다 돌린다.
+- 발사 차례로 돌리면 family가 32개·48개인 library에서 다시 끊긴다. 그래서 방문 차례로 정했다(26~60개를 모두 시험).
+- 슬롯을 다 쓰는 발사는 시작이 0이라 예전과 같다. 1d는 교배가 슬롯을 가져간 발사에서만 바뀐다.
+
+**확인 읽기를 11-14로 당긴다 (Q4):**
+- 11-22를 기다리는 다른 일은 없다. 되돌림 조건은 2027-03-22 H2 판정과 다음 이전 구간 재생이다.
+- 몫은 rotation이 정한다. family 42개인 context는 21번 발사에 한 바퀴를 돈다(하루 한 번). BTCUSDT 1h는 5번이다.
+- 10-24부터 21번이면 11-13 발사까지다. 바퀴 중간에 읽으면 rotation 위치에 끌린다. 10-24 하루만 보면 1h가 45%였다.
+- **사전 등록 (교배 0 가정):**
+  - 1h는 36%다(BTCUSDT 37.5%, 수정 배포 전이면 35.0%; 나머지 35.7%).
+  - 4h는 35.7%다.
+  - 허용 폭은 ±10%p다. 발사당 mint는 8이다.
+- **교배 수는 기준에서 빼고 숫자만 보고한다.**
+  - 한 발사 안에서 교배가 topup보다 먼저 돌아서, 틸트가 교배 수를 바꿀 수 없다.
+  - 틸트 전에도 6일 연속 0이 있었다(10-13~10-18). 30일로도 변화를 가려내지 못한다.
+
+| 결정 | 질문 | 권고 |
+|---|---|---|
+| **Q4** | 30일 기계적 확인(11-22)을 rotation 한 바퀴(11-14)로 당기는가 | **예.** 11-14에 한 번 읽는다. 기준은 위 사전 등록이고, 교배 수는 보고만 한다 |

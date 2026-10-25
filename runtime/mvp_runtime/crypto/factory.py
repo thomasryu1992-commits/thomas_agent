@@ -56,6 +56,7 @@ real instead of always zero.
 
 from __future__ import annotations
 
+import math
 from itertools import combinations
 from typing import Any, Callable, Mapping, Sequence
 
@@ -1343,6 +1344,24 @@ def tilt_slots(topup_requested: int, *, timeframe: str, rotation_index: int | No
     half, odd = divmod(int(topup_requested), 2)
     return half + (odd if (rotation_index or 0) % 2 else 0)
 
+
+def shortfall_slice_start(rotation_index: int | None, kept: int, count: int, total: int) -> int:
+    """Where in slice ``2k+1`` the plain shortfall draw starts when it keeps only ``kept`` of ``count``.
+
+    Keeping the slice's head every time leaves its tail to "the next pass", and in a library of ``total``
+    families where the batch walks one parity of slices and the shortfall the other (``total`` a multiple of
+    ``2 * count``: BTCUSDT 1h has 40) that pass never comes. With the tilt keeping two of four slots that was
+    ten of BTCUSDT 1h's forty families, never minted there again (found 2026-10-25).
+
+    The start turns once per VISIT to the slice, and a slice comes back every ``total // gcd(2 * count,
+    total)`` fires. Turning it with the fire count instead fails whenever that period is even (32 or 48
+    families): every visit lands on the same parity and keeps the same head. A full slice keeps start 0, so
+    fires the tilt does not touch draw exactly what they drew before."""
+    if rotation_index is None or kept <= 0 or kept >= count or total <= 0:
+        return 0
+    period = total // math.gcd(2 * count, total)
+    return ((int(rotation_index) // period) * int(kept)) % int(count)
+
 def run_factory(
     snapshot: Mapping[str, Any],
     *,
@@ -1667,6 +1686,8 @@ def run_factory(
     # for a whole slice (`count`) and keeps its first `topup_requested`, so when fusion takes some
     # of its pairs the tail of slice 2k+1 is not drawn this pass — on the day this landed fusion
     # took 8.6% of its slots — and waits for the next pass rather than displacing another slice.
+    # Where the kept part starts turns with the cursor (`shortfall_slice_start`), because in some
+    # libraries the next pass at the same slice keeps the same head and the tail never comes.
     #
     # A distinct seed, because the same one reproduces the batch: the next eight hex digits of
     # the window hash the first eight already seeded, so it stays derived from the recorded
@@ -1683,9 +1704,9 @@ def run_factory(
     # a fire's rows on 07-31 and by 5 of 20 on 08-06.
     topup_requested = max(0, fusion_pairs - len(fused))
     # The tilted share only exists where the tilt families can be minted in this context at all.
-    tilt_family_set = MINT_TILT_FAMILIES & {
-        t.family for t in templates_for_timeframe(
-            timeframe, symbol=symbol, positioning_eligible=positioning_eligible, venue=venue)}
+    library = templates_for_timeframe(
+        timeframe, symbol=symbol, positioning_eligible=positioning_eligible, venue=venue)
+    tilt_family_set = MINT_TILT_FAMILIES & {t.family for t in library}
     tilt_requested = tilt_slots(topup_requested, timeframe=timeframe, rotation_index=rotation_index) \
         if tilt_family_set else 0
     plain_requested = topup_requested - tilt_requested
@@ -1707,6 +1728,7 @@ def run_factory(
             venue=venue,
             rotation_index=topup_slice,
             symbol_scope=scope,
+            slice_start=shortfall_slice_start(rotation_index, plain_requested, count, len(library)),
         )
         kept = topup["specs"][:plain_requested]
         topup_accepted = len(kept)
