@@ -87,7 +87,6 @@ SERVICES=(
   thomas-knowledge-bridge
   thomas-switch-bridge
   thomas-claude-read-bridge
-  hermes
 )
 
 SERVICES_ALL=("${SERVICES[@]}")   # SERVICES is emptied when the daemon cannot answer

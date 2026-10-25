@@ -418,11 +418,10 @@ EIGHT = ("thomas-operator", "thomas-scheduler", "thomas-scheduler-maint", "thoma
 
 
 def _stack(**over):
-    """A host whose tree compose names the eight runtime services and hermes, as the real file does."""
+    """A host whose tree compose names the eight runtime services (hermes left the file 2026-10-25)."""
     services = {name: {"container_name": name, "environment": {"TELEGRAM_BOT_TOKEN": SECRET}, "volumes": [
         {"type": "bind", "source": pf.STATE_SOURCE, "target": "/app/.runtime_governance_state"}]} for name in EIGHT}
-    services["hermes"] = {"container_name": "hermes", "volumes": []}
-    over.setdefault("running_names", [*EIGHT, "hermes"])
+    over.setdefault("running_names", list(EIGHT))
     return _promote_host(compose_raw=json.dumps({"services": services}), **over)
 
 

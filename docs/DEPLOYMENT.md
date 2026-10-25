@@ -82,30 +82,12 @@ Keep this state on a host directory (e.g. `/srv/thomas/state`) that maps to
 
 ## Run (compose — the one deployment path)
 
-**Since PR5 (2026-09-04) the assistant is the ninth service of this file.** One project, one
-`up -d`, one backup, one health view — and still two runtimes: `hermes` has its own image
-(`hermes-agent`), uid (10000), state root (`/root/hermes-trial/data`) and no `build:` here.
-Its image is built **out of band** and never by a Thomas deploy:
-
-```bash
-docker build -t hermes-agent /root/hermes-trial/hermes-agent          # only when the assistant's checkout changes
-docker tag hermes-agent:latest hermes-agent:rollback-pre-<change>    # before rebuilding, same rule as the runtime image
-```
-
-A Thomas deploy (`up -d` from a clean worktree, below) recreates `hermes` only when its own
-service definition changed; the candidate-tag flow in `CLAUDE.md` is about `thomas-agent-runtime`
-and does not touch it. `hermes` depends on no service and none on it
-(`test_no_service_depends_on_any_other`) — a lane or the operator being recreated leaves the
-assistant running, and vice versa.
-
-**The assistant's MCP shims and prompt templates are versioned in this repository since P02
-(2026-09-14):** `integrations/hermes/` holds the five shim files the gateway spawns from
-`/root/hermes-trial/data/mcp/`, the operational prompt (`SOUL.md`), the `thomas-ops` skill, and
-scrubbed templates of `config.yaml` and the cron jobs; `integrations/hermes/MANIFEST.yaml` records the
-image, shim revision and runtime they were measured with. `scripts/ops/install_hermes_shims.sh` (default
-`--check`) reports drift between the host copy and the repository; `--install` copies the repository
-files over with backups and never restarts anything. The repository copy is the source of truth; the
-host copy is what runs.
+**The assistant's container (Hermes) was retired 2026-10-25** (Thomas, on cost;
+[`history/2026-10-25-retire-hermes-container.md`](history/2026-10-25-retire-hermes-container.md)).
+It was the ninth service of this file from PR5 (2026-09-04). Its shims and prompt templates
+(`integrations/hermes/`) and their install and log-rotation scripts went with it. Its bot token
+stays: it is the send-only notification window (below). `/root/hermes-trial` is no longer
+read by anything in this repository; its data directory is Thomas's to keep or delete.
 
 **Compose is the only way this is deployed. Do not `docker run` the services and do not
 build private `thomas-agent-operator:<tag>` images to deploy from.** The services own
@@ -143,13 +125,11 @@ Secrets and per-host paths come from a gitignored `.env` next to `docker-compose
 ```text
 MVP_OPERATOR_CHANNEL=telegram
 TELEGRAM_BOT_TOKEN=...
-# OPTIONAL. The scheduler's outbound notifications only, on a DIFFERENT bot from the one the
-# operator loop polls. Set it when operator Telegram lives with the assistant (Hermes) and this
-# runtime kept the original bot: without it the scheduler's notifications are delivered
-# successfully into a conversation nobody reads any more. Safe only because the scheduler never
-# calls getUpdates — never set this on the operator service, which does poll, or the two
-# pollers steal each other's messages. Unset falls back to TELEGRAM_BOT_TOKEN.
-HERMES_BOT_TOKEN=...            # the assistant's bot; lane notifications go there (renamed 2026-09-04)
+# OPTIONAL. Outbound notifications only, on a DIFFERENT bot from the one the operator loop
+# polls: the notification window. Nothing polls it since the assistant's container was retired
+# (2026-10-25). Safe only because every holder only sends — never set this as the operator's
+# TELEGRAM_BOT_TOKEN, which it polls. Unset falls back to TELEGRAM_BOT_TOKEN.
+HERMES_BOT_TOKEN=...            # the notification bot (the assistant's, until 2026-10-25)
 MVP_HOSTED_PROVIDER=google_ai_studio,openrouter,groq   # order: Thomas 2026-10-05 (scorecard Q2)
 OPENROUTER_API_KEY=...
 GOOGLE_AI_STUDIO_API_KEY=...
@@ -494,7 +474,7 @@ Rows are keyed by the name in `.env` (what leaves the file), not by the containe
 | `MVP_TESTNET_ORDER_API_KEY` | `scheduler` | the signed testnet path (PR1d-1) — no real money, its own venue and its own key |
 | `MVP_TESTNET_ORDER_API_SECRET` | `scheduler` | the signed testnet path's secret — never the live one |
 | `COINALYZE_API_KEY` | `scheduler`, `scheduler-maint` | derivatives feed for the cycle (risk) and the candle archive (maintenance) |
-| `OPENROUTER_API_KEY` | `hermes`, `operator`, `pipeline-worker` | the model plane: analyses, validation, the front desk, and the assistant's own model — never the money plane |
+| `OPENROUTER_API_KEY` | `operator`, `pipeline-worker` | the model plane: analyses, validation and the front desk — never the money plane |
 | `GOOGLE_AI_STUDIO_API_KEY` | `operator`, `pipeline-worker` | same plane, second provider in the chain |
 | `GROQ_API_KEY` | `operator`, `pipeline-worker` | same plane, validator and front-desk provider |
 | `TAVILY_API_KEY` | `operator`, `pipeline-worker` | the read-only search tool, model plane only |
@@ -504,33 +484,22 @@ Rows are keyed by the name in `.env` (what leaves the file), not by the containe
 | `NAVER_SEARCHAD_API_KEY` | `pipeline-worker` | same |
 | `NAVER_SEARCHAD_SECRET_KEY` | `pipeline-worker` | same |
 | `TELEGRAM_BOT_TOKEN` | `operator`, `scheduler`, `scheduler-maint` | the control bot: the operator polls it; the two lanes list it only as the **fallback** when `HERMES_BOT_TOKEN` is unset |
-| `HERMES_BOT_TOKEN` | `hermes`, `operator`, `scheduler`, `scheduler-maint` | the assistant's bot: `hermes` is its one poller; the two lanes and the operator's approval mirror send on it and never call `getUpdates`, which is what makes sharing it safe |
+| `HERMES_BOT_TOKEN` | `operator`, `scheduler`, `scheduler-maint` | the notification bot (the assistant's until 2026-10-25): no poller; the two lanes and the operator's approval mirror send on it and never call `getUpdates`, which is what makes sharing it safe |
 
 **The door services hold nothing** — their `environment:` is exactly the two peer-gate variables
 (`test_the_dispatch_door_carries_only_the_peer_variables`), and no row above names them.
 
-**The assistant's container (Hermes) is the `hermes` service of this compose file** (PR5,
-2026-09-04 — one compose project, two runtimes). It draws exactly three values from the same
-`.env` by `environment:` enumeration — `OPENROUTER_API_KEY` (the same key, held once),
-`HERMES_BOT_TOKEN` as its `TELEGRAM_BOT_TOKEN` (it is the one poller of that bot), and
-`HERMES_TELEGRAM_ALLOWED_USERS` as its `TELEGRAM_ALLOWED_USERS` — and nothing of the live-trading
-or peer-gate surface (`test_the_assistant_holds_exactly_its_three_values_and_nothing_of_the_surfaces`).
-The separate compose project under `/root/hermes-trial` and its `hermes.env` are retired; the
-directory keeps the assistant's **data** (`data/`, its state root) and its **build context**
-(`hermes-agent/`). Check the container rather than the compose file:
-
-```bash
-docker inspect hermes --format '{{range .Config.Env}}{{println .}}{{end}}' | cut -d= -f1 | grep -E 'KEY|SECRET|TOKEN'
-# expect exactly: OPENROUTER_API_KEY, TELEGRAM_BOT_TOKEN
-```
+**The assistant's container (Hermes) is retired** (2026-10-25). From PR5 (2026-09-04) it was
+the `hermes` service here, drawing `OPENROUTER_API_KEY`, `HERMES_BOT_TOKEN` (as the bot's one
+poller) and `HERMES_TELEGRAM_ALLOWED_USERS`; the last is now read by nothing and can leave `.env`.
 
 **One cell wider since 2026-09-04 (PR11, decision Q1-b):** the `operator` service also receives
 `HERMES_BOT_TOKEN`, under that name, for the approval mirror — a switch-door ask minted through the
 assistant is pushed to the control bot (where `/approve` is read) and a copy, with the invitation
 to answer removed and the destination stated, is sent on the assistant's bot into the window
 Thomas talks to it in. The operator's channel on that token is send-only by construction
-(`SendOnlyChannel` refuses `poll`/`peek` with `MIRROR_IS_SEND_ONLY`), so the `hermes` container
-stays the bot's one poller. The mirror is off, and says so at startup, when the control channel is
+(`SendOnlyChannel` refuses `poll`/`peek` with `MIRROR_IS_SEND_ONLY`), so the operator never
+becomes that bot's poller. The mirror is off, and says so at startup, when the control channel is
 not `telegram`, when the variable is unset, or when it equals `TELEGRAM_BOT_TOKEN` (one bot cannot
 mirror itself). Expect a line reading `OPERATOR: approval mirror ON` in the operator's log.
 
@@ -543,6 +512,10 @@ enumerate it in exactly the services whose code reads it, add the row to `SECRET
 to the table above. CI fails until all four agree.
 
 ## The four assistant doors — check the boundary, no test can
+
+**Their client is gone since 2026-10-25** (the assistant's container was retired); the doors still
+run, admitting a uid nothing on the host now holds, until their own removal lands. The checks below
+that name `hermes` describe the container as it was.
 
 `read` / `switch` / `dispatch` / `knowledge` serve an assistant that lives in **another
 repository** (`/root/hermes-trial`). Two properties of that boundary are enforced by
@@ -675,10 +648,10 @@ wrong, so a run nobody comments on is a run the system will repeat.
 
 ## Health, logs, shutdown
 
-**Backup, restore, and the assistant's health and stop budgets** are in
-[`RUNBOOK_HARNESS_BACKUP_RESTORE.md`](RUNBOOK_HARNESS_BACKUP_RESTORE.md) (PR4, 2026-09-04): five roots in one
-daily archive, the restore order with the three owning uids, the Hermes heartbeat healthcheck, the s6
-stop budget that ended the unclean-exit run, and the one log Hermes does not rotate.
+**Backup and restore** are in
+[`RUNBOOK_HARNESS_BACKUP_RESTORE.md`](RUNBOOK_HARNESS_BACKUP_RESTORE.md) (PR4, 2026-09-04): the roots in one
+daily archive and the restore order with the owning uids. The assistant's root, healthcheck and stop
+budget left with its container (2026-10-25).
 
 - **Healthcheck** (compose): each service's own **heartbeat**
   (`python -m runtime.mvp_runtime.heartbeat_cli operator|scheduler`). Each loop stamps

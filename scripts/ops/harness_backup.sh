@@ -1,5 +1,5 @@
 #!/bin/bash
-# Harness backup — five roots, two modes. PR4 of the Hermes integration sequence (Thomas decision
+# Harness backup — the runtime's roots, two modes. PR4 of the Hermes integration sequence (Thomas decision
 # Q10, 2026-09-03; installed 2026-09-04). Lives in the Thomas Agent repository at
 # scripts/ops/harness_backup.sh and is INSTALLED to /root/backups/backup-governance-state.sh (the
 # crontab path did not change). Restore procedure: docs/RUNBOOK_HARNESS_BACKUP_RESTORE.md.
@@ -9,18 +9,17 @@
 #              thomas_agent/THOMAS_CORE/{activations,approvals}   (root-owned Core activation, was never backed up)
 #              thomas_agent/workspace                   (content-lane deliverables)
 #              thomas_agent/.env                        (the single secret source, 0600)
-#              hermes-trial/data                        (SOUL, MCP shims, skills, cron, memories, sessions,
-#                                                        and a consistent SQLite copy via `hermes backup --quick`)
+#            hermes-trial/data was a member until the assistant's container was retired (2026-10-25):
+#            an absent member fails the whole archive, so it left with the container.
 #   candles  weekly Sun 08:15Z, keep 4 — crypto/candle_archive only (unchanged from 2026-08-31).
 #   transcripts  daily 07:55Z — Claude Code conversations (.claude/projects) and the prompt
 #              collector's local state, encrypted like core. Full weekly (keep 2), changed files on
 #              the other days (kept while their full is). Thomas 2026-10-09.
 #
-# The assistant's compose definition is NOT a member: since PR5 (2026-09-04) hermes is the ninth
-# service of this repository's docker-compose.yml, which is code and lives in git. Backing up the
-# retired /root/hermes-trial/docker-compose.yml is what broke this script for three days.
+# No compose definition is a member: docker-compose.yml is code and lives in git. Backing up the
+# retired /root/hermes-trial/docker-compose.yml is what broke this script for three days (2026-09-04).
 #
-# Member paths are prefixed with the host directory (`thomas_agent/…`, `hermes-trial/…`) so a restore
+# Member paths are prefixed with the host directory (`thomas_agent/…`; `hermes-trial/…` until 2026-10-25) so a restore
 # knows where each root goes. Archives before 2026-09-04 start at `.runtime_governance_state/` instead.
 # File names keep the `govstate-` prefix: the Mac pull (`com.thomas.govstate-pull`) globs on it.
 #
@@ -35,9 +34,7 @@
 # recipient=<prefix> anchor=excluded` names the key the archive is for.
 #
 # Live SQLite files are NOT tarred (a WAL-mode database copied mid-write is not a backup). The
-# assistant's own `hermes backup --quick` copies state.db with the sqlite backup API into
-# data/state-snapshots/<stamp>-daily/, and that directory IS tarred. The workflow store (sequence 2,
-# P10; V0.2 Q28) follows the same rule: the dispatch bridge copies workflow.db with the backup API
+# workflow store (sequence 2, P10; V0.2 Q28) is copied with the sqlite backup API instead: the dispatch bridge copies workflow.db with the backup API
 # into .runtime_governance_state/workflow/snapshots/<stamp>/ as uid 10001, that directory is tarred,
 # the live workflow.db* is excluded, and the log line says `workflow-snapshot=ok|absent|FAILED`
 # (absent = the manager never created the store on this host; not a failure). Only the newest
@@ -56,7 +53,6 @@ MODE="${1:-core}"
 DEST="${HARNESS_BACKUP_DEST:-/root/backups/governance-state}"
 HOST_ROOT="${HARNESS_BACKUP_HOST_ROOT:-/root}"
 THOMAS=thomas_agent
-HERMES=hermes-trial
 STAMP="${HARNESS_BACKUP_STAMP:-$(date -u +%Y%m%d-%H%M)}"   # override for tests only
 AGE="${AGE_BIN:-age}"
 RECIPIENTS="${HARNESS_BACKUP_AGE_RECIPIENTS:-/root/backups/age-recipients.txt}"
@@ -199,18 +195,9 @@ case "$MODE" in
       exit 3
     fi
     RECIPIENT_NOTE="enc=age recipient=$(grep -m1 -E '^age1' "$RECIPIENTS" | cut -c1-12)"
-    # 1. A consistent copy of the assistant's SQLite state, made by the assistant itself (uid 10000).
-    #    Non-fatal: if the container is down, the tar still carries everything but state.db and the
-    #    log line says so — a backup with a hole you can see beats no backup.
-    SNAP_NOTE="hermes-snapshot=ok"
-    if ! docker exec -u 10000 hermes /opt/hermes/.venv/bin/hermes backup --quick -l daily >/dev/null 2>&1; then
-      SNAP_NOTE="hermes-snapshot=FAILED"
-    fi
-    # Keep only the newest snapshot directory (33 MB each): older ones are in older archives.
-    ls -1dt "$HOST_ROOT/$HERMES/data/state-snapshots"/*/ 2>/dev/null | tail -n +2 | xargs -r rm -rf
-    # 1b. A consistent copy of the workflow store (P10), made by the dispatch bridge as uid 10001
+    # 1. A consistent copy of the workflow store (P10), made by the dispatch bridge as uid 10001
     #     — the owner of the state directory, so the copy is the service's to write and to read
-    #     back. Non-fatal like the Hermes snapshot: the archive then carries the previous
+    #     back. Non-fatal: the archive then carries the previous
     #     snapshot directory and the log line says FAILED. No store = nothing to copy = absent.
     WF_DIR="$THOMAS/.runtime_governance_state/workflow"
     WF_NOTE="workflow-snapshot=ok"
@@ -227,15 +214,14 @@ case "$MODE" in
     else
       WF_NOTE="workflow-snapshot=absent"
     fi
-    SNAP_NOTE="$SNAP_NOTE $WF_NOTE"
-    # 2. One archive, two host roots, member paths prefixed with the directory they restore into.
+    SNAP_NOTE="$WF_NOTE"
+    # 2. One archive, member paths prefixed with the directory they restore into.
     # A missing member makes tar exit 2 and this script delete the archive it just wrote, so the
     # whole backup is lost for the sake of one absent path. Name the absent path in the log —
     # `FAILED rc=2` alone said nothing for three days after PR5 retired a member (2026-09-04..06).
     MEMBERS=("$THOMAS/.runtime_governance_state"
              "$THOMAS/THOMAS_CORE/activations" "$THOMAS/THOMAS_CORE/approvals"
-             "$THOMAS/workspace" "$THOMAS/.env"
-             "$HERMES/data")
+             "$THOMAS/workspace" "$THOMAS/.env")
     # 2b. Claude Code's own configuration (Thomas 2026-10-09, TA-PROMPT-RETENTION-01): the user
     #     settings, the global CLAUDE.md, this repository's untracked settings.local.json, and the
     #     author's skills with their local git history. No other backup carried them. Optional: an
@@ -267,14 +253,6 @@ case "$MODE" in
         --exclude="$THOMAS/.runtime_governance_state/crypto/candle_archive" \
         --exclude="$THOMAS/.runtime_governance_state/crypto/execution_stage_anchor.json" \
         --exclude="$WF_DIR/workflow.db" --exclude="$WF_DIR/workflow.db-*" \
-        --exclude="$HERMES/data/state.db" --exclude="$HERMES/data/state.db-*" \
-        --exclude="$HERMES/data/kanban.db" --exclude="$HERMES/data/kanban.db-*" \
-        --exclude="$HERMES/data/cron/executions.db" --exclude="$HERMES/data/cron/executions.db-*" \
-        --exclude="$HERMES/data/cache" --exclude="$HERMES/data/lazy-packages" \
-        --exclude="$HERMES/data/home" --exclude="$HERMES/data/bin" --exclude="$HERMES/data/.local" \
-        --exclude="$HERMES/data/logs" --exclude="$HERMES/data/sandboxes" \
-        --exclude="$HERMES/data/image_cache" --exclude="$HERMES/data/audio_cache" \
-        --exclude="$HERMES/data/models_dev_cache.json" \
         --exclude=".claude/skills/synced" --exclude=".claude/skills/*.bak-*" --exclude=".claude/skills/*/*.bak-*" \
         "${MEMBERS[@]}" ${CONFIG_PRESENT[@]+"${CONFIG_PRESENT[@]}"} | "$AGE" -R "$RECIPIENTS" -o "$PART"
     PIPE=("${PIPESTATUS[@]}")

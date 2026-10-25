@@ -1,5 +1,9 @@
 # Runbook — harness backup and restore (five roots), health and restart budgets
 
+> **The assistant's root left on 2026-10-25**, when its container was retired: `harness_backup.sh` no longer
+> tars `hermes-trial/data` or runs `hermes backup --quick`, and `rotate_hermes_mcp_log.sh` is gone. The
+> Hermes sections below describe archives made before that date, which still carry its data.
+
 **Status:** in force since 2026-09-04 (PR4 of the Hermes integration sequence; Thomas decisions Q10 and Q15, 2026-09-03).
 **Scope:** everything on this host that is state and not code, for both runtimes — Thomas Agent (8 services, uid 10001) and the assistant Hermes (1 container, uid 10000). Code is in git; images are rebuilt from it.
 **Owner of the scripts:** `scripts/ops/harness_backup.sh` and `scripts/ops/rotate_hermes_mcp_log.sh` in this repository, **installed** to `/root/backups/` (the crontab path `/root/backups/backup-governance-state.sh` did not change). Reinstall after editing:
