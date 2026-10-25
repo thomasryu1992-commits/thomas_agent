@@ -483,7 +483,7 @@ Rows are keyed by the name in `.env` (what leaves the file), not by the containe
 | `NAVER_APIHUB_KEY_ID` | `pipeline-worker` | same |
 | `NAVER_SEARCHAD_API_KEY` | `pipeline-worker` | same |
 | `NAVER_SEARCHAD_SECRET_KEY` | `pipeline-worker` | same |
-| `TELEGRAM_BOT_TOKEN` | `operator`, `scheduler`, `scheduler-maint` | the control bot: the operator polls it; the two lanes list it only as the **fallback** when `HERMES_BOT_TOKEN` is unset |
+| `TELEGRAM_BOT_TOKEN` | `operator`, `scheduler`, `scheduler-maint` | the control bot: the operator polls it; the two lanes list it only as the **fallback** when `HERMES_BOT_TOKEN` is unset, and scheduler-maint also receives it as `MVP_CONTROL_BOT_TOKEN` for the weekly management report alone (send-only, WMR-1) |
 | `HERMES_BOT_TOKEN` | `scheduler`, `scheduler-maint` | the notification bot (the assistant's until 2026-10-25): no poller; the two lanes send on it and never call `getUpdates` |
 
 **The assistant's container (Hermes) is retired** (2026-10-25). From PR5 (2026-09-04) it was

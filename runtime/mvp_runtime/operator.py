@@ -834,6 +834,62 @@ def select_operator_channel(*, now: str | None = None, root: Path | None = None)
     )
 
 
+# --- the control bot from a service that must never poll it (WMR-1, Thomas 2026-10-25) ---------------
+#
+# The scheduler lanes notify on the notification bot (`TELEGRAM_BOT_TOKEN` there resolves to
+# `HERMES_BOT_TOKEN` first, docker-compose.yml). The weekly management report goes to the control
+# bot instead (WEEKLY_MANAGEMENT_REPORT_V0.1.md Q1=A): scheduler-maint receives the control bot's
+# token a second time under this name, and only the report reads it. The operator is that bot's one
+# poller, and a second `getUpdates` caller would steal its `/approve`s, so the channel refuses
+# `poll` and `peek` by construction.
+CONTROL_BOT_TOKEN_ENV = "MVP_CONTROL_BOT_TOKEN"
+CONTROL_SEND_ONLY_REASON = "CONTROL_CHANNEL_SEND_ONLY"
+
+
+class ControlSendChannel:
+    """The control bot, send-only. ``send`` is delegated; the capability attributes are the wrapped
+    channel's, so a banner or a test reads what is really behind it."""
+
+    def __init__(self, inner: OperatorChannel):
+        self._inner = inner
+
+    @property
+    def network_egress(self) -> bool:
+        return bool(getattr(self._inner, "network_egress", False))
+
+    @property
+    def provider_id(self) -> str | None:
+        return getattr(self._inner, "provider_id", None)
+
+    def poll(self, *, long_poll_seconds: int = 0) -> list[InboundMessage]:
+        del long_poll_seconds
+        raise OperatorBlocked(CONTROL_SEND_ONLY_REASON, "this service sends on the control bot; only the operator polls it")
+
+    def peek(self) -> list[InboundMessage]:
+        raise OperatorBlocked(CONTROL_SEND_ONLY_REASON, "this service sends on the control bot; only the operator reads it")
+
+    def send(self, chat_id: str, text: str) -> str | None:
+        return self._inner.send(chat_id, text)
+
+
+def select_control_channel() -> OperatorChannel:
+    """The control bot as a send-only channel, behind the same gate as :func:`select_operator_channel`.
+
+    ``MVP_OPERATOR_CHANNEL=telegram`` is the opt-in; anything else selects the Mock, which notifies
+    nobody. The real channel reads its token by NAME (``MVP_CONTROL_BOT_TOKEN``) at send time and
+    keeps no ``getUpdates`` cursor (no ``state_path``), because it never polls."""
+    return ControlSendChannel(safety_gate.select_env_gated(
+        env_var=OPERATOR_CHANNEL_ENV,
+        opt_in_value=TELEGRAM,
+        flags=_NETWORK_FLAGS,
+        provider_id=TELEGRAM,
+        default_factory=MockOperatorChannel,
+        gated_factory=lambda authorization: TelegramChannel(
+            token_env=CONTROL_BOT_TOKEN_ENV, authorization=authorization, state_path=None,
+        ),
+    ))
+
+
 def notify_operator(channel: OperatorChannel, text: str, *, repo_root: Path | None = None) -> None:
     """Send an UNSOLICITED notification to the registered operator.
 

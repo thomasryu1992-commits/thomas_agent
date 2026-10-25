@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **661** distinct codes across **1315** raise sites
+- **664** distinct codes across **1321** raise sites
 - **22** exception classes carry them
 - **66** codes are raised from more than one module (see below)
 - **162** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -308,6 +308,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `CONTENT_CHANGED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | `_revalidated_candidate` | `integrity.sha256_record({'content': content}) != snapshot.get('content_sha256')` |
 | `CONTENT_CHANGED` | `ApprovalBlocked` | `runtime/mvp_runtime/trial.py` | `run_trial` | `trial_content_sha256(role, trial_request) != snapshot.get('content_sha256')` |
 | `CONTENT_TOO_LARGE` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | `_require_content` | `size > MAX_CONTENT_BYTES` |
+| `CONTROL_CHANNEL_SEND_ONLY` | `OperatorBlocked` | `runtime/mvp_runtime/operator.py` | `peek` | `—` |
+| `CONTROL_CHANNEL_SEND_ONLY` | `OperatorBlocked` | `runtime/mvp_runtime/operator.py` | `poll` | `—` |
 | `CONTROL_CHARS` | `TaskIntakeBlocked` | `runtime/mvp_runtime/intake.py` | `_reject_control_chars` | `code < 32 and ch not in _ALLOWED_CONTROL_CHARS or code == 127` |
 | `CONTROL_STATE_CHANGED` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | `apply_command` | `latest != baseline` |
 | `CONTROL_STORE_UNAVAILABLE` | `ControlBlocked` | `runtime/mvp_runtime/store_reads.py` | `read_runtime_status` | `control_store is None` |
@@ -642,6 +644,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `LEDGER_ARCHIVE_INDEX_FAILED` | `PersistenceError` | `runtime/mvp_runtime/retention.py` | `write_archive_index` | `—` |
 | `LEDGER_EMPTY_KIND_FILTER` | `PersistenceError` | `runtime/mvp_runtime/store.py` | `_kind_prescreen` | `not tokens` |
 | `LEDGER_INVALID_KEEP` | `PersistenceError` | `runtime/mvp_runtime/retention.py` | `rotate_file` | `not (isinstance(keep_rows, int) and keep_rows > 0)` |
+| `LEDGER_NOT_WINDOW_READABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | `iter_events_with_archive` | `filename not in WINDOW_EVENT_FILES` |
 | `LEDGER_PROTECTED_FROM_ROTATION` | `PersistenceError` | `runtime/mvp_runtime/retention.py` | `rotate_file` | `filename in PROTECTED_FILES` |
 | `LEDGER_ROTATION_FAILED` | `PersistenceError` | `runtime/mvp_runtime/retention.py` | `rotate_file` | `—` |
 | `LEDGER_UNAVAILABLE` | `ApprovalBlocked` | `runtime/mvp_runtime/trial.py` | `run_trial` | `—` |
@@ -652,6 +655,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | `_tip` | `—` |
 | `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | `count_scheduler_events` | `—` |
 | `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | `health` | `not entry['present']` |
+| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | `iter_events_with_archive` | `—` |
+| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | `iter_events_with_archive` | `—` |
 | `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | `iter_records` | `—` |
 | `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | `iter_records_with_archive` | `—` |
 | `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | `iter_records_with_archive` | `—` |
@@ -851,6 +856,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/tools.py` | `_parse` | `—` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/tools.py` | `_parse` | `not isinstance(results, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/tools.py` | `_parse` | `not isinstance(results, list)` |
+| `MANAGEMENT_REPORT_NOT_SENT` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | `_execute` | `schedule.kind == KIND_MANAGEMENT_REPORT` |
 | `MEMORY_UNAVAILABLE` | `OperatorBlocked` | `runtime/mvp_runtime/memory_console.py` | `apply_memory_command` | `ledger is None` |
 | `MEMORY_UNAVAILABLE` | `OperatorBlocked` | `runtime/mvp_runtime/memory_console.py` | `apply_memory_command` | `working_memory is None` |
 | `MISSING_BRACKET_QUANTITY` | `ToolError` | `runtime/mvp_runtime/crypto/live_leg.py` | `build_bracket_intent` | `not (isinstance(quantity, (int, float)) and quantity > 0)` |

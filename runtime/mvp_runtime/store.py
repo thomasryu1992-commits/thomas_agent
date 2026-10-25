@@ -56,6 +56,8 @@ MEMORY_FILE = "memory_events.jsonl"
 SCHEDULER_FILE = "scheduler_events.jsonl"
 PROGRAMIZATION_FILE = "programization_events.jsonl"
 FEEDBACK_FILE = "feedback_events.jsonl"
+# The rotating event streams `LedgerStore.iter_events_with_archive` walks for a window of time.
+WINDOW_EVENT_FILES = frozenset({SCHEDULER_FILE, FEEDBACK_FILE})
 # The assistant doors' at-most-once bookkeeping: one row per `request_id` transition, folded
 # latest-wins by `bridge_idempotency`. It lives here rather than in a store of its own because
 # the doors already hold a `LedgerStore` and this file needs exactly what the other eight need —
@@ -422,7 +424,14 @@ class LedgerStore:
     def _archived_record_files(
         self, appended_since: str | None, kinds: Iterable[str] | None = None
     ) -> list[Path]:
-        """Archived record ledgers oldest first, minus those this read cannot need.
+        """Archived record ledgers oldest first, minus those this read cannot need
+        (:meth:`_archived_files` for the record ledger)."""
+        return self._archived_files(RECORDS_FILE, appended_since, kinds)
+
+    def _archived_files(
+        self, filename: str, appended_since: str | None, kinds: Iterable[str] | None = None
+    ) -> list[Path]:
+        """Archived copies of ``filename`` oldest first, minus those this read cannot need.
 
         Two independent skips, and the difference between them is worth stating. The
         ``appended_since`` bound drops archives wholly older than a time window. The ``kinds``
@@ -439,7 +448,7 @@ class LedgerStore:
         directory = self._root / ARCHIVE_DIR
         if not directory.is_dir():
             return []
-        stem = RECORDS_FILE.removesuffix(".jsonl")
+        stem = filename.removesuffix(".jsonl")
         cutoff = appended_since.replace(":", "") if appended_since else None
         wanted = frozenset(kinds) if kinds is not None else None
         kept: list[Path] = []
@@ -453,6 +462,34 @@ class LedgerStore:
                     continue
             kept.append(path)
         return kept
+
+    def iter_events_with_archive(
+        self, filename: str, *, appended_since: str | None = None
+    ) -> Iterator[dict[str, Any]]:
+        """Rows of one rotating event stream, ARCHIVES INCLUDED, oldest first, under its own lock.
+
+        :meth:`iter_records_with_archive`'s contract for the two event streams a window-of-time
+        reader needs: the scheduler ledger and the feedback ledger. Both rotate at
+        ``retention.DEFAULT_KEEP_ROWS`` rows, so an active-file read of "the last seven days"
+        silently shrinks to however many days those rows cover — the weekly management report
+        (WEEKLY_MANAGEMENT_REPORT_V0.1.md) counts failed fires and feedback over exactly such a
+        window. ``appended_since`` bounds which archive FILES are opened, never which rows are
+        yielded; the caller filters. Any other file is refused rather than read: the record
+        ledger has its own reader, and the never-rotated files have no archive to walk.
+
+        Holds the appender's lock for the whole iteration, as the record reader does, so
+        **consume or close it** — the tick loop appends to the scheduler ledger."""
+        if filename not in WINDOW_EVENT_FILES:
+            raise PersistenceError(
+                "LEDGER_NOT_WINDOW_READABLE",
+                f"{filename} is not an event stream this reader walks; it reads {sorted(WINDOW_EVENT_FILES)}",
+            )
+        label = f"the {filename.removesuffix('.jsonl').replace('_', ' ')} ledger"
+        with self.file_lock(filename, label=label):
+            for path in self._archived_files(filename, appended_since):
+                yield from jsonl.iter_objects(path, read_code="LEDGER_UNREADABLE",
+                                              label=f"the archived {path.name}")
+            yield from jsonl.iter_objects(self._root / filename, read_code="LEDGER_UNREADABLE", label=label)
 
     def read_scheduler_events(self) -> list[dict[str, Any]]:
         """Every persisted scheduler event, in append order. Fails closed on a corrupt file.

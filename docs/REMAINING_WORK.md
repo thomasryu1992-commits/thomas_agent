@@ -1547,6 +1547,18 @@ same answer.
       or model-supplied time string reaching a record. Then the 110 declarations should become a
       defence instead of documentation, and the measurement above is the thing to re-run first.
 
+- [ ] **Operator feedback is recorded and counted, never read back; scheduled analyses are never
+      sent — deferred by Thomas, 2026-10-25 (WMR-1 Q4).** `/feedback` lands in `feedback_events.jsonl`
+      and is linked to one delivered run by `trace_id` (`operator_feedback.py`). Nothing reads it except
+      `store.py`'s health count and, since WMR-1, the weekly management report's GOOD/BAD/NOTE counts
+      per lane (`management_report.py`). The evaluation and preference-learning stages that
+      `operator_feedback.py` names (E2, E3) are not on any roadmap. They are a different E2/E3 from
+      §L's crypto items. Separately, an `analysis_task` fire closes `DELIVERED` without sending
+      anything (`scheduler._execute`), and its result reaches Thomas only through `/result`; the
+      weekly report shows how many there were. Both were found by the 2026-10-25 company-design audit.
+      Both are decisions: reading feedback back changes what later runs are given, and sending
+      scheduled results adds messages.
+
 - [ ] **Answering a question the runtime asked costs a model call — observed 2026-08-06, left
       alone.** `notify_operator` pushes to the ONE registered private chat, and that chat is also
       the intake channel. So there is no way for Thomas to *reply* to a notification: a plain

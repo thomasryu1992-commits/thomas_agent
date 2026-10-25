@@ -1,6 +1,6 @@
 # 제안: 주간 경영 보고 — 레인 요약·대기 승인·실패 스케줄·피드백 통계를 관제봇으로 (DRAFT v0.1)
 
-**상태:** DRAFT 2026-10-25 — 매주 한 번 네 절(레인 요약, 대기 승인, 실패 스케줄, 피드백 통계)을 묶어 관제봇으로 보내는 스케줄 kind `management_report`의 설계다. Hermes가 은퇴하면서(#1305·#1307) 정기 보고를 보내는 주체가 없어졌고, 이 보고가 그 자리를 채운다. 결정 4개(Q1 발송 경로, Q2 보유자산 포함 여부, Q3 시각, Q4 피드백 통계 범위)를 기다린다. 이 문서는 구현·배포·권한을 승인하지 않는다.
+**상태:** DECIDED 2026-10-25 — Q1=A(관제봇 토큰을 scheduler-maint에 `MVP_CONTROL_BOT_TOKEN`으로), Q2=보유자산 제외, Q3=월요일 09:00 KST, Q4=피드백은 집계만(Thomas 2026-10-25, "승인: WMR-1 Q1=A Q2=제외 Q3=월09KST Q4=집계만, 구현·PR"). 구현은 같은 날 PR로 올렸다(`management_report.py`, kind `management_report`). 배포와 스케줄 등록은 Thomas가 한다.
 **요청:** Thomas 2026-10-25 — "주간 경영 보고 스케줄 설계부터 시작해. 레인 요약, 대기 승인, 실패 스케줄, 피드백 통계를 묶어서 관제봇으로."
 **근거:** 2026-10-25 회사형 설계 점검. 비서 역할 중 빠진 것 세 가지가 확인됐다. 정기 경영 보고가 없고, 스케줄로 돈 분석은 결과를 보내지 않으며(`scheduler.py`의 analysis_task 분기), 피드백은 개수 세기 말고는 다시 읽히지 않는다(`store.py`). 이 문서는 첫째를 채우고, 둘째와 셋째는 보고에 숫자로 드러낸다.
 
@@ -98,3 +98,13 @@ D8(`SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md`, 비크립토 레인 증거 기한, 
 호스트 단계(Thomas): 배포 뒤 `scheduler_cli add`로 등록하고, Q1=A이면 `.env` 변경은 필요 없다(같은 `TELEGRAM_BOT_TOKEN` 값을 다른 이름으로 넘길 뿐).
 
 승인 한 줄 예: `승인: WMR-1 Q1=A Q2=제외 Q3=월09KST Q4=집계만, 구현·PR (Thomas 2026-10-25)`
+
+## 결정 (Thomas 2026-10-25)
+
+`승인: WMR-1 Q1=A Q2=제외 Q3=월09KST Q4=집계만, 구현·PR (Thomas 2026-10-25)` — 원문의 "왩09KST"는 "월09KST"의 오타로 읽었다.
+권고대로 네 항목이 정해졌고, 구현과 PR까지 승인됐다. 머지와 배포는 이 승인 범위가 아니다.
+
+구현에서 문서와 달라진 것:
+- 게이트 목록 테스트(`test_the_env_only_gate_has_exactly_the_capabilities_thomas_named`)는 호출 지점이 아니라 파일 단위로 고정한다. 관제봇 선택(`select_control_channel`)은 이미 목록에 있는 `operator.py` 안에 있으므로, 목록은 그대로 두고 그 줄에 두 번째 호출 지점을 기록했다.
+- 새 변수가 scheduler-maint에만 있다는 것은 `test_only_the_maintenance_lane_receives_the_control_bot_under_its_report_name`이 고정한다.
+- 피드백 재사용과 스케줄 분석 결과 발송은 `REMAINING_WORK.md` §E에 기록했다.
