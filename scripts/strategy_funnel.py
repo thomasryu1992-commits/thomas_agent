@@ -3,7 +3,8 @@
 
 Where the candidate store's lineages stop at the promotion door, charged to the first axis of
 ``promotable_backlog``'s own chain, and how far the forward cohort's members have got. Both are split
-by timeframe, strategy family and direction. Nothing is written and nothing is decided; the door
+by timeframe, strategy family and direction, plus a per-family table of what 30 days of mints produced
+(``FAMILY_EXHAUSTION_V0.1`` B). Nothing is written and nothing is decided; the door
 and the board are unchanged. ``--json`` prints the structure instead of the table::
 
     docker exec thomas-scheduler python -m scripts.strategy_funnel
