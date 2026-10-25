@@ -9,8 +9,9 @@
     operator, the two scheduler lanes, pipeline-worker and claude-read-bridge.
   - **Modules:** `switch_bridge`, `dispatch_bridge`, `knowledge_bridge` (with their CLIs), `workflow`,
     `workflow_store`, `workflow_manager`, `workflow_console`, `workflow_cli`, `bridge_idempotency`,
-    `dispatch_spend`. Also the `workflow_plan.v0.1` / `workflow_event.v0.1` schemas, and the CI smoke step that
-    drove the dispatch door (`.github/ci-compose.workflow.yml`).
+    `dispatch_spend`. Also the `workflow_plan.v0.1` / `workflow_event.v0.1` schemas. The CI smoke step that
+    drove the dispatch door leaves in its own branch (`ci/drop-dispatch-door-smoke`), merged first: the agent's
+    token cannot write workflow files.
   - **The knowledge lane, whole** (`runtime/mvp_runtime/knowledge/`). Its door was its only entry, so it goes
     the way `predmarket/` went. Its PDF dependencies left the image too: `poppler-utils` and `pypdf`.
   - **Scheduler kinds:** `workflow_plan` and `dispatch_spend_watch`. A stored row of either is refused by name at
