@@ -558,7 +558,7 @@ def test_a_memory_promotion_ask_is_unchanged():
 
 # --- what undoes each ask ---------------------------------------------------------
 #
-# The switch door's fix above was one kind at a time. Until 2026-09-19 the reversibility line still
+# The switch door's fix (2026-08-22; its asks left with the door) was one kind at a time. Until 2026-09-19 the reversibility line still
 # fell through to the memory promotion's answer, so a paper-tier pool promotion, a retirement, a
 # P&L correction, a probe batch and a program registration all rendered as permanent because
 # "validated memory는 지속됩니다" — and a retirement, which shares its target with a paper
