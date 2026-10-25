@@ -260,7 +260,7 @@ def test_an_oom_kill_is_reported_at_once(tmp_path):
 @posix_only
 def test_dry_run_writes_neither_state_nor_log(tmp_path):
     table = _all_healthy()
-    table["thomas-read-bridge"] = None
+    table["thomas-scheduler-maint"] = None
     _run(tmp_path, table, dry_run=True)
     assert not (tmp_path / "health-watch.state").exists()
     assert not (tmp_path / "health-watch.log").exists()
@@ -336,7 +336,7 @@ def test_a_dead_daemon_is_one_line_not_nine(tmp_path):
 def test_a_container_docker_cannot_describe_reads_as_missing(tmp_path):
     """An empty inspect line must read as 'missing', not crash the run under `set -u`."""
     table = _all_healthy()
-    table["thomas-knowledge-bridge"] = None
+    table["thomas-pipeline-worker"] = None
     result = _run(tmp_path, table, dry_run=True, confirm_runs=1)
     assert result.returncode == 1
     assert "컨테이너가 없습니다" in result.stdout

@@ -70,9 +70,6 @@ FAILED_PREFIX = "failed:"
 # and exactly one terminal event after, both carrying the same ``schedule_run_id``.
 # ``abandoned`` is the terminal a fire killed mid-flight never got to write — supplied by
 # the next startup, which is the only vantage point that can see it.
-# P09: the principal a scheduled workflow submission is accepted under — the scheduler's own,
-# never the assistant's; the request id is the occurrence's `schedule_run_id`.
-WORKFLOW_PRINCIPAL = "scheduler"
 ACTION_STARTED = "started"
 ACTION_ABANDONED = "abandoned"
 TERMINAL_ACTIONS = frozenset({"fired", "failed", ACTION_ABANDONED})
@@ -208,16 +205,9 @@ KIND_NULL_CONTROL = "crypto_null_control"
 # The `request` column carries the seed keywords, comma separated, exactly as `crypto_factory`
 # carries a symbol list there. `target=<keyword>` among them overrides the week's selection.
 KIND_CONTENT_IDEATION = "content_ideation"
-# P09: a schedule whose fire SUBMITS a workflow plan (sequence 2) to the workflow store under the
-# occurrence's own `schedule_run_id` as request id — one acceptance per occurrence, a re-fire of
-# the same occurrence replays, a missed occurrence is dropped like every other kind's
-# (`next_occurrence`: at-most-once, no catch-up). The manager runs it; this fire only submits.
-KIND_WORKFLOW = "workflow_plan"
-# §6-3's spend watch (docs/proposals/HERMES_AGENT_DISPATCH_V0.1.md, Thomas 2026-07-30): sum
-# the day's assistant-dispatched cost and raise past 50 USD. Maintenance, not risk: it reads
-# the ledger and never touches money — the threshold is dormant on free tiers by the
-# proposal's own recorded caveat, and `dispatch_spend`'s docstring carries the details.
-KIND_DISPATCH_SPEND = "dispatch_spend_watch"
+# `workflow_plan` and `dispatch_spend_watch` were kinds until the assistant's doors were retired
+# (2026-10-25): the first submitted to the workflow manager, the second summed the assistant's
+# dispatch spend. A row of either left in a store is refused by name at its fire (UNKNOWN_KIND).
 # The forward cohort's walk (`crypto/forward_cohort.py`; Thomas 2026-09-23, Phase 1 under option
 # A). One fire advances every frozen cohort's members to the newest closed bar, writing only the
 # cohort's own store. Maintenance, not risk: it is a measurement, "no pool, no orders", and a day
@@ -232,7 +222,7 @@ KIND_HOLDINGS = "holdings_refresh"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
                    KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE,
                    KIND_BREAKER_WATCH, KIND_ROUTE_WATCH, KIND_CANDLE_ARCHIVE,
-                   KIND_NULL_CONTROL, KIND_CONTENT_IDEATION, KIND_DISPATCH_SPEND, KIND_WORKFLOW,
+                   KIND_NULL_CONTROL, KIND_CONTENT_IDEATION,
                    KIND_FORWARD_COHORT, KIND_HOLDINGS})
 
 # The kinds whose lateness costs money rather than freshness.
@@ -304,7 +294,7 @@ RISK_FIRE_DEADLINE_SECONDS: Mapping[str, float] = {
 MAINTENANCE_KINDS: frozenset[str] = frozenset({
     KIND_TASK, KIND_PRUNE, KIND_FACTORY, KIND_REPORT, KIND_PROPOSER,
     KIND_DATA_REVIEW, KIND_ROTATE, KIND_CANDLE_ARCHIVE, KIND_NULL_CONTROL,
-    KIND_CONTENT_IDEATION, KIND_DISPATCH_SPEND, KIND_WORKFLOW, KIND_FORWARD_COHORT,
+    KIND_CONTENT_IDEATION, KIND_FORWARD_COHORT,
     KIND_HOLDINGS,
 })
 
@@ -538,8 +528,6 @@ def build_schedule(
     request = request.strip() if isinstance(request, str) else ""
     if kind == KIND_TASK and not request:
         raise SchedulerBlocked("MISSING_REQUEST", "an analysis_task schedule requires a non-empty request")
-    if kind == KIND_WORKFLOW:
-        workflow_plan_of(request)            # the plan is validated here, once, before the row exists
     if expires_at is not None and not (isinstance(expires_at, str) and _TIMESTAMP_PATTERN.match(expires_at)):
         raise SchedulerBlocked("INVALID_EXPIRY", "expires_at must be the fixed UTC form YYYY-MM-DDThh:mm:ssZ")
     if kind == KIND_CONTENT_IDEATION and not request:
@@ -561,31 +549,6 @@ def build_schedule(
         enabled=enabled, created_by=created_by.strip(), created_at=now,
         next_run_at=timeutil.plus_seconds(now, interval_seconds), reason=reason, expires_at=expires_at,
     )
-
-
-def workflow_request_prefix(schedule: Schedule) -> str:
-    """A `workflow_plan` occurrence submits under ``<schedule_id>:<schedule_run_id>``: the run id
-    keeps it at-most-once per occurrence, the schedule id lets the next fire find the last one."""
-    return f"{schedule.schedule_id}:"
-
-
-def workflow_plan_of(request: str) -> dict[str, Any]:
-    """The plan a `workflow_plan` schedule carries in its request: JSON text of a
-    `workflow_plan.v0.1` object, validated by the workflow module's own rules. Refused with a
-    typed reason, never stored half-parsed."""
-    from . import workflow as wf                   # noqa: PLC0415 — the scheduler loads it only for this kind
-    from .errors import WorkflowBlocked
-    try:
-        plan = json.loads(request or "")
-    except ValueError as exc:
-        raise SchedulerBlocked("INVALID_PLAN", f"a workflow_plan schedule's request must be JSON: {exc}") from exc
-    if not isinstance(plan, dict):
-        raise SchedulerBlocked("INVALID_PLAN", "a workflow_plan schedule's request must be a JSON object (workflow_plan.v0.1)")
-    try:
-        wf.validate_plan(plan)
-    except WorkflowBlocked as exc:
-        raise SchedulerBlocked("INVALID_PLAN", f"{exc.reason_code}: {exc}") from exc
-    return plan
 
 
 class ScheduleStore:
@@ -1202,7 +1165,7 @@ def delegate_proposal_generation(
 def _execute(
     schedule: Schedule, *, now: str, ledger: Any, working_memory: Any, programization: Any,
     repo_root: Path | None, executor: Callable[..., dict[str, Any]],
-    registry: Any = None, run_id: str | None = None, workflow_store: Any = None,
+    registry: Any = None, run_id: str | None = None,
 ) -> str:
     """Execute one due schedule and return a short status string.
 
@@ -1556,29 +1519,6 @@ def _execute(
             parts.append(forward_trial.status_line(
                 {"trials": trials, "nulls": nulls_of_trials or {}}))
         return " | ".join(parts)
-    if schedule.kind == KIND_DISPATCH_SPEND:
-        # §6-3's alert rides the failure-transition notifier the way the data review's stall
-        # does: past the threshold this fire FAILS, the operator gets the transition message,
-        # and a steady over-threshold day stays one message instead of one per fire. Under
-        # the threshold the status line is the whole fire — quiet is the normal state, and
-        # doubly so while free tiers leave the cost unmetered (the line says which).
-        from . import dispatch_spend
-        from .store import LedgerStore as _LedgerStore
-
-        try:
-            measured = dispatch_spend.measure_day(_LedgerStore.default(repo_root), now=now)
-        except MvpRuntimeError as exc:
-            # An unreadable ledger cannot tell "nothing spent" from "cannot see" — report it,
-            # never swallow it into a comfortable zero.
-            return f"dispatch_spend_unavailable:{exc.reason_code}"
-        status = dispatch_spend.status_line(measured)
-        if dispatch_spend.over_threshold(measured):
-            raise SchedulerBlocked(dispatch_spend.DISPATCH_SPEND_OVER, (
-                f"assistant dispatch spent {measured['cost_usd']:.2f} USD today against the "
-                f"{measured['threshold_usd']:.0f} USD/day alert line (Thomas 2026-07-30, no "
-                f"hard cap — nothing was stopped). runs={measured['runs']}. {status}"
-            ))
-        return status
     if schedule.kind == KIND_REPORT:
         # C13: render the read-only dashboard and push it to the ONE registered
         # operator chat. Pure reads + one notify — no gate of its own beyond the
@@ -2148,32 +2088,6 @@ def _execute(
         return (f"candle_archive symbols={summary['symbols']} books={summary['books']} "
                 f"kept={summary['written']} degraded={summary['degraded']} "
                 f"deferred={summary.get('deferred', 0)}")
-    if schedule.kind == KIND_WORKFLOW:
-        # P09: submit the plan under the occurrence's own run id. The workflow store's request
-        # table makes this at-most-once per occurrence: the same run id replays the accepted
-        # workflow and never accepts it twice, and the plan itself was validated at
-        # registration. Without a store (the manager never ran here) the fire fails by name.
-        if workflow_store is None:
-            raise SchedulerBlocked(
-                "WORKFLOW_UNAVAILABLE",
-                "this runtime has no workflow store; a workflow_plan schedule needs the dispatch bridge "
-                "started with --workflow-manager",
-            )
-        if run_id is None:
-            raise SchedulerBlocked("SCHEDULER_EVENT_INVALID", "a workflow_plan fire needs its schedule_run_id")
-        # Coalesce to one open workflow per schedule (review of P09): while this schedule's
-        # previous occurrence has not ended — the manager is off, or slower than the cadence —
-        # this occurrence is dropped with its reason instead of queueing behind it, so a manager
-        # that comes back never faces a burst of stale occurrences and the server's open-step
-        # ceiling is never filled by one schedule.
-        prefix = workflow_request_prefix(schedule)
-        still_open = workflow_store.open_workflows_by_request_prefix(WORKFLOW_PRINCIPAL, prefix)
-        if still_open:
-            first = still_open[0]
-            return f"workflow:skipped:previous occurrence {first['workflow_id']} still {first['status']}"
-        outcome = workflow_store.submit(principal=WORKFLOW_PRINCIPAL, request_id=f"{prefix}{run_id}",
-                                        plan=workflow_plan_of(schedule.request), now=now)
-        return f"workflow:{outcome.workflow_id}:{outcome.status}" + (":replayed" if outcome.replayed else "")
     if schedule.kind != KIND_TASK:
         # Every branch above tests one kind, and this used to be a bare fall-through: a
         # schedule of ANY unrecognised kind ran the analysis pipeline below — a real model
@@ -2652,7 +2566,6 @@ def run_due(
     notifier: Callable[[str, str], None] | None = None,
     registry: Any = None,
     kinds: frozenset[str] | None = None,
-    workflow_store: Any = None,
     fire_guard: Callable[[Schedule, str], AbstractContextManager[Any]] | None = None,
 ) -> dict[str, Any]:
     """Fire every enabled schedule whose ``next_run_at`` is at or before ``now``. Kill-switch bound.
@@ -2878,8 +2791,7 @@ def run_due(
             with (fire_guard(claimed, run_id) if fire_guard is not None else nullcontext()):
                 status = _execute(claimed, now=now, ledger=ledger, working_memory=working_memory,
                                   programization=programization, registry=registry,
-                                  repo_root=repo_root, executor=executor, run_id=run_id,
-                                  workflow_store=workflow_store)
+                                  repo_root=repo_root, executor=executor, run_id=run_id)
             if claimed.kind == KIND_FACTORY and status == STATUS_FACTORY_SPAWNED:
                 # The bracket stays open on purpose: the terminal event belongs to the pass
                 # that collects the child (`_collect_factory_child`), under this same

@@ -34,11 +34,7 @@
             "thomas-operator",
             "thomas-scheduler",
             "thomas-scheduler-maint",
-            "thomas-read-bridge",
-            "thomas-dispatch-bridge",
-            "thomas-pipeline-worker",
-            "thomas-knowledge-bridge",
-            "thomas-switch-bridge"
+            "thomas-pipeline-worker"
           ],
           "properties": {
             "thomas-operator": {
@@ -74,51 +70,7 @@
                 }
               ]
             },
-            "thomas-read-bridge": {
-              "anyOf": [
-                {
-                  "type": "null"
-                },
-                {
-                  "type": "string",
-                  "pattern": "^sha256:[0-9a-f]{64}\\Z"
-                }
-              ]
-            },
-            "thomas-dispatch-bridge": {
-              "anyOf": [
-                {
-                  "type": "null"
-                },
-                {
-                  "type": "string",
-                  "pattern": "^sha256:[0-9a-f]{64}\\Z"
-                }
-              ]
-            },
             "thomas-pipeline-worker": {
-              "anyOf": [
-                {
-                  "type": "null"
-                },
-                {
-                  "type": "string",
-                  "pattern": "^sha256:[0-9a-f]{64}\\Z"
-                }
-              ]
-            },
-            "thomas-knowledge-bridge": {
-              "anyOf": [
-                {
-                  "type": "null"
-                },
-                {
-                  "type": "string",
-                  "pattern": "^sha256:[0-9a-f]{64}\\Z"
-                }
-              ]
-            },
-            "thomas-switch-bridge": {
               "anyOf": [
                 {
                   "type": "null"
@@ -170,7 +122,7 @@
         },
         "containers": {
           "type": "array",
-          "maxItems": 8,
+          "maxItems": 4,
           "items": {
             "type": "object",
             "additionalProperties": false,
@@ -185,11 +137,7 @@
                   "thomas-operator",
                   "thomas-scheduler",
                   "thomas-scheduler-maint",
-                  "thomas-read-bridge",
-                  "thomas-dispatch-bridge",
-                  "thomas-pipeline-worker",
-                  "thomas-knowledge-bridge",
-                  "thomas-switch-bridge"
+                  "thomas-pipeline-worker"
                 ]
               },
               "state": {

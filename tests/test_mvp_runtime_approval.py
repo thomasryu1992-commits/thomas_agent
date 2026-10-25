@@ -542,90 +542,12 @@ def test_store_is_empty_before_anything_is_asked(tmp_path):
     assert store.get("approval_nope") is None
 
 
-# --- the switch door's asks -------------------------------------------------------
-#
-# Until 2026-08-22 `format_request` had two branches — trial, and everything else — and the
-# switch door's asks fell into "everything else". They therefore told Thomas that approving a
-# runtime switch could not be undone because "validated memory는 지속됩니다", quoted a cost of
-# none, and closed with a paragraph about spending the grant through `approval_consumption`.
-# None of that describes a switch. The door's whole point is that Thomas sees what he is
-# deciding, so a renderer that describes a different decision defeats it.
-
-
-def _switch_permdec(*, arms: bool):
-    """A real switch-door decision, minted by the module that owns the target prefix."""
-    builder = (permission.build_trading_switch_permission_decision if arms
-               else permission.build_nonfinancial_resume_permission_decision)
-    return builder(
-        _bound(), "crypto",
-        stop_ref="stop_abc123",
-        stop_summary="the KILLED placed by local_console at 2026-07-18T10:44:41Z",
-        now=NOW,
-    )
-
-
-@requires_local_core
-def test_a_switch_grant_is_not_pointed_at_the_consume_cli():
-    """A switch grant is spent by calling the door again with the id. It is not a promotion,
-    it does not go through `approval_cli consume`, and it is not gated on the
-    `approval_consumption` safety flag — so an ask that says otherwise sends Thomas to a
-    command that will not work on it."""
-    permdec = _switch_permdec(arms=True)
-    text = approval.request_message(approval.build_approval_request(permdec, now=NOW), permdec)
-    # The claim, not the token: the ask may name `approval_consumption` — it does, to say the
-    # flag is irrelevant here — but it must not send Thomas to that step.
-    assert "`approval_cli consume`으로 쓰지 않습니다" in text
-    assert "approval_consumption 세이프티 플래그와" in text and "무관합니다" in text
-    assert "승격을 1회 수행합니다" not in text
-    assert "플래그가 켜진 기기에서만" not in text
-    assert "스위치 문을 다시 호출할 때 1회만 소비됩니다" in text
-
-
-@requires_local_core
-def test_a_switch_grant_says_stopping_needs_no_approval():
-    """The reversibility line was exactly backwards. Stopping is the cheap verb — it applies at
-    once with no approval — and that asymmetry is the reason this door exists at all."""
-    permdec = _switch_permdec(arms=True)
-    text = approval.request_message(approval.build_approval_request(permdec, now=NOW), permdec)
-    assert "validated memory는 지속됩니다" not in text
-    assert "되돌릴 수 있는가: 예 — 끄기(stop/pause)는 승인 없이 즉시 적용됩니다" in text
-
-
-@requires_local_core
-def test_the_two_switch_grants_differ_on_the_one_thing_that_differs():
-    """`trading_switch:` re-arms live entries and `runtime_resume:` structurally cannot. That is
-    the entire difference in effect between the two, so it is the line Thomas must be able to
-    read — and the cost line follows it."""
-    arming = approval.request_message(
-        approval.build_approval_request(_switch_permdec(arms=True), now=NOW),
-        _switch_permdec(arms=True),
-    )
-    runtime_only = approval.request_message(
-        approval.build_approval_request(_switch_permdec(arms=False), now=NOW),
-        _switch_permdec(arms=False),
-    )
-    assert "승인하면 라이브 진입이 다시 무장됩니다." in arming
-    assert "예상 비용: 실주문이 다시 나갈 수 있게 되므로" in arming
-
-    assert "라이브 진입을 무장하지 않습니다" in runtime_only
-    assert "다시 무장됩니다" not in runtime_only
-    assert "예상 비용: 없음" in runtime_only
-
-
-@requires_local_core
-def test_a_switch_grant_warns_that_a_changed_stop_voids_it():
-    """`stop_ref` is derived from the whole control state, so anything that rewrites
-    `updated_at` between minting and spending refuses the grant with STOP_CHANGED. That costs a
-    re-ask, and Thomas should not learn it from a refusal."""
-    permdec = _switch_permdec(arms=False)
-    text = approval.request_message(approval.build_approval_request(permdec, now=NOW), permdec)
-    assert "STOP_CHANGED" in text
+# --- the memory promotion ask (the switch door's asks rendered here until 2026-10-25) ---------------
 
 
 @requires_local_core
 def test_a_memory_promotion_ask_is_unchanged():
-    """The control. The two lines above are keyed on the target prefix, so the ask this
-    renderer was written for must read exactly as it did."""
+    """The control: the ask this renderer was written for reads exactly as it did."""
     permdec = _permdec()
     text = approval.request_message(approval.build_approval_request(permdec, now=NOW), permdec)
     assert "되돌릴 수 있는가: 아니오 — validated memory는 지속됩니다" in text
@@ -636,7 +558,7 @@ def test_a_memory_promotion_ask_is_unchanged():
 
 # --- what undoes each ask ---------------------------------------------------------
 #
-# The switch door's fix above was one kind at a time. Until 2026-09-19 the reversibility line still
+# The switch door's fix (2026-08-22; its asks left with the door) was one kind at a time. Until 2026-09-19 the reversibility line still
 # fell through to the memory promotion's answer, so a paper-tier pool promotion, a retirement, a
 # P&L correction, a probe batch and a program registration all rendered as permanent because
 # "validated memory는 지속됩니다" — and a retirement, which shares its target with a paper
@@ -681,14 +603,6 @@ _ASKS = {
         permission.build_trial_permission_decision,
         {"role_id": "research.candidate", "version": "0.1.0", "definition_sha256": "sha256:d"},
         trial_request="t",
-    ),
-    "trading_switch": lambda: _minted_ask(
-        permission.build_trading_switch_permission_decision, "crypto", stop_ref="stop_1", stop_summary="s"),
-    "runtime_resume": lambda: _minted_ask(
-        permission.build_nonfinancial_resume_permission_decision, "crypto", stop_ref="stop_1", stop_summary="s"),
-    "workflow_step": lambda: _minted_ask(
-        permission.build_workflow_step_permission_decision, workflow_id="wf_1", step_key="s1", plan_version=1,
-        capability="analysis", request_sha256="sha256:q", request_preview="p",
     ),
     "execution_stage": lambda: _minted_ask(
         permission.build_execution_stage_permission_decision,
@@ -738,10 +652,6 @@ _ASKS = {
 _UNDO = {
     "memory": _MEMORY_UNDO,
     "trial": "되돌릴 수 있는가: 예 — 격리된 1회 시험 실행이며 기록만 남습니다 (역할 활성화 아님)",
-    "trading_switch": "되돌릴 수 있는가: 예 — 끄기(stop/pause)는 승인 없이 즉시 적용됩니다",
-    "runtime_resume": "되돌릴 수 있는가: 예 — 끄기(stop/pause)는 승인 없이 즉시 적용됩니다",
-    "workflow_step": ("되돌릴 수 있는가: 실행 전까지는 예(cancel_workflow·/kill) — 실행된 단계는 "
-                      "P3 작업(모델 호출·작업공간 쓰기)으로 기록이 남습니다"),
     "execution_stage": ("되돌릴 수 있는가: 예 — 단계 강등은 승인 없이 즉시 적용됩니다(--demote), "
                         "청산은 어느 단계에서도 막히지 않습니다"),
     "pool_live": ("되돌릴 수 있는가: 예 — 무장 해제(scripts/disarm_live_strategies.py)는 승인 없이 즉시 "

@@ -706,8 +706,6 @@ def test_a_halt_under_a_stop_keeps_the_stops_placer_for_the_ask_and_names_its_ow
     """Review of PR6d: the write re-stamped the stop with the halt's actor and time, so the next
     resume ask Thomas signs read "the KILLED placed by assistant_bridge". The stop keeps its placer;
     the event and the reason name who recorded the halt. A tighter halt replaces the looser note."""
-    from runtime.mvp_runtime import switch_bridge
-
     store, ledger = _armed(tmp_path), FakeLedger()
     control.apply_command(store, control.CMD_KILL, actor="tg-12345", now=NOW, arg="급변", ledger=ledger)
     control.apply_command(store, control.CMD_HALT_TRADING, actor="assistant_bridge", now=LATER,
@@ -718,8 +716,6 @@ def test_a_halt_under_a_stop_keeps_the_stops_placer_for_the_ask_and_names_its_ow
     assert (state.mode, state.halt_level, state.updated_by, state.updated_at) == (
         KILLED, control.HALT_HARD, "tg-12345", NOW)
     assert state.reason == f"급변 [under the stop: HARD halt recorded by assistant_bridge at {LATEST}: 변동성]"
-    summary = switch_bridge.stop_summary(state)
-    assert f"the KILLED placed by tg-12345 at {NOW}" in summary and "assistant_bridge" in summary
     assert [(e["actor"], e["created_at"], e["resulting_halt_level"]) for e in ledger.control] == [
         ("tg-12345", NOW, None), ("assistant_bridge", LATER, control.HALT_SOFT),
         ("assistant_bridge", LATEST, control.HALT_HARD)]
@@ -1449,3 +1445,13 @@ def test_a_soft_level_recovered_under_a_stop_is_marked_without_the_loosening_hin
     assert state.reason.endswith(f"[SOFT {_KEPT_NOTE}]")
     assert "The SOFT halt was kept from a control state recovered" in out["reply"]
     assert "loosens" not in out["reply"]
+
+
+def test_stop_ref_kept_its_ids_when_it_moved_out_of_the_switch_door():
+    """`stop_ref` moved here from the retired switch door (2026-10-25). An emergency-close ask binds it,
+    so an ask minted before the deploy must spend after it: these ids were computed by the door's copy."""
+    killed = control.ControlState(mode=KILLED, updated_by="tg-1", updated_at="2026-10-25T00:00:00Z",
+                                  reason="x", halt_level=control.HALT_HARD)
+    active = control.ControlState(mode=control.ACTIVE, updated_by="op", updated_at="2026-10-25T01:00:00Z", reason="y")
+    assert control.stop_ref(killed) == "stop_0fbf2729c890d548246d"
+    assert control.stop_ref(active) == "stop_20409e88274a63012bb2"

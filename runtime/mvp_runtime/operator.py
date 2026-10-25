@@ -32,14 +32,13 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any, Protocol
 
 from . import (
     approval, control, domain_console, frontdesk, memory_console, operator_feedback,
@@ -850,135 +849,14 @@ def notify_operator(channel: OperatorChannel, text: str, *, repo_root: Path | No
     channel.send(registration.chat_id, text)
 
 
-# --- the approval mirror: the same ask, in the assistant's window, decided elsewhere -----------
-#
-# Thomas talks to the assistant on its own bot and reads `/approve` on the control bot (decision
-# Q1-b, 2026-09-03). A switch-door ask minted through the assistant would otherwise appear only
-# in the window he is NOT looking at. The mirror sends a copy on the assistant's bot token — the
-# mechanism the scheduler lanes have used since 2026-08-01 — and the copy says where the answer
-# goes, because a verbatim copy would invite him to type `/approve` where nothing reads it.
-
-MIRROR_TOKEN_ENV = "HERMES_BOT_TOKEN"
-MIRROR_SEND_ONLY_REASON = "MIRROR_IS_SEND_ONLY"
-
-
-class SendOnlyChannel:
-    """A channel that can only ``send`` — the assistant's bot as seen from this service.
-
-    That bot has exactly ONE poller, the ``hermes`` container, and a second ``getUpdates``
-    caller on the same token steals its updates (the scheduler lanes' comment in
-    ``docker-compose.yml``). So the wrapper refuses ``poll`` and ``peek`` by construction: an
-    operator loop that were ever handed this as its control channel fails closed on the first
-    poll instead of quietly eating the assistant's messages. ``send`` is delegated; the
-    capability attributes are the wrapped channel's, so ``gate_banners`` announces it honestly.
-    """
-
-    def __init__(self, inner: OperatorChannel):
-        self._inner = inner
-
-    @property
-    def network_egress(self) -> bool:
-        return bool(getattr(self._inner, "network_egress", False))
-
-    @property
-    def provider_id(self) -> str | None:
-        return getattr(self._inner, "provider_id", None)
-
-    def poll(self, *, long_poll_seconds: int = 0) -> list[InboundMessage]:
-        del long_poll_seconds
-        raise OperatorBlocked(
-            MIRROR_SEND_ONLY_REASON, "the approval mirror sends only; it never polls the assistant's bot"
-        )
-
-    def peek(self) -> list[InboundMessage]:
-        raise OperatorBlocked(
-            MIRROR_SEND_ONLY_REASON, "the approval mirror sends only; it never reads the assistant's bot"
-        )
-
-    def send(self, chat_id: str, text: str) -> str | None:
-        return self._inner.send(chat_id, text)
-
-
-def select_mirror_channel() -> OperatorChannel | None:
-    """The send-only channel switch-door asks are mirrored on, or ``None`` — and a stderr line
-    either way, because a silently absent mirror is the failure this feature exists to end.
-
-    Same gate as the control channel (``MVP_OPERATOR_CHANNEL=telegram``): the mirror is a second
-    use of the same authorization, not a second authorization. It DEGRADES rather than fails
-    closed (``scheduler_cli.build_alerter``'s pattern): the control channel is the authority and
-    the mirror a convenience (D-5), and this is the one service that also READS ``/approve`` —
-    it must not die for a courtesy.
-
-    Off when the gate is not open (the Mock notifies nobody, so there is nothing to mirror on),
-    when ``HERMES_BOT_TOKEN`` is not set in this container, or when it holds the SAME value as
-    ``TELEGRAM_BOT_TOKEN`` — then the "mirror" would be the control bot sending the ask twice
-    into one window, the second copy telling Thomas to answer in the window he is already in.
-    The values are compared in memory and never written anywhere.
-    """
-    if os.environ.get(OPERATOR_CHANNEL_ENV, "").strip().lower() != TELEGRAM:
-        sys.stderr.write("OPERATOR: approval mirror OFF (the control channel is not telegram)\n")
-        return None
-    token = os.environ.get(MIRROR_TOKEN_ENV)
-    if not token:
-        sys.stderr.write(f"OPERATOR: approval mirror OFF ({MIRROR_TOKEN_ENV} is not set)\n")
-        return None
-    if token == os.environ.get("TELEGRAM_BOT_TOKEN"):
-        sys.stderr.write(
-            f"OPERATOR: approval mirror OFF ({MIRROR_TOKEN_ENV} equals TELEGRAM_BOT_TOKEN — "
-            "one bot cannot mirror itself)\n"
-        )
-        return None
-    try:
-        channel = safety_gate.select_env_gated(
-            env_var=OPERATOR_CHANNEL_ENV,
-            opt_in_value=TELEGRAM,
-            flags=_NETWORK_FLAGS,
-            provider_id=TELEGRAM,
-            default_factory=MockOperatorChannel,
-            # No state_path: the mirror keeps no getUpdates cursor because it never polls.
-            gated_factory=lambda authorization: TelegramChannel(
-                token_env=MIRROR_TOKEN_ENV, authorization=authorization, state_path=None,
-            ),
-        )
-    except MvpRuntimeError as exc:
-        sys.stderr.write(f"OPERATOR: approval mirror OFF ({exc.reason_code})\n")
-        return None
-    sys.stderr.write(
-        "OPERATOR: approval mirror ON — switch-door asks are also sent on the assistant's bot "
-        "(send-only; the decision stays on this channel)\n"
-    )
-    return SendOnlyChannel(channel)
-
-
-_CHOICE_LINE_PREFIXES = ("가능한 선택:", "(id 뒤에 이유를 적으면")
-
-
-def mirror_message(ask: Mapping[str, Any], permission_decision: Mapping[str, Any]) -> str:
-    """The ask as the assistant's window shows it: the same text minus the two lines that invite
-    an answer HERE, framed by where the answer goes. The shim already warns about exactly this
-    confusion; the copy must not create it."""
-    approval_id = str(ask["approval_id"])
-    where = f"결정은 관제봇 창에서: /approve {approval_id} 또는 /reject {approval_id}"
-    body = [
-        line for line in approval.request_message(ask, permission_decision).splitlines()
-        if not line.startswith(_CHOICE_LINE_PREFIXES)
-    ]
-    return "\n".join(
-        [f"[알림 사본] {where}", ""] + body
-        + ["", where, "이 창의 /approve는 아무에게도 닿지 않습니다 — 여기서는 사본만 보입니다."]
-    )
-
-
-# The switch door's asks are the only ones nobody delivers. Every other approval is minted by
-# Thomas running a script, so the id is already on his screen and the median answer comes back
-# in about a minute. The switch door's are minted by an assistant, asynchronously, and until
-# 2026-08-22 they went nowhere at all: the one real attempt (`approval_cb281753`, 2026-07-31
-# 03:25:56Z) expired fifteen minutes later unanswered, and the enable chain had never once
-# completed in production. `approval.py` has no notify path by design; this is the delivery
-# half, and it lives here because this service is also the one that READS `/approve`.
+# Asks the operator spends from the console are announced here, on the channel that READS `/approve`.
+# It began for the switch door's asks, which an assistant minted asynchronously and which until
+# 2026-08-22 went nowhere at all (`approval_cb281753` expired unanswered); the switch door was retired
+# 2026-10-25, and what stays announced is the execution-stage and emergency-close asks. `approval.py`
+# has no notify path by design; this is the delivery half.
 ANNOUNCED_POINTER_REL = ".runtime_governance_state/approval_announced.json"
 
-# A batch cap, not a rate limit. If several switch asks are somehow open at once, sending three
+# A batch cap, not a rate limit. If several asks are somehow open at once, sending three
 # and leaving the rest for the next pass keeps one bad state from filling the control channel.
 MAX_ANNOUNCEMENTS_PER_BATCH = 3
 
@@ -1036,28 +914,17 @@ def announce_pending_approvals(
     *,
     now: str,
     repo_root: Path | None = None,
-    mirror: OperatorChannel | None = None,
 ) -> list[str]:
-    """Push undelivered switch-door approval asks to the registered control channel.
+    """Push undelivered execution-stage and emergency-close asks to the registered control channel.
 
     Returns the approval ids announced on this pass (empty when there is nothing to send).
 
-    ``mirror`` (opt-in) is the assistant's send-only channel (:func:`select_mirror_channel`):
-    right after the authoritative send, a *different* body (:func:`mirror_message`) goes to the
-    same registered chat on that bot. Best-effort and outside the pointer (D-5): a mirror
-    failure is one stderr line, never a re-announcement — the control channel push is the
-    authority, and a second pointer would only widen this loop's partial-failure window.
-
-    **Only the switch door's asks — and, since sequence 2 P07, the workflow manager's gated-step
-    asks.** ``pending()`` returns every scope, and the rest are already in front of Thomas by
-    the flow that minted them — announcing those would put a memory candidate's full text and a
-    strategy-pool ask into the control channel for no gain. The filter is the target prefix,
-    imported from ``permission`` which mints it, because these asks share ``RUNTIME_GOVERNANCE``
-    with strategy promotion and only the target says what is being started. A workflow-step ask
-    is announced on the control channel and **never mirrored** to the assistant's window
-    (policy 1.5.0 ``approval_notification_mirror.mirrored_asks: switch_door_only``), and so are the
-    execution-stage asks (crypto PR1a) and the emergency-close asks (crypto PR6c): the operator
-    spends both from the console, and Thomas answers them here.
+    **Only those two kinds** (crypto PR1a and PR6c): the operator spends both from the console, and
+    Thomas answers them here. ``pending()`` returns every scope, and the rest are already in front of
+    Thomas by the flow that minted them — announcing those would put a memory candidate's full text
+    and a strategy-pool ask into the control channel for no gain. The filter is the target prefix,
+    imported from ``permission`` which mints it. The switch door's and the workflow manager's asks
+    were announced here too until both were retired (2026-10-25).
 
     Expired asks are never announced: a dead id cannot be approved, and sending one invites
     Thomas to answer something that will refuse him.
@@ -1070,16 +937,14 @@ def announce_pending_approvals(
         pending = approval_store.pending()
     except MvpRuntimeError:
         raise
-    switch_prefixes = (permission.TRADING_SWITCH_TARGET_PREFIX, permission.NONFINANCIAL_RESUME_TARGET_PREFIX)
-    switch_asks = [
+    console_asks = [
         a for a in pending
         if str((a.get("approved_action_snapshot") or {}).get("target_ref") or "").startswith(
-            switch_prefixes + (permission.WORKFLOW_STEP_TARGET_PREFIX, permission.EXECUTION_STAGE_TARGET_PREFIX,
-                               permission.EMERGENCY_CLOSE_TARGET_PREFIX)
+            (permission.EXECUTION_STAGE_TARGET_PREFIX, permission.EMERGENCY_CLOSE_TARGET_PREFIX)
         )
         and not approval.is_expired(a, now=now)
     ]
-    live_ids = {str(a["approval_id"]) for a in switch_asks}
+    live_ids = {str(a["approval_id"]) for a in console_asks}
 
     announced = load_announced(repo_root)
     if announced is None:
@@ -1090,7 +955,7 @@ def announce_pending_approvals(
     # Filter BEFORE the cap, never after. Slicing first lets already-announced asks occupy the
     # batch and starve the ones behind them — with three announced and two waiting, every
     # subsequent pass sends nothing and the two are never reached.
-    undelivered = [a for a in switch_asks if str(a["approval_id"]) not in announced]
+    undelivered = [a for a in console_asks if str(a["approval_id"]) not in announced]
 
     sent: list[str] = []
     for ask in undelivered[:MAX_ANNOUNCEMENTS_PER_BATCH]:
@@ -1105,14 +970,6 @@ def announce_pending_approvals(
         )
         announced.add(approval_id)
         sent.append(approval_id)
-        target = str((ask.get("approved_action_snapshot") or {}).get("target_ref") or "")
-        if mirror is not None and target.startswith(switch_prefixes):
-            try:
-                notify_operator(mirror, mirror_message(ask, decision), repo_root=repo_root)
-            except MvpRuntimeError as exc:
-                sys.stderr.write(
-                    f"OPERATOR: approval {approval_id} announced but not mirrored ({exc.reason_code})\n"
-                )
 
     # Drop ids that are no longer open so the pointer does not grow without bound. Pruning
     # AFTER the send loop, and only against ids seen open this pass, keeps an ask that is
@@ -1121,114 +978,6 @@ def announce_pending_approvals(
     if pruned != announced or sent:
         record_announced(pruned, now=now, repo_root=repo_root)
     return sent
-
-
-# --- workflow core-event push (sequence 2, P08; V0.2 Q23, acceptance A19) -----------------------
-#
-# The operator holds the control-bot token and survives a Hermes outage, so it is the one
-# process that pushes a workflow's arrival at a state Thomas acts on or wants to know about —
-# `wf.PUSHED_WORKFLOW_STATUSES` — and the only writer of `deliveries` / `delivery_cursors`.
-# Everything else about a workflow is Hermes's to narrate by polling `workflow.events`. A
-# workflow waiting for an approval is not pushed here: the ask itself is that push
-# (`announce_pending_approvals`), and one event has exactly one pusher.
-#
-# Delivery is recorded before the send (PENDING) and after it (CONFIRMED / UNCERTAIN), so a
-# crash between the two leaves a PENDING row that the next pass retries once. That is
-# at-least-once; a message may arrive twice after a crash, and nothing promises exactly-once
-# to the outside (V0.2 §4.3). UNCERTAIN — the send raised — is kept as the answer and never
-# re-sent: the channel may well have delivered it. Like the mirror and the announcer, a push
-# failure is one stderr line and never reaches approval handling or the emergency console.
-
-PUSH_CHANNEL = "control"
-MAX_PUSHES_PER_PASS = 20
-PUSH_READ_PAGE = 500            # events read per pass; most are step/attempt rows that are not pushed
-
-
-def push_workflow_events(
-    channel: OperatorChannel,
-    workflow_store: Any,
-    *,
-    now: str,
-    repo_root: Path | None = None,
-    channel_name: str = PUSH_CHANNEL,
-    limit: int = MAX_PUSHES_PER_PASS,
-) -> dict[str, Any]:
-    """One pass of the push. Returns ``{"sent": [cursors], "uncertain": [cursors], "retried": n,
-    "cursor": int, "adopted": bool}``; raises only when the store itself cannot be read. ``limit``
-    caps the messages sent in one pass (retries included); the cursor stops before the first
-    event the cap left unsent, so the next pass takes it up."""
-    from . import workflow as wf                      # noqa: PLC0415 — the operator loads no workflow module at import
-    from . import workflow_console
-
-    report: dict[str, Any] = {"sent": [], "uncertain": [], "retried": 0, "cursor": None, "adopted": False}
-
-    def _deliver(event: Mapping[str, Any]) -> bool:
-        cursor = int(event["cursor"])
-        try:
-            view = workflow_store.status_view(str(event["workflow_id"]), now=now)
-        except MvpRuntimeError:
-            view = None
-        try:
-            notify_operator(channel, workflow_console.render_push(event, view), repo_root=repo_root)
-        except MvpRuntimeError as exc:
-            workflow_store.record_delivery(channel_name, cursor, wf.DELIVERY_UNCERTAIN, now=now,
-                                           detail=f"{exc.reason_code}: {exc}"[:500])
-            report["uncertain"].append(cursor)
-            sys.stderr.write(f"OPERATOR: workflow event #{cursor} push UNCERTAIN ({exc.reason_code})\n")
-            return False
-        workflow_store.record_delivery(channel_name, cursor, wf.DELIVERY_CONFIRMED, now=now)
-        report["sent"].append(cursor)
-        return True
-
-    # 1. A PENDING row is a send this process (or its predecessor) never confirmed: retry once.
-    #    "Once" is recorded before the retry leaves — the row turns UNCERTAIN first, so a process
-    #    that dies during the retry leaves UNCERTAIN, which is never sent again (review of P08).
-    for row in workflow_store.deliveries(channel_name, status=wf.DELIVERY_PENDING, limit=limit):
-        event = workflow_store.event(int(row["event_cursor"]))
-        if event is None:
-            workflow_store.record_delivery(channel_name, int(row["event_cursor"]), wf.DELIVERY_UNCERTAIN, now=now,
-                                           detail="event row missing")
-            continue
-        report["retried"] += 1
-        workflow_store.record_delivery(channel_name, int(row["event_cursor"]), wf.DELIVERY_UNCERTAIN, now=now,
-                                       detail="retrying a send a previous pass left PENDING; not retried again")
-        _deliver(event)
-
-    # 2. New events past the cursor. The first pass adopts the backlog and sends nothing — a
-    #    deploy must not open with every ending since the store was created.
-    cursor = workflow_store.delivery_cursor(channel_name)
-    if cursor is None:
-        tail = workflow_store.max_event_cursor()
-        workflow_store.set_delivery_cursor(channel_name, tail, now=now)
-        if tail:
-            workflow_store.record_delivery(channel_name, tail, wf.DELIVERY_SKIPPED, now=now,
-                                           detail="first pass adopted the backlog; nothing sent")
-        report.update({"cursor": tail, "adopted": True})
-        return report
-
-    events, _next_cursor = workflow_store.events_after(cursor, limit=PUSH_READ_PAGE)
-    budget = max(0, int(limit) - len(report["sent"]) - len(report["uncertain"]))
-    advanced_to = cursor
-    for event in events:
-        # An arrival, not a restatement: a same-status workflow event (a new plan version on a
-        # waiting workflow) is not a new state Thomas has to hear about (review of P08).
-        pushed = (event.get("entity") == "workflow" and event.get("to_status") in wf.PUSHED_WORKFLOW_STATUSES
-                  and event.get("from_status") != event.get("to_status"))
-        if pushed and workflow_store.delivery(channel_name, int(event["cursor"])) is not None:
-            # Already sent or attempted by a pass that died before it moved the cursor: the row is
-            # the answer, and a CONFIRMED or UNCERTAIN event is never sent twice (review of P08).
-            pushed = False
-        if pushed:
-            if budget <= 0:
-                break                                  # the rest waits for the next pass; the cursor stays before it
-            budget -= 1
-            workflow_store.record_delivery(channel_name, int(event["cursor"]), wf.DELIVERY_PENDING, now=now)
-            _deliver(event)
-        advanced_to = int(event["cursor"])
-    if advanced_to != cursor:
-        workflow_store.set_delivery_cursor(channel_name, advanced_to, now=now)
-    report["cursor"] = advanced_to
-    return report
 
 
 class TelegramChannel:

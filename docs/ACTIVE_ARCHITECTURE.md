@@ -129,12 +129,9 @@ The live executor. Same authority chain, one process, no kernel modification.
 
 ```text
 Entry / control      cli.py · operator.py · scheduler.py · frontdesk.py · console_cli.py · control.py
-                     socket_door.py (shared unix-socket transport for the bridge doors)
-                     read_bridge.py (read-only door; console renders, never a mutating verb)
-                     dispatch_bridge.py (dispatch door; validates + forwards bounded P3 kinds, never the money path)
-                     pipeline_worker.py (the dispatch door's AND the scheduler's engine; holds the model/search/Naver env neither of them does, internal socket, runtime-uid peers only, attribution declared per caller)
-                     switch_bridge.py (trading switch; disable free, enable only on a single-use Thomas grant)
-                     knowledge_bridge.py (knowledge door; append + two reads, no delete verb exists)
+                     socket_door.py (shared unix-socket transport for the doors and the worker)
+                     read_bridge.py (read-only door; Claude's under the `claude` profile; never a mutating verb)
+                     pipeline_worker.py (the scheduler's engine; holds the model/search/Naver env it does not, internal socket, runtime-uid peers only)
 Planning             intake.py · binding.py · planner.py · prime.py · assignment.py · triage.py
 Governance surface   permission.py · authority.py · safety_gate.py · budgets.py
 Work                 worker.py · providers.py · tools.py
@@ -143,18 +140,19 @@ Memory               memory.py · working_memory.py · retention.py
 Governed asks        approval.py · approval_store.py · consumption.py · trial.py
 Programization       programization.py · program_request.py · registration.py
 Domain packages      crypto/ (C-series, incl. the gated live-order path)
-                     knowledge/ (K-series; PDF extraction, BM25 retrieval, document store)
 ```
 
 Domain packages are applications of the same chokepoints, not parallel runtimes: they build the same
 PermissionDecisions, pass the same Safety-Flag Gate, and append to the same audit chain.
 
-### Who is on the other side of the four assistant doors
+### The four assistant doors (retired 2026-10-25)
 
-**Nobody, since 2026-10-25:** Thomas retired the Hermes container on cost
-([`history/2026-10-25-retire-hermes-container.md`](history/2026-10-25-retire-hermes-container.md)). The doors
-still run until their own removal and admit uid 10000, which nothing on the host now holds. What follows
-is the record of the client they served.
+**Retired with their client.** Thomas retired the Hermes container on cost, then its four doors
+(`read` / `switch` / `dispatch` / `knowledge`), the workflow manager and the knowledge lane; policy 1.7.0
+removed their clauses and kept `assistant_read`, under which Claude's read door serves
+([`history/2026-10-25-retire-hermes-container.md`](history/2026-10-25-retire-hermes-container.md),
+[`history/2026-10-25-retire-assistant-doors.md`](history/2026-10-25-retire-assistant-doors.md)). The
+operator's control bot is the one inbound door. What follows is the record of the client they served.
 
 Named here because until 2026-08-22 no document in this repository did, and two facts about that
 client change how the doors' guarantees should be read.

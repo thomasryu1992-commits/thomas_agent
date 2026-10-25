@@ -1,6 +1,6 @@
 schema_version: thomas_governance_policy.v1
 policy_id: thomas.governance.policy
-policy_version: 1.6.2
+policy_version: 1.7.0
 status: ACTIVE_POLICY_SOURCE
 owner: Thomas
 authoritative: true
@@ -173,23 +173,6 @@ authority:
       - post_action_report_and_audit     # EXECUTE_AND_REPORT is not fire-and-forget
     gate_grants_authority: false         # the gate permits; it never raises a ceiling
 
-  # The assistant's dispatch gate (Thomas approved 2026-08-30; proposed 2026-07-30 in
-  # docs/proposals/HERMES_AGENT_DISPATCH_V0.1.md §7 and running SINCE then — this clause is
-  # the codification the 08-22 door audit recorded as missing, not a new capability).
-  # Defining it opens nothing: dispatched tasks already execute under their own P<=3
-  # ceiling, and this gate makes that auditable against policy rather than implied by code.
-  assistant_dispatch_gate:
-    gate_id: thomas.dispatch.assistant_gate
-    applies_to_actor: assistant_bridge
-    requires:
-      - effective_permission_ceiling_p3   # a dispatched task tops out at P3 — P5/P6 unreachable
-      - role_in_dispatch_allowlist        # allowlisted roles only (control_channel.assistant_dispatch)
-      - no_money_path_capability          # no trading/venue/live-order role or tool
-      - reason_recorded                   # every dispatch names its reason, on the record
-      - post_dispatch_audit               # actor=assistant_bridge, one ledger record per dispatch
-                                          # and one task_registry entry, origin AGENT (PR8)
-    gate_grants_authority: false         # same invariant as p5: a gate permits, never raises
-
 action_identity:
   payload_schema: action_fingerprint_payload.v0.1
   algorithm: SHA-256
@@ -264,86 +247,13 @@ control_channel:
       - resume
     new_high_risk_approval_creation_allowed: false
 
-  # The assistant's dispatch lane (Thomas approved 2026-08-30). Distinct from the operator
-  # console (= Thomas-authenticated) and from the halt door (= fail-safe stop): this lane
-  # STARTS work, so it is bounded by effect class, not by trust. The lane has been live
-  # since 2026-07-30 behind the door's structural walls; this block is the versioned
-  # governance update §12–16 requires, written after the fact and saying so.
-  assistant_dispatch:
-    actor: assistant_bridge
-    mode: AUTONOMOUS_WITHIN_ALLOWLIST     # Thomas 2026-07-30 (option A): no per-dispatch operator confirmation
-    permission_ceiling: P3
-    role_allowlist:
-      - general.specialist
-      - research.general
-      - translation.general
-      - content.general
-    trading_role_absent: structural_and_test_locked   # crypto/trading roles structurally out of the list
-    hard_rate_cap: none                   # Thomas 2026-07-30: no fail-closed cap
-    self_halt_on_spike: false             # Thomas decision: alert only, no circuit breaker
-    spend_alert:
-      # Enforced since 2026-08-30 by `dispatch_spend_watch` (runtime/mvp_runtime/dispatch_spend.py,
-      # #803): the maintenance lane sums the UTC day's assistant-dispatched cost from the
-      # ledger's budget_usage rows and raises past the threshold onto the operator notifier.
-      # The recorded caveat stands: free-tier providers meter no cost, so the threshold is
-      # dormant until real cost appears — the watch's own status line says which state it is in.
-      meter: execution_budget_cumulative_cost
-      threshold_amount: 50
-      threshold_currency: USD
-      period: per_day
-      action: notify_operator             # no auto-stop — a human stops via the halt door
-    new_high_risk_approval_creation_allowed: false
-
-  # The assistant's switch lane (Thomas approved 2026-08-30). Its own proposal
-  # (docs/proposals/HERMES_AGENT_SWITCH_V0.1.md) decided the OPPOSITE — "no clause, and none
-  # coming" — because the only draft clause served S2's conditional branch, S2 was rejected,
-  # and the lane invents no authority: disable IS the halt door and enable rides the standard
-  # approval machinery this file already governs. That reasoning was sound until 1.3.0 named
-  # the actor's dispatch lane above, at which point a policy-only reader would conclude
-  # dispatch is the assistant's ONLY lane — which is false in the dangerous direction, since
-  # the unlisted lane is the one that can re-arm live trading. This block completes the
-  # actor's description; it grants nothing that was not already granted, and S2 stays
-  # rejected — the clause codifies the UNCONDITIONAL approval, not the branch.
-  assistant_switch:
-    actor: assistant_bridge
-    domain_allowlist:
-      - crypto                            # the door's own closed set
-    verbs:
-      status: read_only                   # answers even while halted
-      disable: fail_safe_immediate        # kill|pause|soft|hard, reason required, NO approval — the
-                                          # assistant may always stop; a stop needing sign-off
-                                          # is not a fail-safe (S3: the halt door lives here)
-      enable: approval_required_always    # S2 REJECTED (Thomas 2026-08-01): approval is
-                                          # required regardless of gate state — the assistant
-                                          # reads the untrusted web and cannot tell a user's
-                                          # request from an injected one, so "start" is never
-                                          # its own call. The verb only MINTS the ask.
-      emergency_close: approval_required_always  # 1.5.2, Thomas decision 49 (2026-09-19): the
-                                          # assistant only ASKS. Mints the ask to close every
-                                          # booked live position at market, reduceOnly, under
-                                          # the HARD halt in effect; Thomas approves on the
-                                          # control channel and the operator spends it once in
-                                          # the scheduler container. This door never spends it.
-    enable_scopes:
-      trading:                            # RED — re-arms live entries (resume_arms: true)
-        risk_class: RED
-      runtime:                            # ORANGE — non-financial resume (resume_arms: false)
-        risk_class: ORANGE
-    approval_binding:
-      single_use: true                    # approval_lifetime.one_time_use_required, unchanged
-      stop_state_fingerprint: stop_ref    # a stop that changed after minting refuses the
-                                          # spend (STOP_CHANGED) — approving state A never
-                                          # re-arms state B
-    caller_cannot_name_resume: true       # control.CMD_RESUME is not in the caller's verb set
-    gate_grants_authority: false          # same invariant as every gate in this file
-  # The assistant's read lane (door API v2, 2026-09-04). Named for the reason 1.4.0 named the
-  # switch: with dispatch and switch described, a policy-only reader concludes those are the
-  # assistant's lanes — and misses the one that reads the approvals store. The verb list is
-  # CLOSED and pinned by test: every verb here is served (read_bridge._READS), and a served verb
+  # The read lane (door API v2, 2026-09-04). The assistant's until it was retired (Thomas
+  # 2026-10-25, 1.7.0 removed its dispatch, switch, mirror and schedule clauses); kept because
+  # Claude's read door (claude-read-bridge) serves its policy-gated reads under it. The verb list
+  # is CLOSED and pinned by test: every verb here is served (read_bridge._READS), and a served verb
   # missing here is one the door carries dormant and refuses by name (POLICY_GATED_READS).
-  # No verb here changes anything; schedule enable/disable/remove live in scheduler_cli and,
-  # within assistant_schedule's delegated scope only, the dispatch door's
-  # schedule.propose_change (1.6.0); the approval read is a summary and never the record.
+  # No verb here changes anything; schedule enable/disable/remove live in scheduler_cli, and the
+  # approval read is a summary and never the record.
   assistant_read:
     actor: assistant_bridge
     authority:
@@ -378,38 +288,6 @@ control_channel:
       - issued_at
       - target_prefix
       - permission_scope
-    gate_grants_authority: false          # same invariant as every gate in this file
-  # A switch-door ask is also SENT on the assistant's bot (PR11, decision Q1-b). A second sink,
-  # not a second source: the copy carries no /approve invitation, the operator's channel on
-  # that token is send-only by construction (MIRROR_IS_SEND_ONLY), and nothing typed in that
-  # window can answer an ask — invalid_approval_sources above is unchanged.
-  approval_notification_mirror:
-    sink: assistant_bot_private_chat      # operator sends on HERMES_BOT_TOKEN, send-only
-    decision_source: false
-    mirrored_asks: switch_door_only       # the same filter as announce_pending_approvals
-  # The assistant's schedule lane (sequence 2, P09; V0.2 §1.3 — the conditional amendment of
-  # invariant 3). Until this clause existed no door carried a schedule-changing verb and every
-  # schedule change was Thomas's, in the container (scheduler_cli). This clause DELEGATES a
-  # closed scope and nothing else: the dispatch door's `schedule.propose_change` applies a change
-  # only when every line below holds, records a PROPOSAL and applies nothing when one does not,
-  # and refuses a financial kind outright — no delegation reaches the money path's schedules,
-  # and no proposal record is written for them either. The code is the same with or without
-  # this clause; the clause is the switch (schedule_delegation.load_delegation).
-  assistant_schedule:
-    actor: assistant_bridge
-    authority:
-      - policy_dispositions.ALLOW.INTERNAL_ANALYSIS
-      - policy_dispositions.ALLOW.DRAFT_CREATION
-    mutation_allowed: true                # inside the scope below, and only there
-    delegated_kinds:                      # closed; every other kind is a proposal, every crypto kind a refusal
-      - analysis_task
-      - workflow_plan
-    min_interval_seconds: 3600            # no delegated cadence tighter than hourly
-    max_active: 3                         # enabled schedules created by the assistant, at once
-    max_validity_days: 30                 # a delegated schedule ends itself (expires_at); Thomas renews by hand
-    max_model_calls_per_run: 6            # a workflow_plan's budget per occurrence
-    financial_kinds_delegable: false      # crypto_* and candle_archive: refused, never proposed
-    out_of_scope: proposal_only           # recorded as a `proposed` scheduler event; nothing applied
     gate_grants_authority: false          # same invariant as every gate in this file
 
 approval_lifetime:

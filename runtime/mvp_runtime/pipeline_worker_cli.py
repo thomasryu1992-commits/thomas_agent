@@ -122,11 +122,10 @@ def main(argv: list[str] | None = None) -> int:
             resolve_providers=_resolve_providers,
             independent_validation=_validation_policy(args.independent_validation),
             revise=bool(args.revise),
-            registry=registry,
         ),
         banner=lambda server: (
             f"kinds={sorted(pipeline_worker._ALLOWED_KINDS)}, "
-            f"actor={pipeline_worker.ASSISTANT_ACTOR}, "
+            f"actor={pipeline_worker.SCHEDULER_PROFILE}, "
             f"validation={args.independent_validation or 'automatic-only'}, "
             f"revise={'on' if args.revise else 'off'}, "
             f"{socket_door.describe_admission(server)}"

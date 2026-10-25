@@ -17,16 +17,16 @@ crypto PR7, directive work since 2026-09-21, split step by step under a layer te
 comparison). What keeps the
 core thin while lanes grow, stated as rules:
 
-- A domain package (`crypto/`, `knowledge/`) is an **application of the core's chokepoints**
+- A domain package (`crypto/`) is an **application of the core's chokepoints**
   (PermissionDecision, Safety-Flag Gate, audit chain — `docs/ACTIVE_ARCHITECTURE.md`), never a
   parallel runtime.
 - The core import graph loads **zero** domain modules. A domain package appears at module
-  level only in its own door modules (today `knowledge_bridge*.py`); everywhere else the core
+  level only in its own door modules (today none — the knowledge door left with its lane, 2026-10-25); everywhere else the core
   dispatches into a lane with function-local imports at the dispatch sites (`scheduler.py`,
   `domain_console.py`). `tests/test_mvp_runtime_domain_isolation.py` pins both properties;
   widening the door list is a decision to record there, not a convenience.
-- A lane earns its size with evidence or is removed **whole** (`predmarket/`, 2026-08-02, is
-  the precedent). Lanes are removable units, never core accretion.
+- A lane earns its size with evidence or is removed **whole** (`predmarket/`, 2026-08-02, and
+  `knowledge/` with the assistant's doors, 2026-10-25, are the precedents). Lanes are removable units, never core accretion.
 
 ## Guardrails (do not violate without explicit Thomas approval)
 

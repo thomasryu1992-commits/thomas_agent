@@ -234,6 +234,41 @@ def halt_advice() -> str:
             "policy 1.5.1 grants it.")
 
 
+def stop_ref(state: ControlState) -> str:
+    """A stable id for the stop in effect, bound into an approval that acts under it.
+
+    An emergency close is approved under one HARD halt and may only run under that same halt
+    (``crypto.live_route.emergency_halt_problem``), and nothing about "a HARD halt is in effect"
+    says WHICH one. This id goes into the approved action's fingerprint and is re-derived from live
+    state before the spend, so any control write between ask and spend lapses the grant.
+
+    Derived from the WHOLE state rather than the mode, because mode alone cannot tell two stops
+    apart — kill, resume, kill again reads as KILLED throughout, which is precisely the sequence
+    where an old grant must not still be spendable. ``fail_closed`` is in the seed on purpose: a
+    KILLED state *derived* from an unreadable file is not the same fact as one an operator wrote.
+
+    The cost, stated rather than discovered: ``/stop <task_id>`` rewrites ``updated_at`` without
+    changing ``mode``, so an unrelated stop request between ask and spend also invalidates the
+    grant. That costs a re-ask, which is the direction to be wrong in.
+
+    Moved here from the assistant's switch door when the doors were retired (2026-10-25); the id it
+    returns is unchanged, so an ask minted before the move spends after it.
+    """
+    seed = {
+        "mode": state.mode,
+        "updated_at": state.updated_at,
+        "updated_by": state.updated_by,
+        "reason": state.reason,
+        "fail_closed": bool(state.fail_closed),
+    }
+    # The halt level too (PR6), but only when one is placed: a grant minted against a soft halt must
+    # not spend against a hard one placed in the same second by the same actor with the same words.
+    # A state with no halt keeps the id it had before levels existed.
+    if state.halt_level is not None:
+        seed["halt_level"] = state.halt_level
+    return integrity.short_id("stop", seed)
+
+
 def status_lines(state: ControlState, *, ledger: Any | None = None) -> str:
     """A short human-readable status report (the read-only `status` command output).
 
@@ -709,39 +744,12 @@ def granted_emergency_controls(root: Path | None = None) -> frozenset[str]:
     return frozenset(v for v in allowed if isinstance(v, str))
 
 
-# What the switch door does with each verb, which is what the policy must say for the verb to count as
-# listed: a verb under any other disposition (``refused``, ``null``, a typo) grants nothing. Key presence
-# alone used to grant (crypto PR6e review), so the value the policy validators pin was never read.
-SWITCH_VERB_DISPOSITIONS: dict[str, str] = {
-    "status": "read_only",
-    "disable": "fail_safe_immediate",
-    "enable": "approval_required_always",
-    "emergency_close": "approval_required_always",
-}
-
-
-def granted_switch_verbs(root: Path | None = None) -> frozenset[str]:
-    """The verbs the committed policy lists for the assistant's switch door
-    (``control_channel.assistant_switch.verbs``), read now.
-
-    A verb counts only under the disposition :data:`SWITCH_VERB_DISPOSITIONS` names for it.
-    Fail-closed like :func:`granted_emergency_controls`, and consulted the same way: only by a verb
-    the door carries dormant until the policy names it (``switch_bridge.POLICY_GATED_COMMANDS``). A
-    policy read failing can never take ``disable`` away, because ``disable`` never asks."""
-    switch = _control_channel_clause(root, "assistant_switch")
-    verbs = switch.get("verbs") if isinstance(switch, dict) else None
-    if not isinstance(verbs, dict):
-        return frozenset()
-    return frozenset(v for v, disposition in verbs.items()
-                     if isinstance(v, str) and SWITCH_VERB_DISPOSITIONS.get(v) == disposition)
-
-
 def granted_read_verbs(root: Path | None = None) -> frozenset[str]:
     """The verbs the committed policy lists for the assistant's read door
     (``control_channel.assistant_read.verbs``), read now.
 
     Consulted only by a read the door carries dormant until the policy names it
-    (``read_bridge.POLICY_GATED_READS``), the way :func:`granted_switch_verbs` is. Fail-closed: an
+    (``read_bridge.POLICY_GATED_READS``), the way :func:`granted_emergency_controls` is. Fail-closed: an
     unreadable or malformed policy grants nothing, and the reads that are not policy-gated never ask,
     so a policy read failing can never blind the assistant to a board."""
     clause = _control_channel_clause(root, "assistant_read")

@@ -18,11 +18,10 @@ deployment names the uids permitted to connect (``MVP_BRIDGE_CLIENT_UID``; the d
 container has at times carried the runtime's gid in ``group_add``, so a mount mistake must not
 be one permission bit away from being access. ``SO_PEERCRED`` is what refuses it either way.
 
-**Validation here is defence in depth, not a second authority.** The door owns the permission
-surface — its ``_ALLOWED_KINDS`` is imported rather than redefined, so there is exactly one
-place the set lives — and the worker re-checks kind, shape, and the kill switch on arrival
-because fail-closed means not trusting the peer to have checked, even when the peer is our own
-door. Idempotency is NOT re-done here: the claim is the door's, made before the forward.
+**Since the doors were retired (2026-10-25) the scheduler lanes are this socket's only callers**,
+and the permission surface the dispatch door owned (``_ALLOWED_KINDS``) lives here. The worker
+checks kind, shape, profile and the kill switch on arrival because fail-closed means not trusting
+the peer to have checked, even when the peer is our own scheduler.
 
 **What this process holds and what it must never hold.** Model, search, and Naver env — yes;
 that is its purpose. Money — never: no ``BINANCE_*``, no ``MVP_LIVE_*``, no venue or order
@@ -33,26 +32,21 @@ model quota and reach the research APIs; it cannot place an order.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable
 
 from . import socket_door, task_registry, timeutil
-from .workflow import (
-    ATTEMPT_ID_KEY, ATTEMPT_ID_PATTERN, MAX_STEPS, RESULT_REF_PATTERN, STEP_KEY_PATTERN,
-    WORKFLOW_ID_KEY, WORKFLOW_ID_PATTERN, WORKFLOW_INPUTS_KEY, WORKFLOW_OPTIONS_KEY,
-)
 from .control import ControlStore
 from .errors import ControlBlocked, MvpRuntimeError
 from .naver_research import MAX_SEED_CHARS
 from .pipeline import run_task
 from .programization import ProgramizationStore
-from .socket_door import ASSISTANT_ACTOR
 from .store import LedgerStore
 from .task_registry import RegistryEntry, TaskRegistryStore
 from .working_memory import WorkingMemoryStore
 
-# The permission surface stays the door's; see the module docstring. Imported, not copied, so
-# a widening there is a widening here and the two can never disagree.
-from .dispatch_bridge import _ALLOWED_KINDS
+# The request kinds this worker runs: the closed, non-trading set the dispatch door defined until it
+# was retired (2026-10-25). The scheduler's delegation sends `analysis`; none of them reaches money.
+_ALLOWED_KINDS: frozenset[str] = frozenset({"analysis", "research", "translation", "content"})
 
 # Under `internal/`, deliberately NOT `bridge/` — see the module docstring. `open_door`
 # refuses a path under a directory named `bridge` outright, as a tripwire against an override
@@ -63,35 +57,13 @@ SOCKET_ENV = "MVP_PIPELINE_WORKER_SOCKET"
 # What the door forwards: the fields it validated, nothing else. `request_id` is
 # deliberately absent — idempotency is claimed at the door, and a frame carrying one here did
 # not come from the door. `naver_keywords` is optional and travels only when the caller sent
-# it: read-only [K#] evidence for the run, re-validated here with the door's own rule because
-# fail-closed means not trusting the peer to have checked, even when the peer is our own door.
-# `client_id` (door API v2) is attribution the door validated and forwards when the assistant
-# named one — which session or cron job asked. It lands on the task record's `created_by` and
-# nowhere that decides anything. `proto` never crosses: the dialect is the door's business.
+# it: read-only [K#] evidence for the run, re-validated here because fail-closed means not
+# trusting the peer to have checked. The door's `client_id` and the workflow manager's attempt
+# keys were accepted too, until both callers were retired (2026-10-25).
 _ALLOWED_KEYS: frozenset[str] = frozenset(
     {"request", "kind", "reason", "naver_keywords", "actor_profile", "job", "inventory",
-     "proposal_inputs", "ideation_inputs", socket_door.CLIENT_ID_KEY,
-     ATTEMPT_ID_KEY, WORKFLOW_ID_KEY, WORKFLOW_OPTIONS_KEY, WORKFLOW_INPUTS_KEY}
+     "proposal_inputs", "ideation_inputs"}
 )
-
-# The attempt frame (sequence 2, P05). The workflow manager — inside the dispatch-bridge
-# process, this socket's one client — names the attempt it opened, and this worker echoes it
-# on the reply so the manager's fence can tell a live result from a late one. The registry row
-# such a run opens is origin WORKFLOW (the manager's own to reconcile, never a worker
-# restart's). `workflow_options` may raise the assurance policy for one attempt (the reviewer,
-# the one revision) and never lower it: the manager reserved those calls against the plan's
-# budget before it sent the frame. `workflow_inputs` (P07) names the dependency results the
-# step reads — `{step_key: "ledger:<trace>"}` — and is recorded on the run's source so the
-# task record says what it was given; it lifts nothing and is not (yet) read into the prompt.
-# None of these keys is in `dispatch_bridge._ALLOWED_KEYS`, so the assistant cannot send
-# them; a frame carrying them came from the manager or did not come through the door — and
-# the worker checks their shape either way.
-_WORKFLOW_OPTION_KEYS: frozenset[str] = frozenset({"independent_validation", "revise"})
-
-# The terminal a worker writes on an entry whose run raised rather than answered: the run
-# reached no outcome, so the registry must not say RUNNING forever (the door relays the
-# exception as BRIDGE_ERROR, and the assistant sees that; this is the bookkeeping half).
-WORKER_EXCEPTION_REASON_CODE = "WORKER_EXCEPTION"
 
 # The second thing this process does, and the reason it is a *set* rather than a second
 # entrypoint: after the plane separation this is where the model credentials live, so anything
@@ -135,36 +107,19 @@ _JOB_KEYS: frozenset[str] = frozenset(
 # spend the allowance on recitation; the live table is twelve.
 _MAX_EXISTING_FAMILIES = 200
 
-# Who a run is recorded as. Two callers reach this socket — the dispatch door and (since the
-# scheduler's analysis_task delegation) the scheduler — and the ledger must keep telling them
-# apart: "an operator reading the ledger must be able to tell an action that came from SSH
-# from one that came from the assistant" is the property `socket_door.ASSISTANT_ACTOR` exists
-# for, and a second caller inheriting the first's identity would quietly end it.
+# Who a run is recorded as. The caller declares its own profile, so the ledger can always tell
+# one caller's work from another's. Deliberately NOT a peer check: every caller runs as uid 10001
+# in this deployment, so SO_PEERCRED cannot separate them. This is an attribution declaration,
+# not an authorization — the profile chooses no capability, and nothing here reads it to decide
+# whether the work may run. The assistant's dispatch door was the other profile until 2026-10-25.
 #
-# **A caller declares its own profile, and neither declaration is reachable by the assistant.**
-# `dispatch_bridge._ALLOWED_KEYS` is closed and does not name `actor_profile`, so a frame
-# arriving at the door carrying one is refused (ARGUMENT_NOT_ACCEPTED) before it reaches here
-# — the assistant cannot express `scheduler`. The door's forward does not send the key at all
-# and gets the default below.
-#
-# Deliberately NOT a peer check: both callers run as uid 10001 in this deployment, so
-# SO_PEERCRED cannot separate them and a second socket would not either. This is an
-# attribution declaration, not an authorization — the profile chooses no capability, both
-# profiles run the same closed kind set at the same P3 ceiling, and nothing here reads it to
-# decide whether the work may run.
-ASSISTANT_PROFILE = "assistant"
+# Since the dispatch door was retired (2026-10-25) the scheduler is the one caller, and its profile
+# is required: a frame that names none is refused, never filed under a default actor.
 SCHEDULER_PROFILE = "scheduler"
 _ACTOR_PROFILES: dict[str, dict[str, str]] = {
-    # `source_ref_format` is applied to the caller's stated reason. The assistant's is stamped
-    # here because its reason is free text from the far end; the scheduler states its own
+    # `source_ref_format` is applied to the caller's stated reason. The scheduler states its own
     # source_ref verbatim (`scheduler:<schedule_id>`), which is the exact string an in-process
     # scheduled run recorded before the delegation, so ledger rows read identically across it.
-    ASSISTANT_PROFILE: {
-        "requester_id": ASSISTANT_ACTOR,
-        "requester_type": "agent",
-        "channel": "agent",
-        "source_ref_format": ASSISTANT_ACTOR + ":dispatch: {reason}",
-    },
     SCHEDULER_PROFILE: {
         "requester_id": "mvp.scheduler",
         "requester_type": "scheduler",
@@ -174,12 +129,11 @@ _ACTOR_PROFILES: dict[str, dict[str, str]] = {
 }
 
 # Bound on the recorded reason: long enough to attribute, short enough that a reason cannot
-# bloat the source record. The assistant keeps the full text; this is the audit stub.
+# bloat the source record; this is the audit stub.
 _MAX_REASON_ON_SOURCE = 180
 
-# Matches the door's ceiling (`dispatch_bridge.MAX_CONCURRENT_REQUESTS`): the door holds one
-# of its slots for the life of each forward, so its ceiling is the effective one and this is
-# the backstop that holds if a second caller ever reaches this socket.
+# Two concurrent runs, unchanged since the retired dispatch door set the effective ceiling; the
+# scheduler lanes are the callers now, and a third concurrent frame is refused, not queued.
 MAX_CONCURRENT_REQUESTS = 2
 
 # This door's own frame ceiling, stated because a job frame carries an INPUT rather than a
@@ -226,7 +180,6 @@ def apply_work(
     repo_root: Path | None = None,
     independent_validation: bool | str = False,
     revise: bool = False,
-    registry: TaskRegistryStore | None = None,
 ) -> dict[str, Any]:
     """Re-validate one forwarded dispatch and run it, or raise a typed ``ControlBlocked``.
 
@@ -284,30 +237,18 @@ def apply_work(
     reason = reason.strip()
 
     raw_profile = request.get("actor_profile")
-    if raw_profile is None:
-        # The door does not send one, and its absence means the assistant — today's behaviour,
-        # unchanged. Named rather than inferred for the second caller.
-        profile_name = ASSISTANT_PROFILE
-    elif isinstance(raw_profile, str) and raw_profile.strip() in _ACTOR_PROFILES:
+    if isinstance(raw_profile, str) and raw_profile.strip() in _ACTOR_PROFILES:
         profile_name = raw_profile.strip()
     else:
-        # Refused rather than defaulted to the assistant: a caller that named a profile
-        # believed its work would be recorded as that, and quietly filing it under a different
-        # actor is the ledger-honesty failure this field exists to prevent.
+        # Refused rather than defaulted: a caller that named a profile believed its work would be
+        # recorded as that, and filing it under a different actor is the ledger-honesty failure
+        # this field exists to prevent. An absent profile is refused the same way.
         raise ControlBlocked(
             "ACTOR_PROFILE_NOT_PERMITTED",
             f"{raw_profile!r} is not an attribution profile this worker records; it carries "
             f"{sorted(_ACTOR_PROFILES)} only",
         )
     profile = _ACTOR_PROFILES[profile_name]
-
-    attempt = _attempt_fields(request, profile_name=profile_name)
-    if attempt is not None:
-        options = attempt["options"]
-        if options.get("independent_validation"):
-            independent_validation = True
-        if options.get("revise"):
-            revise = True
 
     raw_seeds = request.get("naver_keywords")
     if raw_seeds is None:
@@ -329,171 +270,56 @@ def apply_work(
     _assert_running(control_store)
 
     resolved = providers or {}
-    client_id = socket_door.client_id_of(request)
-
-    # The registry entry (door API v2): opened RUNNING — never QUEUED, which the operator's
-    # drain would claim regardless of origin — for the assistant's profile only. The
-    # scheduler's forwarded analyses already own a SCHEDULER entry opened before delegation;
-    # recording them here again would make one run two entries. Best-effort like every
-    # recording seam: a broken registry never costs the caller its run. `now` is stamped here
-    # because the door does not send one, and a None reaches `build_entry` as a schema
-    # violation that `record_submission` swallows — the silent non-record this must not be.
-    stamp = now or timeutil.utc_now_iso()
-    entry: RegistryEntry | None = None
-    if profile_name == ASSISTANT_PROFILE:
-        entry = task_registry.record_submission(
-            registry, request_text=text.strip(),
-            origin=task_registry.WORKFLOW_ORIGIN if attempt is not None else task_registry.AGENT_ORIGIN,
-            requester_id=profile["requester_id"], now=stamp, request_kind=kind,
-            attempt_id=attempt["attempt_id"] if attempt is not None else None,
-        )
-    # Attribution on the task record: `created_by` is the one free-text audit field the task
-    # schema leaves to the caller and nothing reads for authority. `requester_id` stays the
-    # constant actor — the spend meter and the task id seed both key on it.
-    attribution = {"created_by": f"{profile['requester_id']}:{client_id}"} if client_id else {}
+    # No registry entry here: the scheduler's forwarded analyses already own a SCHEDULER entry
+    # opened before delegation (the AGENT entries this worker opened were the dispatch door's).
 
     # No `write_path`/`writer` is passed — nothing on this socket can lift a run above P3, and
     # the run is attributed to its caller, never to Thomas.
-    try:
-        result = run_task(
-            text.strip(),
-            halt_check=lambda: _assert_running(control_store),
-            request_kind=kind,
-            keyword_seeds=naver_keywords,
-            independent_validation=independent_validation,
-            revise=revise,
-            provider=resolved.get("provider"),
-            validator_provider=resolved.get("validator_provider"),
-            search_tool=resolved.get("search_tool"),
-            working_memory=working_memory,
-            programization=programization,
-            store=ledger,
-            repo_root=repo_root,
-            now=now,
-            requester_id=profile["requester_id"],
-            requester_type=profile["requester_type"],
-            channel=profile["channel"],
-            source_ref=_source_ref(reason, profile, inputs=attempt["inputs"] if attempt is not None else None),
-            authenticated=True,
-            **attribution,
-        )
-    except BaseException:
-        # The run reached no outcome; the entry must not say RUNNING forever. The exception
-        # itself still propagates — the door turns it into BRIDGE_ERROR, as before.
-        task_registry.close_entry(
-            registry, entry, status=task_registry.FAILED, now=now or timeutil.utc_now_iso(),
-            reason_code=WORKER_EXCEPTION_REASON_CODE,
-        )
-        raise
+    result = run_task(
+        text.strip(),
+        halt_check=lambda: _assert_running(control_store),
+        request_kind=kind,
+        keyword_seeds=naver_keywords,
+        independent_validation=independent_validation,
+        revise=revise,
+        provider=resolved.get("provider"),
+        validator_provider=resolved.get("validator_provider"),
+        search_tool=resolved.get("search_tool"),
+        working_memory=working_memory,
+        programization=programization,
+        store=ledger,
+        repo_root=repo_root,
+        now=now,
+        requester_id=profile["requester_id"],
+        requester_type=profile["requester_type"],
+        channel=profile["channel"],
+        source_ref=_source_ref(reason, profile),
+        authenticated=True,
+    )
 
     identity = _identity(result)
-    finished = now or timeutil.utc_now_iso()
-    entry_id = entry.registry_entry_id if entry is not None else None
-    echo = _attempt_echo(attempt, result)
     if result.get("status") == "COMPLETED":
-        trace_id = identity.get("trace_id")
-        task_registry.close_entry(
-            registry, entry, status=task_registry.DELIVERED, now=finished,
-            task_id=identity.get("task_id"), trace_id=trace_id,
-            result_ref=f"ledger:{trace_id}" if trace_id else None,
-        )
         return {
             "ok": True,
             "kind": kind,
             "task_id": identity.get("task_id"),
-            "trace_id": trace_id,
-            "registry_entry_id": entry_id,
+            "trace_id": identity.get("trace_id"),
             "final_response": result.get("final_response", ""),
             "actor": profile["requester_id"],
-            **echo,
         }
     # A pipeline BLOCK is a real answer, not a worker error: it names its `kind`, so the door
     # completes the idempotency claim and relays it — the assistant reports "the runtime
     # refused this" rather than "the door broke".
     block = result.get("block") or {}
-    task_registry.close_entry(
-        registry, entry, status=task_registry.BLOCKED, now=finished,
-        task_id=identity.get("task_id"), trace_id=identity.get("trace_id"),
-        reason_code=block.get("reason_code", "DISPATCH_BLOCKED"),
-    )
     return {
         "ok": False,
         "kind": kind,
         "task_id": identity.get("task_id"),
         "trace_id": identity.get("trace_id"),
-        "registry_entry_id": entry_id,
         "reason_code": block.get("reason_code", "DISPATCH_BLOCKED"),
         "reason": block.get("message", "the runtime blocked this dispatch"),
         "actor": profile["requester_id"],
-        **echo,
     }
-
-
-def _attempt_fields(request: Mapping[str, Any], *, profile_name: str) -> dict[str, Any] | None:
-    """The attempt frame's fields, validated, or None for an ordinary dispatch.
-
-    Refused rather than ignored, every way it can be wrong: a malformed id, options without an
-    attempt, an option outside the two named, a non-boolean, or the scheduler's profile
-    carrying an attempt (the manager speaks for the assistant's profile only)."""
-    attempt_id = request.get(ATTEMPT_ID_KEY)
-    workflow_id = request.get(WORKFLOW_ID_KEY)
-    raw_options = request.get(WORKFLOW_OPTIONS_KEY)
-    raw_inputs = request.get(WORKFLOW_INPUTS_KEY)
-    if attempt_id is None and workflow_id is None and raw_options is None and raw_inputs is None:
-        return None
-    if not isinstance(attempt_id, str) or not ATTEMPT_ID_PATTERN.match(attempt_id):
-        raise ControlBlocked("MALFORMED_REQUEST", f"'{ATTEMPT_ID_KEY}' must be a workflow attempt id when given")
-    if not isinstance(workflow_id, str) or not WORKFLOW_ID_PATTERN.match(workflow_id):
-        raise ControlBlocked("MALFORMED_REQUEST", f"an attempt frame names its '{WORKFLOW_ID_KEY}'")
-    if profile_name != ASSISTANT_PROFILE:
-        raise ControlBlocked(
-            "MALFORMED_REQUEST", "an attempt frame is the workflow manager's and runs as the assistant's profile",
-        )
-    options: dict[str, bool] = {}
-    if raw_options is not None:
-        if not isinstance(raw_options, dict) or set(raw_options) - _WORKFLOW_OPTION_KEYS:
-            raise ControlBlocked(
-                "MALFORMED_REQUEST",
-                f"'{WORKFLOW_OPTIONS_KEY}' carries {sorted(_WORKFLOW_OPTION_KEYS)} only, as booleans",
-            )
-        for key, value in raw_options.items():
-            if not isinstance(value, bool):
-                raise ControlBlocked("MALFORMED_REQUEST", f"'{WORKFLOW_OPTIONS_KEY}.{key}' must be a boolean")
-            options[key] = value
-    inputs: dict[str, str] = {}
-    if raw_inputs is not None:
-        if not isinstance(raw_inputs, dict) or not raw_inputs or len(raw_inputs) > MAX_STEPS:
-            raise ControlBlocked(
-                "MALFORMED_REQUEST",
-                f"'{WORKFLOW_INPUTS_KEY}' maps 1..{MAX_STEPS} dependency step keys to their result references",
-            )
-        for key, ref in raw_inputs.items():
-            if not (isinstance(key, str) and STEP_KEY_PATTERN.match(key)
-                    and isinstance(ref, str) and RESULT_REF_PATTERN.match(ref)):
-                raise ControlBlocked(
-                    "MALFORMED_REQUEST",
-                    f"'{WORKFLOW_INPUTS_KEY}' entries are a step key and a 'ledger:<trace_id>' reference",
-                )
-            inputs[key] = ref
-    return {"attempt_id": attempt_id, "workflow_id": workflow_id, "options": options, "inputs": inputs}
-
-
-def _attempt_echo(attempt: Mapping[str, Any] | None, result: Mapping[str, Any]) -> dict[str, Any]:
-    """What an attempt frame's reply carries beside the run: the ids echoed for the manager's
-    fence, and the run's recorded spend (the ledger's ``budget_usage`` row, or None when the
-    run blocked before one was written) so the manager can confirm its reservation."""
-    if attempt is None:
-        return {}
-    usage_row = (result.get("records") or {}).get("budget_usage")
-    usage = None
-    if isinstance(usage_row, Mapping):
-        usage = {
-            "model_calls": int(usage_row.get("model_calls") or 0),
-            "tokens_used": int(usage_row.get("tokens_used") or 0),
-            "agent_invocations": int(usage_row.get("agent_invocations") or 0),
-            "revision_cycles": int(usage_row.get("revision_cycles") or 0),
-        }
-    return {ATTEMPT_ID_KEY: attempt["attempt_id"], WORKFLOW_ID_KEY: attempt["workflow_id"], "usage": usage}
 
 
 def reconcile_worker_entries(registry: TaskRegistryStore | None, *, now: str) -> list[RegistryEntry]:
@@ -690,19 +516,10 @@ def _identity(result: Any) -> dict[str, Any]:
     return identity if isinstance(identity, dict) else {}
 
 
-def _source_ref(reason: str, profile: dict[str, str], *, inputs: Mapping[str, str] | None = None) -> str:
-    """The reason, recorded on the task's source, stamped per the caller's profile.
-
-    The assistant's keeps the `dispatch` tag from before the split so its ledger attribution
-    reads identically across it; the scheduler states its own ref verbatim
-    (``scheduler:<schedule_id>``), which is the string its in-process runs recorded. An attempt
-    that was handed dependency results (P07) records them after the reason, sorted by step key,
-    so the task record itself says which prior runs this one was given.
-    """
-    ref = profile["source_ref_format"].format(reason=reason)[:_MAX_REASON_ON_SOURCE]
-    if inputs:
-        ref += " inputs=" + ",".join(f"{key}={inputs[key]}" for key in sorted(inputs))
-    return ref
+def _source_ref(reason: str, profile: dict[str, str]) -> str:
+    """The reason, recorded on the task's source, stamped per the caller's profile: the scheduler
+    states its own ref verbatim (``scheduler:<schedule_id>``), the string its in-process runs recorded."""
+    return profile["source_ref_format"].format(reason=reason)[:_MAX_REASON_ON_SOURCE]
 
 
 def open_door(
@@ -715,7 +532,6 @@ def open_door(
     resolve_providers: ProviderSelector | None = None,
     independent_validation: bool | str = False,
     revise: bool = False,
-    registry: TaskRegistryStore | None = None,
 ) -> socket_door.SocketDoor:
     """Listen on ``path`` and run forwarded work from it — refusing to listen at all unless
     the deployment states who may connect.
@@ -757,7 +573,6 @@ def open_door(
             providers=providers,
             independent_validation=independent_validation,
             revise=revise,
-            registry=registry,
         )
 
     return socket_door.SocketDoor(

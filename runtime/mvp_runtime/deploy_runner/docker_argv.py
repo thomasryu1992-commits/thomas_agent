@@ -24,10 +24,9 @@ from pathlib import Path
 from .reasons import RunnerRefused
 
 IMAGE_REPOSITORY = "thomas-agent-runtime"
-# The eight runtime services (docker-compose.yml). hermes runs its own image and is not the runner's.
-RUNTIME_CONTAINERS = ("thomas-operator", "thomas-scheduler", "thomas-scheduler-maint", "thomas-read-bridge",
-                      "thomas-dispatch-bridge", "thomas-pipeline-worker", "thomas-knowledge-bridge",
-                      "thomas-switch-bridge")
+# The runtime services on the runtime image (docker-compose.yml), Claude's read door aside. The four
+# assistant doors were on this list until they were retired with the assistant (2026-10-25).
+RUNTIME_CONTAINERS = ("thomas-operator", "thomas-scheduler", "thomas-scheduler-maint", "thomas-pipeline-worker")
 
 _IMAGE_ID = re.compile(r"^sha256:[0-9a-f]{64}\Z")
 CONTAINER_FORMAT = ("{{.Image}} {{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} "

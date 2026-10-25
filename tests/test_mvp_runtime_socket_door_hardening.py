@@ -252,18 +252,6 @@ def test_a_door_must_serve_at_least_one_request(tmp_path):
     assert exc.value.reason_code == "BRIDGE_CONCURRENCY_INVALID"
 
 
-def test_the_stop_door_is_not_ceilinged_at_one():
-    """`switch_bridge` carries the halt and the start, and the start is the slow one. A ceiling
-    of 1 would let an in-flight `enable` refuse the `disable` behind it — the failure that made
-    this door its own service, reproduced inside it."""
-    from runtime.mvp_runtime import dispatch_bridge, read_bridge, switch_bridge
-
-    assert switch_bridge.MAX_CONCURRENT_REQUESTS > 1
-    # Ordering is the claim: reads are cheapest, a dispatch holds its slot for a pipeline run.
-    assert read_bridge.MAX_CONCURRENT_REQUESTS > switch_bridge.MAX_CONCURRENT_REQUESTS
-    assert dispatch_bridge.MAX_CONCURRENT_REQUESTS < switch_bridge.MAX_CONCURRENT_REQUESTS
-
-
 # --- errors that do not describe the runtime -----------------------------------
 
 def test_an_untyped_failure_does_not_reach_the_caller_as_text(capsys):

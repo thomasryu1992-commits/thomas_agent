@@ -45,76 +45,53 @@ def _collected():
 # audited all 59. The list exists so the *sixtieth* is a decision someone makes, which is the gap
 # §G3 names, rather than a review of the fifty-nine that is not this test's job.
 SHARED_ACROSS_MODULES = frozenset({
-    "ALREADY_CONSUMED", "APPROVAL_CONTENT_MISMATCH", "APPROVAL_EXPIRED",
+    "APPROVAL_CONTENT_MISMATCH", "APPROVAL_EXPIRED",
     "APPROVAL_MISSING", "APPROVAL_NOT_APPROVED", "APPROVAL_WRONG_ACTION",
     "ARGUMENT_NOT_ACCEPTED", "AUTHORITY_RECORD_INVALID", "CANDIDATE_EXPIRED",
     "CANDIDATE_GONE", "CANDIDATE_INPUT_INVALID", "CANDIDATE_NOT_FOUND",
     "CONSUMPTION_DISABLED", "CONTENT_CHANGED", "ENTRY_NOT_FOUND",
-    "FINGERPRINT_MISMATCH", "FINGERPRINT_UNCOMPUTABLE", "INVALID_CANDIDATE",
+    "INVALID_CANDIDATE",
     "INVALID_ROLE", "INVALID_TIMESTAMP", "KILL_STATE_UNAVAILABLE",
-    # Added 2026-08-10 with the plane separation: the dispatch door validates and forwards, and
-    # `pipeline_worker` re-checks the same closed surface on arrival (defence in depth — the
-    # engine does not trust its peer to have checked, even though the peer is our own door).
-    # Same kind set BY IDENTITY (the worker imports the door's frozenset), same meaning, so the
-    # shared name is the point: an operator reading either code back is looking at one contract
-    # enforced at two depths.
-    "KIND_NOT_PERMITTED", "REQUEST_REQUIRED",
-    # Added 2026-08-23 with the blog lane's weekly job, and it is the same shape as the two
-    # above: `pipeline_worker` checks that the delegated frame carries seeds, and
+    # Left 2026-10-25 with the assistant's doors, each down to one raise site: ALREADY_CONSUMED,
+    # FINGERPRINT_MISMATCH, FINGERPRINT_UNCOMPUTABLE, KIND_NOT_PERMITTED, LEDGER_WRITE_FAILED,
+    # NOT_APPROVED, PERMISSION_DECISION_MISSING, PLAN_INVALID, REASON_REQUIRED, REQUEST_ID_REQUIRED,
+    # REQUEST_ID_REUSED, REQUEST_IN_FLIGHT, REQUEST_REQUIRED, SCHEDULES_UNAVAILABLE, TRANSITION_INVALID,
+    # UNKNOWN_APPROVAL, WORKER_UNAVAILABLE, WORKFLOW_UNAVAILABLE.
+    # Added 2026-08-23 with the blog lane's weekly job: `pipeline_worker` checks that the delegated
+    # frame carries seeds, and
     # `blog_content` re-checks the same requirement on arrival rather than trusting its
     # caller — including a caller that is not the worker. One contract, two depths, and an
     # operator reading the code back is looking at the same fact either way: the ideation job
     # was asked to run with nothing to work from.
     "IDEATION_INPUTS_REQUIRED",
-    # Added 2026-09-14 with sequence 2 P09. `SCHEDULES_UNAVAILABLE`: a door opened without the
-    # schedule store — the read door (`store_reads`) and now the dispatch door's
-    # `schedule.propose_change` say the same thing about the same missing store.
-    # `UNKNOWN_KIND`: a schedule kind outside `scheduler.KINDS` — `scheduler.build_schedule`
-    # refuses it at registration and `schedule_delegation` refuses it before the delegation
-    # check for the same reason. `WORKFLOW_UNAVAILABLE`: no workflow store / manager here — the
-    # dispatch door refuses v3 commands by that name and a `workflow_plan` schedule fire fails
-    # by it; one fact ("the manager never ran on this runtime"), two depths.
-    "SCHEDULES_UNAVAILABLE", "UNKNOWN_KIND", "WORKFLOW_UNAVAILABLE",
-    # Added 2026-08-10 with the scheduler's analysis_task delegation. Both callers of the
-    # pipeline worker report the same thing under this code — "the engine did not answer, so
-    # nothing ran" — and neither falls back to running the work itself. `dispatch_bridge`
-    # raises it toward the assistant, `scheduler` toward a failed fire; one meaning, two
-    # readers, which is what makes the shared name right rather than a collision.
-    "WORKER_UNAVAILABLE",
-    # Added 2026-08-08, and they are not new collisions — they are newly *visible* ones. Both are
-    # handed to `jsonl`, which raises them on the caller's behalf, so the literal sits at the call
-    # and the extractor (walking only error-class calls) never saw either. `LEDGER_UNREADABLE`:
-    # store.py's readers and control.py's `_mode_from_ledger`, both "a ledger file would not
-    # read". `LEDGER_WRITE_FAILED`: store.py's audit append and bridge_idempotency.py's, which
-    # writes under the same LedgerStore root — both "a ledger append failed". Same meaning each.
-    "LEDGER_UNREADABLE", "LEDGER_WRITE_FAILED",
+    # Added 2026-09-14 with sequence 2 P09. `UNKNOWN_KIND`: a schedule kind outside
+    # `scheduler.KINDS` — `scheduler.build_schedule` refuses it at registration and
+    # `schedule_delegation` refuses it before the delegation check for the same reason.
+    "UNKNOWN_KIND",
+    # Added 2026-08-08: not a new collision but a newly *visible* one, handed to `jsonl`, which
+    # raises it on the caller's behalf. `LEDGER_UNREADABLE`: store.py's readers and control.py's
+    # `_mode_from_ledger`, both "a ledger file would not read".
+    "LEDGER_UNREADABLE",
     "LIFECYCLE_DECISION_INVALID", "LIFECYCLE_TERMINAL_IMMUTABLE", "LIFECYCLE_UNKNOWN_STRATEGY",
     "MALFORMED_DIRECTION", "MALFORMED_REQUEST", "MALFORMED_RESULT",
     "MISSING_OPERATOR", "MISSING_REASON", "MISSING_SYMBOL",
-    "NOT_APPROVED", "NOT_A_CANDIDATE", "NOT_BOUND",
+    "NOT_A_CANDIDATE", "NOT_BOUND",
     "NO_API_KEY", "NO_MODEL_BUDGET", "PATTERN_NOT_FOUND",
-    "PERMISSION_DECISION_MISSING", "PLANNED_TASK_INVALID", "POLICY_UNAVAILABLE",
-    "PROVIDER_ERROR", "REASON_REQUIRED", "REGISTRY_UNAVAILABLE",
+    "PLANNED_TASK_INVALID", "POLICY_UNAVAILABLE",
+    "PROVIDER_ERROR", "REGISTRY_UNAVAILABLE",
     "REGISTRY_UNRESOLVABLE", "RESPONSE_TRUNCATED", "ROLE_DEFINITION_INVALID",
     # SCOPE_NOT_CONSUMABLE left this set when the spend ladder consolidated into
     # approval.validate_spendable_approval (#794) — one raise site now, by design.
     "ROUTE_NOT_SUPPORTED", "SECRET_IN_CANDIDATE",
     "TOKEN_BUDGET_EXCEEDED", "TOOL_ERROR", "TOOL_TRANSPORT",
-    "UNKNOWN_APPROVAL", "UNKNOWN_CANDIDATE", "UNKNOWN_COMMAND",
+    "UNKNOWN_CANDIDATE", "UNKNOWN_COMMAND",
     # UNKNOWN_FLAG left this set with the grant machinery (2026-08-30): its second raise
     # site was build_activation_record, removed with the rest of the retired selectors.
     "UNKNOWN_REQUEST_KIND", "USAGE",
     "VALIDATION_RESULT_INVALID", "VERB_NOT_PERMITTED",
-    # The forward-only lifecycle refusal, raised by the task registry (F1) and by the workflow
-    # model (sequence 2, P03) for the same reason: an edge the lifecycle table does not name.
-    "TRANSITION_INVALID",
-    # Door API v3 (sequence 2, P05): the dispatch door refuses a plan that is not a plan object
-    # with the same code the workflow model uses for every other malformed plan, and refuses an
-    # unknown workflow command with the read/switch doors' own "not a verb here" code.
-    "PLAN_INVALID",
     # Added 2026-09-21 (crypto PR7d-3), when the index learned to follow a code imported from the
     # module that defines it. Not new collisions: newly visible ones, the same case as the two
-    # `jsonl` codes above. The testnet order adapter (PR1d-1) imports the live adapter's codes and
+    # `jsonl` code above. The testnet order adapter (PR1d-1) imports the live adapter's codes and
     # raises them for the same failures at another venue: one vocabulary, two venues.
     "NO_ORDER_API_KEY", "ORDER_HALTED", "ORDER_MALFORMED_RESULT", "ORDER_OUTCOME_UNKNOWN",
     "ORDER_REJECTED", "ORDER_TRANSPORT",
@@ -129,20 +106,17 @@ SHARED_ACROSS_MODULES = frozenset({
     # the bytes, `approval_verify` the parsed structure, `clock` a time field inside it. The runner
     # answers it with one fixed sentence, so an operator reading it back is looking at one contract.
     "APPROVAL_MALFORMED",
-    # Added 2026-10-16 with C3a-2. The deploy runner's request store gives REQUEST_ID_REUSED and
-    # REQUEST_IN_FLIGHT the meaning `bridge_idempotency` gives them (same id for a different request;
-    # the request is still being carried out) — the C2 design reused the meanings on purpose and
-    # changed only that a claim never times out. RUNNER_STARTUP_BLOCKED means one thing wherever it is
+    # Added 2026-10-16 with C3a-2. RUNNER_STARTUP_BLOCKED means one thing wherever it is
     # raised (`clock`, `latch`, `startup`): the runner must not accept requests until its records are
     # resolved. STORE_ID_MISMATCH means the consumption store is not the one this install expects, read
     # by `consumption` and judged by `startup` when the install and the audit disagree.
-    "REQUEST_ID_REUSED", "REQUEST_IN_FLIGHT", "RUNNER_STARTUP_BLOCKED", "STORE_ID_MISMATCH",
+    "RUNNER_STARTUP_BLOCKED", "STORE_ID_MISMATCH",
     # Added 2026-10-16 with C3a-3. ARGUMENT_INVALID: a request value not in its accepted form, judged
     # by `approval_verify.check_args` and again by `docker_argv` before any value reaches an argv.
     # AUDIT_WRITE_FAILED: a runner record could not be written — the actor's audit (`audit_chain`) or
     # the gatekeeper's intake log (`gate`); the reply sentence is the same and so is the operator's
-    # next step. REQUEST_ID_REQUIRED keeps `dispatch_bridge`'s meaning: this action needs a request_id.
-    "ARGUMENT_INVALID", "AUDIT_WRITE_FAILED", "REQUEST_ID_REQUIRED",
+    # next step.
+    "ARGUMENT_INVALID", "AUDIT_WRITE_FAILED",
 })
 
 

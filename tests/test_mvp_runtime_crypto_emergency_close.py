@@ -33,7 +33,7 @@ from runtime.mvp_runtime.crypto.live_order import LIVE_CONFIRMATION_PHRASE, Live
 from runtime.mvp_runtime.crypto.live_pnl import read_live_outcomes
 from runtime.mvp_runtime.crypto.live_position import list_open_live_positions
 from runtime.mvp_runtime.errors import MvpRuntimeError, PlannerBlocked, ToolError
-from runtime.mvp_runtime.switch_bridge import stop_ref
+from runtime.mvp_runtime.control import stop_ref
 from scripts import emergency_close as door
 from tests._helpers import requires_local_core
 
