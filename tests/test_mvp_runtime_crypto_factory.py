@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import collections
 import json
+import math
 import random
 import statistics
 from itertools import combinations
@@ -4338,3 +4339,74 @@ def test_on_4h_half_the_shortfall_is_drawn_from_the_tilt_families(tmp_path):
 def test_off_1h_and_4h_nothing_is_tilted(tmp_path):
     result = _declined_fusion_on(tmp_path, "1d")
     assert result["seeded_topup_count"] == 4 and result["tilted_topup_count"] == 0
+
+
+# --- the shortfall's kept part turns with the visit (found 2026-10-25) --------------------------------------
+
+from runtime.mvp_runtime.crypto.factory import shortfall_slice_start  # noqa: E402
+
+
+def _families_walked(symbol, timeframe, *, fires, kept, start_rule):
+    """The families one context mints over ``fires`` fires: batch slice 2k whole, shortfall slice 2k+1 keeping
+    ``kept`` from where ``start_rule`` says, both through the real generator."""
+    total = len(template_space.templates_for_timeframe(timeframe, symbol=symbol))
+    seen = set()
+    for k in range(fires):
+        batch = generator.generate_batch(f"GEN-{k:03d}", seed=k, count=4, symbol=symbol, timeframe=timeframe,
+                                         rotation_index=2 * k)
+        draw = generator.generate_batch(f"GEN-{k:03d}", seed=k + 1, count=4, symbol=symbol, timeframe=timeframe,
+                                        rotation_index=2 * k + 1, slice_start=start_rule(k, kept, 4, total))
+        seen |= {s["strategy_family"] for s in batch["specs"]}
+        seen |= {s["strategy_family"] for s in draw["specs"][:kept]}
+    return total, seen
+
+
+def test_a_shortfall_keeping_half_its_slice_still_reaches_every_family_of_btc_1h():
+    """BTCUSDT 1h has 40 families, so the batch walks one parity of slices and the shortfall the other. Keeping
+    the slice's head every fire cut ten families off for good; turning the start per visit reaches them all."""
+    library = {t.family for t in template_space.templates_for_timeframe("1h", symbol="BTCUSDT")}
+    assert len(library) % 8 == 0, "the fixture must be a library where the old rule loses families"
+    _, head_only = _families_walked("BTCUSDT", "1h", fires=10, kept=2, start_rule=lambda *a: 0)
+    assert library - head_only, "the head-only rule must lose families here, or this test proves nothing"
+    _, turned = _families_walked("BTCUSDT", "1h", fires=10, kept=2, start_rule=shortfall_slice_start)
+    assert turned == library
+
+
+@pytest.mark.parametrize("total", range(26, 62, 2))
+@pytest.mark.parametrize("kept", [1, 2, 3])
+def test_no_library_size_leaves_a_family_unreachable(total, kept):
+    """The same walk in offsets, for library sizes production does not have yet (32 and 48 defeat a start
+    that turns with the fire count instead of the visit)."""
+    reached = set()
+    for k in range(4 * total):
+        batch = generator._rotation_offset("G", 0, 4, total, rotation_index=2 * k, phase=3)
+        draw = generator._rotation_offset("G", 0, 4, total, rotation_index=2 * k + 1, phase=3)
+        reached |= {(batch + j) % total for j in range(4)}
+        start = shortfall_slice_start(k, kept, 4, total)
+        reached |= {(draw + start + j) % total for j in range(kept)}
+    assert reached == set(range(total))
+
+
+def test_a_full_slice_and_an_unrotated_caller_keep_the_old_start():
+    assert shortfall_slice_start(7, 4, 4, 40) == 0              # fires the tilt does not touch are unchanged
+    assert shortfall_slice_start(None, 2, 4, 40) == 0
+    assert shortfall_slice_start(7, 0, 4, 40) == 0
+
+
+def test_the_factory_passes_the_turned_start_to_the_plain_shortfall(tmp_path, monkeypatch):
+    calls = []
+    real = factory.generate_batch
+
+    def recording(*args, **kwargs):
+        calls.append(kwargs)
+        return real(*args, **kwargs)
+
+    total = len(template_space.templates_for_timeframe("4h", symbol=_trending_snapshot()["symbol"]))
+    cursor = total // math.gcd(8, total)                        # the slice's second visit: start 2, not the head
+    monkeypatch.setattr(factory, "generate_batch", recording)
+    monkeypatch.setattr(factory, "context_rotation_index", lambda *a, **k: cursor)
+    result = _declined_fusion_on(tmp_path, "4h")
+    assert result["tilted_topup_count"] == 2
+    plain = [c for c in calls if c.get("rotation_index") == 2 * cursor + 1 and c.get("families") is None]
+    assert len(plain) == 1
+    assert plain[0]["slice_start"] == shortfall_slice_start(cursor, 2, 4, total) == 2
