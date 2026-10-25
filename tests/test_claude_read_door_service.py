@@ -79,9 +79,13 @@ def test_state_is_read_only_and_the_socket_and_log_live_outside_bridge():
     assert "bridge" not in DOOR_DIR and "runtime_governance_state" not in DOOR_DIR
 
 
-def test_hermes_mounts_neither_the_claude_socket_nor_its_log():
-    hermes = " ".join(_services()["hermes"].get("volumes") or [])
-    assert "thomas-claude-door" not in hermes and "/claude-door" not in hermes
+def test_no_other_service_mounts_the_claude_socket_or_its_log():
+    """Written for the assistant's container (retired 2026-10-25); it holds for every other service."""
+    for name, spec in _services().items():
+        if name == "claude-read-bridge":
+            continue
+        mounts = " ".join(str(v) for v in spec.get("volumes") or [])
+        assert "thomas-claude-door" not in mounts and "/claude-door" not in mounts, name
 
 
 def test_the_door_carries_no_secret_and_waits_on_nothing():

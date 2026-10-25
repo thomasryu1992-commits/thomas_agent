@@ -168,7 +168,7 @@ def test_the_backup_script_snapshots_the_store_as_its_owner_excludes_the_live_fi
     assert 'WF_DIR="$THOMAS/.runtime_governance_state/workflow"' in text
     for marker in ("workflow-snapshot=ok", "workflow-snapshot=FAILED", "workflow-snapshot=absent"):
         assert marker in text
-    assert 'SNAP_NOTE="$SNAP_NOTE $WF_NOTE"' in text                  # the marker reaches both log lines
+    assert 'SNAP_NOTE="$WF_NOTE"' in text                  # the marker reaches both log lines
     # the snapshot directory is inside the tarred root, so the archive carries the copy
     assert "/app/.runtime_governance_state/workflow/snapshots/$STAMP" in text
 
@@ -225,7 +225,7 @@ def test_a_failed_workflow_snapshot_keeps_the_last_good_one(tmp_path):
     (stub / "docker").chmod(0o755)
     block = _SCRIPT.read_text(encoding="utf-8")
     start = block.index('    WF_DIR="$THOMAS/.runtime_governance_state/workflow"')
-    end = block.index('    SNAP_NOTE="$SNAP_NOTE $WF_NOTE"')
+    end = block.index('    SNAP_NOTE="$WF_NOTE"')
     snippet = "set -u\nHOST_ROOT=%s\nTHOMAS=thomas_agent\nSTAMP=20260914-0745\nSNAP_NOTE=\n" % host + block[start:end] + 'echo "$WF_NOTE"\n'
     (wf_dir / "snapshots" / "20260914-0745").mkdir()                     # what a partial run leaves behind
     out = subprocess.run(["bash", "-c", snippet], capture_output=True, text=True, timeout=30,
