@@ -216,14 +216,6 @@ def _out_of_scope(change: ChangeRequest, existing: scheduler.Schedule | None, *,
         if expired_twin is not None:
             reasons.append(f"the same schedule ({expired_twin.schedule_id}) expired at {expired_twin.expires_at}; "
                            "renewing it is Thomas's decision")
-        if kind == scheduler.KIND_WORKFLOW:
-            try:
-                plan = scheduler.workflow_plan_of(change.request)
-            except SchedulerBlocked:
-                plan = None                       # build_schedule refuses it by name below
-            if plan is not None and int(plan["budget"]["max_model_calls"]) > delegation.max_model_calls_per_run:
-                reasons.append(f"the plan's budget ({plan['budget']['max_model_calls']} calls) exceeds the delegated "
-                               f"{delegation.max_model_calls_per_run} per run")
     return tuple(reasons)
 
 

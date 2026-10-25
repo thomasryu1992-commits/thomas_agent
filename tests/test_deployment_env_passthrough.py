@@ -173,8 +173,7 @@ LIVE_TRADING_SURFACE = {
 # docs/proposals/CREDENTIAL_PLANE_SEPARATION_V0.1.md). Forwarded to the PIPELINE-WORKER only —
 # the engine that runs the `research`/`content` kinds and the container a `--naver-keywords`
 # CLI run must exec in. Withheld from the OPERATOR, from the SCHEDULER (PR-B removed #650's
-# transitional copy), and from the DISPATCH-BRIDGE: the door that parses the assistant's
-# frames holds no credential at all.
+# transitional copy), and from the DISPATCH-BRIDGE while it ran (retired 2026-10-25).
 #
 # Withheld rather than merely unneeded, and the reason is the credential, not the capability.
 # The lane's USE is read-only — keyword volumes, a trend series, a competition count. The KEY
@@ -269,8 +268,7 @@ def test_no_other_service_is_handed_the_naver_ad_credential(service, env_var):
     that run belongs in the worker container, which holds the env — in this pair it degrades
     to Mock rows by design. Putting the Search Ad secret back on either service would put an
     account-wide, spend-capable credential beside the operator's channel or the Binance keys,
-    which is the trade the live-trading block above declines for the same reason.
-    (dispatch-bridge is covered by its exact-shape test above.)"""
+    which is the trade the live-trading block above declines for the same reason."""
     assert env_var not in _service_environment(service), (
         f"{service} is handed {env_var}; the Naver lane runs in pipeline-worker only and the "
         f"Search Ad secret is account-wide, not the read-only key its read-only use suggests"
@@ -289,7 +287,7 @@ PIPELINE_WORKER_ENGINE_SURFACE = {
     providers.OPENROUTER_MODEL_ENV: "the exact OpenRouter model slug",
     "GOOGLE_AI_STUDIO_API_KEY": "the Google AI Studio key",
     "GROQ_API_KEY": "the Groq key",
-    "OPENROUTER_API_KEY": "the OpenRouter key — shared with the operator's assistant",
+    "OPENROUTER_API_KEY": "the OpenRouter key",
     tools.SEARCH_TOOL_ENV: "the read-only search tool",
     "TAVILY_API_KEY": "the search key",
     workspace.WRITER_ENV: "the R8 writer — the content lane's package files (§J decision 2)",
@@ -309,18 +307,6 @@ def test_the_pipeline_worker_receives_the_engine_surface(env_var, what):
     assert environment[env_var] == "${%s:-}" % env_var
 
 
-def test_the_dispatch_door_carries_only_the_peer_variables():
-    """The point of the split, pinned as an exact shape rather than a denial list: the door
-    that parses the assistant's frames holds the two socket-peer variables and NOTHING else —
-    the same silhouette as the read and switch doors. A denial list would go quiet the day a
-    new credential is invented; an exact allowlist refuses it by construction."""
-    environment = _service_environment("dispatch-bridge")
-    assert set(environment) == {"MVP_BRIDGE_CLIENT_GID", "MVP_BRIDGE_CLIENT_UID"}, (
-        f"dispatch-bridge's environment is {sorted(environment)}; the door must carry the two "
-        f"peer variables only — execution env belongs to pipeline-worker"
-    )
-
-
 @pytest.mark.parametrize("env_var, what", sorted(LIVE_TRADING_SURFACE.items()))
 def test_the_pipeline_worker_receives_none_of_the_live_surface(env_var, what):
     """The worker holds model, search, and Naver env by design — and must never hold money.
@@ -334,9 +320,9 @@ def test_the_pipeline_worker_receives_none_of_the_live_surface(env_var, what):
 
 def test_the_pipeline_worker_socket_peers_are_the_runtime_itself():
     """Literals, not `${...}` interpolations, and pinned as such: a host `.env` that points
-    the doors' gid at the assistant must not be able to point the engine's peers anywhere.
-    10001 is the image's fixed runtime user; the dispatch door is this socket's only
-    legitimate client and SO_PEERCRED enforces it."""
+    the doors' gid anywhere must not be able to point the engine's peers anywhere. 10001 is
+    the image's fixed runtime user; the scheduler lanes are this socket's clients (the dispatch
+    door was too, until 2026-10-25) and SO_PEERCRED enforces it."""
     environment = _service_environment("pipeline-worker")
     assert environment["MVP_BRIDGE_CLIENT_GID"] == "10001"
     assert environment["MVP_BRIDGE_CLIENT_UID"] == "10001"
@@ -713,11 +699,10 @@ SECRET_OWNERSHIP: dict[str, frozenset[str]] = {
     "COINALYZE_API_KEY": frozenset({"scheduler", "scheduler-maint"}),
     "GOOGLE_AI_STUDIO_API_KEY": frozenset({"operator", "pipeline-worker"}),
     "GROQ_API_KEY": frozenset({"operator", "pipeline-worker"}),
-    # `operator` since 2026-09-04 (PR11): send-only, to mirror switch-door asks into the
-    # assistant's window. The one service that polls the control bot now also holds the
-    # assistant's bot token — the boundary is one cell wider, by decision Q1-b. The assistant's
-    # own container, the bot's one poller, was retired 2026-10-25: every holder only sends.
-    "HERMES_BOT_TOKEN": frozenset({"operator", "scheduler", "scheduler-maint"}),
+    # The notification bot: the two lanes send on it. The operator held it too, send-only, for the
+    # approval mirror (PR11, 2026-09-04) until the mirror left with the switch door; the assistant's
+    # own container, the bot's one poller, was retired the same day (2026-10-25).
+    "HERMES_BOT_TOKEN": frozenset({"scheduler", "scheduler-maint"}),
     "MVP_LIVE_ORDER_API_KEY": frozenset({"scheduler"}),
     "MVP_LIVE_ORDER_API_SECRET": frozenset({"scheduler"}),
     # The signed testnet key pair (2026-09-16, PR1d-1). Separate credentials on a separate venue,
@@ -765,7 +750,7 @@ def test_the_bulk_forward_prohibition_covers_every_service():
     """`_ALL_SERVICES` is read from the file, so this can only fail if the file has no services —
     it is here to make the coverage claim explicit rather than implicit in a parametrize."""
     compose = yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
-    assert set(_ALL_SERVICES) == set(compose["services"]) and len(_ALL_SERVICES) >= 8
+    assert set(_ALL_SERVICES) == set(compose["services"]) and len(_ALL_SERVICES) >= 5
 
 
 def _documented_matrix() -> dict[str, frozenset[str]]:
@@ -831,18 +816,6 @@ def test_memory_ceilings_sit_on_everything_but_the_money_path():
     for lane in LANES:
         assert "mem_limit" not in compose["services"][lane] and "memswap_limit" not in compose["services"][lane]
 
-
-
-def test_the_dispatch_door_can_bind_a_task_because_its_manager_mints_approval_asks():
-    """Sequence 2 (review of P07, 2026-09-14): the workflow manager runs inside dispatch-bridge and
-    mints a gated step's ask, which binds a Task to the active Core. Without the two Core mounts
-    every ask failed BINDING_FAILED in the container and a gated step waited forever — a defect no
-    pytest saw, because the suite binds against the checkout's own Core. Read-only, like every
-    other service that binds."""
-    mounts = [str(v) for v in _service("dispatch-bridge")["volumes"]]
-    for target in ("/app/THOMAS_CORE/activations", "/app/THOMAS_CORE/approvals"):
-        (mount,) = [m for m in mounts if f":{target}" in m]
-        assert mount.endswith(":ro"), mount
 
 
 # --- the blog lane's published-post source (Thomas 2026-09-28) ------------------------------

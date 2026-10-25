@@ -374,12 +374,12 @@ def test_operational_verbs_are_refused_by_a_code_constant_even_with_a_valid_appr
 @posix_only
 def test_inspection_reports_fixed_fields_and_needs_no_approval(xdir):
     actor, host = make_actor(xdir)
-    host.containers.pop("thomas-switch-bridge")
+    host.containers.pop("thomas-pipeline-worker")
     reply = handle(actor, message("inspect_candidate"))
     assert reply["ok"] and reply["data"]["tags"] == {"latest": LATEST, "candidate": None, "rollback_pre": None}
-    assert reply["data"]["running"]["thomas-switch-bridge"] is None
+    assert reply["data"]["running"]["thomas-pipeline-worker"] is None
     names = [c["name"] for c in reply["data"]["containers"]]
-    assert "thomas-switch-bridge" not in names and len(names) == 7          # absent: null, no entry (§6.2)
+    assert "thomas-pipeline-worker" not in names and len(names) == 3        # absent: null, no entry (§6.2)
     assert reply["state"] is None                                            # an inspection claims nothing
     assert host.effects() == [] and states(xdir) == ["INSPECT"]
 

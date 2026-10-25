@@ -21,9 +21,8 @@
 #   3. the newest candle archive is younger than 8 days
 #   4. health_watch.sh has written its log in the last 30 minutes — the two watches are each
 #      other's only observer, because the thing that notices a watch has stopped cannot be itself (the weekly job plus a day)
-#   5. that same core line carries `workflow-snapshot=ok` or `=absent` (P10): the workflow store's
-#      backup-API copy was made, or there was no store to copy; FAILED or a line without the
-#      marker means the archive holds no fresh copy of the one database the manager owns
+#   5. (retired 2026-10-25) the workflow snapshot marker: nothing writes the workflow store since
+#      the doors were retired, so the backup no longer copies it or says so
 #   6. that same core line, when OK, carries `anchor=excluded`: the backup script checked tar's own
 #      member list and the execution stage anchor is not in the archive (EXECUTION_STAGE_ANTI_ROLLBACK
 #      D1 a). The archive is encrypted and cannot be listed here, so the script's word is the evidence;
@@ -102,14 +101,6 @@ else
     *" stage=archive "*)
       PROBLEMS+=("core 백업이 아카이브 생성(tar) 단계에서 실패했습니다: $last_core"); BACKUP_PROBLEM=1 ;;
     *) PROBLEMS+=("마지막 core 실행이 실패로 끝났습니다: $last_core"); BACKUP_PROBLEM=1 ;;
-  esac
-  # 5. the workflow snapshot marker on that same line (P10)
-  case "$last_core" in
-    *" workflow-snapshot=ok"*|*" workflow-snapshot=absent"*) ;;
-    *" workflow-snapshot=FAILED"*)
-      PROBLEMS+=("워크플로 저장소 스냅샷이 실패했습니다 — 아카이브에 workflow.db 사본이 없습니다: $last_core"); BACKUP_PROBLEM=1 ;;
-    *)
-      PROBLEMS+=("마지막 core 기록에 workflow-snapshot 표기가 없습니다 — 백업 스크립트가 P10 이전 판입니다: $last_core"); BACKUP_PROBLEM=1 ;;
   esac
   # 6. the anchor marker on an OK line (a FAILED line is already reported above)
   case "$last_core" in

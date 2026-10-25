@@ -120,8 +120,6 @@ ROSTER: dict[tuple[str, str, str], tuple[int, str]] = {
     ("scripts/diagnose_bracket_leg.py", "main", "live_execution.select_venue_reader"): (1, "validation only; no submit or cancel"),
     ("scripts/diagnose_bracket_leg.py", "main", "adapter.validate_order"): (1, "/order/test only; creates nothing"),
     # --- not exchange calls: the same method name on other objects ----------------------------------------
-    ("runtime/mvp_runtime/dispatch_bridge.py", "apply_workflow_command", "workflow_store.submit"): (1, "not an exchange call"),
-    ("runtime/mvp_runtime/scheduler.py", "_execute", "workflow_store.submit"): (1, "not an exchange call"),
     ("runtime/mvp_runtime/socket_door.py", "SocketDoor.process_request", "self._pool.submit"): (1, "a thread pool"),
     ("runtime/mvp_runtime/task_registry.py", "record_submission", "store.submit"): (1, "not an exchange call"),
 }

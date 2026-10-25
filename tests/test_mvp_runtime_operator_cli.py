@@ -201,30 +201,6 @@ def test_approve_over_the_loop_reaches_the_approval_path(tmp_path, monkeypatch):
     assert "no approval with id" in ch.sent[0][1]
 
 
-def test_the_mirror_channel_reaches_the_announcer_and_is_selected_when_not_injected(monkeypatch, capsys):
-    """`main` hands the mirror to the announcer under `mirror=`; without an injected one it
-    selects through the same gate as the control channel and says the outcome once."""
-    import runtime.mvp_runtime.operator_cli as cli
-    from runtime.mvp_runtime.operator import OPERATOR_CHANNEL_ENV
-
-    seen: list = []
-
-    def fake_announce(channel, approval_store, *, now, repo_root=None, mirror=None):
-        seen.append(mirror)
-        return []
-
-    monkeypatch.setattr(cli, "announce_pending_approvals", fake_announce)
-    monkeypatch.delenv(OPERATOR_CHANNEL_ENV, raising=False)
-    mirror = MockOperatorChannel()
-
-    assert main([], channel=MockOperatorChannel(), registration=REG, provider=MockProvider(),
-                mirror_channel=mirror) == 0
-    assert main([], channel=MockOperatorChannel(), registration=REG, provider=MockProvider()) == 0
-
-    assert seen == [mirror, None]
-    assert capsys.readouterr().err.count("OPERATOR: approval mirror OFF") == 1
-
-
 def test_the_operator_announces_a_policy_change_once_to_the_control_channel(tmp_path, monkeypatch, capsys):
     """Q7-a: the operator is the one service holding the channel, so it is the one that tells
     Thomas. The ledger keeps the record; the notice is best-effort on top of it."""
@@ -266,63 +242,6 @@ def test_an_unchanged_policy_is_a_banner_and_nothing_else(tmp_path, capsys):
 
     assert ch.sent == [] and not (tmp_path / "blocks.jsonl").exists()
     assert "POLICY: 1.5.0" in capsys.readouterr().err
-
-
-# --- P08: the loop pushes workflow core events, best-effort ----------------------------------------
-
-def test_the_loop_pushes_workflow_events_with_the_injected_store_and_isolates_a_push_failure(monkeypatch, capsys):
-    import runtime.mvp_runtime.operator_cli as cli
-    from runtime.mvp_runtime.errors import PersistenceError
-
-    seen: list = []
-    sentinel = object()
-
-    def fake_push(channel, workflow_store, *, now, repo_root=None):
-        seen.append(workflow_store)
-        return {"sent": [7], "uncertain": [], "retried": 0, "cursor": 7, "adopted": False}
-
-    monkeypatch.setattr(cli, "push_workflow_events", fake_push)
-    assert main([], channel=MockOperatorChannel(), registration=REG, provider=MockProvider(), workflow_store=sentinel) == 0
-    assert seen == [sentinel]
-    assert "OPERATOR: pushed workflow event #7" in capsys.readouterr().err
-
-    def failing_push(channel, workflow_store, *, now, repo_root=None):
-        raise PersistenceError("WORKFLOW_STORE_UNREADABLE", "disk gone")
-
-    monkeypatch.setattr(cli, "push_workflow_events", failing_push)
-    assert main([], channel=MockOperatorChannel(), registration=REG, provider=MockProvider(), workflow_store=sentinel) == 0
-    assert "OPERATOR: workflow events not pushed (WORKFLOW_STORE_UNREADABLE)" in capsys.readouterr().err
-
-
-def test_the_operator_never_creates_the_workflow_store(tmp_path, monkeypatch):
-    """The manager owns the store's existence; an operator started on a host without it must
-    not leave an empty workflow.db behind — the backup and the next deploy would read it as real."""
-    import runtime.mvp_runtime.operator_cli as cli
-    from runtime.mvp_runtime.workflow_store import WorkflowStore
-
-    calls: list = []
-    monkeypatch.setattr(cli, "push_workflow_events", lambda *a, **k: calls.append(1) or {"sent": [], "uncertain": [],
-                                                                                            "retried": 0, "cursor": 0, "adopted": False})
-    (tmp_path / ".runtime_governance_state").mkdir()
-    (tmp_path / ".runtime_governance_state" / "operator_registration.json").write_text(
-        json.dumps({"operator_id": "tg-1", "chat_id": "chat-1", "approver": "Thomas"}), encoding="utf-8")
-    assert main([], channel=MockOperatorChannel(), registration=REG, provider=MockProvider(), repo_root=tmp_path) == 0
-    assert calls == [] and not WorkflowStore.exists(tmp_path)
-    WorkflowStore(tmp_path).initialize()                       # the manager created it: now the loop pushes
-    assert main([], channel=MockOperatorChannel(), registration=REG, provider=MockProvider(), repo_root=tmp_path) == 0
-    assert calls == [1]
-
-
-
-def test_the_suite_never_reaches_the_checkouts_own_workflow_store(monkeypatch):
-    """Review of P09 (2026-09-14): `main` without `repo_root` asks `WorkflowStore.exists()` for the
-    checkout's state directory. The conftest isolation redirects that default like every other
-    store's, so a checkout that holds a real workflow.db is never pushed from or written by a test."""
-    from runtime.mvp_runtime.paths import repo_root
-    from runtime.mvp_runtime.workflow_store import WorkflowStore
-
-    assert WorkflowStore.default().path.parents[2] != repo_root()
-    assert WorkflowStore.default(readonly=True).path.parents[2] != repo_root()
 
 
 def test_the_operator_announces_a_judgement_rule_change_once(tmp_path, monkeypatch, capsys):

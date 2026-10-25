@@ -954,13 +954,11 @@ def test_the_operator_loop_always_wires_the_kill_switch():
     assert "ControlStore" in source
 
 
-# --- announcing the switch door's asks ---------------------------------------
+# --- announcing the console-spent asks ---------------------------------------
 #
-# The delivery half that never existed. `approval.py` mints an ask and nothing carries it:
-# every other approval is minted by Thomas running a script, so the id is already on his
-# screen, but the switch door's are minted by an assistant and went nowhere. The one real
-# attempt (2026-07-31) expired unanswered fifteen minutes later, and the enable chain had
-# never once completed in production before 2026-08-22.
+# The delivery half. `approval.py` mints an ask and nothing carries it; the announcer does, for
+# the asks the operator spends from the console (execution stage, emergency close). It began for
+# the switch door's asks (2026-08-22), which were retired with the door on 2026-10-25.
 
 from runtime.mvp_runtime import approval as _approval  # noqa: E402
 from runtime.mvp_runtime import permission as _permission  # noqa: E402
@@ -977,21 +975,19 @@ from runtime.mvp_runtime.operator import (  # noqa: E402
 _ANN_NOW = "2026-08-22T09:00:00Z"
 
 
-def _switch_ask(store, tmp_path, *, arms=True, now=_ANN_NOW, stop_ref="stop_abc123"):
-    """Mint a real switch-door ask into `store` and return it.
+def _console_ask(store, tmp_path, *, now=_ANN_NOW, stop_ref="stop_abc123"):
+    """Mint a real emergency-close ask into `store` and return it (``stop_ref`` varies the action).
 
     The binding uses the repo's own Core activation (as every other approval test does) while
     the store, the registration and the announced pointer live under `tmp_path` — those are
     what the announcer reads and writes, and they are what must stay isolated per test.
     """
-    task = build_task("자동매매를 다시 켜줘", now=now)
+    task = build_task("긴급 청산 검토", now=now, channel="manual", requester_id="Thomas")
     _, bound = bind_task_to_core(task, now=now)
-    builder = (_permission.build_trading_switch_permission_decision if arms
-               else _permission.build_nonfinancial_resume_permission_decision)
-    permdec = builder(
-        bound, "crypto", stop_ref=stop_ref,
-        stop_summary="the KILLED placed by local_console", now=now,
-    )
+    content = {"halt_ref": stop_ref, "halt_summary": "the HARD halt placed by tg-1 at T, stated reason: r",
+               "requested_by": "thomas", "reason": "venue incident", "positions": [
+                   {"position_id": "live-btc", "symbol": "BTCUSDT", "direction": "LONG", "quantity": "0.002"}]}
+    permdec = _permission.build_emergency_close_permission_decision(bound, content=content, now=now)
     req = _approval.build_approval_request(permdec, now=now)
     store.append([req])
     store.append_permission_decision(permdec)
@@ -1004,7 +1000,7 @@ def test_the_first_run_marks_the_backlog_seen_without_sending_it(tmp_path):
     that announced its backlog would open with a burst of messages Thomas cannot act on."""
     _register(tmp_path, chat_id="chat-registered")
     store = ApprovalStore(tmp_path)
-    ask = _switch_ask(store, tmp_path)
+    ask = _console_ask(store, tmp_path)
     ch = MockOperatorChannel()
 
     assert load_announced(tmp_path) is None
@@ -1017,13 +1013,13 @@ def test_the_first_run_marks_the_backlog_seen_without_sending_it(tmp_path):
 
 
 @requires_local_core
-def test_a_pending_switch_ask_is_announced_once_to_the_registered_chat(tmp_path):
+def test_a_pending_console_ask_is_announced_once_to_the_registered_chat(tmp_path):
     """The whole point: the ask reaches the window `/approve` is read in — and only once."""
     _register(tmp_path, chat_id="chat-registered")
     store = ApprovalStore(tmp_path)
     announce_pending_approvals(ch := MockOperatorChannel(), store, now=_ANN_NOW, repo_root=tmp_path)
 
-    ask = _switch_ask(store, tmp_path)
+    ask = _console_ask(store, tmp_path)
     sent = announce_pending_approvals(ch, store, now=_ANN_NOW, repo_root=tmp_path)
 
     assert sent == [ask["approval_id"]]
@@ -1045,7 +1041,7 @@ def test_an_expired_ask_is_never_announced(tmp_path):
     _register(tmp_path, chat_id="chat-registered")
     store = ApprovalStore(tmp_path)
     announce_pending_approvals(ch := MockOperatorChannel(), store, now=_ANN_NOW, repo_root=tmp_path)
-    _switch_ask(store, tmp_path)
+    _console_ask(store, tmp_path)
 
     long_after = "2026-08-22T23:00:00Z"
     assert announce_pending_approvals(ch, store, now=long_after, repo_root=tmp_path) == []
@@ -1053,11 +1049,11 @@ def test_an_expired_ask_is_never_announced(tmp_path):
 
 
 @requires_local_core
-def test_only_the_switch_doors_asks_are_announced(tmp_path):
+def test_only_the_console_spent_asks_are_announced(tmp_path):
     """`pending()` returns every scope. Memory candidates, strategy-pool promotions and probe
     batches are already in front of Thomas by the flow that minted them — announcing those
     would put a candidate's full text into the control channel for nothing. The filter is the
-    target prefix, because both switch asks share RUNTIME_GOVERNANCE with strategy promotion."""
+    target prefix, because these asks share RUNTIME_GOVERNANCE with strategy promotion."""
     _register(tmp_path, chat_id="chat-registered")
     store = ApprovalStore(tmp_path)
     announce_pending_approvals(ch := MockOperatorChannel(), store, now=_ANN_NOW, repo_root=tmp_path)
@@ -1075,10 +1071,10 @@ def test_only_the_switch_doors_asks_are_announced(tmp_path):
     store.append([memory_req])
     store.append_permission_decision(permdec)
 
-    switch_req = _switch_ask(store, tmp_path)
+    console_req = _console_ask(store, tmp_path)
 
     sent = announce_pending_approvals(ch, store, now=_ANN_NOW, repo_root=tmp_path)
-    assert sent == [switch_req["approval_id"]]
+    assert sent == [console_req["approval_id"]]
     assert memory_req["approval_id"] not in "".join(t for _, t in ch.sent)
 
 
@@ -1090,7 +1086,7 @@ def test_the_batch_cap_leaves_the_rest_for_the_next_pass(tmp_path):
     store = ApprovalStore(tmp_path)
     announce_pending_approvals(ch := MockOperatorChannel(), store, now=_ANN_NOW, repo_root=tmp_path)
 
-    asks = [_switch_ask(store, tmp_path, stop_ref=f"stop_{i:04d}")
+    asks = [_console_ask(store, tmp_path, stop_ref=f"stop_{i:04d}")
             for i in range(MAX_ANNOUNCEMENTS_PER_BATCH + 2)]
     first = announce_pending_approvals(ch, store, now=_ANN_NOW, repo_root=tmp_path)
     assert len(first) == MAX_ANNOUNCEMENTS_PER_BATCH
@@ -1109,7 +1105,7 @@ def test_announcing_without_a_registration_fails_closed(tmp_path):
     (tmp_path / ANNOUNCED_POINTER_REL).parent.mkdir(parents=True, exist_ok=True)
     (tmp_path / ANNOUNCED_POINTER_REL).write_text(
         json.dumps({"announced_approval_ids": [], "updated_at": _ANN_NOW}), encoding="utf-8")
-    _switch_ask(store, tmp_path)
+    _console_ask(store, tmp_path)
 
     ch = MockOperatorChannel()
     with pytest.raises(OperatorBlocked) as exc:
@@ -1117,133 +1113,9 @@ def test_announcing_without_a_registration_fails_closed(tmp_path):
     assert exc.value.reason_code == "REGISTRATION_MISSING"
     assert ch.sent == []
 
-# --- PR11: the approval mirror — the same ask in the assistant's window, decided here ----------
-
-from runtime.mvp_runtime.operator import (  # noqa: E402
-    MIRROR_SEND_ONLY_REASON,
-    MIRROR_TOKEN_ENV,
-    SendOnlyChannel,
-    mirror_message,
-    select_mirror_channel,
-)
-
-
-def test_the_send_only_wrapper_refuses_to_poll_or_peek_and_delegates_send():
-    """One bot token, one poller: a second `getUpdates` caller would steal the assistant's
-    updates, so the wrapper cannot poll by construction — not by convention."""
-    inner = MockOperatorChannel()
-    mirror = SendOnlyChannel(inner)
-    with pytest.raises(OperatorBlocked) as exc:
-        mirror.poll()
-    assert exc.value.reason_code == MIRROR_SEND_ONLY_REASON
-    with pytest.raises(OperatorBlocked) as exc:
-        mirror.peek()
-    assert exc.value.reason_code == MIRROR_SEND_ONLY_REASON
-    assert mirror.send("chat-1", "hi") == "mock-msg-1"
-    assert inner.sent == [("chat-1", "hi")]
-    assert mirror.network_egress is False           # the wrapped channel's capability, not a claim
-
-
-def test_the_mirror_is_off_and_says_so_without_the_gate_the_token_or_with_the_control_bots_own_token(
-    monkeypatch, capsys,
-):
-    monkeypatch.delenv(OPERATOR_CHANNEL_ENV, raising=False)
-    monkeypatch.setenv(MIRROR_TOKEN_ENV, "assistant-token-value")
-    assert select_mirror_channel() is None
-    monkeypatch.setenv(OPERATOR_CHANNEL_ENV, "telegram")
-    monkeypatch.delenv(MIRROR_TOKEN_ENV, raising=False)
-    assert select_mirror_channel() is None
-    monkeypatch.setenv(MIRROR_TOKEN_ENV, "shared-token-value")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "shared-token-value")
-    assert select_mirror_channel() is None
-    err = capsys.readouterr().err
-    assert err.count("OPERATOR: approval mirror OFF") == 3
-    assert "one bot cannot mirror itself" in err
-    assert "token-value" not in err                  # a token value is never printed, even on refusal
-
-
-def test_the_mirror_wraps_the_assistants_bot_send_only_behind_the_same_gate(monkeypatch, capsys):
-    monkeypatch.setenv(OPERATOR_CHANNEL_ENV, "telegram")
-    monkeypatch.setenv(MIRROR_TOKEN_ENV, "assistant-token-value")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "control-token-value")
-    mirror = select_mirror_channel()
-    assert isinstance(mirror, SendOnlyChannel)
-    assert mirror.network_egress is True
-    assert isinstance(mirror._inner, TelegramChannel)
-    assert mirror._inner._token_env == MIRROR_TOKEN_ENV     # read by NAME, at send time
-    with pytest.raises(OperatorBlocked):
-        mirror.poll()
-    err = capsys.readouterr().err
-    assert "OPERATOR: approval mirror ON" in err and "token-value" not in err
-
-
 @requires_local_core
-def test_a_switch_ask_is_mirrored_with_a_different_body_to_the_same_registered_chat(tmp_path):
-    """The copy reaches the assistant's window (same registered private chat, other bot) and
-    does NOT carry the `/approve | /reject` invitation — it says where the decision goes."""
-    _register(tmp_path, chat_id="chat-registered")
-    store = ApprovalStore(tmp_path)
-    announce_pending_approvals(MockOperatorChannel(), store, now=_ANN_NOW, repo_root=tmp_path)
-    ask = _switch_ask(store, tmp_path)
-    primary, mirror = MockOperatorChannel(), MockOperatorChannel()
-
-    sent = announce_pending_approvals(primary, store, now=_ANN_NOW, repo_root=tmp_path, mirror=mirror)
-
-    assert sent == [ask["approval_id"]]
-    assert len(primary.sent) == 1 and len(mirror.sent) == 1
-    assert mirror.sent[0][0] == "chat-registered"
-    primary_text, mirror_text = primary.sent[0][1], mirror.sent[0][1]
-    assert "가능한 선택:" in primary_text and f"/approve {ask['approval_id']}" in primary_text
-    assert "가능한 선택:" not in mirror_text and "(id 뒤에 이유를" not in mirror_text
-    assert mirror_text.startswith("[알림 사본] 결정은 관제봇 창에서")
-    assert "Approval Request" in mirror_text and ask["approval_id"] in mirror_text
-    assert "아무에게도 닿지 않습니다" in mirror_text
-    assert mirror_text == mirror_message(ask, store.get_permission_decision(ask["permission_decision_id"]))
-
-    # A second pass sends nothing on either channel: one pointer, keyed on the primary send.
-    assert announce_pending_approvals(primary, store, now=_ANN_NOW, repo_root=tmp_path, mirror=mirror) == []
-    assert len(primary.sent) == 1 and len(mirror.sent) == 1
-
-
-@requires_local_core
-def test_a_workflow_step_ask_is_announced_on_the_control_channel_and_never_mirrored(tmp_path):
-    """Sequence 2 P07: the manager's gated-step ask reaches the window `/approve` is read in,
-    once, like a switch ask — and policy 1.5.0 mirrors switch-door asks only, so the copy to
-    the assistant's window is not sent for it."""
-    from runtime.mvp_runtime import workflow as _wf
-
-    _register(tmp_path, chat_id="chat-registered")
-    store = ApprovalStore(tmp_path)
-    announce_pending_approvals(MockOperatorChannel(), store, now=_ANN_NOW, repo_root=tmp_path)
-    task = build_task("워크플로 단계 승인 검토", now=_ANN_NOW, channel="agent", requester_type="agent",
-                      requester_id="assistant_bridge")
-    _, bound = bind_task_to_core(task, now=_ANN_NOW)
-    wid = "wf_" + "c" * 20
-    content = _wf.approval_content(workflow_id=wid, step_key="publish_draft", plan_version=1, capability="content",
-                                   request="초안을 게시용으로 정리")
-    permdec = _permission.build_workflow_step_permission_decision(
-        bound, workflow_id=wid, step_key="publish_draft", plan_version=1, capability="content",
-        request_sha256=content["request_sha256"], request_preview="초안을 게시용으로 정리", now=_ANN_NOW)
-    ask = _approval.build_approval_request(permdec, now=_ANN_NOW)
-    store.append([ask])
-    store.append_permission_decision(permdec)
-    primary, mirror = MockOperatorChannel(), MockOperatorChannel()
-
-    sent = announce_pending_approvals(primary, store, now=_ANN_NOW, repo_root=tmp_path, mirror=mirror)
-
-    assert sent == [ask["approval_id"]]
-    assert len(primary.sent) == 1 and mirror.sent == []
-    chat_id, text = primary.sent[0]
-    assert chat_id == "chat-registered" and ask["approval_id"] in text and "publish_draft" in text
-    assert f"/approve {ask['approval_id']}" in text
-    assert announce_pending_approvals(primary, store, now=_ANN_NOW, repo_root=tmp_path, mirror=mirror) == []
-    assert len(primary.sent) == 1 and mirror.sent == []
-
-
-@requires_local_core
-def test_an_execution_stage_ask_is_announced_on_the_control_channel_and_never_mirrored(tmp_path):
-    """Crypto PR1a: a stage transition is Thomas's to approve on the control channel, like a switch
-    ask; it is not a switch-door ask, so the assistant's window never gets the copy."""
+def test_an_execution_stage_ask_is_announced_on_the_control_channel(tmp_path):
+    """Crypto PR1a: a stage transition is Thomas's to approve on the control channel."""
     from runtime.mvp_runtime.crypto import execution_stage as _es
 
     _register(tmp_path, chat_id="chat-registered")
@@ -1258,11 +1130,10 @@ def test_an_execution_stage_ask_is_announced_on_the_control_channel_and_never_mi
     ask = _approval.build_approval_request(permdec, now=_ANN_NOW)
     store.append([ask])
     store.append_permission_decision(permdec)
-    primary, mirror = MockOperatorChannel(), MockOperatorChannel()
+    primary = MockOperatorChannel()
 
-    assert announce_pending_approvals(primary, store, now=_ANN_NOW, repo_root=tmp_path, mirror=mirror) == [
-        ask["approval_id"]]
-    assert len(primary.sent) == 1 and mirror.sent == []
+    assert announce_pending_approvals(primary, store, now=_ANN_NOW, repo_root=tmp_path) == [ask["approval_id"]]
+    assert len(primary.sent) == 1
     _chat, text = primary.sent[0]
     assert "execution_stage:binance_futures:PAPER" in text
     assert "--confirm --approval-id" in text and "승인 없이 즉시" in text
@@ -1271,14 +1142,13 @@ def test_an_execution_stage_ask_is_announced_on_the_control_channel_and_never_mi
 @requires_local_core
 @pytest.mark.parametrize("requested_by,requester_line", [
     ("thomas", "요청자: thomas (운영자 요청"),
-    # PR6e: the switch door mints the same ask with the assistant as the requester. It is announced
-    # like the operator's, never mirrored, and says who asked (review of #916).
+    # PR6e: the retired switch door minted the same ask with the assistant as the requester; an ask
+    # minted before the retirement still renders who asked (review of #916).
     ("assistant_bridge", "요청자: 어시스턴트(assistant_bridge)"),
 ])
-def test_an_emergency_close_ask_is_announced_on_the_control_channel_and_never_mirrored(
+def test_an_emergency_close_ask_is_announced_on_the_control_channel(
         tmp_path, requested_by, requester_line):
-    """Crypto PR6c: Thomas approves an emergency close on the control channel (decision 49); it is
-    not a switch-door ask, so the assistant's window never gets the copy."""
+    """Crypto PR6c: Thomas approves an emergency close on the control channel (decision 49)."""
     _register(tmp_path, chat_id="chat-registered")
     store = ApprovalStore(tmp_path)
     announce_pending_approvals(MockOperatorChannel(), store, now=_ANN_NOW, repo_root=tmp_path)
@@ -1291,40 +1161,11 @@ def test_an_emergency_close_ask_is_announced_on_the_control_channel_and_never_mi
     ask = _approval.build_approval_request(permdec, now=_ANN_NOW)
     store.append([ask])
     store.append_permission_decision(permdec)
-    primary, mirror = MockOperatorChannel(), MockOperatorChannel()
+    primary = MockOperatorChannel()
 
-    assert announce_pending_approvals(primary, store, now=_ANN_NOW, repo_root=tmp_path, mirror=mirror) == [
-        ask["approval_id"]]
-    assert len(primary.sent) == 1 and mirror.sent == []
+    assert announce_pending_approvals(primary, store, now=_ANN_NOW, repo_root=tmp_path) == [ask["approval_id"]]
+    assert len(primary.sent) == 1
     _chat, text = primary.sent[0]
     assert _permission.EMERGENCY_CLOSE_TARGET_PREFIX in text and "BTCUSDT LONG 0.002" in text
     assert "--confirm --approval-id" in text and "되돌릴 수 있는가: 아니오" in text
     assert requester_line in text and "venue incident" in text
-
-
-class _RefusingMirror(MockOperatorChannel):
-    def send(self, chat_id: str, text: str) -> str | None:
-        raise OperatorBlocked("NO_BOT_TOKEN", "environment variable HERMES_BOT_TOKEN is not set")
-
-
-@requires_local_core
-def test_a_mirror_failure_is_one_stderr_line_and_never_re_announces(tmp_path, capsys):
-    """D-5: the control-channel push is the authority and the pointer follows it alone. A
-    mirror that cannot send costs a stderr line, not a second ask on the control channel."""
-    _register(tmp_path, chat_id="chat-registered")
-    store = ApprovalStore(tmp_path)
-    announce_pending_approvals(MockOperatorChannel(), store, now=_ANN_NOW, repo_root=tmp_path)
-    ask = _switch_ask(store, tmp_path)
-    primary = MockOperatorChannel()
-
-    sent = announce_pending_approvals(
-        primary, store, now=_ANN_NOW, repo_root=tmp_path, mirror=_RefusingMirror(),
-    )
-
-    assert sent == [ask["approval_id"]] and len(primary.sent) == 1
-    assert load_announced(tmp_path) == {ask["approval_id"]}
-    assert f"approval {ask['approval_id']} announced but not mirrored (NO_BOT_TOKEN)" in capsys.readouterr().err
-    assert announce_pending_approvals(
-        primary, store, now=_ANN_NOW, repo_root=tmp_path, mirror=_RefusingMirror(),
-    ) == []
-    assert len(primary.sent) == 1

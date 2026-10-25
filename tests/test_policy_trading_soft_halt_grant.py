@@ -3,7 +3,7 @@ from pathlib import Path
 
 import yaml
 
-from runtime.mvp_runtime import control, switch_bridge
+from runtime.mvp_runtime import control
 
 POLICY = Path(__file__).resolve().parents[1] / "governance" / "GOVERNANCE_POLICY.yaml"
 
@@ -20,7 +20,6 @@ def test_the_grant_names_the_soft_halt_on_both_lists():
 
 def test_the_runtime_reads_the_committed_grant():
     assert control.CMD_HALT_TRADING in control.granted_emergency_controls()
-    assert switch_bridge._DISABLE_MODES["soft"] == control.CMD_HALT_TRADING
 
 
 def test_the_soft_halt_acts_and_keeps_the_runtime_active(tmp_path):

@@ -55,16 +55,13 @@ from .permission import (
     EXECUTION_STAGE_TARGET_PREFIX,
     LIVE_OUTCOME_CORRECTION_ACTION_TYPE,
     MEMORY_PROMOTION_ACTION_TYPE,
-    NONFINANCIAL_RESUME_TARGET_PREFIX,
     REGISTRATION_ACTION_TYPE,
     SLIPPAGE_PROBE_ACTION_TYPE,
     STRATEGY_POOL_LIVE_TARGET_REF,
     STRATEGY_POOL_PAPER_TARGET_REF,
     STRATEGY_PROMOTION_ACTION_TYPE,
     STRATEGY_RETIREMENT_ACTION_TYPE,
-    TRADING_SWITCH_TARGET_PREFIX,
     TRIAL_PERMISSION_SCOPE,
-    WORKFLOW_STEP_TARGET_PREFIX,
 )
 
 from . import _scripts_bridge  # noqa: F401  (side effect: scripts/ on sys.path, once)
@@ -472,16 +469,13 @@ def format_request(approval: Mapping[str, Any]) -> str:
     snapshot = approval["approved_action_snapshot"]
     permdec_reasons = approval.get("_decision_reasons") or []
     trial = snapshot.get("permission_scope") == TRIAL_PERMISSION_SCOPE
-    # The switch door's asks are the third kind this renderer serves, and until 2026-08-22 it
-    # had no branch for them: they went out carrying "되돌릴 수 있는가: 아니오 — validated
-    # memory는 지속됩니다" and a closing paragraph about `approval_consumption`, neither of
-    # which is true of a runtime switch. Keyed on the target prefix rather than the scope
-    # because both switch asks share RUNTIME_GOVERNANCE with strategy promotion, and it is the
-    # target that says what is being started. Prefixes imported from `permission`, which mints
-    # them, so the two sides cannot drift.
+    # Kinds are told apart by the target prefix where the scope cannot do it (several share
+    # RUNTIME_GOVERNANCE, and it is the target that says what is being started). Prefixes imported
+    # from `permission`, which mints them, so the two sides cannot drift. The switch door's and the
+    # workflow manager's asks had branches here until both were retired (2026-10-25).
     target_ref = str(snapshot.get("target_ref") or "")
-    # Arming real money: the assistant's trading switch, or a promotion that installs strategies
-    # at the pool's LIVE tier (both make a real order possible that was not before).
+    # Arming real money: a promotion that installs strategies at the pool's LIVE tier makes a real
+    # order possible that was not before.
     arms_pool_live = target_ref == STRATEGY_POOL_LIVE_TARGET_REF
     # The other RUNTIME_GOVERNANCE asks (and the two ask kinds outside that scope) are told apart by
     # action type, because the target cannot do it: a retirement names the same
@@ -495,13 +489,7 @@ def format_request(approval: Mapping[str, Any]) -> str:
     probe = action_type == SLIPPAGE_PROBE_ACTION_TYPE
     registration = action_type == REGISTRATION_ACTION_TYPE
     memory_promotion = action_type == MEMORY_PROMOTION_ACTION_TYPE
-    arms_live = target_ref.startswith(TRADING_SWITCH_TARGET_PREFIX) or arms_pool_live
-    switch = (target_ref.startswith(TRADING_SWITCH_TARGET_PREFIX)
-              or target_ref.startswith(NONFINANCIAL_RESUME_TARGET_PREFIX))
-    # The workflow manager's gated-step asks (sequence 2, P07) are spent by the manager itself on
-    # its next pass — no operator step follows the approval — so the closing paragraph every other
-    # branch carries ("approval alone runs nothing") was false for them (review of P07, 2026-09-14).
-    workflow_step = target_ref.startswith(WORKFLOW_STEP_TARGET_PREFIX)
+    arms_live = arms_pool_live
     # An execution-stage transition (crypto PR1a). Spent by the operator's --confirm, never by the
     # runtime; a demotion is the reversible direction and needs no ask at all.
     execution_stage = target_ref.startswith(EXECUTION_STAGE_TARGET_PREFIX)
@@ -516,14 +504,6 @@ def format_request(approval: Mapping[str, Any]) -> str:
     # kind not named here says it has no answer rather than borrowing another kind's.
     if trial:
         reversibility = "되돌릴 수 있는가: 예 — 격리된 1회 시험 실행이며 기록만 남습니다 (역할 활성화 아님)"
-    elif switch:
-        # Stopping needs no approval and applies at once, which is this door's whole
-        # asymmetry — so a switch grant is the reversible kind, and saying otherwise
-        # (as this line did for three weeks) misprices the decision in the wrong direction.
-        reversibility = "되돌릴 수 있는가: 예 — 끄기(stop/pause)는 승인 없이 즉시 적용됩니다"
-    elif workflow_step:
-        reversibility = ("되돌릴 수 있는가: 실행 전까지는 예(cancel_workflow·/kill) — 실행된 단계는 "
-                         "P3 작업(모델 호출·작업공간 쓰기)으로 기록이 남습니다")
     elif execution_stage:
         reversibility = ("되돌릴 수 있는가: 예 — 단계 강등은 승인 없이 즉시 적용됩니다(--demote), "
                          "청산은 어느 단계에서도 막히지 않습니다")
@@ -609,17 +589,9 @@ def format_request(approval: Mapping[str, Any]) -> str:
         "(id 뒤에 이유를 적으면 결정 기록에 남습니다 — 예: /reject "
         f"{approval['approval_id']} 근거 문서가 부족함)",
         "",
-        ("승인하면 워크플로 관리자가 다음 패스에서 이 승인을 1회 소비하고 이 단계 하나를 실행합니다. "
-         "런타임이 정지(KILLED/PAUSED)면 소비하지 않고 기다립니다."
-         if workflow_step else
-         "이 승인은 REVIEW_ONLY입니다. 승인만으로 런타임이 자동 실행하지 않습니다."),
+        "이 승인은 REVIEW_ONLY입니다. 승인만으로 런타임이 자동 실행하지 않습니다.",
     ]
-    if workflow_step:
-        lines += [
-            "이 승인은 이 계획 버전의 이 요청(해시)에만 묶입니다. 계획이 바뀌거나 단계가 바뀌면 이 승인은",
-            "APPROVAL_STALE로 거부되고 새 요청이 올라옵니다. 거절하면 단계는 멈추고 워크플로는 결정을 기다립니다.",
-        ]
-    elif emergency_close:
+    if emergency_close:
         lines += [
             "승인 후 운영자가 scheduler 컨테이너에서 `scripts/emergency_close.py --confirm --approval-id <id>`로",
             "1회 소비해야 청산 주문이 나갑니다. 요청 이후 HARD 정지 상태가 바뀌면(해제·완화·다시 걸기)",
@@ -634,16 +606,6 @@ def format_request(approval: Mapping[str, Any]) -> str:
             "단계 기록이 쓰입니다. 요청 이후 단계 기록이나 정책(버전·안전 fingerprint)이 바뀌면 이 승인은",
             "EXECUTION_STAGE_CHANGED / EXECUTION_STAGE_POLICY_CHANGED_SINCE_ASK로 거부되고 새 요청이 필요합니다.",
             "단계에는 만료가 없습니다. 강등하거나 정책이 바뀔 때까지 유지됩니다.",
-        ]
-    elif switch:
-        lines += [
-            "이 승인은 `approval_cli consume`으로 쓰지 않습니다. 어시스턴트가 같은 approval id로",
-            "스위치 문을 다시 호출할 때 1회만 소비됩니다 — approval_consumption 세이프티 플래그와",
-            "무관합니다.",
-            ("승인하면 라이브 진입이 다시 무장됩니다." if arms_live else
-             "이 승인은 런타임만 재개하며 라이브 진입을 무장하지 않습니다."),
-            "승인과 소비 사이에 정지 상태가 바뀌면 이 승인은 STOP_CHANGED로 거부되고, 새 요청이",
-            "필요합니다.",
         ]
     elif trial:
         lines += [

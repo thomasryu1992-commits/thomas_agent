@@ -1,15 +1,12 @@
 """The pipeline worker — the engine's contract, and the placement that keeps it an engine.
 
-Two claims are under test. First, the execution contract the dispatch door used to own:
-attribution to ``assistant_bridge``, the capped ``run_task`` arguments, the reply shapes the
-assistant has always seen. Second — the reason the worker exists — that it is NOT an
-assistant door: its socket lives outside the assistant-mounted ``bridge/`` directory, it
-refuses to listen without a stated uid allowlist, and it re-checks kind and kill switch on
-arrival rather than trusting its peer.
+Two claims are under test. First, the execution contract: the scheduler's attribution, the capped
+``run_task`` arguments, the reply shapes, and the jobs. Second, the placement: its socket lives
+outside ``bridge/``, it refuses to listen without a stated uid allowlist, and it re-checks kind,
+profile and kill switch on arrival rather than trusting its peer. The assistant's dispatch door
+was this socket's other caller until it was retired (2026-10-25).
 
-These do not run the pipeline (that needs a local Core); ``run_task`` is captured. The
-round-trip tests stand a real worker door and a real dispatch door on private sockets and
-speak through both, so the forward path is exercised end to end without a model.
+These do not run the pipeline (that needs a local Core); ``run_task`` is captured.
 """
 
 from __future__ import annotations
@@ -20,10 +17,9 @@ import threading
 
 import pytest
 
-from runtime.mvp_runtime import control, dispatch_bridge, pipeline_worker, socket_door
+from runtime.mvp_runtime import control, pipeline_worker, socket_door
 from runtime.mvp_runtime.control import ControlStore
 from runtime.mvp_runtime.errors import ControlBlocked
-from runtime.mvp_runtime.socket_door import ASSISTANT_ACTOR
 from runtime.mvp_runtime.store import LedgerStore
 
 NOW = "2026-08-10T09:00:00Z"
@@ -75,18 +71,21 @@ def captured_run_task(monkeypatch):
     return calls
 
 
+SCHEDULER = "mvp.scheduler"
+
+
 def _valid(**over):
-    req = {"request": "analyze this idea", "kind": "analysis", "reason": "operator asked"}
+    req = {"request": "analyze this idea", "kind": "analysis", "reason": "operator asked",
+           "actor_profile": pipeline_worker.SCHEDULER_PROFILE}
     req.update(over)
     return req
 
 
-# --- the permission surface is the door's, imported not copied ----------------
+# --- the permission surface: four non-trading kinds -----------------------------
 
-def test_the_kind_set_is_the_doors_own_object():
-    """One authority: widening the door's set widens the worker's, and the two can never
-    disagree. Identity, not equality — a copy that happened to match today could drift."""
-    assert pipeline_worker._ALLOWED_KINDS is dispatch_bridge._ALLOWED_KINDS
+def test_the_kind_set_is_the_four_non_trading_kinds():
+    """The set the retired dispatch door defined, now owned here; none of them reaches money."""
+    assert pipeline_worker._ALLOWED_KINDS == frozenset({"analysis", "research", "translation", "content"})
 
 
 @pytest.mark.parametrize("kind", ["development", "trade", "crypto", "admin"])
@@ -142,14 +141,14 @@ def test_a_valid_dispatch_runs_capped_and_attributed(tmp_path, captured_run_task
     assert out["ok"] is True
     assert out["kind"] == "analysis"
     assert out["final_response"] == "ok"
-    assert out["actor"] == ASSISTANT_ACTOR
+    assert out["actor"] == SCHEDULER
 
     assert len(captured_run_task) == 1
     call = captured_run_task[0]
     assert call["request_kind"] == "analysis"
-    assert call["requester_id"] == ASSISTANT_ACTOR
-    assert call["requester_type"] == "agent"
-    assert call["channel"] == "agent"
+    assert call["requester_id"] == SCHEDULER
+    assert call["requester_type"] == "scheduler"
+    assert call["channel"] == "scheduler"
     assert call["authenticated"] is True
     assert call["keyword_seeds"] is None  # no seeds sent -> the run carries none
     assert "operator asked for a market read" in call["source_ref"]
@@ -194,13 +193,13 @@ def test_a_pipeline_block_is_shaped_as_an_answer_with_its_kind(tmp_path, monkeyp
     assert out["kind"] == "analysis"
     assert out["task_id"] is None
     assert out["reason_code"] == "NO_ROUTABLE_ROLE"
-    assert out["actor"] == ASSISTANT_ACTOR
+    assert out["actor"] == SCHEDULER
 
 
 def test_the_source_ref_reads_identically_across_the_split(tmp_path, captured_run_task):
     """Ledger continuity: attribution strings must not change shape because the process did."""
-    pipeline_worker.apply_work(_valid(reason="why"), control_store=ControlStore(tmp_path))
-    assert captured_run_task[0]["source_ref"] == f"{ASSISTANT_ACTOR}:dispatch: why"
+    pipeline_worker.apply_work(_valid(reason="scheduler:sched_abc"), control_store=ControlStore(tmp_path))
+    assert captured_run_task[0]["source_ref"] == "scheduler:sched_abc"
 
 
 # --- the placement: an engine, not a door -------------------------------------
@@ -242,81 +241,17 @@ def test_the_worker_refuses_a_socket_inside_the_assistant_mounted_directory(tmp_
 
 # --- the forward path, end to end over real sockets ---------------------------
 
-@unix_only
-def test_a_dispatch_travels_door_to_worker_and_back(tmp_path, monkeypatch, captured_run_task):
-    """The whole plane-R path without a model: client -> dispatch door (validates, forwards)
-    -> worker (re-validates, runs the captured pipeline) -> reply relayed to the client."""
-    monkeypatch.delenv(socket_door.CLIENT_GID_ENV, raising=False)
-
-    worker_path = tmp_path / "internal" / "pipeline.sock"
-    monkeypatch.setenv(socket_door.CLIENT_UID_ENV, str(os.getuid()))
-    worker = pipeline_worker.open_door(
-        worker_path, control_store=ControlStore(tmp_path), ledger=LedgerStore(tmp_path),
-    )
-    monkeypatch.delenv(socket_door.CLIENT_UID_ENV, raising=False)
-
-    door_path = tmp_path / "bridge" / "dispatch.sock"
-    door = dispatch_bridge.open_door(
-        door_path, control_store=ControlStore(tmp_path), ledger=LedgerStore(tmp_path),
-        worker_socket=worker_path,
-    )
-
-    threads = [threading.Thread(target=s.serve_forever, daemon=True) for s in (worker, door)]
-    for t in threads:
-        t.start()
-    try:
-        reply = socket_door.call_door(
-            door_path, _valid(reason="round trip"), deadline_seconds=10.0,
-        )
-        assert reply["ok"] is True
-        assert reply["task_id"] == "task-1"
-        assert reply["trace_id"] == "trace-1"
-        assert reply["actor"] == ASSISTANT_ACTOR
-        assert len(captured_run_task) == 1
-        assert captured_run_task[0]["requester_id"] == ASSISTANT_ACTOR
-    finally:
-        for server in (door, worker):
-            server.shutdown()
-            server.server_close()
-
-
-@unix_only
-def test_a_dead_worker_answers_worker_unavailable_with_no_path_in_the_reply(tmp_path, monkeypatch):
-    """Fail-closed, no fallback: with the worker gone the door refuses — it does not (and
-    cannot) run the pipeline itself — and the assistant-facing envelope names no filesystem
-    path, per the BRIDGE_ERROR redaction rule."""
-    monkeypatch.delenv(socket_door.CLIENT_GID_ENV, raising=False)
-    monkeypatch.delenv(socket_door.CLIENT_UID_ENV, raising=False)
-
-    door_path = tmp_path / "bridge" / "dispatch.sock"
-    door = dispatch_bridge.open_door(
-        door_path, control_store=ControlStore(tmp_path), ledger=LedgerStore(tmp_path),
-        worker_socket=tmp_path / "internal" / "pipeline.sock",  # never created
-    )
-    thread = threading.Thread(target=door.serve_forever, daemon=True)
-    thread.start()
-    try:
-        reply = socket_door.call_door(
-            door_path, _valid(reason="worker is down"), deadline_seconds=10.0,
-        )
-        assert reply["ok"] is False
-        assert reply["reason_code"] == "WORKER_UNAVAILABLE"
-        assert str(tmp_path) not in reply.get("reason", "")
-    finally:
-        door.shutdown()
-        door.server_close()
-
-
 # --- attribution: two callers, and only one of them can be the scheduler ------
 
-def test_the_default_profile_is_the_assistant(tmp_path, captured_run_task):
-    """The door sends no profile, so absence must keep meaning what it meant before the
-    scheduler existed as a caller."""
-    pipeline_worker.apply_work(_valid(), control_store=ControlStore(tmp_path))
-    call = captured_run_task[0]
-    assert call["requester_id"] == ASSISTANT_ACTOR
-    assert call["requester_type"] == "agent"
-    assert call["channel"] == "agent"
+def test_a_frame_without_a_profile_is_refused_never_defaulted(tmp_path, captured_run_task):
+    """Absence meant the assistant until its door was retired; it now means nothing, and the
+    worker refuses rather than file the work under an actor nobody named."""
+    frame = _valid()
+    del frame["actor_profile"]
+    with pytest.raises(ControlBlocked) as exc:
+        pipeline_worker.apply_work(frame, control_store=ControlStore(tmp_path))
+    assert exc.value.reason_code == "ACTOR_PROFILE_NOT_PERMITTED"
+    assert captured_run_task == []
 
 
 def test_the_scheduler_profile_records_the_scheduler_not_the_assistant(tmp_path, captured_run_task):
@@ -334,7 +269,7 @@ def test_the_scheduler_profile_records_the_scheduler_not_the_assistant(tmp_path,
     # Verbatim, so the row reads exactly as an in-process scheduled run's did before the
     # delegation — no `assistant_bridge:dispatch:` prefix on scheduler work.
     assert call["source_ref"] == "scheduler:sched_abc"
-    assert ASSISTANT_ACTOR not in call["source_ref"]
+    assert "assistant_bridge" not in call["source_ref"]
 
 
 @pytest.mark.parametrize("bogus", ["operator", "thomas", "", "  ", 42, ["scheduler"]])
@@ -347,58 +282,6 @@ def test_an_unknown_profile_is_refused_never_defaulted(tmp_path, bogus, captured
         )
     assert exc.value.reason_code == "ACTOR_PROFILE_NOT_PERMITTED"
     assert not captured_run_task
-
-
-def test_the_assistant_cannot_express_the_scheduler_profile(tmp_path):
-    """The property the attribution split rests on, asserted at the door rather than argued.
-
-    Both callers run as uid 10001, so SO_PEERCRED cannot separate them and a second socket
-    would not either. What keeps the assistant out of the scheduler's identity is that the
-    door's key set is closed: a frame carrying `actor_profile` is refused before it is ever
-    forwarded, so the string cannot reach the worker from the assistant's side."""
-    assert "actor_profile" not in dispatch_bridge._ALLOWED_KEYS
-    with pytest.raises(ControlBlocked) as exc:
-        dispatch_bridge.apply_dispatch(
-            {"request": "analyze", "kind": "analysis", "reason": "x",
-             "actor_profile": pipeline_worker.SCHEDULER_PROFILE},
-            control_store=ControlStore(tmp_path), execute=lambda *a, **k: {"ok": True},
-        )
-    assert exc.value.reason_code == "ARGUMENT_NOT_ACCEPTED"
-
-
-@unix_only
-def test_a_request_through_the_door_is_attributed_to_the_assistant(tmp_path, monkeypatch,
-                                                                   captured_run_task):
-    """The other half, end to end rather than by inspection: work that arrives through the
-    door is recorded as the assistant's, because the door sends no profile and the worker's
-    default is the assistant. Driven through both real sockets, so it would catch a door that
-    started sending one."""
-    monkeypatch.delenv(socket_door.CLIENT_GID_ENV, raising=False)
-    worker_path = tmp_path / "internal" / "pipeline.sock"
-    monkeypatch.setenv(socket_door.CLIENT_UID_ENV, str(os.getuid()))
-    worker = pipeline_worker.open_door(
-        worker_path, control_store=ControlStore(tmp_path), ledger=LedgerStore(tmp_path),
-    )
-    monkeypatch.delenv(socket_door.CLIENT_UID_ENV, raising=False)
-    door_path = tmp_path / "bridge" / "dispatch.sock"
-    door = dispatch_bridge.open_door(
-        door_path, control_store=ControlStore(tmp_path), ledger=LedgerStore(tmp_path),
-        worker_socket=worker_path,
-    )
-    threads = [threading.Thread(target=s.serve_forever, daemon=True) for s in (worker, door)]
-    for t in threads:
-        t.start()
-    try:
-        reply = socket_door.call_door(
-            door_path, _valid(reason="whose work is this"), deadline_seconds=10.0,
-        )
-        assert reply["actor"] == ASSISTANT_ACTOR
-        assert captured_run_task[0]["requester_id"] == ASSISTANT_ACTOR
-        assert captured_run_task[0]["requester_type"] == "agent"
-    finally:
-        for server in (door, worker):
-            server.shutdown()
-            server.server_close()
 
 
 # --- the job surface (Phase 2 D5: the model call, not the fire) ---------------
@@ -484,20 +367,6 @@ def test_a_job_is_refused_while_killed(tmp_path):
             control_store=store, providers={"validator_provider": MockDataReviewProvider()},
         )
     assert exc.value.reason_code == store.load().refusal_reason_code()
-
-
-def test_the_assistant_cannot_express_a_job(tmp_path):
-    """Same property the actor profile rests on: the door's key set is closed, so `job`
-    cannot reach the worker from the assistant's side at all."""
-    assert "job" not in dispatch_bridge._ALLOWED_KEYS
-    assert "inventory" not in dispatch_bridge._ALLOWED_KEYS
-    with pytest.raises(ControlBlocked) as exc:
-        dispatch_bridge.apply_dispatch(
-            {"request": "x", "kind": "analysis", "reason": "y",
-             "job": pipeline_worker.JOB_DATA_REVIEW},
-            control_store=ControlStore(tmp_path), execute=lambda *a, **k: {"ok": True},
-        )
-    assert exc.value.reason_code == "ARGUMENT_NOT_ACCEPTED"
 
 
 def test_the_worker_states_a_frame_ceiling_the_inventory_fits_in():
@@ -608,7 +477,7 @@ def test_forwarded_work_runs_without_the_second_reviewer_by_default(monkeypatch)
 
     monkeypatch.setattr("runtime.mvp_runtime.pipeline_worker.run_task", _capture)
     pipeline_worker.apply_work(
-        {"request": "분석해줘", "kind": "analysis", "reason": "test"},
+        {"request": "분석해줘", "kind": "analysis", "reason": "test", "actor_profile": "scheduler"},
         control_store=ControlStore(pathlib.Path("/tmp")), now="2026-08-23T09:00:00Z")
     assert seen["independent_validation"] is False
     assert seen["revise"] is False
@@ -626,266 +495,11 @@ def test_the_policies_reach_run_task_when_the_deployment_sets_them(monkeypatch):
 
     monkeypatch.setattr("runtime.mvp_runtime.pipeline_worker.run_task", _capture)
     pipeline_worker.apply_work(
-        {"request": "분석해줘", "kind": "analysis", "reason": "test"},
+        {"request": "분석해줘", "kind": "analysis", "reason": "test", "actor_profile": "scheduler"},
         control_store=ControlStore(pathlib.Path("/tmp")), now="2026-08-23T09:00:00Z",
         independent_validation="AUTO", revise=True)
     assert seen["independent_validation"] == "AUTO"
     assert seen["revise"] is True
-
-
-# --- the registry entry an assistant run leaves behind (door API v2) --------------
-
-import json as _json
-
-from runtime.mvp_runtime import task_registry as _tr
-from runtime.mvp_runtime.task_registry import TaskRegistryStore as _Registry
-
-
-@pytest.fixture
-def completed_run(monkeypatch):
-    """Like `captured_run_task`, with the ids shaped as the real pipeline shapes them
-    (`task_…`/`trace_…`). The registry validates every row it appends against its schema, so a
-    close carrying an id in any other shape is swallowed as REGISTRY_RECORD_INVALID — the
-    shared fixture's `task-1` would leave every entry RUNNING here, and this pins that the
-    real shape closes."""
-    calls: list[dict] = []
-
-    def _fake(raw_request, **kwargs):
-        calls.append({"raw_request": raw_request, **kwargs})
-        return {
-            "status": "COMPLETED",
-            "final_response": "ok",
-            "records": {"received_task": {"identity": {"task_id": "task_a1", "trace_id": "trace_a1"}}},
-        }
-
-    monkeypatch.setattr(pipeline_worker, "run_task", _fake)
-    return calls
-
-
-def test_an_assistant_run_opens_running_and_closes_delivered_with_its_ids(tmp_path, completed_run):
-    registry = _Registry(tmp_path)
-    out = pipeline_worker.apply_work(
-        _valid(client_id="hermes:dm"), control_store=ControlStore(tmp_path), registry=registry, now=NOW,
-    )
-    entry = registry.find(out["registry_entry_id"])
-    assert entry.origin == "AGENT" and entry.status == _tr.DELIVERED
-    assert entry.requester_id == ASSISTANT_ACTOR and entry.request_kind == "analysis"
-    assert entry.task_id == "task_a1" and entry.trace_id == "trace_a1" and entry.result_ref == "ledger:trace_a1"
-    assert registry.find("task_a1").registry_entry_id == out["registry_entry_id"]   # the reply's id resolves
-    assert out["task_id"] == "task_a1"
-    # Never QUEUED: the operator's drain claims QUEUED regardless of origin.
-    rows = [_json.loads(line) for line in registry.path.read_text(encoding="utf-8").splitlines()]
-    assert [r["status"] for r in rows] == [_tr.RUNNING, _tr.DELIVERED]
-    # The attribution the assistant named lands on the task record, nowhere that decides.
-    assert completed_run[0]["created_by"] == f"{ASSISTANT_ACTOR}:hermes:dm"
-    assert completed_run[0]["requester_id"] == ASSISTANT_ACTOR
-
-
-def test_without_a_client_id_no_created_by_is_passed(tmp_path, captured_run_task):
-    pipeline_worker.apply_work(_valid(), control_store=ControlStore(tmp_path), registry=_Registry(tmp_path), now=NOW)
-    assert "created_by" not in captured_run_task[0]
-
-
-def test_a_blocked_run_closes_blocked_with_the_pipelines_reason(tmp_path, monkeypatch):
-    def _blocked(raw_request, **kwargs):
-        return {"status": "BLOCKED", "block": {"reason_code": "PERMISSION_EXCEEDED", "message": "no"},
-                "records": {"received_task": {"identity": {"task_id": "task_b", "trace_id": "trace_b"}}}}
-    monkeypatch.setattr(pipeline_worker, "run_task", _blocked)
-    registry = _Registry(tmp_path)
-    out = pipeline_worker.apply_work(_valid(), control_store=ControlStore(tmp_path), registry=registry, now=NOW)
-    assert out["ok"] is False and out["reason_code"] == "PERMISSION_EXCEEDED"
-    entry = registry.find(out["registry_entry_id"])
-    assert entry.status == _tr.BLOCKED and entry.last_reason_code == "PERMISSION_EXCEEDED"
-    assert entry.task_id == "task_b"
-
-
-def test_a_run_that_raises_closes_failed_and_still_raises(tmp_path, monkeypatch):
-    def _explodes(raw_request, **kwargs):
-        raise RuntimeError("provider down")
-    monkeypatch.setattr(pipeline_worker, "run_task", _explodes)
-    registry = _Registry(tmp_path)
-    with pytest.raises(RuntimeError):
-        pipeline_worker.apply_work(_valid(), control_store=ControlStore(tmp_path), registry=registry, now=NOW)
-    (entry,) = registry.latest()
-    assert entry.status == _tr.FAILED and entry.last_reason_code == pipeline_worker.WORKER_EXCEPTION_REASON_CODE
-
-
-def test_the_scheduler_profile_records_nothing_here(tmp_path, captured_run_task):
-    """The scheduler opens its own SCHEDULER entry before delegating; recording its forwarded
-    run here too would make one run two entries."""
-    registry = _Registry(tmp_path)
-    out = pipeline_worker.apply_work(
-        _valid(actor_profile=pipeline_worker.SCHEDULER_PROFILE, reason="scheduler:sched_abc"),
-        control_store=ControlStore(tmp_path), registry=registry, now=NOW,
-    )
-    assert out["ok"] is True and out["registry_entry_id"] is None
-    assert registry.latest() == []
-
-
-def test_a_missing_registry_never_costs_the_run(tmp_path, captured_run_task):
-    out = pipeline_worker.apply_work(_valid(client_id="hermes:dm"), control_store=ControlStore(tmp_path), now=NOW)
-    assert out["ok"] is True and out["registry_entry_id"] is None
-    assert len(captured_run_task) == 1
-
-
-def test_a_refused_frame_records_nothing(tmp_path, captured_run_task):
-    registry = _Registry(tmp_path)
-    store = ControlStore(tmp_path)
-    control.apply_command(store, control.CMD_KILL, actor="test", now=NOW, reason="halt", ledger=FakeLedger())
-    with pytest.raises(ControlBlocked):
-        pipeline_worker.apply_work(_valid(), control_store=store, registry=registry, now=NOW)
-    assert registry.latest() == [] and not captured_run_task
-
-
-def test_the_worker_reconciles_only_its_own_origin_at_startup(tmp_path):
-    registry = _Registry(tmp_path)
-    agent = _tr.record_submission(registry, request_text="a", origin=_tr.AGENT_ORIGIN, requester_id=ASSISTANT_ACTOR, now=NOW)
-    theirs = _tr.record_submission(registry, request_text="b", origin="SCHEDULER", requester_id="mvp.scheduler:s1", now=NOW)
-    closed = pipeline_worker.reconcile_worker_entries(registry, now="2026-08-10T09:05:00Z")
-    assert [e.registry_entry_id for e in closed] == [agent.registry_entry_id]
-    assert registry.find(theirs.registry_entry_id).status == _tr.RUNNING
-    assert pipeline_worker.reconcile_worker_entries(None, now=NOW) == []
-
-
-def test_the_worker_accepts_client_id_and_still_refuses_proto(tmp_path, captured_run_task):
-    with pytest.raises(ControlBlocked) as exc:
-        pipeline_worker.apply_work(_valid(proto=2), control_store=ControlStore(tmp_path))
-    assert exc.value.reason_code == "ARGUMENT_NOT_ACCEPTED"
-    with pytest.raises(ControlBlocked) as exc:
-        pipeline_worker.apply_work(_valid(client_id="bad name"), control_store=ControlStore(tmp_path))
-    assert exc.value.reason_code == "MALFORMED_REQUEST"
-    assert not captured_run_task
-
-
-# --- the attempt frame (sequence 2, P05) ------------------------------------------------------
-#
-# The workflow manager names the attempt it opened; the worker echoes it and reports the run's
-# recorded spend, and the registry row is origin WORKFLOW — the manager's to reconcile.
-
-_ATTEMPT = "wfa_" + "a" * 20
-_WORKFLOW = "wf_" + "b" * 20
-
-
-def _attempt_frame(**over):
-    req = _valid(attempt_id=_ATTEMPT, workflow_id=_WORKFLOW)
-    req.update(over)
-    return req
-
-
-@pytest.fixture
-def run_task_with_spend(monkeypatch):
-    calls: list[dict] = []
-
-    def _fake(raw_request, **kwargs):
-        calls.append({"raw_request": raw_request, **kwargs})
-        return {
-            "status": "COMPLETED", "final_response": "ok",
-            "records": {
-                "received_task": {"identity": {"task_id": "task_1", "trace_id": "trace_1"}},
-                "budget_usage": {"model_calls": 2, "tokens_used": 1234, "agent_invocations": 2, "revision_cycles": 0},
-            },
-        }
-
-    monkeypatch.setattr(pipeline_worker, "run_task", _fake)
-    return calls
-
-
-def test_an_attempt_frame_opens_a_workflow_row_and_echoes_its_ids_and_spend(tmp_path, run_task_with_spend):
-    from runtime.mvp_runtime import task_registry
-    from runtime.mvp_runtime.task_registry import TaskRegistryStore
-
-    registry = TaskRegistryStore(tmp_path)
-    reply = pipeline_worker.apply_work(_attempt_frame(), control_store=ControlStore(tmp_path), registry=registry)
-    assert reply["ok"] and reply["attempt_id"] == _ATTEMPT and reply["workflow_id"] == _WORKFLOW
-    assert reply["usage"] == {"model_calls": 2, "tokens_used": 1234, "agent_invocations": 2, "revision_cycles": 0}
-    (entry,) = registry.latest()
-    assert entry.origin == task_registry.WORKFLOW_ORIGIN and entry.status == task_registry.DELIVERED
-    assert entry.registry_entry_id == reply["registry_entry_id"] and entry.request_kind == "analysis"
-    assert entry.trace_id == "trace_1" and entry.result_ref == "ledger:trace_1"
-
-
-def test_an_ordinary_dispatch_carries_no_attempt_keys_and_stays_origin_agent(tmp_path, run_task_with_spend):
-    from runtime.mvp_runtime import task_registry
-    from runtime.mvp_runtime.task_registry import TaskRegistryStore
-
-    registry = TaskRegistryStore(tmp_path)
-    reply = pipeline_worker.apply_work(_valid(), control_store=ControlStore(tmp_path), registry=registry)
-    assert reply["ok"] and not ({"attempt_id", "workflow_id", "usage"} & set(reply))
-    assert registry.latest()[0].origin == task_registry.AGENT_ORIGIN
-
-
-@pytest.mark.parametrize("frame, code", [
-    (_attempt_frame(attempt_id="attempt-1"), "MALFORMED_REQUEST"),
-    (_attempt_frame(workflow_id="nope"), "MALFORMED_REQUEST"),
-    (_valid(workflow_options={"revise": True}), "MALFORMED_REQUEST"),          # options without an attempt
-    (_attempt_frame(workflow_options={"write_output": True}), "MALFORMED_REQUEST"),
-    (_attempt_frame(workflow_options={"revise": "yes"}), "MALFORMED_REQUEST"),
-    (_attempt_frame(actor_profile="scheduler"), "MALFORMED_REQUEST"),
-])
-def test_attempt_fields_are_refused_when_malformed_partial_or_not_the_assistants(tmp_path, captured_run_task, frame, code):
-    with pytest.raises(ControlBlocked) as exc:
-        pipeline_worker.apply_work(frame, control_store=ControlStore(tmp_path))
-    assert exc.value.reason_code == code
-    assert not captured_run_task
-
-
-def test_workflow_options_raise_the_assurance_policy_and_never_lower_it(tmp_path, captured_run_task):
-    pipeline_worker.apply_work(_attempt_frame(workflow_options={"independent_validation": True, "revise": True}),
-                               control_store=ControlStore(tmp_path))
-    assert captured_run_task[-1]["independent_validation"] is True and captured_run_task[-1]["revise"] is True
-    pipeline_worker.apply_work(_attempt_frame(workflow_options={"independent_validation": False}),
-                               control_store=ControlStore(tmp_path), independent_validation=True, revise=True)
-    assert captured_run_task[-1]["independent_validation"] is True and captured_run_task[-1]["revise"] is True
-    pipeline_worker.apply_work(_attempt_frame(), control_store=ControlStore(tmp_path))
-    assert captured_run_task[-1]["independent_validation"] is False and captured_run_task[-1]["revise"] is False
-
-
-def test_a_blocked_attempt_run_still_echoes_and_reports_what_it_spent(tmp_path, monkeypatch):
-    def _blocked(raw_request, **kwargs):
-        return {"status": "BLOCKED", "final_response": None,
-                "block": {"reason_code": "VALIDATION_BLOCK", "message": "no"},
-                "records": {"received_task": {"identity": {"task_id": "task_2", "trace_id": "trace_2"}},
-                            "budget_usage": {"model_calls": 1, "tokens_used": 50}}}
-
-    monkeypatch.setattr(pipeline_worker, "run_task", _blocked)
-    reply = pipeline_worker.apply_work(_attempt_frame(), control_store=ControlStore(tmp_path))
-    assert reply["ok"] is False and reply["reason_code"] == "VALIDATION_BLOCK"
-    assert reply["attempt_id"] == _ATTEMPT and reply["usage"]["model_calls"] == 1 and reply["usage"]["tokens_used"] == 50
-
-
-# --- the inputs an attempt was handed (sequence 2, P07) -----------------------------------------
-
-def test_workflow_inputs_are_recorded_on_the_runs_source_and_lift_nothing(tmp_path, run_task_with_spend):
-    reply = pipeline_worker.apply_work(
-        _attempt_frame(workflow_inputs={"draft2": "ledger:trace_b2", "draft1": "ledger:trace_b1"}),
-        control_store=ControlStore(tmp_path),
-    )
-    assert reply["ok"] and reply["attempt_id"] == _ATTEMPT
-    call = run_task_with_spend[0]
-    assert call["source_ref"] == "assistant_bridge:dispatch: operator asked inputs=draft1=ledger:trace_b1,draft2=ledger:trace_b2"
-    assert call["independent_validation"] is False and call["revise"] is False
-    assert "workflow_inputs" not in call and "write_path" not in call
-
-
-@pytest.mark.parametrize("frame, code", [
-    (_valid(workflow_inputs={"a": "ledger:trace_1"}), "MALFORMED_REQUEST"),               # inputs without an attempt
-    (_attempt_frame(workflow_inputs={}), "MALFORMED_REQUEST"),
-    (_attempt_frame(workflow_inputs=["ledger:trace_1"]), "MALFORMED_REQUEST"),
-    (_attempt_frame(workflow_inputs={"Bad Key": "ledger:trace_1"}), "MALFORMED_REQUEST"),
-    (_attempt_frame(workflow_inputs={"a": "trace_1"}), "MALFORMED_REQUEST"),               # not a ledger reference
-    (_attempt_frame(workflow_inputs={"a": "ledger:../etc"}), "MALFORMED_REQUEST"),
-    (_attempt_frame(workflow_inputs={"a": None}), "MALFORMED_REQUEST"),
-    (_attempt_frame(workflow_inputs={f"s{i}": "ledger:trace_1" for i in range(11)}), "MALFORMED_REQUEST"),
-])
-def test_workflow_inputs_are_refused_when_malformed(tmp_path, captured_run_task, frame, code):
-    with pytest.raises(ControlBlocked) as exc:
-        pipeline_worker.apply_work(frame, control_store=ControlStore(tmp_path))
-    assert exc.value.reason_code == code
-    assert not captured_run_task
-
-
-def test_the_assistant_cannot_send_workflow_inputs_through_the_door():
-    assert "workflow_inputs" not in dispatch_bridge._ALLOWED_KEYS and "workflow_inputs" in pipeline_worker._ALLOWED_KEYS
 
 
 # --- a kill that lands mid-run stops the next effect (outside review 3.2, 2026-10-23) ----------------

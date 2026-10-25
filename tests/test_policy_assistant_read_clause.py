@@ -24,12 +24,12 @@ def test_the_policy_verbs_and_the_read_doors_inventory_are_the_same_set_both_way
     assert read_bridge.POLICY_GATED_READS <= served
 
 
-def test_the_clause_grants_nothing_and_the_mirror_is_a_sink():
+def test_the_clause_grants_nothing():
     channel = _control_channel()
     clause = channel["assistant_read"]
     assert clause["actor"] == "assistant_bridge"
     assert clause["mutation_allowed"] is False and clause["gate_grants_authority"] is False
-    assert channel["approval_notification_mirror"]["decision_source"] is False
+    assert "approval_notification_mirror" not in channel          # retired with the switch door, 1.7.0
     assert "telegram_group" in channel["invalid_approval_sources"]      # unchanged by 1.5.0
 
 

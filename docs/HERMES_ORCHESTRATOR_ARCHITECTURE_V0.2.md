@@ -1,7 +1,9 @@
 # Hermes 오케스트레이터 아키텍처 V0.2 — 결정 기록과 불변식
 
-> **은퇴 (Thomas 2026-10-25):** Hermes 컨테이너는 비용 때문에 은퇴했다. 이 문서는 2026-09-03~10-25의
-> 결정 기록으로 남는다. 은퇴의 이유와 함께 빠진 것: [`history/2026-10-25-retire-hermes-container.md`](history/2026-10-25-retire-hermes-container.md).
+> **은퇴 (Thomas 2026-10-25):** Hermes 컨테이너는 비용 때문에 은퇴했고, 문 4개(read·switch·dispatch·knowledge)와
+> workflow manager, knowledge 레인도 함께 제거됐다(정책 1.7.0). 이 문서는 2026-09-03~10-25의 결정 기록으로 남는다.
+> 이유와 함께 빠진 것: [`history/2026-10-25-retire-hermes-container.md`](history/2026-10-25-retire-hermes-container.md),
+> [`history/2026-10-25-retire-assistant-doors.md`](history/2026-10-25-retire-assistant-doors.md).
 
 **Status:** 결정됨 (Thomas, 2026-09-03) · **개정 V0.2 (2026-09-14) — workflow manager 도입 결정.** [V0.1](HERMES_ORCHESTRATOR_ARCHITECTURE_V0.1.md)(#826)을 대체한다. 이 문서는 통합 시퀀스 2(§5.2, P00~P11)의 입력이다. 구현·배포·권한 활성화는 이 문서로 승인된 것이 아니다.
 **Normative authority:** None — 권한의 정본은 [`governance/GOVERNANCE_POLICY.yaml`](../governance/GOVERNANCE_POLICY.yaml)(1.5.0)이고, 불변식은 코드·테스트·정책이 강제한다. 이 문서는 그것들에 이름을 붙이고, 통합이 무엇을 보존해야 하는지를 적는다.

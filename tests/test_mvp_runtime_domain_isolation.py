@@ -8,9 +8,9 @@ a rule the same day:
 - **The core import graph loads zero domain modules.** Core modules that dispatch into a lane
   (`scheduler.py`, `domain_console.py`) do it with function-local imports, so importing the
   core never pays for — or couples to — a lane.
-- **A domain package appears at module level only in its own door modules.** Today that is
-  `knowledge_bridge.py` / `knowledge_bridge_cli.py`, whose whole job is to front the knowledge
-  package for the socket door. A new door widens the lane's surface into the core, which is a
+- **A domain package appears at module level only in its own door modules.** Today there are
+  none: the one pair (`knowledge_bridge.py` / `knowledge_bridge_cli.py`, the Hermes socket's
+  knowledge door) was retired with its lane on 2026-10-25. A new door widens the lane's surface into the core, which is a
   decision to record here — the same containment shape as `_GATE_ENV_VARS` in conftest and the
   env-only-gate caller test: the list is exact in both directions, so drift fails the suite
   either way.
@@ -35,12 +35,8 @@ DOMAIN_PACKAGES = sorted(
 )
 
 # The doors: core modules allowed to import a domain package at module level, exactly.
-EXPECTED_DOORS = {
-    # The knowledge door for the Hermes socket — its module docstring is the reasoning.
-    "knowledge_bridge.py",
-    # The CLI entrypoint of that same door; nothing else imports either of them.
-    "knowledge_bridge_cli.py",
-}
+# Empty since 2026-10-25, when the knowledge door and its lane were retired with the assistant.
+EXPECTED_DOORS: set[str] = set()
 
 
 def _module_level_domain_imports(path: pathlib.Path) -> list[str]:
