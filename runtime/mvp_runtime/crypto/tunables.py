@@ -76,6 +76,7 @@ from . import (
     protection_watch,
     robustness,
     strategy,
+    strategy_funnel,
     template_space,
     testnet_evidence,
     trade_plan,
@@ -223,6 +224,10 @@ TUNABLES: tuple[Tunable, ...] = (
             "and closed at freeze + 180 days, and holds its lineage keys against later freezes until then",
             "Decision 2 B re-asked at cohort 1's close (2027-03-22), or the 1h walk cap (~200 days) "
             "binding before a member reaches its trade floor"),
+    Tunable("FAMILY_WINDOW_DAYS", strategy_funnel.FAMILY_WINDOW_DAYS, "crypto/strategy_funnel.py", OPERATOR,
+            "Thomas 2026-09-24 (FAMILY_EXHAUSTION B): the funnel's family table reads 30 days of mints, the "
+            "window the measurement that motivated it used; display only, nothing reads it",
+            "a retirement review that needs a longer window than one month of rotation gives a family"),
     Tunable("PROTECTION_UNKNOWN_NOTIFY_MINUTES", protection_watch.PROTECTION_UNKNOWN_NOTIFY_MINUTES,
             "crypto/protection_watch.py", OPERATOR,
             "Thomas 2026-09-30 (PROTECTION_UNKNOWN_ESCALATION D1): two 15-minute passes, so a single "

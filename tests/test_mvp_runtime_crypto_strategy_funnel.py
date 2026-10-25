@@ -106,7 +106,7 @@ def test_the_script_reads_only_and_prints_json(tmp_path, capsys):
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     assert script.main(["--json"], root=tmp_path) == 0
     out = json.loads(capsys.readouterr().out)
-    assert set(out) == {"pool", "forward", "null", "trials", "independent_bets", "judgement_rules"}
+    assert set(out) == {"pool", "forward", "null", "trials", "families", "independent_bets", "judgement_rules"}
     assert out["forward"] is None and out["null"] is None
     assert out["trials"] is None
     assert out["independent_bets"] == {"cohort": None, "twins": None, "pool_forward": None,
@@ -191,3 +191,68 @@ def test_the_twins_bet_census_reads_only_the_active_arms_rows(monkeypatch):
     assert seen == [[{"candidate_id": "null_v2_a"}]]
     monkeypatch.setattr(sf, "active_null_ids", lambda root: frozenset())
     assert sf._active_twin_bets(None) is None
+
+
+# --- the family exhaustion table (FAMILY_EXHAUSTION_V0.1 B, Thomas 2026-09-24) -----------------------------
+
+from runtime.mvp_runtime.crypto import robustness  # noqa: E402
+
+NOW_FX = "2026-10-25T09:00:00Z"
+
+
+def _fx(cid, family, created, *, confirmed, oi=False, symbol="BTCUSDT", source=None):
+    """A row the stubbed holdout reads as CONFIRMED (``tag C``) or not; ``oi`` makes its evidence INVALID."""
+    feature = "open_interest_change_pct" if oi else "rsi"
+    row = {"candidate_id": cid, "created_at_utc": created,
+           "strategy_spec": {"strategy_family": family, "timeframe": "1h", "symbol_scope": [symbol],
+                             "direction": "long", "entry_rules": {"conditions": [{"feature": feature}]}},
+           "backtest_evidence": {"holdout": {"tag": "C" if confirmed else "X"}}}
+    if source:
+        row["rescored_from_candidate_id"] = source
+    return row
+
+
+def test_the_family_table_counts_mints_and_valid_confirmations(monkeypatch):
+    monkeypatch.setattr(robustness, "holdout_status", lambda h: robustness.HOLDOUT_CONFIRMED
+                        if h and h.get("tag") == "C" else robustness.HOLDOUT_CONTRADICTED)
+    records = [
+        _fx("a1", "breakout", "2026-10-20T08:00:00Z", confirmed=True),
+        _fx("a2", "breakout", "2026-10-21T08:00:00Z", confirmed=True, symbol="ETHUSDT"),
+        _fx("a3", "breakout", "2026-08-01T08:00:00Z", confirmed=True),              # confirmed, outside the window
+        _fx("b1", "oi_squeeze_long", "2026-09-01T08:00:00Z", confirmed=True, oi=True),   # lookahead: INVALID
+        _fx("b1r", "oi_squeeze_long", "2026-10-21T09:04:00Z", confirmed=False, source="b1"),  # its re-score
+        _fx("c1", "trend_pullback", "2026-10-22T08:00:00Z", confirmed=False),
+    ]
+    table = strategy_funnel.family_exhaustion(records, None, now=NOW_FX)["by_family"]
+    assert table["breakout"]["rows_window"] == 2 and table["breakout"]["confirmed_window"] == 2
+    assert table["breakout"]["last_confirmed"] == "2026-10-21T08:00:00Z"
+    assert table["breakout"]["confirmed_lineages"] == 2           # BTC and ETH; a3 shares BTC's lineage
+    oi = table["oi_squeeze_long"]
+    assert oi["confirmed_invalid"] == 1 and oi["confirmed_window"] == 0 and oi["last_confirmed"] is None
+    assert oi["rows_window"] == 0, "a re-score is not a mint, and it dates from the 09-01 candidate it re-scored"
+    assert table["trend_pullback"] == {**table["trend_pullback"], "rows_window": 1, "confirmed_window": 0}
+
+
+def test_a_rescore_that_confirms_is_dated_by_its_source(monkeypatch):
+    monkeypatch.setattr(robustness, "holdout_status", lambda h: robustness.HOLDOUT_CONFIRMED
+                        if h and h.get("tag") == "C" else robustness.HOLDOUT_CONTRADICTED)
+    records = [_fx("s", "oi_unwind_short", "2026-08-14T08:00:00Z", confirmed=True, oi=True),
+               _fx("s_r", "oi_unwind_short", "2026-10-21T09:04:00Z", confirmed=True, source="s")]
+    records += [_fx("t", "oi_squeeze_short", "2026-10-01T08:00:00Z", confirmed=False, oi=True),
+                _fx("t_r", "oi_squeeze_short", "2026-10-21T09:04:00Z", confirmed=False, source="t")]
+    table = strategy_funnel.family_exhaustion(records, None, now=NOW_FX)["by_family"]
+    row = table["oi_unwind_short"]
+    assert row["last_confirmed"] == "2026-08-14T08:00:00Z" and row["confirmed_window"] == 0
+    assert row["confirmed_invalid"] == 1
+    assert table["oi_squeeze_short"]["rows_window"] == 1          # one mint in the window; its re-score is not another
+
+
+def test_the_family_table_is_printed_as_a_measurement(monkeypatch):
+    monkeypatch.setattr(robustness, "holdout_status", lambda h: robustness.HOLDOUT_CONTRADICTED)
+    section = strategy_funnel.family_exhaustion(
+        [_fx("c1", "trend_pullback", "2026-10-22T08:00:00Z", confirmed=False)],
+        {"by": {"strategy_family": {"trend_pullback": {"members": 3, "maturity:EXPLORATORY": 3}}}}, now=NOW_FX)
+    lines = strategy_funnel._render_families(section)
+    assert any("RETIRED_FAMILIES change" in line for line in lines)
+    row = next(line for line in lines if line.strip().startswith("trend_pullback"))
+    assert "3 (EXPLORATORY=3)" in row

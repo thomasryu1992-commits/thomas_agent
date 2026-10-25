@@ -26,11 +26,16 @@ ranks or decides anything.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from .. import timeutil
+from . import robustness
 from .candidate_identity import candidate_id
-from .candidate_ranking import attempts_by_context, pooled_context_keys, rank_candidates
+from .candidate_ranking import (
+    attempts_by_context, evidence_invalid, evidence_standing, pooled_context_keys, rank_candidates,
+)
 from .forward_confirmation import min_forward_trades
 from . import forward_book
 from .forward_cohort import MATURITIES, cohort_report, maturity_of, read_cohort_outcomes
@@ -177,13 +182,76 @@ def _member_counts(lines: Iterable[Mapping[str, Any]], spec_of: Any) -> tuple[di
     return counts, by
 
 
-def strategy_funnel(root: Path | None = None) -> dict[str, Any]:
+def strategy_funnel(root: Path | None = None, *, now: str | None = None) -> dict[str, Any]:
     """Both funnels over one read of the candidate store."""
     records = read_candidates(root)
-    return {"pool": pool_funnel(records, load_active_pool(root)), "forward": forward_funnel(root, records),
+    forward = forward_funnel(root, records)
+    return {"pool": pool_funnel(records, load_active_pool(root)), "forward": forward,
             "null": null_funnel(root), "trials": trial_funnel(records, root),
+            "families": family_exhaustion(records, forward, now=now or timeutil.utc_now_iso()),
             "independent_bets": independent_bets(root),
             "judgement_rules": judgement_fingerprint()}
+
+
+FAMILY_WINDOW_DAYS = 30
+
+
+def family_exhaustion(records: Sequence[Mapping[str, Any]], forward: Mapping[str, Any] | None, *,
+                      now: str) -> dict[str, Any]:
+    """Per strategy family, what its mints have produced (`FAMILY_EXHAUSTION_V0.1` B, Thomas 2026-09-24).
+
+    Measurement only: retirement stays a `RETIRED_FAMILIES` code change on Thomas's call, and nothing
+    reads this table. A candidate is counted once, at its first row's mint time, judged on its latest
+    row; a re-score (`rescored_from_candidate_id`) is judged as its own row but dated, and not counted
+    as a mint, by the candidate it re-scored. CONFIRMED is the holdout recomputed under today's rule (`robustness.holdout_status`) on evidence
+    that is not INVALID (`candidate_ranking.evidence_standing`): the 2026-09-24 signal this section was
+    built to watch was four `oi_*` CONFIRMED rows, and the OI lookahead later made every one of them
+    INVALID. A lookahead lifts the holdout with the rest of the replay, so it cannot count as a
+    confirmation here either; BIASED ones count and are shown."""
+    minted_at: dict[str, str] = {}
+    latest: dict[str, Mapping[str, Any]] = {}
+    for record in records:
+        cid = candidate_id(record)
+        stamp = str(record.get("created_at_utc") or "")
+        if cid not in minted_at or (stamp and stamp < minted_at[cid]):
+            minted_at[cid] = stamp
+        latest[cid] = record
+    def mint_time(cid: str) -> str:
+        # A re-score is a new row about an old mint: it dates from the candidate it re-scored.
+        seen = set()
+        while cid not in seen and (source := latest[cid].get("rescored_from_candidate_id")) in latest:
+            seen.add(cid)
+            cid = str(source)
+        return minted_at[cid]
+
+    since = timeutil.format_iso(timeutil.parse_iso(now) - timedelta(days=FAMILY_WINDOW_DAYS))
+    families: dict[str, dict[str, Any]] = {}
+    for cid, record in latest.items():
+        spec = record.get("strategy_spec") or {}
+        row = families.setdefault(str(spec.get("strategy_family") or UNKNOWN), {
+            "rows_window": 0, "confirmed_window": 0, "confirmed_biased": 0, "confirmed_invalid": 0,
+            "last_confirmed": None, "confirmed_lineages": set()})
+        recent = mint_time(cid) >= since
+        row["rows_window"] += recent and not record.get("rescored_from_candidate_id")
+        holdout = (record.get("backtest_evidence") or {}).get("holdout")
+        if robustness.holdout_status(holdout if isinstance(holdout, Mapping) else None) \
+                != robustness.HOLDOUT_CONFIRMED:
+            continue
+        if evidence_invalid(record):
+            row["confirmed_invalid"] += 1
+            continue
+        row["confirmed_window"] += recent
+        row["confirmed_biased"] += bool(evidence_standing(record)["biased"])
+        row["last_confirmed"] = max(filter(None, (row["last_confirmed"], mint_time(cid))), default=None)
+        row["confirmed_lineages"].add(_lineage_key(spec))
+    members = ((forward or {}).get("by") or {}).get("strategy_family") or {}
+    for family, row in families.items():
+        row["confirmed_lineages"] = len(row["confirmed_lineages"])
+        cells = members.get(family) or {}
+        row["forward_members"] = cells.get("members", 0)
+        row["forward_maturity"] = {key.split(":", 1)[1]: n for key, n in sorted(cells.items())
+                                   if key.startswith("maturity:")}
+    return {"window_days": FAMILY_WINDOW_DAYS, "since": since, "by_family": families}
 
 
 def independent_bets(root: Path | None) -> dict[str, Any]:
@@ -223,6 +291,7 @@ def render_text(funnel: Mapping[str, Any]) -> list[str]:
             lines.append(f"  {stage['after']:<24} -{stage['dropped']:<6} left {stage['remaining']}")
     lines.append(f"  {PROMOTABLE:<24} {pool['outcomes'][PROMOTABLE]}")
     lines += _render_breakdown(pool["by"], order=(*BACKLOG_REFUSAL_AXES, PROMOTABLE))
+    lines += _render_families(funnel.get("families"))
     forward = funnel.get("forward")
     lines += ["", "FORWARD COHORT - every frozen member (option A: this opens no door)"]
     if forward is None:
@@ -279,6 +348,30 @@ def _render_bets(name: str, census: Mapping[str, Any] | None) -> list[str]:
     top = census.get("top_same_direction_pairs") or []
     if top:
         lines.append(f"  {'':<13} most alike: " + ", ".join(f"{p['a']}~{p['b']} {p['corr']}" for p in top))
+    return lines
+
+
+def _render_families(section: Mapping[str, Any] | None) -> list[str]:
+    """One line per family minted in the window or ever confirmed; the rest are counted, not listed."""
+    if not section:
+        return []
+    rows = section["by_family"]
+    shown = [f for f, r in rows.items() if r["rows_window"] or r["confirmed_lineages"]]
+    shown.sort(key=lambda f: (-rows[f]["confirmed_window"], -rows[f]["confirmed_lineages"],
+                              -rows[f]["rows_window"], f))
+    invalid = sum(r["confirmed_invalid"] for r in rows.values())
+    lines = ["", f"FAMILIES - mints since {section['since']} ({section['window_days']} days); holdout CONFIRMED "
+                 f"on evidence that is not INVALID ({invalid} INVALID CONFIRMED left out). Measurement only: "
+                 "retiring a family is a RETIRED_FAMILIES change",
+             f"  {'family':<28} {'rows':>5} {'conf':>5} {'last conf':<11} {'lineages':>8}  forward"]
+    for family in shown:
+        r = rows[family]
+        conf = f"{r['confirmed_window']}" + ("b" * bool(r["confirmed_biased"]))
+        maturity = " ".join(f"{k}={n}" for k, n in r["forward_maturity"].items())
+        lines.append(f"  {family[:28]:<28} {r['rows_window']:>5} {conf:>5} {(r['last_confirmed'] or '-')[:10]:<11} "
+                     f"{r['confirmed_lineages']:>8}  {r['forward_members'] or '-'}" + (f" ({maturity})" if maturity else ""))
+    if len(rows) > len(shown):
+        lines.append(f"  ... {len(rows) - len(shown)} more with no mint in the window and no confirmation")
     return lines
 
 

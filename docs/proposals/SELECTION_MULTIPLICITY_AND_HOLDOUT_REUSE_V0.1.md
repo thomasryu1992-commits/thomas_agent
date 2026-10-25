@@ -1,6 +1,6 @@
 # Two structural weaknesses in strategy selection: an uncorrected holdout path to LIVE, and a holdout that leaks into breeding
 
-**Status:** DECIDED 2026-09-30 — D1 C·D2·D3 B→A·D4 예(Thomas): LIVE는 FORWARD_CONFIRMED 필수, forward 기준을 `observed_lineages`로 보정, 재사용 홀드아웃 표시는 버그 수정으로 지금 구현, 검증 슬라이스는 에포크 경계. 남은 구현: ① 문 변경, ② B 표시. ② A는 `REMAINING_WORK.md` §L.
+**Status:** DECIDED 2026-09-30 — D1 C·D2·D3 B→A·D4 예(Thomas): LIVE는 FORWARD_CONFIRMED 필수, forward 기준을 `observed_lineages`로 보정, 재사용 홀드아웃 표시는 버그 수정으로 지금 구현, 검증 슬라이스는 에포크 경계. ① 문 변경은 #1047(LIVE 문은 forward만 읽는다), ② B는 #1043(교배 자식의 홀드아웃은 확정하지 못한다)으로 구현됐다. 남은 것은 에포크 경계 항목이다: ② A(`REMAINING_WORK.md` §L)와 검증 슬라이스(D4). (상태 줄 갱신 2026-10-25)
 
 **What this is:** two findings from a read-only review of the selection chain (factory → robustness →
 pool admission → LIVE door), with the measurements behind them and the options for each. Nothing is

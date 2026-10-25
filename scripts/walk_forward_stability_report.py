@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from runtime.mvp_runtime.crypto import backtest, pool, robustness
+from runtime.mvp_runtime.crypto.candidate_ranking import evidence_invalid, evidence_standing
 from runtime.mvp_runtime.crypto.strategy import StrategySpec
 
 
@@ -148,22 +149,35 @@ def main(argv: list[str] | None = None) -> int:
     # The grouping status is recomputed from the stored holdout block (`holdout_status`),
     # exactly as `candidate_ranking.candidate_quality` does — a mint-time label can be two rule
     # vintages stale, and grouping on it would validate the metric against the wrong answer key.
+    #
+    # INVALID evidence is left out of the split (`candidate_ranking.evidence_standing`). A lookahead
+    # leaks the same future into the scored region and the holdout, so it lifts both the metric
+    # and the answer key: on 2026-10-25, 12 of the 14 CONFIRMED rows were `oi_lookahead`, and they
+    # alone made the split look sharp (AUC 0.89 with them, 0.39 on the two that remained).
     stability_by_status: dict[str, list[float]] = defaultdict(list)
+    biased_by_status: Counter[str] = Counter()
     unjudgeable = 0
+    invalid = 0
     for record in rows:
         evidence = record["backtest_evidence"]
         stability = would_be_temporal_stability(evidence["walk_forward"])
         if stability is None:
             unjudgeable += 1
             continue
+        if evidence_invalid(record):
+            invalid += 1
+            continue
         holdout = evidence.get("holdout")
         status = robustness.holdout_status(holdout if isinstance(holdout, Mapping) else None)
         stability_by_status[status].append(stability)
+        if evidence_standing(record)["biased"]:
+            biased_by_status[status] += 1
     print(f"\nwould-be temporal_stability by (recomputed) holdout status "
-          f"({unjudgeable} below the floor):")
+          f"({unjudgeable} below the floor; {invalid} with INVALID evidence left out):")
     for status in (robustness.HOLDOUT_CONFIRMED, robustness.HOLDOUT_INSUFFICIENT,
                    robustness.HOLDOUT_CONTRADICTED, robustness.HOLDOUT_UNCONFIRMED):
-        print(_median_line(status, stability_by_status.get(status, [])))
+        line = _median_line(status, stability_by_status.get(status, []))
+        print(line + (f"   ({biased_by_status[status]} BIASED)" if biased_by_status[status] else ""))
     print("  READS: the holdout is not an input to the metric, so this split is a legitimate")
     print("  validation target. CONFIRMED not clearly above CONTRADICTED = the metric is")
     print("  noise here, and PR-2 does not happen on these numbers.")
