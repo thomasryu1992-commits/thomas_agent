@@ -10,7 +10,6 @@ verified reader of the frozen registry is tested in `test_mvp_runtime_canary_evi
 
 from __future__ import annotations
 
-import ast
 import json
 from pathlib import Path
 
@@ -1161,15 +1160,14 @@ def _status_for_view(*, ready=True, armed=0, armed_known=True, gate_known=True, 
 # tests pinned read True under a kill or a disarm (FO-10).
 
 
-def test_live_entry_possible_is_what_the_read_shim_says_it_is(tmp_path, clean_env):
-    """The assistant is told `live_entry_possible` is `true` only when every entry of
-    `readiness.components` is ok, and to quote `readiness.blocking` or `readiness.unknown` otherwise
-    (`trading_readiness` in integrations/hermes/mcp/read_bridge_mcp.py, shims 2.12). 2.11 listed the
+def test_live_entry_possible_is_what_the_read_shim_said_it_is(tmp_path, clean_env):
+    """`live_entry_possible` is `true` only when every entry of `readiness.components` is ok, with
+    `readiness.blocking` or `readiness.unknown` naming why otherwise — what the assistant's
+    `trading_readiness` shim (2.12) told it until the shim was retired with its container (2026-10-25). 2.11 listed the
     four fields the value was made of and said "nothing else", which stopped being true the day the
     readiness state added the kill, the disarm and the breakers (PR5a) — as a list of members had gone
     stale twice before. The description names the lists now, so a joining component needs no new
-    sentence; this pins that the value IS those lists, on hand-made statuses and on the real board, and
-    that the description says so."""
+    sentence; this pins that the value IS those lists, on hand-made statuses and on the real board."""
     four_fields_of_2_11 = {
         "live_armed_strategies": {"known": True, "armed": 1},
         "recorded_gate": {"known": True, "open": True, "stale": False},
@@ -1188,13 +1186,6 @@ def test_live_entry_possible_is_what_the_read_shim_says_it_is(tmp_path, clean_en
             f"{name}:{c['reason']}" for name, c in components.items() if c["ok"] is False]
         assert data["readiness"]["unknown"] == [
             f"{name}:{c['reason']}" for name, c in components.items() if c["ok"] is None]
-    shim = Path(__file__).resolve().parents[1] / "integrations" / "hermes" / "mcp" / "read_bridge_mcp.py"
-    tool = next(node for node in ast.parse(shim.read_text(encoding="utf-8")).body
-                if isinstance(node, ast.FunctionDef) and node.name == "trading_readiness")
-    description = ast.get_docstring(tool) or ""
-    for field in ("live_entry_possible", "readiness.components", "readiness.blocking",
-                  "readiness.unknown"):
-        assert f"`{field}`" in description, field
 
 
 def test_the_view_carries_the_boards_instant_and_is_json_safe():

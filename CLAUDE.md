@@ -122,13 +122,11 @@ core thin while lanes grow, stated as rules:
   on, so a branch that falls behind `main` re-runs after `update-branch`. Push follow-up commits
   BEFORE enabling auto-merge, or disable it first — a green head merges as soon as the five are
   green, and a later push arrives on a merged PR.
-- **The assistant is the ninth compose service, not part of the runtime image.**
-  `hermes` in `docker-compose.yml` is image-only (`hermes-agent`, built from
-  `/root/hermes-trial/hermes-agent` out of band); the deploy procedure below never rebuilds or
-  retags it, and `up -d` recreates it only when its own service block changed. Its boundary —
-  bridge-only mount, three `.env` values, no `depends_on` — is pinned in
-  `tests/test_deployment_env_passthrough.py`; changing that block is a governance change, not a
-  deploy detail (`docs/HERMES_ORCHESTRATOR_ARCHITECTURE_V0.2.md`).
+- **The assistant's container (Hermes) is retired** (Thomas 2026-10-25, on cost). `docker-compose.yml`
+  has no `hermes` service, and `test_the_retired_assistant_is_not_a_service` keeps it that way.
+  Bringing an assistant container back is a governance change, not a deploy detail. Its bot token
+  (`HERMES_BOT_TOKEN`) stays as the send-only notification window, and the control bot stays the
+  one inbound door. Why and what went with it: `docs/history/2026-10-25-retire-hermes-container.md`.
 - Match existing style: `from __future__ import annotations`, type hints, no import-time
   side effects.
 

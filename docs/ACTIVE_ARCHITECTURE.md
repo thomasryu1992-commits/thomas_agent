@@ -151,6 +151,11 @@ PermissionDecisions, pass the same Safety-Flag Gate, and append to the same audi
 
 ### Who is on the other side of the four assistant doors
 
+**Nobody, since 2026-10-25:** Thomas retired the Hermes container on cost
+([`history/2026-10-25-retire-hermes-container.md`](history/2026-10-25-retire-hermes-container.md)). The doors
+still run until their own removal and admit uid 10000, which nothing on the host now holds. What follows
+is the record of the client they served.
+
 Named here because until 2026-08-22 no document in this repository did, and two facts about that
 client change how the doors' guarantees should be read.
 

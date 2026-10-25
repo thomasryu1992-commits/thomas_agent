@@ -186,7 +186,7 @@ def test_one_unhealthy_container_waits_for_a_second_look(tmp_path):
 @posix_only
 def test_a_problem_that_clears_within_the_window_never_speaks(tmp_path):
     table = _all_healthy()
-    table["hermes"] = "running|unhealthy|0|false|{id}|2026-09-07T00:00:00Z"
+    table["thomas-claude-read-bridge"] = "running|unhealthy|0|false|{id}|2026-09-07T00:00:00Z"
     assert _run(tmp_path, table).returncode == 0
     assert _run(tmp_path, _all_healthy()).returncode == 0
     log = (tmp_path / "health-watch.log").read_text(encoding="utf-8")
@@ -230,7 +230,7 @@ def test_a_crash_loop_does_not_wait_for_confirmation(tmp_path):
 def test_a_recreated_container_resets_the_counter_without_alerting(tmp_path):
     """`up -d` gives a new id and RestartCount 0; a drop is a deploy, not a crash."""
     table = _all_healthy()
-    table["hermes"] = "running|healthy|4|false|{id}|2026-09-07T00:00:00Z"
+    table["thomas-claude-read-bridge"] = "running|healthy|4|false|{id}|2026-09-07T00:00:00Z"
     _run(tmp_path, table)
     fresh = _all_healthy()                              # different stub id? same string, count back to 0
     result = _run(tmp_path, fresh)
@@ -240,12 +240,12 @@ def test_a_recreated_container_resets_the_counter_without_alerting(tmp_path):
 @posix_only
 def test_starting_is_normal_until_it_is_not(tmp_path):
     table = _all_healthy()
-    table["hermes"] = "running|starting|0|false|{id}|2026-09-07T00:00:00Z"   # long past 15 minutes
+    table["thomas-claude-read-bridge"] = "running|starting|0|false|{id}|2026-09-07T00:00:00Z"   # long past 15 minutes
     result = _run(tmp_path, table, dry_run=True, confirm_runs=1)
     assert result.returncode == 1 and "starting" in result.stdout
 
     recent = _all_healthy()
-    recent["hermes"] = "running|starting|0|false|{id}|2099-01-01T00:00:00Z"  # a deploy, seconds ago
+    recent["thomas-claude-read-bridge"] = "running|starting|0|false|{id}|2099-01-01T00:00:00Z"  # a deploy, seconds ago
     assert _run(tmp_path, recent, dry_run=True, confirm_runs=1).returncode == 0
 
 
@@ -411,7 +411,7 @@ def test_a_container_stuck_restarting_still_names_the_cause(tmp_path):
     OOM flag and the restart count that say why."""
     _run(tmp_path, _all_healthy(), delivers="200")
     table = _all_healthy()
-    table["hermes"] = "restarting|none|7|true|{id}|2026-09-07T00:00:00Z"
+    table["thomas-claude-read-bridge"] = "restarting|none|7|true|{id}|2026-09-07T00:00:00Z"
     _run(tmp_path, table, delivers="200")
     sent = (tmp_path / "sent.txt").read_text(encoding="utf-8")
     assert "OOM" in sent and "크래시 루프" in sent
@@ -432,7 +432,7 @@ def test_a_silence_file_dated_in_the_future_does_not_mute(tmp_path):
     """`touch -d` with a mistyped year, or a clock that stepped back, would otherwise mute this
     for as long as the date is wrong — the one thing the six-hour ceiling exists to prevent."""
     table = _all_healthy()
-    table["hermes"] = UNHEALTHY
+    table["thomas-claude-read-bridge"] = UNHEALTHY
     silence = tmp_path / "health-watch.silence"
     silence.touch()
     os.utime(silence, (2 ** 31 - 1, 2 ** 31 - 1))            # 2038
@@ -473,7 +473,7 @@ def test_a_daemon_outage_does_not_erase_the_restart_baseline(tmp_path):
     """Rewriting only what was observed dropped all nine baselines on one outage, and the first
     run after it had nothing to compare against — a crash loop across the gap would vanish."""
     table = _all_healthy()
-    table["hermes"] = "running|healthy|2|false|{id}|2026-09-07T00:00:00Z"
+    table["thomas-claude-read-bridge"] = "running|healthy|2|false|{id}|2026-09-07T00:00:00Z"
     _run(tmp_path, table, delivers="200")
     down = subprocess.run(
         [str(SCRIPT)], capture_output=True, text=True, timeout=60,
@@ -483,7 +483,7 @@ def test_a_daemon_outage_does_not_erase_the_restart_baseline(tmp_path):
              "BACKUP_WATCH_LOG": str(_fresh_backup_log(tmp_path))},
     )
     assert down.returncode in (0, 1)
-    assert "restart_hermes=" in (tmp_path / "health-watch.state").read_text(encoding="utf-8")
+    assert "restart_thomas-claude-read-bridge=" in (tmp_path / "health-watch.state").read_text(encoding="utf-8")
 
 
 @posix_only

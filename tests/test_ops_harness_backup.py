@@ -42,7 +42,7 @@ esac
 def _host(tmp_path: Path) -> Path:
     host = tmp_path / "host"
     for d in ("thomas_agent/.runtime_governance_state", "thomas_agent/THOMAS_CORE/activations",
-              "thomas_agent/THOMAS_CORE/approvals", "thomas_agent/workspace", "hermes-trial/data"):
+              "thomas_agent/THOMAS_CORE/approvals", "thomas_agent/workspace"):
         (host / d).mkdir(parents=True)
     (host / "thomas_agent/.runtime_governance_state/records.jsonl").write_text("{}\n", encoding="utf-8")
     (host / "thomas_agent/.env").write_text("TOKEN=not-a-real-secret\n", encoding="utf-8")
@@ -171,7 +171,8 @@ def test_success_writes_only_the_encrypted_archive_and_names_the_key(tmp_path):
     assert body.startswith(HEADER)
     with tarfile.open(fileobj=io.BytesIO(gzip.decompress(body[len(HEADER):]))) as tar:
         members = tar.getnames()
-    assert "thomas_agent/.env" in members and "hermes-trial/data" in members
+    assert "thomas_agent/.env" in members
+    assert not any(m.startswith("hermes-trial") for m in members)   # retired with its container, 2026-10-25
 
 
 def test_legacy_plaintext_archives_go_only_once_seven_encrypted_ones_exist(tmp_path):

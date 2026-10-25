@@ -7,8 +7,8 @@ and nothing is active until an explicit, versioned, audited approval turns it on
 
 What runs today: a Telegram control channel and an analysis pipeline ("analyze this business
 idea"), a scheduler that fires recurring work, a crypto research and paper-trading lane, a content
-lane, and the doors an assistant (Hermes, a separate image) uses to reach them. Eight services
-from one image — see [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+lane, and the doors an assistant used to reach them (its container, Hermes, was retired
+2026-10-25). Eight services from one image — see [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 
 This is a personal system, published as-is. There is no license file.
 
