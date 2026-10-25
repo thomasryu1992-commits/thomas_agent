@@ -75,7 +75,7 @@ from .. import timeutil
 from ..audit import AuditError
 from ..coerce import as_optional_float as _f
 # `halt_advice` names the halt in an incident notice. It is `control`'s since refactor plan PR-04.
-from ..control import ACTIVE, CMD_HALT_TRADING, HALT_HARD, ControlStore, apply_command, halt_advice
+from ..control import ACTIVE, CMD_HALT_TRADING, HALT_HARD, ControlStore, apply_command, halt_advice, stop_ref
 from ..errors import MvpRuntimeError, ToolError
 from ..state_guard import assert_not_foreign_root_run
 from ..store import LedgerStore
@@ -1755,8 +1755,7 @@ def emergency_close_rows(positions: Sequence[Mapping[str, Any]]) -> list[dict[st
 def emergency_halt_problem(state: Any, halt_ref: str | None) -> str | None:
     """Why an emergency close may not run against ``state``, or None. It runs only under the HARD
     halt with the runtime ACTIVE (decision 49), and once asked for, only under the very halt Thomas
-    approved: ``halt_ref`` is the switch door's ``stop_ref`` of it, which any control write moves."""
-    from ..switch_bridge import stop_ref  # local: the door module is not part of the live stack
+    approved: ``halt_ref`` is ``control.stop_ref`` of it, which any control write moves."""
 
     if state.mode != ACTIVE or state.halt_level != HALT_HARD:
         halt = f"a {state.halt_level} halt" if state.halt_level else "no halt"
@@ -1792,8 +1791,6 @@ def emergency_close_content(
     """What an emergency-close ask binds (``permission.build_emergency_close_permission_decision``):
     the HARD halt in effect and every position the book holds. Reads the control state and the book;
     opens no socket and changes nothing."""
-    from ..switch_bridge import stop_ref
-
     control = control_store if control_store is not None else ControlStore.default(root)
     state = control.load()
     problem = emergency_halt_problem(state, None)

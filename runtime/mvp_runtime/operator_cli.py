@@ -40,9 +40,7 @@ from .operator import (
     announce_pending_approvals,
     load_operator_registration,
     notify_operator,
-    push_workflow_events,
     run_operator_once,
-    select_mirror_channel,
     select_operator_channel,
 )
 from .pipeline import AUTO_VALIDATION
@@ -53,7 +51,6 @@ from .store import LedgerStore
 from .task_registry import TaskRegistryStore, reconcile_stale_running
 from .tools import select_search_tool
 from .working_memory import WorkingMemoryStore
-from .workflow_store import WorkflowStore
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -91,7 +88,6 @@ def main(
     argv: list[str] | None = None,
     *,
     channel: OperatorChannel | None = None,
-    mirror_channel: OperatorChannel | None = None,
     registration: OperatorIdentity | None = None,
     provider: Any | None = None,
     validator_provider: Any | None = None,
@@ -104,7 +100,6 @@ def main(
     frontdesk_provider: Any | None = None,
     repo_root: Path | None = None,
     sleep: Any = time.sleep,
-    workflow_store: WorkflowStore | None = None,
 ) -> int:
     """Run the operator loop. Returns 0 on a clean finish, non-zero on a fail-closed block.
     Dependencies are injectable for tests; unset ones are selected through the Safety-Flag
@@ -119,10 +114,6 @@ def main(
         assert_state_writable(repo_root)
         registration = registration if registration is not None else load_operator_registration(repo_root)
         channel = channel if channel is not None else select_operator_channel(root=repo_root)
-        # The approval mirror (PR11, decision Q1-b): never raises — off with a stderr line when
-        # the gate is closed or the assistant's token is absent. A convenience must not stop
-        # the one service that reads `/approve`.
-        mirror_channel = mirror_channel if mirror_channel is not None else select_mirror_channel()
         provider = provider if provider is not None else select_provider()
         search_tool = search_tool if search_tool is not None else select_search_tool()
         # R7.1: the validator's own (gated) provider — None keeps the pipeline pairing.
@@ -146,7 +137,6 @@ def main(
     gate_banners(
         operator_channel=channel, analysis_provider=provider, search_tool=search_tool,
         validator_provider=validator_provider, frontdesk_provider=frontdesk_provider,
-        approval_mirror=mirror_channel,
     )
     if frontdesk_provider is not None:
         sys.stderr.write("FRONTDESK: conversational mode ON "
@@ -298,7 +288,7 @@ def main(
                 sys.stderr.write(f"  handled trace={reply.trace_id} status={reply.status}\n")
             batch += 1
             _beat()
-            # Deliver any switch-door approval ask nobody has seen. After the batch, so an
+            # Deliver any console-spent approval ask nobody has seen. After the batch, so an
             # `/approve` waiting in this poll is handled before the ask it answers could be
             # re-sent. Best-effort like `_beat` and the startup reconcile: the announcement is
             # a courtesy on top of the loop's job, and losing it must not take down the one
@@ -307,28 +297,11 @@ def main(
             try:
                 announced = announce_pending_approvals(
                     channel, approval_store, now=timeutil.utc_now_iso(), repo_root=repo_root,
-                    mirror=mirror_channel,
                 )
                 for approval_id in announced:
                     sys.stderr.write(f"OPERATOR: announced approval {approval_id}\n")
             except MvpRuntimeError as exc:
                 sys.stderr.write(f"OPERATOR: pending asks not announced ({exc.reason_code})\n")
-            # P08: push a workflow's arrival at a state Thomas acts on (WAITING_REPLAN) or wants
-            # to know about (COMPLETED / FAILED / BLOCKED / CANCELLED), recording each delivery.
-            # Same posture as the announcer: best-effort, one stderr line on failure, never a
-            # reason the loop stops reading `/approve`. The store is opened only if the manager
-            # ever created it — this process must not create an empty workflow store.
-            if workflow_store is None and WorkflowStore.exists(repo_root):
-                workflow_store = WorkflowStore.default(repo_root)
-            if workflow_store is not None:
-                try:
-                    pushed = push_workflow_events(channel, workflow_store, now=timeutil.utc_now_iso(), repo_root=repo_root)
-                    for cursor in pushed["sent"]:
-                        sys.stderr.write(f"OPERATOR: pushed workflow event #{cursor}\n")
-                    if pushed["adopted"]:
-                        sys.stderr.write(f"OPERATOR: workflow push adopted the backlog at event #{pushed['cursor']}\n")
-                except MvpRuntimeError as exc:
-                    sys.stderr.write(f"OPERATOR: workflow events not pushed ({exc.reason_code})\n")
             if args.sleep_seconds > 0 and (args.max_batches == 0 or batch < args.max_batches):
                 sleep(args.sleep_seconds)
     except KeyboardInterrupt:

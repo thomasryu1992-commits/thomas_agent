@@ -51,7 +51,6 @@ from .state_guard import assert_state_writable
 from .store import LedgerStore
 from .task_registry import TaskRegistryStore
 from .working_memory import WorkingMemoryStore
-from .workflow_store import WorkflowStore
 
 LOCAL_ACTOR = "local_scheduler_cli"
 GAP_ALERT_KEY = "startup_gap"
@@ -457,9 +456,6 @@ def main(
                     # nothing while an unattended run held the tick.
                     registry=TaskRegistryStore.default(repo_root),
                     kinds=lane_kind_set,
-                    # P09: a workflow_plan fire submits to the store the manager owns — opened
-                    # only if it exists, so this process never creates an empty one.
-                    workflow_store=(WorkflowStore.default(repo_root) if WorkflowStore.exists(repo_root) else None),
                     fire_guard=_fire_guard,
                 )
                 total_fired += summary["fired"]

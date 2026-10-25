@@ -81,11 +81,7 @@ SERVICES=(
   thomas-operator
   thomas-scheduler
   thomas-scheduler-maint
-  thomas-read-bridge
-  thomas-dispatch-bridge
   thomas-pipeline-worker
-  thomas-knowledge-bridge
-  thomas-switch-bridge
   thomas-claude-read-bridge
 )
 

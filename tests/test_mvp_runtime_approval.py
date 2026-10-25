@@ -682,14 +682,6 @@ _ASKS = {
         {"role_id": "research.candidate", "version": "0.1.0", "definition_sha256": "sha256:d"},
         trial_request="t",
     ),
-    "trading_switch": lambda: _minted_ask(
-        permission.build_trading_switch_permission_decision, "crypto", stop_ref="stop_1", stop_summary="s"),
-    "runtime_resume": lambda: _minted_ask(
-        permission.build_nonfinancial_resume_permission_decision, "crypto", stop_ref="stop_1", stop_summary="s"),
-    "workflow_step": lambda: _minted_ask(
-        permission.build_workflow_step_permission_decision, workflow_id="wf_1", step_key="s1", plan_version=1,
-        capability="analysis", request_sha256="sha256:q", request_preview="p",
-    ),
     "execution_stage": lambda: _minted_ask(
         permission.build_execution_stage_permission_decision,
         content={"venue": "binance", "transition": "CLIMB", "from_stage": "PAPER", "to_stage": "SIGNED_TESTNET",
@@ -738,10 +730,6 @@ _ASKS = {
 _UNDO = {
     "memory": _MEMORY_UNDO,
     "trial": "되돌릴 수 있는가: 예 — 격리된 1회 시험 실행이며 기록만 남습니다 (역할 활성화 아님)",
-    "trading_switch": "되돌릴 수 있는가: 예 — 끄기(stop/pause)는 승인 없이 즉시 적용됩니다",
-    "runtime_resume": "되돌릴 수 있는가: 예 — 끄기(stop/pause)는 승인 없이 즉시 적용됩니다",
-    "workflow_step": ("되돌릴 수 있는가: 실행 전까지는 예(cancel_workflow·/kill) — 실행된 단계는 "
-                      "P3 작업(모델 호출·작업공간 쓰기)으로 기록이 남습니다"),
     "execution_stage": ("되돌릴 수 있는가: 예 — 단계 강등은 승인 없이 즉시 적용됩니다(--demote), "
                         "청산은 어느 단계에서도 막히지 않습니다"),
     "pool_live": ("되돌릴 수 있는가: 예 — 무장 해제(scripts/disarm_live_strategies.py)는 승인 없이 즉시 "

@@ -1,8 +1,8 @@
 """The transport every bridge door sits on — one JSON object in, one out, over a unix socket.
 
-Three doors face the assistant: ``switch_bridge`` (the trading switch), ``read_bridge`` (the
-console reads) and ``dispatch_bridge`` (bounded P3 work). They carry different authorities and
-must stay separate modules, but they
+Two servers sit on it today: ``read_bridge`` (Claude's read door) and ``pipeline_worker`` (the
+scheduler's engine). The assistant's switch, dispatch and knowledge doors sat on it too until they
+were retired (2026-10-25). Each carries its own authority and stays a separate module, but they
 must **not** answer a malformed frame differently. A door that dies on a bad byte is a
 denial of service, and a door that half-applies a truncated request is worse; getting that
 right twice, and keeping it right through two future edits, is the drift this module exists

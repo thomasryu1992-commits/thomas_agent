@@ -410,18 +410,18 @@ def test_the_required_checks_all_still_run():
 
 # --- the services compose up would touch (Thomas 2026-10-12) -------------------------------------------------
 
-# Claude's read door (Option C C6b prerequisite 1) is a ninth runtime service, outside EIGHT: the stacks below
-# model the host as it runs before that door's first deploy.
+# Claude's read door (Option C C6b prerequisite 1) is a runtime service outside RUNTIME: the stacks below
+# model the host as it runs before that door's first deploy. RUNTIME was eight services until the four
+# assistant doors were retired (2026-10-25).
 CLAUDE_DOOR = "thomas-claude-read-bridge"
-EIGHT = ("thomas-operator", "thomas-scheduler", "thomas-scheduler-maint", "thomas-read-bridge",
-         "thomas-dispatch-bridge", "thomas-pipeline-worker", "thomas-knowledge-bridge", "thomas-switch-bridge")
+RUNTIME = ("thomas-operator", "thomas-scheduler", "thomas-scheduler-maint", "thomas-pipeline-worker")
 
 
 def _stack(**over):
-    """A host whose tree compose names the eight runtime services (hermes left the file 2026-10-25)."""
+    """A host whose tree compose names the runtime services (hermes and the doors left the file 2026-10-25)."""
     services = {name: {"container_name": name, "environment": {"TELEGRAM_BOT_TOKEN": SECRET}, "volumes": [
-        {"type": "bind", "source": pf.STATE_SOURCE, "target": "/app/.runtime_governance_state"}]} for name in EIGHT}
-    over.setdefault("running_names", list(EIGHT))
+        {"type": "bind", "source": pf.STATE_SOURCE, "target": "/app/.runtime_governance_state"}]} for name in RUNTIME}
+    over.setdefault("running_names", list(RUNTIME))
     return _promote_host(compose_raw=json.dumps({"services": services}), **over)
 
 
@@ -436,16 +436,16 @@ def test_the_whole_stack_running_passes_both_runs(promote):
 
 @pytest.mark.parametrize("promote", [False, True])
 def test_unrelated_containers_of_other_projects_are_not_compared(promote):
-    assert [r.level for r in _services(_stack(running_names=[*EIGHT, "hermes", "postgres", "blog-cron"]),
+    assert [r.level for r in _services(_stack(running_names=[*RUNTIME, "hermes", "postgres", "blog-cron"]),
                                        promote)] == ["PASS"]
 
 
 @pytest.mark.parametrize("running", [
     None,                                   # docker ps failed
     [],                                     # docker ps answered: nothing runs
-    [*EIGHT[1:], "hermes"],                 # one service down
-    [*EIGHT[:3], "hermes"],                 # several down
-    [*EIGHT, "hermes", "thomas-legacy"],    # a thomas- container this file no longer names
+    [*RUNTIME[1:], "hermes"],                 # one service down
+    [*RUNTIME[:3], "hermes"],                 # several down
+    [*RUNTIME, "hermes", "thomas-legacy"],    # a thomas- container this file no longer names
 ], ids=["ps-failed", "empty", "one-missing", "several-missing", "unexpected-thomas"])
 def test_any_service_difference_warns_first_and_stops_the_promote(capsys, running):
     assert {r.level for r in _services(_stack(running_names=running), False)} == {"WARN"}
@@ -456,12 +456,12 @@ def test_any_service_difference_warns_first_and_stops_the_promote(capsys, runnin
 
 
 def _stack_adding(*added, **over):
-    """A tree whose compose adds services the host does not run yet, on a host running the eight and hermes."""
-    names = [*EIGHT, *added]
+    """A tree whose compose adds services the host does not run yet, on a host running the runtime and hermes."""
+    names = [*RUNTIME, *added]
     services = {name: {"container_name": name, "environment": {"TELEGRAM_BOT_TOKEN": SECRET}, "volumes": [
         {"type": "bind", "source": pf.STATE_SOURCE, "target": "/app/.runtime_governance_state"}]} for name in names}
     services["hermes"] = {"container_name": "hermes", "volumes": []}
-    over.setdefault("running_names", [*EIGHT, "hermes"])
+    over.setdefault("running_names", [*RUNTIME, "hermes"])
     return _promote_host(compose_raw=json.dumps({"services": services}), **over)
 
 
@@ -487,9 +487,9 @@ def test_first_start_lets_through_only_the_container_it_names():
 
 
 @pytest.mark.parametrize("name, running", [
-    (CLAUDE_DOOR, [*EIGHT, "hermes", CLAUDE_DOOR]),     # already running: the flag is stale
-    ("thomas-claude-read-bridgee", [*EIGHT, "hermes"]),  # a typo: not in the compose file
-    ("thomas-scheduler", [*EIGHT, "hermes"]),           # running service named as new
+    (CLAUDE_DOOR, [*RUNTIME, "hermes", CLAUDE_DOOR]),     # already running: the flag is stale
+    ("thomas-claude-read-bridgee", [*RUNTIME, "hermes"]),  # a typo: not in the compose file
+    ("thomas-scheduler", [*RUNTIME, "hermes"]),           # running service named as new
 ], ids=["already-running", "typo", "running-service"])
 def test_a_first_start_name_that_is_not_exactly_a_new_container_stops_the_promote(name, running):
     results = _first_start(_stack_adding(CLAUDE_DOOR, running_names=running), True, name)
@@ -531,13 +531,13 @@ def _bind_sources() -> dict[str, list[str]]:
 # The variables the bind sources may be built from: paths only, never a credential. What each resolves
 # to lives in .env, which only the volume check at deploy time sees.
 PATH_VARIABLES = {"THOMAS_STATE_DIR", "THOMAS_CORE_ACTIVATIONS_DIR", "THOMAS_CORE_APPROVALS_DIR",
-                  "THOMAS_WORKSPACE_DIR", "THOMAS_BLOG_VAULT_DIR", "HERMES_DATA_DIR", "THOMAS_CLAUDE_DOOR_DIR"}
+                  "THOMAS_WORKSPACE_DIR", "THOMAS_BLOG_VAULT_DIR", "THOMAS_CLAUDE_DOOR_DIR"}
 
 
 def test_every_bind_source_is_a_path_variable_with_a_default():
     """Each bind source is ``${PATH_VAR:-default}[/sub]``: no literal host path, no other variable."""
     sources_by_service = _bind_sources()
-    assert sum(map(len, sources_by_service.values())) >= 25   # the file has 26; an empty parse is not a pass
+    assert sum(map(len, sources_by_service.values())) >= 18   # the file has 19; an empty parse is not a pass
     for service, sources in sources_by_service.items():
         for source in sources:
             match = re.fullmatch(r"\$\{([A-Z_]+):-[^}]+\}(/[\w./-]+)?", source)
@@ -548,7 +548,7 @@ def test_every_bind_source_is_a_path_variable_with_a_default():
 def test_every_runtime_service_mounts_the_state_root_from_the_one_variable():
     compose = _raw_compose()
     runtime = {n: s for n, s in compose["services"].items() if s.get("image") == "thomas-agent-runtime"}
-    assert {s.get("container_name") for s in runtime.values()} == {*EIGHT, CLAUDE_DOOR}
+    assert {s.get("container_name") for s in runtime.values()} == {*RUNTIME, CLAUDE_DOOR}
     state = "${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state"
     for name, spec in runtime.items():
         # Claude's read door alone mounts it read-only (C6b read door, RD decision f2, Thomas 2026-10-19).

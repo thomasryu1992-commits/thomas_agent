@@ -484,24 +484,15 @@ Rows are keyed by the name in `.env` (what leaves the file), not by the containe
 | `NAVER_SEARCHAD_API_KEY` | `pipeline-worker` | same |
 | `NAVER_SEARCHAD_SECRET_KEY` | `pipeline-worker` | same |
 | `TELEGRAM_BOT_TOKEN` | `operator`, `scheduler`, `scheduler-maint` | the control bot: the operator polls it; the two lanes list it only as the **fallback** when `HERMES_BOT_TOKEN` is unset |
-| `HERMES_BOT_TOKEN` | `operator`, `scheduler`, `scheduler-maint` | the notification bot (the assistant's until 2026-10-25): no poller; the two lanes and the operator's approval mirror send on it and never call `getUpdates`, which is what makes sharing it safe |
-
-**The door services hold nothing** — their `environment:` is exactly the two peer-gate variables
-(`test_the_dispatch_door_carries_only_the_peer_variables`), and no row above names them.
+| `HERMES_BOT_TOKEN` | `scheduler`, `scheduler-maint` | the notification bot (the assistant's until 2026-10-25): no poller; the two lanes send on it and never call `getUpdates` |
 
 **The assistant's container (Hermes) is retired** (2026-10-25). From PR5 (2026-09-04) it was
 the `hermes` service here, drawing `OPENROUTER_API_KEY`, `HERMES_BOT_TOKEN` (as the bot's one
 poller) and `HERMES_TELEGRAM_ALLOWED_USERS`; the last is now read by nothing and can leave `.env`.
 
-**One cell wider since 2026-09-04 (PR11, decision Q1-b):** the `operator` service also receives
-`HERMES_BOT_TOKEN`, under that name, for the approval mirror — a switch-door ask minted through the
-assistant is pushed to the control bot (where `/approve` is read) and a copy, with the invitation
-to answer removed and the destination stated, is sent on the assistant's bot into the window
-Thomas talks to it in. The operator's channel on that token is send-only by construction
-(`SendOnlyChannel` refuses `poll`/`peek` with `MIRROR_IS_SEND_ONLY`), so the operator never
-becomes that bot's poller. The mirror is off, and says so at startup, when the control channel is
-not `telegram`, when the variable is unset, or when it equals `TELEGRAM_BOT_TOKEN` (one bot cannot
-mirror itself). Expect a line reading `OPERATOR: approval mirror ON` in the operator's log.
+**The approval mirror is gone** (2026-10-25). From PR11 (2026-09-04) the `operator` also held
+`HERMES_BOT_TOKEN`, send-only, to copy switch-door asks into the assistant's window; it left with the
+switch door, and the operator holds the control bot's token alone again.
 
 **Renamed 2026-09-04:** `SCHEDULER_TELEGRAM_BOT_TOKEN` → `HERMES_BOT_TOKEN`. The old name is no
 longer read anywhere; a host still carrying it silently falls back to the control bot for lane
@@ -511,51 +502,15 @@ notifications, which is the misdelivery the 2026-08-01 comment in the compose fi
 enumerate it in exactly the services whose code reads it, add the row to `SECRET_OWNERSHIP` and
 to the table above. CI fails until all four agree.
 
-## The four assistant doors — check the boundary, no test can
+## The four assistant doors — retired 2026-10-25
 
-**Their client is gone since 2026-10-25** (the assistant's container was retired); the doors still
-run, admitting a uid nothing on the host now holds, until their own removal lands. The checks below
-that name `hermes` describe the container as it was.
-
-`read` / `switch` / `dispatch` / `knowledge` serve an assistant that lives in **another
-repository** (`/root/hermes-trial`). Two properties of that boundary are enforced by
-configuration rather than by code in this repo, so nothing here fails when they drift. Check them
-whenever either side is redeployed.
-
-**1. Each door admits one uid, and it is the assistant's gateway.**
-
-```bash
-for c in thomas-read-bridge thomas-switch-bridge thomas-dispatch-bridge thomas-knowledge-bridge; do
-  printf '%-26s ' "$c"; docker logs "$c" 2>&1 | grep -o 'uids=[^)]*' | tail -1
-done
-```
-
-Expect `uids=[10000]` on all four. `uids=unrestricted (group only)` means
-`MVP_BRIDGE_CLIENT_UID` is unset, and the doors are back to checking the gid alone — every peer,
-including a root shell on this host, is then recorded as actor `assistant_bridge` and the ledger
-cannot tell them apart. uid 0 is deliberately **not** in the allowlist: `docker exec hermes`
-defaults to root, so it cannot distinguish the host operator from the assistant's own container.
-Host-side checks go through the scheduler CLI (above), not through these doors — expect
-`PEER_NOT_PERMITTED` if you point a root shell at a door socket, and that is correct.
-
-**2. The assistant's container reaches this host by more than the doors.**
-
-```bash
-docker inspect hermes --format '{{json .HostConfig.Binds}} {{json .HostConfig.GroupAdd}}'
-```
-
-**The mount is gone — removed by Thomas's decision on 2026-08-29, reversing the 2026-08-22
-retention.** From 2026-07-31 to 08-29 that container mounted `/var/run/docker.sock` and carried
-the host `docker` group, which made it equivalent to host root — able to `docker exec` into
-`thomas-scheduler` and read the live-order keys the door processes are kept away from, unbound
-by any door guarantee (P3 ceiling, closed kind set, no money path). Actual use: 37 calls, all
-on 07-30/31, then zero for a month — which is why it went. The removal took the mount AND
-`group_add` out together (the mount is the one that matters: `stage2-hook.sh` re-adds the group
-on every boot by inspecting the socket, so with no socket the hook stands down). Verified on
-removal: no `/var/run/docker.sock` in the container, gateway groups reduced to `10000`, and a
-door round-trip still answers as uid 10000 while uid 0 still gets `PEER_NOT_PERMITTED`. The
-check above should now show empty Binds for the socket and an empty GroupAdd; a non-empty
-answer means the mount came back and this section is wrong again.
+`read` / `switch` / `dispatch` / `knowledge` served the assistant (Hermes) and were removed with it:
+the services, their modules, the workflow manager inside the dispatch door, the knowledge lane, and
+policy 1.7.0's removal of their clauses ([`history/2026-10-25-retire-assistant-doors.md`](history/2026-10-25-retire-assistant-doors.md)).
+`claude-read-bridge` stays: it is Claude's own read door, on the same `read_bridge.py` under the
+`claude` profile, and its policy-gated reads are granted by `control_channel.assistant_read`, which
+1.7.0 kept. The boundary checks this section used to carry (each door's uid allowlist, the
+assistant's mounts) have nothing left to check.
 
 ## Assurance policies — both ON since 2026-08-24
 

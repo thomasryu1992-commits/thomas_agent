@@ -34,11 +34,9 @@
 # recipient=<prefix> anchor=excluded` names the key the archive is for.
 #
 # Live SQLite files are NOT tarred (a WAL-mode database copied mid-write is not a backup). The
-# workflow store (sequence 2, P10; V0.2 Q28) is copied with the sqlite backup API instead: the dispatch bridge copies workflow.db with the backup API
-# into .runtime_governance_state/workflow/snapshots/<stamp>/ as uid 10001, that directory is tarred,
-# the live workflow.db* is excluded, and the log line says `workflow-snapshot=ok|absent|FAILED`
-# (absent = the manager never created the store on this host; not a failure). Only the newest
-# snapshot directory is kept. The execution stage ANCHOR is excluded on purpose (Thomas 2026-09-30,
+# workflow store was the one (sequence 2, P10): the dispatch bridge copied it with the sqlite backup
+# API and the log said `workflow-snapshot=…`. Since the doors were retired (2026-10-25) nothing writes
+# workflow.db, so it is tarred as the static file it now is, and the marker is gone. The execution stage ANCHOR is excluded on purpose (Thomas 2026-09-30,
 # EXECUTION_STAGE_ANTI_ROLLBACK D1 a): it vouches for the stage ledger, and restored together with the
 # ledger it would vouch for an older stage. Without it a restore reads READ_ONLY until a BOOTSTRAP,
 # which is the point. The archive is encrypted and cannot be listed on this host, so the check sits
@@ -195,26 +193,7 @@ case "$MODE" in
       exit 3
     fi
     RECIPIENT_NOTE="enc=age recipient=$(grep -m1 -E '^age1' "$RECIPIENTS" | cut -c1-12)"
-    # 1. A consistent copy of the workflow store (P10), made by the dispatch bridge as uid 10001
-    #     — the owner of the state directory, so the copy is the service's to write and to read
-    #     back. Non-fatal: the archive then carries the previous
-    #     snapshot directory and the log line says FAILED. No store = nothing to copy = absent.
-    WF_DIR="$THOMAS/.runtime_governance_state/workflow"
-    WF_NOTE="workflow-snapshot=ok"
-    if [ -e "$HOST_ROOT/$WF_DIR/workflow.db" ]; then
-      if docker exec -u 10001 thomas-dispatch-bridge python -m runtime.mvp_runtime.workflow_cli snapshot \
-             --dest "/app/.runtime_governance_state/workflow/snapshots/$STAMP" >/dev/null 2>&1; then
-        # Prune only after a good copy exists: the previous snapshot is the archive's only copy
-        # until this one is (review of P10, 2026-09-14 — a failed run used to delete it).
-        ls -1dt "$HOST_ROOT/$WF_DIR/snapshots"/*/ 2>/dev/null | tail -n +2 | xargs -r rm -rf
-      else
-        WF_NOTE="workflow-snapshot=FAILED"
-        rm -rf "${HOST_ROOT:?}/$WF_DIR/snapshots/$STAMP"      # a partial copy is not a snapshot; keep the last good one
-      fi
-    else
-      WF_NOTE="workflow-snapshot=absent"
-    fi
-    SNAP_NOTE="$WF_NOTE"
+    SNAP_NOTE=""
     # 2. One archive, member paths prefixed with the directory they restore into.
     # A missing member makes tar exit 2 and this script delete the archive it just wrote, so the
     # whole backup is lost for the sake of one absent path. Name the absent path in the log —
@@ -252,7 +231,6 @@ case "$MODE" in
     tar czvf - --index-file="$INDEX" --warning=no-file-changed -C "$HOST_ROOT" \
         --exclude="$THOMAS/.runtime_governance_state/crypto/candle_archive" \
         --exclude="$THOMAS/.runtime_governance_state/crypto/execution_stage_anchor.json" \
-        --exclude="$WF_DIR/workflow.db" --exclude="$WF_DIR/workflow.db-*" \
         --exclude=".claude/skills/synced" --exclude=".claude/skills/*.bak-*" --exclude=".claude/skills/*/*.bak-*" \
         "${MEMBERS[@]}" ${CONFIG_PRESENT[@]+"${CONFIG_PRESENT[@]}"} | "$AGE" -R "$RECIPIENTS" -o "$PART"
     PIPE=("${PIPESTATUS[@]}")
