@@ -1,9 +1,9 @@
 # 제안: temporal_stability를 측정하고 나서 판정한다 — 워크포워드 period 소계 (DRAFT v0.1)
 
-**상태:** DRAFT 2026-10-25 — **§4 보고서를 처음 돌렸다(2026-10-25): 유효한 증거로는 판별력이 없다.** 그대로 읽으면
-CONFIRMED가 높아 보였지만, CONFIRMED 14개 중 12개가 OI lookahead(INVALID)였다. 그것을 빼면 CONFIRMED는 2개이고
-중앙값이 CONTRADICTED보다 낮다(아래 "§4 결과" 절). 2026-10-06 규칙대로 PR-2 없이 닫을지 Thomas 결정(W1)을 기다린다.
-PR-1(기록 전용)은 구현됐다. 작성일은 추정이다(FACTORY_ABLATION 결정 이후 작성).
+**상태:** IMPLEMENTED 2026-10-25 — **닫았다: PR-2 없음(W1, Thomas 2026-10-25).** §4 보고서를 처음 돌렸더니(2026-10-25)
+유효한 증거로는 판별력이 없었다. 그대로 읽으면 CONFIRMED가 높아 보였지만 CONFIRMED 14개 중 12개가 OI lookahead(INVALID)였고,
+그것을 빼면 CONFIRMED는 2개이며 중앙값이 CONTRADICTED보다 낮다(아래 "§4 결과" 절). PR-1(기록 전용)은 구현돼 그대로 둔다.
+다시 여는 조건은 유효한 홀드아웃 CONFIRMED가 30개 이상 쌓이는 것이다.
 **원래 상태(작성 당시):** DRAFT — PR-1(기록 전용)은 구현됨; **PR-2(판정 활성화)는 아래 §4의 측정 결과를 근거로
 Thomas가 결정한다.** 이 문서가 그 결정의 게이트다.
 
@@ -117,3 +117,11 @@ FACTORY_ABLATION §1-3이 거절한 A2(홀드아웃 재사용) 증폭이다.
 | 결정 | 질문 | 권고 |
 |---|---|---|
 | **W1** | 2026-10-06 규칙("판별력이 없으면 PR-2 없이 닫는다")대로 이 문서를 닫는가 | **예.** PR-2 없이 닫는다. PR-1의 소계 기록은 그대로 둔다. 다시 열 조건은 유효한 홀드아웃 CONFIRMED가 30개 이상 쌓이는 것이다 |
+
+## 결정 (Thomas 2026-10-25) — W1 예
+
+"승인: #1302, #1303, #1304 병합, W1 예(PR-2 없이 닫음) (Thomas 2026-10-25)"
+
+- **W1 예:** 2026-10-06 규칙대로 PR-2 없이 이 문서를 닫는다. `temporal_stability`는 계속 None으로 기록되고 판정에 들어가지 않는다.
+- PR-1의 소계 기록(`walk_forward.period_r`/`period_trades`)과 보고서(`scripts/walk_forward_stability_report.py`)는 그대로 둔다.
+- 다시 여는 조건: 유효한(INVALID가 아닌) 홀드아웃 CONFIRMED가 30개 이상 쌓이면 보고서를 다시 돌려 §4의 2를 읽는다.
