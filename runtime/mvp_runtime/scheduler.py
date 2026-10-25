@@ -2406,6 +2406,8 @@ def _factory_status_line(result: Mapping[str, Any]) -> str:
     # fires and the denominator alone cannot say which. `ablated=`/`luck_filtered=` because
     # the lattice multiplies replays per hypothesis with no cadence change: this line is
     # where that spend and its yield are legible per fire.
+    # `tilted=` is the part of `topup=` drawn from `factory.MINT_TILT_FAMILIES` (2026-10-25): the
+    # tilt's check had to infer it from slot order because nothing outside the result carried it.
     # `trial=` only on a fire that was asked to screen (a cohort fire): minted:<family>,
     # refused:<n>, empty, or skipped:cap / skipped:not_cohort.
     from .crypto.factory import trial_status
@@ -2414,6 +2416,7 @@ def _factory_status_line(result: Mapping[str, Any]) -> str:
     return (f"generated={result['accepted_count']}/{result['requested_count']} "
             f"fused={result.get('fused_count', 0)} "
             f"topup={result.get('seeded_topup_count', 0)} "
+            f"tilted={result.get('tilted_topup_count', 0)} "
             f"ablated={result.get('ablated_count', 0)} "
             f"luck_filtered={result.get('luck_filtered_count', 0)} "
             + (f"trial={trial} " if trial is not None else "")
