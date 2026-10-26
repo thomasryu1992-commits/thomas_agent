@@ -95,6 +95,16 @@ def _never_the_real_host(monkeypatch):
     monkeypatch.setattr(c6a.Path, "unlink", guarded(c6a.Path.unlink, "remove"))
     monkeypatch.setattr(c6a.shutil, "rmtree", guarded(c6a.shutil.rmtree, "remove"))
     monkeypatch.setattr(c6a.shutil, "move", guarded(c6a.shutil.move, "move"))
+    # An upgrade writes by copy and rename (2026-10-26): the same roots are refused as destinations.
+    def guarded_to(real, verb):
+        def call(source, target, *a, **k):
+            if str(target).startswith(roots):
+                raise AssertionError(f"a test tried to {verb} onto {target}")
+            return real(source, target, *a, **k)
+        return call
+    monkeypatch.setattr(c6a.os, "replace", guarded_to(c6a.os.replace, "replace"))
+    monkeypatch.setattr(c6a.shutil, "copyfile", guarded_to(c6a.shutil.copyfile, "copy"))
+    monkeypatch.setattr(c6a.shutil, "copy2", guarded_to(c6a.shutil.copy2, "copy"))
 
 
 def _plan(tmp_path, keys_text, fp, **kw):
@@ -246,3 +256,177 @@ def test_the_script_names_no_secret_path_and_touches_no_runtime_state():
                       "docker exec"):
         assert forbidden not in text, forbidden
     assert json.dumps(c6a.POLICY)                                             # plain data
+
+
+# --- upgrade: another sha for an installed runner, records kept (Thomas 2026-10-26) -------------------------
+
+OLD, NEW = "c" * 40, "d" * 40
+
+
+def _installed_files(sha=OLD):
+    body = c6a.runner_configs(sha=sha, host_label=LABEL, store_id="5" * 32,
+                              fingerprint={"python": "3.12.13", "distributions_sha256": "sha256:" + "0" * 64})
+    return {str(c6a.CONFIG_DIR / f"{role}.json"): json.dumps(b) for role, b in body.items()} | {
+        "/proc/1/comm": "systemd\n"}
+
+
+def _upgrade_host(**kw):
+    existing = {c6a.OPT / OLD, *(c6a.UNIT_DIR / u for u in c6a.UNITS), *kw.pop("existing", ())}
+    files = kw.pop("files", None) or _installed_files()
+    host = FakeHost(dry=kw.pop("dry", True),
+                    taken={("passwd", n) for n in c6a.IDS} - {("passwd", n) for n in kw.pop("missing", ())},
+                    existing=existing, files=files, head=kw.pop("head", NEW), dirty=kw.pop("dirty", ""),
+                    root=kw.pop("root", True))
+    assert not kw
+    return host
+
+
+@pytest.mark.parametrize("problem", ["no_runner", "split_sha", "same_sha", "old_install_gone", "unit_missing",
+                                     "not_at_sha", "dirty", "target_exists", "reuse_absent", "no_repo", "not_root",
+                                     "no_systemd", "bad_sha"])
+def test_upgrade_preflight_stops_before_anything_is_done(tmp_path, problem):
+    sha, reuse, repo = NEW, problem == "reuse_absent", None if problem == "no_repo" else tmp_path
+    host = _upgrade_host(missing={"thomas-deploy-actor"} if problem == "no_runner" else (),
+                         head="e" * 40 if problem == "not_at_sha" else NEW, dirty=" M x" if problem == "dirty" else "",
+                         existing={c6a.OPT / NEW} if problem == "target_exists" else (), root=problem != "not_root",
+                         dry=False)
+    if problem == "split_sha":
+        host.files[str(c6a.CONFIG_DIR / "gate.json")] = json.dumps({"install_sha": "f" * 40})
+    if problem == "same_sha":
+        sha = OLD
+    if problem == "old_install_gone":
+        host.existing.discard(str(c6a.OPT / OLD))
+    if problem == "unit_missing":
+        host.existing.discard(str(c6a.UNIT_DIR / c6a.UNITS[1]))
+    if problem == "no_systemd":
+        host.files["/proc/1/comm"] = "init\n"
+    if problem == "bad_sha":
+        sha = "D" * 40
+    plan = c6a.UpgradePlan(sha=sha, repo=repo, reuse_installed=reuse, backup=tmp_path / "backup")
+    with pytest.raises(c6a.Stop):
+        c6a.upgrade(plan, host)
+    assert host.actions == [] and not plan.backup.exists()
+
+
+@pytest.mark.parametrize("reuse,steps", [(False, ["b0", "b1", "b2", "b3", "b4", "b5"]),
+                                         (True, ["b0", "b1-b2", "b3", "b4", "b5"])])
+def test_an_upgrade_dry_run_lists_its_steps_in_order_and_changes_nothing(tmp_path, reuse, steps):
+    host = _upgrade_host(existing={c6a.OPT / NEW} if reuse else ())
+    plan = c6a.UpgradePlan(sha=NEW, repo=None if reuse else tmp_path, reuse_installed=reuse, backup=tmp_path / "b")
+    c6a.upgrade(plan, host)
+    assert [a.split(" ", 1)[0] for a in host.actions] == steps
+    assert all(cmd[0] == "/usr/bin/git" for cmd in host.ran)                 # only the preflight's reads
+    assert not plan.backup.exists()
+
+
+class SwitchHost(c6a.Host):
+    """A real run against files under tmp_path, with every command answered: systemctl, setpriv, the install tool."""
+
+    def __init__(self, *, check_fails=None):
+        super().__init__(dry=False, log=lambda _line: None)
+        self.check_fails, self.ran = check_fails, []
+
+    def run(self, argv, *, input=None, check=True, cwd=None):
+        self.ran.append(list(argv))
+        if "fingerprint" in argv:
+            return subprocess.CompletedProcess(argv, 0, json.dumps(
+                {"python": "3.12.13", "distributions_sha256": "sha256:" + "9" * 64}).encode(), b"")
+        if "render-units" in argv:
+            out = Path(argv[argv.index("--out") + 1])
+            install = argv[argv.index("--install-dir") + 1]
+            for unit in c6a.UNITS:
+                (out / unit).write_text(f"[Service]\nExecStart={install}/venv/bin/python\n", encoding="ascii")
+        if "--check" in argv and self.check_fails and self.check_fails in argv:
+            return subprocess.CompletedProcess(argv, 3, b"", b"RUNNER_CONFIG_INVALID")
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    def getent(self, db, key):
+        return f"{key}:x"
+
+    def is_root(self):
+        return True
+
+
+@pytest.fixture
+def installed(tmp_path, monkeypatch):
+    """An installed runner at OLD under tmp_path: configs, units, trust files and the actor's records."""
+    paths = {"OPT": tmp_path / "opt", "CONFIG_DIR": tmp_path / "etc", "UNIT_DIR": tmp_path / "units",
+             "LIB": tmp_path / "lib"}
+    for name, path in paths.items():
+        monkeypatch.setattr(c6a, name, path)
+        path.mkdir()
+    monkeypatch.setattr(c6a, "ACTOR_DIR", paths["LIB"] / "actor")
+    monkeypatch.setattr(c6a, "GATE_DIR", paths["LIB"] / "gate")
+    monkeypatch.setattr(c6a.os, "chown", lambda *_a, **_k: None)       # tests do not run as root
+    (paths["OPT"] / OLD).mkdir()
+    (paths["OPT"] / NEW).mkdir()
+    for name, text in _installed_files().items():
+        if name.endswith(".json"):
+            (paths["CONFIG_DIR"] / Path(name).name).write_text(text, encoding="ascii")
+    for unit in c6a.UNITS:
+        (paths["UNIT_DIR"] / unit).write_text(f"[Service]\nExecStart=/opt/thomas-deploy/{OLD}/venv/bin/python\n",
+                                              encoding="ascii")
+    (paths["CONFIG_DIR"] / "trust_anchor").write_text("ssh-ed25519 AAAA\n", encoding="ascii")
+    c6a.ACTOR_DIR.mkdir()
+    (c6a.ACTOR_DIR / "consumption.jsonl").write_text('{"seq":0}\n', encoding="ascii")
+    real_read = c6a.Host.read
+    monkeypatch.setattr(c6a.Host, "read", lambda self, path: "systemd\n" if str(path) == "/proc/1/comm"
+                        else real_read(self, path))
+    monkeypatch.setattr(c6a, "_wait_for_units", lambda host: None)
+    return paths
+
+
+def _snapshot(paths):
+    return {str(p): p.read_bytes() for root in paths.values() for p in root.rglob("*") if p.is_file()}
+
+
+def test_an_upgrade_switches_the_configs_and_units_and_keeps_every_record(tmp_path, installed, monkeypatch):
+    probes = []
+    monkeypatch.setattr(c6a, "_probe_gate", lambda host, step: probes.append(step))
+    before = _snapshot(installed)
+    host = SwitchHost()
+    c6a.upgrade(c6a.UpgradePlan(sha=NEW, reuse_installed=True, backup=tmp_path / "backup"), host)
+    actor = json.loads((installed["CONFIG_DIR"] / "actor.json").read_text())
+    gate = json.loads((installed["CONFIG_DIR"] / "gate.json").read_text())
+    old_actor = json.loads(before[str(installed["CONFIG_DIR"] / "actor.json")])
+    assert actor["install_sha"] == gate["install_sha"] == NEW
+    assert actor["actor"]["store_id"] == old_actor["actor"]["store_id"]                        # the same store
+    assert actor["environment"]["host_label"] == old_actor["environment"]["host_label"]
+    assert actor["fingerprint"]["distributions_sha256"] == "sha256:" + "9" * 64               # the new interpreter's
+    for unit in c6a.UNITS:
+        assert f"{installed['OPT']}/{NEW}/venv" in (installed["UNIT_DIR"] / unit).read_text()
+    after = _snapshot(installed)
+    for path in (c6a.ACTOR_DIR / "consumption.jsonl", installed["CONFIG_DIR"] / "trust_anchor"):
+        assert after[str(path)] == before[str(path)]                                           # records and trust kept
+    assert (tmp_path / "backup" / "before" / "actor.json").read_text() == before[str(installed["CONFIG_DIR"] / "actor.json")].decode()
+    stops = [cmd for cmd in host.ran if cmd[:2] == [c6a.SYSTEMCTL, "stop"]]
+    assert [cmd[2] for cmd in stops] == [c6a.UNITS[1], c6a.UNITS[0]]                          # gate first, then actor
+    assert probes == ["b6"]
+
+
+@pytest.mark.parametrize("failure", ["check_actor", "check_gate", "probe", "reload"])
+def test_a_failed_start_check_or_probe_puts_the_previous_runner_back(tmp_path, installed, monkeypatch, failure):
+    def probe(host, step):
+        if failure == "probe":
+            raise c6a.Stop("root reached the gate")
+    monkeypatch.setattr(c6a, "_probe_gate", probe)
+    before = _snapshot(installed)
+    host = SwitchHost(check_fails={"check_actor": "actor", "check_gate": "gate"}.get(failure))
+    if failure == "reload":                       # the first daemon-reload after the swap fails, the restore's works
+        real_run, calls = host.run, []
+
+        def run(argv, **kw):
+            if argv[:2] == [c6a.SYSTEMCTL, "daemon-reload"] and not calls:
+                calls.append(1)
+                raise c6a.Stop("systemctl daemon-reload … exited 1")
+            return real_run(argv, **kw)
+        host.run = run
+    with pytest.raises(c6a.Stop) as stopped:
+        c6a.upgrade(c6a.UpgradePlan(sha=NEW, reuse_installed=True, backup=tmp_path / "backup"), host)
+    assert f"back on {OLD[:8]}" in str(stopped.value)
+    after = _snapshot(installed)
+    for path in (*(installed["CONFIG_DIR"] / f"{r}.json" for r in ("actor", "gate")),
+                 *(installed["UNIT_DIR"] / u for u in c6a.UNITS)):
+        assert after[str(path)] == before[str(path)], path                                    # exactly as before
+    starts = [cmd for cmd in host.ran if cmd[:2] == [c6a.SYSTEMCTL, "start"]]
+    assert starts[-2:] == [[c6a.SYSTEMCTL, "start", c6a.UNITS[0]], [c6a.SYSTEMCTL, "start", c6a.UNITS[1]]]
