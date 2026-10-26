@@ -37,7 +37,7 @@ nothing judges by it.
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -195,7 +195,7 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
     # ledger and — because the transfers are then unknown — its coherence, never the Toss snapshot.
     transfers: list[int] | None = ()
     flows_note = None
-    readiness_alert = exception_alert = rule_flow_alert = None
+    readiness_alert = exception_alert = rule_flow_alert = band_alert = None
     binance_ok = toss_ok = False      # a verified fire needs both (H6b readiness-hardening)
     flow_feed = binance_wallet.select_wallet_feed() if wallet is not None else None
     if isinstance(flow_feed, binance_wallet.BinanceWalletFeed):
@@ -294,6 +294,10 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
         flows_note = flows_note or _reason(exc)
     if flows_note:
         body.setdefault("cash_flows", {"mode": cash_flows.ACCOUNTING_MODE})["error"] = flows_note
+    try:
+        band_alert = band_notice(body, now=now, root=root)
+    except Exception:  # noqa: BLE001 — a notice must not cost the board; the next fire offers it again
+        band_alert = None
     # H3: the doors get one table under the single-holding rule; the whole fire goes to the local file.
     # Without the allocation's makeup there is no table to judge, so nothing leaves but status words.
     try:
@@ -318,7 +322,47 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
         edge = combined.alert(outward["combined"], told=combined.read_told(state_dir(root)), as_of=body["as_of"])
     return {"status": f"holdings snapshot: refreshed; {combined_note}", "alert": edge,
             "readiness_alert": readiness_alert, "exception_alert": exception_alert,
-            "rule_flow_alert": rule_flow_alert}
+            "rule_flow_alert": rule_flow_alert, "band_alert": band_alert}
+
+
+BAND_NOTICE_FILENAME = "holdings_band_notice.json"
+
+
+def band_notice_path(root: Path | None = None) -> Path:
+    return state_dir(root) / BAND_NOTICE_FILENAME
+
+
+def _first_weekday(month: str) -> str:
+    day = date.fromisoformat(f"{month}-01")
+    while day.weekday() >= 5:
+        day += timedelta(days=1)
+    return day.isoformat()
+
+
+def band_notice(body: Mapping[str, Any], *, now: str, root: Path | None = None) -> tuple[str, str] | None:
+    """RB5 (Thomas 2026-10-26): once a month, from the first weekday (KST) on, how many bands are outside — a
+    count, never a class or an amount. The verdict is the calculator's (engine margin left out), so the count
+    and ``--rebalance`` agree. Weekdays stand in for business days: a public holiday is not known here, and the
+    notice then comes on that holiday. Returns (month, text) until :func:`mark_band_told` records the month."""
+    today = overseas_gain.kst_day(now)
+    month = today[:7]
+    if today < _first_weekday(month) or (_read_json(band_notice_path(root)) or {}).get("told_month") == month:
+        return None
+    table = body.get("allocation") if isinstance(body.get("allocation"), Mapping) else {}
+    class_krw = {name: float((row or {}).get("krw") or 0.0) for name, row in (table.get("classes") or {}).items()}
+    result = rebalance.plan(class_krw=class_krw, positions=[], complete=table.get("complete") is True)
+    if result.status == "refused":
+        return month, ("[보유 자산] 월 리밸런싱 점검 — 이번 달은 판정할 수 없습니다(자산 합계가 완전하지 않음). "
+                       "분류와 읽기를 확인한 뒤 Thomas 터미널에서 --rebalance로 보세요.")
+    outside = sum(1 for row in result.drift.values() if row["outside"])
+    return month, (f"[보유 자산] 월 리밸런싱 점검 — 밴드 이탈 {outside}개. "
+                   + ("Thomas 터미널에서 --rebalance로 계획을 확인하세요." if outside else "리밸런싱할 것이 없습니다."))
+
+
+def mark_band_told(month: str, *, now: str, root: Path | None = None) -> None:
+    """Record that this month's band notice was delivered — only after delivery, like every holdings notice."""
+    _write_json(band_notice_path(root), {"told_month": month, "told_at": now},
+                code="HOLDINGS_BAND_NOTICE_LOCKED", label="holdings band notice")
 
 
 def mark_readiness_told(*, now: str, root: Path | None = None) -> None:
