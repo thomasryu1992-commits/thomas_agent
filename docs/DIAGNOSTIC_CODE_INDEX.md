@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **656** distinct codes across **1303** raise sites
+- **656** distinct codes across **1304** raise sites
 - **22** exception classes carry them
 - **65** codes are raised from more than one module (see below)
 - **159** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -231,6 +231,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `BINANCE_WALLET_PATH_REFUSED` | `ToolBlocked` | `runtime/mvp_runtime/holdings/binance_wallet.py` | `_get` | `(base, path) not in ALLOWED_REQUESTS` |
 | `BINANCE_WALLET_PATH_REFUSED` | `ToolBlocked` | `runtime/mvp_runtime/holdings/binance_wallet.py` | `flow_history` | `source not in FLOW_SOURCES` |
 | `BINDING_FAILED` | `PlannerBlocked` | `runtime/mvp_runtime/binding.py` | `bind_task_to_core` | `—` |
+| `BLOG_VAULT_UNAVAILABLE` | `ToolError` | `runtime/mvp_runtime/blog_department.py` | `observe` | `row['files'] == 0` |
 | `BLOG_VAULT_UNAVAILABLE` | `ToolError` | `runtime/mvp_runtime/blog_department.py` | `vault_root` | `missing` |
 | `BLOG_VAULT_UNAVAILABLE` | `ToolError` | `runtime/mvp_runtime/blog_department.py` | `vault_root` | `not value` |
 | `BRIDGE_ALREADY_RUNNING` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | `__init__` | `door_is_live(path)` |
