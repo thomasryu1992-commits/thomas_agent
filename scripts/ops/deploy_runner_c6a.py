@@ -1,4 +1,4 @@
-"""Option C C6a — install, check and reverse the deploy runner on a host, as root, step by step.
+"""Option C C6a — install, check, upgrade and reverse the deploy runner on a host, as root, step by step.
 
 C5 plan (approved 2026-10-19) §3, steps a0–a9; Thomas 2026-10-19: ``결정: C6a 실행 방식 = A(Claude가 설치·되돌리기 스크립트
 PR, Thomas가 서버 셸에서 실행), 서명 키 = Thomas가 root authorized_keys 4개 중 지문으로 선택(K1), host_label =
@@ -7,6 +7,8 @@ ubuntu-4gb-sin-1``. Claude writes this; Thomas runs it at his server shell::
     python3 scripts/ops/deploy_runner_c6a.py install --repo <clean origin/main tree> --sha <40 hex> \
         --host-label ubuntu-4gb-sin-1 --signer-fingerprint SHA256:… [--dry-run]
     python3 scripts/ops/deploy_runner_c6a.py status
+    python3 scripts/ops/deploy_runner_c6a.py upgrade --repo <clean origin/main tree> --sha <40 hex> [--dry-run]
+    python3 scripts/ops/deploy_runner_c6a.py upgrade --sha <an installed sha> --reuse-installed [--dry-run]
     python3 scripts/ops/deploy_runner_c6a.py uninstall [--dry-run]
 
 Standard library only: it runs under the system ``python3`` before the runner's own interpreter exists, and
@@ -77,6 +79,10 @@ SETPRIV, SYSTEMCTL, SSH_KEYGEN, GIT = "/usr/bin/setpriv", "/usr/bin/systemctl", 
 
 class Stop(Exception):
     """A step's check did not hold. The message is what to report; nothing after it ran."""
+
+
+class Restored(Stop):
+    """An upgrade step failed after the switch began, and the previous runner was put back."""
 
 
 # --- the signing key ------------------------------------------------------------------------------------
@@ -241,6 +247,38 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _install_interpreter(install_dir: Path, host: Host, download: Callable[[str, Path], None]) -> None:
+    """a2 (and b1 of an upgrade): the pinned interpreter into ``install_dir/python``, its SHA256 checked first."""
+    with tempfile.TemporaryDirectory(prefix="c6a-pbs-") as tmp:
+        tarball = Path(tmp) / "pbs.tar.gz"
+        download(PBS_URL, tarball)
+        if _sha256(tarball) != PBS_SHA256:
+            raise Stop("the interpreter's SHA256 does not match CR-8b; nothing extracted")
+        install_dir.mkdir(parents=True)
+        host.run(["tar", "-xzf", str(tarball), "-C", str(install_dir)])
+    version = host.run([str(install_dir / "python" / "bin" / "python3"), "-I", "-c",
+                        "import platform; print(platform.python_version())"]).stdout.decode().strip()
+    if version != PYTHON_VERSION:
+        raise Stop(f"the interpreter is {version}, not {PYTHON_VERSION}")
+
+
+def _install_app(install_dir: Path, repo: Path, sha: str, host: Host) -> None:
+    """a3 (and b2 of an upgrade): the code at ``sha``, the venv, the .pth; then root-owned, not group/world-writable."""
+    python = install_dir / "venv" / "bin" / "python"
+    app = install_dir / "app"
+    app.mkdir()
+    archive = host.run([GIT, "-C", str(repo), "archive", sha, "runtime", "schemas", "scripts"]).stdout
+    host.run(["tar", "-x", "-C", str(app)], input=archive)
+    host.run([str(install_dir / "python" / "bin" / "python3"), "-I", "-m", "venv", str(install_dir / "venv")])
+    host.run([str(python), "-I", "-m", "pip", "install", "--no-cache-dir", "--disable-pip-version-check", "-q",
+              "-r", str(repo / "requirements-validation.lock")])
+    host.run([str(python), "-m", "scripts.ops.deploy_runner_install", "link-install", "--app", str(app)],
+             cwd=str(app))
+    host.run(["chown", "-R", "root:root", str(OPT)])
+    host.run(["chmod", "-R", "go-w", str(OPT)])
+    host.run([str(python), "-I", "-c", "import runtime.mvp_runtime.deploy_runner.serve"], cwd="/")
+
+
 def install(plan: Plan, host: Host, *, download: Callable[[str, Path], None] = _download) -> None:
     blob = preflight(plan, host)
     tool = [str(plan.python), "-I", "-m", "scripts.ops.deploy_runner_install"]
@@ -271,35 +309,12 @@ def install(plan: Plan, host: Host, *, download: Callable[[str, Path], None] = _
     host.act("a1 groups and accounts claude 2101, thomas-deploy-gate 2102, thomas-deploy-actor 2103 (X in docker)", a1)
 
     # a2: the interpreter, checked before anything opens it
-    def a2():
-        with tempfile.TemporaryDirectory(prefix="c6a-pbs-") as tmp:
-            tarball = Path(tmp) / "pbs.tar.gz"
-            download(PBS_URL, tarball)
-            if _sha256(tarball) != PBS_SHA256:
-                raise Stop("the interpreter's SHA256 does not match CR-8b; nothing extracted")
-            plan.install.mkdir(parents=True)
-            host.run(["tar", "-xzf", str(tarball), "-C", str(plan.install)])
-        version = host.run([str(plan.install / "python" / "bin" / "python3"), "-I", "-c",
-                            "import platform; print(platform.python_version())"]).stdout.decode().strip()
-        if version != PYTHON_VERSION:
-            raise Stop(f"the interpreter is {version}, not {PYTHON_VERSION}")
-    host.act(f"a2 python-build-standalone {PYTHON_VERSION} into {plan.install}/python (SHA256 {PBS_SHA256[:8]}…)", a2)
+    host.act(f"a2 python-build-standalone {PYTHON_VERSION} into {plan.install}/python (SHA256 {PBS_SHA256[:8]}…)",
+             lambda: _install_interpreter(plan.install, host, download))
 
     # a3: the code, the venv, the .pth; then root-owned and not group/world-writable
-    def a3():
-        app = plan.install / "app"
-        app.mkdir()
-        archive = host.run([GIT, "-C", str(plan.repo), "archive", plan.sha, "runtime", "schemas", "scripts"]).stdout
-        host.run(["tar", "-x", "-C", str(app)], input=archive)
-        host.run([str(plan.install / "python" / "bin" / "python3"), "-I", "-m", "venv", str(plan.install / "venv")])
-        host.run([str(plan.python), "-I", "-m", "pip", "install", "--no-cache-dir", "--disable-pip-version-check", "-q",
-                  "-r", str(plan.repo / "requirements-validation.lock")])
-        host.run([str(plan.python), "-m", "scripts.ops.deploy_runner_install", "link-install", "--app", str(app)],
-                 cwd=str(app))
-        host.run(["chown", "-R", "root:root", str(OPT)])
-        host.run(["chmod", "-R", "go-w", str(OPT)])
-        host.run([str(plan.python), "-I", "-c", "import runtime.mvp_runtime.deploy_runner.serve"], cwd="/")
-    host.act(f"a3 runtime, schemas, scripts at {plan.sha[:8]} into {plan.install}/app; venv; link-install; root-owned", a3)
+    host.act(f"a3 runtime, schemas, scripts at {plan.sha[:8]} into {plan.install}/app; venv; link-install; root-owned",
+             lambda: _install_app(plan.install, plan.repo, plan.sha, host))
 
     # a4: directories
     def a4():
@@ -347,31 +362,218 @@ def install(plan: Plan, host: Host, *, download: Callable[[str, Path], None] = _
         host.run([SYSTEMCTL, "daemon-reload"])
         host.run([SYSTEMCTL, "enable", "--now", UNITS[0]])
         host.run([SYSTEMCTL, "enable", "--now", UNITS[1]])
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
-            if all(host.run([SYSTEMCTL, "is-active", "--quiet", u], check=False).returncode == 0 for u in UNITS) \
-                    and GATE_SOCKET.is_socket() and ACTOR_SOCKET.is_socket():
-                return
-            time.sleep(0.5)
-        raise Stop("the units did not come up with their sockets within 30 s")
+        _wait_for_units(host)
     host.act("a8 render units, serve --check as G and X, enable --now actor then gate", a8)
 
     # a9: the first check through the real path
-    def a9():
-        frame = (json.dumps({"proto": 2, "client_id": "c6a", "request_id": "c6a-a9", "verb": "inspect_candidate",
-                             "args": {"pr": 1}}, separators=(",", ":")) + "\n").encode("ascii")
-        probe = ("import json,socket,sys;s=socket.socket(socket.AF_UNIX);s.settimeout(90);"
-                 f"s.connect({str(GATE_SOCKET)!r});s.sendall(sys.stdin.buffer.read());d=b''\n"
-                 "while not d.endswith(b'\\n'):\n c=s.recv(65536)\n if not c: break\n d+=c\n"
-                 "r=json.loads(d);print(json.dumps({'ok':r.get('ok'),'reason_code':r.get('reason_code')}))")
-        uid = str(IDS[CLAUDE])
-        as_claude = json.loads(host.run([SETPRIV, f"--reuid={uid}", f"--regid={uid}", "--init-groups", "--reset-env",
-                                         "--", "/usr/bin/python3", "-I", "-c", probe], input=frame, cwd="/").stdout)
-        as_root = json.loads(host.run(["/usr/bin/python3", "-I", "-c", probe], input=frame, cwd="/").stdout)
-        if as_root.get("reason_code") != "PEER_NOT_PERMITTED":
-            raise Stop(f"root reached the gate: {as_root}")
-        host.log(f"[check] a9 inspect as claude: {as_claude}; as root: PEER_NOT_PERMITTED")
-    host.act("a9 one inspection through the gate as claude; the same as root must be PEER_NOT_PERMITTED", a9)
+    host.act("a9 one inspection through the gate as claude; the same as root must be PEER_NOT_PERMITTED",
+             lambda: _probe_gate(host, "a9"))
+
+
+def _wait_for_units(host: Host) -> None:
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        if all(host.run([SYSTEMCTL, "is-active", "--quiet", u], check=False).returncode == 0 for u in UNITS) \
+                and GATE_SOCKET.is_socket() and ACTOR_SOCKET.is_socket():
+            return
+        time.sleep(0.5)
+    raise Stop("the units did not come up with their sockets within 30 s")
+
+
+def _probe_gate(host: Host, step: str) -> None:
+    """One inspection through the gate as claude; the same frame as root must be PEER_NOT_PERMITTED."""
+    frame = (json.dumps({"proto": 2, "client_id": "c6a", "request_id": f"c6a-{step}", "verb": "inspect_candidate",
+                         "args": {"pr": 1}}, separators=(",", ":")) + "\n").encode("ascii")
+    probe = ("import json,socket,sys;s=socket.socket(socket.AF_UNIX);s.settimeout(90);"
+             f"s.connect({str(GATE_SOCKET)!r});s.sendall(sys.stdin.buffer.read());d=b''\n"
+             "while not d.endswith(b'\\n'):\n c=s.recv(65536)\n if not c: break\n d+=c\n"
+             "r=json.loads(d);print(json.dumps({'ok':r.get('ok'),'reason_code':r.get('reason_code')}))")
+    uid = str(IDS[CLAUDE])
+    as_claude = json.loads(host.run([SETPRIV, f"--reuid={uid}", f"--regid={uid}", "--init-groups", "--reset-env",
+                                     "--", "/usr/bin/python3", "-I", "-c", probe], input=frame, cwd="/").stdout)
+    as_root = json.loads(host.run(["/usr/bin/python3", "-I", "-c", probe], input=frame, cwd="/").stdout)
+    if as_root.get("reason_code") != "PEER_NOT_PERMITTED":
+        raise Stop(f"root reached the gate: {as_root}")
+    host.log(f"[check] {step} inspect as claude: {as_claude}; as root: PEER_NOT_PERMITTED")
+
+
+# --- upgrade b0–b6 (Thomas 2026-10-26) -------------------------------------------------------------------------
+#
+# The runner's code is pinned to the sha it was installed at, and `install` refuses a host that already has the
+# runner (and, after C6b, the claude account), so a service change (#1307 retired four containers the actor
+# still measured) had no way in. An upgrade replaces only what is per-install: the interpreter, venv and code
+# under /opt/thomas-deploy/<sha>, the two configurations' `install_sha` and interpreter fingerprint, and the two
+# unit files. It never touches the accounts, the trust files, the actor's consumption store and audit chain
+# (an approval spent before the upgrade stays spent after it), the gate's records or the trees. The previous
+# install stays on disk, so going back is another upgrade (`--reuse-installed`).
+
+UPGRADE_KEEP = ("accounts", "trust files", "consumption store", "audit chain", "gate records", "trees")
+
+
+@dataclass
+class UpgradePlan:
+    sha: str
+    repo: Path | None = None
+    reuse_installed: bool = False
+    backup: Path | None = None
+
+    @property
+    def install(self) -> Path:
+        return OPT / self.sha
+
+    @property
+    def python(self) -> Path:
+        return self.install / "venv" / "bin" / "python"
+
+
+def upgrade_preflight(plan: UpgradePlan, host: Host) -> dict[str, Any]:
+    """What must hold before b0: the runner installed and consistent, the target new (or installed, to go back).
+    Returns the current configurations. Read-only, also under --dry-run."""
+    if not host.is_root() and not host.dry:
+        raise Stop("run as root (sudo); --dry-run works without")
+    if not _SHA.match(plan.sha):
+        raise Stop("--sha must be 40 lowercase hex")
+    for name in IDS:
+        if not host.getent("passwd", name):
+            raise Stop(f"account {name} is missing; this host has no installed runner to upgrade (use install)")
+    try:
+        current = {role: json.loads(host.read(CONFIG_DIR / f"{role}.json")) for role in ("actor", "gate")}
+    except (OSError, KeyError, ValueError) as exc:
+        raise Stop(f"cannot read the installed configurations in {CONFIG_DIR}: {exc}") from None
+    shas = {body.get("install_sha") for body in current.values()}
+    if len(shas) != 1 or not _SHA.match(str(next(iter(shas)))):
+        raise Stop(f"actor.json and gate.json do not name one install sha: {sorted(map(str, shas))}")
+    installed = next(iter(shas))
+    if installed == plan.sha:
+        raise Stop(f"the runner already runs {plan.sha[:8]}")
+    if not host.exists(OPT / installed):
+        raise Stop(f"the installed {OPT / installed} is missing; nothing to go back to, so no upgrade")
+    for unit in UNITS:
+        if not host.exists(UNIT_DIR / unit):
+            raise Stop(f"{UNIT_DIR / unit} is missing; this is not an installed runner")
+    if plan.reuse_installed:
+        if not host.exists(plan.install):
+            raise Stop(f"--reuse-installed: {plan.install} is not installed")
+    else:
+        if plan.repo is None:
+            raise Stop("--repo is required unless --reuse-installed")
+        head = host.run([GIT, "-C", str(plan.repo), "rev-parse", "HEAD"]).stdout.decode().strip()
+        dirty = host.run([GIT, "-C", str(plan.repo), "status", "--porcelain"]).stdout.decode().strip()
+        if head != plan.sha or dirty:
+            raise Stop("--repo must be a clean tree checked out at --sha (a fresh origin/main worktree)")
+        if host.exists(plan.install):
+            raise Stop(f"{plan.install} already exists; to switch to it use --reuse-installed")
+    if host.read(Path("/proc/1/comm")).strip() != "systemd":
+        raise Stop("systemd is not PID 1")
+    host.log(f"[check] installed {installed[:8]} -> {plan.sha[:8]}"
+             + (" (already on disk)" if plan.reuse_installed else "") + f"; kept as is: {', '.join(UPGRADE_KEEP)}")
+    return {"installed": installed, **current}
+
+
+def _put(source: Path, target: Path, mode: int) -> None:
+    """Replace ``target`` with ``source`` in one rename (a copy beside it first, so a crash leaves the old file)."""
+    side = target.with_name(target.name + ".c6a-new")
+    shutil.copyfile(source, side)
+    os.chown(side, 0, 0)
+    side.chmod(mode)
+    os.replace(side, target)
+
+
+def upgrade(plan: UpgradePlan, host: Host, *, download: Callable[[str, Path], None] = _download) -> None:
+    found = upgrade_preflight(plan, host)
+    installed = found["installed"]
+    backup = plan.backup or Path("/root") / f"c6-upgrade-{datetime.date.today().isoformat()}-{plan.sha[:8]}"
+    before, staged = backup / "before", backup / "next"
+    tool = [str(plan.python), "-I", "-m", "scripts.ops.deploy_runner_install"]
+    files = [(CONFIG_DIR / "actor.json", 0o644), (CONFIG_DIR / "gate.json", 0o644),
+             *((UNIT_DIR / u, 0o644) for u in UNITS)]
+
+    # b0: what runs now, so the switch can be put back exactly
+    def b0():
+        backup.mkdir(mode=0o700, parents=False, exist_ok=False)
+        before.mkdir(mode=0o700)
+        for path, _mode in files:
+            shutil.copy2(path, before / path.name)
+    host.act(f"b0 copy actor.json, gate.json and the two unit files (installed {installed[:8]}) to {before}", b0)
+
+    if not plan.reuse_installed:
+        host.act(f"b1 python-build-standalone {PYTHON_VERSION} into {plan.install}/python (SHA256 {PBS_SHA256[:8]}…)",
+                 lambda: _install_interpreter(plan.install, host, download))
+        host.act(f"b2 runtime, schemas, scripts at {plan.sha[:8]} into {plan.install}/app; venv; link-install",
+                 lambda: _install_app(plan.install, plan.repo, plan.sha, host))
+    else:
+        host.act(f"b1-b2 skipped: {plan.install} is already installed; import check only",
+                 lambda: host.run([str(plan.python), "-I", "-c", "import runtime.mvp_runtime.deploy_runner.serve"],
+                                  cwd="/"))
+
+    # b3: the new configurations and units, written beside the backup while the old runner still serves
+    def b3():
+        staged.mkdir(mode=0o700)
+        fingerprint = json.loads(host.run(tool + ["fingerprint"], cwd="/").stdout)
+        actor = found["actor"]
+        configs = runner_configs(sha=plan.sha, host_label=actor["environment"]["host_label"],
+                                 fingerprint=fingerprint, store_id=actor["actor"]["store_id"])
+        for role, body in configs.items():
+            _write(staged / f"{role}.json", json.dumps(body, indent=1, sort_keys=True) + "\n")
+        units = staged / "units"
+        units.mkdir(mode=0o700)
+        host.run(tool + ["render-units", "--out", str(units), "--install-dir", str(plan.install),
+                         "--config-dir", str(CONFIG_DIR), "--gate-user", GATE, "--gate-group", GATE,
+                         "--actor-user", ACTOR, "--actor-group", ACTOR, "--gate-dir", str(GATE_DIR),
+                         "--actor-dir", str(ACTOR_DIR)], cwd="/")
+    host.act(f"b3 stage actor.json, gate.json (install_sha {plan.sha[:8]}, its interpreter's fingerprint, the same "
+             f"store_id and host_label) and the units for {plan.install} in {staged}", b3)
+
+    def put_back(reason: str) -> None:
+        host.log(f"[restore] {reason}: putting {installed[:8]} back")
+        for unit in reversed(UNITS):
+            host.run([SYSTEMCTL, "stop", unit], check=False)
+        for path, mode in files:
+            _put(before / path.name, path, mode)
+        host.run([SYSTEMCTL, "daemon-reload"])
+        for unit in UNITS:
+            host.run([SYSTEMCTL, "start", unit], check=False)
+        _wait_for_units(host)
+        raise Restored(f"{reason}; the runner is back on {installed[:8]} (its files in {before})")
+
+    # b4: stop gate then actor, swap the four files, the start checks as X and G against the new install
+    def b4():
+        try:
+            swap_and_check()
+        except Restored:
+            raise
+        except (Stop, OSError) as exc:
+            put_back(f"the switch failed ({exc})")
+
+    def swap_and_check():
+        for unit in reversed(UNITS):
+            host.run([SYSTEMCTL, "stop", unit])
+        for path, mode in files:
+            _put((staged / "units" if path.parent == UNIT_DIR else staged) / path.name, path, mode)
+        host.run([SYSTEMCTL, "daemon-reload"])
+        for role, account in (("actor", ACTOR), ("gate", GATE)):
+            uid = str(IDS[account])
+            done = host.run([SETPRIV, f"--reuid={uid}", f"--regid={uid}", "--init-groups", "--reset-env", "--",
+                             str(plan.python), "-I", "-m", "runtime.mvp_runtime.deploy_runner.serve", "--role", role,
+                             "--config", str(CONFIG_DIR / f"{role}.json"), "--check"], cwd=str(plan.install),
+                            check=False)
+            if done.returncode != 0:
+                put_back(f"serve --check as {role} refused the new install "
+                         f"({done.stderr.decode('utf-8', 'replace').strip()[-200:]})")
+    host.act("b4 stop gate then actor; swap actor.json, gate.json and the units; daemon-reload; serve --check as X and G",
+             b4)
+
+    # b5 + b6: start, then the same probe the install ended on
+    def b5_b6():
+        for unit in UNITS:
+            host.run([SYSTEMCTL, "start", unit])
+        try:
+            _wait_for_units(host)
+            _probe_gate(host, "b6")
+        except Stop as exc:
+            put_back(f"the upgraded runner failed its start or probe ({exc})")
+    host.act("b5 start actor then gate; b6 one inspection through the gate as claude, root must be PEER_NOT_PERMITTED",
+             b5_b6)
 
 
 # --- status and reversal ----------------------------------------------------------------------------------
@@ -384,6 +586,11 @@ def status(host: Host) -> dict[str, Any]:
     for unit in UNITS:
         done = host.run([SYSTEMCTL, "is-active", unit], check=False)
         out["units"][unit] = done.stdout.decode().strip() or "unknown"
+    try:
+        out["install_sha"] = {role: json.loads(host.read(CONFIG_DIR / f"{role}.json")).get("install_sha")
+                              for role in ("actor", "gate")}
+    except (OSError, KeyError, ValueError):
+        out["install_sha"] = None
     return out
 
 
@@ -452,6 +659,13 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("status")
     s.add_argument("--expect-absent", action="store_true",
                    help="exit 1 unless nothing of the runner is left (after uninstall)")
+    g = sub.add_parser("upgrade", help="move an installed runner to another sha; accounts, trust and records stay")
+    g.add_argument("--sha", required=True)
+    g.add_argument("--repo", help="a clean tree at --sha (not needed with --reuse-installed)")
+    g.add_argument("--reuse-installed", action="store_true",
+                   help="switch to a sha already under /opt/thomas-deploy (going back after an upgrade)")
+    g.add_argument("--backup", default=None)
+    g.add_argument("--dry-run", action="store_true")
     u = sub.add_parser("uninstall")
     u.add_argument("--backup", default=str(Path("/root") / f"c6-backup-{datetime.date.today().isoformat()}"))
     u.add_argument("--dry-run", action="store_true")
@@ -474,6 +688,14 @@ def main(argv: list[str] | None = None) -> int:
             uninstall(host, backup=Path(args.backup))
             print("uninstall: done" if not host.dry else "uninstall: dry run, nothing changed")
             return EXIT_OK
+        if args.command == "upgrade":
+            plan_u = UpgradePlan(sha=args.sha, repo=Path(args.repo) if args.repo else None,
+                                 reuse_installed=args.reuse_installed,
+                                 backup=Path(args.backup) if args.backup else None)
+            upgrade(plan_u, host)
+            print(f"upgrade: done, running {args.sha[:8]} — check `status`" if not host.dry
+                  else "upgrade: dry run, nothing changed")
+            return EXIT_OK
         plan = Plan(repo=Path(args.repo), sha=args.sha, host_label=args.host_label,
                     signer_fingerprint=args.signer_fingerprint, pubkey_file=Path(args.pubkey_file))
         install(plan, host)
@@ -481,7 +703,12 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_OK
     except Stop as exc:
         print(f"STOP: {exc}", file=sys.stderr)
-        if host.actions and not host.dry:
+        if host.actions and not host.dry and args.command == "upgrade":
+            print(f"stopped in: {host.actions[-1].split(' ', 1)[0]}. Nothing after it ran. Before b4 the running "
+                  "runner was never touched (a half-written /opt/thomas-deploy/<sha> from b1/b2 is removed by hand before a "
+                  "retry); from b4 on, a failure puts the previous files back and restarts it. Check `status`.",
+                  file=sys.stderr)
+        elif host.actions and not host.dry:
             print(f"stopped in: {host.actions[-1].split(' ', 1)[0]}. Nothing after it ran. To reverse what ran: "
                   "python3 scripts/ops/deploy_runner_c6a.py uninstall --dry-run, then without --dry-run",
                   file=sys.stderr)
