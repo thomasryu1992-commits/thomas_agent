@@ -13,7 +13,7 @@ reads what it did, once a week, from the one place every step leaves a mark — 
   Either way it is called what it is, never "published".
 
 Dates are KST calendar dates, as the vault writes them. A file without readable front matter is counted as
-unparsed, never guessed at. Nothing here writes the vault, calls a model, or reaches the network; the vault
+unparsed, never guessed at; a platform folder with no posts at all refuses, like an absent one. Nothing here writes the vault, calls a model, or reaches the network; the vault
 arrives as a read-only mount (``MVP_BLOG_VAULT_ROOT``).
 """
 
@@ -108,6 +108,10 @@ def observe(root: str | Path | None = None, *, now: str) -> dict[str, Any]:
                 row["published"] += 1
             if status != "published" and scheduled and until <= scheduled < ahead:
                 row["upcoming"] += 1
+        if row["files"] == 0:
+            # Each folder holds well over a hundred posts. None at all is a mount that does not reach the files
+            # (or a folder this user cannot list), never a quiet week.
+            raise ToolError("BLOG_VAULT_UNAVAILABLE", f"the vault at {base} has no posts under content/{platform}")
         platforms[platform] = row
     return {"since": since, "until": until, "ahead": ahead, "platforms": platforms}
 

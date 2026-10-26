@@ -65,6 +65,14 @@ def test_an_absent_vault_refuses_rather_than_reading_as_an_empty_week(tmp_path, 
     assert exc.value.reason_code == "BLOG_VAULT_UNAVAILABLE"
 
 
+def test_an_empty_platform_folder_refuses_rather_than_reading_as_a_quiet_week(vault):
+    for post in (vault / "content" / "tistory").glob("*.md"):
+        post.unlink()
+    with pytest.raises(ToolError) as exc:
+        bd.observe(vault, now=NOW)
+    assert exc.value.reason_code == "BLOG_VAULT_UNAVAILABLE" and "content/tistory" in str(exc.value)
+
+
 def test_the_record_is_counts_only_and_satisfies_its_closed_schema(vault):
     record = bd.build_record(bd.observe(vault, now=NOW), now=NOW)
     assert record["schema_version"] == "blog_department_week.v0.1" and record["observation_id"].startswith("blogweek_")
