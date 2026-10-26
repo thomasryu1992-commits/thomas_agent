@@ -37,6 +37,7 @@ nothing judges by it.
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -44,9 +45,9 @@ from .. import timeutil
 from ..errors import MvpRuntimeError, ToolError
 from ..filelock import locked
 from ..paths import repo_root as _repo_root
-from . import allocation, binance_wallet, cash_flows, classification, combined, disclosure, rebalance
+from . import allocation, binance_wallet, cash_flows, classification, combined, disclosure, overseas_gain, rebalance
 from .board import aggregate_view, render_view
-from .toss_account import TossHoldingsFeed, read_holdings, select_holdings_feed
+from .toss_account import MARKET_OVERSEAS, TossHoldingsFeed, read_holdings, select_holdings_feed
 
 STATE_REL = ".runtime_governance_state/holdings"
 SNAPSHOT_FILENAME = "holdings_snapshot.json"
@@ -84,6 +85,19 @@ POSITIONS_FILENAME = "holdings_positions.json"
 POSITIONS_RECORD_TYPE = "holdings_positions.v1"
 
 
+TAX_ESTIMATE_FILENAME = "holdings_tax_estimate.json"
+TAX_ESTIMATE_RECORD_TYPE = "holdings_tax_estimate.v1"
+# The whole closed-order history, once a KST day (RB3'). 50 pages of 100: a longer history is truncated and
+# the gain refused, never counted from part of it.
+TAX_ESTIMATE_MAX_PAGES = 50
+
+
+def tax_estimate_path(root: Path | None = None) -> Path:
+    """The USD/KRW rate the fire saw each KST day, and this year's realised overseas gain: amounts, no symbol;
+    LOCAL_ONLY all the same (``--rebalance`` only)."""
+    return state_dir(root) / TAX_ESTIMATE_FILENAME
+
+
 def positions_path(root: Path | None = None) -> Path:
     """Each classified holding of the last fire, for ``--rebalance`` only. Names instruments: LOCAL_ONLY."""
     return state_dir(root) / POSITIONS_FILENAME
@@ -103,6 +117,31 @@ def _write_json(path: Path, body: Mapping[str, Any], *, code: str, label: str) -
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(body, ensure_ascii=False, sort_keys=True), encoding="utf-8")
         tmp.replace(path)
+
+
+def refresh_tax_estimate(feed: Any, snapshot: Any, *, now: str, root: Path | None = None) -> None:
+    """RB3' (Thomas 2026-10-26): record today's USD/KRW rate (the first fire of a KST day), and once a day
+    rebuild this year's realised overseas gain from the whole closed-order history. A failed read keeps the
+    last block, which then names an earlier day, and the next fire tries again."""
+    path = tax_estimate_path(root)
+    body = _read_json(path) or {}
+    today = overseas_gain.kst_day(now)
+    rates = dict(body.get("fx_rates") or {})
+    if snapshot.usd_krw_rate and today not in rates:
+        rates[today] = snapshot.usd_krw_rate
+    gain = body.get("overseas_gain")
+    if not isinstance(gain, dict) or gain.get("computed_on") != today:
+        try:
+            orders, truncated = feed.closed_orders(date_from=None, date_to=None, max_pages=TAX_ESTIMATE_MAX_PAGES)
+            held = {h.symbol: (h.quantity, h.average_price) for h in snapshot.holdings if h.market == MARKET_OVERSEAS}
+            result = overseas_gain.realised(orders, truncated=truncated, year=int(today[:4]), rates=rates,
+                                            current_rate=snapshot.usd_krw_rate, held=held)
+            gain = {**result.as_record(), "computed_on": today}
+        except Exception:  # noqa: BLE001 — a failed read keeps yesterday's block; the rate is still recorded
+            pass
+    _write_json(path, {"record_type": TAX_ESTIMATE_RECORD_TYPE, "written_at": now, "fx_rates": rates,
+                       "overseas_gain": gain},
+                code="HOLDINGS_TAX_ESTIMATE_LOCKED", label="holdings tax estimate")
 
 
 def _feed() -> Any:
@@ -203,6 +242,7 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
         positions = rebalance.toss_positions(snapshot, entries)
     except Exception:  # noqa: BLE001 — the calculator's input must not cost the board
         positions = None
+    feed = None
     try:
         feed = _feed()
         if isinstance(feed, TossHoldingsFeed):
@@ -210,6 +250,11 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
             toss_ok = True
     except Exception as exc:  # noqa: BLE001 — a Toss shadow failure costs that pass, not the summary
         flows_note = flows_note or f"toss {_reason(exc)}"
+    try:
+        if isinstance(feed, TossHoldingsFeed):
+            refresh_tax_estimate(feed, snapshot, now=now, root=root)
+    except Exception:  # noqa: BLE001 — the calculator's input must not cost the board
+        pass
     try:
         flows = cash_flows.summary(state_dir(root))
         # H6d-min §11: readiness judges this fire's health, never a past PASS — every history read, the
@@ -379,9 +424,30 @@ def load_rebalance(*, now: str, root: Path | None = None, force: bool = False) -
     age = _age_seconds(body.get("as_of"), now) if body else None
     # The board and the positions must come from one fire; a mismatch is a fire that wrote one and not the other.
     rows = held.get("positions") if held and body and held.get("as_of") == body.get("as_of") else None
+    gain, gain_note = _overseas_gain_for(_read_json(tax_estimate_path(root)), now=now)
     result = rebalance.plan_from_local(body, positions=rows, candidates=candidates, age_seconds=age,
-                                       stale_after_seconds=STALE_AFTER_SECONDS, force=force)
+                                       stale_after_seconds=STALE_AFTER_SECONDS, overseas_gain_ytd_krw=gain,
+                                       force=force)
+    result.notes.append(gain_note)
     return "\n".join(rebalance.render(result, as_of=(body or {}).get("as_of")))
+
+
+def _overseas_gain_for(estimate: Mapping[str, Any] | None, *, now: str) -> tuple[float | None, str]:
+    """The FIFO gain (§3's sample line) when today's or yesterday's rebuild for this year succeeded, else None:
+    the planner then skips step 3 (§2.3). The note says which, and that it is an estimate either way."""
+    block = (estimate or {}).get("overseas_gain")
+    today = overseas_gain.kst_day(now)
+    yesterday = overseas_gain.kst_day((timeutil.parse_iso(now) - timedelta(days=1)).isoformat())
+    if not isinstance(block, Mapping):
+        return None, "overseas gain: not computed yet (the next holdings fire rebuilds it)"
+    if block.get("computed_on") not in (today, yesterday) or block.get("year") != int(today[:4]):
+        return None, f"overseas gain: last rebuilt {block.get('computed_on')}, too old to use"
+    if block.get("status") != "ok" or block.get("fifo_krw") is None:
+        return None, f"overseas gain: refused ({block.get('reason')})"
+    return float(block["fifo_krw"]), (
+        f"overseas gain: FIFO (method unconfirmed, estimate); moving average {block.get('moving_average_krw'):,} KRW; "
+        f"{block.get('sells_counted')} sells this year, {block.get('unsettled_sells')} unsettled, "
+        f"{block.get('approx_fx_fills')} fills at an approximate rate")
 
 
 def load_snapshot_status(*, now: str, root: Path | None = None) -> dict[str, Any]:

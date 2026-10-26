@@ -106,6 +106,10 @@ def _band_drift(class_krw: Mapping[str, float], nav: float) -> dict[str, dict[st
     return out
 
 
+def _ratio(position: Position) -> float:
+    return (position.pnl_krw or 0.0) / position.value_krw if position.value_krw else 0.0
+
+
 def _sell_order(position: Position, amount: float, step: int, kind: str) -> dict[str, Any]:
     price = position.price_krw
     whole = position.market == "domestic"
@@ -146,9 +150,10 @@ def plan(*, class_krw: Mapping[str, float], positions: Iterable[Position], compl
     deduction_left = (None if overseas_gain_ytd_krw is None
                       else max(0.0, OVERSEAS_DEDUCTION_KRW - overseas_gain_ytd_krw))
     if deduction_left is None:
-        result.notes.append("this year's overseas gain is unknown: overseas sells are taxed in the estimate as if "
-                            "the 2.5M deduction were used up")
+        result.notes.append("this year's overseas gain is unknown: step 3 is skipped, so overseas sells wait for "
+                            "step 4 and are taxed in the estimate as if the 2.5M deduction were used up")
     sells: list[dict[str, Any]] = []
+    room = deduction_left
     for asset_class, need in excess.items():
         if need <= 0:
             continue
@@ -157,21 +162,37 @@ def plan(*, class_krw: Mapping[str, float], positions: Iterable[Position], compl
                           "step": STEP[TAX_FREE], "tax_kind": TAX_FREE, "amount_krw": round(need), "quantity": None,
                           "whole_shares": False, "gain_krw": 0, "manual": True})
             continue
-        held = [p for p in positions if p.asset_class == asset_class]
+        held = sorted((p for p in positions if p.asset_class == asset_class), key=lambda p: (_ratio(p), p.instrument))
+        sold = {p.instrument: 0.0 for p in held}
 
-        def order_key(p: Position) -> tuple[int, float]:
-            kind = tax_kind(p, tax_overrides)
-            ratio = (p.pnl_krw or 0.0) / p.value_krw if p.value_krw else 0.0
-            return (STEP[kind], ratio)
-
-        for position in sorted(held, key=order_key):
-            if need <= 0:
-                break
-            amount = min(need, position.value_krw)
-            kind = tax_kind(position, tax_overrides)
-            order = _sell_order(position, amount, STEP[kind], kind)
+        def sell(position: Position, amount: float, step: int) -> None:
+            nonlocal need
+            order = _sell_order(position, amount, step, tax_kind(position, tax_overrides))
+            sold[position.instrument] += order["amount_krw"]
             need -= order["amount_krw"]
             sells.append(order)
+
+        # Step 2: tax-free sells.
+        for position in held:
+            if need > 0 and tax_kind(position, tax_overrides) == TAX_FREE:
+                sell(position, min(need, position.value_krw), STEP[TAX_FREE])
+        # Step 3 (§2.3): overseas sells only as far as the year's deduction still covers their gain. Unknown
+        # gain: no step 3, the overseas holdings wait for step 4.
+        if room is not None:
+            for position in held:
+                if need <= 0 or tax_kind(position, tax_overrides) != OVERSEAS:
+                    continue
+                ratio = _ratio(position)
+                cap = position.value_krw if ratio <= 0 else min(position.value_krw, room / ratio)
+                if cap >= 1:
+                    before = len(sells)
+                    sell(position, min(need, cap), STEP[OVERSEAS])
+                    room -= sells[-1]["gain_krw"] if len(sells) > before else 0.0
+        # Step 4: what is left of the overseas and the taxed holdings, the smallest gain ratio first.
+        for position in held:
+            left = position.value_krw - sold[position.instrument]
+            if need > 0 and left >= 1 and tax_kind(position, tax_overrides) != TAX_FREE:
+                sell(position, min(need, left), STEP[TAXED_DIVIDEND])
 
     # Buys: each under-target class is filled from surplus cash and the sells, into Thomas's approved
     # candidates (RB2): the candidate with the smallest current holding first, so the class spreads across them.
