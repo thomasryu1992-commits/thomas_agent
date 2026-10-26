@@ -818,18 +818,33 @@ def test_memory_ceilings_sit_on_everything_but_the_money_path():
 
 
 
-# --- the vault: mounted by no service since the runtime blog lane was retired (2026-10-26) --------
+# --- the vault: read by the blog department's observation, on scheduler-maint only (2026-10-26) ------
 #
-# The lane read the vault's post folders and keyword queue (Thomas 2026-09-28) in pipeline-worker.
-# With the lane gone (BLOG_DEPARTMENT_V0.1.md §2) nothing in the runtime reads the vault, so no
-# service mounts it, and the lane's env names are gone with it.
+# The runtime blog lane read the vault in pipeline-worker until it was retired (BLOG_DEPARTMENT_V0.1.md §2).
+# What reads it now is the weekly report's blog section (stages 1-2): the two post folders, read-only,
+# on the maintenance lane that sends the report — and no other service, and no other folder.
 
 def _vault_mounts(service: str) -> list[str]:
     return [str(v) for v in _service(service).get("volumes") or [] if "blog_vault" in str(v)]
 
 
-@pytest.mark.parametrize("service", sorted(yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))["services"]))
-def test_no_service_mounts_the_vault_or_names_the_lanes_env(service):
+def test_the_maintenance_lane_reads_the_vaults_post_folders_read_only():
+    from runtime.mvp_runtime import blog_department
+
+    mounts = _vault_mounts("scheduler-maint")
+    targets = sorted(m.rsplit(":", 2)[1] for m in mounts)   # "${VAR:-default}/…:target:ro"
+    assert targets == ["/app/blog_vault/content/naver", "/app/blog_vault/content/tistory"]
+    assert all(m.endswith(":ro") for m in mounts), mounts
+    assert all(m.startswith("${THOMAS_BLOG_VAULT_DIR:-") for m in mounts), mounts
+    environment = _service_environment("scheduler-maint")
+    root = environment.get(blog_department.BLOG_VAULT_ROOT_ENV)
+    assert root == "/app/blog_vault"
+    assert sorted(f"{root}/content/{p}" for p in blog_department.PLATFORMS) == targets
+
+
+@pytest.mark.parametrize("service", sorted(
+    s for s in yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))["services"] if s != "scheduler-maint"))
+def test_no_other_service_mounts_the_vault(service):
     assert _vault_mounts(service) == []
     environment = _service(service).get("environment") or {}
     assert not [name for name in environment if name.startswith("MVP_BLOG_")], environment
