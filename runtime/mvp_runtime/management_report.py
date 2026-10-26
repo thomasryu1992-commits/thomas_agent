@@ -14,7 +14,10 @@ him once a week, on the bot he decides on:
   text (the read door's projection v1 drops it for the same reason). Scheduled analyses are counted
   too, because their results reach Thomas only through ``/result``;
 * **feedback** — ``/feedback`` verdicts over the window, per lane by the run's ``trace_id``, against
-  the runs delivered in the same window. Comments are never quoted.
+  the runs delivered in the same window. Comments are never quoted;
+* **blog** — the blog department's week from the vault's post front matter (``blog_department``,
+  BLOG_DEPARTMENT_V0.1.md stages 1-2): status now, new drafts, published, and the slots planned for the
+  week ahead, per platform. Counts only.
 
 Each section is collected on its own: one that cannot be read renders as ``읽지 못함: <code>`` and the
 others still go. Holdings never appear (Q2): numbers from that lane leave the process through H3's
@@ -158,6 +161,7 @@ def read_feedback(ledger: Any, *, since: str, until: str, lanes: Mapping[str, Ma
 def collect(
     *, now: str, ledger: Any, schedules: Any, approval_store: Any, control_state: Any = None,
     crypto_status: Callable[[], Mapping[str, Any]] | None = None,
+    blog: Callable[[], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Every section, each read on its own. ``crypto_status`` is called, not passed, so a dashboard
     that cannot be built is the crypto line's failure and nothing else's."""
@@ -174,6 +178,7 @@ def collect(
         "schedules": _section(lambda: read_schedules(schedules, ledger, since=since)),
         "feedback": _section(lambda: read_feedback(ledger, since=since, until=now,
                                                    lanes=lanes["data"] if lanes["ok"] else None)),
+        "blog": _section(blog) if blog is not None else None,
     }
 
 
@@ -262,4 +267,17 @@ def render(report: Mapping[str, Any]) -> str:
         for lane, counts in f["by_lane"].items():
             lines.append(f"    [{lane}] " + " · ".join(f"{k} {counts[k]}" for k in sorted(counts)))
         lines.append("  피드백은 기록만 되고 아직 다시 읽히지 않습니다(E2·E3 미구현).")
+
+    blog = report.get("blog")
+    if blog is not None:
+        lines += ["", "■ 블로그"]
+        if not blog["ok"]:
+            lines.append(_unreadable(blog))
+        else:
+            for platform, label in (("naver", "네이버"), ("tistory", "티스토리")):
+                p = blog["data"]["platforms"][platform]
+                st = p["status"]
+                lines.append(f"  [{label}] 새 원고 {p['new_drafts']} · 발행 {p['published']} · 다음 7일 예정 {p['upcoming']}")
+                lines.append(f"    지금: draft {st['draft']} · 보류 {st['hold']} · 예약 {st['scheduled']} · 발행됨 {st['published']}"
+                             + (f" · 읽지 못한 파일 {p['unparsed']}" if p["unparsed"] else ""))
     return "\n".join(lines)

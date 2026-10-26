@@ -354,6 +354,13 @@ services:
       - ${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state
       - ${THOMAS_CORE_ACTIVATIONS_DIR:-./THOMAS_CORE/activations}:/app/THOMAS_CORE/activations:ro
       - ${THOMAS_CORE_APPROVALS_DIR:-./THOMAS_CORE/approvals}:/app/THOMAS_CORE/approvals:ro
+      # The blog department, observed (BLOG_DEPARTMENT_V0.1.md stages 1-2, Thomas 2026-10-26): the weekly
+      # management report counts the vault's posts by their front matter. Only the two post folders,
+      # read-only. THOMAS_BLOG_VAULT_DIR is the host vault root, absolute in the .env, and should be the
+      # clone the drafting cron writes. Unset, the relative default is an empty folder in the deploy
+      # tree and the report's blog section says the vault is unavailable rather than reading as zero.
+      - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/content/naver:/app/blog_vault/content/naver:ro
+      - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/content/tistory:/app/blog_vault/content/tistory:ro
     # Its own heartbeat, probed by its own name: a shared file would let this loop keep a
     # dead risk loop reading FRESH (or the reverse). Same thresholds as its sibling.
     healthcheck:
@@ -399,6 +406,8 @@ services:
       # The interpolation source is the same `TELEGRAM_BOT_TOKEN` this service already draws as
       # its fallback above, so the set of services that hold the control bot does not change.
       MVP_CONTROL_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      # Where the read-only vault mount above lands. A literal: it names a path inside this container.
+      MVP_BLOG_VAULT_ROOT: /app/blog_vault
       # The holdings board's Toss Securities account read (P1-b of MULTI_ASSET_EXPANSION_V0.1.md;
       # KIS replaced by Toss, Thomas 2026-10-07). The `holdings_refresh` fire is a maintenance kind,
       # and this lane — not the risk lane — holds the key, so a brokerage key never sits next to the

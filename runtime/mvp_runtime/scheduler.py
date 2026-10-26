@@ -1462,20 +1462,34 @@ def _execute(
             control_state = ControlStore.default(repo_root).load()
         except MvpRuntimeError:
             control_state = None
+        from . import blog_department
+
         report = management_report.collect(
             now=now, ledger=ledger, schedules=ScheduleStore.default(repo_root),
             approval_store=ApprovalStore.default(repo_root), control_state=control_state,
             crypto_status=lambda: build_status(repo_root, now=now),
+            blog=lambda: blog_department.observe(now=now),
         )
+        # Stage 2: the department's week on the ledger, whether or not the message then goes out —
+        # the observation is the evidence (D8), the message is its delivery. A record that cannot be
+        # built or appended is named on the status line and costs the report nothing.
+        blog_note = ""
+        if report.get("blog") is not None and report["blog"]["ok"]:
+            try:
+                record = blog_department.build_record(report["blog"]["data"], now=now)
+                ledger.append_records(record["observation_id"], {blog_department.RECORD_KIND: record})
+                blog_note = f" blog_recorded={record['observation_id']}"
+            except Exception as exc:  # noqa: BLE001 — a schema miss is not an MvpRuntimeError; neither may stop the report
+                blog_note = f" blog_not_recorded:{getattr(exc, 'reason_code', None) or type(exc).__name__}"
         text = management_report.render(report)
         try:
             channel = operator_mod.select_control_channel()
             operator_mod.notify_operator(channel, text, repo_root=repo_root)
         except MvpRuntimeError as exc:
             raise SchedulerBlocked("MANAGEMENT_REPORT_NOT_SENT", f"the weekly report was not sent: {exc.reason_code}") from exc
-        unread = sorted(k for k in ("lanes", "crypto", "approvals", "schedules", "feedback")
+        unread = sorted(k for k in ("lanes", "crypto", "approvals", "schedules", "feedback", "blog")
                         if report.get(k) is not None and not report[k]["ok"])
-        return "management_report_sent" + (f" unreadable={','.join(unread)}" if unread else "")
+        return "management_report_sent" + (f" unreadable={','.join(unread)}" if unread else "") + blog_note
     if schedule.kind == KIND_CRYPTO:
         # Governed crypto cycles (C7). The collector and paper store are selected at
         # fire time through their Safety-Flag chokepoints, so a deleted grant is a

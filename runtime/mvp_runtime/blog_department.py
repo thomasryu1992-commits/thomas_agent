@@ -1,0 +1,131 @@
+"""The blog department, observed: what the vault's post folders say happened this week. Reads only.
+
+BLOG_DEPARTMENT_V0.1.md stages 1 and 2 (Thomas 2026-10-26). Blog production runs outside the runtime: the
+claude cron drafts into the vault, the Mac and an SSH session publish. The organisation does not run it; it
+reads what it did, once a week, from the one place every step leaves a mark — each post's front matter in
+``content/naver/`` and ``content/tistory/`` — and reports and records that:
+
+* **status now** — ``draft`` / ``hold`` / ``scheduled`` / ``published`` per platform, as the files say;
+* **new drafts** — posts whose ``created:`` date falls in the window;
+* **published** — ``status: published`` posts whose ``published:`` date falls in the window;
+* **upcoming** — unpublished posts whose ``scheduled:`` slot falls in the next seven days. On Naver that slot is
+  the plan (the post stays ``draft`` until it goes out); on Tistory a ``scheduled`` status is a real reservation.
+  Either way it is called what it is, never "published".
+
+Dates are KST calendar dates, as the vault writes them. A file without readable front matter is counted as
+unparsed, never guessed at; a platform folder with no posts at all refuses, like an absent one. Nothing here writes the vault, calls a model, or reaches the network; the vault
+arrives as a read-only mount (``MVP_BLOG_VAULT_ROOT``).
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from datetime import timedelta
+from pathlib import Path
+from typing import Any, Mapping
+
+from runtime.read_only_kernel import integrity
+
+from . import schema_cache, timeutil
+from .errors import ToolError
+from .paths import repo_root as _repo_root
+
+BLOG_VAULT_ROOT_ENV = "MVP_BLOG_VAULT_ROOT"
+PLATFORMS = ("naver", "tistory")
+STATUSES = ("draft", "hold", "scheduled", "published")
+WINDOW_DAYS = 7
+RECORD_KIND = "blog_department_week"
+RECORD_SCHEMA = "schemas/blog_department_week.v0.1.schema.json"
+RECORD_SCHEMA_VERSION = "blog_department_week.v0.1"
+_KST = timedelta(hours=9)
+_FIELD = re.compile(r"^([a-z_]+):[ \t]*(.*)$")
+_DATE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
+_WANTED = frozenset({"status", "created", "published", "scheduled"})
+
+
+def vault_root(root: str | Path | None = None) -> Path:
+    """The mounted vault root, from the argument or ``MVP_BLOG_VAULT_ROOT``. Unset is a typed refusal: an
+    empty week and a vault that is not there must never read the same."""
+    value = root if root is not None else os.environ.get(BLOG_VAULT_ROOT_ENV)
+    if not value:
+        raise ToolError("BLOG_VAULT_UNAVAILABLE", f"{BLOG_VAULT_ROOT_ENV} is not set; the vault is not mounted here")
+    path = Path(value)
+    missing = [p for p in PLATFORMS if not (path / "content" / p).is_dir()]
+    if missing:
+        raise ToolError("BLOG_VAULT_UNAVAILABLE", f"the vault at {path} has no content folder for {missing}")
+    return path
+
+
+def front_matter(text: str) -> dict[str, str] | None:
+    """The ``key: value`` lines this module reads, or None when the file has no front matter block."""
+    if not text.startswith("---"):
+        return None
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return None
+    fields: dict[str, str] = {}
+    for line in parts[1].splitlines():
+        match = _FIELD.match(line)
+        if match and match.group(1) in _WANTED:
+            fields[match.group(1)] = match.group(2).strip().strip('"')
+    return fields
+
+
+def _date(value: str | None) -> str | None:
+    match = _DATE.match(value or "")
+    return match.group(1) if match else None
+
+
+def _kst_date(iso: str, days: int = 0) -> str:
+    return (timeutil.parse_iso(iso) + _KST + timedelta(days=days)).strftime("%Y-%m-%d")
+
+
+def observe(root: str | Path | None = None, *, now: str) -> dict[str, Any]:
+    """Each platform's counts over the window ending at ``now``: ``[since, until)`` for what happened, and
+    ``[until, ahead)`` for what is planned."""
+    base = vault_root(root)
+    since, until, ahead = _kst_date(now, -WINDOW_DAYS), _kst_date(now), _kst_date(now, WINDOW_DAYS)
+    platforms: dict[str, dict[str, Any]] = {}
+    for platform in PLATFORMS:
+        row = {"files": 0, "unparsed": 0, "status": {s: 0 for s in (*STATUSES, "other")},
+               "new_drafts": 0, "published": 0, "upcoming": 0}
+        for path in sorted((base / "content" / platform).glob("*.md")):
+            row["files"] += 1
+            try:
+                fields = front_matter(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError):
+                fields = None
+            if fields is None or "status" not in fields:
+                row["unparsed"] += 1
+                continue
+            status = fields["status"] if fields["status"] in STATUSES else "other"
+            row["status"][status] += 1
+            created, published, scheduled = (_date(fields.get(k)) for k in ("created", "published", "scheduled"))
+            if created and since <= created < until:
+                row["new_drafts"] += 1
+            if status == "published" and published and since <= published < until:
+                row["published"] += 1
+            if status != "published" and scheduled and until <= scheduled < ahead:
+                row["upcoming"] += 1
+        if row["files"] == 0:
+            # Each folder holds well over a hundred posts. None at all is a mount that does not reach the files
+            # (or a folder this user cannot list), never a quiet week.
+            raise ToolError("BLOG_VAULT_UNAVAILABLE", f"the vault at {base} has no posts under content/{platform}")
+        platforms[platform] = row
+    return {"since": since, "until": until, "ahead": ahead, "platforms": platforms}
+
+
+def build_record(observation: Mapping[str, Any], *, now: str) -> dict[str, Any]:
+    """The week's observation as a ledger record, validated against its closed schema before it leaves.
+    The schema is read from the code's own tree, never from a state root a caller passes."""
+    body = {"window": {"since": observation["since"], "until": observation["until"], "ahead": observation["ahead"]},
+            "platforms": observation["platforms"]}
+    record = {
+        "schema_version": RECORD_SCHEMA_VERSION,
+        "observation_id": integrity.short_id("blogweek", {"observed_at": now, **body}),
+        "observed_at": now,
+        **body,
+    }
+    schema_cache.validate_against_schema(record, _repo_root() / RECORD_SCHEMA, RECORD_KIND)
+    return record
