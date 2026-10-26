@@ -14,7 +14,7 @@
       so it is never called published.
 
     Dates are KST calendar dates, as the vault writes them. A file without front matter is counted as
-    unparsed. An unmounted vault refuses (`BLOG_VAULT_UNAVAILABLE`) rather than reading as an empty week, and so does a platform folder with no posts in it (a mount that reaches nothing, or a folder uid 10001 cannot list: the real folders hold 160 and 140).
+    unparsed. An unmounted vault refuses (`BLOG_VAULT_UNAVAILABLE`) rather than reading as an empty week, and so does a platform folder with no posts in it (a mount that reaches nothing, or a folder uid 10001 cannot list: on 2026-10-26 the folders held 164 and 144 posts).
   - The weekly management report renders it as "■ 블로그", and the same fire appends a `blog_department_week`
     record (closed schema v0.1, counts only). A record that cannot be built or appended is named on the status
     line and costs the report nothing.
