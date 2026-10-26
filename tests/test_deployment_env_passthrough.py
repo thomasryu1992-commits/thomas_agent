@@ -818,39 +818,21 @@ def test_memory_ceilings_sit_on_everything_but_the_money_path():
 
 
 
-# --- the blog lane's published-post source (Thomas 2026-09-28) ------------------------------
+# --- the vault: mounted by no service since the runtime blog lane was retired (2026-10-26) --------
+#
+# The lane read the vault's post folders and keyword queue (Thomas 2026-09-28) in pipeline-worker.
+# With the lane gone (BLOG_DEPARTMENT_V0.1.md §2) nothing in the runtime reads the vault, so no
+# service mounts it, and the lane's env names are gone with it.
 
 def _vault_mounts(service: str) -> list[str]:
     return [str(v) for v in _service(service).get("volumes") or [] if "blog_vault" in str(v)]
 
 
-def test_the_pipeline_worker_reads_the_vaults_post_folders_read_only():
-    """Rule-based blog selection refuses without the published posts (`blog_content`), and the
-    lane runs only here. The two post folders and the keyword queue's folder — nothing else of
-    the vault — and read-only."""
-    from runtime.mvp_runtime import blog_content
-
-    mounts = _vault_mounts("pipeline-worker")
-    targets = sorted(m.rsplit(":", 2)[1] for m in mounts)   # "${VAR:-default}/…:target:ro"
-    assert targets == ["/app/blog_vault/analytics/keywords", "/app/blog_vault/content/naver",
-                       "/app/blog_vault/content/tistory"]
-    assert all(m.endswith(":ro") for m in mounts), mounts
-    assert all(m.startswith("${THOMAS_BLOG_VAULT_DIR:-") for m in mounts), mounts
-    environment = _service_environment("pipeline-worker")
-    assert environment.get(blog_content.PUBLISHED_ROOT_ENV) == "/app/blog_vault"
-    # The adapter reads `<root>/content/{naver,tistory}` — the mount targets under that root.
-    root = environment[blog_content.PUBLISHED_ROOT_ENV]
-    expected = [f"{root}/content/{p}" for p in blog_content._PUBLISHED_PLATFORM_DIRS]
-    expected.append(f"{root}/{blog_content.QUEUE_REL.rsplit('/', 1)[0]}")
-    assert targets == sorted(expected)
-
-
-@pytest.mark.parametrize("service", sorted(
-    s for s in yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))["services"]
-    if s != "pipeline-worker"))
-def test_no_other_service_mounts_the_vault(service):
+@pytest.mark.parametrize("service", sorted(yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))["services"]))
+def test_no_service_mounts_the_vault_or_names_the_lanes_env(service):
     assert _vault_mounts(service) == []
-    assert "MVP_BLOG_PUBLISHED_ROOT" not in (_service(service).get("environment") or {})
+    environment = _service(service).get("environment") or {}
+    assert not [name for name in environment if name.startswith("MVP_BLOG_")], environment
 
 
 # --- the weekly report's control-bot token (WMR-1, Thomas 2026-10-25) -------------------------------

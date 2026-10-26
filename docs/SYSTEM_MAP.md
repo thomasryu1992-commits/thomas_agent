@@ -88,15 +88,15 @@ Thomas 한 사람이 한 서버에서 돌리는 **거버넌스 우선 자율 에
 | `operator` | 관제봇을 폴링하고, 등록된 운영자를 확인하고, 분석 요청을 처리한다. `/approve`·`/kill` 등 명령, 승인 요청 알림 | 관제봇 토큰, 모델 키 |
 | `scheduler` (risk) | 크립토 사이클, 브레이커·경로 감시. **돈 경로** | 거래소 키, 라이브 변수 |
 | `scheduler-maint` (maintenance) | 팩토리, null control, 캔들 아카이브, 리포트, 데이터 리뷰, 보유자산 새로고침, 정리·회전, 주간 경영 보고 | 읽기 전용 거래소·증권 키, 시장 데이터 키, 관제봇 토큰(보고 전용 이름) |
-| `pipeline-worker` | 위임받은 분석과 job(데이터 리뷰, 전략 제안, 콘텐츠 아이디에이션) 실행 | 모델·검색·Naver 키 |
+| `pipeline-worker` | 위임받은 분석과 job(데이터 리뷰, 전략 제안) 실행. 분석 CLI의 `--naver-keywords`도 여기서 돈다 | 모델·검색·Naver 키 |
 | `claude-read-bridge` | Claude 계정의 읽기 전용 문(`claude` 프로필). 읽기 세 가지: `schedules`, `scheduler_events`, `holdings_status`(신선도와 검사 상태만, 금액 없음, #1314) | 없음(상태 루트를 읽기 전용으로 마운트) |
 
-**스케줄 종류 16개**(`scheduler.KINDS`):
+**스케줄 종류 15개**(`scheduler.KINDS`):
 - **risk 3개:** `crypto_pipeline`, `crypto_breaker_watch`, `crypto_route_watch`
-- **maintenance 13개:**
+- **maintenance 12개:**
   - 크립토: `crypto_factory`, `crypto_null_control`, `crypto_forward_cohort`, `crypto_propose`, `crypto_data_review`, `crypto_report`, `candle_archive`
   - 보유자산: `holdings_refresh`
-  - 분석·콘텐츠: `analysis_task`, `content_ideation`
+  - 분석: `analysis_task`
   - 정리: `memory_prune`, `ledger_rotate`
   - 보고: `management_report`
 
@@ -105,7 +105,7 @@ Thomas 한 사람이 한 서버에서 돌리는 **거버넌스 우선 자율 에
 ## 6. 레인
 
 레인은 코어의 관문(PermissionDecision, Safety-Flag Gate, 감사 체인)을 쓰는 응용이다. 증거가 없으면 통째로 제거한다
-(`predmarket/` 2026-08-02, `knowledge/` 2026-10-25).
+(`predmarket/` 2026-08-02, `knowledge/` 2026-10-25, 런타임 블로그 레인 2026-10-26).
 
 - **크립토** (`crypto/`)
   - **흐름:** 연구 팩토리(가설 → 생성 → holdout) → forward cohort(동결 후 180일에 판정, `COHORT_LIFETIME_DAYS`) → 승격 문 → 페이퍼 → (관문 뒤) 라이브.
@@ -119,7 +119,7 @@ Thomas 한 사람이 한 서버에서 돌리는 **거버넌스 우선 자율 에
   - **소유 문서:** `proposals/MULTI_ASSET_EXPANSION_V0.1.md`, `HOLDINGS_LEDGER_CHECKPOINT_V0.1.md`.
 - **분석·콘텐츠**
   - **분석:** 사업 아이디어 분석(MVP 사용 사례)과 역할별 작업. Naver 키워드 근거는 `--naver-keywords`로 붙이고, worker에서 돈다.
-  - **블로그 런타임 모듈:** `blog_*.py`, `content_ideation`. 블로그 **생산 경로는 런타임이 아니라 볼트와 서버 cron**이다(§8).
+  - **블로그:** 생산은 런타임 밖, 볼트와 서버 cron, Mac이 맡는다(§8). 런타임 블로그 레인은 2026-10-26에 통째로 지웠다(`proposals/BLOG_DEPARTMENT_V0.1.md`).
 - **주간 경영 보고** (`management_report.py`, WMR-1)
   - **내용:** 레인 요약, 대기 승인, 실패 스케줄, 피드백 통계.
   - **방식:** 매주 관제봇으로 보낸다. 첫 보고는 2026-11-02 12:41 KST다.
@@ -166,6 +166,7 @@ Thomas 한 사람이 한 서버에서 돌리는 **거버넌스 우선 자율 에
 |---|---|---|
 | Hermes 컨테이너(대화 창·오케스트라) | 2026-10-25 | `history/2026-10-25-retire-hermes-container.md`, `HERMES_ORCHESTRATOR_ARCHITECTURE_V0.2.md`(결정 기록) |
 | 문 4개(read·switch·dispatch·knowledge), workflow manager, knowledge 레인, 정책 조항 5개 | 2026-10-25 | `history/2026-10-25-retire-assistant-doors.md`, `runtime-contracts/POLICY_1_7_0_DRAFT.md` |
+| 런타임 블로그 레인(`blog_*` 모듈, `content_ideation`) | 2026-10-26 | `history/2026-10-26-retire-runtime-blog-lane.md` |
 | predmarket 레인 | 2026-08-02 | `REMAINING_WORK.md` §A |
 | 기기별 Safety-Flag grant | 2026-08-10 | `BUILD_HISTORY.md` |
 

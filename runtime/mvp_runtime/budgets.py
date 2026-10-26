@@ -43,35 +43,15 @@ TRIAGE_TIMEOUT_SECONDS = 30
 FRONTDESK_TOKEN_ALLOWANCE = 2000
 FRONTDESK_TIMEOUT_SECONDS = 30
 
-# Request-specific allowances (review B9). A blog draft is 1,800-3,500 characters of Korean prose
-# PLUS the structured JSON around it (titles, sections, tags, capture directions, fact checks,
-# sources); Korean costs roughly one token per character on these tokenizers, so the generic
-# 4,000-token output half truncates exactly the drafts the standards ask for. The fix is not a
-# bigger TOKENS_PER_AGENT — every other role would get it too — but a NAMED profile a caller
-# asks for, bound to the one request kind it exists for, and closed: an unknown name, or a
-# known name on another kind, is refused rather than defaulted.
-#
-# The profile sizes the TASK's allocation and the SPECIALIST's assignment together, so the
-# contract's "an assignment cannot exceed its parent task's remaining budget" holds by
-# construction (16,000 x planned agents >= the one 16,000 assignment). The validator and the
-# triage keep their own allowances.
-BLOG_CONTENT_BUDGET_PROFILE = "blog_content"
-# `max_runtime_seconds` too (2026-09-28): the blog draft runs on a slower non-Google model
-# (68 s measured for one real-sized draft), and the chain's 120 s left its first member 40 s.
-# 360 s gives each of three members up to 120 s (`FailoverProvider` member cap) and keeps a
-# whole fire (research + draft + one revision) inside the scheduler's 1,500 s deadline.
-# The Tistory draft (2026-10-05, `blog_tistory`): 3,500~5,000 characters of body against Naver's
-# 1,800~3,500, plus a brief, an FAQ, alt texts and SEO fields in the same JSON — about 6,000~8,000
-# output tokens, at or past the Naver profile's 8,000-token output half. Its revision carries that
-# whole draft back as input, which the 8,000 input half cannot hold beside the request. Same kind
-# binding, same runtime; only the share grows, and only for a request that names this profile.
-BLOG_TISTORY_BUDGET_PROFILE = "blog_content_tistory"
-BUDGET_PROFILES: dict[str, dict[str, Any]] = {
-    BLOG_CONTENT_BUDGET_PROFILE: {"tokens_per_agent": 16000, "max_runtime_seconds": 360,
-                                  "request_kinds": frozenset({"content"})},
-    BLOG_TISTORY_BUDGET_PROFILE: {"tokens_per_agent": 24000, "max_runtime_seconds": 360,
-                                  "request_kinds": frozenset({"content"})},
-}
+# Request-specific allowances (review B9): a NAMED profile a caller asks for, bound to the request
+# kinds it exists for, and closed — an unknown name, or a known name on another kind, is refused
+# rather than defaulted. The profile sizes the TASK's allocation and the SPECIALIST's assignment
+# together, so "an assignment cannot exceed its parent task's remaining budget" holds by
+# construction. The two profiles it was built for (`blog_content`, `blog_content_tistory`) left with
+# the runtime blog lane (Thomas 2026-10-26, BLOG_DEPARTMENT_V0.1.md §2); the mechanism stays, empty,
+# so the next request kind that outgrows the generic share names a profile instead of raising it
+# for every role.
+BUDGET_PROFILES: dict[str, dict[str, Any]] = {}
 
 
 def tokens_per_agent(profile: str | None = None) -> int:

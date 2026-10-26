@@ -214,7 +214,6 @@ services:
       # spend-capable signing secret back on the service that also holds the Binance keys.
       # Consequence for the CLI: a `--naver-keywords` run must exec in thomas-pipeline-worker,
       # not here — in this container the brief silently degrades to Mock rows.
-      # The weekly ideation schedule (blog lane Phase 3, unbuilt) executes via the worker.
       # Outbound-only: lets the tick loop TELL Thomas when a schedule fails, recovers,
       # or was left overdue while this service was down. Same `telegram` opt-in and the
       # same registered chat as the operator service — the scheduler never reads
@@ -512,25 +511,13 @@ services:
       # a BRIDGE_ERROR naming a THOMAS_CORE path means THESE mounts were dropped).
       - ${THOMAS_CORE_ACTIVATIONS_DIR:-./THOMAS_CORE/activations}:/app/THOMAS_CORE/activations:ro
       - ${THOMAS_CORE_APPROVALS_DIR:-./THOMAS_CORE/approvals}:/app/THOMAS_CORE/approvals:ro
-      # The content lane's package files (§J decision 2, Thomas 2026-08-30): POST.md/PASTE.txt
-      # render into workspace/blog/ through the R8 controlled write. Same absolute-path rule
+      # The R8 controlled write's target (§J decision 2, Thomas 2026-08-30). The blog lane's package
+      # files rendered here until that lane was retired (2026-10-26); the writer stays for the
+      # CLI's `--write-output` run in this container. Same absolute-path rule
       # as THOMAS_STATE_DIR — deploys run compose from throwaway clean worktrees, so the
       # relative default would scatter packages across build directories. The dir must be
       # writable by uid 10001 (chown once at adoption; state_guard's rule, same reason).
       - ${THOMAS_WORKSPACE_DIR:-./workspace}:/app/workspace
-      # The blog lane's published posts (Thomas 2026-09-28): rule-based keyword selection
-      # excludes every keyword the vault already wrote, and refuses without this source
-      # (PUBLISHED_KEYWORD_SOURCE_UNAVAILABLE). Only the two post folders, read-only — the
-      # rest of the vault (analytics, portfolio, paste packages) has no business in a
-      # container. THOMAS_BLOG_VAULT_DIR is the host vault root, absolute in the .env like the
-      # others. Unset, the relative default is an empty folder in the deploy tree, and the
-      # adapter reads "no posts" as unavailable rather than as "nothing was ever published".
-      - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/content/naver:/app/blog_vault/content/naver:ro
-      - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/content/tistory:/app/blog_vault/content/tistory:ro
-      # The vault keyword pipeline's output (`source=queue` seeds): queue.md and its inputs,
-      # keyword data only. The folder, not the file — a bind-mounted file keeps its old inode
-      # when the writer replaces rather than rewrites it.
-      - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/analytics/keywords:/app/blog_vault/analytics/keywords:ro
     healthcheck:
       test: ["CMD", "test", "-S", "/app/.runtime_governance_state/internal/pipeline.sock"]
       interval: 60s
@@ -570,23 +557,17 @@ services:
       MVP_GROQ_MODEL: ${MVP_GROQ_MODEL:-}
       MVP_HOSTED_MODEL: ${MVP_HOSTED_MODEL:-}
       MVP_VALIDATOR_PROVIDER: ${MVP_VALIDATOR_PROVIDER:-}
-      # R8's writer, on THIS service only (§J decision 2, Thomas 2026-08-30): the weekly
-      # content fire renders its package to files here, and the three loop services keep
+      # R8's writer, on THIS service only (§J decision 2, Thomas 2026-08-30): the blog lane's weekly
+      # package rendered here until 2026-10-26; the CLI's `--write-output` still can. The loop services keep
       # their standing exclusion (test_deployment_env_passthrough's NOT_DEPLOYED carries
       # the reasoning). Unset = the dry-run writer, exactly the pre-decision lane.
       MVP_WORKSPACE_WRITER: ${MVP_WORKSPACE_WRITER:-}
-      # Where the read-only vault mount above lands. A literal, not a passthrough: it names a
-      # path inside this container, which only this file decides.
-      MVP_BLOG_PUBLISHED_ROOT: /app/blog_vault
-      # The blog draft's OpenRouter model (Thomas 2026-09-28), this service only. Unset keeps the
-      # analysis chain's model for the draft as well (`blog_content.draft_provider`).
-      MVP_BLOG_OPENROUTER_MODEL: ${MVP_BLOG_OPENROUTER_MODEL:-}
       # Read-only web search (optional), same Safety-Flag Gate.
       MVP_SEARCH_TOOL: ${MVP_SEARCH_TOOL:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
-      # Naver keyword research for the blog content lane (optional). The `research`/`content`
-      # kinds run HERE now, so this service is where the lane's credentials belong — and after
-      # PR-B removes the scheduler's copy, the only place they exist at all.
+      # Naver keyword research (optional): the `--naver-keywords` evidence of an analysis run. The
+      # `research`/`content` kinds run HERE, so this service is where the credentials belong — the
+      # only place they exist at all. (The runtime blog lane used them too, until 2026-10-26.)
       #
       # Unlike every other gate in this block, MVP_NAVER_RESEARCH is the WHOLE gate: there is
       # no mounted grant behind it (Thomas, 2026-08-09). Naming it here is therefore an
