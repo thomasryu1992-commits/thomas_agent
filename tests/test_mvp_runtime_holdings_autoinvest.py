@@ -254,6 +254,22 @@ def test_short_buying_power_holds_the_whole_scenario_and_the_next_trading_day_tr
     assert ai.run(_Feed(), orders, tmp_path, now="2026-10-28T01:00:00Z")["status"] == "executed:3"
 
 
+@pytest.mark.parametrize("broken", ["kr_market_day", "stock_info", "last_prices", "cash_krw"])
+def test_a_read_that_fails_holds_and_is_told_never_a_half_order(tmp_path, broken):
+    _approve(tmp_path)
+    feed, orders = _Feed(), _Orders()
+
+    def fail(*_a, **_kw):
+        raise ToolError("TOOL_TRANSPORT", "down")
+
+    setattr(feed, broken, fail)
+    assert ai.run(feed, orders, tmp_path, now=OPEN)["status"] == "hold:read_failed" and orders.calls == []
+    assert "토스 조회에 실패" in ai.notice(tmp_path)[1]
+    # A calendar that could not be read consumed no day; the next fire that day looks again.
+    if broken == "kr_market_day":
+        assert ai.run(_Feed(), orders, tmp_path, now="2026-10-27T02:00:00Z")["status"] == "executed:3"
+
+
 def test_the_daily_cap_counts_every_scenario_that_day(tmp_path):
     ai._append(tmp_path, {"at": OPEN, "day": "2026-10-27", "scenario_id": "old", "client_order_id": "x",
                           "instrument": "toss:domestic:069500", "quantity": 4, "est_krw": 400_000, "state": "intent"})

@@ -29,6 +29,9 @@
     - the estimate (price × quantity × (1 + the account's KR commission)) is within the scenario cap, the
       day's 500,000 KRW across scenarios (from the journal), and KRW cash.
     - Any miss holds the whole scenario to the next trading day. It never trims what Thomas approved.
+    - A read that fails (calendar, info, prices, cash) is a hold too, told once (`read_failed`). A calendar that
+      cannot be read consumes no day.
+    - Topping up after a hold does not act that day: the next attempt is the next trading day.
   - The journal gets an `intent` line before each POST and its outcome after.
   - A `clientOrderId` already in the journal is never resent: a crash between intent and POST reads as
     unknown.
@@ -57,4 +60,5 @@
     the next day; the daily cap; the scenario cap; a rejection stopping the rest; unknown; a crash after
     intent; non-ETF; refusals at approval; expiry; scheduler delivery and the failed-refresh guard; the store
     handing the gated adapter.
-  - Sixteen mutations were each caught.
+  - A whole-share domestic sell under 50,000 KRW is still carried (RB4'' opens buys only).
+  - Seventeen mutations were each caught.

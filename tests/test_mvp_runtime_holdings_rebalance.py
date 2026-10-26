@@ -130,6 +130,15 @@ def test_orders_under_50000_are_carried_not_placed():
     assert all(o["amount_krw"] >= rb.MIN_ORDER_KRW for o in out.orders)
 
 
+def test_a_whole_share_sell_under_50000_is_still_carried():
+    # RB4'' opens buys only: gold 40,000 over target at 10,000 a share sells 4 whole shares, and that is carried.
+    krw = _on_target(gold=13_040_000.0, cash=7_460_000.0)
+    positions = [Position("toss:domestic:KRGOLD", al.GOLD, 1_304, 13_040_000.0, 0.0)]
+    out = rb.plan(class_krw=krw, positions=positions, complete=True, force=True)
+    (sell,) = out.carried
+    assert sell["side"] == "SELL" and sell["quantity"] == 4 and sell["amount_krw"] == 40_000 and not out.orders
+
+
 def test_a_whole_share_buy_under_50000_is_placed_not_carried():
     # RB4'' (Thomas 2026-10-26): the same 40,000 short, in a domestic candidate at 10,000 a share: 4 shares.
     krw = _on_target(global_equity=35_500_000.0, gold=12_960_000.0, cash=2_040_000.0)
