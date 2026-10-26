@@ -1,6 +1,6 @@
 # Thomas Agent 시스템 지도
 
-**상태:** 안내 문서(Navigation only). 2026-10-26, main `c8a77799` 기준.
+**상태:** 안내 문서(Navigation only). 2026-10-26, main `1881f06a` 기준.
 **권위:** 없음. 이 문서는 무엇이 어디 있는지만 가리킨다. 규칙은 `CLAUDE.md`, 권한은
 `governance/GOVERNANCE_POLICY.yaml`, 코드 소유권은 [`ACTIVE_ARCHITECTURE.md`](ACTIVE_ARCHITECTURE.md)에 있다.
 이 문서와 그 문서들이 다르면 그 문서들이 맞다.
@@ -58,7 +58,7 @@ Thomas 한 사람이 한 서버에서 돌리는 **거버넌스 우선 자율 에
               │
      .runtime_governance_state/  (원장·승인·스케줄·제어 상태 — 서비스가 함께 마운트)
               │
-   claude-read-bridge ──▶ Claude(uid 2101): 투영된 읽기 두 가지만
+   claude-read-bridge ──▶ Claude(uid 2101): 투영된 읽기 세 가지만
 
    저장소 밖: 볼트(obsidian-thomas) · 서버 스크립트(~/.claude/scripts) · Mac 루틴 · /root/backups · 배포 러너(C6a)
 ```
@@ -89,7 +89,7 @@ Thomas 한 사람이 한 서버에서 돌리는 **거버넌스 우선 자율 에
 | `scheduler` (risk) | 크립토 사이클, 브레이커·경로 감시. **돈 경로** | 거래소 키, 라이브 변수 |
 | `scheduler-maint` (maintenance) | 팩토리, null control, 캔들 아카이브, 리포트, 데이터 리뷰, 보유자산 새로고침, 정리·회전, 주간 경영 보고 | 읽기 전용 거래소·증권 키, 시장 데이터 키, 관제봇 토큰(보고 전용 이름) |
 | `pipeline-worker` | 위임받은 분석과 job(데이터 리뷰, 전략 제안, 콘텐츠 아이디에이션) 실행 | 모델·검색·Naver 키 |
-| `claude-read-bridge` | Claude 계정의 읽기 전용 문(`claude` 프로필) | 없음(상태 루트를 읽기 전용으로 마운트) |
+| `claude-read-bridge` | Claude 계정의 읽기 전용 문(`claude` 프로필). 읽기 세 가지: `schedules`, `scheduler_events`, `holdings_status`(신선도와 검사 상태만, 금액 없음, #1314) | 없음(상태 루트를 읽기 전용으로 마운트) |
 
 **스케줄 종류 16개**(`scheduler.KINDS`):
 - **risk 3개:** `crypto_pipeline`, `crypto_breaker_watch`, `crypto_route_watch`
@@ -115,7 +115,7 @@ Thomas 한 사람이 한 서버에서 돌리는 **거버넌스 우선 자율 에
   - **소유 문서:** `docs/runtime-contracts/CRYPTO_*`, `EXECUTION_STAGE_V0.1.md`, `REMAINING_WORK.md` §C·§F·§L.
 - **보유자산** (`holdings/`)
   - **흐름:** 토스·바이낸스를 읽기 전용으로 조회해 보드를 만든다.
-  - **공개 경계:** 프로세스 밖으로 나가는 것은 H3의 표 하나다(`holdings/disclosure.py`). Claude는 `holdings_board` 기본 렌더로만 읽는다(`CLAUDE.md`).
+  - **공개 경계:** 프로세스 밖으로 나가는 것은 H3의 표 하나다(`holdings/disclosure.py`). Claude가 읽는 길은 `CLAUDE.md`의 holdings 규칙과 읽기 문의 `holdings_status`(금액 없음)뿐이다.
   - **소유 문서:** `proposals/MULTI_ASSET_EXPANSION_V0.1.md`, `HOLDINGS_LEDGER_CHECKPOINT_V0.1.md`.
 - **분석·콘텐츠**
   - **분석:** 사업 아이디어 분석(MVP 사용 사례)과 역할별 작업. Naver 키워드 근거는 `--naver-keywords`로 붙이고, worker에서 돈다.
