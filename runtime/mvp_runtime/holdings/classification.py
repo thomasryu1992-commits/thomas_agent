@@ -52,6 +52,9 @@ class Classification:
     mapping_version: int = 0
     entries: Mapping[str, str] = field(default_factory=dict)
     currencies: Mapping[str, str] = field(default_factory=dict)
+    # REBALANCING_PROPOSAL RB2 (Thomas 2026-10-26): per class, the instruments Thomas approved for the
+    # rebalancing calculator to buy into. They name instruments, so they live here, on this host only.
+    candidates: Mapping[str, list[str]] = field(default_factory=dict)
 
 
 def path(state_dir: Path) -> Path:
@@ -95,10 +98,16 @@ def load(state_dir: Path) -> Classification:
         entries[str(instrument)] = str(asset_class)
         if currency is not None:
             currencies[str(instrument)] = str(currency)
+    candidates: dict[str, list[str]] = {}
+    for asset_class, ids in (body.get("candidates") or {}).items():
+        if (asset_class not in ASSIGNABLE_CLASSES or not isinstance(ids, list)
+                or not all(isinstance(i, str) and _valid_id(i) for i in ids)):
+            raise ToolError(CLASSIFICATION_UNREADABLE, f"{FILENAME} carries a candidate list that is not valid")
+        candidates[str(asset_class)] = list(ids)
     version = body.get("mapping_version")
     if not isinstance(version, int) or version < 0:
         raise ToolError(CLASSIFICATION_UNREADABLE, f"{FILENAME} has no mapping_version")
-    return Classification(mapping_version=version, entries=entries, currencies=currencies)
+    return Classification(mapping_version=version, entries=entries, currencies=currencies, candidates=candidates)
 
 
 def apply(state_dir: Path, *, assign: Mapping[str, str] | None = None, remove: tuple[str, ...] = (),
@@ -125,15 +134,51 @@ def apply(state_dir: Path, *, assign: Mapping[str, str] | None = None, remove: t
     with locked(target.with_suffix(".lock"), code="HOLDINGS_CLASSIFICATION_LOCKED", label="holdings classification"):
         current = load(state_dir)
         raw: dict[str, Any] = {}
+        kept: dict[str, Any] = {}
         if target.exists():
-            raw = json.loads(target.read_text(encoding="utf-8")).get("entries") or {}
+            existing = json.loads(target.read_text(encoding="utf-8"))
+            raw = existing.get("entries") or {}
+            kept = existing.get("candidates") or {}
         for instrument in remove:
             raw.pop(instrument, None)
         for instrument, asset_class in assign.items():
             raw[instrument] = {"asset_class": asset_class, "approved_at": stamp,
                                **({"currency": currency[instrument]} if instrument in currency else {})}
         body = {"record_type": RECORD_TYPE, "mapping_version": current.mapping_version + 1,
-                "updated_at": stamp, "entries": raw}
+                "updated_at": stamp, "entries": raw, **({"candidates": kept} if kept else {})}
+        tmp = target.with_suffix(".tmp")
+        tmp.write_text(json.dumps(body, ensure_ascii=False, sort_keys=True, indent=1), encoding="utf-8")
+        tmp.replace(target)
+    return load(state_dir)
+
+
+MAX_CANDIDATES = 4
+
+
+def set_candidates(state_dir: Path, asset_class: str, instruments: list[str], *, now: str | None = None) -> Classification:
+    """Replace one class's approved candidates (RB2: three or four; an empty list withdraws them). Keeps every
+    entry and the other classes' lists; moves the version once. Refuses before anything is written."""
+    if asset_class not in ASSIGNABLE_CLASSES - {"cash", "coin"}:
+        raise ToolError(CLASSIFICATION_REFUSED, "candidates are for a Toss-held class: "
+                                                "global_equity, domestic_equity, bonds or gold")
+    if len(instruments) > MAX_CANDIDATES or len(set(instruments)) != len(instruments):
+        raise ToolError(CLASSIFICATION_REFUSED, f"at most {MAX_CANDIDATES} distinct candidates")
+    if not all(i.startswith("toss:") and _valid_id(i) for i in instruments):
+        raise ToolError(CLASSIFICATION_REFUSED, "a candidate must be toss:<market>:<SYMBOL>")
+    stamp = now or timeutil.utc_now_iso()
+    target = path(state_dir)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with locked(target.with_suffix(".lock"), code="HOLDINGS_CLASSIFICATION_LOCKED", label="holdings classification"):
+        current = load(state_dir)
+        existing = json.loads(target.read_text(encoding="utf-8")) if target.exists() else {}
+        lists = dict(existing.get("candidates") or {})
+        if instruments:
+            lists[asset_class] = list(instruments)
+        else:
+            lists.pop(asset_class, None)
+        body = {"record_type": RECORD_TYPE, "mapping_version": current.mapping_version + 1,
+                "updated_at": stamp, "entries": existing.get("entries") or {},
+                **({"candidates": lists} if lists else {})}
         tmp = target.with_suffix(".tmp")
         tmp.write_text(json.dumps(body, ensure_ascii=False, sort_keys=True, indent=1), encoding="utf-8")
         tmp.replace(target)
