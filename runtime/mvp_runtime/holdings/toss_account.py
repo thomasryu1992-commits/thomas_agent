@@ -103,6 +103,10 @@ STOCKS_PATH = "/api/v1/stocks"
 CANDLES_PATH = "/api/v1/candles"
 COMMISSIONS_PATH = "/api/v1/commissions"
 STOCKS_PAGE_LIMIT = 200
+# G6-buy (Thomas 2026-10-26): the executor's pre-order reads. The order itself is not here: it lives in
+# `toss_orders.py`, behind its own gate, so this feed stays a read with no order method.
+PRICES_PATH = "/api/v1/prices"
+KR_CALENDAR_PATH = "/api/v1/market-calendar/KR"
 ACCOUNT_HEADER = "X-Tossinvest-Account"
 BROKERAGE = "BROKERAGE"
 
@@ -334,6 +338,34 @@ class TossHoldingsFeed:
     def usd_krw_rate(self, *, timeout_seconds: int = 10) -> float | None:
         """Toss's USD/KRW mid-rate now, or None when it cannot be read."""
         return self._usd_krw_rate([], timeout_seconds=timeout_seconds)
+
+    # -- the G6-buy executor's reads (G6_BUY_CASH_AUTOINVEST_V0.1): still reads, all GETs --------------------------
+
+    def cash_krw(self, *, timeout_seconds: int = 10) -> float | None:
+        """The account's KRW cash buying power, or None when it cannot be read."""
+        self._resolve_account(timeout_seconds=timeout_seconds)
+        return self._cash("KRW", [], timeout_seconds=timeout_seconds)
+
+    def last_prices(self, symbols: list[str], *, timeout_seconds: int = 10) -> dict[str, float]:
+        """The last price per symbol (up to 200); a symbol without a readable price is left out."""
+        if not 0 < len(symbols) <= STOCKS_PAGE_LIMIT:
+            raise ToolError("TOOL_USAGE", f"prices take 1..{STOCKS_PAGE_LIMIT} symbols")
+        rows = self._get(PRICES_PATH, {"symbols": ",".join(symbols)}, account=False, what="prices",
+                         timeout_seconds=timeout_seconds)
+        out: dict[str, float] = {}
+        for row in rows if isinstance(rows, list) else []:
+            try:
+                out[str(row["symbol"])] = float(row["lastPrice"])
+            except (KeyError, TypeError, ValueError):
+                continue
+        return out
+
+    def kr_market_day(self, date: str, *, timeout_seconds: int = 10) -> dict[str, Any] | None:
+        """``today`` of Toss's domestic market calendar for ``date`` (KST), or None when it carries none."""
+        result = self._get(KR_CALENDAR_PATH, {"date": date}, account=False, what="KR market calendar",
+                           timeout_seconds=timeout_seconds)
+        today = result.get("today") if isinstance(result, dict) else None
+        return today if isinstance(today, dict) else None
 
     def _resolve_account(self, *, timeout_seconds: int) -> tuple[int, str]:
         if self._account is not None:

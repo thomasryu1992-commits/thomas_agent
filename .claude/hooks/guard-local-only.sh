@@ -72,7 +72,7 @@ deny() {
 state='runtime_governance_state/+'
 [[ $flat =~ ${state}holdings ]] && deny "a path into the holdings state directory"
 [[ $flat =~ holdings/+holdings_ ]] && deny "a holdings state file"
-[[ $flat =~ holdings_(classification|local|positions|tax_estimate|auto_candidates)\.json|holdings_cash_flows?(_state)?\.jsonl?|holdings_cash_flow_blocked_told\.json|holdings_baselines\.jsonl ]] \
+[[ $flat =~ holdings_(classification|local|positions|tax_estimate|auto_candidates|autoinvest)\.json|holdings_autoinvest_journal\.jsonl|holdings_cash_flows?(_state)?\.jsonl?|holdings_cash_flow_blocked_told\.json|holdings_baselines\.jsonl ]] \
   && deny "a holdings state file by name"
 [[ $flat =~ ${state}[^/[:space:]\"\']*[*?[{] ]] && deny "a glob under the state root"
 [[ $kind == unknown ]] && deny "a $tool input without a command this guard can read"
@@ -84,7 +84,7 @@ if [[ $kind == command || $kind == raw ]]; then
   if [[ $flat =~ $root_ref ]] && [[ $flat =~ $recursive ]]; then
     deny "a recursive read of the state root"
   fi
-  [[ $flat =~ holdings_board[^\;\&\|]*--(full|local|unclassified|classify|unclassify|reset-peak|cash-flow-cutover|migrate|shadow-started|flows|resolve|semantics-epoch|toss-continuity|adopt-ledger|rebalance|approve-candidates)([^a-z-]|$) ]] \
+  [[ $flat =~ holdings_board[^\;\&\|]*--(full|local|unclassified|classify|unclassify|reset-peak|cash-flow-cutover|migrate|shadow-started|flows|resolve|semantics-epoch|toss-continuity|adopt-ledger|rebalance|approve-candidates|autoinvest-approve|autoinvest-status)([^a-z-]|$) ]] \
     && deny "a terminal-only holdings_board mode"
   # RB2' (2026-10-26): the candidate report prints raw Toss market data, which Toss's terms keep to the
   # investor's own use and MULTI_ASSET keeps out of any model prompt. Running it is Thomas's.

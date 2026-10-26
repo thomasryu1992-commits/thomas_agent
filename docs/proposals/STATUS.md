@@ -4,7 +4,7 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **84**건: `DRAFT` 1 · `PARTIALLY DECIDED` 9 · `DECIDED` 20 · `IMPLEMENTED` 44 · `SUPERSEDED` 3 · `RECORD` 7
+제안서 **85**건: `DRAFT` 1 · `PARTIALLY DECIDED` 9 · `DECIDED` 21 · `IMPLEMENTED` 44 · `SUPERSEDED` 3 · `RECORD` 7
 
 ## Thomas 결정 대기 (10)
 
@@ -23,7 +23,7 @@
 | [TOTAL_ASSET_ALLOCATION_V0.1.md](TOTAL_ASSET_ALLOCATION_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-20 | **2026-10-20(3):** D-C 3단계가 정해지고 지어졌다. 원·달러 노출을 Thomas의 터미널 보드에만 보인다(H3 때문에 반출하지 않는다). 엔 줄은 없다(아래 결정 절). D-C의 세 단계가 모두 끝났다. **2026-10-20(2):** 미국채 수단은 국내 상장 ETF(7–10년, 환노출)다. 계좌는 Q3의 채권 배치를 따른다. D-D 답: 토스증권은 IRP를 제공하지 않는다. 그 비용은 Q3 재검토 조건에 넣었다(아래 결정 절). **2026-10-20:** D-A가 정해졌다. 채권 37 중 ¼(9.25)을 미국채 7–10년물, 환노출로 담는다(아래 결정 절). 목표 상수는 바뀌지 않는다. 열린 것: 미국채의 수단·계좌와 토스증권 IRP 제공 여부(D-D), D-C 3단계(통화별 노출 표시). **이전 상태(2026-10-16):** 열린 것: 미국채의 몫·만기·환헤지 여부·계좌(원·달러·엔 환율 측정 뒤 Thomas가 정한다)와 토스증권 IRP 제공 여부(Thomas 확인 대기). 2026-10-16 결정(아래 결정 절): 채권에 미국채를 함께 담고, 퇴직연금은 이 배분의 범위 밖이며, 원·달러·엔 환율 변동을 측정 → 표시 순서로 반영한다. 목표 수치는 미국채 몫이 정해질 때까지 그대로다. Q1–Q10 결정(2026-10-07). Q1·Q2·Q4 권고대로(중립형 배분, 5/25 밴드 월 점검, BTC 위험 기여도 상한 25%). Q3은 권고와 달리 토스 하나로 유지하고, 금은 토스증권 금 ETF로 담는다. Q5는 엔진 비중 0%에서 시작해 증거에 따라 늘리며 연구 일시 중지(D3)는 풀지 않는다. 실데이터 검증(`TOTAL_ASSET_ALLOCATION_VALIDATION_V0.1.md`) 뒤 Q6–Q10도 권고대로 결정했다 (§11): BTC 5 → 2.5%(줄인 몫은 현금), 국내주식 10% 유지, 국고채 3년 중심, 목표 대비 이탈은 표시만(D4 안), BTC 현물은 수동 입력·바이낸스 잔고는 목표 0%의 "엔진 증거금". 현재 목표: 주식 40·국고채 37·금 13·BTC 2.5·현금 7.5. 이탈 표시는 지어졌다 (§11.1, `holdings/allocation.py`, 2026-10-07). 남은 것: Q5의 첫 증액 질문(cohort 1 판정, 2027-03-22). 밴드(Q2)와 BTC 상한(Q4)은 P2의 한도 후보에서 뺐다(Thomas 2026-10-07, Q4 아래): 시스템은 비중 한도를 짓지 않는다. |
 | [BLOG_DEPARTMENT_V0.1.md](BLOG_DEPARTMENT_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-26 | 생산은 지금의 볼트 경로에서 시작하고, 런타임 블로그 레인(`blog_*` 10개 모듈)은 지웠다(#1319). v0.2(Thomas 2026-10-26): 통합할 수 있는 단계(키워드, 검증, 발행 계획, 분석, 피드백)는 시스템 안으로 옮기고, 원고 생성·발행·통계 수집만 외주로 둔다(§3). §7의 N1·S1·L2·L3·R1–R3은 권고대로 정했다(Thomas 2026-10-26). P0 관측(#1321)은 머지됐고, 배포(#1320 포함 여부)가 결정을 기다린다. |
 
-## 결정됨 — 구현 남음 (20)
+## 결정됨 — 구현 남음 (21)
 
 결정은 끝났고 결정된 것이 아직 다 지어지지 않았다. 결정이 만든 구현 대기열이다.
 
@@ -47,6 +47,7 @@
 | [PRE_WINDOW_REPLAY_V0.1.md](PRE_WINDOW_REPLAY_V0.1.md) | `DECIDED` | 2026-10-23 | Q1–Q3 권고대로(Thomas): 대상은 cohort 구성원만, 결과는 mint 재배분 제안의 입력으로만, 공개 데이터는 2019년까지 받는다. **정식 결과(2026-10-23): 1h·4h 모두 LEAD_FOUND다.** 1h `hybrid(fused)`·`volatility_expansion`, 4h `hybrid(fused)`가 LEAD이고, 1h 차이는 해마다 줄었다. 두 번째 쌍둥이 seed에서는 크기가 줄어 가장자리다(아래 결과 절). 판정, 문, 템플릿, mint 비중은 바꾸지 않는다. 다음은 재배분 안이다. |
 | [MINT_REALLOCATION_PRE_WINDOW_V0.1.md](MINT_REALLOCATION_PRE_WINDOW_V0.1.md) | `DECIDED` | 2026-10-25 | **Q4a 예: 11-14 읽기의 4h 기대 몫은 37.5%다(Thomas 2026-10-25).** Q1 B, Q2 1h·4h, Q3 하지 않음(Thomas 2026-10-23), Q4 예: 기계적 확인은 11-14에 한 번 읽고 교배 수는 보고만 한다(Thomas 2026-10-25). 틸트 뒤 BTCUSDT 1h에서 family 10개가 끊기던 결함은 #1300으로 고쳤다(`factory.shortfall_slice_start`). **확인 측정 통과(2026-10-23)**: 1h 두 family가 다시 LEAD이고, 4h `hybrid(fused)`는 NULL이다. topup 기울이기를 지었다(`factory.MINT_TILT_FAMILIES`). 판정, 홀드아웃, 문, 템플릿 목록은 바꾸지 않는다. |
 | [WEEKLY_MANAGEMENT_REPORT_V0.1.md](WEEKLY_MANAGEMENT_REPORT_V0.1.md) | `DECIDED` | 2026-10-25 | Q1=A(관제봇 토큰을 scheduler-maint에 `MVP_CONTROL_BOT_TOKEN`으로), Q2=보유자산 제외, Q3=월요일 09:00 KST, Q4=피드백은 집계만(Thomas 2026-10-25, "승인: WMR-1 Q1=A Q2=제외 Q3=월09KST Q4=집계만, 구현·PR"). 구현은 같은 날 PR로 올렸다(`management_report.py`, kind `management_report`). 배포와 스케줄 등록은 Thomas가 한다. |
+| [G6_BUY_CASH_AUTOINVEST_V0.1.md](G6_BUY_CASH_AUTOINVEST_V0.1.md) | `DECIDED` | 2026-10-26 | G6-buy(매수만, 일 50만 원 한도, H6c 선행 면제, 평일 장중 1회, env 기본 꺼짐), 시나리오 확인 뒤 실행, 정수 주 매수는 5만 원 미만 허용(RB4'')(Thomas). v0.1 경로(승인 명령, 실행기, 주문 어댑터)를 지었다. 자동 시나리오 생성과 해외(USD) 매수는 남았다. |
 | [HOLDINGS_STATUS_READ_AND_AUTO_FLOWS_V0.1.md](HOLDINGS_STATUS_READ_AND_AUTO_FLOWS_V0.1.md) | `DECIDED` | 2026-10-26 | R1 예, R2 예, R3 예, F1 A, F2 아니오(Thomas). PR-1(R1–R3: `toss_needs`, `holdings_status` v1.1, Claude 프로필, CLAUDE.md, #1314)과 PR-2(F1–F2: `quiet_window.v1`, Thomas 재분류 1회, 방향·개수 알림)를 지었다. 둘 다 병합과 배포가 남았다. **결정 전 상태:** DRAFT — Thomas 결정 다섯 건(R1–R3, F1–F2)을 기다렸다. Thomas가 두 가지를 요청했다(2026-10-26). 하나는 holdings 검사의 이름과 상태만 Claude read door로 읽는 것이다(금액 없음). 다른 하나는 입출금을 사람이 닫지 않고 자동으로 확인하는 것이다. 코드·정책·스키마 변경은 없다. |
 | [REBALANCING_PROPOSAL_V0.1.md](REBALANCING_PROPOSAL_V0.1.md) | `DECIDED` | 2026-10-26 | RB1 예, RB2'' 후보 자동 선정(RB2'를 대신함), RB3' 토스 주문 내역 자동 계산, RB4' 5만 원·이월, RB5 엔진 제외·월 알림, RB6 지금(Thomas). PR-A(계산기, `--rebalance`·`--approve-candidates`, 종목 파일)와 PR-B(해외 실현 이익: 주문 내역 재구성, 일별 환율 기록, §2.3 3단계 공제 한도), PR-C(후보 선별 보고서 `scripts.rebalance_candidates`, Thomas 터미널), PR-D(월 밴드 알림: 매월 첫 평일부터 이탈 개수 한 번), RB2''(후보 자동 선정: 월 1회와 거래 불가 시, 수동은 덮어쓰기만)를 지었다. 종목별 과세 유형 덮어쓰기는 남았다(계산기는 받지만 적는 곳이 없다). **결정 전 상태:** DRAFT 2026-10-26 — Thomas 결정 여섯 건(RB1–RB6)을 기다린다. RB2–RB4는 Thomas의 답(2026-10-26)대로 고쳤다: 후보 3~4개 승인 뒤 자동 선택, 해외 실현 이익은 Toss 주문 내역으로 자동 계산, 최소 거래 5만 원 고정·이월. Thomas의 요청(2026-10-26): 리밸런싱 제안을 터미널 전용으로 보여 주고, 주문은 Thomas가 낸다. 코드·정책·스키마 변경은 없다. |
 

@@ -54,7 +54,7 @@ from runtime.mvp_runtime.crypto import (
     live_pnl,
     testnet_execution,
 )
-from runtime.mvp_runtime.holdings import binance_wallet, toss_account
+from runtime.mvp_runtime.holdings import binance_wallet, toss_account, toss_orders
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_PATH = ROOT / "docker-compose.yml"
@@ -498,6 +498,8 @@ MAINTENANCE_LANE_SELECTORS = {
     toss_account.TOSS_CLIENT_ID_ENV: "the Toss OAuth client id",
     toss_account.TOSS_CLIENT_SECRET_ENV: "the Toss OAuth client secret",
     toss_account.TOSS_ACCOUNT_SEQ_ENV: "which brokerage account, when the client sees more than one",
+    # G6-buy (Thomas 2026-10-26): the buy-order gate rides the same fire and borrows the same token.
+    toss_orders.TOSS_ORDERS_ENV: "the G6-buy order gate (buy_only)",
     # The holdings board's Binance spot + Simple Earn read (Thomas 2026-10-07, appendix C): the same
     # `holdings_refresh` fire. Its gate only — the account key pair was removed by H1-a (below).
     binance_wallet.BINANCE_WALLET_ENV: "the holdings lane's Binance wallet gate",
@@ -516,7 +518,7 @@ def test_no_other_service_receives_the_broker_surface(service, env_var):
 
 
 def test_the_broker_surface_is_the_whole_holdings_env():
-    assert len(BROKER_SURFACE) == 4
+    assert len(BROKER_SURFACE) == 5
 
 
 @pytest.mark.parametrize("service", [s for s in _ALL_SERVICES if s != "scheduler-maint"])

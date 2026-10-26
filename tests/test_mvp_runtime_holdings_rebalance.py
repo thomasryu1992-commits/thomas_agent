@@ -123,10 +123,21 @@ def test_orders_under_50000_are_carried_not_placed():
     assert sum(krw.values()) == pytest.approx(NAV)
     positions = [Position("toss:domestic:KRWORLD", al.GLOBAL_EQUITY, 1_000, 35_500_000.0, 0.0),
                  Position("toss:domestic:KRGOLD", al.GOLD, 1_296, 12_960_000.0, 0.0)]
-    out = rb.plan(class_krw=krw, positions=positions, complete=True,
-                  candidates={al.GOLD: ["toss:domestic:KRGOLD"]})
-    assert out.carried and all(o["amount_krw"] < rb.MIN_ORDER_KRW for o in out.carried)
+    # The candidate is held overseas, so its buy is an amount, not whole shares: under 50,000 it is carried.
+    overseas = [positions[0], Position("toss:overseas:USGOLD", al.GOLD, 1_296, 12_960_000.0, 0.0)]
+    out = rb.plan(class_krw=krw, positions=overseas, complete=True, candidates={al.GOLD: ["toss:overseas:USGOLD"]})
+    assert [o["instrument"] for o in out.carried] == ["toss:overseas:USGOLD"]
     assert all(o["amount_krw"] >= rb.MIN_ORDER_KRW for o in out.orders)
+
+
+def test_a_whole_share_buy_under_50000_is_placed_not_carried():
+    # RB4'' (Thomas 2026-10-26): the same 40,000 short, in a domestic candidate at 10,000 a share: 4 shares.
+    krw = _on_target(global_equity=35_500_000.0, gold=12_960_000.0, cash=2_040_000.0)
+    positions = [Position("toss:domestic:KRWORLD", al.GLOBAL_EQUITY, 1_000, 35_500_000.0, 0.0),
+                 Position("toss:domestic:KRGOLD", al.GOLD, 1_296, 12_960_000.0, 0.0)]
+    out = rb.plan(class_krw=krw, positions=positions, complete=True, candidates={al.GOLD: ["toss:domestic:KRGOLD"]})
+    gold = next(o for o in out.orders if o["instrument"] == "toss:domestic:KRGOLD")
+    assert gold["quantity"] == 4 and gold["amount_krw"] == 40_000 and not out.carried
 
 
 def test_buys_spread_across_the_approved_candidates_smallest_first():

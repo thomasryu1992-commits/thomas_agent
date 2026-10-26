@@ -428,6 +428,11 @@ services:
       TOSS_CLIENT_ID: ${TOSS_CLIENT_ID:-}
       TOSS_CLIENT_SECRET: ${TOSS_CLIENT_SECRET:-}
       TOSS_ACCOUNT_SEQ: ${TOSS_ACCOUNT_SEQ:-}
+      # G6-buy (Thomas 2026-10-26, G6_BUY_CASH_AUTOINVEST_V0.1.md): the one order path — market BUYs of whole
+      # shares of current domestic candidates, only a scenario Thomas approved, 500,000 KRW a day at most.
+      # `buy_only` builds the adapter; unset = no order can be placed. It borrows the feed's token above. Thomas
+      # sets it; revoking it means unsetting it and recreating this service.
+      MVP_TOSS_ORDERS: ${MVP_TOSS_ORDERS:-}
       # The holdings board's Binance spot + Simple Earn read (appendix C of MULTI_ASSET_EXPANSION_V0.1.md,
       # Thomas 2026-10-07). Its gate only. The account key pair it was first given (option A) was
       # REMOVED from this lane (H1-a, Thomas 2026-10-07): it is the very key the order credentials are
