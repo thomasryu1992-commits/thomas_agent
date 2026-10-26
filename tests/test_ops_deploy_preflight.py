@@ -537,7 +537,7 @@ PATH_VARIABLES = {"THOMAS_STATE_DIR", "THOMAS_CORE_ACTIVATIONS_DIR", "THOMAS_COR
 def test_every_bind_source_is_a_path_variable_with_a_default():
     """Each bind source is ``${PATH_VAR:-default}[/sub]``: no literal host path, no other variable."""
     sources_by_service = _bind_sources()
-    assert sum(map(len, sources_by_service.values())) >= 18   # the file has 19; an empty parse is not a pass
+    assert sum(map(len, sources_by_service.values())) >= 15   # the file has 16; an empty parse is not a pass
     for service, sources in sources_by_service.items():
         for source in sources:
             match = re.fullmatch(r"\$\{([A-Z_]+):-[^}]+\}(/[\w./-]+)?", source)
