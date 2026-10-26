@@ -291,4 +291,10 @@ def render(report: Mapping[str, Any]) -> str:
                 lines.append(f"    원고 {runs['drafts']}편(front matter 새 원고 {new}) · 검수 FAIL preflight {runs['preflight_fail']}"
                              f" · variety {runs['variety_fail']} · 검수 미실행 {runs['checks_unrun']}"
                              f" · 키워드 {runs['distinct_keywords']}개 · 시스템 지시 {runs['instructed']}일")
+            check = blog["data"].get("verification")
+            if check is not None:
+                codes = " · ".join(f"{c} {n}" for c, n in check["codes"])
+                lines.append(f"  [검수 대조] {check['runs']}일 · 비교 {check['compared']}편 중 일치 {check['agreed']}"
+                             f" · 다름 {check['differed']}" + (f"({codes})" if codes else "")
+                             + f" · 비교 못 함 {check['not_compared']}")
     return "\n".join(lines)

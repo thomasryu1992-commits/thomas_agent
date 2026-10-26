@@ -115,6 +115,9 @@ _RECORD_KINDS = (
     # The blog department's week as the organisation observed it from the vault (BLOG_DEPARTMENT_V0.1.md
     # stages 1-2, 2026-10-26): counts only, appended by the weekly management report.
     "blog_department_week",
+    # The system's re-check of each reported draft against the drafting cron's own verdict (BLOG_DEPARTMENT v0.2
+    # P2, 2026-10-26): per draft a short id, its state and whether the codes agree; appended by ``blog_verify``.
+    "blog_verification",
     "programization_observation", "programization_pattern",
 )
 

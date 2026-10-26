@@ -47,6 +47,9 @@ RECORD_SCHEMA = "schemas/blog_department_week.v0.2.schema.json"
 RECORD_SCHEMA_VERSION = "blog_department_week.v0.2"
 RUNS_DIR = ("ops", "blog-runs")
 RUN_REPORT_SCHEMA = "blog_run_report.v1"
+# Written by the lane's daily ``blog_verify`` fire (``blog/verify.py``); named here so the weekly report can read it
+# without the core importing the lane.
+VERIFY_RECORD_KIND = "blog_verification"
 _KST = timedelta(hours=9)
 _FIELD = re.compile(r"^([a-z_]+):[ \t]*(.*)$")
 _DATE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
@@ -173,6 +176,26 @@ def observe(root: str | Path | None = None, *, now: str) -> dict[str, Any]:
         platforms[platform] = row
     return {"since": since, "until": until, "ahead": ahead, "platforms": platforms,
             "runs": read_runs(base, since, until)}
+
+
+def verification_summary(ledger: Any, *, now: str) -> dict[str, Any]:
+    """The week's ``blog_verification`` records (run dates in ``[since, until)``), summed: how many reported drafts
+    the system could compare, how many agreed, and which rule codes differed most. Never carries a path."""
+    since, until = _kst_date(now, -WINDOW_DAYS), _kst_date(now)
+    out = {"runs": 0, "drafts": 0, "compared": 0, "agreed": 0, "differed": 0, "not_compared": 0, "codes": []}
+    counter: dict[str, int] = {}
+    for row in ledger.iter_records(kinds=[VERIFY_RECORD_KIND]):
+        record = row.get("record") if row.get("kind") == VERIFY_RECORD_KIND else None
+        if not isinstance(record, Mapping) or not since <= str(record.get("run_date")) < until:
+            continue
+        out["runs"] += 1
+        for key in ("drafts", "compared", "agreed", "differed", "not_compared"):
+            out[key] += int(record["summary"][key])
+        for draft in record.get("drafts") or []:
+            for code in draft.get("differ") or []:
+                counter[code] = counter.get(code, 0) + 1
+    out["codes"] = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
+    return out
 
 
 def build_record(observation: Mapping[str, Any], *, now: str) -> dict[str, Any]:

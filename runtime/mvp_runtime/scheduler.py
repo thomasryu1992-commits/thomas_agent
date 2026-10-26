@@ -217,11 +217,15 @@ KIND_HOLDINGS = "holdings_refresh"
 # (`operator.select_control_channel`), not the notification bot the lanes' alerts use. Maintenance,
 # not risk: a late report costs freshness, never money.
 KIND_MANAGEMENT_REPORT = "management_report"
+# The blog department's verification (BLOG_DEPARTMENT v0.2 P2, Thomas 2026-10-26): once a day, re-check the drafts
+# the outsourced drafting cron reported, with the vault's own rules generated into ``blog/``, and record whether the
+# verdicts agree. Maintenance, not risk: it reads the vault read-only and writes one ledger record per run report.
+KIND_BLOG_VERIFY = "blog_verify"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
                    KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE,
                    KIND_BREAKER_WATCH, KIND_ROUTE_WATCH, KIND_CANDLE_ARCHIVE,
                    KIND_NULL_CONTROL,
-                   KIND_FORWARD_COHORT, KIND_HOLDINGS, KIND_MANAGEMENT_REPORT})
+                   KIND_FORWARD_COHORT, KIND_HOLDINGS, KIND_MANAGEMENT_REPORT, KIND_BLOG_VERIFY})
 
 # The kinds whose lateness costs money rather than freshness.
 #
@@ -293,7 +297,7 @@ MAINTENANCE_KINDS: frozenset[str] = frozenset({
     KIND_TASK, KIND_PRUNE, KIND_FACTORY, KIND_REPORT, KIND_PROPOSER,
     KIND_DATA_REVIEW, KIND_ROTATE, KIND_CANDLE_ARCHIVE, KIND_NULL_CONTROL,
     KIND_FORWARD_COHORT,
-    KIND_HOLDINGS, KIND_MANAGEMENT_REPORT,
+    KIND_HOLDINGS, KIND_MANAGEMENT_REPORT, KIND_BLOG_VERIFY,
 })
 
 # How much of one pass the non-risk kinds may spend before it stops STARTING more of them.
@@ -1466,6 +1470,11 @@ def _execute(
             return f"report_rendered_not_sent:{type(exc).__name__}"
         warned = len(status.get("warnings") or [])
         return f"report_sent cycles={status.get('cycles_seen')} warnings={warned}"
+    if schedule.kind == KIND_BLOG_VERIFY:
+        # The lane is reached here and only here, by a function-local import (the core loads no domain module).
+        from .blog import verify as blog_verify
+
+        return blog_verify.fire(ledger, now=now)
     if schedule.kind == KIND_MANAGEMENT_REPORT:
         # WMR-1: read the four sections (each fails on its own) and send them on the control bot.
         # Unlike KIND_REPORT, a send that fails RAISES: a weekly report that vanished quietly is
@@ -1486,7 +1495,8 @@ def _execute(
             now=now, ledger=ledger, schedules=ScheduleStore.default(repo_root),
             approval_store=ApprovalStore.default(repo_root), control_state=control_state,
             crypto_status=lambda: build_status(repo_root, now=now),
-            blog=lambda: blog_department.observe(now=now),
+            blog=lambda: {**blog_department.observe(now=now),
+                          "verification": blog_department.verification_summary(ledger, now=now)},
         )
         # Stage 2: the department's week on the ledger, whether or not the message then goes out —
         # the observation is the evidence (D8), the message is its delivery. A record that cannot be

@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "blog_verification.v0.1.schema.json",
+  "title": "Blog Verification v0.1",
+  "description": "One drafting run's drafts re-checked by the system (BLOG_DEPARTMENT v0.2 P2): per draft, whether its bytes were unchanged since the run's report and, if so, whether the system's preflight/variety codes agree with the reported ones (X2 link liveness excluded). No paths, titles or text: a draft is a short id over its vault path.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "verification_id",
+    "verified_at",
+    "run_date",
+    "drafts",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "blog_verification.v0.1"
+    },
+    "verification_id": {
+      "type": "string",
+      "pattern": "^blogverify_[0-9a-f]{20}$"
+    },
+    "verified_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "run_date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "drafts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "draft_id",
+          "platform",
+          "state",
+          "agree",
+          "differ"
+        ],
+        "properties": {
+          "draft_id": {
+            "type": "string",
+            "pattern": "^blogdraft_[0-9a-f]{20}$"
+          },
+          "platform": {
+            "enum": [
+              "naver",
+              "tistory",
+              null
+            ]
+          },
+          "state": {
+            "type": "string",
+            "pattern": "^(compared|changed|no_hash|no_codes|missing|outside|error:[A-Za-z]{1,60})$"
+          },
+          "agree": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "differ": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9]{1,8}$"
+            }
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "drafts",
+        "compared",
+        "agreed",
+        "differed",
+        "not_compared"
+      ],
+      "properties": {
+        "drafts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "compared": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "agreed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "differed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "not_compared": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}
