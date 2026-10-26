@@ -25,6 +25,9 @@ class Holding:
     value: float | None
     unrealized_pnl: float | None
     currency: str
+    # The broker's average purchase price in ``currency`` (commission excluded), for the overseas-gain
+    # reconciliation (REBALANCING_PROPOSAL RB3'). In-process only, like every field here.
+    average_price: float | None = None
 
 
 @dataclass(frozen=True)

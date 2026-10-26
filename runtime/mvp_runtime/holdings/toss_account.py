@@ -260,16 +260,18 @@ class TossHoldingsFeed:
 
     # -- the reads -------------------------------------------------------------------------
 
-    def closed_orders(self, *, date_from: str, date_to: str, max_pages: int = 10,
+    def closed_orders(self, *, date_from: str | None, date_to: str | None, max_pages: int = 10,
                       timeout_seconds: int = 10) -> tuple[list[dict[str, Any]], bool]:
-        """Closed orders whose ``orderedAt`` falls in ``date_from``..``date_to`` (KST dates, inclusive),
-        and whether the pages ran out before the list did. The rows carry symbols and amounts: in this
-        process only (H6a; the ledger that uses them is H6b)."""
+        """Closed orders whose ``orderedAt`` falls in ``date_from``..``date_to`` (KST dates, inclusive; both
+        ``None`` asks for the whole history, which Toss gives when neither is sent), and whether the pages ran
+        out before the list did. The rows carry symbols and amounts: in this process only (H6a; the ledger that
+        uses them is H6b; the overseas gain, RB3')."""
         self._resolve_account(timeout_seconds=timeout_seconds)
         rows: list[dict[str, Any]] = []
         cursor: str | None = None
         for _ in range(max_pages):
-            params = {"status": "CLOSED", "from": date_from, "to": date_to, "limit": str(ORDERS_PAGE_LIMIT)}
+            params = {"status": "CLOSED", "limit": str(ORDERS_PAGE_LIMIT)}
+            params.update({k: v for k, v in (("from", date_from), ("to", date_to)) if v is not None})
             if cursor:
                 params["cursor"] = cursor
             result = self._get(ORDERS_PATH, params, account=True, what="closed orders",
@@ -359,6 +361,8 @@ class TossHoldingsFeed:
                 value=_number((row.get("marketValue") or {}).get("amount"), warnings, "holding value"),
                 unrealized_pnl=_number((row.get("profitLoss") or {}).get("amount"), warnings, "holding pnl"),
                 currency=str(row.get("currency") or "?"),
+                # Not the board's figure: a missing one costs only the overseas-gain reconciliation, never a warning.
+                average_price=_number(row.get("averagePurchasePrice"), [], "holding average price"),
             ))
 
         usd_value = subtotal("marketValue", "amount", "usd")

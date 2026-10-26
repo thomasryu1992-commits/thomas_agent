@@ -75,7 +75,21 @@ def test_unknown_overseas_gain_is_taxed_in_the_estimate_and_said():
                   candidates={al.BONDS: ["toss:domestic:KRBOND"]})
     overseas = next(o for o in out.orders if o["instrument"] == "toss:overseas:USWORLD")
     assert overseas["est_tax_krw"] == round(overseas["gain_krw"] * 0.22)
+    assert overseas["step"] == 4 and not any(o["step"] == 3 for o in out.orders)       # §2.3: no step 3
     assert any("overseas gain is unknown" in n for n in out.notes)
+
+
+def test_step_3_sells_only_as_far_as_the_deduction_left_covers_the_gain():
+    # 2.4M of this year's 2.5M is used: 100,000 left. USWORLD's gain ratio is 1M/16M, so step 3 may sell 1.6M;
+    # the rest of the 6M excess is step 4, USWORLD first again (its ratio is below KRWORLD's 0.2).
+    krw, positions = _equity_heavy()
+    out = rb.plan(class_krw=krw, positions=positions, complete=True, overseas_gain_ytd_krw=2_400_000.0,
+                  candidates={al.BONDS: ["toss:domestic:KRBOND"]})
+    sells = [o for o in out.orders if o["side"] == "SELL"]
+    assert [(o["step"], o["instrument"], o["amount_krw"]) for o in sells] == [
+        (3, "toss:overseas:USWORLD", 1_600_000), (4, "toss:overseas:USWORLD", 4_400_000)]
+    assert sells[0]["est_tax_krw"] == 0
+    assert sells[1]["est_tax_krw"] == round(4_400_000 * 1_000_000 / 16_000_000 * 0.22)
 
 
 def test_domestic_orders_are_whole_shares_and_overseas_are_amounts():
@@ -193,6 +207,16 @@ def test_the_terminal_render_carries_the_plan_over_one_fire(tmp_path):
     text = store.load_rebalance(now=NOW, root=tmp_path)
     assert text.startswith("REBALANCE - terminal only") and "rebalance due" in text
     assert "SELL toss:domestic:WORLD" in text and "BUY  toss:domestic:BOND" in text
+
+
+def test_the_terminal_render_takes_the_fires_overseas_gain(tmp_path):
+    _local(tmp_path)
+    store.tax_estimate_path(tmp_path).write_text(json.dumps({"overseas_gain": {
+        "status": "ok", "year": 2026, "computed_on": "2026-10-26", "fifo_krw": 700_000, "moving_average_krw": 650_000,
+        "sells_counted": 1, "unsettled_sells": 0, "approx_fx_fills": 3}}), encoding="utf-8")
+    text = store.load_rebalance(now=NOW, root=tmp_path, force=True)
+    assert "overseas gain this year: 700,000 of 2,500,000 deduction" in text
+    assert "FIFO (method unconfirmed, estimate)" in text and "3 fills at an approximate rate" in text
 
 
 @pytest.mark.parametrize("case", ["positions_from_another_fire", "partial", "stale"])
