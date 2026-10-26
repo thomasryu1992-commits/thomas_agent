@@ -361,6 +361,10 @@ services:
       # tree and the report's blog section says the vault is unavailable rather than reading as zero.
       - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/content/naver:/app/blog_vault/content/naver:ro
       - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/content/tistory:/app/blog_vault/content/tistory:ro
+      # The drafting cron's per-run reports (BLOG_DEPARTMENT v0.2 P1, Thomas 2026-10-26): the outsourced work's
+      # report channel, written by the host's blog-run-report.py. The folder must exist in the vault before
+      # `up -d`, or Docker creates it root-owned and the cron (uid 2101) can no longer write its report.
+      - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/ops/blog-runs:/app/blog_vault/ops/blog-runs:ro
     # Its own heartbeat, probed by its own name: a shared file would let this loop keep a
     # dead risk loop reading FRESH (or the reverse). Same thresholds as its sibling.
     healthcheck:

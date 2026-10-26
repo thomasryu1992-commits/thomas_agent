@@ -821,25 +821,27 @@ def test_memory_ceilings_sit_on_everything_but_the_money_path():
 # --- the vault: read by the blog department's observation, on scheduler-maint only (2026-10-26) ------
 #
 # The runtime blog lane read the vault in pipeline-worker until it was retired (BLOG_DEPARTMENT_V0.1.md §2).
-# What reads it now is the weekly report's blog section (stages 1-2): the two post folders, read-only,
-# on the maintenance lane that sends the report — and no other service, and no other folder.
+# What reads it now is the weekly report's blog section (stages 1-2): the two post folders and, since v0.2 P1,
+# the drafting cron's run reports, read-only, on the maintenance lane that sends the report — and no other
+# service, and no other folder.
 
 def _vault_mounts(service: str) -> list[str]:
     return [str(v) for v in _service(service).get("volumes") or [] if "blog_vault" in str(v)]
 
 
-def test_the_maintenance_lane_reads_the_vaults_post_folders_read_only():
+def test_the_maintenance_lane_reads_the_vaults_post_folders_and_run_reports_read_only():
     from runtime.mvp_runtime import blog_department
 
     mounts = _vault_mounts("scheduler-maint")
     targets = sorted(m.rsplit(":", 2)[1] for m in mounts)   # "${VAR:-default}/…:target:ro"
-    assert targets == ["/app/blog_vault/content/naver", "/app/blog_vault/content/tistory"]
+    assert targets == ["/app/blog_vault/content/naver", "/app/blog_vault/content/tistory", "/app/blog_vault/ops/blog-runs"]
     assert all(m.endswith(":ro") for m in mounts), mounts
     assert all(m.startswith("${THOMAS_BLOG_VAULT_DIR:-") for m in mounts), mounts
     environment = _service_environment("scheduler-maint")
     root = environment.get(blog_department.BLOG_VAULT_ROOT_ENV)
     assert root == "/app/blog_vault"
-    assert sorted(f"{root}/content/{p}" for p in blog_department.PLATFORMS) == targets
+    assert sorted([f"{root}/content/{p}" for p in blog_department.PLATFORMS]
+                  + ["/".join((root, *blog_department.RUNS_DIR))]) == targets
 
 
 @pytest.mark.parametrize("service", sorted(

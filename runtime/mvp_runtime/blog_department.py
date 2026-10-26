@@ -11,6 +11,12 @@ reads what it did, once a week, from the one place every step leaves a mark — 
 * **upcoming** — unpublished posts whose ``scheduled:`` slot falls in the next seven days. On Naver that slot is
   the plan (the post stays ``draft`` until it goes out); on Tistory a ``scheduled`` status is a real reservation.
   Either way it is called what it is, never "published".
+* **runs** (v0.2 P1, Thomas 2026-10-26) — the drafting cron is outsourced work, and it reports each run as
+  ``ops/blog-runs/<KST date>.json`` (``blog-run-report.py`` on the host). The week counts the reports dated in the
+  window: how many days reported, how many drafts they name, how many of those the cron's own re-run of
+  ``blog-preflight`` / ``blog_variety`` failed or could not run, and how many runs consumed a system instruction
+  (none until P6). A report folder that is not mounted is ``None`` — absent, never zero. A report that does not
+  parse as ``blog_run_report.v1`` is counted as unreadable and contributes nothing else.
 
 Dates are KST calendar dates, as the vault writes them. A file without readable front matter is counted as
 unparsed, never guessed at; a platform folder with no posts at all refuses, like an absent one. Nothing here writes the vault, calls a model, or reaches the network; the vault
@@ -19,6 +25,7 @@ arrives as a read-only mount (``MVP_BLOG_VAULT_ROOT``).
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from datetime import timedelta
@@ -36,8 +43,10 @@ PLATFORMS = ("naver", "tistory")
 STATUSES = ("draft", "hold", "scheduled", "published")
 WINDOW_DAYS = 7
 RECORD_KIND = "blog_department_week"
-RECORD_SCHEMA = "schemas/blog_department_week.v0.1.schema.json"
-RECORD_SCHEMA_VERSION = "blog_department_week.v0.1"
+RECORD_SCHEMA = "schemas/blog_department_week.v0.2.schema.json"
+RECORD_SCHEMA_VERSION = "blog_department_week.v0.2"
+RUNS_DIR = ("ops", "blog-runs")
+RUN_REPORT_SCHEMA = "blog_run_report.v1"
 _KST = timedelta(hours=9)
 _FIELD = re.compile(r"^([a-z_]+):[ \t]*(.*)$")
 _DATE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
@@ -81,6 +90,55 @@ def _kst_date(iso: str, days: int = 0) -> str:
     return (timeutil.parse_iso(iso) + _KST + timedelta(days=days)).strftime("%Y-%m-%d")
 
 
+def _failed(check: Any) -> bool:
+    return isinstance(check, Mapping) and (check.get("exit") not in (0, None) or bool(check.get("fail")))
+
+
+def _unrun(check: Any) -> bool:
+    return not isinstance(check, Mapping) or check.get("exit") is None
+
+
+def read_runs(base: Path, since: str, until: str) -> dict[str, int] | None:
+    """The outsourced drafting runs reported in ``[since, until)``, as counts. ``None`` when the folder is absent."""
+    folder = base.joinpath(*RUNS_DIR)
+    if not folder.is_dir():
+        return None
+    row = {"reports": 0, "unreadable": 0, "days_without_report": 0, "draft_step_failed": 0, "instructed": 0,
+           "drafts": 0, "preflight_fail": 0, "variety_fail": 0, "checks_unrun": 0, "distinct_keywords": 0}
+    keywords: set[str] = set()
+    days: set[str] = set()
+    for path in sorted(folder.glob("*.json")):
+        day = _date(path.stem)
+        if not day or not since <= day < until:
+            continue
+        try:
+            report = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            report = None
+        if not (isinstance(report, Mapping) and report.get("schema") == RUN_REPORT_SCHEMA
+                and isinstance(report.get("drafts"), list) and isinstance(report.get("steps"), Mapping)):
+            row["unreadable"] += 1
+            continue
+        row["reports"] += 1
+        days.add(day)
+        if report["steps"].get("draft") != 0:
+            row["draft_step_failed"] += 1
+        if report.get("instruction_id"):
+            row["instructed"] += 1
+        for draft in report["drafts"]:
+            if not isinstance(draft, Mapping):
+                continue
+            row["drafts"] += 1
+            row["preflight_fail"] += _failed(draft.get("preflight"))
+            row["variety_fail"] += _failed(draft.get("variety"))
+            row["checks_unrun"] += _unrun(draft.get("preflight")) or _unrun(draft.get("variety"))
+            if isinstance(draft.get("keyword"), str) and draft["keyword"]:
+                keywords.add(draft["keyword"])
+    row["days_without_report"] = WINDOW_DAYS - len(days)
+    row["distinct_keywords"] = len(keywords)
+    return row
+
+
 def observe(root: str | Path | None = None, *, now: str) -> dict[str, Any]:
     """Each platform's counts over the window ending at ``now``: ``[since, until)`` for what happened, and
     ``[until, ahead)`` for what is planned."""
@@ -113,14 +171,15 @@ def observe(root: str | Path | None = None, *, now: str) -> dict[str, Any]:
             # (or a folder this user cannot list), never a quiet week.
             raise ToolError("BLOG_VAULT_UNAVAILABLE", f"the vault at {base} has no posts under content/{platform}")
         platforms[platform] = row
-    return {"since": since, "until": until, "ahead": ahead, "platforms": platforms}
+    return {"since": since, "until": until, "ahead": ahead, "platforms": platforms,
+            "runs": read_runs(base, since, until)}
 
 
 def build_record(observation: Mapping[str, Any], *, now: str) -> dict[str, Any]:
     """The week's observation as a ledger record, validated against its closed schema before it leaves.
     The schema is read from the code's own tree, never from a state root a caller passes."""
     body = {"window": {"since": observation["since"], "until": observation["until"], "ahead": observation["ahead"]},
-            "platforms": observation["platforms"]}
+            "platforms": observation["platforms"], "runs": observation.get("runs")}
     record = {
         "schema_version": RECORD_SCHEMA_VERSION,
         "observation_id": integrity.short_id("blogweek", {"observed_at": now, **body}),

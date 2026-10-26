@@ -43,7 +43,27 @@ def vault(tmp_path):
     # The guards: a published post keeps its slot (95 Naver posts do), and a reserved post can carry a stale date.
     _post(naver, "7.md", status="published", created="2026-10-01", published="2026-10-02", scheduled="2026-10-27 09:00")
     _post(tistory, "4.md", status="scheduled", created="2026-10-01", published="2026-10-21", scheduled="2026-10-29 19:30")
+    runs = tmp_path / "ops" / "blog-runs"
+    runs.mkdir(parents=True)
+    ok = {"exit": 0, "fail": 0, "warn": 1, "error": None}
+    _run(runs, "2026-10-21", 0, [_draft("가", ok, ok), _draft("나", {"exit": 1, "fail": 2, "warn": 0, "error": None}, ok)])
+    _run(runs, "2026-10-22", 1, [_draft("가", ok, {"exit": None, "fail": None, "warn": None, "error": "TimeoutExpired"})],
+         instruction="instr_1")
+    _run(runs, "2026-10-18", 0, [_draft("창 밖", ok, ok)])                          # before the window: not counted
+    (runs / "2026-10-23.json").write_text("{not json", encoding="utf-8")          # unreadable: counted as such only
     return tmp_path
+
+
+def _draft(keyword, preflight, variety):
+    return {"path": "content/naver/x.md", "platform": "naver", "status": "draft", "cluster": None,
+            "keyword": keyword, "scheduled": None, "preflight": preflight, "variety": variety}
+
+
+def _run(folder, day, draft_rc, drafts, instruction=None):
+    report = {"schema": "blog_run_report.v1", "run_date": day, "started_at": f"{day}T00:00:00Z",
+              "ended_at": f"{day}T01:00:00Z", "instruction_id": instruction, "kw_status": "kw ok",
+              "steps": {"draft": draft_rc, "naver_slot": 0}, "drafts": drafts, "skipped": None}
+    (folder / f"{day}.json").write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
 
 
 def test_the_counts_mean_what_they_say(vault):
@@ -55,6 +75,21 @@ def test_the_counts_mean_what_they_say(vault):
     assert (naver["new_drafts"], naver["published"], naver["upcoming"]) == (3, 1, 1)   # 7.md is not "upcoming"
     assert tistory["status"]["scheduled"] == 3 and tistory["status"]["published"] == 1
     assert (tistory["new_drafts"], tistory["published"], tistory["upcoming"]) == (2, 1, 2)  # 4.md is not "published"
+
+
+def test_the_run_reports_are_counted_in_the_window_and_an_unreadable_one_adds_nothing(vault):
+    runs = bd.observe(vault, now=NOW)["runs"]
+    assert runs == {"reports": 2, "unreadable": 1, "days_without_report": 5, "draft_step_failed": 1, "instructed": 1,
+                    "drafts": 3, "preflight_fail": 1, "variety_fail": 0, "checks_unrun": 1, "distinct_keywords": 2}
+
+
+def test_an_unmounted_report_folder_is_absent_not_zero(vault):
+    import shutil
+
+    shutil.rmtree(vault / "ops")
+    assert bd.observe(vault, now=NOW)["runs"] is None
+    record = bd.build_record(bd.observe(vault, now=NOW), now=NOW)
+    assert record["runs"] is None
 
 
 @pytest.mark.parametrize("root", [None, "missing"])
@@ -75,8 +110,9 @@ def test_an_empty_platform_folder_refuses_rather_than_reading_as_a_quiet_week(va
 
 def test_the_record_is_counts_only_and_satisfies_its_closed_schema(vault):
     record = bd.build_record(bd.observe(vault, now=NOW), now=NOW)
-    assert record["schema_version"] == "blog_department_week.v0.1" and record["observation_id"].startswith("blogweek_")
+    assert record["schema_version"] == "blog_department_week.v0.2" and record["observation_id"].startswith("blogweek_")
     assert "제목" not in json.dumps(record, ensure_ascii=False)
+    assert "가" not in json.dumps(record["runs"], ensure_ascii=False)   # keywords are counted, never carried
     from runtime.mvp_runtime import schema_cache
     from runtime.mvp_runtime.paths import repo_root
     from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
@@ -110,6 +146,8 @@ def test_the_report_renders_the_blog_section_and_an_unreadable_one(vault):
     assert "[네이버] 새 원고 3 · 발행 1 · 다음 7일 예정 1" in text
     assert "지금: draft 1 · 보류 1 · 예약 0 · 발행됨 4 · 읽지 못한 파일 1" in text
     assert "[티스토리] 새 원고 2 · 발행 1 · 다음 7일 예정 2" in text
+    assert "[원고 실행 보고] 2일 보고 · 보고 없는 날 5 · 원고 단계 실패 1일 · 읽지 못한 보고 1" in text
+    assert "원고 3편(front matter 새 원고 5) · 검수 FAIL preflight 1 · variety 0 · 검수 미실행 1 · 키워드 2개 · 시스템 지시 1일" in text
 
     def absent():
         raise ToolError("BLOG_VAULT_UNAVAILABLE", "not mounted")
@@ -131,6 +169,7 @@ def test_the_weekly_fire_records_the_department_week_on_the_ledger(vault, tmp_pa
     run_due(store, now=NOW, control_store=ControlStore(state), ledger=ledger, repo_root=state)
     rows = [r for r in ledger.iter_records(kinds=[bd.RECORD_KIND]) if r["kind"] == bd.RECORD_KIND]
     assert len(rows) == 1 and rows[0]["record"]["platforms"]["naver"]["published"] == 1
+    assert rows[0]["record"]["runs"]["reports"] == 2
     terminal = [e for e in ledger.read_scheduler_events() if e["action"] in ("fired", "failed")][-1]
     assert terminal["action"] == "fired" and f"blog_recorded={rows[0]['record']['observation_id']}" in terminal["status"]
     assert "■ 블로그" in sent[0]

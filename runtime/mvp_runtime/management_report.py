@@ -280,4 +280,15 @@ def render(report: Mapping[str, Any]) -> str:
                 lines.append(f"  [{label}] 새 원고 {p['new_drafts']} · 발행 {p['published']} · 다음 7일 예정 {p['upcoming']}")
                 lines.append(f"    지금: draft {st['draft']} · 보류 {st['hold']} · 예약 {st['scheduled']} · 발행됨 {st['published']}"
                              + (f" · 읽지 못한 파일 {p['unparsed']}" if p["unparsed"] else ""))
+            runs = blog["data"].get("runs")
+            if runs is None:
+                lines.append("  [원고 실행 보고] 보고 폴더가 마운트되지 않았다")
+            else:
+                new = sum(blog["data"]["platforms"][p]["new_drafts"] for p in ("naver", "tistory"))
+                lines.append(f"  [원고 실행 보고] {runs['reports']}일 보고 · 보고 없는 날 {runs['days_without_report']}"
+                             f" · 원고 단계 실패 {runs['draft_step_failed']}일"
+                             + (f" · 읽지 못한 보고 {runs['unreadable']}" if runs["unreadable"] else ""))
+                lines.append(f"    원고 {runs['drafts']}편(front matter 새 원고 {new}) · 검수 FAIL preflight {runs['preflight_fail']}"
+                             f" · variety {runs['variety_fail']} · 검수 미실행 {runs['checks_unrun']}"
+                             f" · 키워드 {runs['distinct_keywords']}개 · 시스템 지시 {runs['instructed']}일")
     return "\n".join(lines)

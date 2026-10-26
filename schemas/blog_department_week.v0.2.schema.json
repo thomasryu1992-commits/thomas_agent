@@ -1,0 +1,261 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "blog_department_week.v0.2.schema.json",
+  "title": "Blog Department Week v0.2",
+  "description": "One week of the blog department, observed from the vault: post front matter (BLOG_DEPARTMENT stages 1-2) and, since v0.2, the drafting cron's per-run reports in ops/blog-runs (v0.2 P1). Counts only: no titles, keywords, URLs or text. runs is null when the report folder is not mounted, never zero.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "observation_id",
+    "observed_at",
+    "window",
+    "platforms",
+    "runs"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "blog_department_week.v0.2"
+    },
+    "observation_id": {
+      "type": "string",
+      "pattern": "^blogweek_[0-9a-f]{20}$"
+    },
+    "observed_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "since",
+        "until",
+        "ahead"
+      ],
+      "properties": {
+        "since": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "until": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "ahead": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        }
+      }
+    },
+    "platforms": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "naver",
+        "tistory"
+      ],
+      "properties": {
+        "naver": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "files",
+            "unparsed",
+            "status",
+            "new_drafts",
+            "published",
+            "upcoming"
+          ],
+          "properties": {
+            "files": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unparsed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "status": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "draft",
+                "hold",
+                "scheduled",
+                "published",
+                "other"
+              ],
+              "properties": {
+                "draft": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "hold": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "scheduled": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "published": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "other": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "new_drafts": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "published": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "upcoming": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "tistory": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "files",
+            "unparsed",
+            "status",
+            "new_drafts",
+            "published",
+            "upcoming"
+          ],
+          "properties": {
+            "files": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unparsed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "status": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "draft",
+                "hold",
+                "scheduled",
+                "published",
+                "other"
+              ],
+              "properties": {
+                "draft": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "hold": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "scheduled": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "published": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "other": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "new_drafts": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "published": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "upcoming": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "runs": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reports",
+            "unreadable",
+            "days_without_report",
+            "draft_step_failed",
+            "instructed",
+            "drafts",
+            "preflight_fail",
+            "variety_fail",
+            "checks_unrun",
+            "distinct_keywords"
+          ],
+          "properties": {
+            "reports": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unreadable": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "days_without_report": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "draft_step_failed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "instructed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "drafts": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "preflight_fail": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "variety_fail": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "checks_unrun": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "distinct_keywords": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      ]
+    }
+  }
+}
