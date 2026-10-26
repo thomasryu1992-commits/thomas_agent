@@ -365,6 +365,12 @@ services:
       # report channel, written by the host's blog-run-report.py. The folder must exist in the vault before
       # `up -d`, or Docker creates it root-owned and the cron (uid 2101) can no longer write its report.
       - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/ops/blog-runs:/app/blog_vault/ops/blog-runs:ro
+      # P2 (BLOG_DEPARTMENT v0.2, Thomas 2026-10-26): the daily blog_verify re-check runs the vault's rules, which read
+      # the post images (capture metadata, Y3) and the topic registries (clusters.tsv/entities.tsv, M0-M7, V16).
+      # Read-only; the keyword folder is mounted whole so a git rewrite of a registry file is seen (a single-file
+      # bind keeps the replaced inode).
+      - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/content/_assets:/app/blog_vault/content/_assets:ro
+      - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/analytics/keywords:/app/blog_vault/analytics/keywords:ro
     # Its own heartbeat, probed by its own name: a shared file would let this loop keep a
     # dead risk loop reading FRESH (or the reverse). Same thresholds as its sibling.
     healthcheck:
