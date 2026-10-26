@@ -41,6 +41,8 @@ def _decision(stdin: str, cwd: Path) -> str:
 
 
 DENIED = [
+    ("Bash", "docker exec -it thomas-scheduler-maint python -m scripts.rebalance_candidates"),
+    ("Bash", "python3 scripts/rebalance_candidates.py --timeout 5"),
     ("Bash", "cat .runtime_governance_state/holdings/holdings_local.json"),
     ("Bash", "python3 -c \"import json; json.load(open('/root/thomas_agent/.runtime_governance_state/holdings/x.json'))\""),
     ("Bash", "docker exec thomas-scheduler cat /app/.runtime_governance_state/holdings/holdings_snapshot.json"),
@@ -75,6 +77,8 @@ DENIED = [
 ]
 
 ALLOWED = [
+    ("Bash", "git add scripts/rebalance_candidates.py tests/test_mvp_runtime_holdings_candidates.py"),
+    ("Bash", ".venv/bin/python -m pytest tests/test_mvp_runtime_holdings_candidates.py -q"),
     ("Bash", "docker exec thomas-scheduler python -m scripts.holdings_board"),
     ("Bash", "docker exec thomas-scheduler python -m scripts.holdings_board --json"),
     ("Bash", "cat .runtime_governance_state/schedules.jsonl"),

@@ -22,7 +22,8 @@
 #   - a state file's name, or `holdings/holdings_…`, for a command run from inside the state root;
 #   - a glob in the first path segment under the state root, which could expand into holdings;
 #   - for a command that runs (Bash's or Monitor's `command`): a recursive read of the whole state root,
-#     the terminal-only `holdings_board` modes, and inline Python that imports the holdings package;
+#     the terminal-only `holdings_board` modes, the candidate report (`scripts.rebalance_candidates`, raw
+#     Toss market data), and inline Python that imports the holdings package;
 #   - a Bash or Monitor input with no command it can read.
 # What stays allowed: `holdings_board` and `holdings_board --json` (the one table), other state files
 # (`schedules.jsonl`, `crypto/…`), `ls`/`du` of the state root, and the source and tests of the lane.
@@ -85,6 +86,11 @@ if [[ $kind == command || $kind == raw ]]; then
   fi
   [[ $flat =~ holdings_board[^\;\&\|]*--(full|local|unclassified|classify|unclassify|reset-peak|cash-flow-cutover|migrate|shadow-started|flows|resolve|semantics-epoch|toss-continuity|adopt-ledger|rebalance|approve-candidates)([^a-z-]|$) ]] \
     && deny "a terminal-only holdings_board mode"
+  # RB2' (2026-10-26): the candidate report prints raw Toss market data, which Toss's terms keep to the
+  # investor's own use and MULTI_ASSET keeps out of any model prompt. Running it is Thomas's.
+  [[ $flat =~ (^|[^a-zA-Z0-9_])scripts[./]rebalance_candidates([^a-zA-Z0-9_]|$) ]] \
+    && [[ $flat =~ (^|[^a-zA-Z0-9_])python ]] \
+    && deny "the rebalancing candidate report (raw Toss market data, terminal only)"
   if [[ $flat =~ (^|[^a-zA-Z0-9_])python[0-9.]*([[:space:]]|$) ]] \
     && [[ $flat =~ mvp_runtime\.holdings|mvp_runtime[[:space:]]+import[[:space:]]+holdings ]]; then
     deny "inline Python importing the holdings package"
