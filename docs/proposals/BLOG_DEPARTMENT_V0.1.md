@@ -127,3 +127,48 @@ Thomas가 정한 순서: **설계 문서 → 검증 → 최적화 → 검증 →
 - **R1. 목표:** (권고) 유지보수성(한 곳에서 이해·수정) / 비용(모델 호출) / 속도 / 원고 품질.
 - **R2. 코드의 집:** (권고) 볼트 `tools/`를 정본으로(Mac이 git으로 받는다), 서버 스크립트는 얇은 진입점만 / thomas_agent 저장소로 이전(PR·CI를 받지만 Mac이 이 저장소를 받아야 한다).
 - **R3. 시작 시점:** (권고) 1·2단계 배포 후 기준선 2주 / 바로.
+
+## 부록 A. 구성 목록 (§4-1, 2026-10-26 조사)
+
+`S` = 서버 스크립트 git(`/home/claude/.claude/scripts`), `T` = 볼트 `tools/`, `S→T` = 서버 쪽은 볼트 파일을 가리키는 심볼릭 링크(정본은 볼트). "호출처"는 크론 작업·스킬·Mac 루틴·`tistory-autopost-procedure.md`·다른 스크립트에서 이름이 불리는 곳을 grep으로 찾은 것이다. 비어 있으면 그 진입점들에서 불리지 않는다는 뜻이고, 손으로 돌리는 도구이거나 쓰이지 않는 것이다(어느 쪽인지는 이 조사로 가리지 못했다). 테스트 파일(`*.test.py`)과 `fixtures/`·`testdata/`는 빠져 있다.
+
+| 단계 | 파일 | 위치 | 호출처 |
+|---|---|---|---|
+| 키워드 | `kw_pipeline.py` | S→T | root 크론 `kw-daily.sh`, 매일 원고 작업, 스킬 셋, 티스토리 절차 |
+| | `kw_pool.py` | T | 매일 원고 작업 |
+| | `kw-check.py` | S | 원고 스킬 둘 |
+| | `blog_taxonomy.py` | S→T | `naver-blog-draft` |
+| | `ai_briefing_sources.py` | T | (없음) |
+| 원고 | `blog-daily-draft.sh` + `.prompt.md` | S | claude 크론 23:02 UTC |
+| | `naver_slot.py` | T | 매일 원고 작업, `naver-blog-draft` |
+| | `blog-affiliate-place.py`, `affiliate-clips.py` | S | 매일 원고 작업 / `naver-blog-draft` |
+| | `affiliate_fetch.py`, `affiliate_link.py` | T | `naver-blog-draft` / Mac 아침 루틴 |
+| 검수 | `blog-preflight.py`, `blog_variety.py` | S→T | 스킬 셋, 매일 원고 작업, 티스토리 절차 |
+| | `img-preflight.py`, `img_helpers.py`, `blogkit.py` | S | 원고 스킬 둘(`blogkit`·`img_helpers`는 스킬과 `img-preflight`가 가져다 씀) |
+| | `blog-capture.py` | S | 매일 원고 작업, `naver-blog-draft` |
+| | `tistory_browser_check.py`, `tistory_verify.py` | T | 티스토리 절차 |
+| | `blog-tone.py`, `source_status.py`, `tistory_variety_asdraft.py` | S / T / T | (없음) |
+| | `tistory-engine-compare.py` | S | (없음, 2026-10 엔진 비교용 일회성) |
+| 발행(Mac·SSH) | `naver_draft.py`, `naver_draft_daily.sh`, `naver_draft_install.sh`, `mac_ready.sh` | T | Mac launchd `com.thomas.naver-draft` |
+| | `naver_reserve.py`, `naver_version_gate.py`, `naver_patch.py` | T | `naver_draft.py`·`naver_reserve.py`에서 / Thomas 손 |
+| | `tistory_queue.py`, `tistory_reserve_gate.py`, `md2paste.py`, `tistory_bold.py`, `tistory_backlinks.py`, `tistory_index_todo.py` | T(`md2paste` S→T) | 티스토리 절차 |
+| | `tistory_version_gate.py`, `tistory_live2md.py` | T | (없음) |
+| | `notify_hermes.sh`, `claude_retry.sh` | T | Mac 아침 루틴·주간 통계 |
+| 측정·피드백 | `blog-weekly.py` | S | 스킬 셋 |
+| | `naver_stats_weekly.py`/`.sh`, `naver_trend_daily.py` | T | Mac launchd(월 10:00, 매일) |
+| | `revision_log.py` | T | `naver-to-google-seo` |
+| | `mac-routine-watch.py`, `weekly-snapshot-check.py` | S | 서로, 날짜 지정 `at` 작업 |
+| 블로그 아님: 볼트·세션 운영 | `vault.sh`, `vault-autopush.sh`, `vault-guard.sh`, `vault-push-gate.py`/`.allow`, `session-start-check.sh`, `pgrep-wait-guard.sh`, `memedit.py`, `server_scripts_backup.py`, `run-tests.sh`, `SCRIPTS.md` | S / T | 훅(`settings.json`), 매일 원고 작업 |
+| 블로그 아님: 프롬프트 라이브러리 | `prompt_collect.py`, `prompt_conversations.py`, `prompt_history.py`, `prompt_intel.py`, `prompt_score.py`, `prompt_similar.py`, `memory_ledger.py`, `retention_plan.py` | T | 매일 원고 작업 끝, 서로 |
+| 블로그 아님: 여행 | `travel-preflight.py`, `strip-gps.py` | S | (손) |
+
+조사에서 나온 것(고치지 않고 적어 둔다):
+- **정본이 두 곳이다.** 키워드·검수·분류 다섯 개는 볼트가 정본이고 서버 쪽은 링크다. 나머지 서버 스크립트는 서버 git이 정본이고 볼트에는 매일 사본(`ops/server-scripts/`)만 간다. R2(코드 집)가 이 둘을 하나로 할지 정한다.
+- **호출처 없는 검수 도구 셋**(`blog-tone.py`, `source_status.py`, `tistory_variety_asdraft.py`)은 손으로 돌리는 것인지 버려진 것인지 이 조사로 가리지 못했다. `source_status.py`의 테스트는 정리 전부터 실패한다(아래).
+- **`notify_hermes.sh`는 이름만 옛것이다.** Hermes 컨테이너 은퇴(2026-10-25) 때 `HERMES_BOT_TOKEN`과 서버 `hermes-notify.sh`는 발신 전용 창으로 일부러 남겼으므로 Mac 알림은 계속 간다.
+- 볼트 `tools/`의 3분의 1가량은 블로그가 아니다(프롬프트 라이브러리, 볼트 운영). 블로그 부서의 경계는 위 표의 "블로그 아님" 행을 빼고 긋는다.
+
+## 부록 B. 리팩토링 단계 검증 기록 (2026-10-26)
+
+- **`.bak` 정리(§4-2).** 볼트 `tools/`에서 git이 추적하던 `.bak-*` 15개(`kw_pipeline.py.bak-*`, `tistory-autopost-procedure.md.bak-*`)를 지웠다(볼트 커밋 `b70af8ea`). 되살리기: `git show b70af8ea~1:tools/<파일>`로 확인했다. 서버 스크립트의 `.bak` 13개는 git이 추적하지 않는 파일이라 지우면 되살릴 수 없고, 그중 5개는 10-25·26 날짜라 다른 세션의 되돌림 지점일 수 있어 남겼다.
+- **전후 비교.** 서버 `run-tests.sh`는 정리 전후 모두 rc=0, 출력 차이는 기존 traceback 줄 속 임시 디렉터리 이름뿐이다. 볼트 도구 테스트 29개는 전후 결과가 같다. 그중 2개는 정리 전부터 실패한다: `source_status.test.py`(JSONDecodeError), `tistory_reserve_gate.test.py`(IndexError). 이 작업이 만든 실패가 아니며 고치지 않았다.
