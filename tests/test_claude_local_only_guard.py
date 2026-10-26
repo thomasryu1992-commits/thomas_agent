@@ -56,6 +56,8 @@ DENIED = [
     ("Bash", "jq .positions holdings_positions.json"),
     ("Bash", "jq .overseas_gain holdings_tax_estimate.json"),
     ("Bash", "cat holdings_auto_candidates.json"),
+    ("Bash", "cat holdings_autoinvest.json"),
+    ("Bash", "tail holdings_autoinvest_journal.jsonl"),
     ("Bash", "cat .runtime_governance_state/*/holdings_x"),
     ("Bash", "ls .runtime_governance_state/h*"),
     ("Bash", "grep -r usd .runtime_governance_state"),
@@ -240,7 +242,9 @@ TERMINAL_ONLY = ("--full", "--local", "--unclassified", "--classify binance:X=co
                  "--resolve pay:x --kind deposit", "--semantics-epoch --change-ref '#1'", "--toss-continuity",
                  "--adopt-ledger --by t --reason r --confirm 1a2b3c4d",
                  # REBALANCING_PROPOSAL (2026-10-26): the plan names instruments and amounts; approving names them.
-                 "--rebalance", "--approve-candidates bonds=toss:domestic:X")
+                 "--rebalance", "--approve-candidates bonds=toss:domestic:X",
+                 # G6-buy (2026-10-26): approving a buy scenario spends money; its status names amounts.
+                 "--autoinvest-approve 069500=1 --max-krw 100000", "--autoinvest-status")
 
 
 def _board_modes() -> set[str]:

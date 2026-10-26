@@ -1376,6 +1376,23 @@ def _execute(
             else:
                 holdings_store.mark_band_told(month, now=now, root=repo_root)
                 status = f"{status}; band notice told"
+        # G6-buy (Thomas 2026-10-26): Thomas's approved buy scenario, a step of its own after a refresh that
+        # landed. It never raises into the fire; its notice is told after delivery like every holdings notice.
+        if status.startswith("holdings snapshot: refreshed"):
+            try:
+                invest = holdings_store.run_autoinvest(now=now, root=repo_root)
+                if invest.get("status") not in ("none", "no_feed", "outside_session", "done_today"):
+                    status = f"{status}; autoinvest {invest['status']}"
+                if invest.get("alert"):
+                    token, text = invest["alert"]
+                    failure = _tell(text)
+                    if failure:
+                        status = f"{status}; autoinvest not sent:{failure}"
+                    else:
+                        holdings_store.mark_autoinvest_told(token, now=now, root=repo_root)
+                        status = f"{status}; autoinvest told"
+            except Exception as exc:  # noqa: BLE001 — an order step must not stop scheduling
+                status = f"{status}; autoinvest error:{getattr(exc, 'reason_code', type(exc).__name__)}"
         # RB2'' (Thomas 2026-10-26): a new automatic candidate pick, or a manual one that stopped trading — counts.
         if result.get("candidate_alert"):
             token, text = result["candidate_alert"]

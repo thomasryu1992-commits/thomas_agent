@@ -250,6 +250,10 @@ def test_the_env_only_gate_has_exactly_the_capabilities_thomas_named():
         # spot + Simple Earn read and the public price list. Its own opt-in and provider id; the key
         # pair is shared with the account feed by decision (option A), the order surface is not.
         "runtime/mvp_runtime/holdings/binance_wallet.py",  # the Binance wallet feed
+        # Added 2026-10-26 (Thomas, G6-buy, G6_BUY_CASH_AUTOINVEST_V0.1.md): the Toss buy-order adapter. Its own
+        # opt-in (MVP_TOSS_ORDERS=buy_only) and provider id; BUY is a constant, domestic whole shares only, a
+        # scenario Thomas approved. It inherits nothing from the crypto order adapters' authorization.
+        "runtime/mvp_runtime/holdings/toss_orders.py",  # the Toss buy-order adapter
     }, callers
 
 

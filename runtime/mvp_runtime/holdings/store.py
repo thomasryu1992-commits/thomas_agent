@@ -413,6 +413,24 @@ def mark_candidates_told(token: str, *, now: str, root: Path | None = None) -> N
                 label="holdings auto candidates")
 
 
+def run_autoinvest(*, now: str, root: Path | None = None) -> dict[str, Any]:
+    """G6-buy (Thomas 2026-10-26): one look at Thomas's approved buy scenario, through this fire's Toss feed and
+    the order adapter its own gate builds (``MVP_TOSS_ORDERS=buy_only``). Returns the step's status and, until it
+    is marked told, its notice (counts and state only)."""
+    from . import autoinvest, toss_orders
+
+    feed = _feed()
+    result = autoinvest.run(feed, toss_orders.select_buy_orders(feed), state_dir(root), now=now) if isinstance(
+        feed, TossHoldingsFeed) else {"status": "no_feed"}
+    return {**result, "alert": autoinvest.notice(state_dir(root))}
+
+
+def mark_autoinvest_told(token: str, *, now: str, root: Path | None = None) -> None:
+    from . import autoinvest
+
+    autoinvest.mark_told(state_dir(root), token, now=now)
+
+
 BAND_NOTICE_FILENAME = "holdings_band_notice.json"
 
 

@@ -232,7 +232,9 @@ def plan(*, class_krw: Mapping[str, float], positions: Iterable[Position], compl
     for order in sells + buys:
         if order["amount_krw"] <= 0:       # a whole share costs more than the amount: nothing to place or carry
             continue
-        (result.orders if order["amount_krw"] >= MIN_ORDER_KRW else result.carried).append(order)
+        # RB4'' (Thomas 2026-10-26): a whole-share buy of at least one share is placed whatever its amount.
+        whole_buy = order["side"] == "BUY" and order["whole_shares"] and (order["quantity"] or 0) >= 1
+        (result.orders if order["amount_krw"] >= MIN_ORDER_KRW or whole_buy else result.carried).append(order)
     result.orders.sort(key=lambda o: (o["step"], o["side"] != "SELL", o["instrument"]))
 
     # Tax: taxable steps by their rate on the gain; overseas gains above what is left of the deduction.

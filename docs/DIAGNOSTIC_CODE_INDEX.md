@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **657** distinct codes across **1313** raise sites
+- **659** distinct codes across **1322** raise sites
 - **22** exception classes carry them
 - **65** codes are raised from more than one module (see below)
 - **164** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -493,6 +493,11 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `FRONTDESK_ROLE_UNRESOLVED` | `OperatorBlocked` | `runtime/mvp_runtime/frontdesk.py` | `_require_active_role` | `len(entries) != 1` |
 | `GENERATOR_NO_MINTABLE_FAMILY` | `ToolError` | `runtime/mvp_runtime/crypto/generator.py` | `generate_batch` | `not templates` |
 | `GUARD_NOT_APPROVED` | `SubmitRefused` | `runtime/mvp_runtime/crypto/live_execution.py` | `submit_and_reconcile` | `not (isinstance(guard_verdict, Mapping) and guard_verdict.get('approved') is True)` |
+| `HOLDINGS_AUTOINVEST_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/autoinvest.py` | `_read` | `—` |
+| `HOLDINGS_AUTOINVEST_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/autoinvest.py` | `approve` | `not isinstance(max_krw, int) or not 0 < max_krw <= DAILY_CAP_KRW` |
+| `HOLDINGS_AUTOINVEST_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/autoinvest.py` | `approve` | `outside` |
+| `HOLDINGS_AUTOINVEST_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/autoinvest.py` | `parse_spec` | `not items or len(items) > MAX_ITEMS or len({i['instrument'] for i in items}) != len(items)` |
+| `HOLDINGS_AUTOINVEST_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/autoinvest.py` | `parse_spec` | `not sep or quantity < 1 or (not ident.startswith('toss:domestic:')) or (len(ident.split(':')[2]…` |
 | `HOLDINGS_CASH_FLOW_ADOPT_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `_adoptable` | `legacy_import_refusal(rows, state)` |
 | `HOLDINGS_CASH_FLOW_ADOPT_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `_adoptable` | `not rows` |
 | `HOLDINGS_CASH_FLOW_ADOPT_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `_adoptable` | `problem is None` |
@@ -1303,6 +1308,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | `keywords` | `—` |
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/tools.py` | `search` | `—` |
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/tools.py` | `search` | `—` |
+| `TOOL_USAGE` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `last_prices` | `not 0 < len(symbols) <= STOCKS_PAGE_LIMIT` |
 | `TOOL_USAGE` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `stock_info` | `not 0 < len(symbols) <= STOCKS_PAGE_LIMIT` |
 | `TOO_LONG` | `TaskIntakeBlocked` | `runtime/mvp_runtime/intake.py` | `_clean_str_list` | `len(item) > MAX_FIELD_CHARS` |
 | `TOO_LONG` | `TaskIntakeBlocked` | `runtime/mvp_runtime/intake.py` | `_require_text` | `len(value) > max_len` |
@@ -1310,6 +1316,9 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `TOSS_ACCOUNT_AMBIGUOUS` | `ToolBlocked` | `runtime/mvp_runtime/holdings/toss_account.py` | `_resolve_account` | `not brokerage` |
 | `TOSS_ACCOUNT_NOT_FOUND` | `ToolBlocked` | `runtime/mvp_runtime/holdings/toss_account.py` | `_resolve_account` | `not chosen` |
 | `TOSS_NO_ACCOUNT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `_resolve_account` | `not brokerage` |
+| `TOSS_ORDER_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/toss_orders.py` | `buy_kr` | `—` |
+| `TOSS_ORDER_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/toss_orders.py` | `buy_kr` | `not isinstance(quantity, int) or isinstance(quantity, bool) or quantity < 1` |
+| `TOSS_ORDER_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/toss_orders.py` | `buy_kr` | `not symbol or not symbol.isalnum() or len(symbol) != 6` |
 | `TOSS_TOKEN_REJECTED` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `_issue_token` | `—` |
 | `TRANSITION_INVALID` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | `_assert_transition` | `target not in _ALLOWED_TRANSITIONS.get(current, frozenset())` |
 | `TREE_NOT_CLEAN` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_tree` | `status.strip()` |

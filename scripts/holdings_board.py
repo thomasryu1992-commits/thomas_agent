@@ -12,6 +12,8 @@
     python -m scripts.holdings_board --flows                        # H6 exceptions, terminal only (H6d-min)
     python -m scripts.holdings_board --rebalance [--force]          # the rebalancing plan, terminal only
     python -m scripts.holdings_board --approve-candidates bonds=toss:domestic:A,toss:domestic:B   # override (RB2'')
+    python -m scripts.holdings_board --autoinvest-approve "069500=1,114260=1" --max-krw 200000   # G6-buy, Thomas
+    python -m scripts.holdings_board --autoinvest-status            # the approved scenario and its journal
     python -m scripts.holdings_board --resolve KEY --kind deposit --by thomas --reason "..."   # terminal only
     python -m scripts.holdings_board --semantics-epoch --change-ref "#1203" --by thomas --reason "..."
     python -m scripts.holdings_board --toss-continuity              # do the Toss windows tile the stretch since the cutover
@@ -150,10 +152,15 @@ def main(argv: list[str] | None = None) -> int:
                       help="the rebalancing proposal over the last fire (REBALANCING_PROPOSAL; terminal only)")
     mode.add_argument("--approve-candidates", metavar="CLASS=ID[,ID...]",
                       help="override the automatic pick for a class (RB2''); CLASS= returns it to the automatic pick (Thomas)")
+    mode.add_argument("--autoinvest-approve", metavar="SYMBOL=SHARES[,...]",
+                      help="approve one buy scenario of current domestic candidates (G6-buy; Thomas, terminal only)")
+    mode.add_argument("--autoinvest-status", action="store_true",
+                      help="the approved buy scenario and its order journal (G6-buy; terminal only)")
     mode.add_argument("--adopt-ledger", action="store_true",
                       help="adopt a ledger the checkpoint refuses, in two runs (C7 PR-C; Thomas, terminal only)")
     parser.add_argument("--confirm", help="the 8 characters the first --adopt-ledger run printed (step two)")
     parser.add_argument("--force", action="store_true", help="plan even with no class outside its band (--rebalance)")
+    parser.add_argument("--max-krw", type=int, default=None, help="the scenario's KRW cap (--autoinvest-approve)")
     parser.add_argument("--kind", help="what the exception was (--resolve; --flows lists the allowed kinds)")
     parser.add_argument("--change-ref", help="the merged reconciliation change, #<PR> or a commit (--semantics-epoch)")
     parser.add_argument("--migrate", action="store_true", help="move an existing cutover (--cash-flow-cutover)")
@@ -232,6 +239,33 @@ def main(argv: list[str] | None = None) -> int:
         if snapshot is not None:
             print(LIVE_READ_NOTICE)
         if snapshot is None and reason_code != "NOT_CONFIGURED":
+            return EXIT_BLOCKED
+        return EXIT_OK
+
+    if args.autoinvest_approve is not None:
+        from runtime.mvp_runtime.holdings import autoinvest
+        from runtime.mvp_runtime.holdings.store import effective_candidates
+
+        try:
+            assert_not_foreign_root_run()
+            if args.max_krw is None:
+                raise ToolError(autoinvest.AUTOINVEST_REFUSED, "--max-krw is required")
+            body = autoinvest.approve(state_dir(), args.autoinvest_approve, max_krw=args.max_krw,
+                                      candidates=effective_candidates())
+        except MvpRuntimeError as exc:
+            print(f"refused ({exc.reason_code}): {exc}")
+            return EXIT_BLOCKED
+        print(f"autoinvest  : {body['scenario_id']} pending, {len(body['items'])} order(s), cap {body['max_krw']:,} KRW, "
+              f"expires {body['expires_at']}; placed at the next domestic regular session if MVP_TOSS_ORDERS=buy_only")
+        return EXIT_OK
+
+    if args.autoinvest_status:
+        from runtime.mvp_runtime.holdings import autoinvest
+
+        try:
+            print("\n".join(autoinvest.render_status(state_dir())))
+        except MvpRuntimeError as exc:
+            print(f"autoinvest  : unreadable ({exc.reason_code})")
             return EXIT_BLOCKED
         return EXIT_OK
 
