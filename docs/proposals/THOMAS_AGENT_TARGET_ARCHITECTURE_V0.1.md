@@ -1,6 +1,6 @@
 # 제안: Thomas Agent 목표 아키텍처 — 7개 계층의 지도와 증거 관문 로드맵 (DRAFT v0.1)
 
-**상태:** DRAFT 2026-10-11 — **2026-10-20 사실 정정:** 연구 일시 중지(D3)가 풀렸다(판정 규칙 완화는 여전히 에포크 경계에서만). G4(P3)에서 날짜 조건이 빠졌고, D5는 날짜 대신 "첫 FORWARD_CONFIRMED 때"가 됐다. 미국채 D-A는 ¼·7–10년·환노출로 정해졌다. 아래 §2·§5·§6의 2027-03-22 표기는 작성 시점의 사실이다. 지금 규칙은 각 소유 문서의 2026-10-20 결정 절에 있다. **2026-10-17 사실 정정:** C7 PR-D #1216, PR-A #1231, PR-B #1235, PR-C #1238이 병합됐다(배포 없음). C7 구현과 운영 반영(2026-10-17 배포, cutover 11:35Z)이 끝났다. D-A5(C7 D2)는 C안으로 정해졌다(`HOLDINGS_LEDGER_CHECKPOINT_V0.1.md` §12.5). H6는 H6a·H6b·H6d-min이 지어졌고 H6b-shadow·H6c가 남았다. 최종 목표(승인된 범위 안의 자율 투자 운영)와 지금의 운영 제한을 한 장에 묶은 지도다. 새 실행 권한이나 정책 권위를 만들지 않으며, 각 줄의 권위는 줄마다 적은 소유 문서에 있다. Thomas의 검토를 기다린다. 결정이 필요한 것은 여섯 가지였고, 2026-10-17 기준 다섯이 열려 있다: 포트폴리오 전체 위험 한도가 주문을 막는지(D-A1), 실행 단계를 자산군별로 어떻게 적용하는지(D-A2), LIVE_SCALED 진입 규칙(D-A3), 크립토 현물 주문을 어느 단계에서 다루는지(D-A4), C7 D2(D-A5, 2026-10-17 C안으로 정해짐), IV–RV 측정을 지을지(D-A6). 전역 LOCAL_ONLY Guard의 갱신 완료는 이 문서 기준으로 미확인(PENDING)이다.
+**상태:** DRAFT 2026-10-11 — **2026-10-26 사실 정정:** §2 표는 10-11 기준 그대로 두고, 바뀐 행은 §2a에 적었다(Hermes와 문 4개 은퇴, 정책 1.7.0, C7 배포, Option C C6a·C6b 완료, 연구 일시 중지 해제). **2026-10-20 사실 정정:** 연구 일시 중지(D3)가 풀렸다(판정 규칙 완화는 여전히 에포크 경계에서만). G4(P3)에서 날짜 조건이 빠졌고, D5는 날짜 대신 "첫 FORWARD_CONFIRMED 때"가 됐다. 미국채 D-A는 ¼·7–10년·환노출로 정해졌다. 아래 §2·§5·§6의 2027-03-22 표기는 작성 시점의 사실이다. 지금 규칙은 각 소유 문서의 2026-10-20 결정 절에 있다. **2026-10-17 사실 정정:** C7 PR-D #1216, PR-A #1231, PR-B #1235, PR-C #1238이 병합됐다(배포 없음). C7 구현과 운영 반영(2026-10-17 배포, cutover 11:35Z)이 끝났다. D-A5(C7 D2)는 C안으로 정해졌다(`HOLDINGS_LEDGER_CHECKPOINT_V0.1.md` §12.5). H6는 H6a·H6b·H6d-min이 지어졌고 H6b-shadow·H6c가 남았다. 최종 목표(승인된 범위 안의 자율 투자 운영)와 지금의 운영 제한을 한 장에 묶은 지도다. 새 실행 권한이나 정책 권위를 만들지 않으며, 각 줄의 권위는 줄마다 적은 소유 문서에 있다. Thomas의 검토를 기다린다. 결정이 필요한 것은 여섯 가지였고, 2026-10-17 기준 다섯이 열려 있다: 포트폴리오 전체 위험 한도가 주문을 막는지(D-A1), 실행 단계를 자산군별로 어떻게 적용하는지(D-A2), LIVE_SCALED 진입 규칙(D-A3), 크립토 현물 주문을 어느 단계에서 다루는지(D-A4), C7 D2(D-A5, 2026-10-17 C안으로 정해짐), IV–RV 측정을 지을지(D-A6). 전역 LOCAL_ONLY Guard의 갱신 완료는 이 문서 기준으로 미확인(PENDING)이다.
 
 **기준:** origin/main `71226ab7` (#1212), 2026-10-11. 운영 상태는 읽기 전용 명령으로만 확인했다: `live_readiness`, `register_execution_stage --show`, `holdings_board` 기본 렌더.
 **입력:** Thomas의 7계층 구상과 다섯 가지 답(2026-10-11, 모두 기본값 채택).
@@ -82,6 +82,26 @@
 | C7 | PR-0 #1210, PR-D #1216, PR-A #1231, PR-B #1235, PR-C #1238 병합(2026-10-17). **2026-10-17 운영 배포**(`candidate-1238`), cutover 11:35Z, `history_completeness` PASS, shadow 재시작. 남은 것: shadow 7일 → H6c 결정. D2 = C안 | `HOLDINGS_LEDGER_CHECKPOINT_V0.1.md` §12, §12.4–§12.6 |
 | 병합된 것 | #1211(결정 기록), #1212(Toss 연속성 진단, 터미널 전용). #1212는 **실제 원장에서 아직 실행하지 않았다** | git |
 | 전역 LOCAL_ONLY Guard | **PENDING — 이 문서 기준으로는 미확인.** #1212 본문은 `GLOBAL_GUARD_PENDING`이고, 저장소에는 갱신과 다섯 항목 검증의 완료 기록이 없다. 확인이 필요한 사실로 남긴다 | #1212 본문 |
+
+---
+
+## 2a. 바뀐 것 (2026-10-26)
+
+§2 표는 작성 시점(2026-10-11)의 기록이다. 그 뒤 바뀐 행만 적는다. 이 갱신에서 다시 읽지 않은 운영 상태는 미확인으로 둔다.
+
+| 항목 | 2026-10-26 값 | 출처 |
+|---|---|---|
+| 실행 단계 | **PAPER**, 정책 1.7.0에 다시 묶였다(REBIND 2026-10-26, `stage_7c9526f5bf25b24df54b`). 1.7.0이 정책 버전과 안전 지문을 바꿨기 때문이다 | `register_execution_stage --show`(Thomas 터미널, 2026-10-26), `docs/runtime-contracts/POLICY_1_7_0_DRAFT.md` §3 |
+| 실거래 진입 | **미확인.** 이 갱신에서 `live_readiness`를 다시 읽지 않았다 | — |
+| 운영 서비스 | 다섯 개다: operator, scheduler, scheduler-maint, pipeline-worker, claude-read-bridge. Hermes 컨테이너와 문 4개(read·dispatch·switch·knowledge)는 은퇴했고, workflow manager와 knowledge 레인도 같이 빠졌다. `candidate-1309`로 2026-10-26 배포 | `docs/history/2026-10-25-retire-hermes-container.md`, `2026-10-25-retire-assistant-doors.md` |
+| 전략 증거 | forward cohort 197개 중 FORWARD_CONFIRMED 0, CONTRADICTED 19, INSUFFICIENT 173, UNDERPOWERED 5 | `scripts.strategy_funnel`(연구 데이터 `20261026T041701Z`) |
+| 증거 무결성 | OI·청산 lookahead 행은 INVALID, 재사용 홀드아웃과 OI 재채점은 BIASED다. walk-forward 소계가 있는 3,156행 중 유효한 홀드아웃 CONFIRMED는 2개이고 둘 다 BIASED다(2026-10-25) | `candidate_ranking.evidence_standing`, `WALK_FORWARD_TEMPORAL_STABILITY_V0.1.md` §4 결과 |
+| 연구 일시 중지 | **풀렸다(2026-10-20).** 판정 규칙 완화는 여전히 에포크 경계(2027-03-22부터)에서만 한다 | `SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md` 결정(2026-10-20) |
+| C7 | 다섯 PR이 2026-10-17 `candidate-1238`로 배포됐다. cutover 11:35Z, `history_completeness` PASS, shadow 관찰 재시작. H6b_shadow_ready 여부는 **미확인**(Thomas 보드·알림) | `HOLDINGS_LEDGER_CHECKPOINT_V0.1.md` §12.7 |
+| 전역 LOCAL_ONLY Guard | GLOBAL_GUARD_VERIFIED(2026-10-12, Thomas 운영자 증거). §2의 PENDING은 그 전 사실이다 | `HOLDINGS_C7_PR_D_DEPLOY_READINESS_V0.1.md` |
+| Option C | C6a 실행기 설치(2026-10-19), C6b Claude 전용 계정(2026-10-20). 실행기는 2026-10-26에 `fab6abad`로 upgrade | `HOST_PRIVILEGE_SEPARATION_V0.1.md`, `docs/history/2026-10-26-c6a-runner-upgrade.md` |
+
+**우선순위 1번(① 회계)에서 다음 문:** G1a H6b-shadow(시스템이 준비를 알리고 Thomas가 승인)와 그 뒤의 G1d H6c. ③ 전략 쪽은 2027-03-22 경계 전까지 판정 규칙이 바뀌지 않는다.
 
 ---
 
