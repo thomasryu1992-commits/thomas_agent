@@ -68,7 +68,7 @@ core thin while lanes grow, stated as rules:
   `.runtime_governance_state/holdings/` directly, and never run `holdings_board --full`,
   `--local`, `--unclassified`, `--classify`/`--unclassify`, `--reset-peak`,
   `--cash-flow-cutover`, `--flows`, `--resolve`, `--semantics-epoch`, `--rebalance` or `--approve-candidates`.
-  Those are Thomas's, in his own terminal. The local files name holdings and carry per-wallet and sub-class breakdowns; H3
+  Those are Thomas's, in his own terminal, and so is `scripts.rebalance_candidates` (raw Toss market data, RB2'). The local files name holdings and carry per-wallet and sub-class breakdowns; H3
   (`holdings/disclosure.py`) lets exactly one table leave the process, and a model prompt is a way out.
   Never report a breakdown from which one instrument's share follows.
   `.claude/hooks/guard-local-only.sh` and the `Read` deny rules in `.claude/settings.json` are a
