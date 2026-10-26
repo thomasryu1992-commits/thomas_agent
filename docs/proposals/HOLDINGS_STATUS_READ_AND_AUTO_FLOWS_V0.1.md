@@ -1,6 +1,6 @@
 # 제안: Claude가 holdings 검사 상태를 읽고, Toss 입출금은 규칙으로 자동 분류한다 (DRAFT v0.1)
 
-**상태:** DRAFT 2026-10-26 — Thomas 결정 다섯 건(R1–R3, F1–F2)을 기다린다. Thomas가 두 가지를 요청했다(2026-10-26). 하나는 holdings 검사의 이름과 상태만 Claude read door로 읽는 것이다(금액 없음). 다른 하나는 입출금을 사람이 닫지 않고 자동으로 확인하는 것이다. 코드·정책·스키마 변경은 없다.
+**상태:** DECIDED 2026-10-26 — R1 예, R2 예, R3 예, F1 A, F2 아니오(Thomas). PR-1(R1–R3: `toss_needs`, `holdings_status` v1.1, Claude 프로필, CLAUDE.md)을 짓는 중이고, PR-2(F1–F2: `quiet_window.v1`)가 남았다. **결정 전 상태:** DRAFT — Thomas 결정 다섯 건(R1–R3, F1–F2)을 기다렸다. Thomas가 두 가지를 요청했다(2026-10-26). 하나는 holdings 검사의 이름과 상태만 Claude read door로 읽는 것이다(금액 없음). 다른 하나는 입출금을 사람이 닫지 않고 자동으로 확인하는 것이다. 코드·정책·스키마 변경은 없다.
 
 **대상:** Claude read door의 `holdings_status` 읽기(`HOST_PRIVILEGE_SEPARATION_V0.1.md` §4.19.2의 응답 계약 v1)와 H6 현금흐름 원장의 Toss 잔차 처리(`PORTFOLIO_CASH_FLOW_LEDGER_V0.1.md`, `holdings/cash_flows.py`).
 
@@ -162,3 +162,13 @@
 - 보류 읽기 `runtime_status`, `heartbeat`, `crypto_readiness`는 다루지 않는다.
 - H6b-shadow와 H6c의 승인은 다루지 않는다. 그것은 `PORTFOLIO_CASH_FLOW_LEDGER_V0.1.md`의 결정이다.
 - Toss 주문 경로(P3)는 다시 열지 않는다.
+
+## 결정 (Thomas 2026-10-26) — 권고대로
+
+"승인: #1313 R1 예, R2 예, R3 예, F1 A, F2 아니오 / #1313 병합, PR-1·PR-2 구현 (Thomas 2026-10-26)"
+
+- **R1 예:** Claude read door가 `holdings_status` v1.1을 답한다.
+- **R2 예:** 그 검사 상태는 H3의 표가 아니라 운영 상태다. CLAUDE.md의 holdings 읽기 문장을 그에 맞게 고친다. 금지 명령 목록은 그대로다.
+- **R3 예:** `toss_needs`를 구조 필드로 더한다.
+- **F1 A:** `quiet_window.v1` 규칙으로 조용한 창의 둥근 KRW 잔차를 입금·출금으로 닫는다. 규칙 밖은 지금처럼 Thomas가 본다.
+- **F2 아니오:** 자동 분류 알림에는 방향과 개수만 넣는다.
