@@ -107,13 +107,14 @@ _RECORD_KINDS = (
     # The operator's emergency close (crypto PR6c): one report per spent grant, naming every order it
     # sent, beside the audit events and the outcomes it produced (review of #913).
     "crypto_emergency_close",
-    # The blog content lane's package (Phase 2). A ledger row rather than a file: the workspace
-    # writer is behind `filesystem_write`, which is unset on this deployment, so the record IS
-    # the artefact until that opens.
+    # The runtime blog lane's package and its rank observations. Nothing writes either since the
+    # lane was retired (2026-10-26, BLOG_DEPARTMENT_V0.1.md §2); the kinds stay so the rows already
+    # on the ledger and in its archives keep reading, indexing and validating as they did.
     "blog_content_package",
-    # Append-only rank observations of a published package (blog_rank.py). Recorded only;
-    # nothing reads them into keyword selection until several have accumulated.
     "blog_rank_snapshot",
+    # The blog department's week as the organisation observed it from the vault (BLOG_DEPARTMENT_V0.1.md
+    # stages 1-2, 2026-10-26): counts only, appended by the weekly management report.
+    "blog_department_week",
     "programization_observation", "programization_pattern",
 )
 

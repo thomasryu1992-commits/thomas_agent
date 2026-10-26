@@ -1056,8 +1056,8 @@ def run_task(
     caller (``workspace.select_writer``).
 
     ``budget_profile`` (opt-in, ``budgets.BUDGET_PROFILES``) replaces the per-agent token share
-    for the task allocation and the specialist's assignment — today only ``blog_content`` on a
-    ``content`` request. An unknown profile, or one on a kind it was not made for, BLOCKs."""
+    for the task allocation and the specialist's assignment. None is defined today (the blog lane's
+    two left with it, 2026-10-26). An unknown profile, or one on a kind it was not made for, BLOCKs."""
     provider = provider if provider is not None else MockProvider()
     search_tool = search_tool if search_tool is not None else MockSearchTool()
     if validator_provider is None:

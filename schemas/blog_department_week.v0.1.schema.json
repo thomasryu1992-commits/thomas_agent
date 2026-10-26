@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "blog_department_week.v0.1.schema.json",
+  "title": "Blog Department Week v0.1",
+  "description": "One week of the blog department, observed from the vault's post front matter (BLOG_DEPARTMENT_V0.1.md stages 1-2). Counts only: no titles, keywords, URLs or text.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "observation_id",
+    "observed_at",
+    "window",
+    "platforms"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "blog_department_week.v0.1"
+    },
+    "observation_id": {
+      "type": "string",
+      "pattern": "^blogweek_[0-9a-f]{20}$"
+    },
+    "observed_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "since",
+        "until",
+        "ahead"
+      ],
+      "properties": {
+        "since": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "until": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "ahead": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        }
+      }
+    },
+    "platforms": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "naver",
+        "tistory"
+      ],
+      "properties": {
+        "naver": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "files",
+            "unparsed",
+            "status",
+            "new_drafts",
+            "published",
+            "upcoming"
+          ],
+          "properties": {
+            "files": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unparsed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "status": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "draft",
+                "hold",
+                "scheduled",
+                "published",
+                "other"
+              ],
+              "properties": {
+                "draft": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "hold": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "scheduled": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "published": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "other": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "new_drafts": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "published": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "upcoming": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "tistory": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "files",
+            "unparsed",
+            "status",
+            "new_drafts",
+            "published",
+            "upcoming"
+          ],
+          "properties": {
+            "files": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unparsed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "status": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "draft",
+                "hold",
+                "scheduled",
+                "published",
+                "other"
+              ],
+              "properties": {
+                "draft": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "hold": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "scheduled": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "published": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "other": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "new_drafts": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "published": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "upcoming": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    }
+  }
+}

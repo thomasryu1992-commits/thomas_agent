@@ -57,13 +57,8 @@ SHARED_ACROSS_MODULES = frozenset({
     # NOT_APPROVED, PERMISSION_DECISION_MISSING, PLAN_INVALID, REASON_REQUIRED, REQUEST_ID_REQUIRED,
     # REQUEST_ID_REUSED, REQUEST_IN_FLIGHT, REQUEST_REQUIRED, SCHEDULES_UNAVAILABLE, TRANSITION_INVALID,
     # UNKNOWN_APPROVAL, WORKER_UNAVAILABLE, WORKFLOW_UNAVAILABLE.
-    # Added 2026-08-23 with the blog lane's weekly job: `pipeline_worker` checks that the delegated
-    # frame carries seeds, and
-    # `blog_content` re-checks the same requirement on arrival rather than trusting its
-    # caller — including a caller that is not the worker. One contract, two depths, and an
-    # operator reading the code back is looking at the same fact either way: the ideation job
-    # was asked to run with nothing to work from.
-    "IDEATION_INPUTS_REQUIRED",
+    # Left 2026-10-26 with the runtime blog lane: IDEATION_INPUTS_REQUIRED (the worker's ideation job
+    # and `blog_content` both raised it; neither exists now).
     # Added 2026-09-14 with sequence 2 P09. `UNKNOWN_KIND`: a schedule kind outside
     # `scheduler.KINDS` — `scheduler.build_schedule` refuses it at registration and
     # `schedule_delegation` refuses it before the delegation check for the same reason.
