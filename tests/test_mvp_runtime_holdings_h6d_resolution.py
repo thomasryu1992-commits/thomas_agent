@@ -40,7 +40,7 @@ def _semantics(tmp_path):
 
 # 1
 def test_a_toss_deposit_alone_is_closed_as_a_deposit_and_proves_nothing(tmp_path):
-    row = _residual(tmp_path, 1_050_000)
+    row = _residual(tmp_path, 1_050_123)                  # not round: left to Thomas
     key = row["source_event_key"]
     assert cash_flows.post_cutover_exceptions(ledger(tmp_path)) == 1 and _semantics(tmp_path) != "MIXED"
     _refused(cash_flows.RESOLVE_KIND, lambda: resolve(tmp_path, key, "withdrawal"))     # the sign says money came in
@@ -74,7 +74,7 @@ def test_a_dividend_or_interest_is_closed_as_income_never_as_a_fee(tmp_path):
 
 # 4
 def test_a_second_resolution_of_one_event_is_refused(tmp_path):
-    row = _residual(tmp_path, 1_050_000)
+    row = _residual(tmp_path, 1_050_123)                  # not round: left to Thomas
     resolve(tmp_path, row["source_event_key"], "deposit")
     _refused(cash_flows.RESOLVE_DUPLICATE, lambda: resolve(tmp_path, row["source_event_key"], "deposit"))
     assert len(events(tmp_path, "flow_resolved")) == 1
@@ -201,7 +201,8 @@ def test_flows_lists_exceptions_without_amounts(board, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "1 open" in out and "pay:p1" in out and "allowed: deposit" in out
     assert "SECRETCOIN" not in out and "123.45" not in out
-    assert all(set(row) == {"key", "event", "category", "phase", "review", "kind", "allowed", "direction"}
+    assert all(set(row) == {"key", "event", "category", "phase", "review", "kind", "allowed", "closed_by",
+                            "direction"}
                for row in cash_flows.flows_view(tmp_path))
 
 
@@ -218,12 +219,12 @@ def test_the_epoch_command_asks_for_the_digest(board, monkeypatch, tmp_path):
 
 
 def test_the_resolution_line_carries_the_required_fields_and_no_amount(tmp_path):
-    row = _residual(tmp_path, 1_050_000)
+    row = _residual(tmp_path, 1_050_123)                  # not round: left to Thomas
     written = resolve(tmp_path, row["source_event_key"], "deposit")
     for name in cash_flows.REQUIRED_FIELDS["flow_resolved"]:
         assert written[name] not in (None, ""), name
     assert written["source_event_key"] == f"resolved:{row['source_event_key']}"
-    assert "50000" not in json.dumps(written) and "residual" not in written
+    assert "50123" not in json.dumps(written) and "residual" not in written
 
 
 # --- cutover consistency (§8) ------------------------------------------------------------------------
@@ -231,9 +232,9 @@ def test_the_resolution_line_carries_the_required_fields_and_no_amount(tmp_path)
 def test_a_toss_window_around_the_cutover_is_unknown_never_post_and_still_blocks(tmp_path):
     set_cutover(tmp_path, "2026-10-09T04:30:00Z")
     toss_fire(tmp_path, 1_000_000, "2026-10-09T03:00:00Z")
-    toss_fire(tmp_path, 1_010_000, "2026-10-09T04:00:00Z")                          # wholly before: observed only
-    toss_fire(tmp_path, 1_020_000, "2026-10-09T05:00:00Z")                          # the boundary falls inside
-    toss_fire(tmp_path, 1_030_000, "2026-10-09T06:00:00Z")                          # wholly after
+    toss_fire(tmp_path, 1_010_123, "2026-10-09T04:00:00Z")                          # wholly before: observed only
+    toss_fire(tmp_path, 1_020_246, "2026-10-09T05:00:00Z")                          # the boundary falls inside
+    toss_fire(tmp_path, 1_030_369, "2026-10-09T06:00:00Z")                          # wholly after
     rows = ledger(tmp_path)
     boundary = cash_flows._iso_ms("2026-10-09T04:30:00Z")
     phases = [cash_flows.event_phase(r, boundary) for r in rows if r["event"] == "toss_residual"]

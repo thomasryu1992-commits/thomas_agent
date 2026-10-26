@@ -1,6 +1,6 @@
 # 제안: Claude가 holdings 검사 상태를 읽고, Toss 입출금은 규칙으로 자동 분류한다 (DRAFT v0.1)
 
-**상태:** DECIDED 2026-10-26 — R1 예, R2 예, R3 예, F1 A, F2 아니오(Thomas). PR-1(R1–R3: `toss_needs`, `holdings_status` v1.1, Claude 프로필, CLAUDE.md)을 짓는 중이고, PR-2(F1–F2: `quiet_window.v1`)가 남았다. **결정 전 상태:** DRAFT — Thomas 결정 다섯 건(R1–R3, F1–F2)을 기다렸다. Thomas가 두 가지를 요청했다(2026-10-26). 하나는 holdings 검사의 이름과 상태만 Claude read door로 읽는 것이다(금액 없음). 다른 하나는 입출금을 사람이 닫지 않고 자동으로 확인하는 것이다. 코드·정책·스키마 변경은 없다.
+**상태:** DECIDED 2026-10-26 — R1 예, R2 예, R3 예, F1 A, F2 아니오(Thomas). PR-1(R1–R3: `toss_needs`, `holdings_status` v1.1, Claude 프로필, CLAUDE.md, #1314)과 PR-2(F1–F2: `quiet_window.v1`, Thomas 재분류 1회, 방향·개수 알림)를 지었다. 둘 다 병합과 배포가 남았다. **결정 전 상태:** DRAFT — Thomas 결정 다섯 건(R1–R3, F1–F2)을 기다렸다. Thomas가 두 가지를 요청했다(2026-10-26). 하나는 holdings 검사의 이름과 상태만 Claude read door로 읽는 것이다(금액 없음). 다른 하나는 입출금을 사람이 닫지 않고 자동으로 확인하는 것이다. 코드·정책·스키마 변경은 없다.
 
 **대상:** Claude read door의 `holdings_status` 읽기(`HOST_PRIVILEGE_SEPARATION_V0.1.md` §4.19.2의 응답 계약 v1)와 H6 현금흐름 원장의 Toss 잔차 처리(`PORTFOLIO_CASH_FLOW_LEDGER_V0.1.md`, `holdings/cash_flows.py`).
 

@@ -218,10 +218,10 @@ def test_toss_cash_explained_by_a_fill_leaves_no_residual(tmp_path):
 
 def test_an_unexplained_toss_change_is_an_unresolved_shadow_residual(tmp_path):
     cash_flows.collect_toss(Toss(), _snap(1_000_000, 100.0), tmp_path, now=NOW)
-    cash_flows.collect_toss(Toss(), _snap(6_000_000, 100.0), tmp_path, now=LATER)
+    cash_flows.collect_toss(Toss(), _snap(6_000_123, 100.0), tmp_path, now=LATER)   # not round: left to Thomas
     (row,) = _not_windows(cash_flows.verify(tmp_path))
     assert _window(cash_flows.verify(tmp_path))["residual_status"]["KRW"] == "OPEN"
-    assert row["event"] == "toss_residual" and row["pocket"] == "KRW" and row["residual"] == "5000000"
+    assert row["event"] == "toss_residual" and row["pocket"] == "KRW" and row["residual"] == "5000123"
     assert row["source_confidence"] == "UNRESOLVED" and row["accounting_status"] == "SHADOW_ONLY"
 
 
@@ -687,10 +687,10 @@ def test_a_look_alike_after_the_cutover_blocks_through_the_link(tmp_path):
 
 def test_a_toss_residual_after_the_cutover_blocks_and_one_before_does_not(tmp_path):
     cash_flows.collect_toss(Toss(), _snap(1_000_000, 0.0), tmp_path, now="2026-10-09T02:00:00Z")
-    cash_flows.collect_toss(Toss(), _snap(1_050_000, 0.0), tmp_path, now="2026-10-09T02:30:00Z")   # before
+    cash_flows.collect_toss(Toss(), _snap(1_050_123, 0.0), tmp_path, now="2026-10-09T02:30:00Z")   # before
     _ready_but_for(tmp_path)
     assert cash_flows.readiness(tmp_path, now="2026-10-17T00:00:00Z")["exceptions"] == 0
-    cash_flows.collect_toss(Toss(), _snap(1_100_000, 0.0), tmp_path, now="2026-10-10T00:00:00Z")   # after
+    cash_flows.collect_toss(Toss(), _snap(1_100_246, 0.0), tmp_path, now="2026-10-10T00:00:00Z")   # after
     ready = cash_flows.readiness(tmp_path, now="2026-10-17T00:00:00Z")
     assert ready["exceptions"] == 1 and ready["ready"] is False
 
