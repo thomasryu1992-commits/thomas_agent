@@ -394,6 +394,12 @@ services:
       # is honest: two loops, two restarts, two diagnoses.
       MVP_OPERATOR_CHANNEL: ${MVP_OPERATOR_CHANNEL:-}
       TELEGRAM_BOT_TOKEN: ${HERMES_BOT_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}
+      # The CONTROL bot's token, a second time and under another name (WMR-1, Thomas 2026-10-25,
+      # WEEKLY_MANAGEMENT_REPORT_V0.1.md Q1=A). Only the weekly management report reads it
+      # (`operator.select_control_channel`), send-only: the operator is that bot's one poller.
+      # The interpolation source is the same `TELEGRAM_BOT_TOKEN` this service already draws as
+      # its fallback above, so the set of services that hold the control bot does not change.
+      MVP_CONTROL_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       # The holdings board's Toss Securities account read (P1-b of MULTI_ASSET_EXPANSION_V0.1.md;
       # KIS replaced by Toss, Thomas 2026-10-07). The `holdings_refresh` fire is a maintenance kind,
       # and this lane — not the risk lane — holds the key, so a brokerage key never sits next to the

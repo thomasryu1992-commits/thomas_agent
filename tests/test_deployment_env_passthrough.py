@@ -851,3 +851,17 @@ def test_the_pipeline_worker_reads_the_vaults_post_folders_read_only():
 def test_no_other_service_mounts_the_vault(service):
     assert _vault_mounts(service) == []
     assert "MVP_BLOG_PUBLISHED_ROOT" not in (_service(service).get("environment") or {})
+
+
+# --- the weekly report's control-bot token (WMR-1, Thomas 2026-10-25) -------------------------------
+
+def test_only_the_maintenance_lane_receives_the_control_bot_under_its_report_name():
+    """Q1=A: scheduler-maint draws the control bot's token a second time, as `MVP_CONTROL_BOT_TOKEN`,
+    for the weekly management report alone. From the same `.env` source it already holds as its
+    fallback, so no service gains a credential; and from that source only — a report that sent on
+    any other bot would not be the control-bot report Thomas asked for."""
+    from runtime.mvp_runtime import operator
+
+    holders = {name for name in _ALL_SERVICES if operator.CONTROL_BOT_TOKEN_ENV in _service_environment(name)}
+    assert holders == {"scheduler-maint"}
+    assert _service_environment("scheduler-maint")[operator.CONTROL_BOT_TOKEN_ENV] == "${TELEGRAM_BOT_TOKEN:-}"

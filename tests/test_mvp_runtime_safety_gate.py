@@ -227,7 +227,10 @@ def test_the_env_only_gate_has_exactly_the_capabilities_thomas_named():
         "runtime/mvp_runtime/providers.py",               # hosted model chain + validator + M2 tiers
         "runtime/mvp_runtime/frontdesk.py",               # the conversational front desk's chain
         "runtime/mvp_runtime/tools.py",                   # the search tool
-        "runtime/mvp_runtime/operator.py",                # the Telegram operator channel
+        # the Telegram operator channel, and since 2026-10-25 (WMR-1 Q1=A) a second call site in the
+        # same file: `select_control_channel`, the control bot send-only for the weekly report. Same
+        # opt-in and provider id; named here because a second site is still a decision.
+        "runtime/mvp_runtime/operator.py",
         "runtime/mvp_runtime/workspace.py",               # the workspace writer
         "runtime/mvp_runtime/consumption.py",             # approval consumption
         "runtime/mvp_runtime/trial.py",                   # the candidate-trial spend

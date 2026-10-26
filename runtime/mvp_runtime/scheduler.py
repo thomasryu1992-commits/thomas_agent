@@ -219,11 +219,16 @@ KIND_FORWARD_COHORT = "crypto_forward_cohort"
 # risk: a late fire costs freshness, never money, and Thomas put the broker key on scheduler-maint for
 # exactly that reason. Not `crypto_`-prefixed, so `schedule_delegation` names it as financial itself.
 KIND_HOLDINGS = "holdings_refresh"
+# The weekly management report (WEEKLY_MANAGEMENT_REPORT_V0.1.md, Thomas 2026-10-25, WMR-1): lane
+# summary, pending approvals, failing schedules and feedback counts, one message on the CONTROL bot
+# (`operator.select_control_channel`), not the notification bot the lanes' alerts use. Maintenance,
+# not risk: a late report costs freshness, never money.
+KIND_MANAGEMENT_REPORT = "management_report"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
                    KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE,
                    KIND_BREAKER_WATCH, KIND_ROUTE_WATCH, KIND_CANDLE_ARCHIVE,
                    KIND_NULL_CONTROL, KIND_CONTENT_IDEATION,
-                   KIND_FORWARD_COHORT, KIND_HOLDINGS})
+                   KIND_FORWARD_COHORT, KIND_HOLDINGS, KIND_MANAGEMENT_REPORT})
 
 # The kinds whose lateness costs money rather than freshness.
 #
@@ -295,7 +300,7 @@ MAINTENANCE_KINDS: frozenset[str] = frozenset({
     KIND_TASK, KIND_PRUNE, KIND_FACTORY, KIND_REPORT, KIND_PROPOSER,
     KIND_DATA_REVIEW, KIND_ROTATE, KIND_CANDLE_ARCHIVE, KIND_NULL_CONTROL,
     KIND_CONTENT_IDEATION, KIND_FORWARD_COHORT,
-    KIND_HOLDINGS,
+    KIND_HOLDINGS, KIND_MANAGEMENT_REPORT,
 })
 
 # How much of one pass the non-risk kinds may spend before it stops STARTING more of them.
@@ -1540,6 +1545,34 @@ def _execute(
             return f"report_rendered_not_sent:{type(exc).__name__}"
         warned = len(status.get("warnings") or [])
         return f"report_sent cycles={status.get('cycles_seen')} warnings={warned}"
+    if schedule.kind == KIND_MANAGEMENT_REPORT:
+        # WMR-1: read the four sections (each fails on its own) and send them on the control bot.
+        # Unlike KIND_REPORT, a send that fails RAISES: a weekly report that vanished quietly is
+        # the gap this kind exists to close, so the failure goes to the existing failure alert.
+        from . import management_report
+        from . import operator as operator_mod
+        from .approval_store import ApprovalStore
+        from .control import ControlStore
+        from .crypto.dashboard import build_status
+
+        try:
+            control_state = ControlStore.default(repo_root).load()
+        except MvpRuntimeError:
+            control_state = None
+        report = management_report.collect(
+            now=now, ledger=ledger, schedules=ScheduleStore.default(repo_root),
+            approval_store=ApprovalStore.default(repo_root), control_state=control_state,
+            crypto_status=lambda: build_status(repo_root, now=now),
+        )
+        text = management_report.render(report)
+        try:
+            channel = operator_mod.select_control_channel()
+            operator_mod.notify_operator(channel, text, repo_root=repo_root)
+        except MvpRuntimeError as exc:
+            raise SchedulerBlocked("MANAGEMENT_REPORT_NOT_SENT", f"the weekly report was not sent: {exc.reason_code}") from exc
+        unread = sorted(k for k in ("lanes", "crypto", "approvals", "schedules", "feedback")
+                        if report.get(k) is not None and not report[k]["ok"])
+        return "management_report_sent" + (f" unreadable={','.join(unread)}" if unread else "")
     if schedule.kind == KIND_CRYPTO:
         # Governed crypto cycles (C7). The collector and paper store are selected at
         # fire time through their Safety-Flag chokepoints, so a deleted grant is a
