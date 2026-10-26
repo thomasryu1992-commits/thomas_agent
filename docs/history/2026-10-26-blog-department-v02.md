@@ -21,5 +21,5 @@ work that the system instructs and hears back from.
 **Verified against the sources.** Every external host in §7 N1 was taken from the code (`kw_pipeline.py`,
 `blog_taxonomy.py`, `blog-preflight.py`, `blog-weekly.py`). Every file in appendix A is assigned in §3-2.
 
-**Not decided here.** N1 (hosts), S1 (keyword state's home), L2, L3, R1–R3, and the P0 deploy. #1320 merged into
+**Decided the same day.** Thomas approved §7 as recommended ("승인: BLOG-DEPT v0.2 §7 권고대로"): N1, S1, L2, L3, R1–R3. **Still open:** the P0 deploy. #1320 merged into
 main mid-deploy on 2026-10-26, so the second preflight stopped. Nothing was promoted.
