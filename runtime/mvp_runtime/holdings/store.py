@@ -44,7 +44,7 @@ from .. import timeutil
 from ..errors import MvpRuntimeError, ToolError
 from ..filelock import locked
 from ..paths import repo_root as _repo_root
-from . import allocation, binance_wallet, cash_flows, classification, combined, disclosure
+from . import allocation, binance_wallet, cash_flows, classification, combined, disclosure, rebalance
 from .board import aggregate_view, render_view
 from .toss_account import TossHoldingsFeed, read_holdings, select_holdings_feed
 
@@ -78,6 +78,15 @@ def state_dir(root: Path | None = None) -> Path:
 
 def snapshot_path(root: Path | None = None) -> Path:
     return state_dir(root) / SNAPSHOT_FILENAME
+
+
+POSITIONS_FILENAME = "holdings_positions.json"
+POSITIONS_RECORD_TYPE = "holdings_positions.v1"
+
+
+def positions_path(root: Path | None = None) -> Path:
+    """Each classified holding of the last fire, for ``--rebalance`` only. Names instruments: LOCAL_ONLY."""
+    return state_dir(root) / POSITIONS_FILENAME
 
 
 def local_path(root: Path | None = None) -> Path:
@@ -188,6 +197,12 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
     except Exception as exc:  # noqa: BLE001 — see the comment above
         body["allocation"] = None
         combined_note += f"; allocation not computed ({type(exc).__name__})"
+    # REBALANCING_PROPOSAL RB1 (Thomas 2026-10-26): each classified holding for `--rebalance`. It names
+    # instruments, so it goes to its own local file (:func:`positions_path`), never the board or the snapshot.
+    try:
+        positions = rebalance.toss_positions(snapshot, entries)
+    except Exception:  # noqa: BLE001 — the calculator's input must not cost the board
+        positions = None
     try:
         feed = _feed()
         if isinstance(feed, TossHoldingsFeed):
@@ -245,6 +260,10 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
     try:
         _write_json(local_path(root), {**body, "record_type": LOCAL_RECORD_TYPE},
                     code="HOLDINGS_LOCAL_LOCKED", label="holdings local board")
+        if positions is not None:
+            _write_json(positions_path(root), {"record_type": POSITIONS_RECORD_TYPE, "as_of": body["as_of"],
+                                               "positions": positions},
+                        code="HOLDINGS_POSITIONS_LOCKED", label="holdings positions")
         _write_json(snapshot_path(root), outward, code="HOLDINGS_SNAPSHOT_LOCKED", label="holdings snapshot")
     except Exception as exc:  # noqa: BLE001 — see the docstring
         return {"status": f"holdings snapshot: not persisted ({type(exc).__name__})", "alert": None}
@@ -345,6 +364,24 @@ def load_local_view(*, now: str, root: Path | None = None) -> str:
              *render_view(body, stamp_line=f"{'as of':12}: {body.get('as_of')} ({age_text})")]
     lines.extend(f"{'note':12}: {note}" for note in body.get("notes") or [])
     return "\n".join(lines)
+
+
+def load_rebalance(*, now: str, root: Path | None = None, force: bool = False) -> str:
+    """The rebalancing proposal over the last fire (``holdings_board --rebalance``), for Thomas's terminal only.
+    Names instruments and amounts: never route it to a door, a channel or a model prompt."""
+    body = _read_json(local_path(root))
+    held = _read_json(positions_path(root))
+    try:
+        entries = classification.load(state_dir(root))
+        candidates = dict(entries.candidates)
+    except ToolError:
+        candidates = {}
+    age = _age_seconds(body.get("as_of"), now) if body else None
+    # The board and the positions must come from one fire; a mismatch is a fire that wrote one and not the other.
+    rows = held.get("positions") if held and body and held.get("as_of") == body.get("as_of") else None
+    result = rebalance.plan_from_local(body, positions=rows, candidates=candidates, age_seconds=age,
+                                       stale_after_seconds=STALE_AFTER_SECONDS, force=force)
+    return "\n".join(rebalance.render(result, as_of=(body or {}).get("as_of")))
 
 
 def load_snapshot_status(*, now: str, root: Path | None = None) -> dict[str, Any]:

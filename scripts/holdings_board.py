@@ -10,6 +10,8 @@
     python -m scripts.holdings_board --unclassify binance:SOL
     python -m scripts.holdings_board --cash-flow-cutover 2026-10-09T04:30:00Z   # once, at H6b activation
     python -m scripts.holdings_board --flows                        # H6 exceptions, terminal only (H6d-min)
+    python -m scripts.holdings_board --rebalance [--force]          # the rebalancing plan, terminal only
+    python -m scripts.holdings_board --approve-candidates bonds=toss:domestic:A,toss:domestic:B   # Thomas
     python -m scripts.holdings_board --resolve KEY --kind deposit --by thomas --reason "..."   # terminal only
     python -m scripts.holdings_board --semantics-epoch --change-ref "#1203" --by thomas --reason "..."
     python -m scripts.holdings_board --toss-continuity              # do the Toss windows tile the stretch since the cutover
@@ -110,7 +112,9 @@ from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, force_utf8_io 
 from runtime.mvp_runtime.errors import MvpRuntimeError, ToolError  # noqa: E402
 from runtime.mvp_runtime.holdings import classification, combined  # noqa: E402
 from runtime.mvp_runtime.holdings.board import render_full  # noqa: E402
-from runtime.mvp_runtime.holdings.store import load_holdings_view, load_local_view, state_dir  # noqa: E402
+from runtime.mvp_runtime.holdings.store import (  # noqa: E402
+    load_holdings_view, load_local_view, load_rebalance, state_dir,
+)
 from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run  # noqa: E402
 from runtime.mvp_runtime.holdings.toss_account import read_holdings  # noqa: E402
 
@@ -142,9 +146,14 @@ def main(argv: list[str] | None = None) -> int:
                       help="start a new Toss semantics epoch after a reconciliation change (Thomas, terminal only)")
     mode.add_argument("--toss-continuity", action="store_true",
                       help="whether the Toss windows tile the stretch since the cutover (C7 D2; terminal only)")
+    mode.add_argument("--rebalance", action="store_true",
+                      help="the rebalancing proposal over the last fire (REBALANCING_PROPOSAL; terminal only)")
+    mode.add_argument("--approve-candidates", metavar="CLASS=ID[,ID...]",
+                      help="the 3-4 instruments the calculator may buy for a class; CLASS= withdraws (Thomas)")
     mode.add_argument("--adopt-ledger", action="store_true",
                       help="adopt a ledger the checkpoint refuses, in two runs (C7 PR-C; Thomas, terminal only)")
     parser.add_argument("--confirm", help="the 8 characters the first --adopt-ledger run printed (step two)")
+    parser.add_argument("--force", action="store_true", help="plan even with no class outside its band (--rebalance)")
     parser.add_argument("--kind", help="what the exception was (--resolve; --flows lists the allowed kinds)")
     parser.add_argument("--change-ref", help="the merged reconciliation change, #<PR> or a commit (--semantics-epoch)")
     parser.add_argument("--migrate", action="store_true", help="move an existing cutover (--cash-flow-cutover)")
@@ -223,6 +232,28 @@ def main(argv: list[str] | None = None) -> int:
         if snapshot is not None:
             print(LIVE_READ_NOTICE)
         if snapshot is None and reason_code != "NOT_CONFIGURED":
+            return EXIT_BLOCKED
+        return EXIT_OK
+
+    if args.approve_candidates is not None:
+        try:
+            assert_not_foreign_root_run()
+            asset_class, sep, ids = args.approve_candidates.partition("=")
+            if not sep:
+                raise ToolError(classification.CLASSIFICATION_REFUSED, "expected CLASS=ID[,ID...]")
+            chosen = [i.strip() for i in ids.split(",") if i.strip()]
+            result = classification.set_candidates(state_dir(), asset_class.strip(), chosen)
+        except MvpRuntimeError as exc:
+            print(f"refused ({exc.reason_code}): {exc}")
+            return EXIT_BLOCKED
+        print(f"candidates for {asset_class.strip()}: {len(chosen)} (mapping_version {result.mapping_version})")
+        return EXIT_OK
+
+    if args.rebalance:
+        try:
+            print(load_rebalance(now=timeutil.utc_now_iso(), force=args.force))
+        except ToolError as exc:
+            print(f"rebalance   : local board unreadable ({exc.reason_code})")
             return EXIT_BLOCKED
         return EXIT_OK
 

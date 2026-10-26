@@ -1015,3 +1015,21 @@ def test_rule_classified_flows_are_told_by_direction_and_count_after_delivery(mo
     assert "h6 rule flows told" in _fire(tmp_path) and told == ["tok"]
     (text,) = [t for t in sent if "quiet_window" in t]
     assert "입금 1건" in text and "출금 0건" in text and "원" not in text
+
+
+def test_the_fire_writes_its_positions_to_their_own_local_file(monkeypatch, gate_open, tmp_path):
+    """REBALANCING_PROPOSAL RB1: `--rebalance` needs each holding, and the board and the snapshot carry none.
+    The positions go to their own file, from the same fire (its `as_of`); the snapshot and the local board stay
+    free of any symbol (the test above)."""
+    from runtime.mvp_runtime.holdings import classification as cl
+
+    _toss(monkeypatch)
+    cl.apply(store.state_dir(tmp_path), assign={"toss:domestic:005930": "domestic_equity"}, now=NOW)
+    store.refresh_snapshot(now=NOW, root=tmp_path)
+    held = json.loads(store.positions_path(tmp_path).read_text(encoding="utf-8"))
+    local = json.loads(store.local_path(tmp_path).read_text(encoding="utf-8"))
+    assert held["as_of"] == local["as_of"]
+    assert any(row["instrument"] == "toss:domestic:005930" and row["asset_class"] == "domestic_equity"
+               for row in held["positions"])
+    for path in (store.snapshot_path(tmp_path), store.local_path(tmp_path)):
+        assert "005930" not in path.read_text(encoding="utf-8")

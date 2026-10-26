@@ -51,6 +51,7 @@ DENIED = [
     ("Bash", "head holdings_cash_flow_state.json"),
     ("Bash", "wc -l holdings_cash_flows.jsonl"),
     ("Bash", "cat holdings_classification.json"),
+    ("Bash", "jq .positions holdings_positions.json"),
     ("Bash", "cat .runtime_governance_state/*/holdings_x"),
     ("Bash", "ls .runtime_governance_state/h*"),
     ("Bash", "grep -r usd .runtime_governance_state"),
@@ -231,7 +232,9 @@ def test_without_the_guard_the_wrapper_still_refuses_a_holdings_reference(tmp_pa
 TERMINAL_ONLY = ("--full", "--local", "--unclassified", "--classify binance:X=coin", "--unclassify binance:X",
                  "--reset-peak --reason r", "--cash-flow-cutover 2026-10-09T00:00:00Z", "--flows",
                  "--resolve pay:x --kind deposit", "--semantics-epoch --change-ref '#1'", "--toss-continuity",
-                 "--adopt-ledger --by t --reason r --confirm 1a2b3c4d")
+                 "--adopt-ledger --by t --reason r --confirm 1a2b3c4d",
+                 # REBALANCING_PROPOSAL (2026-10-26): the plan names instruments and amounts; approving names them.
+                 "--rebalance", "--approve-candidates bonds=toss:domestic:X")
 
 
 def _board_modes() -> set[str]:

@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **665** distinct codes across **1322** raise sites
+- **665** distinct codes across **1326** raise sites
 - **22** exception classes carry them
 - **66** codes are raised from more than one module (see below)
 - **162** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -534,7 +534,11 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `HOLDINGS_CLASSIFICATION_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/classification.py` | `apply` | `code not in CURRENCIES` |
 | `HOLDINGS_CLASSIFICATION_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/classification.py` | `apply` | `instrument not in assign` |
 | `HOLDINGS_CLASSIFICATION_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/classification.py` | `apply` | `not _valid_id(instrument)` |
+| `HOLDINGS_CLASSIFICATION_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/classification.py` | `set_candidates` | `asset_class not in ASSIGNABLE_CLASSES - {'cash', 'coin'}` |
+| `HOLDINGS_CLASSIFICATION_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/classification.py` | `set_candidates` | `len(instruments) > MAX_CANDIDATES or len(set(instruments)) != len(instruments)` |
+| `HOLDINGS_CLASSIFICATION_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/classification.py` | `set_candidates` | `not all((i.startswith('toss:') and _valid_id(i) for i in instruments))` |
 | `HOLDINGS_CLASSIFICATION_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/holdings/classification.py` | `load` | `—` |
+| `HOLDINGS_CLASSIFICATION_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/holdings/classification.py` | `load` | `asset_class not in ASSIGNABLE_CLASSES or not isinstance(ids, list) or (not all((isinstance(i, s…` |
 | `HOLDINGS_CLASSIFICATION_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/holdings/classification.py` | `load` | `not _valid_id(str(instrument)) or asset_class not in ASSIGNABLE_CLASSES or (currency is not Non…` |
 | `HOLDINGS_CLASSIFICATION_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/holdings/classification.py` | `load` | `not isinstance(body, dict) or body.get('record_type') != RECORD_TYPE` |
 | `HOLDINGS_CLASSIFICATION_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/holdings/classification.py` | `load` | `not isinstance(version, int) or version < 0` |
