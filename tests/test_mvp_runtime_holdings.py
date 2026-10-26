@@ -987,3 +987,31 @@ def test_h6_readiness_is_told_once_and_only_after_delivery(monkeypatch, gate_ope
     assert _fire(tmp_path).endswith("h6 readiness told")
     assert len(sent) == 1 and "H6b_shadow_ready" in sent[0] and "자동으로 켜지지 않습니다" in sent[0]
     assert "h6 readiness" not in _fire(tmp_path) and len(sent) == 1
+
+
+def test_rule_classified_flows_are_told_by_direction_and_count_after_delivery(monkeypatch, gate_open, tmp_path,
+                                                                                clean_wallet):
+    """F2 (Thomas 2026-10-26): the quiet-window rule's flows reach Telegram as a direction and a count, never an
+    amount, and are marked told only once the message was delivered."""
+    from runtime.mvp_runtime.errors import OperatorBlocked
+    from runtime.mvp_runtime.holdings import cash_flows
+
+    _binance_file(tmp_path, margin=100.0, monkeypatch=monkeypatch)
+    _toss(monkeypatch)
+    told = []
+    monkeypatch.setattr(cash_flows, "rule_flows_untold",
+                        lambda state_dir: (None, {}) if told else ("tok", {"deposit": 1, "withdrawal": 0}))
+    monkeypatch.setattr(cash_flows, "mark_rule_flows_told",
+                        lambda state_dir, *, token, now: told.append(token))
+    monkeypatch.setattr(operator_mod, "select_operator_channel", lambda **_kw: "channel")
+
+    def down(channel, text, **_kw):
+        raise OperatorBlocked("CHANNEL_DOWN", "down")
+
+    monkeypatch.setattr(operator_mod, "notify_operator", down)
+    assert "h6 rule flows not sent:CHANNEL_DOWN" in _fire(tmp_path) and told == []
+    sent = []
+    monkeypatch.setattr(operator_mod, "notify_operator", lambda channel, text, **_kw: sent.append(text))
+    assert "h6 rule flows told" in _fire(tmp_path) and told == ["tok"]
+    (text,) = [t for t in sent if "quiet_window" in t]
+    assert "입금 1건" in text and "출금 0건" in text and "원" not in text

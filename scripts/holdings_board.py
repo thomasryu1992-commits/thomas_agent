@@ -263,7 +263,8 @@ def _exceptions(args: argparse.Namespace) -> int:
             for row in rows:
                 print(f"  {row['review']:6} {row['phase']:12} {row['category']:18} {row['direction'] or '-':3} "
                       f"{row['key']}  allowed: {', '.join(row['allowed']) or 'none'}"
-                      + (f"  closed as: {row['kind']}" if row["kind"] else ""))
+                      + (f"  closed as: {row['kind']}" if row["kind"] else "")
+                      + (f" (by {row['closed_by']})" if row.get("closed_by") else ""))
             return EXIT_OK
         assert_not_foreign_root_run()
         if args.resolve:

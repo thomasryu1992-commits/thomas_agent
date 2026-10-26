@@ -1460,6 +1460,15 @@ def _execute(
             else:
                 holdings_store.mark_exceptions_told(token, now=now, root=repo_root)
                 status = f"{status}; h6 exceptions told"
+        # Toss flows the quiet-window rule classified (Thomas 2026-10-26, F2): direction and count, told once.
+        if result.get("rule_flow_alert"):
+            token, text = result["rule_flow_alert"]
+            failure = _tell(text)
+            if failure:
+                status = f"{status}; h6 rule flows not sent:{failure}"
+            else:
+                holdings_store.mark_rule_flows_told(token, now=now, root=repo_root)
+                status = f"{status}; h6 rule flows told"
         # C7 PR-D (HOLDINGS_LEDGER_CHECKPOINT_V0.1.md §6): a ledger or state every writer refuses is judged
         # on its own, read-only, whatever refresh returned above — an early return still reaches this. Told
         # once per failure and once when it clears; the told file moves only after delivery, and a told

@@ -520,12 +520,12 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `HOLDINGS_CASH_FLOW_LEDGER_TAMPERED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `load_state` | `not isinstance(body, dict)` |
 | `HOLDINGS_CASH_FLOW_LEDGER_TAMPERED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `refuse` | `—` |
 | `HOLDINGS_CASH_FLOW_RESOLVE_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `resolve` | `not written` |
-| `HOLDINGS_CASH_FLOW_RESOLVE_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `rows` | `target in resolutions(existing)` |
+| `HOLDINGS_CASH_FLOW_RESOLVE_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `rows` | `current is not None and (not overriding)` |
 | `HOLDINGS_CASH_FLOW_RESOLVE_INVALID_TARGET` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `rows` | `row.get('accounting_status') == 'APPLIED'` |
 | `HOLDINGS_CASH_FLOW_RESOLVE_INVALID_TARGET` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `rows` | `row.get('event') not in EXCEPTION_EVENTS` |
 | `HOLDINGS_CASH_FLOW_RESOLVE_KIND_NOT_ALLOWED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `resolve` | `kind not in ALL_KINDS` |
 | `HOLDINGS_CASH_FLOW_RESOLVE_KIND_NOT_ALLOWED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `rows` | `kind not in allowed` |
-| `HOLDINGS_CASH_FLOW_RESOLVE_NOT_OPEN` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `rows` | `target not in open_exceptions(existing)` |
+| `HOLDINGS_CASH_FLOW_RESOLVE_NOT_OPEN` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `rows` | `not overriding and target not in open_exceptions(existing)` |
 | `HOLDINGS_CASH_FLOW_RESOLVE_NO_TARGET` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `rows` | `not matches` |
 | `HOLDINGS_CASH_FLOW_RESOLVE_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `resolve` | `not (requested_by or '').strip() or not (reason or '').strip()` |
 | `HOLDINGS_CASH_FLOW_RESOLVE_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `resolve` | `not interactive` |

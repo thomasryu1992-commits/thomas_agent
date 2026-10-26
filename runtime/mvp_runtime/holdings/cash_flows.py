@@ -1127,21 +1127,28 @@ def resolve(state_dir: Path, *, target: str, kind: str, reason: str, requested_b
         row = matches[0]
         if row.get("event") not in EXCEPTION_EVENTS:
             raise ToolError(RESOLVE_INVALID_TARGET, f"a {row.get('event')} line is not an event to resolve")
-        if target in resolutions(existing):
+        current = resolutions(existing).get(target)
+        # A rule's resolution (``QUIET_WINDOW_RULE``) is Thomas's to re-close, once; his own never is.
+        overriding = current is not None and str(current.get("requested_by") or "").startswith("rule:")
+        if current is not None and not overriding:
             raise ToolError(RESOLVE_DUPLICATE, "that event is already resolved")
         if row.get("accounting_status") == "APPLIED":
             raise ToolError(RESOLVE_INVALID_TARGET, "an applied event is not resolved this way")
-        if target not in open_exceptions(existing):
+        if not overriding and target not in open_exceptions(existing):
             raise ToolError(RESOLVE_NOT_OPEN, "that event does not block the readiness (before the cutover, "
                                               "or not held)")
         allowed = _allowed_kinds(row, existing)
         if kind not in allowed:
             raise ToolError(RESOLVE_KIND, f"{kind!r} is not allowed here; allowed: {', '.join(allowed) or 'none'}")
-        return [{"event": EVENT_RESOLVED, "source": "ledger", "source_event_key": f"resolved:{target}",
-                 "resolves": target, "target_event": row.get("event"), "category": exception_category(row, existing),
-                 "kind": kind, "reason": reason.strip(), "requested_by": requested_by.strip(), "timestamp": now,
-                 "review_status": "CLOSED", "evidence_status": "NOT_VALIDATED",
-                 "accounting_eligibility": "NOT_ELIGIBLE"}]
+        line = {"event": EVENT_RESOLVED, "source": "ledger",
+                "source_event_key": f"resolved:{target}" + (":override" if overriding else ""),
+                "resolves": target, "target_event": row.get("event"), "category": exception_category(row, existing),
+                "kind": kind, "reason": reason.strip(), "requested_by": requested_by.strip(), "timestamp": now,
+                "review_status": "CLOSED", "evidence_status": "NOT_VALIDATED",
+                "accounting_eligibility": "NOT_ELIGIBLE"}
+        if overriding:
+            line["supersedes"] = current.get("source_event_key")
+        return [line]
 
     written = [r for r in _commit(state_dir, now=now, rows=rows) if r.get("event") == EVENT_RESOLVED]
     if not written:      # the unique check dropped it: a concurrent resolution got there first
@@ -1156,12 +1163,16 @@ def flows_view(state_dir: Path) -> list[dict[str, Any]]:
     at = cutover_at(rows)
     cutover_ms = _iso_ms(at) if at else None
     life = lifecycle(rows)
+    closed = resolutions(rows)
     out = []
     for key, row in detected_exceptions(rows).items():
         sign = _canon(row.get("residual")) if row.get("event") == EVENT_TOSS_RESIDUAL else None
+        by = str((closed.get(key) or {}).get("requested_by") or "")
         out.append({"key": key, "event": row.get("event"), "category": life[key]["category"],
                     "phase": event_phase(row, cutover_ms), "review": life[key]["review"],
                     "kind": life[key]["kind"], "allowed": list(_allowed_kinds(row, rows)),
+                    # Who closed it: a rule's resolution is Thomas's to re-close once (``resolve``).
+                    "closed_by": None if not by else "rule" if by.startswith("rule:") else "thomas",
                     "direction": row.get("direction") or (None if sign is None else "in" if sign > 0 else "out")})
     return out
 
@@ -1511,6 +1522,44 @@ class _Moved(Exception):
     """The Toss cash point changed between the read and the commit."""
 
 
+# Toss deposits and withdrawals by rule (HOLDINGS_STATUS_READ_AND_AUTO_FLOWS F1 A, Thomas 2026-10-26). Toss has no
+# cash-ledger endpoint (re-read 2026-10-26), so a residual's meaning can only come from the window's shape. A
+# window that holds nothing but a round KRW change is closed as a deposit or withdrawal in the same write that
+# records it, by this rule rather than by Thomas; anything else stays an exception for his terminal. Thomas can
+# re-close a rule's resolution once (:func:`resolve`), e.g. as income.
+QUIET_WINDOW_RULE = "rule:quiet_window.v1"
+QUIET_WINDOW_STEP_KRW = 1000
+
+
+def quiet_window_kind(result: Mapping[str, Any], *, truncated: bool) -> str | None:
+    """``deposit`` / ``withdrawal`` for a quiet window's round KRW residual, else None.
+
+    Quiet: no fill on either side of either pocket, no settlement, no exchange pair, an untruncated and stable
+    order read, the KRW pocket open and the USD pocket untouched (a US dividend lands in USD). Round: a whole,
+    non-zero multiple of 1,000 KRW — a withheld domestic dividend rarely is. Pure, like ``reconcile_window``."""
+    if truncated or result.get("exchange") or result.get("identity_stable") is not True or result.get("settlements"):
+        return None
+    for side in ("buy", "sell"):
+        if any((result.get(side) or {}).get(pocket) for pocket in ("KRW", "USD")):
+            return None
+    opened, residual = result.get("open") or {}, result.get("residual") or {}
+    if not opened.get("KRW") or opened.get("USD") or abs(float(residual.get("USD") or 0.0)) >= 0.005:
+        return None
+    krw = float(residual.get("KRW") or 0.0)
+    whole = round(krw)
+    if whole == 0 or abs(krw - whole) >= 0.5 or whole % QUIET_WINDOW_STEP_KRW:
+        return None
+    return "deposit" if whole > 0 else "withdrawal"
+
+
+def _rule_resolution(target: str, kind: str, *, now: str) -> dict[str, Any]:
+    return {"event": EVENT_RESOLVED, "source": "ledger", "source_event_key": f"resolved:{target}",
+            "resolves": target, "target_event": EVENT_TOSS_RESIDUAL, "category": CATEGORY_TOSS, "kind": kind,
+            "reason": "quiet window: no fill, settlement or exchange; KRW only; a whole multiple of 1,000 KRW",
+            "requested_by": QUIET_WINDOW_RULE, "timestamp": now, "review_status": "CLOSED",
+            "evidence_status": "NOT_VALIDATED", "accounting_eligibility": "NOT_ELIGIBLE"}
+
+
 def _toss_rows(existing: list[dict[str, Any]], previous: Mapping[str, Any], current: Mapping[str, Any],
                orders: list[Mapping[str, Any]], truncated: bool, query: Mapping[str, str], *, rate: float | None,
                now: str) -> list[dict[str, Any]]:
@@ -1538,6 +1587,9 @@ def _toss_rows(existing: list[dict[str, Any]], previous: Mapping[str, Any], curr
                             "residual": f"{residual[pocket]:.{0 if pocket == 'KRW' else 2}f}",
                             "orders_truncated": bool(truncated), "source_confidence": UNRESOLVED,
                             "valuation_status": UNVALUED, "accounting_status": "SHADOW_ONLY"})
+        kind = quiet_window_kind(result, truncated=bool(truncated))
+        if kind is not None:
+            out.append(_rule_resolution(f"toss:residual:KRW:{window}", kind, now=now))
     if not truncated:
         out.extend(_amendments(existing, orders))
     return out
@@ -2025,6 +2077,43 @@ def mark_exceptions_told(state_dir: Path, *, token: str | None, now: str) -> Non
     with _state_lock(state_dir):
         state = load_state(state_dir)
         owed = state.setdefault("exceptions", {})
+        keys = (owed.get("pending") or {}).pop(str(token), None)
+        if keys:
+            owed["told_keys"] = sorted(set(owed.get("told_keys") or []) | set(keys))
+            owed["told_at"] = now
+        _save_state(state_dir, state)
+
+
+def rule_flows_untold(state_dir: Path) -> tuple[str | None, dict[str, int]]:
+    """The Toss flows ``QUIET_WINDOW_RULE`` closed and Thomas was not yet told of (F2: direction and count only).
+
+    A rule resolution Thomas has since re-closed is no longer the rule's and is not told. The untold set is
+    pinned under a token, like the exceptions' (:func:`mark_rule_flows_told` records it once delivered), so a
+    flow found while the message was in flight is still told."""
+    rows = verify(state_dir)
+    current = resolutions(rows)
+    ruled = {_key_digest(key): line["kind"] for key, line in current.items()
+             if line.get("requested_by") == QUIET_WINDOW_RULE}
+    with _state_lock(state_dir):
+        state = load_state(state_dir)
+        owed = state.setdefault("rule_flows", {})
+        untold = sorted(set(ruled) - set(owed.get("told_keys") or []))
+        if not untold:
+            return None, {}
+        token = hashlib.sha256("|".join(untold).encode("utf-8")).hexdigest()[:16]
+        owed.setdefault("pending", {})[token] = untold
+        _save_state(state_dir, state)
+    counts = {"deposit": 0, "withdrawal": 0}
+    for digest in untold:
+        counts[ruled[digest]] = counts.get(ruled[digest], 0) + 1
+    return token, counts
+
+
+def mark_rule_flows_told(state_dir: Path, *, token: str | None, now: str) -> None:
+    """Record the rule flows one delivered message named."""
+    with _state_lock(state_dir):
+        state = load_state(state_dir)
+        owed = state.setdefault("rule_flows", {})
         keys = (owed.get("pending") or {}).pop(str(token), None)
         if keys:
             owed["told_keys"] = sorted(set(owed.get("told_keys") or []) | set(keys))
