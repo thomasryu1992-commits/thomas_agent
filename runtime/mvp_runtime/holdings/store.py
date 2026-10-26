@@ -46,6 +46,7 @@ from ..errors import MvpRuntimeError, ToolError
 from ..filelock import locked
 from ..paths import repo_root as _repo_root
 from . import allocation, binance_wallet, cash_flows, classification, combined, disclosure, overseas_gain, rebalance
+from . import candidates as candidates_mod
 from .board import aggregate_view, render_view
 from .toss_account import MARKET_OVERSEAS, TossHoldingsFeed, read_holdings, select_holdings_feed
 
@@ -195,7 +196,7 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
     # ledger and — because the transfers are then unknown — its coherence, never the Toss snapshot.
     transfers: list[int] | None = ()
     flows_note = None
-    readiness_alert = exception_alert = rule_flow_alert = band_alert = None
+    readiness_alert = exception_alert = rule_flow_alert = band_alert = candidate_alert = None
     binance_ok = toss_ok = False      # a verified fire needs both (H6b readiness-hardening)
     flow_feed = binance_wallet.select_wallet_feed() if wallet is not None else None
     if isinstance(flow_feed, binance_wallet.BinanceWalletFeed):
@@ -256,6 +257,11 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
     except Exception:  # noqa: BLE001 — the calculator's input must not cost the board
         pass
     try:
+        if isinstance(feed, TossHoldingsFeed):
+            refresh_auto_candidates(feed, now=now, root=root)
+    except Exception:  # noqa: BLE001 — a failed screen keeps the last pick; the next fire tries again
+        pass
+    try:
         flows = cash_flows.summary(state_dir(root))
         # H6d-min §11: readiness judges this fire's health, never a past PASS — every history read, the
         # Toss pass ended, and the combined NAV's own freshness and coherence held.
@@ -296,8 +302,9 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
         body.setdefault("cash_flows", {"mode": cash_flows.ACCOUNTING_MODE})["error"] = flows_note
     try:
         band_alert = band_notice(body, now=now, root=root)
+        candidate_alert = candidate_notice(root)
     except Exception:  # noqa: BLE001 — a notice must not cost the board; the next fire offers it again
-        band_alert = None
+        band_alert = candidate_alert = None
     # H3: the doors get one table under the single-holding rule; the whole fire goes to the local file.
     # Without the allocation's makeup there is no table to judge, so nothing leaves but status words.
     try:
@@ -322,7 +329,88 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
         edge = combined.alert(outward["combined"], told=combined.read_told(state_dir(root)), as_of=body["as_of"])
     return {"status": f"holdings snapshot: refreshed; {combined_note}", "alert": edge,
             "readiness_alert": readiness_alert, "exception_alert": exception_alert,
-            "rule_flow_alert": rule_flow_alert, "band_alert": band_alert}
+            "rule_flow_alert": rule_flow_alert, "band_alert": band_alert,
+            "candidate_alert": candidate_alert}
+
+
+AUTO_CANDIDATES_FILENAME = "holdings_auto_candidates.json"
+AUTO_CANDIDATES_RECORD_TYPE = "holdings_auto_candidates.v1"
+
+
+def auto_candidates_path(root: Path | None = None) -> Path:
+    """RB2'': the fire's own pick per class (instrument ids, LOCAL_ONLY). Thomas's ``--approve-candidates`` lists
+    live in the classification file and win for their class; this file never holds his choice."""
+    return state_dir(root) / AUTO_CANDIDATES_FILENAME
+
+
+def effective_candidates(root: Path | None = None) -> dict[str, list[str]]:
+    """What the calculator buys into: Thomas's list where he set one, the automatic pick everywhere else."""
+    auto = (_read_json(auto_candidates_path(root)) or {}).get("candidates") or {}
+    try:
+        manual = dict(classification.load(state_dir(root)).candidates)
+    except ToolError:
+        manual = {}
+    return {**{cls: list(ids) for cls, ids in auto.items() if ids}, **manual}
+
+
+def refresh_auto_candidates(feed: Any, *, now: str, root: Path | None = None, sleep: Any = None) -> str | None:
+    """RB2'' (Thomas 2026-10-26): screen again once a KST month, and at once when an automatic pick is no longer
+    ACTIVE on Toss. A class Thomas set is never screened over; a class the screen finds nothing for keeps its last
+    pick. Returns the trigger it acted on, or None. A failed read changes nothing; the next fire tries again."""
+    path = auto_candidates_path(root)
+    body = _read_json(path) or {}
+    month = overseas_gain.kst_day(now)[:7]
+    try:
+        manual = dict(classification.load(state_dir(root)).candidates)
+    except ToolError:
+        return None                       # an unreadable classification file is Thomas's to fix first
+    auto = {cls: list(ids) for cls, ids in (body.get("candidates") or {}).items()}
+    watched = sorted({i for ids in auto.values() for i in ids} | {i for ids in manual.values() for i in ids})
+    status: dict[str, str] = {}
+    if watched:
+        for row in feed.stock_info([i.split(":")[2] for i in watched]):
+            status[str(row.get("symbol"))] = str(row.get("status") or "")
+    # Only an explicit non-ACTIVE status counts: a row the answer leaves out is not evidence of a delisting.
+    untradable = sorted(i for i in watched if status.get(i.split(":")[2], "ACTIVE") != "ACTIVE")
+    manual_ids = {i for ids in manual.values() for i in ids}
+    trigger = ("monthly" if body.get("screened_month") != month
+               else "untradable" if any(i not in manual_ids for i in untradable) else None)
+    if trigger is not None:
+        ranked, _ = candidates_mod.collect(feed, **({"sleep": sleep} if sleep else {}))
+        picks = candidates_mod.auto_picks(ranked)
+        auto = {cls: (ids or auto.get(cls, [])) for cls, ids in picks.items() if cls not in manual}
+        body.update({"screened_at": now, "screened_month": month, "trigger": trigger,
+                     "kept": sorted(cls for cls, ids in picks.items() if not ids and cls not in manual)})
+    body.update({"record_type": AUTO_CANDIDATES_RECORD_TYPE, "candidates": auto,
+                 "manual_untradable": sorted(i for i in untradable if i in manual_ids)})
+    _write_json(path, body, code="HOLDINGS_AUTO_CANDIDATES_LOCKED", label="holdings auto candidates")
+    return trigger
+
+
+def candidate_notice(root: Path | None = None) -> tuple[str, str] | None:
+    """The Telegram line for a new automatic pick or a manual pick that stopped trading: counts only, never an
+    instrument. (token, text) until :func:`mark_candidates_told` records the token."""
+    body = _read_json(auto_candidates_path(root)) or {}
+    if not body.get("screened_at"):
+        return None
+    bad = body.get("manual_untradable") or []
+    token = f"{body['screened_at']}|{len(bad)}"
+    if body.get("told_token") == token:
+        return None
+    label = {"monthly": "월 점검", "untradable": "거래 불가 후보 교체"}.get(body.get("trigger"), "갱신")
+    text = (f"[보유 자산] 리밸런싱 후보 자동 선정({label}) — 자산군 {len(body.get('candidates') or {})}개"
+            + (f", 찾지 못해 이전 후보 유지 {len(body['kept'])}개" if body.get("kept") else "") + ".")
+    if bad:
+        text += f" 수동 지정 후보 중 거래 불가 {len(bad)}개 — 수동 지정을 지우면 자동 선정으로 바뀝니다."
+    return token, text
+
+
+def mark_candidates_told(token: str, *, now: str, root: Path | None = None) -> None:
+    """Record that the candidate notice ``token`` names was delivered — only after delivery."""
+    body = _read_json(auto_candidates_path(root)) or {}
+    body.update({"told_token": token, "told_at": now})
+    _write_json(auto_candidates_path(root), body, code="HOLDINGS_AUTO_CANDIDATES_LOCKED",
+                label="holdings auto candidates")
 
 
 BAND_NOTICE_FILENAME = "holdings_band_notice.json"
@@ -460,11 +548,7 @@ def load_rebalance(*, now: str, root: Path | None = None, force: bool = False) -
     Names instruments and amounts: never route it to a door, a channel or a model prompt."""
     body = _read_json(local_path(root))
     held = _read_json(positions_path(root))
-    try:
-        entries = classification.load(state_dir(root))
-        candidates = dict(entries.candidates)
-    except ToolError:
-        candidates = {}
+    candidates = effective_candidates(root)
     age = _age_seconds(body.get("as_of"), now) if body else None
     # The board and the positions must come from one fire; a mismatch is a fire that wrote one and not the other.
     rows = held.get("positions") if held and body and held.get("as_of") == body.get("as_of") else None

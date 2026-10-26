@@ -1035,6 +1035,18 @@ def test_the_fire_asks_for_the_monthly_band_notice_over_its_own_allocation(monke
     assert "allocation" in body and kw == {"now": NOW, "root": tmp_path}
 
 
+def test_the_fire_runs_the_automatic_candidate_pick_and_returns_its_notice(monkeypatch, gate_open, tmp_path):
+    """RB2'': the refresh hands its Toss feed to the automatic pick and returns the candidate notice."""
+    _toss(monkeypatch)
+    seen = []
+    monkeypatch.setattr(store, "refresh_auto_candidates", lambda feed, **kw: seen.append((feed, kw)))
+    monkeypatch.setattr(store, "candidate_notice", lambda root: ("tok", "notice"))
+    result = store.refresh(now=NOW, root=tmp_path)
+    assert result["candidate_alert"] == ("tok", "notice")
+    (feed, kw), = seen
+    assert isinstance(feed, TossHoldingsFeed) and kw == {"now": NOW, "root": tmp_path}
+
+
 def test_the_fire_writes_its_positions_to_their_own_local_file(monkeypatch, gate_open, tmp_path):
     """REBALANCING_PROPOSAL RB1: `--rebalance` needs each holding, and the board and the snapshot carry none.
     The positions go to their own file, from the same fire (its `as_of`); the snapshot and the local board stay

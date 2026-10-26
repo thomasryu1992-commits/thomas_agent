@@ -1,30 +1,34 @@
-"""The candidate screening report (REBALANCING_PROPOSAL §2.7, RB2', Thomas 2026-10-26).
+"""Rebalancing candidates, picked automatically (REBALANCING_PROPOSAL §2.7; RB2'' Thomas 2026-10-26).
 
-Once per class, not per rebalance: this lists the ETFs Toss trades that fit each class's decided exposure, with
-the criteria Toss can answer for. Thomas picks three or four and approves them (``holdings_board
---approve-candidates``); the calculator then buys inside that list only.
+RB2'' replaced "Thomas approves 3-4 per class" with an automatic pick: once a month, and at once when a pick
+stops trading, the holdings fire screens the ETFs Toss trades and keeps, per class, the three with the highest
+20-session trading value; bonds keep three Korean 3y plus one unhedged US 7-10y, so the calculator's even fill
+holds the decided quarter. ``holdings_board --approve-candidates`` stays as Thomas's override for a class, and
+the automatic pick never touches a class he set.
 
 **The exposures are already decided** (TOTAL_ASSET_ALLOCATION_V0.1):
-- global equity: a broad index, held as a US-listed ETF in the ordinary account (§8.4: overseas direct, to use
-  the 2.5M deduction);
+- global equity: a global index ("글로벌 지수, 환노출"), held as a US-listed ETF in the ordinary account (§8.4:
+  overseas direct, to use the 2.5M deduction). A US-only index such as the S&P 500 is not a global one;
 - domestic equity: the KOSPI 200, as a domestic equity ETF (gain tax-free);
 - bonds: Korean 3-year government bonds at the centre; a quarter in US Treasuries 7-10y, unhedged, as a
   domestic-listed ETF (D-A, 2026-10-20);
 - gold: a Toss-traded gold ETF (Q3).
 
 **What Toss cannot say.** There is no index, hedge or expense-ratio field (``openapi.json`` v1.2.24,
-``StockInfo``). Exposure is matched by name, the hedge by Korea's "(H)" naming convention, and the expense
-ratio is left for Thomas to read off the issuer's page. The match is a shortlist, never a verdict.
+``StockInfo``). Exposure is matched by name, the hedge by Korea's "(H)" naming convention, and the expense ratio
+is not a criterion. Toss's listing holds only what Toss trades (``/api/v1/stocks/all``).
 
-**Pure.** The script (``scripts/rebalance_candidates.py``) does the reads. The rows are raw market data: Toss's
-terms allow the investor's own use only, so the report is for Thomas's terminal, never a model prompt.
+:func:`pool`, :func:`rank`, :func:`auto_picks` and :func:`render` are pure; :func:`collect` does the paced reads
+through the feed it is handed. The rows are raw market data: Toss's terms allow the investor's own use only, so
+they stay in the process, and only the picked instrument ids are written (a local file).
 """
 
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from . import allocation
 from .rebalance import TAX_FREE, TAXED_DIVIDEND, OVERSEAS, Position, tax_kind
@@ -32,11 +36,12 @@ from .rebalance import TAX_FREE, TAXED_DIVIDEND, OVERSEAS, Position, tax_kind
 KR_MARKETS = ("KOSPI", "KOSDAQ", "KR_ETC")
 US_MARKETS = ("NYSE", "NASDAQ", "AMEX")
 LIQUIDITY_DAYS = 20
-# A shortlist bound: the reads per candidate are one info row and one candle page.
-POOL_LIMIT = 40
+# A shortlist bound per rule: the reads per candidate are one info row and one candle page.
+POOL_LIMIT = 80
 SHOWN = 4
+PICKS = 3
 
-_ALWAYS_OUT = re.compile(r"레버리지|인버스|커버드콜|covered call|\b[23]x\b|ultra|bear|short|2배|3배", re.I)
+_ALWAYS_OUT = re.compile(r"레버리지|인버스|커버드콜|covered call|buywrite|\b[23]x\b|ultra|bear|short|2배|3배", re.I)
 HEDGED = re.compile(r"\(H\)|hedged|헤지", re.I)
 
 
@@ -47,19 +52,23 @@ class Rule:
     label: str
     markets: tuple[str, ...]
     match: re.Pattern[str]
+    out: re.Pattern[str] | None = None     # what the name match lets through but the exposure is not
 
 
 RULES = (
-    Rule(allocation.GLOBAL_EQUITY, "global_equity", "US-listed broad index ETF (S&P 500, total world, ACWI)",
-         US_MARKETS, re.compile(r"s&p\s?500|total world|all[- ]?world|all[- ]?country|acwi|total (stock|us) market|"
-                                r"토탈\s?월드|전세계", re.I)),
+    Rule(allocation.GLOBAL_EQUITY, "global_equity", "US-listed global index ETF (total world, ACWI, all-world)",
+         US_MARKETS, re.compile(r"total world|all[- ]?world|all[- ]?country|\bacwi\b|토탈\s?월드|전세계", re.I),
+         re.compile(r"ex[- ]?us|ex[- ]?u\.s|\bex\b|growth|value|dividend|esg|sri|min(imum)? vol|momentum|quality|"
+                    r"equal|small|mid|bond|real estate|infrastructure|배당|성장|가치", re.I)),
     Rule(allocation.DOMESTIC_EQUITY, "domestic_equity", "KOSPI 200 ETF", KR_MARKETS,
-         re.compile(r"(코스피|kospi)\s?200|^\S+\s200(tr)?$", re.I)),
+         re.compile(r"(코스피|kospi)\s?200|^\S+\s200(tr)?$", re.I),
+         re.compile(r"선물|동일가중|고배당|배당|가치|성장|중소형|섹터|건설|금융|산업|에너지|정보기술|헬스케어", re.I)),
     Rule(allocation.BONDS, "bonds_kr3y", "Korean government bond 3y ETF (the centre of bonds)", KR_MARKETS,
          re.compile(r"국고채\s?3년", re.I)),
     Rule(allocation.BONDS, "bonds_us7_10y", "US Treasury 7-10y ETF, domestic-listed (a quarter of bonds, unhedged)",
          KR_MARKETS, re.compile(r"미국채\s?(7\s?-\s?10|10)\s?년|미국\s?국채\s?(7\s?-\s?10|10)\s?년", re.I)),
-    Rule(allocation.GOLD, "gold", "gold ETF", KR_MARKETS, re.compile(r"골드|금현물|금선물|krx\s?금|\bgold\b", re.I)),
+    Rule(allocation.GOLD, "gold", "gold ETF", KR_MARKETS, re.compile(r"골드|금현물|금선물|krx\s?금|\bgold\b", re.I),
+         re.compile(r"채굴|광산|miner|골드만", re.I)),
 )
 
 
@@ -72,16 +81,19 @@ def _names(row: Mapping[str, Any]) -> list[str]:
 
 
 def pool(listings: Mapping[str, Iterable[Mapping[str, Any]]]) -> dict[str, list[dict[str, Any]]]:
-    """Each rule's shortlist from the market listings: name matches, leverage, inverse and covered-call out."""
+    """Each rule's shortlist from the market listings: the name matches, and nothing in it is leverage, inverse,
+    covered call or the rule's own exclusions."""
     out: dict[str, list[dict[str, Any]]] = {rule.key: [] for rule in RULES}
     for rule in RULES:
         for market in rule.markets:
             for row in listings.get(market) or ():
                 names = _names(row)
-                if (row.get("symbol") and any(rule.match.search(n) for n in names)
-                        and not any(_ALWAYS_OUT.search(n) for n in names)):
-                    out[rule.key].append({"symbol": str(row["symbol"]), "name": str(row.get("name") or ""),
-                                          "market": market})
+                if not row.get("symbol") or not any(rule.match.search(n) for n in names):
+                    continue
+                if any(_ALWAYS_OUT.search(n) or (rule.out is not None and rule.out.search(n)) for n in names):
+                    continue
+                out[rule.key].append({"symbol": str(row["symbol"]), "name": str(row.get("name") or ""),
+                                      "market": market})
         out[rule.key] = sorted(out[rule.key], key=lambda r: r["symbol"])[:POOL_LIMIT]
     return out
 
@@ -146,35 +158,70 @@ def rank(shortlists: Mapping[str, list[dict[str, Any]]], *, info: Mapping[str, M
     return out
 
 
-_TAX_LABEL = {TAX_FREE: "tax-free gain", TAXED_DIVIDEND: "15.4% (dividend income)",
-              OVERSEAS: "22% above the 2.5M deduction"}
-
-
-def _example(ranked: Mapping[str, list[Candidate]]) -> list[str]:
-    """An example approve line per class, by liquidity alone. Thomas edits it; it is not a choice."""
+def auto_picks(ranked: Mapping[str, list[Candidate]]) -> dict[str, list[str]]:
+    """RB2'': per class, the PICKS most-traded candidates with a known trading value; bonds take three Korean 3y
+    plus the most-traded unhedged US 7-10y (the calculator fills candidates evenly, so 3 + 1 holds the decided
+    quarter). A class with nothing tradable maps to an empty list: the caller keeps the last pick for it."""
     def top(key: str, n: int, unhedged_only: bool = False) -> list[str]:
         rows = [c for c in ranked.get(key, []) if c.avg_value_krw and not (unhedged_only and c.fx == "hedged")]
         return [c.instrument for c in rows[:n]]
 
-    picks = {allocation.GLOBAL_EQUITY: top("global_equity", 3), allocation.DOMESTIC_EQUITY: top("domestic_equity", 3),
-             # Three Korean 3y plus one US 7-10y: the calculator fills approved candidates evenly, so 3 + 1 holds
-             # the decided quarter.
-             allocation.BONDS: top("bonds_kr3y", 3) + top("bonds_us7_10y", 1, unhedged_only=True),
-             allocation.GOLD: top("gold", 3)}
-    return [f"  --approve-candidates {cls}={','.join(ids)}" for cls, ids in picks.items() if ids]
+    return {allocation.GLOBAL_EQUITY: top("global_equity", PICKS),
+            allocation.DOMESTIC_EQUITY: top("domestic_equity", PICKS),
+            allocation.BONDS: (top("bonds_kr3y", PICKS) + top("bonds_us7_10y", 1, unhedged_only=True)
+                               if top("bonds_kr3y", PICKS) else []),
+            allocation.GOLD: top("gold", PICKS)}
+
+
+# Toss's per-group limits (overview "Rate Limits", 2026-10-26): STOCK_ALL 1/s, STOCK 5/s, MARKET_DATA_CHART 20/s.
+PAUSE_SECONDS = {"listing": 1.1, "info": 0.25, "candles": 0.06}
+
+
+def collect(feed: Any, *, timeout: int = 10,
+            sleep: Callable[[float], None] = time.sleep) -> tuple[dict[str, list[Candidate]], float | None]:
+    """Every read the screen needs, through ``feed`` (a ``TossHoldingsFeed``), paced under Toss's limits."""
+    from .toss_account import STOCKS_PAGE_LIMIT
+
+    fees = {}
+    for row in feed.commission_rates(timeout_seconds=timeout):
+        try:
+            fees[str(row.get("marketCountry"))] = float(row.get("commissionRate"))
+        except (TypeError, ValueError):
+            continue
+    usd_krw = feed.usd_krw_rate(timeout_seconds=timeout)
+    listings = {}
+    for market in (*KR_MARKETS, *US_MARKETS):
+        listings[market] = feed.listed_etfs(market, timeout_seconds=timeout)
+        sleep(PAUSE_SECONDS["listing"])
+    shortlists = pool(listings)
+    symbols = sorted({row["symbol"] for rows in shortlists.values() for row in rows})
+    info = {}
+    for start in range(0, len(symbols), STOCKS_PAGE_LIMIT):
+        for row in feed.stock_info(symbols[start:start + STOCKS_PAGE_LIMIT], timeout_seconds=timeout):
+            info[str(row.get("symbol"))] = row
+        sleep(PAUSE_SECONDS["info"])
+    bars = {}
+    for symbol in symbols:
+        bars[symbol] = feed.daily_candles(symbol, count=LIQUIDITY_DAYS, timeout_seconds=timeout)
+        sleep(PAUSE_SECONDS["candles"])
+    return rank(shortlists, info=info, candles=bars, fees=fees, usd_krw=usd_krw), usd_krw
+
+
+_TAX_LABEL = {TAX_FREE: "tax-free gain", TAXED_DIVIDEND: "15.4% (dividend income)",
+              OVERSEAS: "22% above the 2.5M deduction"}
 
 
 def render(ranked: Mapping[str, list[Candidate]], *, fetched_at: str, usd_krw: float | None) -> list[str]:
     lines = ["REBALANCE CANDIDATES - terminal only; raw market data, never a chat, a model prompt or a channel",
              f"read at      : {fetched_at}   USD/KRW {usd_krw if usd_krw else 'unknown (US liquidity not converted)'}",
              f"liquidity    : mean daily close × volume over the last {LIQUIDITY_DAYS} sessions, KRW",
-             "expense ratio: not in Toss's API — read it on the issuer's page before approving"]
+             "expense ratio: not in Toss's API, so not a criterion"]
     rules = {rule.key: rule for rule in RULES}
     for key, rows in ranked.items():
         rule = rules[key]
         lines += ["", f"[{rule.asset_class}] {rule.label} — {len(rows)} matched"]
         if not rows:
-            lines.append("  none matched; widen the rule or name the ETF yourself")
+            lines.append("  none matched")
         for i, c in enumerate(rows[:SHOWN], 1):
             value = "unknown" if c.avg_value_krw is None else f"{c.avg_value_krw / 1e8:,.1f}억/day ({c.days}d)"
             fee = "?" if c.fee_rate is None else f"{c.fee_rate * 100:.3f}%"
@@ -182,5 +229,7 @@ def render(ranked: Mapping[str, list[Candidate]], *, fetched_at: str, usd_krw: f
                          f"tax {_TAX_LABEL.get(c.tax_kind, c.tax_kind)}  fx {c.fx}" + (f"  ({c.note})" if c.note else ""))
         if len(rows) > SHOWN:
             lines.append(f"  … {len(rows) - SHOWN} more below these by liquidity")
-    lines += ["", "example (by liquidity only — edit it; choosing is Thomas's):", *_example(ranked)]
+    lines += ["", "the holdings fire picks these automatically once a month (RB2''):"]
+    lines += [f"  {cls}: {', '.join(ids) or 'nothing tradable (the last pick is kept)'}"
+              for cls, ids in auto_picks(ranked).items()]
     return lines

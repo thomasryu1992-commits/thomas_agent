@@ -11,7 +11,7 @@
     python -m scripts.holdings_board --cash-flow-cutover 2026-10-09T04:30:00Z   # once, at H6b activation
     python -m scripts.holdings_board --flows                        # H6 exceptions, terminal only (H6d-min)
     python -m scripts.holdings_board --rebalance [--force]          # the rebalancing plan, terminal only
-    python -m scripts.holdings_board --approve-candidates bonds=toss:domestic:A,toss:domestic:B   # Thomas
+    python -m scripts.holdings_board --approve-candidates bonds=toss:domestic:A,toss:domestic:B   # override (RB2'')
     python -m scripts.holdings_board --resolve KEY --kind deposit --by thomas --reason "..."   # terminal only
     python -m scripts.holdings_board --semantics-epoch --change-ref "#1203" --by thomas --reason "..."
     python -m scripts.holdings_board --toss-continuity              # do the Toss windows tile the stretch since the cutover
@@ -149,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--rebalance", action="store_true",
                       help="the rebalancing proposal over the last fire (REBALANCING_PROPOSAL; terminal only)")
     mode.add_argument("--approve-candidates", metavar="CLASS=ID[,ID...]",
-                      help="the 3-4 instruments the calculator may buy for a class; CLASS= withdraws (Thomas)")
+                      help="override the automatic pick for a class (RB2''); CLASS= returns it to the automatic pick (Thomas)")
     mode.add_argument("--adopt-ledger", action="store_true",
                       help="adopt a ledger the checkpoint refuses, in two runs (C7 PR-C; Thomas, terminal only)")
     parser.add_argument("--confirm", help="the 8 characters the first --adopt-ledger run printed (step two)")
@@ -246,7 +246,8 @@ def main(argv: list[str] | None = None) -> int:
         except MvpRuntimeError as exc:
             print(f"refused ({exc.reason_code}): {exc}")
             return EXIT_BLOCKED
-        print(f"candidates for {asset_class.strip()}: {len(chosen)} (mapping_version {result.mapping_version})")
+        print(f"candidates for {asset_class.strip()}: {len(chosen) or 'automatic pick again'} "
+              f"(mapping_version {result.mapping_version})")
         return EXIT_OK
 
     if args.rebalance:

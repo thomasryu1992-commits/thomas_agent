@@ -333,7 +333,8 @@ def render(result: Plan, *, as_of: Any) -> list[str]:
         lines.append(f"  carried (< {_won(MIN_ORDER_KRW)} KRW, next check) {o['side']} {o['instrument']} "
                      f"{_won(o['amount_krw'])} KRW")
     for name in result.not_bought:
-        lines.append(f"  not bought  : {name} has no approved candidates (--approve-candidates)")
+        lines.append(f"  not bought  : {name} has no candidates yet (the holdings fire picks them; "
+                     "--approve-candidates overrides)")
     lines.append("after       : " + ", ".join(f"{c} {v:+.1f}pp" for c, v in result.after.items()))
     gain = ("unknown (overseas sells taxed in full in the estimate)" if result.overseas_gain_ytd_krw is None
             else f"{_won(result.overseas_gain_ytd_krw)} of {_won(OVERSEAS_DEDUCTION_KRW)} deduction")

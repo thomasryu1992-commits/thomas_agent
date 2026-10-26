@@ -55,6 +55,7 @@ DENIED = [
     ("Bash", "cat holdings_classification.json"),
     ("Bash", "jq .positions holdings_positions.json"),
     ("Bash", "jq .overseas_gain holdings_tax_estimate.json"),
+    ("Bash", "cat holdings_auto_candidates.json"),
     ("Bash", "cat .runtime_governance_state/*/holdings_x"),
     ("Bash", "ls .runtime_governance_state/h*"),
     ("Bash", "grep -r usd .runtime_governance_state"),

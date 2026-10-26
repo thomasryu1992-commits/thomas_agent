@@ -1372,6 +1372,15 @@ def _execute(
             else:
                 holdings_store.mark_band_told(month, now=now, root=repo_root)
                 status = f"{status}; band notice told"
+        # RB2'' (Thomas 2026-10-26): a new automatic candidate pick, or a manual one that stopped trading — counts.
+        if result.get("candidate_alert"):
+            token, text = result["candidate_alert"]
+            failure = _tell(text)
+            if failure:
+                status = f"{status}; candidates not sent:{failure}"
+            else:
+                holdings_store.mark_candidates_told(token, now=now, root=repo_root)
+                status = f"{status}; candidates told"
         # C7 PR-D (HOLDINGS_LEDGER_CHECKPOINT_V0.1.md §6): a ledger or state every writer refuses is judged
         # on its own, read-only, whatever refresh returned above — an early return still reaches this. Told
         # once per failure and once when it clears; the told file moves only after delivery, and a told
