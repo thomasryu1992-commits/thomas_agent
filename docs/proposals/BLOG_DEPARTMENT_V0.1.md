@@ -155,9 +155,9 @@ Thomas가 정한 순서: **설계 문서 → 검증 → 최적화 → 검증 →
 | | `tistory_version_gate.py`, `tistory_live2md.py` | T | (없음) |
 | | `notify_hermes.sh`, `claude_retry.sh` | T | Mac 아침 루틴·주간 통계 |
 | 측정·피드백 | `blog-weekly.py` | S | 스킬 셋 |
-| | `naver_stats_weekly.py`/`.sh`, `naver_trend_daily.py` | T | Mac launchd(월 10:00, 매일) |
+| | `naver_stats_weekly.py`/`.sh`, `naver_trend_daily.py` | T | Mac 예약(파일 머리말 기준 월 10:00, 매일; Mac 쪽 등록은 확인 못 함) |
 | | `revision_log.py` | T | `naver-to-google-seo` |
-| | `mac-routine-watch.py`, `weekly-snapshot-check.py` | S | 서로, 날짜 지정 `at` 작업 |
+| | `mac-routine-watch.py`, `weekly-snapshot-check.py` | S | 서로 |
 | 블로그 아님: 볼트·세션 운영 | `vault.sh`, `vault-autopush.sh`, `vault-guard.sh`, `vault-push-gate.py`/`.allow`, `session-start-check.sh`, `pgrep-wait-guard.sh`, `memedit.py`, `server_scripts_backup.py`, `run-tests.sh`, `SCRIPTS.md` | S / T | 훅(`settings.json`), 매일 원고 작업 |
 | 블로그 아님: 프롬프트 라이브러리 | `prompt_collect.py`, `prompt_conversations.py`, `prompt_history.py`, `prompt_intel.py`, `prompt_score.py`, `prompt_similar.py`, `memory_ledger.py`, `retention_plan.py` | T | 매일 원고 작업 끝, 서로 |
 | 블로그 아님: 여행 | `travel-preflight.py`, `strip-gps.py` | S | (손) |
