@@ -145,6 +145,13 @@ def _fresh_feed_cache(monkeypatch):
     monkeypatch.setattr(store, "_cached_feed", None)
 
 
+@pytest.fixture(autouse=True)
+def _no_band_notice(monkeypatch):
+    # RB5's monthly notice is due on every fire at NOW (October, after its first weekday); the tests here count
+    # the other notices. The monthly notice has its own tests (test_mvp_runtime_holdings_band_notice.py).
+    monkeypatch.setattr(store, "band_notice", lambda body, **_kw: None)
+
+
 @pytest.fixture
 def creds(monkeypatch):
     monkeypatch.setenv(TOSS_CLIENT_ID_ENV, CLIENT_ID)
@@ -1015,6 +1022,17 @@ def test_rule_classified_flows_are_told_by_direction_and_count_after_delivery(mo
     assert "h6 rule flows told" in _fire(tmp_path) and told == ["tok"]
     (text,) = [t for t in sent if "quiet_window" in t]
     assert "입금 1건" in text and "출금 0건" in text and "원" not in text
+
+
+def test_the_fire_asks_for_the_monthly_band_notice_over_its_own_allocation(monkeypatch, gate_open, tmp_path):
+    """RB5: the refresh hands its body (with the allocation) to the band notice and returns what it says."""
+    _toss(monkeypatch)
+    seen = []
+    monkeypatch.setattr(store, "band_notice", lambda body, **kw: seen.append((body, kw)) or ("2026-10", "notice"))
+    result = store.refresh(now=NOW, root=tmp_path)
+    assert result["band_alert"] == ("2026-10", "notice")
+    (body, kw), = seen
+    assert "allocation" in body and kw == {"now": NOW, "root": tmp_path}
 
 
 def test_the_fire_writes_its_positions_to_their_own_local_file(monkeypatch, gate_open, tmp_path):

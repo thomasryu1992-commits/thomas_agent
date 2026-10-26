@@ -1363,6 +1363,15 @@ def _execute(
             else:
                 holdings_store.mark_rule_flows_told(token, now=now, root=repo_root)
                 status = f"{status}; h6 rule flows told"
+        # RB5 (Thomas 2026-10-26): the monthly band check, a count only, told once a month after delivery.
+        if result.get("band_alert"):
+            month, text = result["band_alert"]
+            failure = _tell(text)
+            if failure:
+                status = f"{status}; band notice not sent:{failure}"
+            else:
+                holdings_store.mark_band_told(month, now=now, root=repo_root)
+                status = f"{status}; band notice told"
         # C7 PR-D (HOLDINGS_LEDGER_CHECKPOINT_V0.1.md §6): a ledger or state every writer refuses is judged
         # on its own, read-only, whatever refresh returned above — an early return still reaches this. Told
         # once per failure and once when it clears; the told file moves only after delivery, and a told

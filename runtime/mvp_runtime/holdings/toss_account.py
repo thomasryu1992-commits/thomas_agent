@@ -14,7 +14,9 @@ the tests).
 **Read-only by construction.** Toss's OAuth scopes are empty (``openapi.json``), so the same client
 opens order APIs. Read-only is therefore enforced here: the feed reaches the token endpoint and five
 reads (accounts, holdings, cash buying power, the exchange rate and, since H6a, the closed-order list),
-by path constants, every one a GET, and has no method that places, modifies or cancels an order.
+by path constants, every one a GET, and has no method that places, modifies or cancels an order. Since
+RB2' (2026-10-26) the candidate report adds four more GETs: listed ETFs, stock info, daily candles and the
+account's commission rates. They serve Thomas's terminal only (raw quotes never reach a model prompt).
 
 **What the official docs put on this module** (read 2026-10-07):
 
@@ -94,6 +96,13 @@ EXCHANGE_RATE_PATH = "/api/v1/exchange-rate"
 # orders already placed; the feed has no method that places, modifies or cancels one.
 ORDERS_PATH = "/api/v1/orders"
 ORDERS_PAGE_LIMIT = 100
+# RB2' (Thomas 2026-10-26): the candidate screening report's reads — market data and listings, no account
+# data except the account's commission rates. Every one a GET (`scripts/rebalance_candidates.py`).
+STOCKS_ALL_PATH = "/api/v1/stocks/all"
+STOCKS_PATH = "/api/v1/stocks"
+CANDLES_PATH = "/api/v1/candles"
+COMMISSIONS_PATH = "/api/v1/commissions"
+STOCKS_PAGE_LIMIT = 200
 ACCOUNT_HEADER = "X-Tossinvest-Account"
 BROKERAGE = "BROKERAGE"
 
@@ -284,6 +293,47 @@ class TossHoldingsFeed:
             if not cursor:
                 return rows, False
         return rows, True
+
+    # -- the candidate report's reads (RB2'): listings and market data, for Thomas's terminal only ----------------
+
+    def listed_etfs(self, market: str, *, timeout_seconds: int = 10) -> list[dict[str, Any]]:
+        """Every ACTIVE ETF Toss trades on ``market`` (KOSPI, KOSDAQ, KR_ETC, NYSE, NASDAQ, AMEX)."""
+        rows = self._get(STOCKS_ALL_PATH, {"market": market, "status": "ACTIVE", "securityType": "ETF"},
+                         account=False, what="listed ETFs", timeout_seconds=timeout_seconds)
+        if not isinstance(rows, list):
+            raise ToolError("MALFORMED_RESULT", "listed ETFs carried no list")
+        return [row for row in rows if isinstance(row, dict)]
+
+    def stock_info(self, symbols: list[str], *, timeout_seconds: int = 10) -> list[dict[str, Any]]:
+        """Basic info (market, currency, status, leverage factor) for up to 200 symbols."""
+        if not 0 < len(symbols) <= STOCKS_PAGE_LIMIT:
+            raise ToolError("TOOL_USAGE", f"stock info takes 1..{STOCKS_PAGE_LIMIT} symbols")
+        rows = self._get(STOCKS_PATH, {"symbols": ",".join(symbols)}, account=False, what="stock info",
+                         timeout_seconds=timeout_seconds)
+        if not isinstance(rows, list):
+            raise ToolError("MALFORMED_RESULT", "stock info carried no list")
+        return [row for row in rows if isinstance(row, dict)]
+
+    def daily_candles(self, symbol: str, *, count: int = 20, timeout_seconds: int = 10) -> list[dict[str, Any]]:
+        """The latest ``count`` daily candles (newest first), unadjusted."""
+        page = self._get(CANDLES_PATH, {"symbol": symbol, "interval": "1d", "count": str(count)}, account=False,
+                         what="daily candles", timeout_seconds=timeout_seconds)
+        candles = page.get("candles") if isinstance(page, dict) else None
+        if not isinstance(candles, list):
+            raise ToolError("MALFORMED_RESULT", "daily candles carried no list")
+        return [c for c in candles if isinstance(c, dict)]
+
+    def commission_rates(self, *, timeout_seconds: int = 10) -> list[dict[str, Any]]:
+        """This account's commission rate per market country (KR, US)."""
+        self._resolve_account(timeout_seconds=timeout_seconds)
+        rows = self._get(COMMISSIONS_PATH, account=True, what="commission rates", timeout_seconds=timeout_seconds)
+        if not isinstance(rows, list):
+            raise ToolError("MALFORMED_RESULT", "commission rates carried no list")
+        return [row for row in rows if isinstance(row, dict)]
+
+    def usd_krw_rate(self, *, timeout_seconds: int = 10) -> float | None:
+        """Toss's USD/KRW mid-rate now, or None when it cannot be read."""
+        return self._usd_krw_rate([], timeout_seconds=timeout_seconds)
 
     def _resolve_account(self, *, timeout_seconds: int) -> tuple[int, str]:
         if self._account is not None:
