@@ -4,7 +4,47 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-09-30** — §L gains E3 (the fusion-parenting validation slice, decided 2026-09-30). Before that, **2026-09-28** — §L added (E1/E2 from the regime-episode RECORD, held until the first forward-cohort verdict). Before that, **2026-09-25** — §I's heading and its "nothing here is built" line corrected (decided
+Last updated: **2026-10-26**: the dated block below only. No section was re-surveyed, so a section's own text
+is still as of its last date.
+
+> **Since 2026-09-30, in one place.** Each line names the record that owns it. Live open decisions are on the
+> generated `docs/proposals/STATUS.md`, not here.
+>
+> - **The research pause (review D3) was lifted on 2026-10-20.** Judgement rules still loosen only at a research
+>   epoch boundary. The first boundary is 2027-03-22 (`SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md`, decision of
+>   2026-10-20).
+> - **Evidence standing.**
+>   - Rows whose replay saw the OI daily close or the liquidation reading early read **INVALID**. Re-used holdouts
+>     and the OI re-scores read **BIASED** (`candidate_ranking.evidence_standing`).
+>   - Every reader of a holdout verdict must read the standing too. `tests/test_evidence_standing_readers.py`
+>     enforces this (2026-10-25).
+> - **The research sandbox and data lake** compute without secrets (`RESEARCH_SANDBOX_V0.1.md`).
+> - **Pre-window replay and the mint tilt.**
+>   - Pre-window replay (`PRE_WINDOW_REPLAY_V0.1.md`): on the 1h tier, breakout and volatility-expansion entries
+>     beat coin-flip twins on 2020–2023. The lead is gross of costs and fades year by year.
+>   - Half of the 1h/4h shortfall draw now goes to those six families (`MINT_REALLOCATION_PRE_WINDOW_V0.1.md`). The
+>     mechanical check reads once on 2026-11-14.
+> - **The epoch family path to LIVE was decided** (`EPOCH_FAMILY_LIVE_ELIGIBILITY_V0.1.md`). It applies from
+>   2027-03-22. Its test 2 is displayed now (`selection_evidence family-net`), and no family is NET>0.
+> - **`temporal_stability` was closed without PR-2** (`WALK_FORWARD_TEMPORAL_STABILITY_V0.1.md` W1). On valid
+>   evidence it does not discriminate.
+> - **The Hermes container and the assistant's four doors were retired (2026-10-25).** So were the workflow
+>   manager and the knowledge lane, under policy 1.7.0. They were deployed as `candidate-1309` on 2026-10-26, and
+>   the execution stage was re-bound at PAPER. **§K below describes retired machinery** (history notes
+>   `2026-10-25-retire-hermes-container.md` and `2026-10-25-retire-assistant-doors.md`).
+> - **Host privilege separation:**
+>   - C6a installed the deploy runner (2026-10-19).
+>   - C6b moved Claude to its own account (2026-10-20).
+>   - The runner was upgraded in place on 2026-10-26 (`deploy_runner_c6a.py upgrade`).
+> - **Holdings:**
+>   - C7's five PRs were deployed on 2026-10-17 (`HOLDINGS_LEDGER_CHECKPOINT_V0.1.md` §12.7).
+>   - Next comes H6b-shadow, then H6c. Both are Thomas's decisions (`PORTFOLIO_CASH_FLOW_LEDGER_V0.1.md`).
+> - **The weekly management report** (`WEEKLY_MANAGEMENT_REPORT_V0.1.md`) is deployed. Its schedule is added on
+>   2026-11-02 at 09:00 KST, and the first report arrives a week later.
+> - **Unblocked build items: none (2026-10-26).** The 2026-10-25 sweep built the last three (#1302–#1304). Every other
+>   item waits on a date or on a Thomas decision.
+
+Before that, **2026-09-30** — §L gains E3 (the fusion-parenting validation slice, decided 2026-09-30). Before that, **2026-09-28** — §L added (E1/E2 from the regime-episode RECORD, held until the first forward-cohort verdict). Before that, **2026-09-25** — §I's heading and its "nothing here is built" line corrected (decided
 2026-09-24, option C; PR1–PR3 built as #977–#979). No other section was re-surveyed. Before that,
 **2026-09-03** — §K added (Hermes orchestrator integration, decided 2026-09-03, documentation-first PR sequence). Before that, **2026-08-29** — the header date had sat at 08-10 while the body took 08-23 and
 08-25 updates, exactly the "a document is a claim about a moved main" pattern this file warns
