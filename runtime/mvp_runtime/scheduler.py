@@ -196,15 +196,8 @@ KIND_CANDLE_ARCHIVE = "candle_archive"
 # re-reads the store and every spec's evaluable window is a day longer. See
 # `crypto/null_control.py` for the measurement that made a one-shot version untrustworthy.
 KIND_NULL_CONTROL = "crypto_null_control"
-# The blog lane's weekly package (Phase 2). Maintenance, not risk: it spends model allowance
-# and venue quota, never money, and a week that fires late costs freshness. Like
-# `crypto_data_review` it delegates the whole job to the worker rather than collecting
-# anything here — the Naver keys and the model providers are on `pipeline-worker` and on no
-# other service, so there is nothing this process could do with them if it tried.
-#
-# The `request` column carries the seed keywords, comma separated, exactly as `crypto_factory`
-# carries a symbol list there. `target=<keyword>` among them overrides the week's selection.
-KIND_CONTENT_IDEATION = "content_ideation"
+# `content_ideation` was the runtime blog lane's weekly package until that lane was retired whole
+# (Thomas 2026-10-26, BLOG_DEPARTMENT_V0.1.md §2): blog production is the vault path's.
 # `workflow_plan` and `dispatch_spend_watch` were kinds until the assistant's doors were retired
 # (2026-10-25): the first submitted to the workflow manager, the second summed the assistant's
 # dispatch spend. A row of either left in a store is refused by name at its fire (UNKNOWN_KIND).
@@ -227,7 +220,7 @@ KIND_MANAGEMENT_REPORT = "management_report"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
                    KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE,
                    KIND_BREAKER_WATCH, KIND_ROUTE_WATCH, KIND_CANDLE_ARCHIVE,
-                   KIND_NULL_CONTROL, KIND_CONTENT_IDEATION,
+                   KIND_NULL_CONTROL,
                    KIND_FORWARD_COHORT, KIND_HOLDINGS, KIND_MANAGEMENT_REPORT})
 
 # The kinds whose lateness costs money rather than freshness.
@@ -299,7 +292,7 @@ RISK_FIRE_DEADLINE_SECONDS: Mapping[str, float] = {
 MAINTENANCE_KINDS: frozenset[str] = frozenset({
     KIND_TASK, KIND_PRUNE, KIND_FACTORY, KIND_REPORT, KIND_PROPOSER,
     KIND_DATA_REVIEW, KIND_ROTATE, KIND_CANDLE_ARCHIVE, KIND_NULL_CONTROL,
-    KIND_CONTENT_IDEATION, KIND_FORWARD_COHORT,
+    KIND_FORWARD_COHORT,
     KIND_HOLDINGS, KIND_MANAGEMENT_REPORT,
 })
 
@@ -535,14 +528,6 @@ def build_schedule(
         raise SchedulerBlocked("MISSING_REQUEST", "an analysis_task schedule requires a non-empty request")
     if expires_at is not None and not (isinstance(expires_at, str) and _TIMESTAMP_PATTERN.match(expires_at)):
         raise SchedulerBlocked("INVALID_EXPIRY", "expires_at must be the fixed UTC form YYYY-MM-DDThh:mm:ssZ")
-    if kind == KIND_CONTENT_IDEATION and not request:
-        raise SchedulerBlocked(
-            "MISSING_REQUEST",
-            "a content_ideation schedule requires seed keywords in its request "
-            "(comma separated; `source=queue` takes them from the vault keyword queue; "
-            "`target=<keyword>` overrides the week's selection; `platform=tistory` drafts for "
-            "Tistory instead of Naver)",
-        )
     if not (isinstance(created_by, str) and created_by.strip()):
         raise SchedulerBlocked("MISSING_CREATOR", "a schedule requires a created_by identity")
     schedule_id = integrity.short_id(
@@ -1030,97 +1015,6 @@ def delegate_data_review(
             "the pipeline worker returned no data-review record; nothing was appended",
         )
     return record
-
-
-# Two governed runs plus an independent validation, against a venue and two model calls. The
-# 900s that bounds a single-run delegation is not enough, and a deadline that fires mid-package
-# would leave the research run's spend paid for and its result discarded.
-CONTENT_IDEATION_DEADLINE_SECONDS = 1500.0
-
-
-def delegate_content_ideation(
-    seeds: str, *, source_ref: str, now: str | None, repo_root: Path | None,
-) -> dict[str, Any]:
-    """Run the blog lane's weekly package in the worker and return its sheet.
-
-    Unlike `delegate_data_review` this does not build an input here first — there is nothing to
-    build that does not need a credential this process lacks. The seeds come straight off the
-    schedule's `request` column and the worker does the rest, which is why the frame is one
-    string rather than a collected inventory.
-
-    Fail-closed with no fallback, as every delegation here: an unreachable worker raises and
-    `run_due` records a failed fire. A `NO_ELIGIBLE_KEYWORD` week is NOT that — it is the
-    worker answering, and it arrives as a typed refusal in the reply rather than as silence.
-    """
-    from . import pipeline_worker
-
-    reply = socket_door.call_door(
-        pipeline_worker.socket_path(repo_root),
-        {"job": pipeline_worker.JOB_CONTENT_IDEATION,
-         "ideation_inputs": {"seeds": seeds, "source_ref": source_ref},
-         "reason": "scheduler:content_ideation"},
-        deadline_seconds=CONTENT_IDEATION_DEADLINE_SECONDS,
-    )
-    if not isinstance(reply, dict) or not reply.get("ok"):
-        raise SchedulerBlocked(
-            str((reply or {}).get("reason_code") or "WORKER_UNAVAILABLE")
-            if isinstance(reply, dict) else "WORKER_UNAVAILABLE",
-            str((reply or {}).get("reason") or "the pipeline worker did not build the package")
-            if isinstance(reply, dict) else "the pipeline worker's reply was not an object",
-        )
-    if not reply.get("package_id"):
-        raise SchedulerBlocked(
-            "WORKER_UNAVAILABLE",
-            "the pipeline worker returned no package id; nothing was produced",
-        )
-    return reply
-
-
-def format_ideation_sheet(reply: Mapping[str, Any]) -> str:
-    """The operator's weekly sheet. ASCII-safe framing; the draft's own text is not repeated.
-
-    What an operator needs here is the decision the lane made and whether the draft cleared the
-    bar — the body itself is in the package record, and pasting three thousand characters into
-    a Telegram message would bury both.
-    """
-    evidence = reply.get("target_evidence") or {}
-    score = reply.get("score") or {}
-    measured = score.get("measured") or {}
-    # The target's own numbers only (package v0.2). The line used to count the selection
-    # brief's rows and print the SUM of three different keywords' post counts beside them.
-    if evidence.get("status") == "measured":
-        target_line = (f"{evidence.get('monthly_total')}/mo, as of {evidence.get('as_of')}"
-                       + (f", {evidence['blog_competing_posts']} blog posts"
-                          if evidence.get("blog_competing_posts") is not None else ""))
-    else:
-        target_line = f"no row for the target itself ({evidence.get('degraded_reason_code')})"
-    overlap = reply.get("overlap") or {}
-    lines = [
-        "=== blog package ===",
-        "",
-        f"platform  : {reply.get('platform') or 'naver'}",
-        f"keyword   : {reply.get('target_keyword')}",
-        f"package   : {reply.get('package_id')}",
-        f"evidence  : {target_line}",
-        f"draft     : {measured.get('body_chars', '?')} chars, "
-        f"{measured.get('headings', measured.get('h2_sections', '?'))} headings, "
-        f"{measured.get('images', '?')} image cues",
-        f"standards : {'PASS' if score.get('critical_pass') else 'MISS'} "
-        f"({score.get('standards_version')})",
-    ]
-    if score.get("quality_state"):
-        lines.append(f"quality   : {score['quality_state']}"
-                     " (a draft for review either way; nothing is published)")
-    if overlap.get("overlap_type"):
-        lines.append(f"overlap   : {overlap['overlap_type']} -> {overlap.get('action')}")
-    if not score.get("critical_pass"):
-        lines += ["", "critical criteria missed — the package is recorded, not discarded:"]
-        lines += [f"  {line}" for line in (reply.get("scorecard_lines") or [])
-                  if "MISS" in line]
-    if reply.get("written") is False:
-        lines += ["", f"no file written ({reply.get('filesystem_write')});"
-                       " read the package with its id above"]
-    return "\n".join(lines)
 
 
 def delegate_proposal_generation(
@@ -2044,38 +1938,6 @@ def _execute(
                 f"{schedule.last_status!r}. {status}"
             ))
         return status
-    if schedule.kind == KIND_CONTENT_IDEATION:
-        # The blog lane's week. Everything happens in the worker — this branch delegates,
-        # appends nothing (the worker already wrote the package row through the same ledger),
-        # sends the operator's sheet best-effort, and reports.
-        #
-        # A `NO_ELIGIBLE_KEYWORD` week raises, deliberately. Every seed being unwinnable, too
-        # small or already written is not a quiet completion: it means the seed list has been
-        # used up, and the operator has to widen it before another fire can produce anything.
-        # `_notify_status_change` carries a FAILED fire to the channel; a summary string
-        # reaches nobody, which is exactly the wrong way round for a lane that has stopped
-        # being able to work.
-        from . import operator as operator_mod
-
-        reply = delegate_content_ideation(
-            schedule.request,
-            source_ref=f"scheduler:{schedule.schedule_id}",
-            now=now, repo_root=repo_root,
-        )
-        delivery = ""
-        try:
-            channel = operator_mod.select_operator_channel(now=now, root=repo_root)
-            operator_mod.notify_operator(
-                channel, format_ideation_sheet(reply), repo_root=repo_root)
-        except MvpRuntimeError as exc:
-            delivery = f" sheet_not_sent:{exc.reason_code}"
-        except Exception as exc:  # noqa: BLE001 — transport must not stop scheduling
-            delivery = f" sheet_not_sent:{type(exc).__name__}"
-        score = reply.get("score") or {}
-        return (f"content_ideation={reply.get('package_id')} "
-                f"keyword={reply.get('target_keyword')!r} "
-                f"standards={'pass' if score.get('critical_pass') else 'miss'} "
-                f"quality={score.get('quality_state') or '-'}{delivery}")
     if schedule.kind == KIND_CANDLE_ARCHIVE:
         # Read-only, and the archive feeds nothing — so this fire cannot change what the
         # runtime trades. What it can do is fail to keep a bar that will not be offered

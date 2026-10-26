@@ -4888,6 +4888,8 @@ I1 argues is not what is blocking.
 
 ## J. Naver blog content lane — Phase 1 built, the cadence was not
 
+**Retired 2026-10-26 (Thomas):** the runtime lane below was removed whole — the `blog_*` modules, `content_ideation`, its worker job and the three scripts. Blog production is the vault path's (`docs/proposals/BLOG_DEPARTMENT_V0.1.md`); this section stays as the record of what was built.
+
 **Revived 2026-09-28 (Thomas) — a new weekly row, `schedule_876d53b39de29b2af417`, enabled with
 request `source=queue`, first fire 2026-10-05T13:19:36Z.** The seeds now come from the vault
 keyword queue (#1014) and the vault's published posts are excluded (#1012, #1013). The old
