@@ -3,12 +3,12 @@
 **Status:** Active (MVP runtime). **Normative authority:** None — `governance/GOVERNANCE_POLICY.yaml`
 and `runtime/mvp_runtime/` remain authoritative; this describes how to run the deployed services.
 
-The MVP deploys as **eight services from one image**, sharing one mounted state volume
+The MVP deploys as **five services from one image**, sharing one mounted state volume
 (`docker-compose.yml` at the repo root is the committed source of this topology). The three
-loop services are described here; the **pipeline-worker** (the execution half of the dispatch
-door, holding the model/search/Naver credentials) and the **four assistant doors**
-(`read`/`switch`/`dispatch`/`knowledge` bridges, holding no credentials at all) have their own
-sections further down:
+loop services are described here; the **pipeline-worker** (the scheduler's engine, holding the
+model/search/Naver credentials) and **claude-read-bridge** (Claude's read-only door, holding no
+credential) have their own sections further down. The assistant's container and its four doors
+were retired on 2026-10-25 (`history/2026-10-25-retire-assistant-doors.md`):
 
 - **operator** — the control-channel loop (`runtime/mvp_runtime/operator_cli.py`): poll
   Telegram → verify the registered operator → run the single-agent pipeline → reply. The same
@@ -19,7 +19,9 @@ sections further down:
 - **scheduler-maint** — the MAINTENANCE-lane tick loop (`tick --lane maintenance`): factory,
   null_control, candle archive, scheduled analysis, prune, rotate, report, propose, data
   review — the long fires, in a process the risk lane never waits on
-  (`docs/proposals/SCHEDULER_LANE_SPLIT_V0.1.md`). Holds no venue, live, or model credential.
+  (`docs/proposals/SCHEDULER_LANE_SPLIT_V0.1.md`). Holds no order key, live variable or model
+  credential; its only venue credentials are read-only (the Binance read pair and the Toss read key
+  of the holdings lane, the secret boundary table below).
 
   **Without its lane's service nothing that lane schedules ever runs** — the operator loop
   does not tick schedules. Run at most ONE tick service PER LANE per state volume (the
