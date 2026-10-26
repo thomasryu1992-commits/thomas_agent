@@ -31,8 +31,9 @@ FAKE = "FAKE-SECRET-7f3a"
 FAKE_PATH = "/root/fake-state/holdings/x.json"
 SID = "schedule_" + "a" * 20
 RID = "srun_" + "b" * 20
-CLAUDE_READS = frozenset({"schedules", "scheduler_events"})
-HELD = frozenset({"runtime_status", "heartbeat", "crypto_readiness", "holdings_status"})
+# `holdings_status` joined on 2026-10-26 through its contract v1.1 (HOLDINGS_STATUS_READ_AND_AUTO_FLOWS R1).
+CLAUDE_READS = frozenset({"schedules", "scheduler_events", "holdings_status"})
+HELD = frozenset({"runtime_status", "heartbeat", "crypto_readiness"})
 CLAUDE = read_bridge.PROFILES[read_bridge.CLAUDE_PROFILE]
 REPO = Path(__file__).resolve().parents[1]
 
@@ -221,7 +222,7 @@ def test_r06_a_value_with_a_trailing_newline_is_not_a_well_formed_value():
 
 # --- X-11: the profile's read subset ---------------------------------------------------------------------
 
-def test_r03_the_four_raw_reads_are_held_out_of_every_profile():
+def test_r03_the_raw_reads_are_held_out_of_every_profile():
     # f2 names them; each was traced and answers raw. Admitting one needs a reply contract first.
     assert read_bridge._PROFILE_HELD_READS == HELD and HELD <= set(read_bridge._READS)
     assert not HELD & read_bridge._PROFILE_ADMISSIBLE_READS

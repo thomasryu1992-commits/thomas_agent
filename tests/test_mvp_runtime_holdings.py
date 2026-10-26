@@ -246,9 +246,11 @@ def test_the_feed_has_no_order_capability():
         assert not [n for n in public if any(word in n.lower() for word in forbidden)], cls
 
 
-# The two dispatch sites, exactly: the scheduler's `holdings_refresh` fire and the console's
-# `/holdings` verb. Both import the lane inside a function — the core's dispatch shape.
-HOLDINGS_DISPATCH_SITES = {"runtime/mvp_runtime/scheduler.py", "runtime/mvp_runtime/domain_console.py"}
+# The dispatch sites, exactly: the scheduler's `holdings_refresh` fire, the console's `/holdings` verb, and
+# (2026-10-26, HOLDINGS_STATUS_READ_AND_AUTO_FLOWS R1) the Claude door's `holdings_status` projection, which
+# reads the stored snapshot and keeps only freshness and H6 check states. All import the lane inside a function.
+HOLDINGS_DISPATCH_SITES = {"runtime/mvp_runtime/scheduler.py", "runtime/mvp_runtime/domain_console.py",
+                           "runtime/mvp_runtime/store_reads.py"}
 
 
 def _holdings_imports(path: pathlib.Path) -> tuple[bool, bool]:
@@ -969,7 +971,8 @@ def test_h6_readiness_is_told_once_and_only_after_delivery(monkeypatch, gate_ope
     def fake_readiness(state_dir, *, now, current=None):
         told = bool(cash_flows.load_state(state_dir).get("readiness_told_at"))
         return {"checks": {"ledger_chain": "PASS"}, "ready": True, "shadow_days": 7.0, "toss_note": "ok",
-                "shadow_success_dates": 7, "exceptions": 0, "next_step": "H6b-shadow", "told": told}
+                "toss_needs": [], "shadow_success_dates": 7, "exceptions": 0, "next_step": "H6b-shadow",
+                "told": told}
 
     monkeypatch.setattr(cash_flows, "readiness", fake_readiness)
     monkeypatch.setattr(operator_mod, "select_operator_channel", lambda **_kw: "channel")

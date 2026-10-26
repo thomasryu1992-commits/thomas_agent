@@ -212,7 +212,12 @@ def apply_read(
 
     family, spec = _READS[command]
 
-    if family == _CONTROL and projection is not None and spec == control.CMD_STATUS:
+    if command == "holdings_status" and projection is not None:
+        # Under a reply contract the stored snapshot is projected, never rendered: freshness and the H6 check
+        # states only (`store_reads.read_holdings_status`, HOLDINGS_STATUS_READ_AND_AUTO_FLOWS R1).
+        outcome = store_reads.read_holdings_status(now=now or timeutil.utc_now_iso(), repo_root=repo_root,
+                                                   projection=projection)
+    elif family == _CONTROL and projection is not None and spec == control.CMD_STATUS:
         # Under a reply contract the typed state is read, never the rendered `/status` text
         # (`store_reads.read_runtime_status`). No profile serves this read today.
         outcome = store_reads.read_runtime_status(control_store, now=now or timeutil.utc_now_iso(),
@@ -298,19 +303,21 @@ CLAUDE_PROFILE = "claude"
 
 # The reads a profiled door may carry at all: those answered through a closed reply contract. A read
 # joins this set when it has one, never by being added to a profile.
-_PROFILE_ADMISSIBLE_READS: frozenset[str] = frozenset({"schedules", "scheduler_events"})
+_PROFILE_ADMISSIBLE_READS: frozenset[str] = frozenset({"schedules", "scheduler_events", "holdings_status"})
 
 # D-11 f2 names four more reads for the Claude door. Traced field by field, each answers raw:
 # `heartbeat` puts `"<type>: <message>"` of a parse failure in `detail`; `runtime_status` carries the
 # stored `updated_by` (an operator id) and the operator's free-text `reason`; `crypto_readiness` and
 # `holdings_status` render stored free text and pass stored keys through. A profile must not answer a
 # sensitive read raw, so they are held out until each has a contract or Thomas decides otherwise.
-_PROFILE_HELD_READS: frozenset[str] = frozenset({"runtime_status", "heartbeat", "crypto_readiness", "holdings_status"})
+# `holdings_status` left this set on 2026-10-26 (HOLDINGS_STATUS_READ_AND_AUTO_FLOWS R1): it is answered through
+# contract v1.1 (`store_reads.project_holdings_status`), freshness and H6 check states, never the board.
+_PROFILE_HELD_READS: frozenset[str] = frozenset({"runtime_status", "heartbeat", "crypto_readiness"})
 
 PROFILES: Mapping[str, DoorProfile] = MappingProxyType({
     CLAUDE_PROFILE: DoorProfile(
         name=CLAUDE_PROFILE,
-        reads=frozenset({"schedules", "scheduler_events"}),
+        reads=frozenset({"schedules", "scheduler_events", "holdings_status"}),
         projection=store_reads.PROJECTION_V1,
     ),
 })

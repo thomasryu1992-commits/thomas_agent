@@ -291,3 +291,33 @@ def test_an_unnameable_fill_spoils_the_settlement_day_of_its_window(tmp_path):
     toss_fire(tmp_path, 990_000, "2026-10-10T03:30:00Z", [SETTLES, nameless])       # explained, but unnameable
     assert events(tmp_path, "toss_window_observed")[-1]["identity_stable"] is False
     assert _evidence(tmp_path)["clean_settlement_days"] == []
+
+
+# --- toss_needs: what the check still waits for, as a closed list (HOLDINGS_STATUS_READ_AND_AUTO_FLOWS R3) -----
+
+def _needs(tmp_path, today=AFTER_DAY):
+    rows = ledger(tmp_path)
+    verdict = cash_flows.toss_semantics(rows, cash_flows.load_state(tmp_path), today_kst=today)[0]
+    return verdict, cash_flows.toss_needs(rows, verdict, today_kst=today)
+
+
+def test_a_fresh_epoch_needs_a_buy_a_sell_and_a_settlement_day(tmp_path):
+    start_epoch(tmp_path, now="2026-10-09T09:00:00Z")
+    assert _needs(tmp_path) == ("WAITING", ["buy", "sell", "settlement_day"])
+
+
+def test_a_buy_and_a_sell_leave_only_the_settlement_day(tmp_path):
+    _buy_and_sell_windows(tmp_path)
+    assert _needs(tmp_path) == ("WAITING", ["settlement_day"])
+
+
+def test_all_three_pass_and_need_nothing(tmp_path):
+    _buy_and_sell_windows(tmp_path)
+    _settlement_fires(tmp_path, 12)
+    assert _needs(tmp_path) == ("PASS", [])
+
+
+def test_mixed_needs_a_review_not_a_trade(tmp_path):
+    _mixed_epoch_zero(tmp_path)
+    assert _needs(tmp_path) == ("MIXED", ["review"])
+    assert set(cash_flows.TOSS_NEEDS) >= {"buy", "sell", "settlement_day", "review"}

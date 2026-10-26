@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **664** distinct codes across **1321** raise sites
+- **665** distinct codes across **1322** raise sites
 - **22** exception classes carry them
 - **66** codes are raised from more than one module (see below)
 - **162** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -1105,6 +1105,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `QUEUE_FULL` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | `submit_within_depth` | `depth >= limit` |
 | `READ_UID_ALLOWLIST_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/read_bridge.py` | `__init__` | `not self.allowed_client_uids` |
 | `READ_UID_ALLOWLIST_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/read_bridge.py` | `open_door` | `not socket_door.resolve_client_uids()` |
+| `READ_UNAVAILABLE` | `ControlBlocked` | `runtime/mvp_runtime/store_reads.py` | `read_holdings_status` | `—` |
 | `REASON_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/pipeline_worker.py` | `apply_work` | `not isinstance(reason, str) or not reason.strip()` |
 | `REGISTRATION_MALFORMED` | `OperatorBlocked` | `runtime/mvp_runtime/operator.py` | `load_operator_registration` | `—` |
 | `REGISTRATION_MALFORMED` | `OperatorBlocked` | `runtime/mvp_runtime/operator.py` | `load_operator_registration` | `not (isinstance(operator_id, str) and operator_id and isinstance(chat_id, str) and chat_id)` |

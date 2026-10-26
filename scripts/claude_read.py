@@ -34,7 +34,7 @@ SOCKET = Path("/var/lib/thomas-claude-door/sock/read.sock")
 # The `claude` profile's reads (read_bridge.PROFILES). Spelled out rather than imported: read_bridge pulls in
 # the stores and schema validation, which the system python3 this runs under does not carry. A test holds
 # the two equal.
-READS = ("schedules", "scheduler_events")
+READS = ("schedules", "scheduler_events", "holdings_status")
 CLIENT_ID = "claude"
 DEADLINE_S = 10.0
 EXIT_OK, EXIT_BLOCKED, EXIT_USAGE = 0, 2, 3

@@ -105,7 +105,7 @@ def test_the_client_targets_the_composed_socket():
         _service()["command"][_service()["command"].index("--socket") + 1]).name
 
 
-@pytest.mark.parametrize("read", ["holdings_status", "crypto_readiness", "SCHEDULES", "nope"])
+@pytest.mark.parametrize("read", ["heartbeat", "crypto_readiness", "SCHEDULES", "nope"])
 def test_a_read_outside_the_profile_never_leaves_the_client(read, monkeypatch, capsys):
     monkeypatch.setattr(claude_read.socket_door, "call_door", lambda *a, **k: pytest.fail("reached the door"))
     assert claude_read.main([read]) == claude_read.EXIT_USAGE

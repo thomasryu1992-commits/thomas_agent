@@ -59,8 +59,12 @@ core thin while lanes grow, stated as rules:
   why the per-machine grants were retired and what that gave up: `docs/BUILD_HISTORY.md`.
 - **Claude does not touch the live money path.** The crypto stack can place a real order.
   Claude does not run it, does not handle keys, does not enable live trading.
-- **Claude reads the holdings lane only through its one table.** Use
-  `docker exec thomas-scheduler python -m scripts.holdings_board` (or `--json`). Never open
+- **Claude reads the holdings lane only through two outward surfaces.** The one table,
+  `docker exec thomas-scheduler python -m scripts.holdings_board` (or `--json`), which only Thomas's terminal
+  can run since C6b; and the Claude read door's `holdings_status` (`python3 scripts/claude_read.py
+  holdings_status`): snapshot freshness and the H6 readiness checks by name and state, counts and
+  `toss_needs`, never an amount (contract v1.1; HOLDINGS_STATUS_READ_AND_AUTO_FLOWS R1/R2, Thomas 2026-10-26).
+  Those check states are operational state, not the H3 table. Never open
   `.runtime_governance_state/holdings/` directly, and never run `holdings_board --full`,
   `--local`, `--unclassified`, `--classify`/`--unclassify`, `--reset-peak`,
   `--cash-flow-cutover`, `--flows`, `--resolve` or `--semantics-epoch`. Those are Thomas's, in his

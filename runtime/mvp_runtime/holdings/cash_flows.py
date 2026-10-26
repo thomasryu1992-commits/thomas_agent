@@ -98,6 +98,13 @@ READY, HELD = "READY", "HELD"
 UNVALUED = "UNVALUED"
 SCHEMA_NO_ROWS, SCHEMA_VERIFIED, SCHEMA_MISMATCH = "UNVERIFIED_NO_ROWS", "VERIFIED", "MISMATCH"
 PASS, FAIL, WAITING, RUNNING, UNCHECKED = "PASS", "FAIL", "WAITING", "RUNNING", "UNCHECKED"
+# The readiness checks and their values, closed: the Claude door's `holdings_status` carries exactly these
+# (HOLDINGS_STATUS_READ_AND_AUTO_FLOWS R1). A check added to :func:`readiness` joins here or the door's test fails.
+READINESS_STATUSES = (PASS, FAIL, WAITING, RUNNING, UNCHECKED)
+READINESS_CHECKS = ("binance_access", "binance_real_schema", "cross_source_dedupe", "current_health",
+                    "cutover_boundary", "history_completeness", "internal_transfer_guard", "ledger_chain",
+                    "ledger_state_consistency", "post_cutover_exceptions", "shadow_observation",
+                    "toss_cash_semantics")
 
 EVENT_FLOW = "flow_recorded"
 EVENT_INTERNAL = "internal_transfer"
@@ -1705,6 +1712,24 @@ def toss_semantics(rows: list[Mapping[str, Any]], state: Mapping[str, Any], *, t
             else ("WAITING", f"epoch {epoch}: needs " + ", ".join(missing)))
 
 
+# What the Toss check still waits for, as a closed list a door can carry (HOLDINGS_STATUS_READ_AND_AUTO_FLOWS R3,
+# Thomas 2026-10-26). ``toss_semantics`` says the same in a sentence; nothing parses that sentence.
+TOSS_NEEDS = ("buy", "sell", "settlement_day", "review")
+
+
+def toss_needs(rows: list[Mapping[str, Any]], verdict: str, *, today_kst: str) -> list[str]:
+    """[] once the Toss cash check passes; ``review`` while it is MIXED or waits on something no trade supplies
+    (Thomas's reading of a residual, or a new epoch); otherwise the trade evidence the current epoch lacks."""
+    if verdict == "PASS":
+        return []
+    if verdict == "MIXED":
+        return ["review"]
+    evidence = toss_evidence(rows, epoch=toss_epoch(rows), today_kst=today_kst)
+    missing = [name for name, ok in (("buy", evidence["buy_explained"]), ("sell", evidence["sell_explained"]),
+                                     ("settlement_day", evidence["clean_settlement_days"])) if not ok]
+    return missing or ["review"]
+
+
 # --- semantics epochs (H6d-min D4) -------------------------------------------------------------------------
 
 # Fixed synthetic windows the reconciliation is run over; their outputs are the behaviour an epoch names.
@@ -1931,7 +1956,8 @@ def readiness(state_dir: Path, *, now: str, current: Mapping[str, Any] | None = 
         days = (timeutil.parse_iso(now).timestamp() * 1000 - (_iso_ms(boundary) or 0)) / 86_400_000
     checks["shadow_observation"] = PASS if days >= SHADOW_MIN_DAYS and len(dates) >= SHADOW_MIN_DAYS else RUNNING
     ready = all(value == PASS for value in checks.values())
-    return {"checks": checks, "toss_note": toss_why, "toss_epoch": toss_epoch(rows), "shadow_days": round(days, 1),
+    return {"checks": checks, "toss_note": toss_why, "toss_epoch": toss_epoch(rows),
+            "toss_needs": toss_needs(rows, toss, today_kst=today_kst), "shadow_days": round(days, 1),
             "shadow_success_dates": len(dates), "exceptions": len(exceptions), "ready": ready,
             "open_exception_keys": sorted(exceptions),
             # R-3 (가-수정): ``absent`` and ``observed`` both mean the history before the checkpoint is

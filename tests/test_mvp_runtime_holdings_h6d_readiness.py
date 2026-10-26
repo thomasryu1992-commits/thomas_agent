@@ -174,8 +174,10 @@ def test_the_aggregate_view_still_passes_the_guard_and_keeps_its_keys(monkeypatc
         assert _decision(_payload("Bash", command=command), tmp_path) == "allow"
     _store_fire(monkeypatch, tmp_path)
     stored = json.loads(store.snapshot_path(tmp_path).read_text(encoding="utf-8"))
+    # `toss_needs` (R3, Thomas 2026-10-26) is a closed list of what the Toss check waits for: no amount, no key.
     assert set(stored["cash_flows"]["readiness"]) == {"checks", "ready", "shadow_days", "shadow_success_dates",
-                                                      "exceptions", "next_step"}
+                                                      "exceptions", "toss_needs", "next_step"}
+    assert set(stored["cash_flows"]["readiness"]["toss_needs"]) <= set(cash_flows.TOSS_NEEDS)
 
 
 def test_a_second_message_keeps_what_the_first_one_told(tmp_path):
@@ -188,3 +190,12 @@ def test_a_second_message_keeps_what_the_first_one_told(tmp_path):
     cash_flows.mark_exceptions_told(tmp_path, token=second["exceptions_token"], now="2026-10-09T04:20:00Z")
     third = cash_flows.update_readiness(tmp_path, now="2026-10-09T04:20:00Z")
     assert third["exceptions"] == 2 and third["exceptions_untold"] is False          # p1 is not told again
+
+
+def test_readiness_carries_exactly_the_closed_checks_and_the_toss_needs(tmp_path, monkeypatch):
+    """The Claude door projects these by name (HOLDINGS_STATUS_READ_AND_AUTO_FLOWS R1/R3): a check added to
+    readiness without joining READINESS_CHECKS would be dropped there as UNKNOWN."""
+    ready = _ready_baseline(tmp_path, monkeypatch)
+    assert set(ready["checks"]) == set(cash_flows.READINESS_CHECKS)
+    assert set(ready["checks"].values()) <= set(cash_flows.READINESS_STATUSES)
+    assert ready["toss_needs"] == []                                               # ready: Toss passed

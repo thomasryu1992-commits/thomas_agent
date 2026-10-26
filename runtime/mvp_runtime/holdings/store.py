@@ -58,6 +58,13 @@ RECORD_TYPE = "holdings_snapshot.v1"
 # When a rendered figure stops being a statement about now. Three hourly fires missed in a row.
 STALE_AFTER_SECONDS = 3 * 60 * 60
 
+# What the snapshot's `cash_flows.readiness` may hold, for a door that projects it (the Claude door's
+# `holdings_status`, HOLDINGS_STATUS_READ_AND_AUTO_FLOWS R1). Handed out here so no door imports the ledger
+# module (tests/test_mvp_runtime_holdings_cash_flows.py::test_no_door_module_reads_the_ledger).
+READINESS_CHECKS = cash_flows.READINESS_CHECKS
+READINESS_STATUSES = cash_flows.READINESS_STATUSES
+TOSS_NEEDS = cash_flows.TOSS_NEEDS
+
 HOLDINGS_SNAPSHOT_MISSING = "HOLDINGS_SNAPSHOT_MISSING"
 HOLDINGS_SNAPSHOT_UNREADABLE = "HOLDINGS_SNAPSHOT_UNREADABLE"
 
@@ -198,7 +205,7 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
                    "coherence": nav_checks.get(combined.CHECK_COHERENCE) == combined.PASS}
         ready = cash_flows.update_readiness(state_dir(root), now=now, current=current)
         flows["readiness"] = {key: ready[key] for key in ("checks", "ready", "shadow_days", "shadow_success_dates",
-                                                          "exceptions", "next_step")}
+                                                          "exceptions", "toss_needs", "next_step")}
         body["cash_flows"] = flows
         if ready["ready"] and not ready["told"]:
             readiness_alert = (
@@ -325,6 +332,19 @@ def load_local_view(*, now: str, root: Path | None = None) -> str:
              *render_view(body, stamp_line=f"{'as of':12}: {body.get('as_of')} ({age_text})")]
     lines.extend(f"{'note':12}: {note}" for note in body.get("notes") or [])
     return "\n".join(lines)
+
+
+def load_snapshot_status(*, now: str, root: Path | None = None) -> dict[str, Any]:
+    """The stored snapshot's freshness and its ``cash_flows`` block, for a door that projects them (the Claude
+    door's ``holdings_status``). Renders nothing, so a block the board would choke on cannot sink this read.
+    An unreadable snapshot raises, exactly as :func:`load_holdings_view` does."""
+    body = _read_json(snapshot_path(root))
+    if body is None:
+        return {"available": False, "reason_code": HOLDINGS_SNAPSHOT_MISSING}
+    age = _age_seconds(body.get("as_of"), now)
+    return {"available": True, "as_of": body.get("as_of"), "age_seconds": age,
+            "stale": age is None or age > STALE_AFTER_SECONDS, "partial": body.get("partial"),
+            "cash_flows": body.get("cash_flows")}
 
 
 def load_holdings_view(*, now: str, root: Path | None = None) -> tuple[str, dict[str, Any]]:

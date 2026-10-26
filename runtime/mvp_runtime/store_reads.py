@@ -674,3 +674,125 @@ def read_lane_digest(ledger: LedgerStore | None, argument: str | None, *, now: s
         "action": "LANE_DIGEST_READ",
         "data": {"since": since, "until": now, "days": days, "lanes": digest, "as_of": now},
     }
+
+
+# --- reply contract v1.1 for holdings_status (HOLDINGS_STATUS_READ_AND_AUTO_FLOWS R1–R3, Thomas 2026-10-26) ---
+#
+# The §4.19.2 v1 (freshness only) plus the H6 readiness checks by name and state, the open-exception count,
+# the shadow progress and what the Toss check still needs. Rebuilt from a closed allowlist over the stored
+# snapshot's ``cash_flows.readiness``: no amount, weight, holding, account, exception key, ``next_step`` or
+# ``toss_note`` text, and no key the snapshot gains later. ``holdings`` is a domain package, so it is imported
+# here, at the read, never at module level (tests/test_mvp_runtime_domain_isolation.py).
+
+HOLDINGS_STATUS = "HOLDINGS_STATUS"
+_HOLDINGS_MISSING = "HOLDINGS_SNAPSHOT_MISSING"
+
+
+def _holdings_schema(checks: tuple[str, ...], statuses: tuple[str, ...], needs: tuple[str, ...]) -> dict[str, Any]:
+    state = {"enum": [*statuses, "UNKNOWN"]}
+    h6 = {"type": "object", "additionalProperties": False,
+          "required": ["ready", "checks", "open_exceptions"],
+          "properties": {
+              "ready": {"type": "boolean"},
+              "checks": {"type": "object", "additionalProperties": False,
+                         "properties": {name: state for name in checks}},
+              "open_exceptions": {"type": "integer", "minimum": 0},
+              "shadow_days": _NUMBER_SCHEMA,
+              "shadow_success_dates": {"type": "integer", "minimum": 0},
+              "toss_needs": {"type": "array", "uniqueItems": True, "items": {"enum": list(needs)}},
+          }}
+    return {"type": "object", "additionalProperties": False, "required": ["available", "as_of", "projection"],
+            "properties": {
+                "available": {"type": "boolean"},
+                "reason_code": {"enum": [_HOLDINGS_MISSING]},
+                "snapshot_as_of": _TIME_SCHEMA, "age_seconds": _NUMBER_SCHEMA,
+                "stale": {"type": "boolean"}, "partial": {"type": "boolean"},
+                "h6": h6, "as_of": _TIME_SCHEMA,
+                "projection": {"enum": [PROJECTION_V1, PROJECTION_PARTIAL]},
+            }}
+
+
+def project_holdings_status(view: Any, *, now: str) -> dict[str, Any]:
+    """``holdings.store.load_holdings_view``'s data as the v1.1 contract. Refused whole on a schema defect."""
+    from .holdings import store as holdings_store         # domain package: at the read, never at import
+
+    checks_known, statuses, needs_known = (holdings_store.READINESS_CHECKS, holdings_store.READINESS_STATUSES,
+                                           holdings_store.TOSS_NEEDS)
+    schema = _holdings_schema(checks_known, statuses, needs_known)
+    partial = False
+    if not isinstance(view, Mapping) or view.get("available") is not True:
+        missing = isinstance(view, Mapping) and view.get("reason_code") == _HOLDINGS_MISSING
+        data: dict[str, Any] = {"available": False, "as_of": now}
+        if missing:
+            data["reason_code"] = _HOLDINGS_MISSING
+        data["projection"] = PROJECTION_V1 if missing else PROJECTION_PARTIAL
+        return _checked(data, schema)
+    data = {"available": True}
+    as_of = view.get("as_of")
+    if isinstance(as_of, str) and _ISO.match(as_of):
+        data["snapshot_as_of"] = as_of
+    elif as_of is not None:
+        partial = True
+    age = _nonneg_number(view.get("age_seconds"))
+    if age is not None:
+        data["age_seconds"] = age
+    for name in ("stale", "partial"):
+        if isinstance(view.get(name), bool):
+            data[name] = view[name]
+    flows = view.get("cash_flows")
+    readiness = flows.get("readiness") if isinstance(flows, Mapping) else None
+    if isinstance(readiness, Mapping):
+        h6: dict[str, Any] = {"ready": readiness.get("ready") is True}
+        raw_checks = readiness.get("checks") if isinstance(readiness.get("checks"), Mapping) else {}
+        checks: dict[str, str] = {}
+        for name, value in raw_checks.items():
+            if name not in checks_known:
+                partial = True                            # a check this contract does not know is dropped
+                continue
+            checks[name] = value if value in statuses else "UNKNOWN"
+            partial = partial or value not in statuses
+        h6["checks"] = checks
+        count = _nonneg_int(readiness.get("exceptions"))
+        h6["open_exceptions"] = count if count is not None else 0
+        partial = partial or count is None
+        days = _nonneg_number(readiness.get("shadow_days"))
+        if days is not None:
+            h6["shadow_days"] = round(days, 1)
+        dates = _nonneg_int(readiness.get("shadow_success_dates"))
+        if dates is not None:
+            h6["shadow_success_dates"] = dates
+        raw_needs = readiness.get("toss_needs")
+        if isinstance(raw_needs, (list, tuple)):
+            kept = [n for n in dict.fromkeys(raw_needs) if n in needs_known]
+            partial = partial or len(kept) != len(raw_needs)
+            h6["toss_needs"] = kept
+        data["h6"] = h6
+    elif flows is not None:
+        partial = True
+    data["as_of"] = now
+    data["projection"] = PROJECTION_PARTIAL if partial else PROJECTION_V1
+    return _checked(data, schema)
+
+
+def read_holdings_status(*, now: str, repo_root: Path | None, projection: str) -> dict[str, Any]:
+    """The holdings snapshot's freshness and H6 check states for a projecting door (the Claude door)."""
+    require_projection(projection)
+    from .holdings import store as holdings_store         # domain package: at the read, never at import
+
+    try:
+        view = holdings_store.load_snapshot_status(now=now, root=repo_root)
+    except MvpRuntimeError:
+        raise ControlBlocked("READ_UNAVAILABLE", "the holdings snapshot could not be read") from None
+    data = project_holdings_status(view, now=now)
+    if not data["available"]:
+        return {"reply": "holdings: no snapshot yet", "action": "HOLDINGS_STATUS_READ", "data": data}
+    lines = [f"holdings snapshot: {data.get('snapshot_as_of', '?')}"
+             + (" (stale)" if data.get("stale") else "")]
+    h6 = data.get("h6")
+    if h6 is not None:
+        lines.append(f"H6 ready: {h6['ready']}  open exceptions: {h6['open_exceptions']}"
+                     + (f"  shadow: {h6['shadow_days']} days" if "shadow_days" in h6 else ""))
+        lines += [f"  {name}: {state}" for name, state in sorted(h6["checks"].items())]
+        if "toss_needs" in h6:
+            lines.append("toss needs: " + (", ".join(h6["toss_needs"]) or "nothing"))
+    return {"reply": "\n".join(lines), "action": "HOLDINGS_STATUS_READ", "data": data}
