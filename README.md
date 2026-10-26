@@ -6,9 +6,10 @@ strict and the runtime is deliberately thin on policy: behaviour is defined by c
 and nothing is active until an explicit, versioned, audited approval turns it on.
 
 What runs today: a Telegram control channel and an analysis pipeline ("analyze this business
-idea"), a scheduler that fires recurring work, a crypto research and paper-trading lane, a content
-lane, and the doors an assistant used to reach them (its container, Hermes, was retired
-2026-10-25). Eight services from one image — see [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+idea"), a scheduler that fires recurring work (two lanes), a crypto research and paper-trading
+lane, a holdings board, a content lane, and a weekly management report. Five services from one
+image — see [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). The whole system on one page, including
+what runs outside this repository: [`docs/SYSTEM_MAP.md`](docs/SYSTEM_MAP.md).
 
 This is a personal system, published as-is. There is no license file.
 
@@ -43,7 +44,7 @@ docker exec -u 10001 thomas-scheduler python -m runtime.mvp_runtime.crypto.live_
 
 | Path | What it is |
 |---|---|
-| `runtime/mvp_runtime/` | The runtime: pipeline, scheduler, stores, gates, and the domain lanes (`crypto/`, `knowledge/`) |
+| `runtime/mvp_runtime/` | The runtime: pipeline, scheduler, stores, gates, and the domain lanes (`crypto/`, `holdings/`) |
 | `runtime/read_only_kernel/` | The read-only kernel — the runtime imports its modules (integrity, schema validation, audit) and never modifies it |
 | `governance/` | The governance policy: permissions, effects, authority |
 | `THOMAS_CORE/` | The active core (identity, values, operating policy) and its release flow |

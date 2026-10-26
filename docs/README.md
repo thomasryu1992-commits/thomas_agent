@@ -9,15 +9,17 @@ This file does not define Permission, Approval, Runtime behavior, readiness, or 
 
 | Purpose | Document |
 |---|---|
+| **The whole system on one page — read this first** (services, lanes, channels, governance spine, what runs outside this repository, what was retired) | [System Map](SYSTEM_MAP.md) |
 | **Top-level design-direction (Goal) document** — Target / MVP / Dynamic Task Team layers, expansion criteria, guardrails | [Thomas Autonomous Organization Architecture](THOMAS_AUTONOMOUS_ORGANIZATION_ARCHITECTURE.md) |
+| The investment goal: seven layers and their evidence gates (DRAFT) | [Target Architecture V0.1](proposals/THOMAS_AGENT_TARGET_ARCHITECTURE_V0.1.md) |
 | Final active architecture and canonical Gate commands | [Active Architecture](ACTIVE_ARCHITECTURE.md) |
-| **Hermes as orchestrator — decided architecture, the eight invariants, and the PR sequences** (2026-09-03, amended 2026-09-14 with the workflow manager decisions; **the container was retired 2026-10-25**) | [Hermes Orchestrator Architecture V0.2](HERMES_ORCHESTRATOR_ARCHITECTURE_V0.2.md) |
 | Canonical Governance Policy | [`governance/GOVERNANCE_POLICY.yaml`](../governance/GOVERNANCE_POLICY.yaml) |
 | Architecture Slimming principles | [Step 1 — Principles](architecture-slimming/STEP1_PRINCIPLES.md) |
 | Architecture review findings (why C is parked) | [Architecture Review Record](ARCHITECTURE_REVIEW_RECORD.md) |
 | Completed PR #6–#11 migration record | [Architecture Slimming Master](architecture-slimming/ARCHITECTURE_SLIMMING_MASTER.md) |
 | **What is still to build** (the single to-do list) | [Remaining Work](REMAINING_WORK.md) |
 | **What was built, and why it is shaped that way** | [Build History](BUILD_HISTORY.md) |
+| Retired: Hermes as orchestrator — the decision record (2026-09-03, amended 2026-09-14; the container and its four doors were retired 2026-10-25) | [Hermes Orchestrator Architecture V0.2](HERMES_ORCHESTRATOR_ARCHITECTURE_V0.2.md) |
 | Deferred Architecture | [`deferred/README.md`](../deferred/README.md) |
 | Generated Artifact boundary | [`generated/README.md`](../generated/README.md) |
 | Historical Artifact boundary | [`historical/README.md`](../historical/README.md) |

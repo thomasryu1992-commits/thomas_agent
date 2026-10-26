@@ -694,3 +694,7 @@ validation → audit → memory; R2–R10 및 이후 증분 — 구조와 소유
 남은 작업은 [Remaining Work](./REMAINING_WORK.md)가 소유한다). 새로운 설계 작업은
 이 문서의 레이어와 §12–§16 기준에 근거를 두어야 하며, 근거 없는 확장은 §16 가드레일
 위반으로 본다.
+
+**2026-10-25 점검 (non-normative):** 단일 작업 흐름(§8)은 지어져 있다. 정기 경영 보고는 같은 날
+`management_report`로 채웠다(`proposals/WEEKLY_MANAGEMENT_REPORT_V0.1.md`). 목표 연결(§8.3 "Connect requests to goals")과
+피드백을 다시 읽는 일은 아직 없다(`REMAINING_WORK.md` §E). 시스템 전체의 지금 모습은 [System Map](SYSTEM_MAP.md)에 있다.
