@@ -13,6 +13,7 @@
     python -m scripts.holdings_board --rebalance [--force]          # the rebalancing plan, terminal only
     python -m scripts.holdings_board --approve-candidates bonds=toss:domestic:A,toss:domestic:B   # override (RB2'')
     python -m scripts.holdings_board --autoinvest-approve "069500=1,114260=1" --max-krw 200000   # G6-buy, Thomas
+    python -m scripts.holdings_board --autoinvest-approve           # show today's drafted scenario, approve on y
     python -m scripts.holdings_board --autoinvest-status            # the approved scenario and its journal
     python -m scripts.holdings_board --resolve KEY --kind deposit --by thomas --reason "..."   # terminal only
     python -m scripts.holdings_board --semantics-epoch --change-ref "#1203" --by thomas --reason "..."
@@ -152,8 +153,9 @@ def main(argv: list[str] | None = None) -> int:
                       help="the rebalancing proposal over the last fire (REBALANCING_PROPOSAL; terminal only)")
     mode.add_argument("--approve-candidates", metavar="CLASS=ID[,ID...]",
                       help="override the automatic pick for a class (RB2''); CLASS= returns it to the automatic pick (Thomas)")
-    mode.add_argument("--autoinvest-approve", metavar="SYMBOL=SHARES[,...]",
-                      help="approve one buy scenario of current domestic candidates (G6-buy; Thomas, terminal only)")
+    mode.add_argument("--autoinvest-approve", metavar="SYMBOL=SHARES[,...]", nargs="?", const="",
+                      help="approve one buy scenario of current domestic candidates; with no spec, show today's "
+                           "drafted scenario and approve it on y (G6-buy; Thomas, terminal only)")
     mode.add_argument("--autoinvest-status", action="store_true",
                       help="the approved buy scenario and its order journal (G6-buy; terminal only)")
     mode.add_argument("--adopt-ledger", action="store_true",
@@ -248,10 +250,15 @@ def main(argv: list[str] | None = None) -> int:
 
         try:
             assert_not_foreign_root_run()
-            if args.max_krw is None:
-                raise ToolError(autoinvest.AUTOINVEST_REFUSED, "--max-krw is required")
-            body = autoinvest.approve(state_dir(), args.autoinvest_approve, max_krw=args.max_krw,
-                                      candidates=effective_candidates())
+            if args.autoinvest_approve == "":
+                body = _approve_proposal(effective_candidates())
+                if body is None:
+                    return EXIT_BLOCKED
+            else:
+                if args.max_krw is None:
+                    raise ToolError(autoinvest.AUTOINVEST_REFUSED, "--max-krw is required")
+                body = autoinvest.approve(state_dir(), args.autoinvest_approve, max_krw=args.max_krw,
+                                          candidates=effective_candidates())
         except MvpRuntimeError as exc:
             print(f"refused ({exc.reason_code}): {exc}")
             return EXIT_BLOCKED
@@ -314,6 +321,20 @@ def main(argv: list[str] | None = None) -> int:
 
 def _interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _approve_proposal(candidates: dict) -> dict | None:
+    """G6 §2e Q5: show today's drafted scenario and approve it on Thomas's ``y`` at a terminal, never otherwise."""
+    from runtime.mvp_runtime.holdings import autoinvest_proposal
+
+    print("\n".join(autoinvest_proposal.render(state_dir())))
+    if not _interactive():
+        print("refused: the draft is approved at an interactive terminal (docker exec -it)")
+        return None
+    if input("approve this scenario? [y/N] ").strip().lower() != "y":
+        print("not approved")
+        return None
+    return autoinvest_proposal.approve(state_dir(), now=timeutil.utc_now_iso(), candidates=candidates)
 
 
 def _exceptions(args: argparse.Namespace) -> int:

@@ -373,12 +373,16 @@ def refresh_auto_candidates(feed: Any, *, now: str, root: Path | None = None, sl
     # Only an explicit non-ACTIVE status counts: a row the answer leaves out is not evidence of a delisting.
     untradable = sorted(i for i in watched if status.get(i.split(":")[2], "ACTIVE") != "ACTIVE")
     manual_ids = {i for ids in manual.values() for i in ids}
+    # A pick from before the US bond was recorded apart (G6 §2e) is screened again once, to record it.
     trigger = ("monthly" if body.get("screened_month") != month
-               else "untradable" if any(i not in manual_ids for i in untradable) else None)
+               else "untradable" if any(i not in manual_ids for i in untradable)
+               else "bond_split" if "us_bonds" not in body else None)
     if trigger is not None:
         ranked, _ = candidates_mod.collect(feed, **({"sleep": sleep} if sleep else {}))
         picks = candidates_mod.auto_picks(ranked)
         auto = {cls: (ids or auto.get(cls, [])) for cls, ids in picks.items() if cls not in manual}
+        us_bonds = candidates_mod.us_bond_pick(ranked)
+        body["us_bonds"] = us_bonds if picks.get(allocation.BONDS) else body.get("us_bonds", [])
         body.update({"screened_at": now, "screened_month": month, "trigger": trigger,
                      "kept": sorted(cls for cls, ids in picks.items() if not ids and cls not in manual)})
     body.update({"record_type": AUTO_CANDIDATES_RECORD_TYPE, "candidates": auto,
@@ -425,10 +429,40 @@ def run_autoinvest(*, now: str, root: Path | None = None) -> dict[str, Any]:
     return {**result, "alert": autoinvest.notice(state_dir(root))}
 
 
+def refresh_autoinvest_proposal(*, now: str, root: Path | None = None) -> dict[str, Any]:
+    """G6 §2e (Thomas 2026-10-27): today's drafted buy scenario, after the executor's look, over the fire's own local
+    board and positions. Returns its status word and, until marked told, its notice (counts only). It orders
+    nothing: Thomas confirms the draft on his terminal."""
+    from . import autoinvest_proposal
+
+    feed = _feed()
+    if not isinstance(feed, TossHoldingsFeed):
+        return {"status": "no_feed", "alert": None}
+    try:
+        currencies = dict(classification.load(state_dir(root)).currencies)
+    except ToolError:
+        currencies = None
+    if currencies is None:
+        status = "classification_unreadable"
+    else:
+        positions = (_read_json(positions_path(root)) or {}).get("positions")
+        status = autoinvest_proposal.refresh(
+            feed, state_dir(root), now=now, board=_read_json(local_path(root)),
+            positions=positions if isinstance(positions, list) else None, currencies=currencies,
+            candidates=effective_candidates(root), us_bonds=(_read_json(auto_candidates_path(root)) or {}).get("us_bonds") or [])
+    return {"status": status, "alert": autoinvest_proposal.notice(state_dir(root))}
+
+
 def mark_autoinvest_told(token: str, *, now: str, root: Path | None = None) -> None:
     from . import autoinvest
 
     autoinvest.mark_told(state_dir(root), token, now=now)
+
+
+def mark_proposal_told(token: str, *, now: str, root: Path | None = None) -> None:
+    from . import autoinvest_proposal
+
+    autoinvest_proposal.mark_told(state_dir(root), token, now=now)
 
 
 BAND_NOTICE_FILENAME = "holdings_band_notice.json"
