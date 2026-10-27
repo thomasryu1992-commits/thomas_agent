@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **659** distinct codes across **1326** raise sites
+- **659** distinct codes across **1330** raise sites
 - **22** exception classes carry them
 - **65** codes are raised from more than one module (see below)
 - **172** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -498,6 +498,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `HOLDINGS_AUTOINVEST_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/autoinvest.py` | `approve` | `not isinstance(max_krw, int) or not 0 < max_krw <= DAILY_CAP_KRW` |
 | `HOLDINGS_AUTOINVEST_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/autoinvest.py` | `approve` | `outside` |
 | `HOLDINGS_AUTOINVEST_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/autoinvest.py` | `parse_spec` | `not items or len(items) > MAX_ITEMS or len({i['instrument'] for i in items}) != len(items)` |
+| `HOLDINGS_AUTOINVEST_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/autoinvest.py` | `parse_spec` | `not sep or not ident.startswith('toss:overseas:') or (not re.match('^[A-Z][A-Z.\\-]{0,9}$', sym…` |
 | `HOLDINGS_AUTOINVEST_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/autoinvest.py` | `parse_spec` | `not sep or quantity < 1 or (not ident.startswith('toss:domestic:')) or (len(ident.split(':')[2]…` |
 | `HOLDINGS_CASH_FLOW_ADOPT_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `_adoptable` | `legacy_import_refusal(rows, state)` |
 | `HOLDINGS_CASH_FLOW_ADOPT_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `_adoptable` | `not rows` |
@@ -1323,6 +1324,9 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `TOSS_ORDER_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/toss_orders.py` | `buy_kr` | `not isinstance(price, int) or isinstance(price, bool) or price < 1` |
 | `TOSS_ORDER_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/toss_orders.py` | `buy_kr` | `not isinstance(quantity, int) or isinstance(quantity, bool) or quantity < 1` |
 | `TOSS_ORDER_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/toss_orders.py` | `buy_kr` | `not symbol or not symbol.isalnum() or len(symbol) != 6` |
+| `TOSS_ORDER_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/toss_orders.py` | `buy_us_amount` | `—` |
+| `TOSS_ORDER_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/toss_orders.py` | `buy_us_amount` | `not isinstance(amount_usd, str) or not _USD_AMOUNT.match(amount_usd) or float(amount_usd) <= 0` |
+| `TOSS_ORDER_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/toss_orders.py` | `buy_us_amount` | `not isinstance(symbol, str) or not _US_SYMBOL.match(symbol)` |
 | `TOSS_TOKEN_REJECTED` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `_issue_token` | `—` |
 | `TRANSITION_INVALID` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | `_assert_transition` | `target not in _ALLOWED_TRANSITIONS.get(current, frozenset())` |
 | `TREE_NOT_CLEAN` | `RunnerRefused` | `runtime/mvp_runtime/deploy_runner/actor.py` | `_tree` | `status.strip()` |
