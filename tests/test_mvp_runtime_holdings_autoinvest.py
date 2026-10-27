@@ -141,6 +141,49 @@ def test_a_rejection_is_told_apart_from_an_unknown_outcome(monkeypatch, answer, 
         orders.buy_kr("069500", 1, client_order_id="c1")
 
 
+class _Raw:
+    """An HTTP error whose body and headers are given as they arrived."""
+
+    def __init__(self, status, body: bytes, headers=None):
+        self.status, self.body, self.headers = status, body, headers or {}
+
+
+def _send_raw(monkeypatch, raw):
+    def urlopen(request, timeout=None):
+        raise urllib.error.HTTPError(request.full_url, raw.status, "x", raw.headers, io.BytesIO(raw.body))
+
+    monkeypatch.setenv(toss_orders.TOSS_ORDERS_ENV, toss_orders.BUY_ONLY)
+    monkeypatch.setattr(toss_orders.urllib.request, "urlopen", urlopen)
+    return toss_orders.select_buy_orders(_feed())
+
+
+@pytest.mark.parametrize(("raw", "expected"), [
+    (_Raw(422, json.dumps({"error": {"requestId": "R1", "code": "insufficient-buying-power",
+                                     "message": "주문 가능 금액이 부족합니다."}}).encode()),
+     {"code": "insufficient-buying-power", "body_kind": "envelope", "request_id": "R1",
+      "message": "주문 가능 금액이 부족합니다."}),
+    (_Raw(422, json.dumps({"code": "prerequisite-required", "message": "m"}).encode()),
+     {"code": "prerequisite-required", "body_kind": "flat", "message": "m"}),
+    (_Raw(422, b"<html>blocked</html>", {"X-Request-Id": "H9", "Content-Type": "text/html"}),
+     {"code": "", "body_kind": "non_json", "request_id": "H9", "content_type": "text/html"}),
+    (_Raw(422, b""), {"code": "", "body_kind": "empty"}),
+])
+def test_a_rejection_keeps_what_toss_said_whatever_its_shape(monkeypatch, raw, expected):
+    orders = _send_raw(monkeypatch, raw)
+    with pytest.raises(toss_orders.OrderRejected) as rejected:
+        orders.buy_kr("069500", 1, client_order_id="c1")
+    detail = rejected.value.detail
+    assert detail["status"] == 422 and {k: detail[k] for k in expected} == expected
+    assert rejected.value.toss_code == expected["code"]
+
+
+def test_a_long_message_is_cut_to_a_line(monkeypatch):
+    orders = _send_raw(monkeypatch, _Raw(422, json.dumps({"error": {"code": "x", "message": "가" * 500}}).encode()))
+    with pytest.raises(toss_orders.OrderRejected) as rejected:
+        orders.buy_kr("069500", 1, client_order_id="c1")
+    assert len(rejected.value.detail["message"]) == toss_orders.MESSAGE_LIMIT
+
+
 def test_a_revoked_token_is_reissued_once_and_the_same_order_resent(monkeypatch):
     http = _Http((401, "token-revoked"), {"result": {"orderId": "OID-2"}})
     orders, feed = _orders(monkeypatch, http)
@@ -291,6 +334,21 @@ def test_a_rejection_stops_the_rest_and_never_resends(tmp_path):
     assert [s for s, _, _ in orders.calls] == ["069500", "114260"]
     assert ai.run(_Feed(), orders, tmp_path, now="2026-10-28T01:00:00Z")["status"] == "none" and len(orders.calls) == 2
     assert "insufficient-buying-power" in ai.notice(tmp_path)[1]
+    rejected = [r for r in ai.journal(tmp_path) if r["state"] == "rejected"]
+    assert rejected[0]["toss"] == {}            # the fake carries no detail; the real one's is kept (below)
+
+
+def test_the_journal_keeps_toss_detail_and_the_terminal_shows_it(tmp_path):
+    _approve(tmp_path)
+    detail = {"status": 422, "code": "", "message": "주문 가능 금액이 부족합니다.", "request_id": "R7",
+              "body_kind": "envelope", "content_type": "application/json"}
+    orders = _Orders(fail_at=2, error=toss_orders.OrderRejected(422, "", detail))
+    assert ai.run(_Feed(), orders, tmp_path, now=OPEN)["status"] == "stopped:2"
+    (row,) = [r for r in ai.journal(tmp_path) if r["state"] == "rejected"]
+    assert row["toss"] == detail and row["code"] == "422"
+    text = "\n".join(ai.render_status(tmp_path))
+    assert "request_id=R7" in text and "주문 가능 금액이 부족합니다." in text
+    assert "R7" not in ai.notice(tmp_path)[1]   # the channel gets the code, never the detail
 
 
 def test_an_unknown_outcome_stops_and_is_said_so(tmp_path):

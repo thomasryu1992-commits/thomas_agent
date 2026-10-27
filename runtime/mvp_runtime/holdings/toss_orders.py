@@ -44,15 +44,50 @@ ORDER_REFUSED = "TOSS_ORDER_REFUSED"
 
 
 class OrderRejected(ToolError):
-    def __init__(self, status: int, code: str):
+    def __init__(self, status: int, code: str, detail: dict[str, Any] | None = None):
         super().__init__(ORDER_REJECTED, f"Toss rejected the order ({status} {code or 'no code'})")
-        self.status, self.toss_code = status, code
+        self.status, self.toss_code, self.detail = status, code, detail or {}
 
 
 class OrderUnknown(ToolError):
-    def __init__(self, why: str):
+    def __init__(self, why: str, detail: dict[str, Any] | None = None):
         super().__init__(ORDER_UNKNOWN, f"the order may or may not be placed ({why})")
-        self.why = why
+        self.why, self.detail = why, detail or {}
+
+
+MESSAGE_LIMIT = 200
+
+
+def error_detail(exc: urllib.error.HTTPError) -> dict[str, Any]:
+    """What Toss said about a refused order, for the local journal only (LOCAL_ONLY; never a channel).
+
+    The first live 422 (2026-10-27) left nothing but its status: the code was not where the envelope puts it, and
+    the message and request id were not kept. So every shape is read here: the documented ``{"error": {...}}``
+    envelope, a flat ``{"code": ...}``, a non-JSON body. ``message`` is Toss's user-facing text (``ApiError``:
+    "사용자에게 노출 가능한"), cut to a line; ``request_id`` is what Toss support asks for; ``body_kind`` says
+    which shape arrived. Nothing here is a secret: the token is in the request, not the answer."""
+    headers = exc.headers or {}
+    detail: dict[str, Any] = {"status": exc.code, "code": "", "message": "", "body_kind": "empty",
+                              "request_id": str(headers.get("X-Request-Id") or headers.get("referenceId") or ""),
+                              "content_type": str(headers.get("Content-Type") or "")[:60]}
+    try:
+        raw = exc.read()
+    except OSError:
+        raw = b""
+    if not raw:
+        return detail
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        detail["body_kind"] = "non_json"
+        return detail
+    error = body.get("error") if isinstance(body, dict) else None
+    source = error if isinstance(error, dict) else body if isinstance(body, dict) else {}
+    detail["body_kind"] = "envelope" if isinstance(error, dict) else "flat" if source else "other_json"
+    detail["code"] = str(source.get("code") or "")
+    detail["message"] = str(source.get("message") or "")[:MESSAGE_LIMIT]
+    detail["request_id"] = str(source.get("requestId") or detail["request_id"])
+    return detail
 
 
 class NoBuyOrders:
@@ -87,14 +122,11 @@ class TossBuyOrders:
             with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
                 raw = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
-            code = ""
-            try:
-                code = str((json.loads(exc.read().decode("utf-8")).get("error") or {}).get("code") or "")
-            except (ValueError, AttributeError, OSError):
-                pass
+            detail = error_detail(exc)
+            code = detail["code"]
             if exc.code >= 500 or code == "request-in-progress":
-                raise OrderUnknown(f"{exc.code} {code}".strip()) from None
-            raise OrderRejected(exc.code, code) from None
+                raise OrderUnknown(f"{exc.code} {code}".strip(), detail) from None
+            raise OrderRejected(exc.code, code, detail) from None
         except (TimeoutError, urllib.error.URLError, OSError):
             raise OrderUnknown("timeout or dropped connection") from None
         try:
