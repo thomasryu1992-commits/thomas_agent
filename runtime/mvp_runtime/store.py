@@ -118,6 +118,9 @@ _RECORD_KINDS = (
     # The system's re-check of each reported draft against the drafting cron's own verdict (BLOG_DEPARTMENT v0.2
     # P2, 2026-10-26): per draft a short id, its state and whether the codes agree; appended by ``blog_verify``.
     "blog_verification",
+    # The week's blog statistics as the Mac collected them, read from the vault, with the weekly review's own numbers
+    # beside the system's (BLOG_DEPARTMENT v0.2 P3, 2026-10-27); appended by ``blog_analyze``.
+    "blog_analysis",
     "programization_observation", "programization_pattern",
 )
 
