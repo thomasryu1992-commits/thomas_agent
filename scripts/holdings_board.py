@@ -328,13 +328,25 @@ def _approve_proposal(candidates: dict) -> dict | None:
     from runtime.mvp_runtime.holdings import autoinvest_proposal
 
     print("\n".join(autoinvest_proposal.render(state_dir())))
+    body = autoinvest_proposal.read(state_dir())
+    if not body.get("items") or body.get("approved_scenario"):
+        print("nothing to approve: no new draft (one is drafted on a trading day while no scenario is pending)")
+        return None
     if not _interactive():
         print("refused: the draft is approved at an interactive terminal (docker exec -it)")
         return None
-    if input("approve this scenario? [y/N] ").strip().lower() != "y":
-        print("not approved")
+    if _answer("approve this scenario? [y/N] ") != "y":
+        print("not approved (type y with the keyboard in English input)")
         return None
     return autoinvest_proposal.approve(state_dir(), now=timeutil.utc_now_iso(), candidates=candidates)
+
+
+def _answer(prompt: str) -> str:
+    """One line from the terminal, as bytes decoded leniently: a byte the terminal sends outside UTF-8 (a Korean
+    input mode, 2026-10-27) is a 'no', never a crash."""
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    return sys.stdin.buffer.readline().decode("utf-8", "replace").strip().lower()
 
 
 def _exceptions(args: argparse.Namespace) -> int:

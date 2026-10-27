@@ -136,10 +136,12 @@ def approve(state_dir: Path, spec: str, *, max_krw: int, candidates: Mapping[str
     typo cannot buy an arbitrary stock. A new approval replaces the last one, unless that one still has an open
     order; its own ids are new."""
     items = parse_spec(spec)
-    allowed = {i for ids in candidates.values() for i in ids}
-    outside = [i["instrument"] for i in items if i["instrument"] not in allowed]
+    class_of = {i: asset_class for asset_class, ids in candidates.items() for i in ids}
+    outside = [i["instrument"] for i in items if i["instrument"] not in class_of]
     if outside:
         raise ToolError(AUTOINVEST_REFUSED, f"{len(outside)} instrument(s) are not current candidates")
+    for item in items:
+        item["asset_class"] = class_of[item["instrument"]]     # what it is bought for; see classify_bought
     if not isinstance(max_krw, int) or not 0 < max_krw <= DAILY_CAP_KRW:
         raise ToolError(AUTOINVEST_REFUSED, f"--max-krw must be 1..{DAILY_CAP_KRW:,}")
     stamp = now or timeutil.utc_now_iso()
@@ -357,7 +359,8 @@ def _place(orders: Any, state_dir: Path, body: dict[str, Any], today: str, now: 
             break
         quantity, price = _remaining(item), prices[item["instrument"]]
         base = {"at": now, "day": today, "scenario_id": body["scenario_id"], "client_order_id": cid,
-                "instrument": item["instrument"], "quantity": quantity, "price": price,
+                "instrument": item["instrument"], "asset_class": item.get("asset_class"), "quantity": quantity,
+                "price": price,
                 "est_krw": round(estimates[item["instrument"]])}
         _append(state_dir, {**base, "state": "intent"})
         try:
@@ -388,6 +391,40 @@ def _place(orders: Any, state_dir: Path, body: dict[str, Any], today: str, now: 
     body.pop("hold_reason", None)
     _write(state_dir, body)
     return {"status": f"{'ordered' if outcome == PENDING else outcome}:{placed}"}
+
+
+def classify_bought(state_dir: Path, *, candidates: Mapping[str, Iterable[str]], us_bonds: Iterable[str],
+                    now: str) -> list[str]:
+    """G6 §2f (Thomas 2026-10-27): enter each instrument this path bought (an ``accepted`` journal row) that no
+    entry places yet, in the class it was bought for. A row from before the class was journalled takes its class
+    from the current candidates. A bond names its currency (the US Treasury pick is USD, any other bond KRW),
+    because the bond class has none. It never changes an entry that exists, Thomas's or its own; an instrument
+    whose class cannot be told is left for Thomas. Returns the instruments it entered."""
+    from . import allocation, classification
+
+    bought = {}
+    for row in journal(state_dir):
+        if row.get("state") == "accepted" and row.get("instrument"):
+            bought[str(row["instrument"])] = row.get("asset_class") or bought.get(str(row["instrument"]))
+    if not bought:
+        return []
+    current = classification.load(state_dir)        # unreadable: raises, and nothing is written
+    class_of = {i: asset_class for asset_class, ids in candidates.items() for i in ids}
+    us = set(us_bonds)
+    assign: dict[str, str] = {}
+    currency: dict[str, str] = {}
+    for instrument, recorded in sorted(bought.items()):
+        if instrument in current.entries or allocation.CLASSIFICATION.get(instrument.split(":")[-1]):
+            continue
+        asset_class = recorded or class_of.get(instrument)
+        if asset_class not in classification.ASSIGNABLE_CLASSES:
+            continue
+        assign[instrument] = asset_class
+        if asset_class == allocation.BONDS:
+            currency[instrument] = "usd" if instrument in us else "krw"
+    if assign:
+        classification.apply(state_dir, assign=assign, currency=currency, now=now, source="g6_buy")
+    return sorted(assign)
 
 
 def notice(state_dir: Path) -> tuple[str, str] | None:

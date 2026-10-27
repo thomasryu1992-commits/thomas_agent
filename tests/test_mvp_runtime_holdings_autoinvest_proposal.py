@@ -208,12 +208,79 @@ def test_the_board_command_approves_only_on_y_at_a_terminal(monkeypatch, tmp_pat
     monkeypatch.setattr(holdings_board, "_interactive", lambda: False)
     assert holdings_board.main(["--autoinvest-approve"]) == holdings_board.EXIT_BLOCKED
     monkeypatch.setattr(holdings_board, "_interactive", lambda: True)
-    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+    monkeypatch.setattr(holdings_board, "_answer", lambda _prompt: "n")
     assert holdings_board.main(["--autoinvest-approve"]) == holdings_board.EXIT_BLOCKED
     assert ai._read(store.state_dir(tmp_path)) == {}
-    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+    monkeypatch.setattr(holdings_board, "_answer", lambda _prompt: "y")
     assert holdings_board.main(["--autoinvest-approve"]) == holdings_board.EXIT_OK
     assert ai._read(store.state_dir(tmp_path))["status"] == ai.PENDING
+    # The draft is spent: running it again asks nothing (2026-10-27: "proposal: none" still asked for y).
+    monkeypatch.setattr(holdings_board, "_answer", lambda _prompt: pytest.fail("asked with nothing to approve"))
+    assert holdings_board.main(["--autoinvest-approve"]) == holdings_board.EXIT_BLOCKED
+
+
+def test_with_no_draft_the_board_asks_nothing(monkeypatch, tmp_path):
+    from scripts import holdings_board
+
+    monkeypatch.setattr(holdings_board, "state_dir", lambda: store.state_dir(tmp_path))
+    monkeypatch.setattr(holdings_board, "assert_not_foreign_root_run", lambda: None)
+    monkeypatch.setattr(holdings_board, "_interactive", lambda: True)
+    monkeypatch.setattr(holdings_board, "_answer", lambda _prompt: pytest.fail("asked with nothing to approve"))
+    assert holdings_board.main(["--autoinvest-approve"]) == holdings_board.EXIT_BLOCKED
+
+
+def test_a_byte_outside_utf8_is_a_no_not_a_crash(monkeypatch):
+    """2026-10-27: a y typed in a Korean input mode reached input() outside UTF-8 and raised UnicodeDecodeError."""
+    import io
+    import types
+
+    from scripts import holdings_board
+
+    monkeypatch.setattr(holdings_board.sys, "stdin", types.SimpleNamespace(buffer=io.BytesIO(b"\xa4\xcb\n")))
+    assert holdings_board._answer("approve? ") != "y"
+    monkeypatch.setattr(holdings_board.sys, "stdin", types.SimpleNamespace(buffer=io.BytesIO(b" Y\n")))
+    assert holdings_board._answer("approve? ") == "y"
+
+
+# --- G6 §2f: what the path bought is entered in the class it was bought for --------------------------------------
+
+def _journal(state, *rows):
+    state.mkdir(parents=True, exist_ok=True)
+    with ai.journal_path(state).open("a", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row) + "\n")
+
+
+def test_bought_instruments_are_entered_in_their_class_and_bonds_name_their_currency(tmp_path):
+    _journal(tmp_path,
+             {"state": "accepted", "instrument": DOM},                                   # before the class was kept
+             {"state": "accepted", "instrument": KR3},
+             {"state": "accepted", "instrument": US10, "asset_class": al.BONDS},
+             {"state": "rejected", "instrument": GOLD, "asset_class": al.GOLD},          # never bought
+             {"state": "intent", "instrument": "toss:domestic:233740", "asset_class": al.DOMESTIC_EQUITY})
+    entered = ai.classify_bought(tmp_path, candidates=CANDIDATES, us_bonds=[US10], now=OPEN)
+    assert entered == sorted([DOM, KR3, US10])
+    loaded = classification.load(tmp_path)
+    assert {i: loaded.entries[i] for i in entered} == {DOM: al.DOMESTIC_EQUITY, KR3: al.BONDS, US10: al.BONDS}
+    assert dict(loaded.currencies) == {KR3: "krw", US10: "usd"}
+    raw = json.loads(classification.path(tmp_path).read_text(encoding="utf-8"))["entries"]
+    assert {row["source"] for row in raw.values()} == {"g6_buy"}
+    version = loaded.mapping_version
+    assert ai.classify_bought(tmp_path, candidates=CANDIDATES, us_bonds=[US10], now=LATER) == []
+    assert classification.load(tmp_path).mapping_version == version                  # nothing new, no new version
+
+
+def test_an_entry_that_exists_is_never_changed_and_an_unknown_class_is_left_for_thomas(tmp_path):
+    classification.apply(tmp_path, assign={DOM: al.GLOBAL_EQUITY})                    # Thomas's own choice
+    _journal(tmp_path, {"state": "accepted", "instrument": DOM},
+             {"state": "accepted", "instrument": "toss:domestic:999999"})               # in no candidate list
+    assert ai.classify_bought(tmp_path, candidates=CANDIDATES, us_bonds=[], now=OPEN) == []
+    assert dict(classification.load(tmp_path).entries) == {DOM: al.GLOBAL_EQUITY}
+
+
+def test_approval_keeps_the_class_the_instrument_is_bought_for(tmp_path):
+    ai.approve(tmp_path, "411060=1", max_krw=30_000, candidates=CANDIDATES, now=OPEN)
+    assert ai._read(tmp_path)["items"][0]["asset_class"] == al.GOLD
 
 
 # --- the store and the scheduler --------------------------------------------------------------------------------

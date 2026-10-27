@@ -18,6 +18,10 @@ exposed to (:data:`CURRENCIES`), for the local-only currency line (``allocation`
 an entry without it takes its class's default. A bond needs it, because a bond class has no single
 currency. The field is additive: a file without it reads as before.
 
+**One writer besides Thomas (G6 §2f, Thomas 2026-10-27).** An instrument the G6-buy path bought, that no entry
+places yet, is entered in the class it was bought for (``autoinvest.classify_bought``), marked
+``"source": "g6_buy"``. It never changes or removes an entry, Thomas's or its own.
+
 **Fail closed.** A file that exists but does not parse, or carries an unknown class, raises
 :data:`CLASSIFICATION_UNREADABLE`; the allocation then treats every entry as absent and says so, so the
 band verdict stays withheld rather than resting on a guess.
@@ -111,10 +115,12 @@ def load(state_dir: Path) -> Classification:
 
 
 def apply(state_dir: Path, *, assign: Mapping[str, str] | None = None, remove: tuple[str, ...] = (),
-          currency: Mapping[str, str] | None = None, now: str | None = None) -> Classification:
+          currency: Mapping[str, str] | None = None, now: str | None = None,
+          source: str | None = None) -> Classification:
     """Add, change or remove entries and move the version once. Refuses an id, class or currency it
     cannot place, before anything is written. ``currency`` names the exposure of entries in ``assign``;
-    an assigned entry without one is written without one. The terminal command is the only caller."""
+    an assigned entry without one is written without one. Callers: Thomas's terminal command, and G6-buy's
+    entry for what it bought (``source``, recorded on each entry it writes)."""
     assign = dict(assign or {})
     currency = dict(currency or {})
     for instrument, code in currency.items():
@@ -143,7 +149,8 @@ def apply(state_dir: Path, *, assign: Mapping[str, str] | None = None, remove: t
             raw.pop(instrument, None)
         for instrument, asset_class in assign.items():
             raw[instrument] = {"asset_class": asset_class, "approved_at": stamp,
-                               **({"currency": currency[instrument]} if instrument in currency else {})}
+                               **({"currency": currency[instrument]} if instrument in currency else {}),
+                               **({"source": source} if source else {})}
         body = {"record_type": RECORD_TYPE, "mapping_version": current.mapping_version + 1,
                 "updated_at": stamp, "entries": raw, **({"candidates": kept} if kept else {})}
         tmp = target.with_suffix(".tmp")
