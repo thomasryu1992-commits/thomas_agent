@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "blog_kw_replay.v0.1.schema.json",
+  "title": "Blog Keyword Replay v0.1",
+  "description": "One recorded keyword-pipeline run (BLOG_DEPARTMENT v0.2 P4a) re-run offline by the system with the generated port and compared with what the recorded run wrote: the candidate set with each candidate's lane, score and decision, the top candidates per lane, the Tistory candidates, the out-of-league list and the rank table. Keywords are public search phrases; no URL, title or response body is recorded.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "replay_id",
+    "replayed_at",
+    "bundle",
+    "run_started",
+    "state",
+    "agree",
+    "responses",
+    "misses",
+    "stale",
+    "comparison",
+    "differ"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "blog_kw_replay.v0.1"
+    },
+    "replay_id": {
+      "type": "string",
+      "pattern": "^blogkwreplay_[0-9a-f]{20}$"
+    },
+    "replayed_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "bundle": {
+      "type": "string",
+      "pattern": "^\\d{8}-\\d{6}$"
+    },
+    "run_started": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 40
+    },
+    "state": {
+      "type": "string",
+      "pattern": "^(compared|generator_stale|replay_miss|unreadable|error:[A-Za-z]{1,60})$"
+    },
+    "agree": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "responses": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "misses": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "stale": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "enum": [
+          "kw_pipeline.py",
+          "blog_taxonomy.py",
+          "affiliate_fetch.py"
+        ]
+      }
+    },
+    "comparison": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "candidates_recorded",
+            "candidates_replayed",
+            "top_sets_equal",
+            "tistory_recorded",
+            "tistory_replayed",
+            "tistory_equal",
+            "out_of_league_equal",
+            "ranks_equal",
+            "fields_differing"
+          ],
+          "properties": {
+            "candidates_recorded": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "candidates_replayed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "top_sets_equal": {
+              "type": "boolean"
+            },
+            "tistory_recorded": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "tistory_replayed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "tistory_equal": {
+              "type": "boolean"
+            },
+            "out_of_league_equal": {
+              "type": "boolean"
+            },
+            "ranks_equal": {
+              "type": "boolean"
+            },
+            "fields_differing": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      ]
+    },
+    "differ": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kw",
+          "field"
+        ],
+        "properties": {
+          "kw": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "field": {
+            "enum": [
+              "missing",
+              "extra",
+              "lane",
+              "score",
+              "decision"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

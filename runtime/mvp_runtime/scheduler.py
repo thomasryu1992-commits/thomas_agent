@@ -226,12 +226,16 @@ KIND_BLOG_VERIFY = "blog_verify"
 # Maintenance, not risk: it reads the vault read-only and writes one ledger record per week (again when a late
 # file changes what it read).
 KIND_BLOG_ANALYZE = "blog_analyze"
+# The keyword pipeline's replay shadow (BLOG_DEPARTMENT v0.2 P4a, Thomas 2026-10-27 "재생 그림자 먼저"): once a day,
+# re-run each recorded run of the vault's keyword pipeline offline with the generated port and record whether it wrote
+# the same thing. Maintenance, not risk: it reads a read-only bundle folder and opens no URL.
+KIND_BLOG_KW_REPLAY = "blog_kw_replay"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
                    KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE,
                    KIND_BREAKER_WATCH, KIND_ROUTE_WATCH, KIND_CANDLE_ARCHIVE,
                    KIND_NULL_CONTROL,
                    KIND_FORWARD_COHORT, KIND_HOLDINGS, KIND_MANAGEMENT_REPORT, KIND_BLOG_VERIFY,
-                   KIND_BLOG_ANALYZE})
+                   KIND_BLOG_ANALYZE, KIND_BLOG_KW_REPLAY})
 
 # The kinds whose lateness costs money rather than freshness.
 #
@@ -304,6 +308,7 @@ MAINTENANCE_KINDS: frozenset[str] = frozenset({
     KIND_DATA_REVIEW, KIND_ROTATE, KIND_CANDLE_ARCHIVE, KIND_NULL_CONTROL,
     KIND_FORWARD_COHORT,
     KIND_HOLDINGS, KIND_MANAGEMENT_REPORT, KIND_BLOG_VERIFY, KIND_BLOG_ANALYZE,
+    KIND_BLOG_KW_REPLAY,
 })
 
 # How much of one pass the non-risk kinds may spend before it stops STARTING more of them.
@@ -1517,6 +1522,10 @@ def _execute(
         from .blog import analysis as blog_analysis
 
         return blog_analysis.fire(ledger, now=now)
+    if schedule.kind == KIND_BLOG_KW_REPLAY:
+        from .blog import kw_replay as blog_kw_replay
+
+        return blog_kw_replay.fire(ledger, now=now)
     if schedule.kind == KIND_MANAGEMENT_REPORT:
         # WMR-1: read the four sections (each fails on its own) and send them on the control bot.
         # Unlike KIND_REPORT, a send that fails RAISES: a weekly report that vanished quietly is

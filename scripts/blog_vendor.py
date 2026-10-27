@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import subprocess
 import sys
 from pathlib import Path
@@ -133,6 +134,214 @@ def generate(key: str, vault: Path, commit: str) -> str:
     return header + text.rstrip("\n") + "\n" + CONFIGURE.get(key, "")
 
 
+# --- P4a: the keyword pipeline, generated for offline replay (Thomas 2026-10-27 "재생 그림자 먼저") ------------------
+#
+# The vault's ``tools/kw_pipeline.py`` (with ``affiliate_fetch.py``'s note parser) is generated into ``blog/`` so the
+# system can re-run a recorded run (``KW_REPLAY_DIR`` bundle) and compare outputs. The edits differ from the checkers':
+#
+# - **No network, by substitution.** ``http`` is swapped for a call into the replay's transport, which answers only
+#   with the bodies the recorded run received (a URL it never fetched raises ``ReplayMiss``). ``urllib.request`` goes.
+# - **The recorded run's clock and branches.** ``now``, ``time.time`` and ``time.sleep`` read the recording (sleep is a
+#   no-op); ``load_keys`` answers "present" exactly when the recorded run had a Search Ad key (no key is ever read), and
+#   ``decision_mode`` the recorded mode.
+# - **Writes are redirected, not removed.** Every path derives from ``VAULT``/``CACHE_DIR``; ``configure`` points them
+#   at the replay's working copy of the bundle, so the run writes there and nowhere else. Removing writes would change
+#   the control flow the comparison is meant to test.
+# - **Nothing at import time.** The module-level caches and ``POSTS_PER_DAY`` are built by ``configure``; every
+#   module-level assignment that depends on a path is re-run there (found by name, below), so none is listed by hand.
+REPLAY_SOURCES = {"kw_pipeline": "kw_pipeline.py", "affiliate": "affiliate_fetch.py", "kw_taxonomy": "blog_taxonomy.py"}
+
+REPLAY_REPLACE = {
+    "kw_pipeline": [
+        ("import urllib.parse, urllib.request\n", "import urllib.parse\n"),
+        ('VAULT = os.environ.get("BLOG_VAULT") or ("/root/obsidian-thomas" if os.path.isdir("/root/obsidian-thomas") '
+         'else os.path.dirname(os.path.dirname(os.path.realpath(__file__))))\n', 'VAULT = ""   # generated: set by configure()\n'),
+        ('CACHE_DIR = os.path.expanduser("~/.cache/blog-kw")\n', 'CACHE_DIR = ""   # generated: set by configure()\n'),
+        ('C_AC, C_SERP, C_PROF, C_CHAN = (Cache(n) for n in ("ac", "serp", "prof", "chan"))\n',
+         "C_AC = C_SERP = C_PROF = C_CHAN = None   # generated: built by configure()\n"),
+        ('REPLAY_DIR = os.environ.get("KW_REPLAY_DIR", "")\n', 'REPLAY_DIR = ""   # generated: a replay never records\n'),
+    ],
+    "affiliate": [
+        ("VAULT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\n", 'VAULT = ""   # generated: set by configure()\n'),
+    ],
+    # The pipeline's own copy of the taxonomy: the checkers' edits, but its writers kept (the pipeline appends the
+    # update hand-over and the discrepancy rows, into the replay's working copy).
+    "kw_taxonomy": REPLACE["taxonomy"],
+}
+# Whole lines replaced by their start (the vault keeps a comment after the code); exactly one line must match.
+REPLAY_LINES = {
+    "kw_pipeline": [
+        ('C_VOL = Cache("vol", flush_every=5000)', "C_VOL = None   # generated: built by configure()\n"),
+        ("POSTS_PER_DAY = _naver_day_max()", "POSTS_PER_DAY = 3   # generated: read from the bundle's naver_reserve.py by configure()\n"),
+    ],
+    "affiliate": [],
+    "kw_taxonomy": [],
+}
+# Every occurrence (at least one must exist).
+REPLAY_ALL = {
+    "kw_pipeline": [
+        ("sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))", "pass"),
+        ("import blog_taxonomy as bt", "from . import kw_taxonomy as bt"),
+        ("import affiliate_fetch as af", "from . import affiliate as af"),
+        ("os.path.dirname(os.path.realpath(__file__))", "_TOOLS_DIR"),
+        ("time.time()", "_epoch()"),
+        ("time.sleep(", "_sleep("),
+    ],
+    "affiliate": [],
+    "kw_taxonomy": [],
+}
+REPLAY_SWAP = {
+    "kw_pipeline": {
+        "http": '''def http(url, headers=None, timeout=20, pause=0.3):
+    """Generated: the runtime opens no URL. The replay answers with the body the recorded run received for it."""
+    if _TRANSPORT is None:
+        raise ReplayMiss(url)
+    return _TRANSPORT(url)
+''',
+        "now": '''def now():
+    """Generated: the recorded run's clock — its start, then the time each recorded response arrived."""
+    return getattr(_TRANSPORT, "clock", None) or _CLOCK
+''',
+        "load_keys": '''def load_keys():
+    """Generated: no key is read. "Present" exactly when the recorded run had one, so the same branch runs; the Search
+    Ad responses come from the recording."""
+    return {"CUSTOMER_ID": "replay", "ACCESS_LICENSE": "replay", "SECRET_KEY": "replay", "_src": "replay"} if _HAS_VOL else None
+''',
+        "decision_mode": '''def decision_mode():
+    """Generated: the recorded run's mode."""
+    return _DECISION_MODE
+''',
+    },
+    "affiliate": {},
+    "kw_taxonomy": {},
+}
+REPLAY_DROP = {"kw_pipeline": {"main"},
+               "kw_taxonomy": {"live_category", "cmd_classify", "cmd_validate", "cmd_discrepancy", "cmd_decide", "main"}}
+# affiliate_fetch is a Mac tool (it drives Chrome); only its note parser is used by the pipeline.
+REPLAY_KEEP_FUNCTIONS = {"affiliate": {"norm", "_is_text_line", "_strip_label", "targets", "clean_url"}}
+
+REPLAY_TAIL = {
+    "kw_pipeline": '''
+
+# --- generated: replay configuration (BLOG_DEPARTMENT v0.2 P4a) --------------------------------------------------
+_TOOLS_DIR = ""
+_CLOCK = None
+_EPOCH = 0.0
+_HAS_VOL = False
+_DECISION_MODE = "shadow"
+_TRANSPORT = None
+
+
+class ReplayMiss(Exception):
+    """The replay asked for a URL the recorded run never fetched."""
+
+
+def _epoch():
+    return getattr(_TRANSPORT, "epoch", None) or _EPOCH
+
+
+def _sleep(_seconds):
+    return None
+
+
+def configure(vault_root, *, cache_dir, clock, epoch, has_vol, decision_mode, transport):
+    """Point every path at a replay's working copy and pin the recorded run's clock, key presence and mode."""
+    global VAULT, CACHE_DIR, _TOOLS_DIR, _CLOCK, _EPOCH, _HAS_VOL, _DECISION_MODE, _TRANSPORT
+    global C_AC, C_SERP, C_PROF, C_CHAN, C_VOL, POSTS_PER_DAY
+    {path_globals}
+    VAULT, CACHE_DIR = str(vault_root), str(cache_dir)
+    _TOOLS_DIR = os.path.join(VAULT, "tools")
+    _CLOCK, _EPOCH, _HAS_VOL, _DECISION_MODE, _TRANSPORT = clock, float(epoch), bool(has_vol), decision_mode, transport
+{path_assignments}
+    C_AC, C_SERP, C_PROF, C_CHAN = (Cache(n) for n in ("ac", "serp", "prof", "chan"))
+    C_VOL = Cache("vol", flush_every=5000)
+    POSTS_PER_DAY = _naver_day_max()
+    from . import affiliate, kw_taxonomy
+    kw_taxonomy.configure(VAULT)
+    affiliate.configure(VAULT)
+''',
+    "affiliate": '''
+
+def configure(vault_root):
+    """Point the note parser at a vault (generated: replaces the import-time __file__ lookup)."""
+    global VAULT, KW_DIR, CLIP_DIR, DEBUG_DIR
+    VAULT = str(vault_root)
+    KW_DIR = os.path.join(VAULT, "제휴", "키워드")
+    CLIP_DIR = os.path.join(VAULT, "제휴", "클립")
+    DEBUG_DIR = os.path.join(CLIP_DIR, "_debug")
+''',
+    "kw_taxonomy": CONFIGURE["taxonomy"],
+}
+_PATH_ROOTS = {"VAULT", "CACHE_DIR", "_TOOLS_DIR"}
+
+
+def _path_assignments(text: str) -> tuple[list[str], list[str]]:
+    """The module-level assignments that depend (transitively) on a path root, in source order, and their names."""
+    tree = ast.parse(text)
+    lines = text.splitlines(keepends=True)
+    roots, names, out = set(_PATH_ROOTS), [], []
+    for node in tree.body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        target_names = [t.id for t in targets if isinstance(t, ast.Name)]
+        if not target_names or set(target_names) & _PATH_ROOTS:
+            continue
+        used = {n.id for n in ast.walk(node.value) if isinstance(n, ast.Name)} if node.value is not None else set()
+        if used & roots and not set(target_names) & {"C_AC", "C_VOL", "POSTS_PER_DAY"}:
+            out.append("".join(lines[node.lineno - 1:node.end_lineno]))
+            names += target_names
+            roots |= set(target_names)
+    return out, names
+
+
+def generate_replay(key: str, vault: Path, commit: str) -> str:
+    source = REPLAY_SOURCES[key]
+    text = (vault / "tools" / source).read_text(encoding="utf-8")
+    for old, new in REPLAY_REPLACE[key]:
+        if text.count(old) != 1:
+            raise SystemExit(f"{source}: expected exactly one occurrence of an edited line, found {text.count(old)}:\n{old}")
+        text = text.replace(old, new)
+    for start, new in REPLAY_LINES[key]:
+        hits = [i for i, line in enumerate(text.splitlines(keepends=True)) if line.startswith(start)]
+        if len(hits) != 1:
+            raise SystemExit(f"{source}: expected exactly one line starting with {start!r}, found {len(hits)}")
+        lines = text.splitlines(keepends=True)
+        lines[hits[0]] = new
+        text = "".join(lines)
+    for old, new in REPLAY_ALL[key]:
+        if old not in text:
+            raise SystemExit(f"{source}: expected at least one occurrence of {old!r}")
+        text = text.replace(old, new)
+    if key in REPLAY_KEEP_FUNCTIONS:
+        tree = ast.parse(text)
+        names = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
+        missing = REPLAY_KEEP_FUNCTIONS[key] - names
+        if missing:
+            raise SystemExit(f"{source}: functions the replay keeps are gone: {sorted(missing)}")
+        drop = names - REPLAY_KEEP_FUNCTIONS[key]
+    else:
+        drop = REPLAY_DROP.get(key, set())
+    text = _cut(text, source, drop, REPLAY_SWAP[key])
+    if text.startswith("#!"):
+        text = text.split("\n", 1)[1]
+    tail = REPLAY_TAIL[key]
+    if key == "kw_pipeline":
+        assignments, names = _path_assignments(text)
+        tail = tail.replace("{path_globals}", "global " + ", ".join(names) if names else "pass")
+        tail = tail.replace("{path_assignments}", "".join("    " + line if line.strip() else line
+                                                          for block in assignments for line in block.splitlines(keepends=True)))
+    if key == "kw_pipeline":
+        # What a bundle is replayed against: the recording names the sha of each file it ran; a different one means the
+        # generated module is stale for that bundle, and the replay says so instead of comparing.
+        shas = {name: hashlib.sha256((vault / "tools" / name).read_bytes()).hexdigest()
+                for name in ("kw_pipeline.py", "blog_taxonomy.py", "affiliate_fetch.py")}
+        tail += f"\n\nGENERATED_FROM_SHA256 = {shas!r}\n"
+    header = (f"# GENERATED by scripts/blog_vendor.py from the vault's tools/{source} @ {commit}. Do not edit by hand:\n"
+              f"# change the vault file and regenerate (BLOG_DEPARTMENT v0.2 P4a). The edits are listed in that script.\n")
+    return header + text.rstrip("\n") + "\n" + tail
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--vault", required=True, type=Path)
@@ -141,10 +350,15 @@ def main(argv: list[str] | None = None) -> int:
     commit = subprocess.run(["git", "-C", str(args.vault), "log", "-1", "--format=%h", "--",
                              *(f"tools/{s}" for s in SOURCES.values())],
                             capture_output=True, text=True, check=True).stdout.strip() or "unknown"
+    replay_commit = subprocess.run(["git", "-C", str(args.vault), "log", "-1", "--format=%h", "--",
+                                    *(f"tools/{s}" for s in REPLAY_SOURCES.values())],
+                                   capture_output=True, text=True, check=True).stdout.strip() or "unknown"
     stale = []
-    for key in SOURCES:
+    jobs = [(key, lambda key=key: generate(key, args.vault, commit)) for key in SOURCES]
+    jobs += [(key, lambda key=key: generate_replay(key, args.vault, replay_commit)) for key in REPLAY_SOURCES]
+    for key, make in jobs:
         path = OUT_DIR / f"{key}.py"
-        text = generate(key, args.vault, commit)
+        text = make()
         current = path.read_text(encoding="utf-8") if path.exists() else ""
         # The header's commit moves whenever any of the three files changes; compare the code below it.
         if current.split("\n", 2)[-1] != text.split("\n", 2)[-1]:
