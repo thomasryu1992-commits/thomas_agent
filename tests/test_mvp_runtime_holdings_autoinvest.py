@@ -139,7 +139,32 @@ def test_a_non_json_refusal_keeps_the_start_of_its_body(monkeypatch):
 
 def test_the_adapter_has_no_way_to_sell_modify_or_cancel():
     public = [n for n in dir(toss_orders.TossBuyOrders) if not n.startswith("_")]
-    assert sorted(public) == ["buy_kr", "enabled"] and toss_orders.SIDE == "BUY"
+    assert sorted(public) == ["buy_kr", "buy_us_amount", "enabled"] and toss_orders.SIDE == "BUY"
+    assert sorted(n for n in dir(toss_orders.NoBuyOrders) if not n.startswith("_")) == sorted(public)
+
+
+def test_a_us_buy_is_a_market_order_by_dollar_amount(monkeypatch):
+    """G6 §2g: USD the account holds, spent by amount (fractional shares); nothing converts KRW."""
+    http = _Http({"result": {"orderId": "U1"}})
+    orders, _feed_ = _orders(monkeypatch, http)
+    assert orders.buy_us_amount("VT", "123.45", client_order_id="c9") == "U1"
+    assert json.loads(http.sent[0].data) == {"clientOrderId": "c9", "symbol": "VT", "side": "BUY",
+                                             "orderType": "MARKET", "orderAmount": "123.45"}
+
+
+@pytest.mark.parametrize(("symbol", "amount"), [("VT", "0"), ("VT", "1.234"), ("VT", "-5"), ("VT", 12.5),
+                                                ("vt", "10"), ("069500", "10"), ("", "10")])
+def test_a_malformed_us_amount_or_ticker_is_refused_before_any_post(monkeypatch, symbol, amount):
+    http = _Http()
+    orders, _feed_ = _orders(monkeypatch, http)
+    with pytest.raises(ToolError) as refused:
+        orders.buy_us_amount(symbol, amount, client_order_id="c1")
+    assert refused.value.reason_code == toss_orders.ORDER_REFUSED and http.sent == []
+
+
+def test_without_the_opt_in_no_us_order_can_be_placed(monkeypatch):
+    with pytest.raises(ToolError, match="no order path"):
+        toss_orders.NoBuyOrders().buy_us_amount("VT", "10", client_order_id="c1")
 
 
 @pytest.mark.parametrize(("answer", "kind"), [

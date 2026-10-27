@@ -107,6 +107,7 @@ STOCKS_PAGE_LIMIT = 200
 # `toss_orders.py`, behind its own gate, so this feed stays a read with no order method.
 PRICES_PATH = "/api/v1/prices"
 KR_CALENDAR_PATH = "/api/v1/market-calendar/KR"
+US_CALENDAR_PATH = "/api/v1/market-calendar/US"
 # G6-buy limit orders (Thomas 2026-10-27): the price comes from the book; a placed order's fill is read back.
 ORDERBOOK_PATH = "/api/v1/orderbook"
 ACCOUNT_HEADER = "X-Tossinvest-Account"
@@ -348,6 +349,12 @@ class TossHoldingsFeed:
         self._resolve_account(timeout_seconds=timeout_seconds)
         return self._cash("KRW", [], timeout_seconds=timeout_seconds)
 
+    def cash_usd(self, *, timeout_seconds: int = 10) -> float | None:
+        """The account's USD cash buying power (G6 §2g), or None when it cannot be read. Toss's API never
+        converts KRW (``faq.md``), so this is what Thomas exchanged in the app."""
+        self._resolve_account(timeout_seconds=timeout_seconds)
+        return self._cash("USD", [], timeout_seconds=timeout_seconds)
+
     def last_prices(self, symbols: list[str], *, timeout_seconds: int = 10) -> dict[str, float]:
         """The last price per symbol (up to 200); a symbol without a readable price is left out."""
         if not 0 < len(symbols) <= STOCKS_PAGE_LIMIT:
@@ -381,11 +388,13 @@ class TossHoldingsFeed:
                         what="order detail", timeout_seconds=timeout_seconds)
         if not isinstance(row, dict):
             raise ToolError("MALFORMED_RESULT", "order detail carried no object")
+        execution = row.get("execution") or {}
         try:
-            filled = float((row.get("execution") or {}).get("filledQuantity") or 0)
+            filled = float(execution.get("filledQuantity") or 0)
+            amount = float(execution.get("filledAmount") or 0)
         except (TypeError, ValueError):
             raise ToolError("MALFORMED_RESULT", "order detail carried no readable filled quantity") from None
-        return {"status": str(row.get("status") or ""), "filled": filled}
+        return {"status": str(row.get("status") or ""), "filled": filled, "filled_amount": amount}
 
     def kr_market_day(self, date: str, *, timeout_seconds: int = 10) -> dict[str, Any] | None:
         """``today`` of Toss's domestic market calendar for ``date`` (KST), or None when it carries none."""
@@ -393,6 +402,20 @@ class TossHoldingsFeed:
                            timeout_seconds=timeout_seconds)
         today = result.get("today") if isinstance(result, dict) else None
         return today if isinstance(today, dict) else None
+
+    def us_regular_sessions(self, date: str, *, timeout_seconds: int = 10) -> list[tuple[str, str, str]]:
+        """The US regular sessions around ``date`` (US local): (US date, start, end), the times ISO with the KST
+        offset, as Toss's calendar gives them for the previous, this and the next business day. A closed day has
+        no regular session and is left out."""
+        result = self._get(US_CALENDAR_PATH, {"date": date}, account=False, what="US market calendar",
+                           timeout_seconds=timeout_seconds)
+        out = []
+        for key in ("previousBusinessDay", "today", "nextBusinessDay"):
+            day = result.get(key) if isinstance(result, dict) else None
+            regular = day.get("regularMarket") if isinstance(day, dict) else None
+            if isinstance(regular, dict) and regular.get("startTime") and regular.get("endTime"):
+                out.append((str(day.get("date")), str(regular["startTime"]), str(regular["endTime"])))
+        return out
 
     def _resolve_account(self, *, timeout_seconds: int) -> tuple[int, str]:
         if self._account is not None:
