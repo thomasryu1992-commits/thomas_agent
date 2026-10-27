@@ -154,6 +154,10 @@ REPLAY_SOURCES = {"kw_pipeline": "kw_pipeline.py", "affiliate": "affiliate_fetch
 REPLAY_REPLACE = {
     "kw_pipeline": [
         ("import urllib.parse, urllib.request\n", "import urllib.parse\n"),
+        # Nothing is signed: the replay sends no request and reads no key, so the Search Ad signature goes with hmac.
+        ("import base64, collections, datetime, glob, hashlib, hmac, html,", "import base64, collections, datetime, glob, hashlib, html,"),
+        ('    sig = base64.b64encode(hmac.new(keys["SECRET_KEY"].encode(), f"{ts}.GET.{uri}".encode(), hashlib.sha256).digest()).decode()\n',
+         '    sig = ""   # generated: nothing is signed (the replay sends no request)\n'),
         ('VAULT = os.environ.get("BLOG_VAULT") or ("/root/obsidian-thomas" if os.path.isdir("/root/obsidian-thomas") '
          'else os.path.dirname(os.path.dirname(os.path.realpath(__file__))))\n', 'VAULT = ""   # generated: set by configure()\n'),
         ('CACHE_DIR = os.path.expanduser("~/.cache/blog-kw")\n', 'CACHE_DIR = ""   # generated: set by configure()\n'),
