@@ -208,6 +208,17 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
                 transfers = None
         except Exception as exc:  # noqa: BLE001 — see the comment above
             transfers, flows_note = None, _reason(exc)
+    # G6 §2f (Thomas 2026-10-27): what G6-buy bought is entered in the class it was bought for, before the entries
+    # are read, so this fire's allocation already places it. A failure leaves it unplaced; the next fire tries again.
+    auto_classified: list[str] = []
+    try:
+        from . import autoinvest
+
+        auto_classified = autoinvest.classify_bought(
+            state_dir(root), candidates=effective_candidates(root),
+            us_bonds=(_read_json(auto_candidates_path(root)) or {}).get("us_bonds") or [], now=now)
+    except Exception:  # noqa: BLE001 — bookkeeping must not cost the board
+        pass
     # H5a entries, read once per fire: the allocation places by them, and a new baseline records their
     # version (H5b).
     try:
@@ -327,6 +338,8 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
     if block is not None:
         # The alert is a Telegram message, so it is built from what may leave.
         edge = combined.alert(outward["combined"], told=combined.read_told(state_dir(root)), as_of=body["as_of"])
+    if auto_classified:
+        combined_note += f"; g6 bought classified {len(auto_classified)}"
     return {"status": f"holdings snapshot: refreshed; {combined_note}", "alert": edge,
             "readiness_alert": readiness_alert, "exception_alert": exception_alert,
             "rule_flow_alert": rule_flow_alert, "band_alert": band_alert,

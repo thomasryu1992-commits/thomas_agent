@@ -783,6 +783,25 @@ def test_refresh_stores_the_combined_block_without_the_rate(monkeypatch, gate_op
     assert data["combined"]["drawdown_state"] == combined.STATE_INITIALIZED
 
 
+def test_a_holding_g6_bought_is_placed_by_the_same_fire(monkeypatch, gate_open, tmp_path, clean_wallet):
+    """G6 §2f (Thomas 2026-10-27): the entry is written before the fire reads the entries."""
+    from runtime.mvp_runtime.holdings import autoinvest
+
+    _binance_file(tmp_path, margin=100.0, monkeypatch=monkeypatch)
+    _toss(monkeypatch)
+    hdir = store.state_dir(tmp_path)
+    hdir.mkdir(parents=True, exist_ok=True)
+    store.auto_candidates_path(tmp_path).write_text(
+        json.dumps({"candidates": {"domestic_equity": ["toss:domestic:005930"]}}), encoding="utf-8")
+    autoinvest.journal_path(hdir).write_text(
+        json.dumps({"state": "accepted", "instrument": "toss:domestic:005930"}) + "\n", encoding="utf-8")
+    result = store.refresh(now=NOW, root=tmp_path)
+    assert result["status"].startswith("holdings snapshot: refreshed") and "g6 bought classified 1" in result["status"]
+    classes = json.loads(store.local_path(tmp_path).read_text(encoding="utf-8"))["allocation"]["classes"]
+    assert classes["domestic_equity"]["krw"] == 7_200_000
+    assert "g6 bought" not in store.refresh(now=NOW, root=tmp_path)["status"]        # once
+
+
 def _breach_setup(monkeypatch, tmp_path):
     """A stored peak far above what the fake Toss account and a zero Binance balance now add up to."""
     hdir = store.state_dir(tmp_path)
