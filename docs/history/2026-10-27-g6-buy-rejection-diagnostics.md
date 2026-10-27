@@ -19,8 +19,10 @@
     `toss`, and `--autoinvest-status` prints it.
   - The Telegram notice is unchanged: a code at most, never the detail.
 - **Not changed:** the order type (still MARKET) and every check. The fix waits for the cause.
-- **Next:** re-run the remaining gold ×2 as its own scenario. With nothing else reserving cash, a fill points
-  to the reservation hypothesis. A second 422 now carries its code.
+- **Next:** re-run the remaining gold ×2 as its own scenario. With about 51.6k left, the hypothesis predicts a
+  second rejection (2 × upper limit ≈ 61.8k), and a second 422 now carries its code.
+  - **Corrected 2026-10-27:** this line first said the opposite, that a fill would point to the hypothesis.
+    The same error is in #1330's PR body. See `docs/history/2026-10-27-g6-buy-limit-orders.md`.
 - **Checked:**
   - Four body shapes (envelope, flat, HTML with a header request id, empty).
   - The message cut.

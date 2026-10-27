@@ -1381,7 +1381,7 @@ def _execute(
         if status.startswith("holdings snapshot: refreshed"):
             try:
                 invest = holdings_store.run_autoinvest(now=now, root=repo_root)
-                if invest.get("status") not in ("none", "no_feed", "outside_session", "done_today"):
+                if invest.get("status") not in ("none", "no_feed", "outside_session", "done_today", "waiting"):
                     status = f"{status}; autoinvest {invest['status']}"
                 if invest.get("alert"):
                     token, text = invest["alert"]

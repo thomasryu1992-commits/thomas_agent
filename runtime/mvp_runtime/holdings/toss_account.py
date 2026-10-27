@@ -107,6 +107,8 @@ STOCKS_PAGE_LIMIT = 200
 # `toss_orders.py`, behind its own gate, so this feed stays a read with no order method.
 PRICES_PATH = "/api/v1/prices"
 KR_CALENDAR_PATH = "/api/v1/market-calendar/KR"
+# G6-buy limit orders (Thomas 2026-10-27): the price comes from the book; a placed order's fill is read back.
+ORDERBOOK_PATH = "/api/v1/orderbook"
 ACCOUNT_HEADER = "X-Tossinvest-Account"
 BROKERAGE = "BROKERAGE"
 
@@ -359,6 +361,31 @@ class TossHoldingsFeed:
             except (KeyError, TypeError, ValueError):
                 continue
         return out
+
+    def asks(self, symbol: str, *, timeout_seconds: int = 10) -> list[tuple[float, float]]:
+        """The ask side of ``symbol``'s book, lowest price first, as (price, volume); unreadable levels left out."""
+        book = self._get(ORDERBOOK_PATH, {"symbol": symbol}, account=False, what="orderbook",
+                         timeout_seconds=timeout_seconds)
+        levels = []
+        for row in (book.get("asks") if isinstance(book, dict) else None) or []:
+            try:
+                levels.append((float(row["price"]), float(row["volume"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return sorted(levels)
+
+    def fill_state(self, order_id: str, *, timeout_seconds: int = 10) -> dict[str, Any]:
+        """One placed order's status and filled quantity (``GET /api/v1/orders/{orderId}``), still a read."""
+        self._resolve_account(timeout_seconds=timeout_seconds)
+        row = self._get(f"{ORDERS_PATH}/{urllib.parse.quote(order_id, safe='')}", account=True,
+                        what="order detail", timeout_seconds=timeout_seconds)
+        if not isinstance(row, dict):
+            raise ToolError("MALFORMED_RESULT", "order detail carried no object")
+        try:
+            filled = float((row.get("execution") or {}).get("filledQuantity") or 0)
+        except (TypeError, ValueError):
+            raise ToolError("MALFORMED_RESULT", "order detail carried no readable filled quantity") from None
+        return {"status": str(row.get("status") or ""), "filled": filled}
 
     def kr_market_day(self, date: str, *, timeout_seconds: int = 10) -> dict[str, Any] | None:
         """``today`` of Toss's domestic market calendar for ``date`` (KST), or None when it carries none."""

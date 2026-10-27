@@ -1,7 +1,8 @@
 """The Toss buy-order adapter (G6-buy, Thomas 2026-10-26) — the one way this repo places a Toss order.
 
-``docs/proposals/G6_BUY_CASH_AUTOINVEST_V0.1.md``: buy only, domestic only, whole shares, market orders, a
-scenario Thomas approved. This module is the order half; the reads stay in ``toss_account.TossHoldingsFeed``,
+``docs/proposals/G6_BUY_CASH_AUTOINVEST_V0.1.md``: buy only, domestic only, whole shares, limit orders at a
+price the caller read off the book (since 2026-10-27; the market orders before reserved cash at the upper
+price limit and a second order was refused), a scenario Thomas approved. This module is the order half; the reads stay in ``toss_account.TossHoldingsFeed``,
 which keeps no order method.
 
 **Gate.** ``MVP_TOSS_ORDERS=buy_only`` on scheduler-maint, the environment alone (CLAUDE.md, env-only gate).
@@ -56,6 +57,7 @@ class OrderUnknown(ToolError):
 
 
 MESSAGE_LIMIT = 200
+BODY_HEAD_LIMIT = 200
 
 
 def error_detail(exc: urllib.error.HTTPError) -> dict[str, Any]:
@@ -79,7 +81,9 @@ def error_detail(exc: urllib.error.HTTPError) -> dict[str, Any]:
     try:
         body = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
+        # The two live 422s (2026-10-27) were not JSON. Keep the start of what came, so the next one says what it is.
         detail["body_kind"] = "non_json"
+        detail["body_head"] = raw[:BODY_HEAD_LIMIT].decode("utf-8", errors="replace")
         return detail
     error = body.get("error") if isinstance(body, dict) else None
     source = error if isinstance(error, dict) else body if isinstance(body, dict) else {}
@@ -95,12 +99,13 @@ class NoBuyOrders:
 
     enabled = False
 
-    def buy_kr(self, symbol: str, quantity: int, *, client_order_id: str, timeout_seconds: int = 10) -> str:
+    def buy_kr(self, symbol: str, quantity: int, *, price: int, client_order_id: str,
+               timeout_seconds: int = 10) -> str:
         raise ToolError(ORDER_REFUSED, f"{TOSS_ORDERS_ENV} is not {BUY_ONLY}: no order path")
 
 
 class TossBuyOrders:
-    """Market buys of whole shares of a domestic symbol, through the holdings feed's token."""
+    """Limit buys of whole shares of a domestic symbol, through the holdings feed's token."""
 
     enabled = True
 
@@ -137,14 +142,18 @@ class TossBuyOrders:
             raise OrderUnknown("accepted without an orderId")
         return str(order_id)
 
-    def buy_kr(self, symbol: str, quantity: int, *, client_order_id: str, timeout_seconds: int = 10) -> str:
-        """Place one market BUY of ``quantity`` whole shares of the domestic ``symbol``; returns Toss's orderId."""
+    def buy_kr(self, symbol: str, quantity: int, *, price: int, client_order_id: str,
+               timeout_seconds: int = 10) -> str:
+        """Place one LIMIT DAY BUY of ``quantity`` whole shares of the domestic ``symbol`` at ``price`` KRW (a price
+        read off the book, so it sits on a tick); returns Toss's orderId. Unfilled at the close, Toss cancels it."""
         if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity < 1:
             raise ToolError(ORDER_REFUSED, "a domestic buy is a whole number of shares, at least one")
+        if not isinstance(price, int) or isinstance(price, bool) or price < 1:
+            raise ToolError(ORDER_REFUSED, "a domestic limit price is a whole number of KRW")
         if not symbol or not symbol.isalnum() or len(symbol) != 6:
             raise ToolError(ORDER_REFUSED, "a domestic symbol is a 6-character KRX code")
-        body = {"clientOrderId": client_order_id, "symbol": symbol, "side": SIDE, "orderType": "MARKET",
-                "timeInForce": "DAY", "quantity": str(quantity)}
+        body = {"clientOrderId": client_order_id, "symbol": symbol, "side": SIDE, "orderType": "LIMIT",
+                "timeInForce": "DAY", "quantity": str(quantity), "price": str(price)}
         self._feed._resolve_account(timeout_seconds=timeout_seconds)
         token = self._feed._access_token(timeout_seconds=timeout_seconds)
         try:
