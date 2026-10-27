@@ -79,7 +79,7 @@ def test_without_the_opt_in_nothing_capable_is_built_and_no_order_can_be_placed(
     orders = toss_orders.select_buy_orders(_feed())
     assert isinstance(orders, toss_orders.NoBuyOrders) and not orders.enabled
     with pytest.raises(ToolError) as refused:
-        orders.buy_kr("069500", 1, client_order_id="c1")
+        orders.buy_kr("069500", 1, price=86000, client_order_id="c1")
     assert refused.value.reason_code == toss_orders.ORDER_REFUSED and http.sent == []
 
 
@@ -89,14 +89,14 @@ def test_any_other_value_is_not_the_opt_in(monkeypatch, value):
     assert isinstance(toss_orders.select_buy_orders(_feed()), toss_orders.NoBuyOrders)
 
 
-def test_the_one_post_is_a_market_buy_of_whole_shares_with_its_idempotency_key(monkeypatch):
+def test_the_one_post_is_a_limit_buy_of_whole_shares_at_the_given_price_with_its_idempotency_key(monkeypatch):
     http = _Http({"result": {"orderId": "OID-1", "clientOrderId": "ord_x"}})
     orders, _ = _orders(monkeypatch, http)
-    assert orders.buy_kr("069500", 2, client_order_id="ord_x") == "OID-1"
+    assert orders.buy_kr("069500", 2, price=86000, client_order_id="ord_x") == "OID-1"
     (request,) = http.sent
     assert request.get_method() == "POST" and urllib.parse.urlparse(request.full_url).path == toss_account.ORDERS_PATH
     assert json.loads(request.data) == {"clientOrderId": "ord_x", "symbol": "069500", "side": "BUY",
-                                        "orderType": "MARKET", "timeInForce": "DAY", "quantity": "2"}
+                                        "orderType": "LIMIT", "timeInForce": "DAY", "quantity": "2", "price": "86000"}
     assert request.headers["X-tossinvest-account"] == "7" and request.headers["Authorization"] == "Bearer TOKEN-A"
 
 
@@ -105,7 +105,7 @@ def test_the_egress_recheck_reads_the_opt_in_again_before_the_post(monkeypatch):
     orders, _ = _orders(monkeypatch, http)
     monkeypatch.delenv(toss_orders.TOSS_ORDERS_ENV)
     with pytest.raises(SafetyGateBlocked):
-        orders.buy_kr("069500", 1, client_order_id="c1")
+        orders.buy_kr("069500", 1, price=86000, client_order_id="c1")
     assert http.sent == []
 
 
@@ -115,8 +115,26 @@ def test_only_whole_shares_of_a_domestic_code(monkeypatch, symbol, quantity):
     http = _Http()
     orders, _ = _orders(monkeypatch, http)
     with pytest.raises(ToolError) as refused:
-        orders.buy_kr(symbol, quantity, client_order_id="c1")
+        orders.buy_kr(symbol, quantity, price=86000, client_order_id="c1")
     assert refused.value.reason_code == toss_orders.ORDER_REFUSED and http.sent == []
+
+
+@pytest.mark.parametrize("price", [0, 86000.5, True, None])
+def test_a_limit_price_is_a_whole_number_of_krw(monkeypatch, price):
+    http = _Http()
+    orders, _ = _orders(monkeypatch, http)
+    with pytest.raises(ToolError) as refused:
+        orders.buy_kr("069500", 1, price=price, client_order_id="c1")
+    assert refused.value.reason_code == toss_orders.ORDER_REFUSED and http.sent == []
+
+
+def test_a_non_json_refusal_keeps_the_start_of_its_body(monkeypatch):
+    orders = _send_raw(monkeypatch, _Raw(422, b"Unprocessable Entity " * 20, {"Content-Type": "text/plain"}))
+    with pytest.raises(toss_orders.OrderRejected) as rejected:
+        orders.buy_kr("069500", 1, price=86000, client_order_id="c1")
+    detail = rejected.value.detail
+    assert detail["body_head"].startswith("Unprocessable") and len(detail["body_head"]) == toss_orders.BODY_HEAD_LIMIT
+    assert detail["content_type"] == "text/plain"
 
 
 def test_the_adapter_has_no_way_to_sell_modify_or_cancel():
@@ -138,7 +156,7 @@ def test_the_adapter_has_no_way_to_sell_modify_or_cancel():
 def test_a_rejection_is_told_apart_from_an_unknown_outcome(monkeypatch, answer, kind):
     orders, _ = _orders(monkeypatch, _Http(answer))
     with pytest.raises(kind):
-        orders.buy_kr("069500", 1, client_order_id="c1")
+        orders.buy_kr("069500", 1, price=86000, client_order_id="c1")
 
 
 class _Raw:
@@ -171,7 +189,7 @@ def _send_raw(monkeypatch, raw):
 def test_a_rejection_keeps_what_toss_said_whatever_its_shape(monkeypatch, raw, expected):
     orders = _send_raw(monkeypatch, raw)
     with pytest.raises(toss_orders.OrderRejected) as rejected:
-        orders.buy_kr("069500", 1, client_order_id="c1")
+        orders.buy_kr("069500", 1, price=86000, client_order_id="c1")
     detail = rejected.value.detail
     assert detail["status"] == 422 and {k: detail[k] for k in expected} == expected
     assert rejected.value.toss_code == expected["code"]
@@ -180,14 +198,14 @@ def test_a_rejection_keeps_what_toss_said_whatever_its_shape(monkeypatch, raw, e
 def test_a_long_message_is_cut_to_a_line(monkeypatch):
     orders = _send_raw(monkeypatch, _Raw(422, json.dumps({"error": {"code": "x", "message": "가" * 500}}).encode()))
     with pytest.raises(toss_orders.OrderRejected) as rejected:
-        orders.buy_kr("069500", 1, client_order_id="c1")
+        orders.buy_kr("069500", 1, price=86000, client_order_id="c1")
     assert len(rejected.value.detail["message"]) == toss_orders.MESSAGE_LIMIT
 
 
 def test_a_revoked_token_is_reissued_once_and_the_same_order_resent(monkeypatch):
     http = _Http((401, "token-revoked"), {"result": {"orderId": "OID-2"}})
     orders, feed = _orders(monkeypatch, http)
-    assert orders.buy_kr("069500", 1, client_order_id="c9") == "OID-2"
+    assert orders.buy_kr("069500", 1, price=86000, client_order_id="c9") == "OID-2"
     assert feed.issued == 1 and [json.loads(r.data)["clientOrderId"] for r in http.sent] == ["c9", "c9"]
     assert http.sent[1].headers["Authorization"] == "Bearer TOKEN-B"
 
@@ -200,13 +218,20 @@ PRICES = {"069500": 85_995.0, "114260": 62_355.0, "411060": 23_765.0}
 B = "069500=1,114260=1,411060=2"                     # Thomas's scenario B (2026-10-26)
 APPROVED = "2026-10-26T15:00:00Z"
 OPEN = "2026-10-27T01:00:00Z"                        # 10:00 KST, a Tuesday
+LATER = "2026-10-27T02:00:00Z"                       # the next fire, same day
+NEXT_DAY = "2026-10-28T01:00:00Z"
 EARLY = "2026-10-27T00:02:00Z"                       # 09:02 KST: inside the first five minutes
 LATE = "2026-10-27T06:10:00Z"                        # 15:10 KST: inside the last thirty
 
 
 class _Feed:
-    def __init__(self, cash=200_000.0, prices=None, session=True, status=None, kind="ETF"):
+    """A Toss stand-in. The book has one ask level per symbol at ``ask`` (default: the last price) with ``depth``
+    shares; ``fills`` maps an order id to what ``fill_state`` answers (default: still pending)."""
+
+    def __init__(self, cash=200_000.0, prices=None, session=True, status=None, kind="ETF", ask=None, depth=100,
+                 fills=None, books=None):
         self.cash, self.prices, self.session, self.status, self.kind = cash, prices or PRICES, session, status, kind
+        self.ask, self.depth, self.fills, self.books = ask or {}, depth, fills or {}, books or {}
 
     def kr_market_day(self, date, **_):
         if not self.session:
@@ -218,6 +243,14 @@ class _Feed:
 
     def last_prices(self, symbols, **_):
         return {s: self.prices[s] for s in symbols if s in self.prices}
+
+    def asks(self, symbol, **_):
+        if symbol in self.books:
+            return self.books[symbol]
+        return [(self.ask.get(symbol, self.prices[symbol]), self.depth)]
+
+    def fill_state(self, order_id, **_):
+        return self.fills.get(order_id, {"status": "PENDING", "filled": 0})
 
     def commission_rates(self, **_):
         return [{"marketCountry": "KR", "commissionRate": "0.00015"}]
@@ -232,35 +265,118 @@ class _Orders:
     def __init__(self, fail_at=None, error=None):
         self.calls, self.fail_at, self.error = [], fail_at, error
 
-    def buy_kr(self, symbol, quantity, *, client_order_id, **_):
-        self.calls.append((symbol, quantity, client_order_id))
+    def buy_kr(self, symbol, quantity, *, price, client_order_id, **_):
+        self.calls.append((symbol, quantity, price, client_order_id))
         if self.fail_at is not None and len(self.calls) - 1 == self.fail_at:
             raise self.error
-        return f"OID-{symbol}"
+        return f"OID-{symbol}-{len(self.calls)}"
 
 
 def _approve(tmp_path, spec=B, max_krw=200_000):
     return ai.approve(tmp_path, spec, max_krw=max_krw, candidates=CANDIDATES, now=APPROVED)
 
 
-def test_scenario_b_is_placed_once_inside_the_session(tmp_path):
+def _filled(orders, status="FILLED", filled=None):
+    return {oid: {"status": status, "filled": q if filled is None else filled} for _s, q, _p, oid in
+            [(c[0], c[1], c[2], f"OID-{c[0]}-{n}") for n, c in enumerate(orders.calls, 1)]}
+
+
+def test_scenario_b_is_placed_as_limit_orders_at_the_book_and_closes_when_all_fill(tmp_path):
     _approve(tmp_path)
     orders = _Orders()
     assert ai.run(_Feed(), orders, tmp_path, now=EARLY)["status"] == "outside_session" and orders.calls == []
-    assert ai.run(_Feed(), orders, tmp_path, now=OPEN)["status"] == "executed:3"
-    assert [(s, q) for s, q, _ in orders.calls] == [("069500", 1), ("114260", 1), ("411060", 2)]
+    assert ai.run(_Feed(), orders, tmp_path, now=OPEN)["status"] == "ordered:3"
+    assert [(s, q, p) for s, q, p, _ in orders.calls] == [("069500", 1, 85_995), ("114260", 1, 62_355),
+                                                         ("411060", 2, 23_765)]
     states = [(r["instrument"].split(":")[2], r["state"]) for r in ai.journal(tmp_path)]
     assert states == [("069500", "intent"), ("069500", "accepted"), ("114260", "intent"), ("114260", "accepted"),
-                      ("411060", "intent"), ("411060", "accepted")]
-    assert ai.run(_Feed(), orders, tmp_path, now="2026-10-27T02:00:00Z")["status"] == "none" and len(orders.calls) == 3
+                      ("411060", "intent"), ("411060", "accepted")]       # the intent is on disk before each POST
     token, text = ai.notice(tmp_path)
-    assert "3건 접수" in text and not any(x in text for x in ("069500", "toss:", "KODEX", "85"))
+    assert "지정가 3건 주문" in text and not any(x in text for x in ("069500", "toss:", "KODEX", "85"))
+    # Still open the next fire: no second order beside them.
+    assert ai.run(_Feed(), orders, tmp_path, now=LATER)["status"] == "waiting" and len(orders.calls) == 3
+    # All filled: the scenario closes and says so.
+    assert ai.run(_Feed(fills=_filled(orders)), orders, tmp_path, now=LATER)["status"] == "executed"
+    assert "3종목 전량 체결" in ai.notice(tmp_path)[1]
+    assert ai.run(_Feed(), orders, tmp_path, now=NEXT_DAY)["status"] == "none" and len(orders.calls) == 3
+
+
+def test_the_price_is_where_the_book_covers_the_quantity(tmp_path):
+    _approve(tmp_path, spec="411060=2", max_krw=60_000)
+    orders = _Orders()
+    book = {"411060": [(23_770.0, 1), (23_775.0, 3)]}       # one share at the best ask, the second one level up
+    ai.run(_Feed(books=book), orders, tmp_path, now=OPEN)
+    assert orders.calls[0][:3] == ("411060", 2, 23_775)
+
+
+def test_a_book_that_cannot_cover_the_quantity_holds_the_day(tmp_path):
+    _approve(tmp_path, spec="411060=2", max_krw=60_000)
+    orders = _Orders()
+    assert ai.run(_Feed(depth=1), orders, tmp_path, now=OPEN)["status"] == "hold:book_too_thin" and orders.calls == []
+
+
+def test_a_price_more_than_two_percent_over_the_last_holds_the_day(tmp_path):
+    _approve(tmp_path, spec="411060=1", max_krw=30_000)
+    orders = _Orders()
+    feed = _Feed(ask={"411060": 23_765 * 1.021})
+    assert ai.run(feed, orders, tmp_path, now=OPEN)["status"] == "hold:price_guard" and orders.calls == []
+    assert "2%" in ai.notice(tmp_path)[1]
+    assert ai.run(_Feed(ask={"411060": 23_765 * 1.019}), orders, tmp_path, now=NEXT_DAY)["status"] == "ordered:1"
+
+
+def test_the_check_reserves_what_the_limit_order_reserves(tmp_path):
+    """The case that failed live: the cash covers the book's price, so the order goes; no upper-limit guess."""
+    _approve(tmp_path, spec="411060=2", max_krw=50_000)
+    orders = _Orders()
+    assert ai.run(_Feed(cash=51_600.0), orders, tmp_path, now=OPEN)["status"] == "ordered:1"
+    _approve(tmp_path, spec="411060=2", max_krw=50_000)
+    assert ai.run(_Feed(cash=47_000.0), _Orders(), tmp_path, now=OPEN)["status"] == "hold:insufficient_buying_power"
+
+
+def test_an_order_cancelled_at_the_close_leaves_its_remainder_for_the_next_trading_day(tmp_path):
+    _approve(tmp_path, spec="411060=2", max_krw=60_000)
+    orders = _Orders()
+    ai.run(_Feed(), orders, tmp_path, now=OPEN)                               # 2 shares ordered
+    partial = {"OID-411060-1": {"status": "CANCELED", "filled": 1}}           # one filled, one cancelled at close
+    assert ai.run(_Feed(fills=partial), orders, tmp_path, now="2026-10-27T07:00:00Z")["status"] == "done_today"
+    assert "미체결 1주" in ai.notice(tmp_path)[1]
+    assert ai.run(_Feed(fills=partial), orders, tmp_path, now=NEXT_DAY)["status"] == "ordered:1"
+    assert orders.calls[1][:2] == ("411060", 1)                               # only the remainder
+    assert orders.calls[1][3] != orders.calls[0][3]                           # a new day, a new id
+
+
+def test_a_partial_fill_still_open_places_nothing_beside_it(tmp_path):
+    _approve(tmp_path, spec="411060=2", max_krw=60_000)
+    orders = _Orders()
+    ai.run(_Feed(), orders, tmp_path, now=OPEN)
+    partial = {"OID-411060-1": {"status": "PARTIAL_FILLED", "filled": 1}}
+    assert ai.run(_Feed(fills=partial), orders, tmp_path, now=NEXT_DAY)["status"] == "waiting" and len(orders.calls) == 1
+
+
+def test_an_unknown_status_is_treated_as_open(tmp_path):
+    _approve(tmp_path, spec="411060=1", max_krw=30_000)
+    orders = _Orders()
+    ai.run(_Feed(), orders, tmp_path, now=OPEN)
+    odd = {"OID-411060-1": {"status": "SOMETHING_NEW", "filled": 0}}
+    assert ai.run(_Feed(fills=odd), orders, tmp_path, now=NEXT_DAY)["status"] == "waiting" and len(orders.calls) == 1
+
+
+def test_a_failed_fill_read_keeps_the_order_open(tmp_path):
+    _approve(tmp_path, spec="411060=1", max_krw=30_000)
+    orders = _Orders()
+    ai.run(_Feed(), orders, tmp_path, now=OPEN)
+    feed = _Feed()
+
+    def fail(*_a, **_kw):
+        raise ToolError("TOOL_TRANSPORT", "down")
+
+    feed.fill_state = fail
+    assert ai.run(feed, orders, tmp_path, now=NEXT_DAY)["status"] == "waiting" and len(orders.calls) == 1
 
 
 def test_a_whole_share_order_under_50000_is_placed(tmp_path):
     _approve(tmp_path, spec="411060=2", max_krw=60_000)          # 47,530 KRW: RB4''
-    orders = _Orders()
-    assert ai.run(_Feed(), orders, tmp_path, now=OPEN)["status"] == "executed:1"
+    assert ai.run(_Feed(), _Orders(), tmp_path, now=OPEN)["status"] == "ordered:1"
 
 
 @pytest.mark.parametrize("now", [EARLY, LATE])
@@ -284,7 +400,7 @@ def test_with_the_order_path_off_it_holds_and_says_so_once(tmp_path):
     token, text = ai.notice(tmp_path)
     assert "MVP_TOSS_ORDERS" in text
     ai.mark_told(tmp_path, token, now=OPEN)
-    ai.run(_Feed(), toss_orders.NoBuyOrders(), tmp_path, now="2026-10-27T02:00:00Z")
+    ai.run(_Feed(), toss_orders.NoBuyOrders(), tmp_path, now=LATER)
     assert ai.notice(tmp_path) is None
 
 
@@ -293,11 +409,11 @@ def test_short_buying_power_holds_the_whole_scenario_and_the_next_trading_day_tr
     orders = _Orders()
     assert ai.run(_Feed(cash=150_000.0), orders, tmp_path, now=OPEN)["status"] == "hold:insufficient_buying_power"
     assert orders.calls == [] and json.loads(ai.scenario_path(tmp_path).read_text())["shortfall_krw"] > 0
-    assert ai.run(_Feed(), orders, tmp_path, now="2026-10-27T02:00:00Z")["status"] == "done_today"
-    assert ai.run(_Feed(), orders, tmp_path, now="2026-10-28T01:00:00Z")["status"] == "executed:3"
+    assert ai.run(_Feed(), orders, tmp_path, now=LATER)["status"] == "done_today"
+    assert ai.run(_Feed(), orders, tmp_path, now=NEXT_DAY)["status"] == "ordered:3"
 
 
-@pytest.mark.parametrize("broken", ["kr_market_day", "stock_info", "last_prices", "cash_krw"])
+@pytest.mark.parametrize("broken", ["kr_market_day", "stock_info", "last_prices", "asks", "cash_krw"])
 def test_a_read_that_fails_holds_and_is_told_never_a_half_order(tmp_path, broken):
     _approve(tmp_path)
     feed, orders = _Feed(), _Orders()
@@ -308,9 +424,8 @@ def test_a_read_that_fails_holds_and_is_told_never_a_half_order(tmp_path, broken
     setattr(feed, broken, fail)
     assert ai.run(feed, orders, tmp_path, now=OPEN)["status"] == "hold:read_failed" and orders.calls == []
     assert "토스 조회에 실패" in ai.notice(tmp_path)[1]
-    # A calendar that could not be read consumed no day; the next fire that day looks again.
-    if broken == "kr_market_day":
-        assert ai.run(_Feed(), orders, tmp_path, now="2026-10-27T02:00:00Z")["status"] == "executed:3"
+    if broken == "kr_market_day":                     # a calendar that could not be read consumed no day
+        assert ai.run(_Feed(), orders, tmp_path, now=LATER)["status"] == "ordered:3"
 
 
 def test_the_daily_cap_counts_every_scenario_that_day(tmp_path):
@@ -327,28 +442,36 @@ def test_an_estimate_over_the_approved_cap_holds(tmp_path):
     assert ai.run(_Feed(), orders, tmp_path, now=OPEN)["status"] == "hold:over_scenario_cap" and orders.calls == []
 
 
+def test_the_scenario_cap_counts_what_already_filled(tmp_path):
+    _approve(tmp_path, spec="411060=2", max_krw=48_000)
+    orders = _Orders()
+    ai.run(_Feed(), orders, tmp_path, now=OPEN)                                # 47,530 KRW ordered
+    partial = {"OID-411060-1": {"status": "CANCELED", "filled": 1}}
+    # The remaining share now costs 24,500: 23,765 already spent + 24,500 > 48,000.
+    feed = _Feed(fills=partial, prices={**PRICES, "411060": 24_500.0})
+    assert ai.run(feed, orders, tmp_path, now=NEXT_DAY)["status"] == "hold:over_scenario_cap" and len(orders.calls) == 1
+
+
 def test_a_rejection_stops_the_rest_and_never_resends(tmp_path):
     _approve(tmp_path)
     orders = _Orders(fail_at=1, error=toss_orders.OrderRejected(422, "insufficient-buying-power"))
     assert ai.run(_Feed(), orders, tmp_path, now=OPEN)["status"] == "stopped:1"
-    assert [s for s, _, _ in orders.calls] == ["069500", "114260"]
-    assert ai.run(_Feed(), orders, tmp_path, now="2026-10-28T01:00:00Z")["status"] == "none" and len(orders.calls) == 2
+    assert [s for s, _, _, _ in orders.calls] == ["069500", "114260"]
+    assert ai.run(_Feed(), orders, tmp_path, now=NEXT_DAY)["status"] == "none" and len(orders.calls) == 2
     assert "insufficient-buying-power" in ai.notice(tmp_path)[1]
-    rejected = [r for r in ai.journal(tmp_path) if r["state"] == "rejected"]
-    assert rejected[0]["toss"] == {}            # the fake carries no detail; the real one's is kept (below)
 
 
 def test_the_journal_keeps_toss_detail_and_the_terminal_shows_it(tmp_path):
     _approve(tmp_path)
-    detail = {"status": 422, "code": "", "message": "주문 가능 금액이 부족합니다.", "request_id": "R7",
-              "body_kind": "envelope", "content_type": "application/json"}
+    detail = {"status": 422, "code": "", "message": "", "request_id": "R7", "body_kind": "non_json",
+              "content_type": "text/plain", "body_head": "Unprocessable"}
     orders = _Orders(fail_at=2, error=toss_orders.OrderRejected(422, "", detail))
     assert ai.run(_Feed(), orders, tmp_path, now=OPEN)["status"] == "stopped:2"
     (row,) = [r for r in ai.journal(tmp_path) if r["state"] == "rejected"]
     assert row["toss"] == detail and row["code"] == "422"
     text = "\n".join(ai.render_status(tmp_path))
-    assert "request_id=R7" in text and "주문 가능 금액이 부족합니다." in text
-    assert "R7" not in ai.notice(tmp_path)[1]   # the channel gets the code, never the detail
+    assert "request_id=R7" in text and "head=Unprocessable" in text and "type=text/plain" in text
+    assert "R7" not in ai.notice(tmp_path)[1]
 
 
 def test_an_unknown_outcome_stops_and_is_said_so(tmp_path):
@@ -362,8 +485,8 @@ def test_an_intent_with_no_outcome_is_never_resent(tmp_path):
     """A crash between the intent line and the POST: the next attempt sends nothing."""
     body = _approve(tmp_path)
     from runtime.read_only_kernel import integrity
-    cid = integrity.short_id("ord", f"{body['scenario_id']}|toss:domestic:069500")
-    ai._append(tmp_path, {"at": OPEN, "day": "2026-10-26", "scenario_id": body["scenario_id"], "client_order_id": cid,
+    cid = integrity.short_id("ord", f"{body['scenario_id']}|toss:domestic:069500|2026-10-27")
+    ai._append(tmp_path, {"at": OPEN, "day": "2026-10-27", "scenario_id": body["scenario_id"], "client_order_id": cid,
                           "instrument": "toss:domestic:069500", "quantity": 1, "est_krw": 86_000, "state": "intent"})
     orders = _Orders()
     assert ai.run(_Feed(), orders, tmp_path, now=OPEN)["status"] == "unknown:0" and orders.calls == []
@@ -385,10 +508,13 @@ def test_an_unapproved_instrument_a_typo_or_a_cap_over_the_day_is_refused_before
     assert not ai.scenario_path(tmp_path).exists()
 
 
-def test_an_unexecuted_scenario_expires_after_seven_days(tmp_path):
-    _approve(tmp_path)
-    assert ai.run(_Feed(), _Orders(), tmp_path, now="2026-11-02T16:00:00Z")["status"] == "expired"
-    assert "만료" in ai.notice(tmp_path)[1]
+def test_an_unfinished_scenario_expires_after_seven_days_and_says_what_filled(tmp_path):
+    _approve(tmp_path, spec="411060=2", max_krw=60_000)
+    orders = _Orders()
+    ai.run(_Feed(), orders, tmp_path, now=OPEN)
+    partial = {"OID-411060-1": {"status": "CANCELED", "filled": 1}}
+    assert ai.run(_Feed(fills=partial), orders, tmp_path, now="2026-11-02T16:00:00Z")["status"] == "expired"
+    assert "체결 1주" in ai.notice(tmp_path)[1] and "남은 1주" in ai.notice(tmp_path)[1]
 
 
 # --- the scheduler: a step after a refresh that landed, told after delivery -----------------------------------

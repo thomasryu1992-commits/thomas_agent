@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **659** distinct codes across **1322** raise sites
+- **659** distinct codes across **1325** raise sites
 - **22** exception classes carry them
 - **65** codes are raised from more than one module (see below)
 - **164** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -846,6 +846,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `closed_orders` | `not isinstance(orders, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `commission_rates` | `not isinstance(rows, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `daily_candles` | `not isinstance(candles, list)` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `fill_state` | `—` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `fill_state` | `not isinstance(row, dict)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `holdings_snapshot` | `not isinstance(overview, dict)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `listed_etfs` | `not isinstance(rows, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `stock_info` | `not isinstance(rows, list)` |
@@ -1317,6 +1319,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `TOSS_ACCOUNT_NOT_FOUND` | `ToolBlocked` | `runtime/mvp_runtime/holdings/toss_account.py` | `_resolve_account` | `not chosen` |
 | `TOSS_NO_ACCOUNT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `_resolve_account` | `not brokerage` |
 | `TOSS_ORDER_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/toss_orders.py` | `buy_kr` | `—` |
+| `TOSS_ORDER_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/toss_orders.py` | `buy_kr` | `not isinstance(price, int) or isinstance(price, bool) or price < 1` |
 | `TOSS_ORDER_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/toss_orders.py` | `buy_kr` | `not isinstance(quantity, int) or isinstance(quantity, bool) or quantity < 1` |
 | `TOSS_ORDER_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/toss_orders.py` | `buy_kr` | `not symbol or not symbol.isalnum() or len(symbol) != 6` |
 | `TOSS_TOKEN_REJECTED` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `_issue_token` | `—` |
