@@ -1399,6 +1399,21 @@ def _execute(
                         status = f"{status}; autoinvest told"
             except Exception as exc:  # noqa: BLE001 — an order step must not stop scheduling
                 status = f"{status}; autoinvest error:{getattr(exc, 'reason_code', type(exc).__name__)}"
+            # G6 §2e (Thomas 2026-10-27): today's drafted scenario for Thomas to confirm. It orders nothing.
+            try:
+                draft = holdings_store.refresh_autoinvest_proposal(now=now, root=repo_root)
+                if draft.get("status") == "drafted":
+                    status = f"{status}; autoinvest proposal drafted"
+                if draft.get("alert"):
+                    token, text = draft["alert"]
+                    failure = _tell(text)
+                    if failure:
+                        status = f"{status}; autoinvest proposal not sent:{failure}"
+                    else:
+                        holdings_store.mark_proposal_told(token, now=now, root=repo_root)
+                        status = f"{status}; autoinvest proposal told"
+            except Exception as exc:  # noqa: BLE001 — a draft must not stop scheduling
+                status = f"{status}; autoinvest proposal error:{getattr(exc, 'reason_code', type(exc).__name__)}"
         # RB2'' (Thomas 2026-10-26): a new automatic candidate pick, or a manual one that stopped trading — counts.
         if result.get("candidate_alert"):
             token, text = result["candidate_alert"]

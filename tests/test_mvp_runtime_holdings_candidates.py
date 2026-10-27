@@ -238,6 +238,18 @@ def test_the_fire_picks_once_a_month_and_the_calculator_buys_into_it(tmp_path):
     assert eff[al.BONDS][-1] == "toss:domestic:308620"
 
 
+def test_the_us_bond_pick_is_recorded_apart_and_an_older_file_is_screened_once_to_record_it(tmp_path):
+    feed = _StubFeed()
+    _refresh(feed, tmp_path)
+    assert _auto(tmp_path)["us_bonds"] == ["toss:domestic:308620"]
+    body = _auto(tmp_path)
+    del body["us_bonds"]                                     # a pick written before G6 §2e
+    store.auto_candidates_path(tmp_path).write_text(json.dumps(body), encoding="utf-8")
+    assert _refresh(feed, tmp_path, now="2026-10-28T01:00:00Z") == "bond_split" and feed.screens() == 2
+    assert _auto(tmp_path)["us_bonds"] == ["toss:domestic:308620"]
+    assert _refresh(feed, tmp_path, now="2026-10-28T02:00:00Z") is None and feed.screens() == 2
+
+
 def test_a_pick_that_stops_trading_is_replaced_at_the_next_fire(tmp_path):
     _refresh(_StubFeed(), tmp_path)
     feed = _StubFeed(status={"069500": "DELISTED"}, bars={**BARS, "069500": []})

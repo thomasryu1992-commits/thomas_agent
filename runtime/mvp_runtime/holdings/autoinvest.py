@@ -133,7 +133,8 @@ def parse_spec(spec: str) -> list[dict[str, Any]]:
 def approve(state_dir: Path, spec: str, *, max_krw: int, candidates: Mapping[str, Iterable[str]],
             now: str | None = None) -> dict[str, Any]:
     """Write Thomas's scenario as ``pending``. Every instrument must be one of the current candidates, so a
-    typo cannot buy an arbitrary stock. A new approval replaces the last one; its own ids are new."""
+    typo cannot buy an arbitrary stock. A new approval replaces the last one, unless that one still has an open
+    order; its own ids are new."""
     items = parse_spec(spec)
     allowed = {i for ids in candidates.values() for i in ids}
     outside = [i["instrument"] for i in items if i["instrument"] not in allowed]
@@ -148,6 +149,10 @@ def approve(state_dir: Path, spec: str, *, max_krw: int, candidates: Mapping[str
             "expires_at": expires, "status": PENDING}
     with locked(scenario_path(state_dir).with_suffix(".lock"), code="HOLDINGS_AUTOINVEST_LOCKED",
                 label="holdings autoinvest"):
+        # A replaced scenario takes its open orders' tracking with it: an order at the exchange would go unbooked.
+        if any(i.get("open") for i in _read(state_dir).get("items") or []):
+            raise ToolError(AUTOINVEST_REFUSED, "the current scenario has an open order; approve again once it "
+                                                "closes (filled, or cancelled at the close)")
         _write(state_dir, body)
     return body
 

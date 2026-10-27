@@ -329,8 +329,9 @@ def test_the_check_reserves_what_the_limit_order_reserves(tmp_path):
     _approve(tmp_path, spec="411060=2", max_krw=50_000)
     orders = _Orders()
     assert ai.run(_Feed(cash=51_600.0), orders, tmp_path, now=OPEN)["status"] == "ordered:1"
-    _approve(tmp_path, spec="411060=2", max_krw=50_000)
-    assert ai.run(_Feed(cash=47_000.0), _Orders(), tmp_path, now=OPEN)["status"] == "hold:insufficient_buying_power"
+    other = tmp_path / "b"                    # the first scenario's order is open: it cannot be replaced
+    _approve(other, spec="411060=2", max_krw=50_000)
+    assert ai.run(_Feed(cash=47_000.0), _Orders(), other, now=OPEN)["status"] == "hold:insufficient_buying_power"
 
 
 def test_an_order_cancelled_at_the_close_leaves_its_remainder_for_the_next_trading_day(tmp_path):

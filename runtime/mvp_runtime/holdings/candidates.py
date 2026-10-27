@@ -162,15 +162,21 @@ def auto_picks(ranked: Mapping[str, list[Candidate]]) -> dict[str, list[str]]:
     """RB2'': per class, the PICKS most-traded candidates with a known trading value; bonds take three Korean 3y
     plus the most-traded unhedged US 7-10y (the calculator fills candidates evenly, so 3 + 1 holds the decided
     quarter). A class with nothing tradable maps to an empty list: the caller keeps the last pick for it."""
-    def top(key: str, n: int, unhedged_only: bool = False) -> list[str]:
-        rows = [c for c in ranked.get(key, []) if c.avg_value_krw and not (unhedged_only and c.fx == "hedged")]
-        return [c.instrument for c in rows[:n]]
+    return {allocation.GLOBAL_EQUITY: _top(ranked, "global_equity", PICKS),
+            allocation.DOMESTIC_EQUITY: _top(ranked, "domestic_equity", PICKS),
+            allocation.BONDS: (_top(ranked, "bonds_kr3y", PICKS) + us_bond_pick(ranked)
+                               if _top(ranked, "bonds_kr3y", PICKS) else []),
+            allocation.GOLD: _top(ranked, "gold", PICKS)}
 
-    return {allocation.GLOBAL_EQUITY: top("global_equity", PICKS),
-            allocation.DOMESTIC_EQUITY: top("domestic_equity", PICKS),
-            allocation.BONDS: (top("bonds_kr3y", PICKS) + top("bonds_us7_10y", 1, unhedged_only=True)
-                               if top("bonds_kr3y", PICKS) else []),
-            allocation.GOLD: top("gold", PICKS)}
+
+def _top(ranked: Mapping[str, list[Candidate]], key: str, n: int, unhedged_only: bool = False) -> list[str]:
+    rows = [c for c in ranked.get(key, []) if c.avg_value_krw and not (unhedged_only and c.fx == "hedged")]
+    return [c.instrument for c in rows[:n]]
+
+
+def us_bond_pick(ranked: Mapping[str, list[Candidate]]) -> list[str]:
+    """The bond pick that is the US Treasury quarter (D-A), so a buy can tell the two bond slots apart."""
+    return _top(ranked, "bonds_us7_10y", 1, unhedged_only=True)
 
 
 # Toss's per-group limits (overview "Rate Limits", 2026-10-26): STOCK_ALL 1/s, STOCK 5/s, MARKET_DATA_CHART 20/s.

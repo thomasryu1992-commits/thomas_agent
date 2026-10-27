@@ -4,10 +4,10 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **659** distinct codes across **1325** raise sites
+- **659** distinct codes across **1326** raise sites
 - **22** exception classes carry them
 - **65** codes are raised from more than one module (see below)
-- **164** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
+- **168** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
 - **44** raise sites carry a human-readable **message** where a code would go, so there is nothing to look up — a different gap from the line above, and counted apart from it
 
 ## Codes raised from more than one module
@@ -494,6 +494,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `GENERATOR_NO_MINTABLE_FAMILY` | `ToolError` | `runtime/mvp_runtime/crypto/generator.py` | `generate_batch` | `not templates` |
 | `GUARD_NOT_APPROVED` | `SubmitRefused` | `runtime/mvp_runtime/crypto/live_execution.py` | `submit_and_reconcile` | `not (isinstance(guard_verdict, Mapping) and guard_verdict.get('approved') is True)` |
 | `HOLDINGS_AUTOINVEST_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/autoinvest.py` | `_read` | `—` |
+| `HOLDINGS_AUTOINVEST_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/autoinvest.py` | `approve` | `any((i.get('open') for i in _read(state_dir).get('items') or []))` |
 | `HOLDINGS_AUTOINVEST_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/autoinvest.py` | `approve` | `not isinstance(max_krw, int) or not 0 < max_krw <= DAILY_CAP_KRW` |
 | `HOLDINGS_AUTOINVEST_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/autoinvest.py` | `approve` | `outside` |
 | `HOLDINGS_AUTOINVEST_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/autoinvest.py` | `parse_spec` | `not items or len(items) > MAX_ITEMS or len({i['instrument'] for i in items}) != len(items)` |
