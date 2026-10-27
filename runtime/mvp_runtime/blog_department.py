@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -50,6 +50,8 @@ RUN_REPORT_SCHEMA = "blog_run_report.v1"
 # Written by the lane's daily ``blog_verify`` fire (``blog/verify.py``); named here so the weekly report can read it
 # without the core importing the lane.
 VERIFY_RECORD_KIND = "blog_verification"
+# Written by the lane's daily ``blog_analyze`` fire (``blog/analysis.py``), one per week, again when its sources change.
+ANALYSIS_RECORD_KIND = "blog_analysis"
 _KST = timedelta(hours=9)
 _FIELD = re.compile(r"^([a-z_]+):[ \t]*(.*)$")
 _DATE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
@@ -196,6 +198,45 @@ def verification_summary(ledger: Any, *, now: str) -> dict[str, Any]:
                 counter[code] = counter.get(code, 0) + 1
     out["codes"] = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
     return out
+
+
+def analysis_summary(ledger: Any, *, now: str) -> dict[str, Any] | None:
+    """The latest recorded statistics week that ended before today (KST), from the latest ``blog_analysis`` record
+    for it, plus how many recorded weeks in a row, newest first, agreed with the weekly review on every number both
+    had — P3's switch condition. None when no week is recorded."""
+    until = _kst_date(now)
+    weeks: dict[str, Mapping[str, Any]] = {}
+    for row in ledger.iter_records(kinds=[ANALYSIS_RECORD_KIND]):
+        record = row.get("record") if row.get("kind") == ANALYSIS_RECORD_KIND else None
+        sunday = str((record or {}).get("week", {}).get("sunday")) if isinstance(record, Mapping) else ""
+        if sunday and sunday < until:
+            weeks[sunday] = record          # appended in order: the last one for a week is its latest
+    if not weeks:
+        return None
+    ordered = sorted(weeks, reverse=True)
+    latest = weeks[ordered[0]]
+    in_a_row = 0
+    for sunday in ordered:
+        summary = weeks[sunday]["summary"]
+        if not (summary["compared"] and summary["agreed"] == summary["compared"]):
+            break
+        if in_a_row and (date.fromisoformat(ordered[in_a_row - 1]) - date.fromisoformat(sunday)).days != 7:
+            break
+        in_a_row += 1
+    naver, browser, capture = latest["naver"], latest.get("browser") or {}, latest.get("capture") or {}
+    return {
+        "week": dict(latest["week"]),
+        "naver_views": naver["views"], "naver_search_inflow": naver["search_inflow"],
+        "tistory_views": (browser.get("tistory") or {}).get("views"),
+        "gsc_impressions": (browser.get("gsc") or {}).get("impressions"),
+        "gsc_clicks": (browser.get("gsc") or {}).get("clicks"),
+        # The ledger stores keys sorted; the review reads the classes answer-first.
+        "capture_median": {name: capture["classes"][name]["median"] for name in ("답형", "이름만", "이동형")
+                           if name in (capture.get("classes") or {})},
+        "skill_row": latest["summary"]["skill_row"], "compared": latest["summary"]["compared"],
+        "agreed": latest["summary"]["agreed"], "differed": list(latest["summary"]["differed"]),
+        "weeks_agreeing_in_a_row": in_a_row,
+    }
 
 
 def build_record(observation: Mapping[str, Any], *, now: str) -> dict[str, Any]:

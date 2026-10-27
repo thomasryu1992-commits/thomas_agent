@@ -1,0 +1,574 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "blog_analysis.v0.1.schema.json",
+  "title": "Blog Analysis v0.1",
+  "description": "One week of blog statistics as the Mac collected them (BLOG_DEPARTMENT v0.2 P3), read by the system from the vault: the Naver week, the Tistory and Search Console week, the capture-rate rows summarised per query class, and each number the weekly review wrote in the vault's README row against the system's own. No titles or URLs: a Naver post is its 편 number, a Tistory post its page number. A part the collector did not deliver is null, never zero.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "analysis_id",
+    "sources_id",
+    "analysed_at",
+    "week",
+    "naver",
+    "browser",
+    "capture",
+    "comparison",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "blog_analysis.v0.1"
+    },
+    "analysis_id": {
+      "type": "string",
+      "pattern": "^bloganalysis_[0-9a-f]{20}$"
+    },
+    "sources_id": {
+      "type": "string",
+      "pattern": "^blogsources_[0-9a-f]{20}$"
+    },
+    "analysed_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "week": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "monday",
+        "sunday"
+      ],
+      "properties": {
+        "monday": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "sunday": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        }
+      }
+    },
+    "naver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "views",
+        "views_prev",
+        "unique_visitors",
+        "inflow",
+        "search_inflow",
+        "search_share_pct",
+        "home_feed",
+        "posts",
+        "posts_unmapped",
+        "queries"
+      ],
+      "properties": {
+        "views": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "views_prev": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "unique_visitors": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "inflow": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "search_inflow": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "search_share_pct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 100
+        },
+        "home_feed": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "posts": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "post",
+              "views"
+            ],
+            "properties": {
+              "post": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "views": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "posts_unmapped": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queries": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "query",
+              "inflow"
+            ],
+            "properties": {
+              "query": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "inflow": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    "browser": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tistory",
+            "gsc",
+            "gsc_pages",
+            "indexed",
+            "not_indexed"
+          ],
+          "properties": {
+            "tistory": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "views",
+                    "search",
+                    "daum",
+                    "google",
+                    "sns",
+                    "referral"
+                  ],
+                  "properties": {
+                    "views": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "search": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "daum": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "google": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "sns": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "referral": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    }
+                  }
+                }
+              ]
+            },
+            "gsc": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "start",
+                    "end",
+                    "clicks",
+                    "impressions",
+                    "ctr_pct",
+                    "position"
+                  ],
+                  "properties": {
+                    "start": {
+                      "oneOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "type": "string",
+                          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                        }
+                      ]
+                    },
+                    "end": {
+                      "oneOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "type": "string",
+                          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                        }
+                      ]
+                    },
+                    "clicks": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "impressions": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "ctr_pct": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "position": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "minimum": 0
+                    }
+                  }
+                }
+              ]
+            },
+            "gsc_pages": {
+              "type": "array",
+              "maxItems": 1000,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "page",
+                  "clicks",
+                  "impressions",
+                  "position"
+                ],
+                "properties": {
+                  "page": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "clicks": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "impressions": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "position": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "minimum": 0
+                  }
+                }
+              }
+            },
+            "indexed": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "not_indexed": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          }
+        }
+      ]
+    },
+    "capture": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "queries",
+            "classes",
+            "unsized",
+            "unsized_inflow"
+          ],
+          "properties": {
+            "queries": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "classes": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "답형",
+                "이름만",
+                "이동형"
+              ],
+              "properties": {
+                "답형": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "queries",
+                    "median"
+                  ],
+                  "properties": {
+                    "queries": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "median": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "minimum": 0
+                    }
+                  }
+                },
+                "이름만": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "queries",
+                    "median"
+                  ],
+                  "properties": {
+                    "queries": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "median": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "minimum": 0
+                    }
+                  }
+                },
+                "이동형": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "queries",
+                    "median"
+                  ],
+                  "properties": {
+                    "queries": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "median": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            },
+            "unsized": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unsized_inflow": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        }
+      ]
+    },
+    "comparison": {
+      "type": "array",
+      "minItems": 11,
+      "maxItems": 11,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "field",
+          "system",
+          "skill",
+          "agree"
+        ],
+        "properties": {
+          "field": {
+            "enum": [
+              "naver_views",
+              "naver_search_inflow",
+              "naver_search_share_pct",
+              "naver_home_share_pct",
+              "tistory_views",
+              "tistory_search",
+              "tistory_daum",
+              "tistory_google",
+              "gsc_impressions",
+              "gsc_indexed",
+              "gsc_clicks"
+            ]
+          },
+          "system": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "skill": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "agree": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "skill_row",
+        "compared",
+        "agreed",
+        "differed"
+      ],
+      "properties": {
+        "skill_row": {
+          "type": "boolean"
+        },
+        "compared": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "agreed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "differed": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "naver_views",
+              "naver_search_inflow",
+              "naver_search_share_pct",
+              "naver_home_share_pct",
+              "tistory_views",
+              "tistory_search",
+              "tistory_daum",
+              "tistory_google",
+              "gsc_impressions",
+              "gsc_indexed",
+              "gsc_clicks"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

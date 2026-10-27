@@ -367,10 +367,13 @@ services:
       - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/ops/blog-runs:/app/blog_vault/ops/blog-runs:ro
       # P2 (BLOG_DEPARTMENT v0.2, Thomas 2026-10-26): the daily blog_verify re-check runs the vault's rules, which read
       # the post images (capture metadata, Y3) and the topic registries (clusters.tsv/entities.tsv, M0-M7, V16).
-      # Read-only; the keyword folder is mounted whole so a git rewrite of a registry file is seen (a single-file
-      # bind keeps the replaced inode).
+      # P3 (2026-10-27): the daily blog_analyze reads the week's statistics the Mac collected (naver-weekly/,
+      # weekly-browser/), the capture rows (keywords/capture.tsv) and the weekly review's README row, so the whole
+      # analytics folder is mounted; the keyword folder is still reached at the same path. Read-only, and a folder
+      # rather than single files so a git rewrite of a file is seen (a single-file bind keeps the replaced inode).
+      # Nothing in it is a credential; the revenue lines are already inside naver-weekly/.
       - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/content/_assets:/app/blog_vault/content/_assets:ro
-      - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/analytics/keywords:/app/blog_vault/analytics/keywords:ro
+      - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/analytics:/app/blog_vault/analytics:ro
     # Its own heartbeat, probed by its own name: a shared file would let this loop keep a
     # dead risk loop reading FRESH (or the reverse). Same thresholds as its sibling.
     healthcheck:
