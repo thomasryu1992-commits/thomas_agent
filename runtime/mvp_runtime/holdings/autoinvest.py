@@ -276,11 +276,13 @@ def _place(orders: Any, state_dir: Path, body: dict[str, Any], today: str, now: 
         try:
             order_id = orders.buy_kr(item["instrument"].split(":")[2], item["quantity"], client_order_id=cid)
         except OrderRejected as exc:
-            _append(state_dir, {**base, "state": "rejected", "code": exc.toss_code or str(exc.status)})
+            # What Toss said, whole (code, message, request id, body shape): the first live 422 kept only its status.
+            _append(state_dir, {**base, "state": "rejected", "code": exc.toss_code or str(exc.status),
+                                "toss": exc.detail})
             outcome, code = STOPPED, exc.toss_code or str(exc.status)
             break
         except OrderUnknown as exc:
-            _append(state_dir, {**base, "state": "unknown", "code": exc.why})
+            _append(state_dir, {**base, "state": "unknown", "code": exc.why, "toss": exc.detail})
             outcome, code = UNKNOWN, "unknown"
             break
         except ToolError as exc:
@@ -332,4 +334,8 @@ def render_status(state_dir: Path) -> list[str]:
     for row in journal(state_dir)[-20:]:
         lines.append(f"  {row['at']} {row['state']:8} {row['instrument']} x{row['quantity']} "
                      f"~{row['est_krw']:,} KRW {row.get('order_id') or row.get('code') or ''}")
+        toss = row.get("toss") or {}
+        if toss:
+            lines.append(f"      toss: {toss.get('status')} code={toss.get('code') or '-'} body={toss.get('body_kind')} "
+                         f"request_id={toss.get('request_id') or '-'} message={toss.get('message') or '-'}")
     return lines
