@@ -3,8 +3,8 @@
 ``docs/proposals/G6_BUY_CASH_AUTOINVEST_V0.1.md`` holds the decision and every line below; this is its code.
 
 - :func:`approve` is the terminal command's half (``holdings_board --autoinvest-approve``): it checks the
-  scenario and writes it as ``pending``. Only domestic instruments in the current candidates, whole shares, a
-  KRW cap no higher than the daily limit.
+  scenario and writes it as ``pending``. Only instruments in the current candidates, whole domestic shares or
+  US dollar amounts, a KRW cap no higher than the daily limit.
 - :func:`run` is the holdings fire's half.
   - Every fire it reads back each open order and books what filled. An order the exchange cancelled at the
     close leaves its remainder for the next trading day.
@@ -15,6 +15,10 @@
     first rejection or unknown outcome and never resends.
   - Market orders were dropped because a market buy reserves cash at the upper price limit: two orders of
     scenario B locked the cash the third needed.
+  - A US item (§2g, Thomas 2026-10-27) is a dollar amount of a US ETF, from the USD cash Thomas exchanged in the
+    app; the API never converts. It is placed once per US regular session (until seventy minutes before the
+    close) as a market order by amount. It is done once anything of it filled; one closed with nothing filled
+    is placed again in the next session.
 - :func:`notice` gives the Telegram line: counts and state, never an instrument or an amount (H3).
 
 Both files name instruments and amounts, so they are LOCAL_ONLY (the hook's file regex): the scenario
@@ -25,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -46,6 +51,8 @@ MAX_ITEMS = 10
 VALID_DAYS = 7
 OPEN_AFTER = timedelta(minutes=5)
 CLOSE_BEFORE = timedelta(minutes=30)
+# G6 §2g: Toss takes an amount order until an hour before the US close; ten more minutes of margin.
+US_CLOSE_BEFORE = timedelta(minutes=70)
 FALLBACK_FEE_RATE = 0.001          # when the account's KR commission cannot be read
 # Limit orders (Thomas 2026-10-27): the book's price may sit at most this far above the last price, or the day holds.
 PRICE_GUARD = 0.02
@@ -110,12 +117,24 @@ def _kst(now: str) -> datetime:
 
 # --- approval (Thomas's terminal) -------------------------------------------------------------------------------
 
+US_AMOUNT = re.compile(r"^\$(\d+(\.\d{1,2})?)$")
+
+
 def parse_spec(spec: str) -> list[dict[str, Any]]:
-    """``"069500=1,114260=1"`` (or ``toss:domestic:069500=1``) into items; refuses anything else."""
+    """``"069500=1,114260=1"`` (or ``toss:domestic:069500=1``) into items, and (G6 §2g) a US dollar amount as
+    ``toss:overseas:VT=$123.45``; refuses anything else."""
     items = []
     for part in [p.strip() for p in spec.split(",") if p.strip()]:
         ident, sep, qty = part.partition("=")
         ident = ident.strip()
+        dollars = US_AMOUNT.match(qty.strip())
+        if dollars:
+            symbol = ident.split(":")[-1]
+            if (not sep or not ident.startswith("toss:overseas:") or not re.match(r"^[A-Z][A-Z.\-]{0,9}$", symbol)
+                    or float(dollars.group(1)) <= 0):
+                raise ToolError(AUTOINVEST_REFUSED, "expected toss:overseas:TICKER=$DOLLARS for a US amount")
+            items.append({"instrument": ident, "amount_usd": f"{float(dollars.group(1)):.2f}"})
+            continue
         if not ident.startswith("toss:"):
             ident = f"toss:domestic:{ident}"
         try:
@@ -194,6 +213,8 @@ _HOLD_TEXT = {
     "read_failed": "토스 조회에 실패했습니다",
     "book_too_thin": "매도 호가 잔량이 주문 수량보다 적습니다",
     "price_guard": f"호가 가격이 현재가보다 {round(PRICE_GUARD * 100)}% 넘게 높습니다",
+    "rate_unreadable": "원·달러 환율을 읽지 못했습니다",
+    "insufficient_usd": "달러 주문 가능 금액이 부족합니다(앱에서 환전 필요)",
 }
 
 
@@ -201,15 +222,25 @@ def _notice(body: dict[str, Any], event: str, text: str) -> None:
     body["notice"] = {"token": f"{body['scenario_id']}|{event}", "text": text}
 
 
+def _is_us(item: Mapping[str, Any]) -> bool:
+    return "amount_usd" in item
+
+
 def _remaining(item: Mapping[str, Any]) -> int:
+    """Shares still to buy; a US amount item counts as one until it is done."""
+    if _is_us(item):
+        return 0 if item.get("done") else 1
     return int(item["quantity"]) - int(item.get("filled") or 0)
 
 
 def _track(feed: Any, body: dict[str, Any], now: str) -> None:
     """Read back every open order (each fire, in or out of session). FILLED closes it; CANCELED, REJECTED or
     REPLACED closes it with what filled, and the rest waits for the next trading day; anything else (pending,
-    partial, a status Toss adds later) keeps it open, so no second order is placed beside it."""
-    closed_short = 0
+    partial, a status Toss adds later) keeps it open, so no second order is placed beside it.
+
+    A US amount order (§2g) is done once anything of it filled; one closed with nothing filled is placed again in
+    the next US regular session."""
+    closed_short = us_unfilled = 0
     for item in body["items"]:
         held = item.get("open")
         if not held:
@@ -218,8 +249,18 @@ def _track(feed: Any, body: dict[str, Any], now: str) -> None:
             state = feed.fill_state(held["order_id"])
         except ToolError:
             continue                                   # unknown this fire: the order stays open, nothing new
-        filled = int(min(float(state.get("filled") or 0), held["quantity"]))
         status = state.get("status")
+        if _is_us(item):
+            got = float(state.get("filled") or 0)
+            if status == "FILLED" or (status in DONE_STATUSES and got > 0):
+                item.update(done=True, filled_shares=got, spent_usd=float(state.get("filled_amount") or 0),
+                            spent_krw=float(held.get("est_krw") or 0))
+                item.pop("open", None)
+            elif status in DONE_STATUSES:
+                item.pop("open", None)
+                us_unfilled += 1
+            continue
+        filled = int(min(float(state.get("filled") or 0), held["quantity"]))
         if status == "FILLED" or (status in DONE_STATUSES and filled >= held["quantity"]):
             filled = held["quantity"]
         elif status not in DONE_STATUSES:
@@ -230,12 +271,25 @@ def _track(feed: Any, body: dict[str, Any], now: str) -> None:
         item.pop("open", None)
         closed_short += held["quantity"] - filled
     left = sum(_remaining(i) for i in body["items"])
+    if us_unfilled and left:
+        _notice(body, f"us_short|{now}", f"[보유 자산] 자동 매수 — 미국 금액 주문 {us_unfilled}건이 체결되지 않고 "
+                                          "닫혔습니다. 다음 미국 정규장에 다시 주문합니다.")
     if left == 0:
         body.update(status=EXECUTED, completed_at=now)
         _notice(body, "filled", f"[보유 자산] 자동 매수 — 승인한 시나리오 {len(body['items'])}종목 전량 체결.")
     elif closed_short:
         _notice(body, f"short|{now}", f"[보유 자산] 자동 매수 — 미체결 {closed_short}주는 장 마감에 취소됐습니다. "
                                        "다음 거래일에 남은 수량만 다시 주문합니다.")
+
+
+def _committed_krw(body: Mapping[str, Any]) -> float:
+    """What the scenario has spent or holds open, in KRW: a US order at its estimate when placed."""
+    total = sum(float(i.get("spent_krw") or 0) for i in body["items"])
+    for item in body["items"]:
+        held = item.get("open")
+        if held:
+            total += float(held.get("est_krw") or 0) if _is_us(item) else held["quantity"] * held["price"]
+    return total
 
 
 def _limit_price(levels: list[tuple[float, float]], quantity: int) -> float | None:
@@ -274,25 +328,42 @@ def run(feed: Any, orders: Any, state_dir: Path, *, now: str) -> dict[str, Any]:
                 _write(state_dir, body)
                 return {"status": "hold:orders_off"}
             return _hold(state_dir, body, "orders_off")
-        wanted = [i for i in body["items"] if _remaining(i) > 0 and not i.get("open")]
-        if not wanted or body.get("last_attempt_day") == today:
+        wanted = [i for i in body["items"] if _remaining(i) > 0 and not i.get("open") and not _is_us(i)]
+        wanted_us = [i for i in body["items"] if _remaining(i) > 0 and not i.get("open") and _is_us(i)]
+        if not wanted and not wanted_us:
             _write(state_dir, body)
-            return {"status": "waiting" if not wanted else "done_today"}
-        try:
-            session = _session(feed.kr_market_day(today), today)
-        except ToolError:
-            return _hold(state_dir, body, "read_failed")    # told once; the next fire looks again
-        if session is None or not (session[0] + OPEN_AFTER <= local <= session[1] - CLOSE_BEFORE):
-            _write(state_dir, body)
-            return {"status": "outside_session"}
-        body["last_attempt_day"] = today
-        try:
-            checked = _checks(feed, state_dir, body, today, wanted)
-        except ToolError:
-            return _hold(state_dir, body, "read_failed")    # a read that failed holds the day, never half-orders
-        if "status" in checked:
-            return checked
-        return _place(orders, state_dir, body, today, now, wanted, checked["prices"], checked["estimates"])
+            return {"status": "waiting"}
+        if wanted and body.get("last_attempt_day") != today:
+            try:
+                session = _session(feed.kr_market_day(today), today)
+            except ToolError:
+                return _hold(state_dir, body, "read_failed")    # told once; the next fire looks again
+            if session is not None and session[0] + OPEN_AFTER <= local <= session[1] - CLOSE_BEFORE:
+                body["last_attempt_day"] = today
+                try:
+                    checked = _checks(feed, state_dir, body, today, wanted)
+                except ToolError:
+                    return _hold(state_dir, body, "read_failed")  # a read that failed holds the day, never half-orders
+                if "status" in checked:
+                    return checked
+                return _place(orders, state_dir, body, today, now, wanted, checked["prices"], checked["estimates"])
+        if wanted_us:
+            try:
+                session_day = _us_session(feed, now)
+            except ToolError:
+                return _hold(state_dir, body, "read_failed")
+            if session_day is not None and body.get("last_us_attempt") != session_day:
+                body["last_us_attempt"] = session_day
+                try:
+                    checked = _checks_us(feed, state_dir, body, today, wanted_us)
+                except ToolError:
+                    return _hold(state_dir, body, "read_failed")
+                if "status" in checked:
+                    return checked
+                return _place_us(orders, state_dir, body, today, now, session_day, wanted_us, checked["estimates"])
+        _write(state_dir, body)
+        return {"status": "done_today" if wanted and not wanted_us and body.get("last_attempt_day") == today
+                else "outside_session"}
 
 
 def _checks(feed: Any, state_dir: Path, body: dict[str, Any], today: str,
@@ -329,8 +400,7 @@ def _checks(feed: Any, state_dir: Path, body: dict[str, Any], today: str,
                 pass
     estimates = {i["instrument"]: _remaining(i) * prices[i["instrument"]] * (1 + fee) for i in wanted}
     total = sum(estimates.values())
-    spent_before = sum(float(i.get("spent_krw") or 0) for i in body["items"]) + sum(
-        i["open"]["quantity"] * i["open"]["price"] for i in body["items"] if i.get("open"))
+    spent_before = _committed_krw(body)
     spent_today = sum(float(r.get("est_krw") or 0) for r in journal(state_dir)
                       if r.get("day") == today and r.get("state") == "intent")
     body["estimate_krw"] = round(total)
@@ -362,35 +432,133 @@ def _place(orders: Any, state_dir: Path, body: dict[str, Any], today: str, now: 
                 "instrument": item["instrument"], "asset_class": item.get("asset_class"), "quantity": quantity,
                 "price": price,
                 "est_krw": round(estimates[item["instrument"]])}
-        _append(state_dir, {**base, "state": "intent"})
-        try:
-            order_id = orders.buy_kr(item["instrument"].split(":")[2], quantity, price=price, client_order_id=cid)
-        except OrderRejected as exc:
-            # What Toss said, whole (code, message, request id, body shape): the first live 422 kept only its status.
-            _append(state_dir, {**base, "state": "rejected", "code": exc.toss_code or str(exc.status),
-                                "toss": exc.detail})
-            outcome, code = STOPPED, exc.toss_code or str(exc.status)
+        order_id, outcome, code = _send(state_dir, base, lambda: orders.buy_kr(
+            item["instrument"].split(":")[2], quantity, price=price, client_order_id=cid))
+        if order_id is None:
             break
-        except OrderUnknown as exc:
-            _append(state_dir, {**base, "state": "unknown", "code": exc.why, "toss": exc.detail})
-            outcome, code = UNKNOWN, "unknown"
-            break
-        except ToolError as exc:
-            _append(state_dir, {**base, "state": "rejected", "code": exc.reason_code})
-            outcome, code = STOPPED, exc.reason_code
-            break
-        _append(state_dir, {**base, "state": "accepted", "order_id": order_id})
         item["open"] = {"order_id": order_id, "quantity": quantity, "price": price, "day": today}
         placed += 1
+    return _placed(state_dir, body, today, now, placed, outcome, code, "지정가")
+
+
+def _send(state_dir: Path, base: Mapping[str, Any], post: Any) -> tuple[str | None, str, str | None]:
+    """One POST between its journal lines: (order id, PENDING, None) when accepted, else (None, outcome, code)."""
+    _append(state_dir, {**base, "state": "intent"})
+    try:
+        order_id = post()
+    except OrderRejected as exc:
+        # What Toss said, whole (code, message, request id, body shape): the first live 422 kept only its status.
+        _append(state_dir, {**base, "state": "rejected", "code": exc.toss_code or str(exc.status), "toss": exc.detail})
+        return None, STOPPED, exc.toss_code or str(exc.status)
+    except OrderUnknown as exc:
+        _append(state_dir, {**base, "state": "unknown", "code": exc.why, "toss": exc.detail})
+        return None, UNKNOWN, "unknown"
+    except ToolError as exc:
+        _append(state_dir, {**base, "state": "rejected", "code": exc.reason_code})
+        return None, STOPPED, exc.reason_code
+    _append(state_dir, {**base, "state": "accepted", "order_id": order_id})
+    return order_id, PENDING, None
+
+
+def _placed(state_dir: Path, body: dict[str, Any], today: str, now: str, placed: int, outcome: str, code: str | None,
+            kind: str) -> dict[str, Any]:
     body.update(status=outcome, last_placed_at=now, **({"stop_reason": code} if code else {}))
-    text = {PENDING: f"[보유 자산] 자동 매수 — 지정가 {placed}건 주문. 체결은 다음 실행에서 확인합니다.",
+    text = {PENDING: f"[보유 자산] 자동 매수 — {kind} {placed}건 주문. 체결은 다음 실행에서 확인합니다.",
             STOPPED: f"[보유 자산] 자동 매수 중단 — 주문 {placed}건, 거부 1건({code}). 남은 몫은 새 시나리오로 승인해야 합니다.",
             UNKNOWN: f"[보유 자산] 자동 매수 확인 필요 — 주문 {placed}건, 접수 여부를 모르는 주문 1건. "
                      "다시 보내지 않습니다. 다음 실행의 체결 내역에서 확인됩니다."}[outcome]
-    _notice(body, f"{outcome}|{today}", text)
+    _notice(body, f"{outcome}|{today}|{kind}", text)
     body.pop("hold_reason", None)
     _write(state_dir, body)
     return {"status": f"{'ordered' if outcome == PENDING else outcome}:{placed}"}
+
+
+# --- G6 §2g: the US amount orders (Thomas 2026-10-27) ------------------------------------------------------------
+
+def _us_session(feed: Any, now: str) -> str | None:
+    """The US date of the regular session ``now`` is inside, from five minutes after its open to seventy minutes
+    before its close (Toss takes an amount order until an hour before), or None."""
+    at = timeutil.parse_iso(now)
+    us_day = (at - timedelta(hours=5)).date().isoformat()          # New York's date, near enough to pick the week
+    for day, start, end in feed.us_regular_sessions(us_day):
+        try:
+            opened, closed = datetime.fromisoformat(start), datetime.fromisoformat(end)
+        except ValueError:
+            continue
+        if opened + OPEN_AFTER <= at <= closed - US_CLOSE_BEFORE:
+            return day
+    return None
+
+
+def _us_fee(feed: Any) -> float:
+    for row in feed.commission_rates():
+        if row.get("marketCountry") == "US":
+            try:
+                return float(row["commissionRate"])
+            except (KeyError, TypeError, ValueError):
+                pass
+    return FALLBACK_FEE_RATE
+
+
+def _checks_us(feed: Any, state_dir: Path, body: dict[str, Any], today: str,
+               wanted: list[dict[str, Any]]) -> dict[str, Any]:
+    """Before the first US POST: ACTIVE ETFs, the rate, the three caps in KRW, USD cash. No price guard: an amount
+    order fixes the dollars, not the shares."""
+    symbols = [i["instrument"].split(":")[2] for i in wanted]
+    info = {str(r.get("symbol")): r for r in feed.stock_info(symbols)}
+    bad = [s for s in symbols if (info.get(s) or {}).get("status") != "ACTIVE"
+           or (info.get(s) or {}).get("securityType") not in ("ETF", "FOREIGN_ETF")]
+    if bad:
+        body.update(status=STOPPED, stop_reason="not_an_active_etf")
+        _notice(body, "stopped|not_an_active_etf",
+                f"[보유 자산] 자동 매수 중단 — 거래 가능한 ETF가 아닌 종목 {len(bad)}개. 주문 0건.")
+        _write(state_dir, body)
+        return {"status": "stopped:not_an_active_etf"}
+    rate = feed.usd_krw_rate()
+    if not rate:
+        return _hold(state_dir, body, "rate_unreadable")
+    fee = _us_fee(feed)
+    dollars = {i["instrument"]: float(i["amount_usd"]) * (1 + fee) for i in wanted}
+    estimates = {k: v * rate for k, v in dollars.items()}
+    total = sum(estimates.values())
+    spent_before = _committed_krw(body)
+    spent_today = sum(float(r.get("est_krw") or 0) for r in journal(state_dir)
+                      if r.get("day") == today and r.get("state") == "intent")
+    body["estimate_krw"] = round(total)
+    if spent_before + total > body["max_krw"]:
+        return _hold(state_dir, body, "over_scenario_cap")
+    if spent_today + total > DAILY_CAP_KRW:
+        return _hold(state_dir, body, "over_daily_cap")
+    power = feed.cash_usd()
+    if power is None:
+        return _hold(state_dir, body, "buying_power_unreadable")
+    if sum(dollars.values()) > power:
+        body["shortfall_usd"] = round(sum(dollars.values()) - power, 2)
+        return _hold(state_dir, body, "insufficient_usd")
+    return {"estimates": estimates}
+
+
+def _place_us(orders: Any, state_dir: Path, body: dict[str, Any], today: str, now: str, session_day: str,
+              wanted: list[dict[str, Any]], estimates: Mapping[str, float]) -> dict[str, Any]:
+    """This US session's amount orders in turn, journalled before and after, as the domestic ones."""
+    placed, outcome, code = 0, PENDING, None
+    sent = {r.get("client_order_id") for r in journal(state_dir)}
+    for item in wanted:
+        cid = integrity.short_id("ord", f"{body['scenario_id']}|{item['instrument']}|us:{session_day}")
+        if cid in sent:
+            outcome, code = UNKNOWN, "journaled"
+            break
+        base = {"at": now, "day": today, "us_session": session_day, "scenario_id": body["scenario_id"],
+                "client_order_id": cid, "instrument": item["instrument"], "asset_class": item.get("asset_class"),
+                "quantity": None, "amount_usd": item["amount_usd"], "est_krw": round(estimates[item["instrument"]])}
+        order_id, outcome, code = _send(state_dir, base, lambda: orders.buy_us_amount(
+            item["instrument"].split(":")[2], item["amount_usd"], client_order_id=cid))
+        if order_id is None:
+            break
+        item["open"] = {"order_id": order_id, "amount_usd": item["amount_usd"], "day": session_day,
+                        "est_krw": round(estimates[item["instrument"]])}
+        placed += 1
+    return _placed(state_dir, body, today, now, placed, outcome, code, "미국 금액")
 
 
 def classify_bought(state_dir: Path, *, candidates: Mapping[str, Iterable[str]], us_bonds: Iterable[str],
@@ -443,6 +611,15 @@ def mark_told(state_dir: Path, token: str, *, now: str) -> None:
         _write(state_dir, body)
 
 
+def _status_item(item: Mapping[str, Any]) -> str:
+    if _is_us(item):
+        state = (f"done, {item.get('filled_shares', 0):g} sh for ${item.get('spent_usd', 0):,.2f}" if item.get("done")
+                 else "open" if item.get("open") else "to place")
+        return f"{item['instrument']} ${item['amount_usd']} ({state})"
+    return (f"{item['instrument']} {int(item.get('filled') or 0)}/{item['quantity']}"
+            + (f" (open {item['open']['quantity']} @ {item['open']['price']:,})" if item.get("open") else ""))
+
+
 def render_status(state_dir: Path) -> list[str]:
     """Thomas's terminal: the scenario and today's journal, with amounts. LOCAL_ONLY."""
     body = _read(state_dir)
@@ -451,17 +628,15 @@ def render_status(state_dir: Path) -> list[str]:
         return lines + ["scenario    : none approved"]
     lines += [f"scenario    : {body.get('scenario_id')} {body.get('status')} (approved {body.get('approved_at')}, "
               f"expires {body.get('expires_at')})",
-              "items       : " + ", ".join(
-                  f"{i['instrument']} {int(i.get('filled') or 0)}/{i['quantity']}"
-                  + (f" (open {i['open']['quantity']} @ {i['open']['price']:,})" if i.get("open") else "")
-                  for i in body.get("items", [])),
+              "items       : " + ", ".join(_status_item(i) for i in body.get("items", [])),
               f"cap         : {body.get('max_krw'):,} KRW; estimate {body.get('estimate_krw', '-')}"]
     for key in ("hold_reason", "shortfall_krw", "stop_reason", "last_placed_at", "completed_at", "executed_at"):
         if key in body:
             lines.append(f"{key:12}: {body[key]}")
     for row in journal(state_dir)[-20:]:
-        price = f" @ {row['price']:,}" if row.get("price") else ""
-        lines.append(f"  {row['at']} {row['state']:8} {row['instrument']} x{row['quantity']}{price} "
+        what = (f"${row['amount_usd']}" if row.get("amount_usd")
+                else f"x{row['quantity']}" + (f" @ {row['price']:,}" if row.get("price") else ""))
+        lines.append(f"  {row['at']} {row['state']:8} {row['instrument']} {what} "
                      f"~{row['est_krw']:,} KRW {row.get('order_id') or row.get('code') or ''}")
         toss = row.get("toss") or {}
         if toss:

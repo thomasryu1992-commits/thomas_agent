@@ -1,9 +1,12 @@
 """The Toss buy-order adapter (G6-buy, Thomas 2026-10-26) — the one way this repo places a Toss order.
 
-``docs/proposals/G6_BUY_CASH_AUTOINVEST_V0.1.md``: buy only, domestic only, whole shares, limit orders at a
-price the caller read off the book (since 2026-10-27; the market orders before reserved cash at the upper
-price limit and a second order was refused), a scenario Thomas approved. This module is the order half; the reads stay in ``toss_account.TossHoldingsFeed``,
-which keeps no order method.
+``docs/proposals/G6_BUY_CASH_AUTOINVEST_V0.1.md``: buy only, a scenario Thomas approved.
+- Domestic: whole shares, limit orders at a price the caller read off the book. This is so since 2026-10-27:
+  the market orders before reserved cash at the upper price limit, and a second order was refused.
+- US (§2g, 2026-10-27): a market buy by dollar amount, from the USD cash Thomas exchanged in the app; the API
+  never converts.
+
+This module is the order half; the reads stay in ``toss_account.TossHoldingsFeed``, which keeps no order method.
 
 **Gate.** ``MVP_TOSS_ORDERS=buy_only`` on scheduler-maint, the environment alone (CLAUDE.md, env-only gate).
 Unset, :func:`select_buy_orders` returns :class:`NoBuyOrders` and nothing capable is built. Every POST re-reads
@@ -25,6 +28,7 @@ connection, a 5xx or ``request-in-progress``. The caller stops on either and nev
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.request
 from typing import Any
@@ -103,9 +107,19 @@ class NoBuyOrders:
                timeout_seconds: int = 10) -> str:
         raise ToolError(ORDER_REFUSED, f"{TOSS_ORDERS_ENV} is not {BUY_ONLY}: no order path")
 
+    def buy_us_amount(self, symbol: str, amount_usd: str, *, client_order_id: str, timeout_seconds: int = 10) -> str:
+        raise ToolError(ORDER_REFUSED, f"{TOSS_ORDERS_ENV} is not {BUY_ONLY}: no order path")
+
+
+# A US ticker as Toss's order body takes it: letters, with a dot or dash for a share class (``BRK.B``).
+_US_SYMBOL = re.compile(r"^[A-Z][A-Z.\-]{0,9}$")
+# Dollars and cents, no more: Toss's ``orderAmount`` is a decimal string.
+_USD_AMOUNT = re.compile(r"^\d+(\.\d{1,2})?$")
+
 
 class TossBuyOrders:
-    """Limit buys of whole shares of a domestic symbol, through the holdings feed's token."""
+    """Buys through the holdings feed's token: limit buys of whole domestic shares, and (G6 §2g) US market buys
+    by dollar amount from the account's USD cash."""
 
     enabled = True
 
@@ -154,6 +168,20 @@ class TossBuyOrders:
             raise ToolError(ORDER_REFUSED, "a domestic symbol is a 6-character KRX code")
         body = {"clientOrderId": client_order_id, "symbol": symbol, "side": SIDE, "orderType": "LIMIT",
                 "timeInForce": "DAY", "quantity": str(quantity), "price": str(price)}
+        return self._send(body, timeout_seconds=timeout_seconds)
+
+    def buy_us_amount(self, symbol: str, amount_usd: str, *, client_order_id: str, timeout_seconds: int = 10) -> str:
+        """Place one US MARKET BUY of ``amount_usd`` dollars of ``symbol`` (fractional shares, regular session until
+        an hour before the close); returns Toss's orderId. It spends USD only: the API never converts KRW."""
+        if not isinstance(amount_usd, str) or not _USD_AMOUNT.match(amount_usd) or float(amount_usd) <= 0:
+            raise ToolError(ORDER_REFUSED, "a US amount is a positive dollar figure with at most two decimals")
+        if not isinstance(symbol, str) or not _US_SYMBOL.match(symbol):
+            raise ToolError(ORDER_REFUSED, "a US symbol is an upper-case ticker")
+        body = {"clientOrderId": client_order_id, "symbol": symbol, "side": SIDE, "orderType": "MARKET",
+                "orderAmount": amount_usd}
+        return self._send(body, timeout_seconds=timeout_seconds)
+
+    def _send(self, body: dict[str, Any], *, timeout_seconds: int) -> str:
         self._feed._resolve_account(timeout_seconds=timeout_seconds)
         token = self._feed._access_token(timeout_seconds=timeout_seconds)
         try:

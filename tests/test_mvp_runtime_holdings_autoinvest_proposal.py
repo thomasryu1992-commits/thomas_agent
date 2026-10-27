@@ -29,13 +29,23 @@ LATER = "2026-10-28T02:00:00Z"
 NEXT_DAY = "2026-10-29T01:00:00Z"
 
 
+RATE = 1_400.0
+
+
 class _Feed:
-    def __init__(self, cash=200_000.0, session=True):
-        self.cash, self.session, self.reads = cash, session, []
+    def __init__(self, cash=200_000.0, session=True, usd=0.0, rate=RATE):
+        self.cash, self.session, self.reads, self.usd, self.rate = cash, session, [], usd, rate
 
     def cash_krw(self, **_):
         self.reads.append("cash")
         return self.cash
+
+    def cash_usd(self, **_):
+        self.reads.append("usd")
+        return self.usd
+
+    def usd_krw_rate(self, **_):
+        return self.rate
 
     def kr_market_day(self, date, **_):
         regular = {"startTime": "09:00:00", "endTime": "15:30:00"} if self.session else None
@@ -46,7 +56,7 @@ class _Feed:
         return {s: PRICES[s] for s in symbols if s in PRICES}
 
     def commission_rates(self, **_):
-        return [{"marketCountry": "KR", "commissionRate": "0"}]
+        return [{"marketCountry": "KR", "commissionRate": "0"}, {"marketCountry": "US", "commissionRate": "0"}]
 
     def stock_info(self, symbols, **_):
         return [{"symbol": s, "name": f"ETF {s}", "status": "ACTIVE", "securityType": "ETF"} for s in symbols]
@@ -76,12 +86,13 @@ def test_shares_go_one_at_a_time_to_the_largest_gap_and_never_past_a_target():
         "bonds_us7_10y": 9, "domestic_equity": 2, "gold": 1}                            # Q2 worked by hand
     assert result["estimate_krw"] == 190_000
     assert "bonds_kr3y" not in {i["slot"] for i in result["items"]}                    # over its ¾ target
-    assert notes == ["global_equity:overseas"]                                         # no USD path
+    assert notes == [] and result["exchange_krw"] == 0                               # global equity is at target
 
 
 def test_once_every_slot_is_at_target_the_rest_of_the_cash_stays_cash():
-    rows = [{"key": "gold", "asset_class": al.GOLD, "instrument": GOLD, "target_krw": 110_000.0, "held_krw": 100_000.0},
-            {"key": "domestic_equity", "asset_class": al.DOMESTIC_EQUITY, "instrument": DOM, "target_krw": 50_000.0,
+    rows = [{"key": "gold", "asset_class": al.GOLD, "instrument": GOLD, "currency": "krw", "target_krw": 110_000.0, "held_krw": 100_000.0},
+            {"key": "domestic_equity", "asset_class": al.DOMESTIC_EQUITY, "instrument": DOM, "currency": "krw",
+             "target_krw": 50_000.0,
              "held_krw": 60_000.0}]
     result = ap.draft(rows, prices=PRICES, cash_krw=200_000.0, fee_rate=0.0)
     assert [(i["slot"], i["quantity"]) for i in result["items"]] == [("gold", 1)] and result["estimate_krw"] == 20_000
@@ -99,25 +110,27 @@ def test_bonds_split_three_quarters_and_a_quarter_and_usd_entries_count_as_the_u
 
 def test_each_class_buys_its_first_candidate_and_a_list_without_the_us_pick_stays_one_slot():
     rows, notes = _slots(candidates={**CANDIDATES, al.BONDS: [KR3, "toss:domestic:148070"], al.GOLD: []})
-    assert {r["key"]: r["instrument"] for r in rows} == {"domestic_equity": DOM, "bonds": KR3}
-    assert notes == ["global_equity:overseas", "bonds_unsplit", "gold:no_candidate"]
+    assert {r["key"]: (r["instrument"], r["currency"]) for r in rows} == {
+        "global_equity": (WORLD, "usd"), "domestic_equity": (DOM, "krw"), "bonds": (KR3, "krw")}
+    assert notes == ["bonds_unsplit", "gold:no_candidate"]
 
 
 def test_a_budget_under_fifty_thousand_drafts_nothing_and_an_unpriced_slot_is_skipped():
     rows, _ = _slots()
     assert ap.draft(rows, prices=PRICES, cash_krw=51_000.0, fee_rate=0.0)["status"] == "below_minimum"
     result = ap.draft(rows, prices={k: v for k, v in PRICES.items() if k != "308620"}, cash_krw=200_000.0, fee_rate=0.0)
-    assert result["unpriced"] == ["bonds_us7_10y"] and all(i["slot"] != "bonds_us7_10y" for i in result["items"])
+    assert result["unpriced"] == ["global_equity", "bonds_us7_10y"]                   # no rate: no dollar slot either
+    assert all(i["slot"] not in result["unpriced"] for i in result["items"])
 
 
 def test_the_fee_counts_against_the_budget():
-    rows = [{"key": "gold", "asset_class": al.GOLD, "instrument": GOLD, "target_krw": 1e9, "held_krw": 0.0}]
+    rows = [{"key": "gold", "asset_class": al.GOLD, "instrument": GOLD, "currency": "krw", "target_krw": 1e9, "held_krw": 0.0}]
     # 97,000 budget: four 20,000 shares at a 25% fee is 100,000, three is 75,000.
     assert ap.draft(rows, prices=PRICES, cash_krw=100_000.0, fee_rate=0.25)["items"][0]["quantity"] == 3
 
 
 def test_the_daily_cap_bounds_both_the_budget_and_the_scenario_cap():
-    rows = [{"key": "gold", "asset_class": al.GOLD, "instrument": GOLD, "target_krw": 1e9, "held_krw": 0.0}]
+    rows = [{"key": "gold", "asset_class": al.GOLD, "instrument": GOLD, "currency": "krw", "target_krw": 1e9, "held_krw": 0.0}]
     result = ap.draft(rows, prices=PRICES, cash_krw=2_000_000.0, fee_rate=0.0)
     assert result["max_krw"] == ai.DAILY_CAP_KRW and result["estimate_krw"] <= ai.DAILY_CAP_KRW * 0.97
 
@@ -288,7 +301,8 @@ def test_approval_keeps_the_class_the_instrument_is_bought_for(tmp_path):
 def _toss_feed():
     feed = toss_account.TossHoldingsFeed.__new__(toss_account.TossHoldingsFeed)
     stub = _Feed()
-    for name in ("cash_krw", "kr_market_day", "last_prices", "commission_rates", "stock_info"):
+    for name in ("cash_krw", "cash_usd", "usd_krw_rate", "kr_market_day", "last_prices", "commission_rates",
+                 "stock_info"):
         setattr(feed, name, getattr(stub, name))
     return feed
 
