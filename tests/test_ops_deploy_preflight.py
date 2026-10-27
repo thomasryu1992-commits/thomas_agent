@@ -531,7 +531,7 @@ def _bind_sources() -> dict[str, list[str]]:
 # The variables the bind sources may be built from: paths only, never a credential. What each resolves
 # to lives in .env, which only the volume check at deploy time sees.
 PATH_VARIABLES = {"THOMAS_STATE_DIR", "THOMAS_CORE_ACTIVATIONS_DIR", "THOMAS_CORE_APPROVALS_DIR",
-                  "THOMAS_WORKSPACE_DIR", "THOMAS_BLOG_VAULT_DIR", "THOMAS_CLAUDE_DOOR_DIR"}
+                  "THOMAS_WORKSPACE_DIR", "THOMAS_BLOG_VAULT_DIR", "THOMAS_CLAUDE_DOOR_DIR", "THOMAS_KW_REPLAY_DIR"}
 
 
 def test_every_bind_source_is_a_path_variable_with_a_default():

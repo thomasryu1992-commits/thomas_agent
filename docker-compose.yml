@@ -374,6 +374,11 @@ services:
       # Nothing in it is a credential; the revenue lines are already inside naver-weekly/.
       - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/content/_assets:/app/blog_vault/content/_assets:ro
       - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/analytics:/app/blog_vault/analytics:ro
+      # P4a (BLOG_DEPARTMENT v0.2, Thomas 2026-10-27 "재생 그림자 먼저"): the bundles root's keyword cron records on each full
+      # run (KW_REPLAY_DIR), replayed offline by the daily blog_kw_replay. Read-only. The folder (default beside the
+      # cron's own status under /var/lib/thomas-measure) must be readable by uid 10001 (0755, files 0644); empty or
+      # missing bundles read as "no bundles", never as a failure.
+      - ${THOMAS_KW_REPLAY_DIR:-/var/lib/thomas-measure/kw-replay}:/app/kw_replay:ro
     # Its own heartbeat, probed by its own name: a shared file would let this loop keep a
     # dead risk loop reading FRESH (or the reverse). Same thresholds as its sibling.
     healthcheck:
@@ -421,6 +426,7 @@ services:
       MVP_CONTROL_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       # Where the read-only vault mount above lands. A literal: it names a path inside this container.
       MVP_BLOG_VAULT_ROOT: /app/blog_vault
+      MVP_KW_REPLAY_DIR: /app/kw_replay
       # The holdings board's Toss Securities account read (P1-b of MULTI_ASSET_EXPANSION_V0.1.md;
       # KIS replaced by Toss, Thomas 2026-10-07). The `holdings_refresh` fire is a maintenance kind,
       # and this lane — not the risk lane — holds the key, so a brokerage key never sits next to the

@@ -121,6 +121,9 @@ _RECORD_KINDS = (
     # The week's blog statistics as the Mac collected them, read from the vault, with the weekly review's own numbers
     # beside the system's (BLOG_DEPARTMENT v0.2 P3, 2026-10-27); appended by ``blog_analyze``.
     "blog_analysis",
+    # A recorded keyword-pipeline run re-run offline with the generated port and compared with what it wrote
+    # (BLOG_DEPARTMENT v0.2 P4a, 2026-10-27); appended by ``blog_kw_replay``.
+    "blog_kw_replay",
     "programization_observation", "programization_pattern",
 )
 

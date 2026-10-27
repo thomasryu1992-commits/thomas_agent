@@ -119,7 +119,7 @@ Thomas 한 사람이 한 서버에서 돌리는 **거버넌스 우선 자율 에
   - **소유 문서:** `proposals/MULTI_ASSET_EXPANSION_V0.1.md`, `HOLDINGS_LEDGER_CHECKPOINT_V0.1.md`.
 - **분석·콘텐츠**
   - **분석:** 사업 아이디어 분석(MVP 사용 사례)과 역할별 작업. Naver 키워드 근거는 `--naver-keywords`로 붙이고, worker에서 돈다.
-  - **블로그:** v0.2(2026-10-26): 통합할 수 있는 단계는 시스템 안으로, 원고 생성·발행·통계 수집은 외주(볼트와 서버 cron, Mac, §8)로 둔다(`proposals/BLOG_DEPARTMENT_V0.1.md`). 옛 런타임 블로그 레인은 2026-10-26에 통째로 지웠다. 지금 안에 있는 것: 검증 레인 `blog/`(P2) — 볼트 검수기에서 생성한 규칙으로 원고 크론이 보고한 원고를 매일 다시 검사하고(`blog_verify`, 원장 `blog_verification`), 판정이 같은지 대조한다. 분석(P3): Mac이 볼트에 모은 주간 통계(네이버·티스토리·서치콘솔)와 포착률 줄을 매일 읽어 주마다 기록하고(`blog_analyze`, 원장 `blog_analysis`), 주간 리뷰가 README 표에 적은 수와 같은지 함께 남긴다.
+  - **블로그:** v0.2(2026-10-26): 통합할 수 있는 단계는 시스템 안으로, 원고 생성·발행·통계 수집은 외주(볼트와 서버 cron, Mac, §8)로 둔다(`proposals/BLOG_DEPARTMENT_V0.1.md`). 옛 런타임 블로그 레인은 2026-10-26에 통째로 지웠다. 지금 안에 있는 것: 검증 레인 `blog/`(P2) — 볼트 검수기에서 생성한 규칙으로 원고 크론이 보고한 원고를 매일 다시 검사하고(`blog_verify`, 원장 `blog_verification`), 판정이 같은지 대조한다. 분석(P3): Mac이 볼트에 모은 주간 통계(네이버·티스토리·서치콘솔)와 포착률 줄을 매일 읽어 주마다 기록하고(`blog_analyze`, 원장 `blog_analysis`), 주간 리뷰가 README 표에 적은 수와 같은지 함께 남긴다. 키워드(P4a): root 키워드 크론이 전체 실행마다 남긴 묶음(입력·받은 응답·출력)을 생성기로 옮긴 파이프라인(`blog/kw_pipeline.py`)으로 네트워크 없이 다시 돌려(`blog_kw_replay`, 원장 `blog_kw_replay`) 같은 결과를 냈는지 남긴다.
 - **주간 경영 보고** (`management_report.py`, WMR-1)
   - **내용:** 레인 요약, 대기 승인, 실패 스케줄, 피드백 통계, 블로그 부서의 한 주(`blog_department.py`: 새 원고·발행·예정·상태별 수, 원고 크론의 실행 보고(`ops/blog-runs/`) 수·검수 판정, 검수 대조 결과, 최근 주간 통계와 주간 리뷰 대조, 원장에 `blog_department_week`로도 기록).
   - **방식:** 매주 관제봇으로 보낸다. 첫 보고는 2026-11-02 12:41 KST다.

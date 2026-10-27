@@ -7,8 +7,8 @@ Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **
 - **659** distinct codes across **1330** raise sites
 - **22** exception classes carry them
 - **65** codes are raised from more than one module (see below)
-- **168** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
-- **44** raise sites carry a human-readable **message** where a code would go, so there is nothing to look up — a different gap from the line above, and counted apart from it
+- **172** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
+- **46** raise sites carry a human-readable **message** where a code would go, so there is nothing to look up — a different gap from the line above, and counted apart from it
 
 ## Codes raised from more than one module
 
