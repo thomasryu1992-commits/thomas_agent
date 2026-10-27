@@ -193,6 +193,31 @@ def _unreadable(section: Mapping[str, Any]) -> str:
     return f"  {UNREADABLE}: {section.get('reason_code')}"
 
 
+def _analysis_line(analysis: Mapping[str, Any] | None) -> str:
+    """The blog department's latest statistics week (P3): what the Mac collected, and whether the weekly review's
+    README row says the same."""
+    if analysis is None:
+        return "  [주간 통계] 기록된 주가 없다"
+    def num(value: Any) -> str:
+        return "?" if value is None else f"{value:,}"
+
+    def pct(value: Any) -> str:
+        return "—" if value is None else f"{value * 100:.1f}%"
+
+    capture = " · ".join(f"{name} {pct(v)}" for name, v in analysis["capture_median"].items())
+    if not analysis["skill_row"]:
+        skill = "주간 리뷰 줄 없음"
+    else:
+        skill = f"주간 리뷰와 일치 {analysis['agreed']}/{analysis['compared']}"
+        if analysis["differed"]:
+            skill += f"(다름: {', '.join(analysis['differed'])})"
+    return (f"  [주간 통계] {analysis['week']['monday'][5:]}~{analysis['week']['sunday'][5:]} · 네이버 조회 "
+            f"{num(analysis['naver_views'])}(검색 {num(analysis['naver_search_inflow'])}) · 티스토리 "
+            f"{num(analysis['tistory_views'])} · 구글 노출 {num(analysis['gsc_impressions'])}·클릭 "
+            f"{num(analysis['gsc_clicks'])}\n    포착률 중앙값 " + (capture or "기록 없음")
+            + f" · {skill} · 연속 일치 {analysis['weeks_agreeing_in_a_row']}주")
+
+
 def render(report: Mapping[str, Any]) -> str:
     lines = [f"주간 경영 보고 ({_kst(report['since'])} → {_kst(report['until'])} KST)"]
     control = report.get("control")
@@ -297,4 +322,6 @@ def render(report: Mapping[str, Any]) -> str:
                 lines.append(f"  [검수 대조] {check['runs']}일 · 비교 {check['compared']}편 중 일치 {check['agreed']}"
                              f" · 다름 {check['differed']}" + (f"({codes})" if codes else "")
                              + f" · 비교 못 함 {check['not_compared']}")
+            if "analysis" in blog["data"]:
+                lines.append(_analysis_line(blog["data"]["analysis"]))
     return "\n".join(lines)
