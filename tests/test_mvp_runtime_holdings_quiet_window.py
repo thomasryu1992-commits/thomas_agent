@@ -97,3 +97,74 @@ def test_round_means_a_whole_non_zero_multiple_of_1000(krw, expected):
     result = {"buy": {}, "sell": {}, "settlements": [], "exchange": False, "identity_stable": True,
               "open": {"KRW": True, "USD": False}, "residual": {"KRW": krw, "USD": 0.0}}
     assert cash_flows.quiet_window_kind(result, truncated=False) == expected
+
+
+# --- why the rule left a KRW residual open (Thomas 2026-10-28): the condition's name, never an amount ------------
+
+@pytest.mark.parametrize(("case", "reason"), [
+    ("not_round", "not_round"), ("with_a_buy", "fill"), ("usd_moved", "usd_moved"), ("truncated", "orders_truncated"),
+    ("settlement", "settlement"), ("unstable", "identity_unstable")])
+def test_the_rule_names_the_condition_that_kept_a_krw_residual_open(tmp_path, case, reason):
+    rows = _window(tmp_path, *{
+        "not_round": (1_200_123,),
+        "with_a_buy": (1_100_000, [order("b1", "BUY", "100000", "2026-10-09T04:30:00Z")]),
+        "usd_moved": (1_200_000,),
+        "truncated": (1_200_000,),
+        "settlement": (1_200_000, [order("s1", "SELL", "50000", "2026-10-07T01:00:00Z", settlement="2026-10-09")]),
+        "unstable": (1_100_000, [order(None, "BUY", "100000", "2026-10-09T04:30:00Z")]),
+    }[case], **({"usd": 10.0} if case == "usd_moved" else {"truncated": True} if case == "truncated" else {}))
+    assert _rule_lines(rows) == []
+    (krw,) = [r for r in events(tmp_path, "toss_residual") if r["pocket"] == "KRW"]
+    assert krw["quiet_window_declined"] == reason
+    (view,) = [v for v in cash_flows.flows_view(tmp_path) if v["key"] == krw["source_event_key"]]
+    assert view["rule_declined"] == reason and view["rule_declined_derived"] is False
+
+
+def test_a_rule_closed_or_usd_residual_carries_no_reason(tmp_path):
+    _window(tmp_path, 1_200_000)                                                    # closed by the rule
+    toss_fire(tmp_path, 1_200_000, T2, usd=10.0)                                    # only USD moved
+    assert all("quiet_window_declined" not in r for r in events(tmp_path, "toss_residual"))
+    assert [v["rule_declined"] for v in cash_flows.flows_view(tmp_path)] == [None, None]
+    key = events(tmp_path, "toss_residual")[0]["source_event_key"]
+    resolve(tmp_path, key, "income")                                                # Thomas re-closes it
+    assert cash_flows.flows_view(tmp_path)[0]["rule_declined"] is None
+
+
+@pytest.mark.parametrize(("after", "reason"), [(1_200_123, "not_round"), (1_200_000, "undetermined")])
+def test_a_line_written_before_the_field_is_derived_from_its_window(tmp_path, monkeypatch, after, reason):
+    with monkeypatch.context() as m:                                               # a fire before the rule existed
+        m.setattr(cash_flows, "quiet_window_verdict", lambda result, *, truncated: (None, None))
+        _window(tmp_path, after)
+    (krw,) = events(tmp_path, "toss_residual")
+    assert "quiet_window_declined" not in krw
+    (view,) = cash_flows.flows_view(tmp_path)
+    assert view["rule_declined"] == reason and view["rule_declined_derived"] is True
+
+
+def test_the_flows_command_prints_the_reason_and_no_amount(tmp_path, monkeypatch, capsys):
+    from scripts import holdings_board
+
+    monkeypatch.setattr(holdings_board, "state_dir", lambda: tmp_path)
+    _window(tmp_path, 1_200_123)
+    assert holdings_board.main(["--flows"]) == holdings_board.EXIT_OK
+    out = capsys.readouterr().out
+    assert "rule: not_round" in out and "(derived)" not in out
+    assert "200123" not in out and "200,123" not in out
+
+
+def test_an_unknown_reason_is_refused_before_the_chain():
+    row = {"event": "toss_residual", "pocket": "KRW", "quiet_window_declined": "amount_was_200123"}
+    with pytest.raises(ToolError) as refused:
+        cash_flows._validate(row)
+    assert refused.value.reason_code == cash_flows.EVENT_INVALID
+    for reason in cash_flows.QUIET_WINDOW_DECLINES:
+        cash_flows._validate({**row, "quiet_window_declined": reason})
+
+
+def test_a_usd_change_under_the_open_threshold_still_keeps_the_window_open_and_says_so():
+    # The USD pocket opens above 0.01, the rule wants it under 0.005: between the two, only the reason tells.
+    result = {"buy": {}, "sell": {}, "settlements": [], "exchange": False, "identity_stable": True,
+              "open": {"KRW": True, "USD": False}, "residual": {"KRW": 200_000.0, "USD": 0.007}}
+    assert cash_flows.quiet_window_verdict(result, truncated=False) == (None, "usd_moved")
+    assert cash_flows.quiet_window_verdict({**result, "residual": {"KRW": 200_000.0, "USD": 0.004}},
+                                           truncated=False) == ("deposit", None)

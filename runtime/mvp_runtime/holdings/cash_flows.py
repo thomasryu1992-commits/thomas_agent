@@ -356,6 +356,9 @@ def _validate(row: Mapping[str, Any]) -> None:
             raise ToolError(EVENT_INVALID, f"a {event} line has {name}={row.get(name)!r}")
     if event == EVENT_TOSS_WINDOW and not set(row["residual_status"].values()) <= {"OPEN", "CLEAR"}:
         raise ToolError(EVENT_INVALID, "a toss window's residual status is OPEN or CLEAR")
+    if event == EVENT_TOSS_RESIDUAL and "quiet_window_declined" in row \
+            and row["quiet_window_declined"] not in QUIET_WINDOW_DECLINES:
+        raise ToolError(EVENT_INVALID, f"a {event} line has quiet_window_declined={row['quiet_window_declined']!r}")
 
 
 def _stamp(rows: list[Mapping[str, Any]], now: str) -> list[dict[str, Any]]:
@@ -1164,16 +1167,27 @@ def flows_view(state_dir: Path) -> list[dict[str, Any]]:
     cutover_ms = _iso_ms(at) if at else None
     life = lifecycle(rows)
     closed = resolutions(rows)
+    windows = {r.get("source_event_key"): r for r in rows if r.get("event") == EVENT_TOSS_WINDOW}
+    by_rule = {r.get("resolves") for r in rows
+               if r.get("event") == EVENT_RESOLVED and r.get("requested_by") == QUIET_WINDOW_RULE}
     out = []
     for key, row in detected_exceptions(rows).items():
         sign = _canon(row.get("residual")) if row.get("event") == EVENT_TOSS_RESIDUAL else None
         by = str((closed.get(key) or {}).get("requested_by") or "")
+        # Why the quiet-window rule left a KRW residual open: as recorded, or derived for an older line.
+        declined, derived = None, False
+        if row.get("event") == EVENT_TOSS_RESIDUAL and row.get("pocket") == "KRW" and key not in by_rule:
+            declined = row.get("quiet_window_declined")
+            if declined is None and key.startswith("toss:residual:KRW:"):
+                window = windows.get("toss:window:" + key[len("toss:residual:KRW:"):])
+                declined, derived = _derived_decline(row, window), True
         out.append({"key": key, "event": row.get("event"), "category": life[key]["category"],
                     "phase": event_phase(row, cutover_ms), "review": life[key]["review"],
                     "kind": life[key]["kind"], "allowed": list(_allowed_kinds(row, rows)),
                     # Who closed it: a rule's resolution is Thomas's to re-close once (``resolve``).
                     "closed_by": None if not by else "rule" if by.startswith("rule:") else "thomas",
-                    "direction": row.get("direction") or (None if sign is None else "in" if sign > 0 else "out")})
+                    "direction": row.get("direction") or (None if sign is None else "in" if sign > 0 else "out"),
+                    "rule_declined": declined, "rule_declined_derived": derived})
     return out
 
 
@@ -1531,25 +1545,61 @@ QUIET_WINDOW_RULE = "rule:quiet_window.v1"
 QUIET_WINDOW_STEP_KRW = 1000
 
 
-def quiet_window_kind(result: Mapping[str, Any], *, truncated: bool) -> str | None:
-    """``deposit`` / ``withdrawal`` for a quiet window's round KRW residual, else None.
+# Why the rule left a KRW residual open (Thomas 2026-10-28): the first condition that failed, by name — never an
+# amount. Written on the residual line as ``quiet_window_declined`` and shown on ``--flows``.
+QUIET_WINDOW_DECLINES = ("orders_truncated", "exchange_pair", "identity_unstable", "settlement", "fill",
+                         "krw_not_open", "usd_moved", "not_round")
+# A line written before the field existed: the reason is derived from the stored window, whose amounts are
+# rounded, so a decline below their precision (under one won, under a cent) — or a window older than the
+# rule — cannot be told from a pass.
+QUIET_WINDOW_UNDETERMINED = "undetermined"
+
+
+def quiet_window_verdict(result: Mapping[str, Any], *, truncated: bool) -> tuple[str | None, str | None]:
+    """``(kind, None)`` when the rule closes the window, else ``(None, reason)`` from :data:`QUIET_WINDOW_DECLINES`.
 
     Quiet: no fill on either side of either pocket, no settlement, no exchange pair, an untruncated and stable
     order read, the KRW pocket open and the USD pocket untouched (a US dividend lands in USD). Round: a whole,
     non-zero multiple of 1,000 KRW — a withheld domestic dividend rarely is. Pure, like ``reconcile_window``."""
-    if truncated or result.get("exchange") or result.get("identity_stable") is not True or result.get("settlements"):
-        return None
+    if truncated:
+        return None, "orders_truncated"
+    if result.get("exchange"):
+        return None, "exchange_pair"
+    if result.get("identity_stable") is not True:
+        return None, "identity_unstable"
+    if result.get("settlements"):
+        return None, "settlement"
     for side in ("buy", "sell"):
         if any((result.get(side) or {}).get(pocket) for pocket in ("KRW", "USD")):
-            return None
+            return None, "fill"
     opened, residual = result.get("open") or {}, result.get("residual") or {}
-    if not opened.get("KRW") or opened.get("USD") or abs(float(residual.get("USD") or 0.0)) >= 0.005:
-        return None
+    if not opened.get("KRW"):
+        return None, "krw_not_open"
+    if opened.get("USD") or abs(float(residual.get("USD") or 0.0)) >= 0.005:
+        return None, "usd_moved"
     krw = float(residual.get("KRW") or 0.0)
     whole = round(krw)
     if whole == 0 or abs(krw - whole) >= 0.5 or whole % QUIET_WINDOW_STEP_KRW:
-        return None
-    return "deposit" if whole > 0 else "withdrawal"
+        return None, "not_round"
+    return ("deposit" if whole > 0 else "withdrawal"), None
+
+
+def quiet_window_kind(result: Mapping[str, Any], *, truncated: bool) -> str | None:
+    """``deposit`` / ``withdrawal`` for a quiet window's round KRW residual, else None."""
+    return quiet_window_verdict(result, truncated=truncated)[0]
+
+
+def _derived_decline(row: Mapping[str, Any], window: Mapping[str, Any] | None) -> str:
+    """The rule's verdict re-run on a KRW residual line written before ``quiet_window_declined`` existed."""
+    if window is None:
+        return QUIET_WINDOW_UNDETERMINED
+    status = window.get("residual_status") or {}
+    result = {"exchange": window.get("exchange_pair"), "identity_stable": window.get("identity_stable", True),
+              "settlements": window.get("settlements"), "buy": window.get("buy_orders"),
+              "sell": window.get("sell_orders"), "open": {p: s == "OPEN" for p, s in status.items()},
+              "residual": {"KRW": float(_canon(row.get("residual")) or 0), "USD": 0.0}}
+    reason = quiet_window_verdict(result, truncated=bool(window.get("orders_truncated")))[1]
+    return reason or QUIET_WINDOW_UNDETERMINED
 
 
 def _rule_resolution(target: str, kind: str, *, now: str) -> dict[str, Any]:
@@ -1580,14 +1630,15 @@ def _toss_rows(existing: list[dict[str, Any]], previous: Mapping[str, Any], curr
                     **bounds, "source_confidence": RECONCILED, "accounting_status": "SHADOW_ONLY",
                     "krw_residual": f"{residual['KRW']:.0f}", "usd_residual": f"{residual['USD']:.2f}"})
     else:
+        kind, declined = quiet_window_verdict(result, truncated=bool(truncated))
         for pocket, flag in open_.items():
             if flag:
                 out.append({"event": EVENT_TOSS_RESIDUAL, "source": "toss",
                             "source_event_key": f"toss:residual:{pocket}:{window}", "pocket": pocket, **bounds,
                             "residual": f"{residual[pocket]:.{0 if pocket == 'KRW' else 2}f}",
                             "orders_truncated": bool(truncated), "source_confidence": UNRESOLVED,
-                            "valuation_status": UNVALUED, "accounting_status": "SHADOW_ONLY"})
-        kind = quiet_window_kind(result, truncated=bool(truncated))
+                            "valuation_status": UNVALUED, "accounting_status": "SHADOW_ONLY",
+                            **({"quiet_window_declined": declined} if pocket == "KRW" and declined else {})})
         if kind is not None:
             out.append(_rule_resolution(f"toss:residual:KRW:{window}", kind, now=now))
     if not truncated:

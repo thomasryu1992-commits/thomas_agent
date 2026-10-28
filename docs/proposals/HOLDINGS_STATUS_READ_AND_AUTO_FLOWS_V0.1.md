@@ -1,6 +1,6 @@
 # 제안: Claude가 holdings 검사 상태를 읽고, Toss 입출금은 규칙으로 자동 분류한다 (DRAFT v0.1)
 
-**상태:** DECIDED 2026-10-26 — R1 예, R2 예, R3 예, F1 A, F2 아니오(Thomas). PR-1(R1–R3: `toss_needs`, `holdings_status` v1.1, Claude 프로필, CLAUDE.md, #1314)과 PR-2(F1–F2: `quiet_window.v1`, Thomas 재분류 1회, 방향·개수 알림)를 지었다. 둘 다 병합과 배포가 남았다. **결정 전 상태:** DRAFT — Thomas 결정 다섯 건(R1–R3, F1–F2)을 기다렸다. Thomas가 두 가지를 요청했다(2026-10-26). 하나는 holdings 검사의 이름과 상태만 Claude read door로 읽는 것이다(금액 없음). 다른 하나는 입출금을 사람이 닫지 않고 자동으로 확인하는 것이다. 코드·정책·스키마 변경은 없다.
+**상태:** DECIDED 2026-10-26 — R1 예, R2 예, R3 예, F1 A, F2 아니오(Thomas). PR-1(R1–R3: `toss_needs`, `holdings_status` v1.1, Claude 프로필, CLAUDE.md, #1314)과 PR-2(F1–F2: `quiet_window.v1`, Thomas 재분류 1회, 방향·개수 알림)를 지었다. 둘 다 병합·배포됐다(candidate-1329부터). 2026-10-28: 규칙이 닫지 않은 이유를 조건 이름으로 원장과 `--flows`에 남긴다(§3.2, Thomas). **결정 전 상태:** DRAFT — Thomas 결정 다섯 건(R1–R3, F1–F2)을 기다렸다. Thomas가 두 가지를 요청했다(2026-10-26). 하나는 holdings 검사의 이름과 상태만 Claude read door로 읽는 것이다(금액 없음). 다른 하나는 입출금을 사람이 닫지 않고 자동으로 확인하는 것이다. 코드·정책·스키마 변경은 없다.
 
 **대상:** Claude read door의 `holdings_status` 읽기(`HOST_PRIVILEGE_SEPARATION_V0.1.md` §4.19.2의 응답 계약 v1)와 H6 현금흐름 원장의 Toss 잔차 처리(`PORTFOLIO_CASH_FLOW_LEDGER_V0.1.md`, `holdings/cash_flows.py`).
 
@@ -116,6 +116,12 @@
 - 그 창은 지금처럼 외부 흐름이다. 매매 증거에서 빠진다.
 - 텔레그램 알림: "입금 1건 자동 분류" 식으로 방향과 개수만 보낸다. 금액을 넣을지는 F2에서 정한다.
 - 되돌리기: Thomas가 `--resolve`로 다른 kind를 줄 수 있어야 한다. 그러려면 규칙이 닫은 것을 다시 여는 명령이 필요하다(새 코드, 같은 PR).
+- **닫지 않은 이유 (Thomas 2026-10-28):** 규칙이 KRW 잔차를 닫지 않으면, 처음 어긋난 조건의 이름을 잔차 줄의 `quiet_window_declined`에 남긴다.
+  - 값은 닫힌 목록이다: `orders_truncated`, `exchange_pair`, `identity_unstable`, `settlement`, `fill`, `krw_not_open`, `usd_moved`, `not_round`.
+  - 금액은 남기지 않는다. 터미널의 `--flows`가 `rule: <이름>`으로 보여 준다.
+  - 이 필드가 생기기 전 줄은 저장된 창에서 다시 계산해 `(derived)`를 붙인다.
+  - 저장된 금액이 반올림돼 있어 1원 미만, 1센트 미만의 어긋남과 규칙 이전의 창은 구분되지 않는다. 그런 줄은 `undetermined`로 보인다.
+  - 계기: 2026-10-27의 2만 원 입금이 규칙으로 닫히지 않았는데, 이유가 어디에도 남지 않았다.
 
 ### 3.3 A가 틀리는 경우 [추정]
 
