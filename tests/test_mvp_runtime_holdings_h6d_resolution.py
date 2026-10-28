@@ -202,7 +202,7 @@ def test_flows_lists_exceptions_without_amounts(board, tmp_path, capsys):
     assert "1 open" in out and "pay:p1" in out and "allowed: deposit" in out
     assert "SECRETCOIN" not in out and "123.45" not in out
     assert all(set(row) == {"key", "event", "category", "phase", "review", "kind", "allowed", "closed_by",
-                            "direction"}
+                            "direction", "rule_declined", "rule_declined_derived"}
                for row in cash_flows.flows_view(tmp_path))
 
 

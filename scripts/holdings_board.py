@@ -67,7 +67,9 @@ in the lane as the service user (``docker exec -u 10001 thomas-scheduler-maint p
 scripts.holdings_board --reset-peak``) and refuses a host-side root run.
 
 **``--flows`` / ``--resolve`` / ``--semantics-epoch``** (H6d-min, Thomas 2026-10-09). ``--flows`` lists the
-H6 exceptions — key, category, phase, review state and the kinds each may be closed as; no amount.
+H6 exceptions — key, category, phase, review state and the kinds each may be closed as; no amount. A KRW
+residual the quiet-window rule left open also names the condition that kept it open (``rule: not_round``;
+``(derived)`` for a line written before 2026-10-28, re-run on the stored window).
 ``--resolve KEY --kind K`` closes one exception's review with a ``flow_resolved`` line; the event stays
 HELD (a review is not evidence, and nothing is eligible for accounting in H6b). ``--semantics-epoch
 --change-ref REF`` starts a new Toss semantics epoch after a reconciliation change: it prints the
@@ -363,7 +365,9 @@ def _exceptions(args: argparse.Namespace) -> int:
                 print(f"  {row['review']:6} {row['phase']:12} {row['category']:18} {row['direction'] or '-':3} "
                       f"{row['key']}  allowed: {', '.join(row['allowed']) or 'none'}"
                       + (f"  closed as: {row['kind']}" if row["kind"] else "")
-                      + (f" (by {row['closed_by']})" if row.get("closed_by") else ""))
+                      + (f" (by {row['closed_by']})" if row.get("closed_by") else "")
+                      + (f"  rule: {row['rule_declined']}" + (" (derived)" if row.get("rule_declined_derived") else "")
+                         if row.get("rule_declined") else ""))
             return EXIT_OK
         assert_not_foreign_root_run()
         if args.resolve:
