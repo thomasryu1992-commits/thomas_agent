@@ -261,3 +261,35 @@ def test_a_fresh_passing_collector_says_nothing(tmp_path):
 def test_a_failed_stale_or_unreadable_collector_is_reported(tmp_path, body, words):
     result = _run(tmp_path, _dest(tmp_path), _health_log(tmp_path), collector=_status(tmp_path, body))
     assert result.returncode == 1 and words in result.stdout, result.stdout
+
+
+def _run_default_collector(tmp_path: Path, claude_root: Path):
+    """No PROMPT_COLLECTOR_STATUS: the watch finds the status file on its own, under the collector's account."""
+    env = {k: v for k, v in os.environ.items() if k != "PROMPT_COLLECTOR_STATUS"}
+    return subprocess.run(
+        [str(SCRIPT), "--dry-run"], capture_output=True, text=True, timeout=60,
+        env={**env, "HARNESS_BACKUP_DEST": str(_dest(tmp_path)), "HEALTH_WATCH_LOG": str(_health_log(tmp_path)),
+             "THOMAS_ENV_FILE": str(tmp_path / "absent.env"),
+             "OPERATOR_REGISTRATION": str(tmp_path / "absent.json"),
+             "HARNESS_BACKUP_CLAUDE_ROOT": str(claude_root)},
+    )
+
+
+@posix_only
+def test_the_default_status_file_is_the_one_under_the_collectors_account(tmp_path):
+    """Since C6b the collector runs as claude. The watch read root's copy, which stopped at the switch
+    and alerted 200 h stale on 2026-10-28 while the collector ran every night."""
+    import datetime
+    claude_root = tmp_path / "claude-home"
+    state = claude_root / ".claude" / "prompt-collector"
+    state.mkdir(parents=True)
+    status = state / "status.json"
+
+    status.write_text('{"overall": "PASS", "last_success": "2026-09-01T00:00:00+00:00"}', encoding="utf-8")
+    stale = _run_default_collector(tmp_path, claude_root)
+    assert stale.returncode == 1 and "마지막 성공이" in stale.stdout, stale.stdout
+
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    status.write_text('{"overall": "WARNING", "last_success": "%s"}' % now, encoding="utf-8")
+    fresh = _run_default_collector(tmp_path, claude_root)
+    assert fresh.returncode == 0, fresh.stdout
