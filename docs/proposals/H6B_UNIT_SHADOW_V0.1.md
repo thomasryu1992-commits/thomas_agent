@@ -1,6 +1,6 @@
 # 제안: H6b-shadow — unitized NAV를 옆에서만 계산한다 (DRAFT v0.1)
 
-**상태:** DRAFT 2026-10-28 — H6b-shadow의 설계·구현 승인 패킷이다. S1–S5가 Thomas 결정을 기다린다. 이 문서는 아무것도 켜지 않는다.
+**상태:** DECIDED 2026-10-28 — S1=A, S2=A, S3=A, S4=A, S5=A(Thomas, "승인: H6b-shadow S1=A S2=A S3=A S4=A S5=A, 설계 문서·구현·PR"). 같은 날 PR 하나로 지었다(`holdings/unit_shadow.py`, 아래 §3). 배포 전에는 아무것도 계산하지 않는다. H6c는 이 문서가 승인하지 않는다.
 
 **대상:** `PORTFOLIO_CASH_FLOW_LEDGER_V0.1.md` §7의 3단계(H6b-shadow). 그 문서의 D-H6-4(시작 100), D-H6-8(사건별 발행·소각),
 D-H6-9(shadow는 판정에 쓰지 않는다)와 §4(unit 회계)는 이미 결정됐다. 여기서는 그 결정이 정하지 않은 다섯 가지만 묻는다.
@@ -87,8 +87,9 @@ D-H6-9(shadow는 판정에 쓰지 않는다)와 §4(unit 회계)는 이미 결�
 
 PR 하나로 짓는다. 배포는 Thomas가 평소의 배포 스크립트로 한다.
 
-- `holdings/nav_points.py`: 완전 NAV 한 줄을 추가한다. 연쇄 해시이고 LOCAL_ONLY다.
-- `holdings/unit_shadow.py`: NAV 시점과 원장으로 unit 경로를 다시 계산한다.
+- `holdings/unit_shadow.py`(구현에서 NAV 기록과 재계산을 한 모듈로 합쳤다):
+  - 완전 NAV 한 줄을 추가한다. 연쇄 해시이고 LOCAL_ONLY다.
+  - NAV 시점과 원장으로 unit 경로를 다시 계산한다.
   - 내놓는 것: NAV/unit, unit 고점, 낙폭, 반영 건수, 보류와 그 이유, `h6c_askable`.
 - `store`: 매 실행 NAV 시점을 남기고 shadow 블록을 계산한다. shadow가 실패해도 지금의 판정과 알림은 그대로 돈다(실패는 블록의 상태로 남는다).
 - 보드 줄을 더한다. `store_reads.project_holdings_status` v1.2를 만든다. 계약 문서를 고친다.

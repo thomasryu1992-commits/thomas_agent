@@ -145,12 +145,31 @@ def render_view(view: dict[str, Any], *, stamp_line: str) -> list[str]:
                           else f"exception review ({ready['exceptions']})" if ready.get("exceptions")
                           else "None")
                 lines.append(f"{'Action required':24} {action}")
+    shadow = view.get("unit_shadow")
+    if isinstance(shadow, dict):
+        lines.append(render_unit_shadow(shadow))
     allocation = view.get("allocation")
     if isinstance(allocation, dict):
         lines.extend(render_allocation(allocation))
     elif "allocation" in view:
         lines.append(f"{'allocation':12}: not computed this fire (see the scheduler log)")
     return lines
+
+
+def render_unit_shadow(shadow: dict[str, Any]) -> str:
+    """H6b-shadow (Thomas 2026-10-28): NAV per unit beside the drawdown above. No amount; nothing judges by it."""
+    label, state = f"{'unit shadow (H6b)':24}", shadow.get("state")
+    if state == "waiting_ready":
+        return f"{label} waiting for H6b_shadow_ready"
+    if state == "broken" or not isinstance(shadow.get("nav_per_unit"), (int, float)):
+        return f"{label} not computed this fire ({shadow.get('error') or shadow.get('held_reason') or state})"
+    applied = shadow.get("flows_applied") or {}
+    held = (f", held at {shadow.get('as_of')} ({shadow.get('held_reason')}, {shadow.get('held')})"
+            if state == "held" else "")
+    return (f"{label} NAV/unit {shadow['nav_per_unit']:.2f}, {shadow.get('drawdown_pct', 0.0):+.1f}% from unit peak "
+            f"{shadow.get('peak_nav_per_unit', 0.0):.2f}; {shadow.get('days', 0)} days since {shadow.get('started_at')}, "
+            f"deposits {applied.get('deposit', 0)} / withdrawals {applied.get('withdrawal', 0)}{held}; "
+            f"H6c askable: {'yes' if shadow.get('h6c_askable') else 'no'} (display only)")
 
 
 def render_combined(block: dict[str, Any]) -> list[str]:

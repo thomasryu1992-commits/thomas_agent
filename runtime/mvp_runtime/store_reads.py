@@ -676,19 +676,23 @@ def read_lane_digest(ledger: LedgerStore | None, argument: str | None, *, now: s
     }
 
 
-# --- reply contract v1.1 for holdings_status (HOLDINGS_STATUS_READ_AND_AUTO_FLOWS R1–R3, Thomas 2026-10-26) ---
+# --- reply contract v1.2 for holdings_status (HOLDINGS_STATUS_READ_AND_AUTO_FLOWS R1–R3, Thomas 2026-10-26;
+# H6B_UNIT_SHADOW S5, Thomas 2026-10-28) ---
 #
 # The §4.19.2 v1 (freshness only) plus the H6 readiness checks by name and state, the open-exception count,
 # the shadow progress and what the Toss check still needs. Rebuilt from a closed allowlist over the stored
 # snapshot's ``cash_flows.readiness``: no amount, weight, holding, account, exception key, ``next_step`` or
-# ``toss_note`` text, and no key the snapshot gains later. ``holdings`` is a domain package, so it is imported
-# here, at the read, never at module level (tests/test_mvp_runtime_domain_isolation.py).
+# ``toss_note`` text, and no key the snapshot gains later. v1.2 adds ``unit_shadow``: the H6b-shadow's state,
+# days, applied-flow and held counts and whether H6c may be asked — never NAV/unit or its drawdown (S5).
+# ``holdings`` is a domain package, so it is imported here, at the read, never at module level
+# (tests/test_mvp_runtime_domain_isolation.py).
 
 HOLDINGS_STATUS = "HOLDINGS_STATUS"
 _HOLDINGS_MISSING = "HOLDINGS_SNAPSHOT_MISSING"
 
 
-def _holdings_schema(checks: tuple[str, ...], statuses: tuple[str, ...], needs: tuple[str, ...]) -> dict[str, Any]:
+def _holdings_schema(checks: tuple[str, ...], statuses: tuple[str, ...], needs: tuple[str, ...],
+                     shadow_states: tuple[str, ...]) -> dict[str, Any]:
     state = {"enum": [*statuses, "UNKNOWN"]}
     h6 = {"type": "object", "additionalProperties": False,
           "required": ["ready", "checks", "open_exceptions"],
@@ -701,24 +705,30 @@ def _holdings_schema(checks: tuple[str, ...], statuses: tuple[str, ...], needs: 
               "shadow_success_dates": {"type": "integer", "minimum": 0},
               "toss_needs": {"type": "array", "uniqueItems": True, "items": {"enum": list(needs)}},
           }}
+    count = {"type": "integer", "minimum": 0}
+    shadow = {"type": "object", "additionalProperties": False, "required": ["state", "h6c_askable"],
+              "properties": {"state": {"enum": [*shadow_states, "UNKNOWN"]}, "days": _NUMBER_SCHEMA,
+                             "deposits": count, "withdrawals": count, "held": count,
+                             "h6c_askable": {"type": "boolean"}}}
     return {"type": "object", "additionalProperties": False, "required": ["available", "as_of", "projection"],
             "properties": {
                 "available": {"type": "boolean"},
                 "reason_code": {"enum": [_HOLDINGS_MISSING]},
                 "snapshot_as_of": _TIME_SCHEMA, "age_seconds": _NUMBER_SCHEMA,
                 "stale": {"type": "boolean"}, "partial": {"type": "boolean"},
-                "h6": h6, "as_of": _TIME_SCHEMA,
+                "h6": h6, "unit_shadow": shadow, "as_of": _TIME_SCHEMA,
                 "projection": {"enum": [PROJECTION_V1, PROJECTION_PARTIAL]},
             }}
 
 
 def project_holdings_status(view: Any, *, now: str) -> dict[str, Any]:
-    """``holdings.store.load_holdings_view``'s data as the v1.1 contract. Refused whole on a schema defect."""
+    """``holdings.store.load_holdings_view``'s data as the v1.2 contract. Refused whole on a schema defect."""
     from .holdings import store as holdings_store         # domain package: at the read, never at import
 
     checks_known, statuses, needs_known = (holdings_store.READINESS_CHECKS, holdings_store.READINESS_STATUSES,
                                            holdings_store.TOSS_NEEDS)
-    schema = _holdings_schema(checks_known, statuses, needs_known)
+    shadow_states = holdings_store.UNIT_SHADOW_STATES
+    schema = _holdings_schema(checks_known, statuses, needs_known, shadow_states)
     partial = False
     if not isinstance(view, Mapping) or view.get("available") is not True:
         missing = isinstance(view, Mapping) and view.get("reason_code") == _HOLDINGS_MISSING
@@ -769,6 +779,26 @@ def project_holdings_status(view: Any, *, now: str) -> dict[str, Any]:
         data["h6"] = h6
     elif flows is not None:
         partial = True
+    raw_shadow = view.get("unit_shadow")
+    if isinstance(raw_shadow, Mapping):
+        state = raw_shadow.get("state")
+        shadow: dict[str, Any] = {"state": state if state in shadow_states else "UNKNOWN",
+                                  "h6c_askable": raw_shadow.get("h6c_askable") is True}
+        partial = partial or state not in shadow_states
+        days = _nonneg_number(raw_shadow.get("days"))
+        if days is not None:
+            shadow["days"] = round(days, 1)
+        applied = raw_shadow.get("flows_applied") if isinstance(raw_shadow.get("flows_applied"), Mapping) else {}
+        for name, kind in (("deposits", "deposit"), ("withdrawals", "withdrawal")):
+            number = _nonneg_int(applied.get(kind))
+            if number is not None:
+                shadow[name] = number
+        held = _nonneg_int(raw_shadow.get("held"))
+        if held is not None:
+            shadow["held"] = held
+        data["unit_shadow"] = shadow
+    elif raw_shadow is not None:
+        partial = True
     data["as_of"] = now
     data["projection"] = PROJECTION_PARTIAL if partial else PROJECTION_V1
     return _checked(data, schema)
@@ -795,4 +825,10 @@ def read_holdings_status(*, now: str, repo_root: Path | None, projection: str) -
         lines += [f"  {name}: {state}" for name, state in sorted(h6["checks"].items())]
         if "toss_needs" in h6:
             lines.append("toss needs: " + (", ".join(h6["toss_needs"]) or "nothing"))
+    shadow = data.get("unit_shadow")
+    if shadow is not None:
+        lines.append(f"unit shadow: {shadow['state']}"
+                     + (f"  {shadow['days']} days" if "days" in shadow else "")
+                     + f"  deposits {shadow.get('deposits', 0)} / withdrawals {shadow.get('withdrawals', 0)}"
+                     + f"  held {shadow.get('held', 0)}  H6c askable: {'yes' if shadow['h6c_askable'] else 'no'}")
     return {"reply": "\n".join(lines), "action": "HOLDINGS_STATUS_READ", "data": data}

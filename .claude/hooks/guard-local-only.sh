@@ -4,10 +4,10 @@
 # The holdings lane keeps two kinds of output (H3, `runtime/mvp_runtime/holdings/disclosure.py`): one
 # table that may leave the process (`holdings_snapshot.json`, rendered by `holdings_board` and `--json`),
 # and everything else, which stays on this host: the per-wallet and sub-class breakdowns, the Toss
-# cash, the classification entries that name holdings, the cash-flow ledger and its state, and the
-# baseline log. A model prompt is one of the ways out that H3 names. On 2026-10-09 a session read the
-# classification file and the local board directly, and derived one instrument's share from the
-# breakdowns. Nothing stopped it: Claude runs as root here, and the state directory's 0700 owner does
+# cash, the classification entries that name holdings, the cash-flow ledger and its state, the
+# baseline log and the NAV points (H6b-shadow). A model prompt is one of the ways out that H3 names.
+# On 2026-10-09 a session read the classification file and the local board directly, and derived one
+# instrument's share from the breakdowns. Nothing stopped it: Claude runs as root here, and the state directory's 0700 owner does
 # not bind root.
 #
 # **This is a tripwire, not a boundary.** It reads the command TEXT and opens no file. A command that
@@ -72,7 +72,7 @@ deny() {
 state='runtime_governance_state/+'
 [[ $flat =~ ${state}holdings ]] && deny "a path into the holdings state directory"
 [[ $flat =~ holdings/+holdings_ ]] && deny "a holdings state file"
-[[ $flat =~ holdings_(classification|local|positions|tax_estimate|auto_candidates|autoinvest|autoinvest_proposal)\.json|holdings_autoinvest_journal\.jsonl|holdings_cash_flows?(_state)?\.jsonl?|holdings_cash_flow_blocked_told\.json|holdings_baselines\.jsonl ]] \
+[[ $flat =~ holdings_(classification|local|positions|tax_estimate|auto_candidates|autoinvest|autoinvest_proposal)\.json|holdings_autoinvest_journal\.jsonl|holdings_cash_flows?(_state)?\.jsonl?|holdings_cash_flow_blocked_told\.json|holdings_baselines\.jsonl|holdings_nav_points\.jsonl ]] \
   && deny "a holdings state file by name"
 [[ $flat =~ ${state}[^/[:space:]\"\']*[*?[{] ]] && deny "a glob under the state root"
 [[ $kind == unknown ]] && deny "a $tool input without a command this guard can read"

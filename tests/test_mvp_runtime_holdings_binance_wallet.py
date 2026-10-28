@@ -232,6 +232,12 @@ def test_classes_count_spot_and_earn_and_skip_the_ld_duplicate(monkeypatch, gate
     assert snapshot.unpriced_assets == 1
 
 
+def test_each_priced_asset_keeps_the_price_the_totals_used(monkeypatch, gate_open):
+    """H6b-shadow S3 (Thomas 2026-10-28): a flow is valued at the prices its NAV used. ZZZ has none."""
+    snapshot, _, _ = _read(monkeypatch)
+    assert snapshot.asset_price_usdt == {"BTC": 80_000.0, "USDT": 1.0, "LDO": 2.0, "USDC": 1.0, "ETH": 3000.0}
+
+
 def test_an_ld_asset_without_a_flexible_twin_is_a_real_coin(monkeypatch, gate_open):
     snapshot, _, _ = _read(monkeypatch, flexible={"rows": [], "total": 0})
     # LDBTC has no flexible BTC row now, so it is kept — and it has no price, so it is unpriced.

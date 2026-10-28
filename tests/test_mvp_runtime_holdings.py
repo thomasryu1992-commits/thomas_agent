@@ -484,7 +484,8 @@ def test_the_snapshot_holds_the_aggregate_and_nothing_else(monkeypatch, gate_ope
     raw = store.snapshot_path(tmp_path).read_text(encoding="utf-8")
     body = json.loads(raw)
     # H3: the doors' file carries one table; the Toss and per-venue breakdowns are local only.
-    stamps = {"record_type", "as_of", "written_at", "combined", "allocation", "cash_flows"}
+    # unit_shadow: H6b-shadow (Thomas 2026-10-28, S5) — NAV/unit and counts, no amount (its own test pins the keys).
+    stamps = {"record_type", "as_of", "written_at", "combined", "allocation", "cash_flows", "unit_shadow"}
     assert set(body) == (board.AGGREGATE_KEYS - disclosure.LOCAL_ONLY_TOP_KEYS) | stamps
     assert set(body["combined"]) == combined.COMBINED_KEYS - disclosure.LOCAL_ONLY_COMBINED_KEYS
     assert set(body["allocation"]) == (allocation.ALLOCATION_KEYS - disclosure.LOCAL_ONLY_ALLOCATION_KEYS
@@ -1083,3 +1084,66 @@ def test_the_fire_writes_its_positions_to_their_own_local_file(monkeypatch, gate
                for row in held["positions"])
     for path in (store.snapshot_path(tmp_path), store.local_path(tmp_path)):
         assert "005930" not in path.read_text(encoding="utf-8")
+
+
+# --- H6b-shadow (Thomas 2026-10-28, H6B_UNIT_SHADOW S1–S5): the fire's point and block ---------------------------
+
+def _complete(monkeypatch, total=12_345_678.0, ready=None, complete=True):
+    real_combine, real_ready = store.combined.combine, store.cash_flows.update_readiness
+
+    def combine(*args, **kwargs):
+        block = real_combine(*args, **kwargs)
+        block.update({"portfolio_nav_complete": complete, "combined_total_krw": total})
+        return block
+
+    monkeypatch.setattr(store.combined, "combine", combine)
+    if ready is not None:
+        monkeypatch.setattr(store.cash_flows, "update_readiness",
+                            lambda *a, **k: {**real_ready(*a, **k), "ready": ready, "told": True})
+
+
+@pytest.mark.parametrize("forced", [False, True])
+def test_an_incomplete_fire_records_no_point(monkeypatch, gate_open, tmp_path, forced):
+    from runtime.mvp_runtime.holdings import unit_shadow
+
+    _toss(monkeypatch)
+    if forced:      # a total beside an incomplete verdict is still no NAV (H2)
+        _complete(monkeypatch, complete=False)
+    store.refresh_snapshot(now=NOW, root=tmp_path)
+    assert unit_shadow.verify(store.state_dir(tmp_path)) == []
+    assert store.load_snapshot_status(now=NOW, root=tmp_path)["unit_shadow"]["state"] == unit_shadow.STATE_WAITING
+
+
+def test_a_complete_fire_records_its_point_and_the_snapshot_block_carries_no_amount(monkeypatch, gate_open, tmp_path):
+    from runtime.mvp_runtime.holdings import unit_shadow
+
+    _toss(monkeypatch)
+    _complete(monkeypatch)
+    store.refresh_snapshot(now=NOW, root=tmp_path)
+    points = unit_shadow.verify(store.state_dir(tmp_path))
+    assert [(p["at"], p["nav_krw"], p["h6_ready"]) for p in points] == [(NOW, "12345678", False)]
+    block = json.loads(store.snapshot_path(tmp_path).read_text(encoding="utf-8"))["unit_shadow"]
+    assert block["state"] == unit_shadow.STATE_WAITING and "12345678" not in json.dumps(block)
+
+
+def test_the_first_ready_complete_fire_starts_the_path(monkeypatch, gate_open, tmp_path):
+    from runtime.mvp_runtime.holdings import unit_shadow
+
+    _toss(monkeypatch)
+    _complete(monkeypatch, ready=True)
+    store.refresh_snapshot(now=NOW, root=tmp_path)
+    assert unit_shadow.verify(store.state_dir(tmp_path))[0]["h6_ready"] is True
+    block = json.loads(store.snapshot_path(tmp_path).read_text(encoding="utf-8"))["unit_shadow"]
+    assert block["state"] == unit_shadow.STATE_RUNNING and block["nav_per_unit"] == 100.0
+    assert "unit shadow (H6b)" in store.load_holdings_view(now=NOW, root=tmp_path)[0]
+
+
+def test_a_shadow_failure_costs_only_its_block(monkeypatch, gate_open, tmp_path):
+    def broken(_state_dir):
+        raise ToolError("HOLDINGS_NAV_POINTS_TAMPERED", "x")
+
+    _toss(monkeypatch)
+    monkeypatch.setattr(store.unit_shadow, "shadow", broken)
+    assert store.refresh_snapshot(now=NOW, root=tmp_path).startswith("holdings snapshot: refreshed")
+    body = json.loads(store.snapshot_path(tmp_path).read_text(encoding="utf-8"))
+    assert body["unit_shadow"] == {"state": "broken", "error": "HOLDINGS_NAV_POINTS_TAMPERED"}

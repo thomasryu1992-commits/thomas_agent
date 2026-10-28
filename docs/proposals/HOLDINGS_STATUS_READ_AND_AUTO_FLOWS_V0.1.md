@@ -66,6 +66,20 @@
 - 예외 키(창 시각이 들어 있다), 계좌, `cash_flows`의 나머지;
 - 스냅샷에 앞으로 생길 키.
 
+### 2.1a v1.2 (H6B_UNIT_SHADOW S5, Thomas 2026-10-28)
+
+v1.1에 `unit_shadow` 블록 하나를 더한다. 같은 규칙을 따른다: 허용 목록으로 새로 만들고, 모르는 상태는 `UNKNOWN` + `v1-partial`로 둔다.
+
+| 필드 | 값 | 출처 |
+|---|---|---|
+| `unit_shadow.state` | `waiting_ready` / `running` / `held` / `broken` | 스냅샷의 `unit_shadow.state` |
+| `unit_shadow.days` | 0 이상의 수, 소수 첫째 자리 | `…days` |
+| `unit_shadow.deposits`, `unit_shadow.withdrawals` | 반영한 입금·출금 건수 | `…flows_applied` |
+| `unit_shadow.held` | 경로를 멈춘 항목 수 | `…held` |
+| `unit_shadow.h6c_askable` | true/false | `…h6c_askable` |
+
+NAV/unit, unit 고점, 낙폭, 보류 이유, 시작 시각은 나가지 않는다. 그 값들은 보드에만 보인다.
+
 ### 2.2 경계
 
 - **H3**(`holdings/disclosure.py`, "프로세스를 떠나는 표는 하나"): H3가 지키는 것은 종목별 몫이 드러나는 내역이다. `h6`에는 금액도 종목도 없고, 운영 검사의 이름과 상태만 있다. 그래서 H3의 "표"에 넣지 않고 운영 상태로 분류하는 것을 권고한다(R2).
