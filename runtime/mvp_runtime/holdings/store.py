@@ -47,6 +47,7 @@ from ..filelock import locked
 from ..paths import repo_root as _repo_root
 from . import allocation, binance_wallet, cash_flows, classification, combined, disclosure, overseas_gain, rebalance
 from . import candidates as candidates_mod
+from . import unit_shadow
 from .board import aggregate_view, render_view
 from .toss_account import MARKET_OVERSEAS, TossHoldingsFeed, read_holdings, select_holdings_feed
 
@@ -66,6 +67,8 @@ STALE_AFTER_SECONDS = 3 * 60 * 60
 READINESS_CHECKS = cash_flows.READINESS_CHECKS
 READINESS_STATUSES = cash_flows.READINESS_STATUSES
 TOSS_NEEDS = cash_flows.TOSS_NEEDS
+# What the snapshot's `unit_shadow.state` may hold, handed out on the same rule (H6B_UNIT_SHADOW S5).
+UNIT_SHADOW_STATES = unit_shadow.STATES
 
 HOLDINGS_SNAPSHOT_MISSING = "HOLDINGS_SNAPSHOT_MISSING"
 HOLDINGS_SNAPSHOT_UNREADABLE = "HOLDINGS_SNAPSHOT_UNREADABLE"
@@ -198,6 +201,7 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
     flows_note = None
     readiness_alert = exception_alert = rule_flow_alert = band_alert = candidate_alert = None
     binance_ok = toss_ok = False      # a verified fire needs both (H6b readiness-hardening)
+    h6_ready = False                  # this fire's readiness, for the NAV point (H6b-shadow S1)
     flow_feed = binance_wallet.select_wallet_feed() if wallet is not None else None
     if isinstance(flow_feed, binance_wallet.BinanceWalletFeed):
         try:
@@ -281,6 +285,7 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
                    "freshness": nav_checks.get(combined.CHECK_FRESHNESS) == combined.PASS,
                    "coherence": nav_checks.get(combined.CHECK_COHERENCE) == combined.PASS}
         ready = cash_flows.update_readiness(state_dir(root), now=now, current=current)
+        h6_ready = ready["ready"] is True
         flows["readiness"] = {key: ready[key] for key in ("checks", "ready", "shadow_days", "shadow_success_dates",
                                                           "exceptions", "toss_needs", "next_step")}
         body["cash_flows"] = flows
@@ -311,6 +316,17 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
         flows_note = flows_note or _reason(exc)
     if flows_note:
         body.setdefault("cash_flows", {"mode": cash_flows.ACCOUNTING_MODE})["error"] = flows_note
+    # H6b-shadow (H6B_UNIT_SHADOW S1–S5, Thomas 2026-10-28): every complete NAV is a point, and the unit path is
+    # recomputed from the points and the ledger. Display only: nothing judges by it, and a failure costs this block.
+    try:
+        total = (block or {}).get("combined_total_krw")
+        if (block or {}).get("portfolio_nav_complete") and isinstance(total, (int, float)) and total > 0:
+            unit_shadow.record_point(state_dir(root), at=now, nav_krw=total, usd_krw_rate=snapshot.usd_krw_rate,
+                                     asset_price_usdt=getattr(wallet, "asset_price_usdt", None) or {},
+                                     h6_ready=h6_ready)
+        body["unit_shadow"] = unit_shadow.shadow(state_dir(root))
+    except Exception as exc:  # noqa: BLE001 — see the comment above
+        body["unit_shadow"] = {"state": unit_shadow.STATE_BROKEN, "error": _reason(exc)}
     try:
         band_alert = band_notice(body, now=now, root=root)
         candidate_alert = candidate_notice(root)
@@ -653,7 +669,7 @@ def load_snapshot_status(*, now: str, root: Path | None = None) -> dict[str, Any
     age = _age_seconds(body.get("as_of"), now)
     return {"available": True, "as_of": body.get("as_of"), "age_seconds": age,
             "stale": age is None or age > STALE_AFTER_SECONDS, "partial": body.get("partial"),
-            "cash_flows": body.get("cash_flows")}
+            "cash_flows": body.get("cash_flows"), "unit_shadow": body.get("unit_shadow")}
 
 
 def load_holdings_view(*, now: str, root: Path | None = None) -> tuple[str, dict[str, Any]]:

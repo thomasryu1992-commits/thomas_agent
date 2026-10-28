@@ -203,6 +203,9 @@ class WalletSnapshot:
     # H5a (Thomas 2026-10-08): each priced asset's USDT value (spot plus Earn), so the allocation can
     # place an asset the classification file names. In-process only, like ``class_assets``.
     asset_usdt: Mapping[str, float] = field(default_factory=dict)
+    # H6b-shadow (Thomas 2026-10-28, S3): each priced asset's USDT price, so a flow of it is valued at the
+    # prices the NAV used. In-process here; the local NAV-point log (``unit_shadow``) keeps it, no door.
+    asset_price_usdt: Mapping[str, float] = field(default_factory=dict)
 
 
 class WalletFeed(Protocol):
@@ -505,6 +508,7 @@ class BinanceWalletFeed:
         unpriced: set[str] = set()
         members: dict[str, set[str]] = {name: set() for name in CLASSES}
         per_asset: dict[str, float] = {}
+        per_price: dict[str, float] = {}
 
         def by_class(holdings: Mapping[str, float]) -> dict[str, float]:
             totals = {name: 0.0 for name in CLASSES}
@@ -513,6 +517,7 @@ class BinanceWalletFeed:
                 if value is None:
                     unpriced.add(asset)
                     continue
+                per_price[asset] = self._value(asset, 1.0, prices) or 0.0
                 totals[asset_class(asset)] += value
                 if value:
                     members[asset_class(asset)].add(asset)
@@ -535,6 +540,7 @@ class BinanceWalletFeed:
             invalid_rows=len(invalid),
             class_assets={name: frozenset(assets) for name, assets in members.items() if assets},
             asset_usdt=dict(per_asset),
+            asset_price_usdt={asset: price for asset, price in per_price.items() if price > 0},
         )
 
 

@@ -52,6 +52,7 @@ DENIED = [
     ("Bash", "jq . holdings_local.json"),
     ("Bash", "head holdings_cash_flow_state.json"),
     ("Bash", "wc -l holdings_cash_flows.jsonl"),
+    ("Bash", "tail -1 holdings_nav_points.jsonl"),          # H6b-shadow's NAV points carry KRW totals
     ("Bash", "cat holdings_classification.json"),
     ("Bash", "jq .positions holdings_positions.json"),
     ("Bash", "jq .overseas_gain holdings_tax_estimate.json"),
