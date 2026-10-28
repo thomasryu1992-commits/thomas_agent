@@ -208,7 +208,8 @@ def test_a_reread_without_the_id_is_not_a_late_order(tmp_path):
 def _mixed_epoch_zero(tmp_path):
     set_cutover(tmp_path)
     toss_fire(tmp_path, 1_000_000, "2026-10-09T04:00:00Z")
-    toss_fire(tmp_path, 950_000, "2026-10-09T05:00:00Z", [order("b1", "BUY", "100000", "2026-10-09T04:30:00Z")])
+    # +53,000 beside the buy: not a round 10,000 within the fill tolerance, so quiet_window.v2 leaves it open
+    toss_fire(tmp_path, 953_000, "2026-10-09T05:00:00Z", [order("b1", "BUY", "100000", "2026-10-09T04:30:00Z")])
     assert _semantics(tmp_path) == "MIXED"
 
 

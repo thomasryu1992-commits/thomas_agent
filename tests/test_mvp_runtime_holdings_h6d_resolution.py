@@ -57,7 +57,7 @@ def test_a_toss_deposit_alone_is_closed_as_a_deposit_and_proves_nothing(tmp_path
 def test_a_deposit_and_a_buy_in_one_window_is_mixed_and_closing_it_is_no_trade_evidence(tmp_path):
     start_epoch(tmp_path)                       # epoch 1: the windows alone decide
     buy = order("b1", "BUY", "100000", "2026-10-09T04:30:00Z")
-    row = _residual(tmp_path, 1_000_000 - 100_000 + 50_000, [buy])
+    row = _residual(tmp_path, 1_000_000 - 100_000 + 53_000, [buy])                   # not round: Thomas closes it
     assert _semantics(tmp_path) == "MIXED"
     resolve(tmp_path, row["source_event_key"], "deposit")
     assert _semantics(tmp_path) == "WAITING"                                          # lifted, not passed

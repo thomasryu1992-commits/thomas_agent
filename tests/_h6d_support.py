@@ -39,11 +39,16 @@ class Feed:
 
 
 class Toss:
-    def __init__(self, orders=(), truncated=False):
-        self.orders, self.truncated = list(orders), truncated
+    def __init__(self, orders=(), truncated=False, open_orders=()):
+        self.orders, self.truncated, self.open = list(orders), truncated, open_orders
 
     def closed_orders(self, **_kw):
         return list(self.orders), self.truncated
+
+    def open_orders(self, **_kw):
+        if isinstance(self.open, Exception):
+            raise self.open
+        return list(self.open)
 
 
 def snap(krw: float, usd: float = 0.0, rate: float = 1400.0) -> SimpleNamespace:
@@ -78,8 +83,9 @@ def order(oid, side: str, amount: str, filled_at: str, *, currency: str = "KRW",
     return row
 
 
-def toss_fire(state_dir, krw: float, now: str, orders=(), *, truncated: bool = False, usd: float = 0.0):
-    return cash_flows.collect_toss(Toss(orders, truncated), snap(krw, usd), state_dir, now=now)
+def toss_fire(state_dir, krw: float, now: str, orders=(), *, truncated: bool = False, usd: float = 0.0,
+              open_orders=()):
+    return cash_flows.collect_toss(Toss(orders, truncated, open_orders), snap(krw, usd), state_dir, now=now)
 
 
 def ledger(state_dir) -> list[dict]:

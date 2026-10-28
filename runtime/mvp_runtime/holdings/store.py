@@ -302,7 +302,7 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
         if token:
             rule_flow_alert = (token, (
                 f"[보유 자산] 토스 입금 {counts.get('deposit', 0)}건·출금 {counts.get('withdrawal', 0)}건을 "
-                "규칙(quiet_window.v1)으로 자동 분류했습니다. 틀렸다면 Thomas 터미널에서 확인(--flows) 후 "
+                "규칙(quiet_window.v2)으로 자동 분류했습니다. 틀렸다면 Thomas 터미널에서 확인(--flows) 후 "
                 "다시 분류(--resolve)할 수 있습니다."))
         if binance_ok and toss_ok:
             # Last, so only a fire whose histories, ledger, Toss pass and readiness all ended counts.

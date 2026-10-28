@@ -246,8 +246,9 @@ def test_account_reads_carry_the_account_seq_not_the_account_number(monkeypatch,
 
 def test_the_feed_has_no_order_capability():
     forbidden = ("order", "submit", "cancel", "trade", "buy", "sell", "place")
-    # The one read whose name says "order" (H6a): it lists orders already closed and has no write path.
-    reads = {"closed_orders"}
+    # The reads whose names say "order": orders already closed (H6a) and orders still open (quiet_window.v2,
+    # 2026-10-28) — both lists through the GET-only ``_get``, with no write path.
+    reads = {"closed_orders", "open_orders"}
     for cls in (TossHoldingsFeed, NoHoldingsFeed):
         public = [name for name in dir(cls) if not name.startswith("_") and name not in reads]
         assert not [n for n in public if any(word in n.lower() for word in forbidden)], cls
