@@ -29,7 +29,7 @@
 #      an OK line without it means the installed script predates the check
 #   7. the conversation transcripts (`mode=transcripts`, Thomas 2026-10-09): some transcripts
 #      archive is younger than 26 h, a FULL one is younger than 8 days, and the last
-#      `mode=transcripts` line reads OK with `enc=age`
+#      `mode=transcripts` line reads OK with `enc=age` and `root=` the Claude home (2026-10-30)
 #   8. the prompt collector's own status file, when it exists: `overall` is not FAIL and its last
 #      successful run is younger than 50 h (it runs inside the daily morning job). No file = the
 #      collector is not installed on this host, which is not a backup problem. The file is under the
@@ -163,7 +163,14 @@ else
 fi
 case "$last_tr" in
   "") [ -n "$tr_any" ] && { PROBLEMS+=("backup.log 에 transcripts 실행 기록이 없습니다"); BACKUP_PROBLEM=1; } ;;
-  *" OK mode=transcripts "*" enc=age "*) ;;
+  *" OK mode=transcripts "*" enc=age "*)
+    # The archive's age says nothing about whose home it holds: from C6b until 2026-10-30 a fresh
+    # archive of root's frozen .claude passed this check every day. The OK line names its root.
+    case "$last_tr " in
+      *" root=$CLAUDE_ROOT "*) ;;
+      *" root="*) PROBLEMS+=("마지막 대화 기록 백업이 다른 홈을 묶었습니다 ($(grep -o 'root=[^ ]*' <<<"$last_tr")) — Claude는 $CLAUDE_ROOT 에서 돕니다"); BACKUP_PROBLEM=1 ;;
+      *) PROBLEMS+=("마지막 대화 기록 백업 줄에 root= 표기가 없습니다 — 설치된 백업 스크립트가 claude 홈을 묶기 전 판입니다 (재설치: docs/RUNBOOK_HARNESS_BACKUP_RESTORE.md)"); BACKUP_PROBLEM=1 ;;
+    esac ;;
   *) PROBLEMS+=("마지막 대화 기록 백업이 실패로 끝났습니다: $last_tr"); BACKUP_PROBLEM=1 ;;
 esac
 
