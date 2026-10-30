@@ -21,7 +21,7 @@ posix_only = pytest.mark.skipif(sys.platform == "win32", reason="backup_watch.sh
 OK_LINE = "2026-09-07T08:15:29Z OK mode=core govstate-20260907-0815.tar.gz.age 28M kept=7 enc=age recipient=age1qqqqqqqq anchor=excluded hermes-snapshot=ok workflow-snapshot=ok\n"
 PRE_P10_LINE = "2026-09-07T08:15:29Z OK mode=core govstate-20260907-0815.tar.gz.age 28M kept=7 enc=age recipient=age1qqqqqqqq anchor=excluded hermes-snapshot=ok\n"
 FAILED_LINE = "2026-09-07T07:45:05Z FAILED mode=core rc=2 hermes-snapshot=ok workflow-snapshot=ok\n"
-TR_OK_LINE = "2026-09-07T07:55:10Z OK mode=transcripts kind=full govstate-transcripts-full-20260907-0755.tar.gz.age 800M files=12 enc=age recipient=age1qqqqqqqq collector-state=included\n"
+TR_OK_LINE = "2026-09-07T07:55:10Z OK mode=transcripts kind=full govstate-transcripts-full-20260907-0755.tar.gz.age 800M files=12 enc=age recipient=age1qqqqqqqq collector-state=included root=/home/claude\n"
 TR_FAILED_LINE = "2026-09-08T07:55:10Z FAILED mode=transcripts stage=encrypt rc=1 kind=inc\n"
 
 
@@ -266,9 +266,10 @@ def test_a_failed_stale_or_unreadable_collector_is_reported(tmp_path, body, word
 def _run_default_collector(tmp_path: Path, claude_root: Path):
     """No PROMPT_COLLECTOR_STATUS: the watch finds the status file on its own, under the collector's account."""
     env = {k: v for k, v in os.environ.items() if k != "PROMPT_COLLECTOR_STATUS"}
+    dest = _dest(tmp_path, tr_log=TR_OK_LINE.replace("root=/home/claude", f"root={claude_root}"))
     return subprocess.run(
         [str(SCRIPT), "--dry-run"], capture_output=True, text=True, timeout=60,
-        env={**env, "HARNESS_BACKUP_DEST": str(_dest(tmp_path)), "HEALTH_WATCH_LOG": str(_health_log(tmp_path)),
+        env={**env, "HARNESS_BACKUP_DEST": str(dest), "HEALTH_WATCH_LOG": str(_health_log(tmp_path)),
              "THOMAS_ENV_FILE": str(tmp_path / "absent.env"),
              "OPERATOR_REGISTRATION": str(tmp_path / "absent.json"),
              "HARNESS_BACKUP_CLAUDE_ROOT": str(claude_root)},
@@ -293,3 +294,30 @@ def test_the_default_status_file_is_the_one_under_the_collectors_account(tmp_pat
     status.write_text('{"overall": "WARNING", "last_success": "%s"}' % now, encoding="utf-8")
     fresh = _run_default_collector(tmp_path, claude_root)
     assert fresh.returncode == 0, fresh.stdout
+
+
+# 7b. whose home the transcripts archive holds (2026-10-30): from C6b until then a fresh archive of
+# root's frozen .claude passed check 7 every day, because the check read only the archive's age.
+
+@posix_only
+@pytest.mark.parametrize("line, words", [
+    (TR_OK_LINE.replace("root=/home/claude", "root=/root"), "다른 홈을 묶었습니다 (root=/root)"),
+    (TR_OK_LINE.replace(" root=/home/claude", ""), "root= 표기가 없습니다"),
+])
+def test_a_transcripts_archive_of_another_home_or_of_no_named_home_is_reported(tmp_path, line, words):
+    result = _run(tmp_path, _dest(tmp_path, tr_log=line), _health_log(tmp_path))
+    assert result.returncode == 1 and words in result.stdout, result.stdout
+
+
+@posix_only
+def test_the_claude_home_the_watch_expects_follows_the_variable(tmp_path):
+    line = TR_OK_LINE.replace("root=/home/claude", "root=/srv/claude")
+    env_run = subprocess.run(
+        [str(SCRIPT), "--dry-run"], capture_output=True, text=True, timeout=60,
+        env={**os.environ, "HARNESS_BACKUP_DEST": str(_dest(tmp_path, tr_log=line)),
+             "HEALTH_WATCH_LOG": str(_health_log(tmp_path)), "THOMAS_ENV_FILE": str(tmp_path / "absent.env"),
+             "OPERATOR_REGISTRATION": str(tmp_path / "absent.json"),
+             "PROMPT_COLLECTOR_STATUS": str(tmp_path / "absent-status.json"),
+             "HARNESS_BACKUP_CLAUDE_ROOT": "/srv/claude"},
+    )
+    assert env_run.returncode == 0, env_run.stdout

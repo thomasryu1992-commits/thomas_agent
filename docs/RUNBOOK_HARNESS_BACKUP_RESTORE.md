@@ -48,7 +48,7 @@ Consequences to keep in mind:
 | `thomas_agent/workspace` | 10001 | content-lane deliverables (`POST.md`, `PASTE.txt`, …) | — |
 | `thomas_agent/.env` | root, 0600 | the single secret source (see `DEPLOYMENT.md` → *Secret boundary*) | — |
 | `hermes-trial/data` | 10000:10000, 0700 | `SOUL.md`, `config.yaml`, `mcp/` shims, `skills/`, `cron/jobs.json`, `memories/`, `sessions/`, `auth.json`, and `state-snapshots/<stamp>-daily/` — a **consistent** `state.db` copy made by `hermes backup --quick` (sqlite backup API) moments before the tar | the live `state.db*`, `kanban.db*`, `cron/executions.db*` (WAL-mode databases copied mid-write are not backups — the snapshot directory carries them); `cache/`, `lazy-packages/`, `home/`, `bin/`, `.local/` (installed packages, recreated on boot); `logs/`, `sandboxes/`, `image_cache/`, `audio_cache/`, `models_dev_cache.json` |
-| `.claude/settings.json`, `.claude/settings.local.json`, `.claude/CLAUDE.md`, `thomas_agent/.claude/settings.local.json`, `.claude/skills` (since 2026-10-09, TA-PROMPT-RETENTION-01) | root | Claude Code's own configuration: user settings (hooks, permissions), the global instructions, this repository's untracked permission file, the author's skills with their local git history. No other backup carried them. **Optional:** an absent one is counted (`claude-config=present/5` on the OK line), never a failure. ~0.65 MB | `skills/synced` (re-synced from claude.ai), `*.bak-*`. **Never carried:** `.claude/.credentials.json` and `~/.claude.json` — a login is recreated, not restored; an archive whose member list names either is refused (`reason=credential-in-archive`) |
+| `.claude/settings.json`, `.claude/settings.local.json`, `.claude/CLAUDE.md`, `thomas_agent/.claude/settings.local.json`, `.claude/skills` (since 2026-10-09, TA-PROMPT-RETENTION-01) | the four `.claude/…` from the Claude home (`/home/claude`, since 2026-10-30; `/root` before), `thomas_agent/.claude/…` from root | Claude Code's own configuration: user settings (hooks, permissions), the global instructions, this repository's untracked permission file, the author's skills with their local git history. No other backup carried them. **Optional:** an absent one is counted (`claude-config=present/5` on the OK line), never a failure. ~0.65 MB | `skills/synced` (re-synced from claude.ai), `*.bak-*`. **Never carried:** `.claude/.credentials.json` and `~/.claude.json` — a login is recreated, not restored; an archive whose member list names either is refused (`reason=credential-in-archive`) |
 
 Measured 2026-09-04: **25 MB, 4.8 s** (the previous Thomas-only archive was 15 MB). Off-host: the Mac pull (`com.thomas.govstate-pull`, daily 18:00 KST, 90-day retention) globs `govstate-*.tar.gz`, so it picked the new shape up without reinstalling. **The encrypted
 name does not match that glob**: the Mac pull script (vault `ops/mac-backup-pull/`) must be updated
@@ -147,8 +147,10 @@ tar xzf /root/restore/govstate-<stamp>.tar.gz -C /root thomas_agent/.env && chow
 then copy what you mean to restore:
 ```bash
 mkdir -p /root/restore/claude-config && tar xzf /root/restore/govstate-<stamp>.tar.gz -C /root/restore/claude-config .claude thomas_agent/.claude
-diff -r /root/restore/claude-config/.claude/skills /root/.claude/skills; diff /root/restore/claude-config/.claude/settings.json /root/.claude/settings.json
+diff -r /root/restore/claude-config/.claude/skills /home/claude/.claude/skills; diff /root/restore/claude-config/.claude/settings.json /home/claude/.claude/settings.json
 ```
+Since 2026-10-30 the four `.claude/…` members come from `/home/claude` and go back there, owned by `claude`.
+An archive from before then holds root's copies, which stopped at C6b (2026-10-20).
 A login is not in the archive by design: sign in again (`claude` → `/login`).
 
 ### 2.3 Hermes
@@ -213,7 +215,22 @@ and `govstate-transcripts-inc-<stamp>.tar.gz.age` (files changed since the previ
 one hour of overlap) on the other days. Both are encrypted to the same recipients as core, and the Mac
 pull fetches them through the same `govstate-*` glob. The members are `.claude/projects` (every session's
 `.jsonl`, subagents and the per-project memory) and `.claude/prompt-collector` (the prompt collector's
-local state and review queue) when it exists. Member paths are relative to `/root`.
+local state and review queue) when it exists. Member paths are relative to the Claude home,
+`HARNESS_BACKUP_CLAUDE_ROOT` (default `/home/claude`, the account Claude runs as since C6b). Until
+2026-10-30 they were relative to `/root`. From C6b (2026-10-20) to then, the set archived root's frozen
+copy and none of Claude's sessions. The OK line ends `root=<dir>`, and backup_watch.sh check 7 reports
+any other root. A run whose last OK line names another root, or none, is a **full**.
+
+**The root-era set** (`transcripts-rootera`, Thomas 2026-10-30). The sessions from before C6b exist only
+under `/root/.claude`, and the daily set no longer reads it, so its last copies would leave with the next
+two weekly fulls. Run it once by hand, after reinstalling the script. It writes
+`govstate-rootera-full-<stamp>.tar.gz.age`, a set of its own that no daily run prunes. It does not yield
+to the disk floor, so check `df -h /root/backups` first. Restore it with `--set rootera`.
+
+```text
+/root/backups/backup-governance-state.sh transcripts-rootera
+grep ' mode=transcripts-rootera ' /root/backups/governance-state/backup.log | tail -1   # OK … kind=full … root=/root
+```
 
 Restore on the Mac with `scripts/ops/restore_transcripts.sh`, then copy back. Do not apply archives by hand.
 
@@ -253,7 +270,8 @@ curl -fsSLO https://raw.githubusercontent.com/thomasryu1992-commits/thomas_agent
 bash restore_transcripts.sh ~/Backups/thomas-govstate ~/restore-transcripts --expect-head <stamp>
 bash restore_transcripts.sh ~/Backups/thomas-govstate ~/restore-20261008 --until 20261008-2359
 # → CONTENT_VERIFIED set=transcripts … full=… archives=N … tail=ok … missing=0 stale=0 … core-hash=ok:N,bad:0,…
-# then rsync ~/restore-transcripts/.claude/ to root@host:/root/.claude/ (no sessions running)
+# then rsync ~/restore-transcripts/.claude/ to the host's /home/claude/.claude/ as claude (no sessions running);
+# a --set rootera restore goes back to /root/.claude/
 ```
 
 **The trial set.** `transcripts-trial` runs daily at 08:05Z, in parallel and approved for trial only
