@@ -32,7 +32,9 @@
 #      `mode=transcripts` line reads OK with `enc=age`
 #   8. the prompt collector's own status file, when it exists: `overall` is not FAIL and its last
 #      successful run is younger than 50 h (it runs inside the daily morning job). No file = the
-#      collector is not installed on this host, which is not a backup problem
+#      collector is not installed on this host, which is not a backup problem. The file is under the
+#      account the collector runs as: `claude` since C6b (2026-10-20), so /home/claude, not /root,
+#      whose copy stopped at the switch and read as 200 h stale on 2026-10-28
 #
 # Secrets: the control-bot token is read from the single secret source (/root/thomas_agent/.env,
 # 0600 root) and handed to curl through a config file on stdin, so it never reaches argv or the log.
@@ -54,7 +56,8 @@ CANDLE_MAX_AGE_D=8
 HEALTH_MAX_AGE_MIN=30     # health_watch.sh runs every 10 minutes; three missed runs is a dead watch
 TRANSCRIPTS_MAX_AGE_H=26
 TRANSCRIPTS_FULL_MAX_AGE_D=8
-COLLECTOR_STATUS="${PROMPT_COLLECTOR_STATUS:-/root/.claude/prompt-collector/status.json}"
+CLAUDE_ROOT="${HARNESS_BACKUP_CLAUDE_ROOT:-/home/claude}"
+COLLECTOR_STATUS="${PROMPT_COLLECTOR_STATUS:-$CLAUDE_ROOT/.claude/prompt-collector/status.json}"
 COLLECTOR_MAX_AGE_H=50
 DRY_RUN=0
 case "${1:-}" in
