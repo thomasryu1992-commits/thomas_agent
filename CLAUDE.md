@@ -65,7 +65,8 @@ core thin while lanes grow, stated as rules:
   `docker exec thomas-scheduler python -m scripts.holdings_board` (or `--json`), which only Thomas's terminal
   can run since C6b; and the Claude read door's `holdings_status` (`python3 scripts/claude_read.py
   holdings_status`): snapshot freshness and the H6 readiness checks by name and state, counts and
-  `toss_needs`, never an amount (contract v1.1; HOLDINGS_STATUS_READ_AND_AUTO_FLOWS R1/R2, Thomas 2026-10-26).
+  `toss_needs`, and the H6b unit shadow's state and counts, never an amount or NAV/unit (contract v1.2;
+  HOLDINGS_STATUS_READ_AND_AUTO_FLOWS R1/R2, Thomas 2026-10-26; H6B_UNIT_SHADOW S5, Thomas 2026-10-28).
   Those check states are operational state, not the H3 table. Never open
   `.runtime_governance_state/holdings/` directly, and never run `holdings_board --full`,
   `--local`, `--unclassified`, `--classify`/`--unclassify`, `--reset-peak`,

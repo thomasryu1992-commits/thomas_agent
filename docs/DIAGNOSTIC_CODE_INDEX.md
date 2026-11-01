@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **659** distinct codes across **1330** raise sites
+- **659** distinct codes across **1332** raise sites
 - **22** exception classes carry them
 - **65** codes are raised from more than one module (see below)
 - **172** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -516,6 +516,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `HOLDINGS_CASH_FLOW_EPOCH_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `start_semantics_epoch` | `not CHANGE_REF.match((change_ref or '').strip())` |
 | `HOLDINGS_CASH_FLOW_EPOCH_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `start_semantics_epoch` | `not interactive` |
 | `HOLDINGS_CASH_FLOW_EPOCH_REFUSED` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `start_semantics_epoch` | `not written` |
+| `HOLDINGS_CASH_FLOW_EVENT_INVALID` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `_validate` | `event == EVENT_TOSS_RESIDUAL and 'quiet_window_declined' in row and (row['quiet_window_declined…` |
 | `HOLDINGS_CASH_FLOW_EVENT_INVALID` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `_validate` | `event == EVENT_TOSS_WINDOW and (not set(row['residual_status'].values()) <= {'OPEN', 'CLEAR'})` |
 | `HOLDINGS_CASH_FLOW_EVENT_INVALID` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `_validate` | `missing` |
 | `HOLDINGS_CASH_FLOW_EVENT_INVALID` | `ToolError` | `runtime/mvp_runtime/holdings/cash_flows.py` | `_validate` | `row.get(name) not in allowed` |
@@ -852,6 +853,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `fill_state` | `not isinstance(row, dict)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `holdings_snapshot` | `not isinstance(overview, dict)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `listed_etfs` | `not isinstance(rows, list)` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `open_orders` | `not isinstance(orders, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `stock_info` | `not isinstance(rows, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | `_parse` | `—` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | `_parse` | `not isinstance(rows, list)` |

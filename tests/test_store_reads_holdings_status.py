@@ -87,7 +87,8 @@ def test_the_schema_refuses_a_field_outside_the_contract():
     with pytest.raises(ControlBlocked) as exc:
         store_reads._checked({"available": True, "as_of": NOW, "projection": "v1", "total_krw": 1},
                              store_reads._holdings_schema(holdings_store.READINESS_CHECKS,
-                                                          holdings_store.READINESS_STATUSES, holdings_store.TOSS_NEEDS))
+                                                          holdings_store.READINESS_STATUSES, holdings_store.TOSS_NEEDS,
+                                                          holdings_store.UNIT_SHADOW_STATES))
     assert exc.value.reason_code == "REPLY_SCHEMA_INVALID"
 
 

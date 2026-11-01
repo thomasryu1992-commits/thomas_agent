@@ -15,6 +15,14 @@
 #   transcripts  daily 07:55Z — Claude Code conversations (.claude/projects) and the prompt
 #              collector's local state, encrypted like core. Full weekly (keep 2), changed files on
 #              the other days (kept while their full is). Thomas 2026-10-09.
+#              Read from CLAUDE_ROOT, the home of the account Claude runs as: /home/claude since C6b
+#              (2026-10-20). Until 2026-10-30 it read /root, whose copy stopped at the switch, so ten
+#              days of archives held root's frozen transcripts and none of Claude's. The OK line says
+#              `root=<dir>`, and a run whose last OK line names another root (or none) is a FULL,
+#              because an inc carries only what changed since the last archive.
+#   transcripts-rootera  by hand, once (Thomas 2026-10-30) — the same archive of HOST_ROOT's
+#              .claude (the root-era sessions, frozen since C6b) as its own set, `govstate-rootera-*`,
+#              which no daily run prunes. Restore with `--set rootera`.
 #
 # No compose definition is a member: docker-compose.yml is code and lives in git. Backing up the
 # retired /root/hermes-trial/docker-compose.yml is what broke this script for three days (2026-09-04).
@@ -50,6 +58,8 @@ set -u
 MODE="${1:-core}"
 DEST="${HARNESS_BACKUP_DEST:-/root/backups/governance-state}"
 HOST_ROOT="${HARNESS_BACKUP_HOST_ROOT:-/root}"
+# Claude Code's own home: transcripts, the prompt collector's state, the user config and skills.
+CLAUDE_ROOT="${HARNESS_BACKUP_CLAUDE_ROOT:-/home/claude}"
 THOMAS=thomas_agent
 STAMP="${HARNESS_BACKUP_STAMP:-$(date -u +%Y%m%d-%H%M)}"   # override for tests only
 AGE="${AGE_BIN:-age}"
@@ -83,7 +93,7 @@ age_ready() {
 # mtime with its line to tell a stale copy from one that changed while the backup ran.
 stamp_of() { basename "$1" | sed -E 's/.*-(full|inc)-([0-9]{8}-[0-9]{4})\..*/\2/'; }
 
-select_files() {  # $1 = all|human; run inside HOST_ROOT
+select_files() {  # $1 = all|human; run inside the transcripts root
   if [ "$1" = all ]; then
     find .claude/projects -type f
     [ -d .claude/prompt-collector ] && find .claude/prompt-collector -type f
@@ -100,15 +110,15 @@ select_files() {  # $1 = all|human; run inside HOST_ROOT
   return 0
 }
 
-transcripts_run() {  # mode set ext compressor selection
-  local mode=$1 set=$2 ext=$3 comp=$4 sel=$5
+transcripts_run() {  # mode set ext compressor selection root
+  local mode=$1 set=$2 ext=$3 comp=$4 sel=$5 root=$6
   if ! AGE_REASON=$(age_ready); then log "FAILED mode=$mode stage=encrypt $AGE_REASON"; exit 3; fi
   local recipient_note
   recipient_note="enc=age recipient=$(grep -m1 -E '^age1' "$RECIPIENTS" | cut -c1-12)"
-  if [ ! -d "$HOST_ROOT/.claude/projects" ]; then
-    log "FAILED mode=$mode stage=archive rc=2 missing=.claude/projects"; exit 2
+  if [ ! -d "$root/.claude/projects" ]; then
+    log "FAILED mode=$mode stage=archive rc=2 missing=.claude/projects root=$root"; exit 2
   fi
-  if [ "$mode" != transcripts ]; then          # the trial and the zstd candidate yield to the disk; the real set never does
+  if [ "$mode" != transcripts ] && [ "$mode" != transcripts-rootera ]; then   # the trial and the zstd candidate yield to the disk; the kept sets never do
     local min_gb="${HARNESS_TRIAL_MIN_FREE_GB:-10}" free_kb
     free_kb=$(df -Pk "$DEST" | awk 'NR==2 {print $4}')
     if [ "$free_kb" -lt $(( min_gb * 1024 * 1024 )) ]; then
@@ -116,12 +126,16 @@ transcripts_run() {  # mode set ext compressor selection
     fi
   fi
   local collector_note="collector-state=absent"
-  [ -d "$HOST_ROOT/.claude/prompt-collector" ] && collector_note="collector-state=included"
-  local full_days="${HARNESS_TRANSCRIPTS_FULL_DAYS:-7}" last_full last_any kind=full chain="$STAMP" prev=none
+  [ -d "$root/.claude/prompt-collector" ] && collector_note="collector-state=included"
+  local full_days="${HARNESS_TRANSCRIPTS_FULL_DAYS:-7}" last_full last_any last_ok kind=full chain="$STAMP" prev=none
   local newer=()
   last_full=$(ls -1t "$DEST"/govstate-$set-full-*.$ext.age 2>/dev/null | head -1)
   last_any=$(ls -1t "$DEST"/govstate-$set-*.$ext.age 2>/dev/null | head -1)
-  if [ -n "$last_full" ] && [ $(( $(date +%s) - $(stat -c %Y "$last_full") )) -lt $(( full_days * 86400 - 3600 )) ]; then
+  # An inc builds on the archive before it, so it is only valid from the same root. A last OK line
+  # that names another root, or none (a script from before the root was recorded), starts a new chain.
+  last_ok=$(grep " OK mode=$mode " "$DEST/backup.log" 2>/dev/null | tail -1)
+  if [ -n "$last_full" ] && [ $(( $(date +%s) - $(stat -c %Y "$last_full") )) -lt $(( full_days * 86400 - 3600 )) ] \
+       && [[ " $last_ok " == *" root=$root "* ]]; then
     kind=inc
     # One hour of overlap with the archive before: a file appended while that one was written
     # is carried again rather than missed.
@@ -134,20 +148,20 @@ transcripts_run() {  # mode set ext compressor selection
   mkdir -p "$mfdir"
   local t0
   t0=$(date -u +%Y%m%d%H%M.%S)
-  (cd "$HOST_ROOT" && select_files "$sel") | LC_ALL=C sort -u > "$mfdir/files.txt"
+  (cd "$root" && select_files "$sel") | LC_ALL=C sort -u > "$mfdir/files.txt"
   # Core assets — the prompt collector's state and the per-project memory, ~15 MB — also get a sha256
   # (4th column), so a restore can prove their content, not only their size and mtime. The
   # conversation logs themselves (GBs) are not hashed: size + mtime + the chain stand for them.
-  (cd "$HOST_ROOT" && grep -E '^\.claude/prompt-collector/|^\.claude/projects/[^/]+/memory/' "$mfdir/files.txt" \
+  (cd "$root" && grep -E '^\.claude/prompt-collector/|^\.claude/projects/[^/]+/memory/' "$mfdir/files.txt" \
      | tr '\n' '\0' | xargs -0 -r sha256sum 2>/dev/null | sed -E 's/^([0-9a-f]{64})  (.*)$/\2\t\1/') > "$mfdir/hashes.tsv"
   { printf '# t0=%s\n# set=%s\n# kind=%s\n# stamp=%s\n# chain=%s\n# prev=%s\n# hashed=collector-state,memory\n' \
         "$t0" "$set" "$kind" "$STAMP" "$chain" "$prev"
-    (cd "$HOST_ROOT" && tr '\n' '\0' < "$mfdir/files.txt" | xargs -0 -r stat -c $'%n\t%s\t%Y' 2>/dev/null) \
+    (cd "$root" && tr '\n' '\0' < "$mfdir/files.txt" | xargs -0 -r stat -c $'%n\t%s\t%Y' 2>/dev/null) \
       | awk -F'\t' 'NR == FNR { h[$1] = $2; next } { print $0 (($1 in h) ? "\t" h[$1] : "") }' "$mfdir/hashes.tsv" -
   } > "$mfdir/TRANSCRIPTS_MANIFEST.txt"
   # no-file-unchanged: an inc otherwise prints "file is unchanged; not dumped" once per skipped file.
   tar cvf - --index-file="$index" --warning=no-file-changed --warning=no-file-unchanged "${newer[@]}" \
-      -C "$HOST_ROOT" -T "$mfdir/files.txt" -C "$mfdir" TRANSCRIPTS_MANIFEST.txt \
+      -C "$root" -T "$mfdir/files.txt" -C "$mfdir" TRANSCRIPTS_MANIFEST.txt \
     | $comp | "$AGE" -R "$RECIPIENTS" -o "$part"
   local pipe=("${PIPESTATUS[@]}")
   rm -f "$mfdir/TRANSCRIPTS_MANIFEST.txt" "$mfdir/files.txt" "$mfdir/hashes.tsv"
@@ -176,7 +190,7 @@ transcripts_run() {  # mode set ext compressor selection
       if [ -e "$f" ] && [ "$f" -ot "$oldest_full" ]; then rm -f "$f"; fi
     done
   fi
-  log "OK mode=$mode kind=$kind $(basename "$out") $(du -h "$out" | cut -f1) files=$files chain=$chain prev=$prev sel=$sel $recipient_note $collector_note"
+  log "OK mode=$mode kind=$kind $(basename "$out") $(du -h "$out" | cut -f1) files=$files chain=$chain prev=$prev sel=$sel $recipient_note $collector_note root=$root"
   exit 0
 }
 
@@ -208,13 +222,21 @@ case "$MODE" in
     #     that holds the trading state. Skills synced from claude.ai (skills/synced) re-sync and stay
     #     out. Never carried, and checked below from what tar wrote: the OAuth login
     #     (.credentials.json) and ~/.claude.json — a login is recreated, not restored.
-    CONFIG=(".claude/settings.json" ".claude/settings.local.json" ".claude/CLAUDE.md"
-            "$THOMAS/.claude/settings.local.json" ".claude/skills")
-    CONFIG_PRESENT=()
-    for member in "${CONFIG[@]}"; do
-      [ -e "$HOST_ROOT/$member" ] && CONFIG_PRESENT+=("$member")
+    #     The user's four come from CLAUDE_ROOT (Thomas 2026-10-30): /root's copies stopped at C6b.
+    #     The repository's settings.local.json stays with the checkout under HOST_ROOT.
+    USER_CONFIG=(".claude/settings.json" ".claude/settings.local.json" ".claude/CLAUDE.md" ".claude/skills")
+    REPO_CONFIG=("$THOMAS/.claude/settings.local.json")
+    USER_PRESENT=()
+    REPO_PRESENT=()
+    for member in "${USER_CONFIG[@]}"; do
+      [ -e "$CLAUDE_ROOT/$member" ] && USER_PRESENT+=("$member")
     done
-    SNAP_NOTE="$SNAP_NOTE claude-config=${#CONFIG_PRESENT[@]}/${#CONFIG[@]}"
+    for member in "${REPO_CONFIG[@]}"; do
+      [ -e "$HOST_ROOT/$member" ] && REPO_PRESENT+=("$member")
+    done
+    USER_ARGS=()
+    [ "${#USER_PRESENT[@]}" -gt 0 ] && USER_ARGS=(-C "$CLAUDE_ROOT" "${USER_PRESENT[@]}")
+    SNAP_NOTE="$SNAP_NOTE claude-config=$(( ${#USER_PRESENT[@]} + ${#REPO_PRESENT[@]} ))/$(( ${#USER_CONFIG[@]} + ${#REPO_CONFIG[@]} ))"
     MISSING=()
     for member in "${MEMBERS[@]}"; do
       [ -e "$HOST_ROOT/$member" ] || MISSING+=("$member")
@@ -232,7 +254,8 @@ case "$MODE" in
         --exclude="$THOMAS/.runtime_governance_state/crypto/candle_archive" \
         --exclude="$THOMAS/.runtime_governance_state/crypto/execution_stage_anchor.json" \
         --exclude=".claude/skills/synced" --exclude=".claude/skills/*.bak-*" --exclude=".claude/skills/*/*.bak-*" \
-        "${MEMBERS[@]}" ${CONFIG_PRESENT[@]+"${CONFIG_PRESENT[@]}"} | "$AGE" -R "$RECIPIENTS" -o "$PART"
+        "${MEMBERS[@]}" ${REPO_PRESENT[@]+"${REPO_PRESENT[@]}"} ${USER_ARGS[@]+"${USER_ARGS[@]}"} \
+      | "$AGE" -R "$RECIPIENTS" -o "$PART"
     PIPE=("${PIPESTATUS[@]}")
     TAR_RC=${PIPE[0]}
     AGE_RC=${PIPE[1]}
@@ -267,20 +290,26 @@ case "$MODE" in
     RC=0
     ;;
   transcripts)
-    transcripts_run transcripts transcripts tar.gz "gzip -6" all
+    transcripts_run transcripts transcripts tar.gz "gzip -6" all "$CLAUDE_ROOT"
+    ;;
+  transcripts-rootera)
+    # The root-era sessions (Thomas 2026-10-30): HOST_ROOT's .claude has not been written since C6b,
+    # and the daily set no longer reads it, so its last copies would leave with the next two fulls.
+    # One run by hand keeps them in a set of their own that nothing prunes. Not scheduled.
+    transcripts_run transcripts-rootera rootera tar.gz "gzip -6" all "$HOST_ROOT"
     ;;
   transcripts-trial)
     # Parallel trial (Thomas 2026-10-09): only sessions a person wrote in (plus their subagents and
     # tool-result files, memory, the collector's state), zstd -3 instead of gzip. Separate names
     # (govstate-trialzst-*), separate log mode; the real `transcripts` run and the watch are untouched.
     # Skipped, not failed, when the disk has less than HARNESS_TRIAL_MIN_FREE_GB (default 10) free.
-    transcripts_run transcripts-trial trialzst tar.zst "zstd -3 -T2 -q" human
+    transcripts_run transcripts-trial trialzst tar.zst "zstd -3 -T2 -q" human "$CLAUDE_ROOT"
     ;;
   transcripts-fullzst)
     # Switch candidate under validation (Thomas 2026-10-09, TA-PROMPT-RETENTION-01): everything the
     # gzip set carries, compressed with zstd -3. NOT scheduled and not a production set: run by hand
     # into a separate HARNESS_BACKUP_DEST until a switch is approved. Same disk floor as the trial.
-    transcripts_run transcripts-fullzst fullzst tar.zst "zstd -3 -T2 -q" all
+    transcripts_run transcripts-fullzst fullzst tar.zst "zstd -3 -T2 -q" all "$CLAUDE_ROOT"
     ;;
   candles)
     OUT="$DEST/govstate-candles-$STAMP.tar.gz"
@@ -292,7 +321,7 @@ case "$MODE" in
     RC=$?
     ;;
   *)
-    echo "usage: $0 [core|candles|transcripts|transcripts-trial|transcripts-fullzst]" >&2; exit 2 ;;
+    echo "usage: $0 [core|candles|transcripts|transcripts-rootera|transcripts-trial|transcripts-fullzst]" >&2; exit 2 ;;
 esac
 
 # tar exits 1 when a live append-mode file changed under it (the content is a valid snapshot);

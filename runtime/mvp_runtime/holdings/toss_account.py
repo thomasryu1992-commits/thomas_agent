@@ -276,6 +276,18 @@ class TossHoldingsFeed:
 
     # -- the reads -------------------------------------------------------------------------
 
+    def open_orders(self, *, timeout_seconds: int = 10) -> list[dict[str, Any]]:
+        """Every order still open (``status=OPEN``: pending, partly filled, pending cancel or replace). Toss
+        returns them all at once, without paging. quiet_window.v2 counts them: a pending buy holds buying power.
+        The rows carry symbols and amounts: in this process only."""
+        self._resolve_account(timeout_seconds=timeout_seconds)
+        result = self._get(ORDERS_PATH, {"status": "OPEN"}, account=True, what="open orders",
+                           timeout_seconds=timeout_seconds)
+        orders = result.get("orders") if isinstance(result, dict) else None
+        if not isinstance(orders, list):
+            raise ToolError("MALFORMED_RESULT", "open orders carried no list")
+        return [order for order in orders if isinstance(order, dict)]
+
     def closed_orders(self, *, date_from: str | None, date_to: str | None, max_pages: int = 10,
                       timeout_seconds: int = 10) -> tuple[list[dict[str, Any]], bool]:
         """Closed orders whose ``orderedAt`` falls in ``date_from``..``date_to`` (KST dates, inclusive; both

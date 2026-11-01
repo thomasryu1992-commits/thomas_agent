@@ -38,7 +38,8 @@ is still as of its last date.
 >   - The runner was upgraded in place on 2026-10-26 (`deploy_runner_c6a.py upgrade`).
 > - **Holdings:**
 >   - C7's five PRs were deployed on 2026-10-17 (`HOLDINGS_LEDGER_CHECKPOINT_V0.1.md` §12.7).
->   - Next comes H6b-shadow, then H6c. Both are Thomas's decisions (`PORTFOLIO_CASH_FLOW_LEDGER_V0.1.md`).
+>   - H6b-shadow was decided and built on 2026-10-28 (`H6B_UNIT_SHADOW_V0.1.md`). It is display only. H6c is asked
+    when the Claude door shows `h6c_askable`: 14 shadow days, a deposit and a withdrawal applied, nothing held.
 > - **The weekly management report** (`WEEKLY_MANAGEMENT_REPORT_V0.1.md`) is deployed. Its schedule is added on
 >   2026-11-02 at 09:00 KST, and the first report arrives a week later.
 > - **Unblocked build items: none (2026-10-26).** The 2026-10-25 sweep built the last three (#1302–#1304). Every other

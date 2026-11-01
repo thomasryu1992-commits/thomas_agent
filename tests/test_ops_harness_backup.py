@@ -25,6 +25,13 @@ HEADER = b"age-encryption.org/v1\n"
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="harness_backup.sh is a bash script")
 
+
+@pytest.fixture(autouse=True)
+def _no_real_claude_home(tmp_path, monkeypatch):
+    """The Claude home defaults to /home/claude. A run that forgot to name its scratch one must fail on a
+    missing directory here, never archive this host's real transcripts into a test's tmp_path."""
+    monkeypatch.setenv("HARNESS_BACKUP_CLAUDE_ROOT", str(tmp_path / "no-claude-home-named-by-this-test"))
+
 STUB_AGE = """#!/bin/bash
 # -R <file> -o <out>: behave per $STUB_AGE_MODE.  -d -i <key> <file>: strip the version line (restore tests)
 out=""; dec=0; in=""
@@ -70,7 +77,7 @@ def _run(tmp_path: Path, *, recipients: str | None = RECIPIENT + "\n", age_mode:
     if recipients is not None:
         rfile.write_text(recipients, encoding="utf-8")
     env = {**os.environ, "PATH": f"{_bin(tmp_path)}:{os.environ['PATH']}",
-           "HARNESS_BACKUP_HOST_ROOT": str(host), "HARNESS_BACKUP_DEST": str(dest),
+           "HARNESS_BACKUP_HOST_ROOT": str(host), "HARNESS_BACKUP_CLAUDE_ROOT": str(host), "HARNESS_BACKUP_DEST": str(dest),
            "HARNESS_BACKUP_AGE_RECIPIENTS": str(rfile), "STUB_AGE_MODE": age_mode}
     if age_bin is not None:
         env["AGE_BIN"] = age_bin
@@ -198,7 +205,7 @@ def test_the_candle_archive_is_unchanged_and_not_encrypted(tmp_path):
     (host / "thomas_agent/.runtime_governance_state/crypto/candle_archive").mkdir(parents=True)
     dest = tmp_path / "dest"
     env = {**os.environ, "PATH": f"{_bin(tmp_path)}:{os.environ['PATH']}",
-           "HARNESS_BACKUP_HOST_ROOT": str(host), "HARNESS_BACKUP_DEST": str(dest),
+           "HARNESS_BACKUP_HOST_ROOT": str(host), "HARNESS_BACKUP_CLAUDE_ROOT": str(host), "HARNESS_BACKUP_DEST": str(dest),
            "HARNESS_BACKUP_AGE_RECIPIENTS": str(tmp_path / "absent")}
     out = subprocess.run(["bash", str(SCRIPT), "candles"], capture_output=True, text=True, timeout=60, env=env)
     assert out.returncode == 0, out.stderr
@@ -214,7 +221,7 @@ def test_a_real_age_round_trip_decrypts_with_the_private_key_only(tmp_path):
     dest = tmp_path / "dest"
     (tmp_path / "age-recipients.txt").write_text(public, encoding="utf-8")
     env = {**os.environ, "PATH": f"{_bin(tmp_path)}:{os.environ['PATH']}", "AGE_BIN": shutil.which("age"),
-           "HARNESS_BACKUP_HOST_ROOT": str(host), "HARNESS_BACKUP_DEST": str(dest),
+           "HARNESS_BACKUP_HOST_ROOT": str(host), "HARNESS_BACKUP_CLAUDE_ROOT": str(host), "HARNESS_BACKUP_DEST": str(dest),
            "HARNESS_BACKUP_AGE_RECIPIENTS": str(tmp_path / "age-recipients.txt")}
     out = subprocess.run(["bash", str(SCRIPT), "core"], capture_output=True, text=True, timeout=60, env=env)
     assert out.returncode == 0, out.stderr
@@ -244,7 +251,7 @@ def _run_transcripts(tmp_path: Path, host: Path, *, recipients: str = RECIPIENT 
     rfile = tmp_path / "age-recipients.txt"
     rfile.write_text(recipients, encoding="utf-8")
     env = {**os.environ, "PATH": f"{_bin(tmp_path)}:{os.environ['PATH']}",
-           "HARNESS_BACKUP_HOST_ROOT": str(host), "HARNESS_BACKUP_DEST": str(dest),
+           "HARNESS_BACKUP_HOST_ROOT": str(host), "HARNESS_BACKUP_CLAUDE_ROOT": str(host), "HARNESS_BACKUP_DEST": str(dest),
            "HARNESS_BACKUP_AGE_RECIPIENTS": str(rfile), "STUB_AGE_MODE": "ok"}
     out = subprocess.run(["bash", str(SCRIPT), "transcripts"], capture_output=True, text=True, timeout=60, env=env)
     log = (dest / "backup.log").read_text(encoding="utf-8") if (dest / "backup.log").exists() else ""
@@ -381,7 +388,7 @@ def _backup(tmp_path: Path, host: Path, stamp: str, *, full: bool = False) -> st
     dest = tmp_path / "dest"
     (tmp_path / "age-recipients.txt").write_text(RECIPIENT + "\n", encoding="utf-8")
     env = {**os.environ, "PATH": f"{_bin(tmp_path)}:{os.environ['PATH']}",
-           "HARNESS_BACKUP_HOST_ROOT": str(host), "HARNESS_BACKUP_DEST": str(dest),
+           "HARNESS_BACKUP_HOST_ROOT": str(host), "HARNESS_BACKUP_CLAUDE_ROOT": str(host), "HARNESS_BACKUP_DEST": str(dest),
            "HARNESS_BACKUP_AGE_RECIPIENTS": str(tmp_path / "age-recipients.txt"), "STUB_AGE_MODE": "ok",
            "HARNESS_BACKUP_STAMP": stamp, "HARNESS_TRANSCRIPTS_FULL_DAYS": "0" if full else "7"}
     out = subprocess.run(["bash", str(SCRIPT), "transcripts"], capture_output=True, text=True, timeout=60, env=env)
@@ -486,7 +493,7 @@ def test_a_real_age_transcripts_backup_restores_with_the_script(tmp_path):
     host = _transcripts_host(tmp_path)
     dest = tmp_path / "dest"
     (tmp_path / "age-recipients.txt").write_text(public, encoding="utf-8")
-    env = {**os.environ, "AGE_BIN": shutil.which("age"), "HARNESS_BACKUP_HOST_ROOT": str(host),
+    env = {**os.environ, "AGE_BIN": shutil.which("age"), "HARNESS_BACKUP_HOST_ROOT": str(host), "HARNESS_BACKUP_CLAUDE_ROOT": str(host),
            "HARNESS_BACKUP_DEST": str(dest), "HARNESS_BACKUP_AGE_RECIPIENTS": str(tmp_path / "age-recipients.txt"),
            "HARNESS_BACKUP_STAMP": "20261009-0100"}
     out = subprocess.run(["bash", str(SCRIPT), "transcripts"], capture_output=True, text=True, timeout=60, env=env)
@@ -609,7 +616,7 @@ def test_a_legacy_archive_without_chain_headers_restores_but_is_not_verified(tmp
 def _trial(tmp_path: Path, host: Path, stamp: str, **env_extra):
     dest = tmp_path / "dest"
     (tmp_path / "age-recipients.txt").write_text(RECIPIENT + "\n", encoding="utf-8")
-    env = {**os.environ, "PATH": f"{_bin(tmp_path)}:{os.environ['PATH']}", "HARNESS_BACKUP_HOST_ROOT": str(host),
+    env = {**os.environ, "PATH": f"{_bin(tmp_path)}:{os.environ['PATH']}", "HARNESS_BACKUP_HOST_ROOT": str(host), "HARNESS_BACKUP_CLAUDE_ROOT": str(host),
            "HARNESS_BACKUP_DEST": str(dest), "HARNESS_BACKUP_AGE_RECIPIENTS": str(tmp_path / "age-recipients.txt"),
            "STUB_AGE_MODE": "ok", "HARNESS_BACKUP_STAMP": stamp, "HARNESS_TRIAL_MIN_FREE_GB": "0", **env_extra}
     out = subprocess.run(["bash", str(SCRIPT), "transcripts-trial"], capture_output=True, text=True, timeout=60, env=env)
@@ -708,7 +715,7 @@ def test_the_fullzst_candidate_carries_every_session_and_restores_its_chain(tmp_
     dest = tmp_path / "dest"
     (tmp_path / "age-recipients.txt").write_text(RECIPIENT + "\n", encoding="utf-8")
     def run(stamp, full_days):
-        env = {**os.environ, "PATH": f"{_bin(tmp_path)}:{os.environ['PATH']}", "HARNESS_BACKUP_HOST_ROOT": str(host),
+        env = {**os.environ, "PATH": f"{_bin(tmp_path)}:{os.environ['PATH']}", "HARNESS_BACKUP_HOST_ROOT": str(host), "HARNESS_BACKUP_CLAUDE_ROOT": str(host),
                "HARNESS_BACKUP_DEST": str(dest), "HARNESS_BACKUP_AGE_RECIPIENTS": str(tmp_path / "age-recipients.txt"),
                "STUB_AGE_MODE": "ok", "HARNESS_BACKUP_STAMP": stamp, "HARNESS_TRIAL_MIN_FREE_GB": "0",
                "HARNESS_TRANSCRIPTS_FULL_DAYS": full_days}
@@ -735,9 +742,107 @@ def test_the_fullzst_candidate_yields_to_a_short_disk(tmp_path):
     host = _human_and_headless(tmp_path)
     dest = tmp_path / "dest"
     (tmp_path / "age-recipients.txt").write_text(RECIPIENT + "\n", encoding="utf-8")
-    env = {**os.environ, "PATH": f"{_bin(tmp_path)}:{os.environ['PATH']}", "HARNESS_BACKUP_HOST_ROOT": str(host),
+    env = {**os.environ, "PATH": f"{_bin(tmp_path)}:{os.environ['PATH']}", "HARNESS_BACKUP_HOST_ROOT": str(host), "HARNESS_BACKUP_CLAUDE_ROOT": str(host),
            "HARNESS_BACKUP_DEST": str(dest), "HARNESS_BACKUP_AGE_RECIPIENTS": str(tmp_path / "age-recipients.txt"),
            "STUB_AGE_MODE": "ok", "HARNESS_TRIAL_MIN_FREE_GB": "999999"}
     out = subprocess.run(["bash", str(SCRIPT), "transcripts-fullzst"], capture_output=True, text=True, timeout=60, env=env)
     assert out.returncode == 0 and "SKIPPED mode=transcripts-fullzst reason=disk" in (dest / "backup.log").read_text()
     assert not list(dest.glob("govstate-fullzst-*"))
+
+
+# The Claude home (Thomas 2026-10-30). Since C6b Claude runs as `claude`; /root's .claude stopped at the
+# switch, and for ten days the daily set archived that frozen copy and none of Claude's sessions.
+
+def _claude_home(tmp_path: Path) -> Path:
+    home = tmp_path / "claude-home"
+    proj = home / ".claude/projects/-home-claude-thomas-agent"
+    proj.mkdir(parents=True)
+    (proj / "today.jsonl").write_text('{"type":"user"}\n', encoding="utf-8")
+    (home / ".claude/prompt-collector").mkdir(parents=True)
+    (home / ".claude/prompt-collector/status.json").write_text("{}", encoding="utf-8")
+    (home / ".claude/.credentials.json").write_text("x\n", encoding="utf-8")
+    return home
+
+
+def _tr(tmp_path: Path, host: Path, claude: Path, stamp: str, mode: str = "transcripts", **extra: str):
+    dest = tmp_path / "dest"
+    (tmp_path / "age-recipients.txt").write_text(RECIPIENT + "\n", encoding="utf-8")
+    env = {**os.environ, "PATH": f"{_bin(tmp_path)}:{os.environ['PATH']}",
+           "HARNESS_BACKUP_HOST_ROOT": str(host), "HARNESS_BACKUP_CLAUDE_ROOT": str(claude),
+           "HARNESS_BACKUP_DEST": str(dest), "HARNESS_BACKUP_AGE_RECIPIENTS": str(tmp_path / "age-recipients.txt"),
+           "STUB_AGE_MODE": "ok", "HARNESS_BACKUP_STAMP": stamp, **extra}
+    out = subprocess.run(["bash", str(SCRIPT), mode], capture_output=True, text=True, timeout=60, env=env)
+    assert out.returncode == 0, out.stderr
+    return dest, (dest / "backup.log").read_text(encoding="utf-8").splitlines()[-1]
+
+
+def test_the_daily_set_reads_the_claude_home_and_names_it(tmp_path):
+    host, claude = _transcripts_host(tmp_path), _claude_home(tmp_path)
+    dest, line = _tr(tmp_path, host, claude, "20261030-0755")
+    (archive,) = dest.glob("govstate-transcripts-full-*.tar.gz.age")
+    assert sorted(_members(archive)) == [".claude/projects/-home-claude-thomas-agent/today.jsonl",
+                                         ".claude/prompt-collector/status.json", "TRANSCRIPTS_MANIFEST.txt"]
+    assert line.endswith(f" root={claude}") and "collector-state=included" in line
+
+
+def test_a_run_from_another_root_than_the_last_one_starts_a_new_full(tmp_path):
+    """An inc carries only what changed since the archive before it. Built on another root's chain it
+    would leave out every older file of the new one."""
+    host, claude = _transcripts_host(tmp_path), _claude_home(tmp_path)
+    dest, line = _tr(tmp_path, host, host, "20261029-0755")                    # the old script's root
+    assert " kind=full " in line
+    dest, line = _tr(tmp_path, host, host, "20261029-0756")
+    assert " kind=inc " in line                                               # same root: the chain goes on
+    dest, line = _tr(tmp_path, host, claude, "20261030-0755")
+    assert " kind=full " in line and f" root={claude}" in line
+    full = dest / "govstate-transcripts-full-20261030-0755.tar.gz.age"
+    assert ".claude/projects/-home-claude-thomas-agent/today.jsonl" in _members(full)
+
+
+def test_a_last_line_from_a_script_that_never_named_its_root_starts_a_new_full(tmp_path):
+    host, claude = _transcripts_host(tmp_path), _claude_home(tmp_path)
+    dest, line = _tr(tmp_path, host, claude, "20261030-0755")
+    log = dest / "backup.log"
+    log.write_text(log.read_text(encoding="utf-8").replace(f" root={claude}", ""), encoding="utf-8")
+    _, line = _tr(tmp_path, host, claude, "20261030-0756")
+    assert " kind=full " in line
+
+
+def test_the_root_era_set_keeps_the_host_roots_sessions_apart_and_restores(tmp_path):
+    host, claude = _transcripts_host(tmp_path), _claude_home(tmp_path)
+    dest, line = _tr(tmp_path, host, claude, "20261030-0800", mode="transcripts-rootera")
+    assert " OK mode=transcripts-rootera kind=full " in line and line.endswith(f" root={host}")
+    (era,) = dest.glob("govstate-rootera-full-*.tar.gz.age")
+    assert ".claude/projects/-root-thomas-agent/old-session.jsonl" in _members(era)
+    for i in range(3):                                                        # three daily fulls rotate
+        _tr(tmp_path, host, claude, f"2026103{i}-0900", HARNESS_TRANSCRIPTS_FULL_DAYS="0")
+    assert era.exists()                                                       # ...and never touch it
+    target = tmp_path / "restored"
+    out = _restore(tmp_path, target, "--set", "rootera")
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert (target / ".claude/projects/-root-thomas-agent/old-session.jsonl").exists()
+    assert not (target / ".claude/projects/-home-claude-thomas-agent").exists()
+
+
+def test_core_takes_the_user_config_from_the_claude_home_and_the_repo_config_from_the_host(tmp_path):
+    host, claude = _host_with_config(tmp_path), _claude_home(tmp_path)
+    for rel in (".claude/settings.json", ".claude/CLAUDE.md", ".claude/skills/blog/SKILL.md"):
+        (claude / rel).parent.mkdir(parents=True, exist_ok=True)
+        (claude / rel).write_text("claude-home\n", encoding="utf-8")
+    dest = tmp_path / "dest"
+    (tmp_path / "age-recipients.txt").write_text(RECIPIENT + "\n", encoding="utf-8")
+    env = {**os.environ, "PATH": f"{_bin(tmp_path)}:{os.environ['PATH']}",
+           "HARNESS_BACKUP_HOST_ROOT": str(host), "HARNESS_BACKUP_CLAUDE_ROOT": str(claude),
+           "HARNESS_BACKUP_DEST": str(dest), "HARNESS_BACKUP_AGE_RECIPIENTS": str(tmp_path / "age-recipients.txt"),
+           "STUB_AGE_MODE": "ok"}
+    out = subprocess.run(["bash", str(SCRIPT), "core"], capture_output=True, text=True, timeout=60, env=env)
+    assert out.returncode == 0, out.stderr
+    (archive,) = dest.glob("govstate-2*.tar.gz.age")
+    with tarfile.open(fileobj=io.BytesIO(gzip.decompress(archive.read_bytes()[len(HEADER):]))) as tar:
+        body = {m.name: tar.extractfile(m).read() for m in tar.getmembers() if m.isfile()}
+    for rel in (".claude/settings.json", ".claude/CLAUDE.md", ".claude/skills/blog/SKILL.md"):
+        assert body[rel] == b"claude-home\n", rel                            # not root's frozen copy
+    assert ".claude/settings.local.json" not in body                          # absent in the claude home
+    assert body["thomas_agent/.claude/settings.local.json"] == b"x\n"         # the checkout's, from the host
+    assert not any(n.endswith(".credentials.json") for n in body)
+    assert "claude-config=4/5" in (dest / "backup.log").read_text(encoding="utf-8").split()

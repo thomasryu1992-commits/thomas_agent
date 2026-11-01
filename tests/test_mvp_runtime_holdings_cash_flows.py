@@ -250,6 +250,7 @@ def test_nothing_is_applied_and_no_unit_exists(tmp_path):
 
 
 DOOR_ALLOWED = frozenset({"runtime/mvp_runtime/holdings/cash_flows.py", "runtime/mvp_runtime/holdings/store.py",
+                          "runtime/mvp_runtime/holdings/unit_shadow.py",     # H6b-shadow reads it, no door
                           "scripts/holdings_board.py"})     # the terminal's cutover command, not a door
 # C7 PR-D self-test (Thomas 2026-10-12): may IMPORT cash_flows to run its synthetic lanes, nothing more. The
 # ledger/state filename literals stay forbidden for it as for every other module, and the exemption is this one
@@ -307,8 +308,10 @@ def test_the_self_test_exemption_is_import_only_and_exact(rel, source, expected)
 
 def test_the_exemptions_did_not_grow():
     assert IMPORT_ONLY_EXEMPT == {"scripts/c7_blocked_selftest.py"}
+    # unit_shadow.py joined on 2026-10-28 (H6B_UNIT_SHADOW S4): it recomputes the unit path from the ledger
+    # and is no door; what leaves it is the snapshot block, which carries no amount.
     assert DOOR_ALLOWED == {"runtime/mvp_runtime/holdings/cash_flows.py", "runtime/mvp_runtime/holdings/store.py",
-                            "scripts/holdings_board.py"}
+                            "runtime/mvp_runtime/holdings/unit_shadow.py", "scripts/holdings_board.py"}
 
 
 def test_a_transfer_in_the_window_withholds_the_nav_through_combine(tmp_path):

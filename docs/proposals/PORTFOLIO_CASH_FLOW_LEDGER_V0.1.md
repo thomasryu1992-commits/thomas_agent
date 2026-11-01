@@ -1,6 +1,6 @@
 # 제안: H6 — 입출금 원장과 unitized NAV, 사람은 예외만 (DRAFT v0.1)
 
-**상태:** DECIDED 2026-10-08 — D-H6-1–10(Thomas). 설계를 검토 보강과 함께 승인했다. **2026-10-17 상태 정정:** H6a(#1193, 첫 probe에서 모든 원천 PASS), H6b(#1194 원장, #1195 hardening, #1196 readiness), H6d-min(#1205 예외 해소·원장 권위, #1208, #1210)은 지어졌다. 남은 빌드는 H6b-shadow(unit 회계를 옆에서 표시만)와 H6c(unit 권위 전환)이고, 둘 다 Thomas 승인 대기다. H6c는 C7 배포를 선행 조건으로 둔다(`HOLDINGS_LEDGER_CHECKPOINT_V0.1.md`, #1211 Q3).
+**상태:** DECIDED 2026-10-08 — D-H6-1–10(Thomas). 설계를 검토 보강과 함께 승인했다. **2026-10-28:** H6b-shadow의 남은 결정 S1–S5가 정해졌고(`H6B_UNIT_SHADOW_V0.1.md`, 모두 A) 같은 날 지어졌다(`holdings/unit_shadow.py`). 판정에는 쓰지 않는다. 남은 빌드는 H6c(unit 권위 전환)이고, shadow가 14일·입금·출금을 겪은 뒤 묻는다. **2026-10-17 상태 정정:** H6a(#1193, 첫 probe에서 모든 원천 PASS), H6b(#1194 원장, #1195 hardening, #1196 readiness), H6d-min(#1205 예외 해소·원장 권위, #1208, #1210)은 지어졌다. 남은 빌드는 H6b-shadow(unit 회계를 옆에서 표시만)와 H6c(unit 권위 전환)이고, 둘 다 Thomas 승인 대기다. H6c는 C7 배포를 선행 조건으로 둔다(`HOLDINGS_LEDGER_CHECKPOINT_V0.1.md`, #1211 Q3).
 이전 상태 줄(2026-10-08): "남은 빌드: H6a → H6b(원장) → H6b-shadow → H6c(unit 권위 전환) → H6d(예외 알림). 엔드포인트가 읽기 키로 열리는지,
 토스 `cashBuyingPower`가 결제 전후에 어떻게 움직이는지는 H6a에서 확인할 사실이다." 토스 `cashBuyingPower`의 의미는 아직 미검증이다(`THOMAS_AGENT_TARGET_ARCHITECTURE_V0.1.md`).
 
