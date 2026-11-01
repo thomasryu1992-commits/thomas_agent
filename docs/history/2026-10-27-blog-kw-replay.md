@@ -74,3 +74,24 @@ container reading Naver/Google itself through the §7 N1 opt-ins, comes after P4
    `docker exec thomas-scheduler python -m runtime.mvp_runtime.scheduler_cli add --kind blog_kw_replay --interval-seconds 86400 --reason "BLOG_DEPARTMENT v0.2 P4a"`.
 
 The first bundle arrives with the first full run after the export, not on a queue-reuse day.
+
+## 2026-10-28: the first root bundle, and a regeneration
+
+Deployed 10-27 as `candidate-1336`. Root's first full run with the variable set (10-28 07:10 KST, `run --max-age 2`,
+25 minutes) recorded bundle `20261028-071006`: 2,176 responses, `has_vol` true, `withheld` 0.
+
+- **One response was missing.** The `--max-age` path calls `own_posts()` to decide whether to reuse the queue, and
+  that reads the Naver RSS into the in-process `_LIVE` cache *before* `replay_start`. The replay drops `--max-age`,
+  so it asks for the RSS after recording began and finds nothing. With no RSS the pipeline falls back to vault
+  status, and the ranks differed. The copy-vault round trips ran without `--max-age`, which is why they never saw
+  this. Vault `706609cd`: `replay_start` clears `_LIVE` when recording, so a full run fetches the RSS inside the
+  recording. Without the variable nothing changes. Its test fails with the fix removed.
+- **The Search Ad branch agrees.** The RSS was fetched again by hand at 11:28 KST, trimmed of the one item published
+  after 07:10, and put into the transport. The replay then came out `compared/agree`: 118 candidates, 613 Tistory
+  candidates, top sets, out-of-league and ranks all equal, with 0 differing fields.
+- **The port was stale anyway.** Another session changed `kw_pipeline.py` in the vault at 10-27 22:02 KST (GSC: only
+  the 28-day table feeds the slot estimate). The production run used that version, so the deployed port reads this
+  bundle as `generator_stale`. This PR regenerates the port from vault `706609cd`, which carries both changes.
+
+Every vault edit to `kw_pipeline.py`, `blog_taxonomy.py` or `affiliate_fetch.py` makes the port stale until a
+regeneration is deployed. A bundle that fires as `generator_stale` gets a record and is not replayed again.
