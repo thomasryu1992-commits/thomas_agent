@@ -434,7 +434,7 @@ def test_short_buying_power_holds_the_whole_scenario_and_the_next_trading_day_tr
     _approve(tmp_path)
     orders = _Orders()
     assert ai.run(_Feed(cash=150_000.0), orders, tmp_path, now=OPEN)["status"] == "hold:insufficient_buying_power"
-    assert orders.calls == [] and json.loads(ai.scenario_path(tmp_path).read_text())["shortfall_krw"] > 0
+    assert orders.calls == [] and json.loads(ai.scenario_path(tmp_path).read_text(encoding="utf-8"))["shortfall_krw"] > 0
     assert ai.run(_Feed(), orders, tmp_path, now=LATER)["status"] == "done_today"
     assert ai.run(_Feed(), orders, tmp_path, now=NEXT_DAY)["status"] == "ordered:3"
 
