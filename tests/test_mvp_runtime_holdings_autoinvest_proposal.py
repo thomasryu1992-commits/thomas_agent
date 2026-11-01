@@ -218,6 +218,9 @@ def test_the_board_command_approves_only_on_y_at_a_terminal(monkeypatch, tmp_pat
     monkeypatch.setattr(holdings_board, "state_dir", lambda: store.state_dir(tmp_path))
     monkeypatch.setattr(holdings_board, "assert_not_foreign_root_run", lambda: None)
     monkeypatch.setattr("runtime.mvp_runtime.holdings.store.effective_candidates", lambda root=None: CANDIDATES)
+    # The board reads the wall clock; the draft was made at OPEN. Unpinned, the 4-day MAX_AGE refused it from
+    # 2026-11-01T01:00Z on, and every PR's pytest went red with "the draft is older than 4 days".
+    monkeypatch.setattr(holdings_board.timeutil, "utc_now_iso", lambda: LATER)
     monkeypatch.setattr(holdings_board, "_interactive", lambda: False)
     assert holdings_board.main(["--autoinvest-approve"]) == holdings_board.EXIT_BLOCKED
     monkeypatch.setattr(holdings_board, "_interactive", lambda: True)
