@@ -124,6 +124,9 @@ _RECORD_KINDS = (
     # A recorded keyword-pipeline run re-run offline with the generated port and compared with what it wrote
     # (BLOG_DEPARTMENT v0.2 P4a, 2026-10-27); appended by ``blog_kw_replay``.
     "blog_kw_replay",
+    # A keyword-priority guideline from the recorded statistics, applied in shadow to the production run's candidates
+    # (BLOG_DEPARTMENT v0.2 P5, 2026-11-02); appended by ``blog_feedback``.
+    "blog_feedback",
     "programization_observation", "programization_pattern",
 )
 

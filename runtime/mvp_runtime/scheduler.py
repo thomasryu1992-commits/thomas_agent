@@ -230,12 +230,17 @@ KIND_BLOG_ANALYZE = "blog_analyze"
 # re-run each recorded run of the vault's keyword pipeline offline with the generated port and record whether it wrote
 # the same thing. Maintenance, not risk: it reads a read-only bundle folder and opens no URL.
 KIND_BLOG_KW_REPLAY = "blog_kw_replay"
+# The keyword-priority feedback shadow (BLOG_DEPARTMENT v0.2 P5): once a day, judge each Naver cluster's posts on the
+# latest recorded statistics week under #1183's evidence floor and record how the resulting guideline would re-rank
+# the production keyword run's candidates. Maintenance, not risk: it reads the ledger and the vault read-only, and
+# nothing reads its record yet.
+KIND_BLOG_FEEDBACK = "blog_feedback"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
                    KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE,
                    KIND_BREAKER_WATCH, KIND_ROUTE_WATCH, KIND_CANDLE_ARCHIVE,
                    KIND_NULL_CONTROL,
                    KIND_FORWARD_COHORT, KIND_HOLDINGS, KIND_MANAGEMENT_REPORT, KIND_BLOG_VERIFY,
-                   KIND_BLOG_ANALYZE, KIND_BLOG_KW_REPLAY})
+                   KIND_BLOG_ANALYZE, KIND_BLOG_KW_REPLAY, KIND_BLOG_FEEDBACK})
 
 # The kinds whose lateness costs money rather than freshness.
 #
@@ -308,7 +313,7 @@ MAINTENANCE_KINDS: frozenset[str] = frozenset({
     KIND_DATA_REVIEW, KIND_ROTATE, KIND_CANDLE_ARCHIVE, KIND_NULL_CONTROL,
     KIND_FORWARD_COHORT,
     KIND_HOLDINGS, KIND_MANAGEMENT_REPORT, KIND_BLOG_VERIFY, KIND_BLOG_ANALYZE,
-    KIND_BLOG_KW_REPLAY,
+    KIND_BLOG_KW_REPLAY, KIND_BLOG_FEEDBACK,
 })
 
 # How much of one pass the non-risk kinds may spend before it stops STARTING more of them.
@@ -1526,6 +1531,10 @@ def _execute(
         from .blog import kw_replay as blog_kw_replay
 
         return blog_kw_replay.fire(ledger, now=now)
+    if schedule.kind == KIND_BLOG_FEEDBACK:
+        from .blog import feedback as blog_feedback
+
+        return blog_feedback.fire(ledger, now=now)
     if schedule.kind == KIND_MANAGEMENT_REPORT:
         # WMR-1: read the four sections (each fails on its own) and send them on the control bot.
         # Unlike KIND_REPORT, a send that fails RAISES: a weekly report that vanished quietly is
