@@ -1,0 +1,385 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "blog_feedback.v0.1.schema.json",
+  "title": "Blog Feedback Shadow v0.1",
+  "description": "A keyword-priority guideline (BLOG_DEPARTMENT v0.2 P5) computed from the latest recorded statistics week and applied in shadow to the production keyword run's candidates: each Naver cluster judged against all posts under #1183's evidence floor (D+14 passed, at least 5 posts, at most 30% unknown, same platform, no unverified rank), the bounded factor it would set, and every candidate's score and lane rank before and after. Nothing reads it yet. Posts are numbers and clusters ids; keywords are public search phrases; no URL or title is recorded.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "feedback_id",
+    "inputs_id",
+    "recorded_at",
+    "mode",
+    "week",
+    "history_date",
+    "baseline",
+    "clusters",
+    "candidates",
+    "top_before",
+    "top_after",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "blog_feedback.v0.1"
+    },
+    "feedback_id": {
+      "type": "string",
+      "pattern": "^blogfeedback_[0-9a-f]{20}$"
+    },
+    "inputs_id": {
+      "type": "string",
+      "pattern": "^blogfeedbackin_[0-9a-f]{20}$"
+    },
+    "recorded_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "mode": {
+      "const": "shadow"
+    },
+    "week": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "monday",
+        "sunday",
+        "analysis_id"
+      ],
+      "properties": {
+        "monday": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "sunday": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "analysis_id": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^bloganalysis_[0-9a-f]{20}$"
+            }
+          ]
+        }
+      }
+    },
+    "history_date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "posts",
+        "median",
+        "measured",
+        "below_table",
+        "unknown"
+      ],
+      "properties": {
+        "posts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "median": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "const": "below_table"
+            }
+          ]
+        },
+        "measured": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "below_table": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unknown": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "clusters": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "cluster",
+          "posts",
+          "measured",
+          "below_table",
+          "unknown",
+          "missing_rate",
+          "median",
+          "ratio",
+          "verdict",
+          "reason",
+          "factor"
+        ],
+        "properties": {
+          "cluster": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,59}$"
+          },
+          "posts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "measured": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "below_table": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unknown": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "missing_rate": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "median": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "const": "below_table"
+              }
+            ]
+          },
+          "ratio": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "verdict": {
+            "enum": [
+              "CANDIDATE",
+              "NO_DIFFERENCE",
+              "INSUFFICIENT_EVIDENCE"
+            ]
+          },
+          "reason": {
+            "enum": [
+              null,
+              "posts_below_floor",
+              "missing_above_ceiling",
+              "baseline_below_table"
+            ]
+          },
+          "factor": {
+            "enum": [
+              0.8,
+              1.0,
+              1.2
+            ]
+          }
+        }
+      }
+    },
+    "candidates": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kw",
+          "lane",
+          "cluster",
+          "effect",
+          "factor",
+          "score_before",
+          "score_after",
+          "rank_before",
+          "rank_after"
+        ],
+        "properties": {
+          "kw": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "lane": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "cluster": {
+            "type": "string",
+            "pattern": "^(unresolved|[a-z0-9][a-z0-9-]{0,59})$"
+          },
+          "effect": {
+            "enum": [
+              "adjusted",
+              "unchanged",
+              "no_guideline",
+              "unresolved"
+            ]
+          },
+          "factor": {
+            "enum": [
+              0.8,
+              1.0,
+              1.2
+            ]
+          },
+          "score_before": {
+            "type": "number",
+            "minimum": 0
+          },
+          "score_after": {
+            "type": "number",
+            "minimum": 0
+          },
+          "rank_before": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "rank_after": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    "top_before": {
+      "type": "object",
+      "maxProperties": 20,
+      "propertyNames": {
+        "maxLength": 40
+      },
+      "additionalProperties": {
+        "type": "array",
+        "maxItems": 10,
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        }
+      }
+    },
+    "top_after": {
+      "type": "object",
+      "maxProperties": 20,
+      "propertyNames": {
+        "maxLength": 40
+      },
+      "additionalProperties": {
+        "type": "array",
+        "maxItems": 10,
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidates",
+        "adjusted",
+        "unchanged",
+        "no_guideline",
+        "unresolved",
+        "rank_moved",
+        "top_entered",
+        "top_left",
+        "clusters_judged",
+        "clusters_candidate",
+        "clusters_insufficient"
+      ],
+      "properties": {
+        "candidates": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "adjusted": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unchanged": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "no_guideline": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unresolved": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rank_moved": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "top_entered": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          }
+        },
+        "top_left": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          }
+        },
+        "clusters_judged": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "clusters_candidate": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,59}$"
+          }
+        },
+        "clusters_insufficient": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

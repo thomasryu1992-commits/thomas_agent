@@ -71,8 +71,9 @@ def vault_root(root: str | Path | None = None) -> Path:
     return path
 
 
-def front_matter(text: str) -> dict[str, str] | None:
-    """The ``key: value`` lines this module reads, or None when the file has no front matter block."""
+def front_matter(text: str, wanted: frozenset[str] = _WANTED) -> dict[str, str] | None:
+    """The ``key: value`` lines named in ``wanted`` (by default the ones this module reads), or None when the file
+    has no front matter block."""
     if not text.startswith("---"):
         return None
     parts = text.split("---", 2)
@@ -81,7 +82,7 @@ def front_matter(text: str) -> dict[str, str] | None:
     fields: dict[str, str] = {}
     for line in parts[1].splitlines():
         match = _FIELD.match(line)
-        if match and match.group(1) in _WANTED:
+        if match and match.group(1) in wanted:
             fields[match.group(1)] = match.group(2).strip().strip('"')
     return fields
 
