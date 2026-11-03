@@ -1,7 +1,7 @@
 # The quiet-window rule v3: a small inflow where nothing traded is deposit interest
 
 - **Why:** on 2026-11-03, `--flows` showed two open Toss exceptions. Both were small KRW inflows that v2 left open
-  as `too_small`: windows `2026-10-29T17:34:01Z..18:34:11Z` and `2026-11-03T03:33:53Z..04:34:16Z`.
+  as `too_small`: windows `2026-10-29T17:34:01Z..18:34:11Z` and `2026-11-03T04:33:53Z..05:34:16Z`.
   - Thomas said they were interest ("이자 같은거").
   - Toss has no cash-ledger API, so a residual's meaning can only come from its window's shape. Without a rule,
     every interest credit needed his hand.
