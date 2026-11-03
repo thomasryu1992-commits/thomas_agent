@@ -130,6 +130,9 @@ _RECORD_KINDS = (
     # One keyword-pipeline run against the live web, compared with its root bundle
     # (BLOG_DEPARTMENT v0.2 P4b, 2026-11-03); appended by ``blog_kw_direct``.
     "blog_kw_direct",
+    # Each reported Naver draft's slot recomputed with the vault's rule, compared with the reported one
+    # (BLOG_DEPARTMENT v0.2 P7, 2026-11-03); appended by ``blog_slot``.
+    "blog_slot",
     "programization_observation", "programization_pattern",
 )
 
