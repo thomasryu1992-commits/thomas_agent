@@ -20,7 +20,10 @@ What is a function of that state is whether a reported slot obeys the queue's ru
 those rules (the slots, the per-day caps, ``key``, ``jitter``, ``kind``, ``is_new``) in ``blog/tistory_queue.py``, and
 each reported Tistory draft gets five checks:
 - ``minute``: the reported minute is ``jitter`` of its slot and the file name (the queue's per-file offset).
-- ``unique``: no other Tistory post's current date takes the same slot, or the whole day for a date-only one.
+- ``unique``: no other Tistory post takes the same slot, or the whole day for a date-only date. The other posts
+  are what the queue counts as occupied, published and scheduled posts, plus the drafts of the same report (which
+  the queue placed while planning). Any other draft with an old ``scheduled`` is left out: a draft the Mac's variety
+  pass held keeps its slot in the file, and the queue hands that slot to the next draft.
 - ``only_cap`` / ``new_cap``: that day holds at most ``ONLY_PER_DAY`` Tistory-only posts and ``NEW_PER_DAY`` new
   ones, counting this draft at its reported slot (null when the cap does not apply to the draft).
 - ``after_run``: the slot lies at least ``MARGIN_MIN`` minutes after the run started (the queue's cutoff).
@@ -143,7 +146,7 @@ def compare_draft(vault_root: Path, draft: Mapping[str, Any]) -> dict[str, Any]:
 def tistory_schedule(vault_root: Path) -> dict[Path, tuple[dict[str, Any], str]]:
     """Every Tistory post the queue sees, with the date it holds now: ``published`` for a published post, otherwise
     ``scheduled`` for a scheduled post or a draft that carries one. Posts with no date (holds, undated drafts) are
-    left out, as the queue leaves them out of its occupancy."""
+    left out. Which drafts count as occupying is decided per report (``check_tistory``)."""
     from . import tistory_queue as tq
 
     base = vault_root / "content" / "tistory"
@@ -158,8 +161,10 @@ def tistory_schedule(vault_root: Path) -> dict[Path, tuple[dict[str, Any], str]]
 
 
 def check_tistory(vault_root: Path, draft: Mapping[str, Any], started_at: Any,
-                  schedule: Mapping[Path, tuple[dict[str, Any], str]]) -> dict[str, Any]:
-    """One reported Tistory draft: its state and, when checked, the queue rules its reported slot passes."""
+                  schedule: Mapping[Path, tuple[dict[str, Any], str]],
+                  siblings: frozenset[Path] = frozenset()) -> dict[str, Any]:
+    """One reported Tistory draft: its state and, when checked, the queue rules its reported slot passes.
+    ``siblings`` are the resolved paths of the report's Tistory drafts, the only drafts counted as occupying."""
     from .. import timeutil
     from . import tistory_queue as tq
 
@@ -188,7 +193,8 @@ def check_tistory(vault_root: Path, draft: Mapping[str, Any], started_at: Any,
         row["file_now"] = now if isinstance(now, str) and _SLOT.match(now) else None
         row["moved"] = row["file_now"] != reported
         folded, day = tq.key(reported), reported[:10]
-        others = [(r, when) for p, (r, when) in schedule.items() if p != path]
+        others = [(r, when) for p, (r, when) in schedule.items()
+                  if p != path and (r.get("status") != "draft" or p in siblings)]
         on_day = [r for r, when in others if when[:10] == day] + [me]
         try:
             started = timeutil.parse_iso(started_at) if isinstance(started_at, str) else None
@@ -273,7 +279,8 @@ def fire(ledger: Any, *, now: str, vault_root: Path | None = None) -> str:
         reported = [d for d in drafts if d.get("platform") == "tistory"]
         if reported and schedule is None:
             schedule = tistory_schedule(root)
-        tistory = [check_tistory(root, d, report.get("started_at"), schedule or {}) for d in reported]
+        siblings = frozenset(p for p in (resolve(root, d.get("path"), "tistory") for d in reported) if p is not None)
+        tistory = [check_tistory(root, d, report.get("started_at"), schedule or {}, siblings) for d in reported]
         record = build_record(run_date, rows, tistory, now=now)
         ledger.append_records(record["slot_id"], {RECORD_KIND: record})
         recorded.append(run_date)

@@ -189,9 +189,10 @@ def _at(day, slot, name):
     return f"{day} {tq.jitter(slot, name)}"
 
 
-def _check(vault, rel, reported, started=STARTED):
+def _check(vault, rel, reported, started=STARTED, siblings=()):
     return bs.check_tistory(vault, {"path": rel, "platform": "tistory", "scheduled": reported}, started,
-                            bs.tistory_schedule(vault))
+                            bs.tistory_schedule(vault),
+                            frozenset((vault / s).resolve() for s in siblings))
 
 
 def test_the_generated_queue_keeps_only_its_rules():
@@ -225,6 +226,16 @@ def test_an_unjittered_minute_and_a_taken_slot_are_caught(vault):
     assert found["agree"] is False and found["checks"]["minute"] is False and found["checks"]["unique"] is False
 
 
+def test_a_held_draft_s_old_slot_is_free_and_a_sibling_s_is_not(vault):
+    """The queue counts published and scheduled posts and what it places while planning, never a draft left with an
+    old slot (the Mac's variety pass held it). A draft of the same report was placed in that run, so it counts."""
+    _post(vault, "150-held.md", "draft", scheduled=_at("2026-11-10", "13:30", "150-held.md"))
+    reported = _at("2026-11-10", "13:30", "170-a.md")
+    rel = _post(vault, "170-a.md", "draft", scheduled=reported)
+    assert _check(vault, rel, reported)["checks"]["unique"] is True
+    assert _check(vault, rel, reported, siblings=["content/tistory/150-held.md"])["checks"]["unique"] is False
+
+
 def test_a_date_only_post_takes_the_whole_day(vault):
     _post(vault, "160-before.md", "published", published="2026-11-10")
     reported = _at("2026-11-10", "19:30", "170-a.md")
@@ -240,6 +251,9 @@ def test_the_day_caps_count_this_draft_and_apply_only_to_their_kind(vault, monke
     rel = _post(vault, "170-a.md", "draft", scheduled=reported)
     checks = _check(vault, rel, reported)["checks"]
     assert checks["unique"] is True and checks["only_cap"] is False and checks["new_cap"] is False
+    _post(vault, "160-before.md", "draft", scheduled=_at("2026-11-10", "13:30", "160-before.md"))   # held: not counted
+    checks = _check(vault, rel, reported)["checks"]
+    assert checks["only_cap"] is True and checks["new_cap"] is True
     rel = _post(vault, "170-a.md", "draft", scheduled=reported, origin=None, created="2026-09-01")   # an old conversion
     checks = _check(vault, rel, reported)["checks"]
     assert checks["only_cap"] is None and checks["new_cap"] is None

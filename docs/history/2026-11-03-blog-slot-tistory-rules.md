@@ -21,8 +21,12 @@ re-planning, and add no recording step.
     was the plan time plus `MARGIN_MIN`, and the plan time is after the start. So this is a necessary condition,
     not the queue's exact cutoff. Null when the report has no start.
   - Not checked: the same-day 1-C conflict, `variety` and `browser_check`.
-- **"Current date" of the other posts:** `published` for a published post, otherwise `scheduled` for a scheduled
-  post or a draft that carries one. Holds and undated drafts are left out, as the queue leaves them out.
+- **Which other posts count**, as the queue counts them:
+  - published posts (their `published`) and scheduled posts (their `scheduled`);
+  - the drafts of the same report, which the queue placed while planning that run.
+  Any other draft with a `scheduled` in its file is left out. A draft the Mac's variety pass held keeps its old slot
+  in the file, and the queue's occupancy (published and scheduled only) hands that slot to the next draft. Counting
+  it would report a difference the record could not explain.
 - **Paths.** A Tistory path from a report must sit in `content/tistory/` or one folder down, where the queue globs.
   Anything else is `outside`, unopened. The record names a post by its file number.
 - **Schema `blog_slot.v0.2`.** It adds `tistory` (rows) and six `tistory_*` summary counts, and drops
