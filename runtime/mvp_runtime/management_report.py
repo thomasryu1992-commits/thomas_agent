@@ -218,6 +218,38 @@ def _analysis_line(analysis: Mapping[str, Any] | None) -> str:
             + f" · {skill} · 연속 일치 {analysis['weeks_agreeing_in_a_row']}주")
 
 
+def _stage_lines(stages: Mapping[str, Any]) -> list[str]:
+    """The blog department's shadows (P4a–P7), each against its switch condition (BLOG_DEPARTMENT §4). A stage with
+    no record yet says so; it is never shown as zero."""
+    lines: list[str] = []
+    for key, label in (("kw_replay", "키워드 재생 P4a"), ("kw_direct", "키워드 직접 조회 P4b")):
+        s = stages.get(key)
+        lines.append(f"  [{label}] 기록 없음" if s is None else
+                     f"  [{label}] 이번 주 묶음 {s['bundles']} · 일치 {s['agreed']} · 다름 {s['differed']}"
+                     f" · 생성기 낡음 {s['stale']} · 그 밖 {s['other']} · 연속 일치 {s['days_agreeing_in_a_row']}일(조건 14일)")
+    s = stages.get("feedback")
+    lines.append("  [피드백 P5] 기록 없음" if s is None else
+                 f"  [피드백 P5] 기록 {s['days']}일({s['first'][5:]}부터, 조건 14일) · 이번 주 {s['week_days']}일"
+                 f" · 순위가 바뀐 날 {s['week_days_moved']} · 바뀐 순위 {s['week_rank_moved']} · 조정된 후보 {s['week_adjusted']}")
+    s = stages.get("instruction")
+    if s is None:
+        lines.append("  [지시 P6] 기록 없음")
+    else:
+        lines.append(f"  [지시 P6] 이번 주 지시 {s['week_built']}일(이전 이력 사용 {s['week_history_not_today']})"
+                     f" · 대조 {s['week_checked']}일 · 지시 없음 {s['week_no_instruction']} · 늦음 {s['week_late']}")
+        lines.append(f"    원고 {s['drafts']}편 중 지시 안 {s['in_instruction']}(후속 {s['next_topics']} · 큐 {s['queue']}"
+                     f" · 티스토리 목록 {s['tistory_list']}) · 이력에서 빠짐 {s['history_filtered']}"
+                     f" · 밖 {s['outside']}(네이버 {s['outside_naver']} · 티스토리 {s['outside_tistory']})"
+                     f" · 키워드 없음 {s['no_keyword']}")
+    s = stages.get("slot")
+    lines.append("  [슬롯 P7] 기록 없음" if s is None else
+                 f"  [슬롯 P7] 이번 주 {s['week_days']}일 · 네이버 비교 {s['compared']} · 일치 {s['agreed']}"
+                 f" · 다름 {s['differed']} · 옮김 {s['moved']} · 비교 못 함 {s['not_compared']}"
+                 f"\n    티스토리 검사 {s['tistory_checked']} · 통과 {s['tistory_agreed']} · 위반 {s['tistory_differed']}"
+                 f" · 옮김 {s['tistory_moved']} · 검사 못 함 {s['tistory_not_checked']}")
+    return lines
+
+
 def render(report: Mapping[str, Any]) -> str:
     lines = [f"주간 경영 보고 ({_kst(report['since'])} → {_kst(report['until'])} KST)"]
     control = report.get("control")
@@ -324,4 +356,6 @@ def render(report: Mapping[str, Any]) -> str:
                              + f" · 비교 못 함 {check['not_compared']}")
             if "analysis" in blog["data"]:
                 lines.append(_analysis_line(blog["data"]["analysis"]))
+            if blog["data"].get("stages") is not None:
+                lines += _stage_lines(blog["data"]["stages"])
     return "\n".join(lines)

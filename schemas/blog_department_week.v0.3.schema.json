@@ -1,0 +1,695 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "blog_department_week.v0.3.schema.json",
+  "title": "Blog Department Week v0.3",
+  "description": "One week of the blog department, observed from the vault: post front matter (BLOG_DEPARTMENT stages 1-2) and, since v0.2, the drafting cron's per-run reports in ops/blog-runs (v0.2 P1). Counts only: no titles, keywords, URLs or text. runs is null when the report folder is not mounted, never zero. Since v0.3, stages: each BLOG_DEPARTMENT v0.2 stage's progress towards its switch condition (P2 verify, P3 analysis, P4a kw_replay, P4b kw_direct, P5 feedback, P6 instruction, P7 slot), counts and dates only; a stage with no record is null, never zero.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "observation_id",
+    "observed_at",
+    "window",
+    "platforms",
+    "runs",
+    "stages"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "blog_department_week.v0.3"
+    },
+    "observation_id": {
+      "type": "string",
+      "pattern": "^blogweek_[0-9a-f]{20}$"
+    },
+    "observed_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "since",
+        "until",
+        "ahead"
+      ],
+      "properties": {
+        "since": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "until": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "ahead": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        }
+      }
+    },
+    "platforms": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "naver",
+        "tistory"
+      ],
+      "properties": {
+        "naver": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "files",
+            "unparsed",
+            "status",
+            "new_drafts",
+            "published",
+            "upcoming"
+          ],
+          "properties": {
+            "files": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unparsed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "status": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "draft",
+                "hold",
+                "scheduled",
+                "published",
+                "other"
+              ],
+              "properties": {
+                "draft": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "hold": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "scheduled": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "published": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "other": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "new_drafts": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "published": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "upcoming": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "tistory": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "files",
+            "unparsed",
+            "status",
+            "new_drafts",
+            "published",
+            "upcoming"
+          ],
+          "properties": {
+            "files": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unparsed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "status": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "draft",
+                "hold",
+                "scheduled",
+                "published",
+                "other"
+              ],
+              "properties": {
+                "draft": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "hold": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "scheduled": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "published": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "other": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "new_drafts": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "published": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "upcoming": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "runs": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reports",
+            "unreadable",
+            "days_without_report",
+            "draft_step_failed",
+            "instructed",
+            "drafts",
+            "preflight_fail",
+            "variety_fail",
+            "checks_unrun",
+            "distinct_keywords"
+          ],
+          "properties": {
+            "reports": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unreadable": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "days_without_report": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "draft_step_failed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "instructed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "drafts": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "preflight_fail": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "variety_fail": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "checks_unrun": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "distinct_keywords": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      ]
+    },
+    "stages": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verify",
+        "analysis",
+        "kw_replay",
+        "kw_direct",
+        "feedback",
+        "instruction",
+        "slot"
+      ],
+      "properties": {
+        "verify": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "runs",
+                "drafts",
+                "compared",
+                "agreed",
+                "differed",
+                "not_compared"
+              ],
+              "properties": {
+                "runs": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "drafts": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "compared": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "agreed": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "differed": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "not_compared": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          ]
+        },
+        "analysis": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "sunday",
+                "compared",
+                "agreed",
+                "weeks_agreeing_in_a_row"
+              ],
+              "properties": {
+                "sunday": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                },
+                "compared": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "agreed": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "weeks_agreeing_in_a_row": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          ]
+        },
+        "kw_replay": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "bundles",
+                "agreed",
+                "differed",
+                "stale",
+                "other",
+                "days",
+                "first",
+                "days_agreeing_in_a_row"
+              ],
+              "properties": {
+                "bundles": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "agreed": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "differed": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "stale": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "other": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "days": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "first": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                },
+                "days_agreeing_in_a_row": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          ]
+        },
+        "kw_direct": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "bundles",
+                "agreed",
+                "differed",
+                "stale",
+                "other",
+                "days",
+                "first",
+                "days_agreeing_in_a_row"
+              ],
+              "properties": {
+                "bundles": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "agreed": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "differed": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "stale": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "other": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "days": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "first": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                },
+                "days_agreeing_in_a_row": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          ]
+        },
+        "feedback": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "days",
+                "first",
+                "week_days",
+                "week_days_moved",
+                "week_rank_moved",
+                "week_adjusted"
+              ],
+              "properties": {
+                "days": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "first": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                },
+                "week_days": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "week_days_moved": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "week_rank_moved": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "week_adjusted": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          ]
+        },
+        "instruction": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "days",
+                "first",
+                "week_built",
+                "week_history_not_today",
+                "week_checked",
+                "week_no_instruction",
+                "week_late",
+                "drafts",
+                "in_instruction",
+                "next_topics",
+                "queue",
+                "tistory_list",
+                "history_filtered",
+                "outside",
+                "no_keyword",
+                "outside_naver",
+                "outside_tistory"
+              ],
+              "properties": {
+                "days": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "first": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                },
+                "week_built": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "week_history_not_today": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "week_checked": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "week_no_instruction": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "week_late": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "drafts": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "in_instruction": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "next_topics": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "queue": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "tistory_list": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "history_filtered": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "outside": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "no_keyword": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "outside_naver": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "outside_tistory": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          ]
+        },
+        "slot": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "days",
+                "first",
+                "week_days",
+                "compared",
+                "agreed",
+                "differed",
+                "moved",
+                "not_compared",
+                "tistory_checked",
+                "tistory_agreed",
+                "tistory_differed",
+                "tistory_moved",
+                "tistory_not_checked"
+              ],
+              "properties": {
+                "days": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "first": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                },
+                "week_days": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "compared": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "agreed": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "differed": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "moved": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "not_compared": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "tistory_checked": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "tistory_agreed": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "tistory_differed": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "tistory_moved": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "tistory_not_checked": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

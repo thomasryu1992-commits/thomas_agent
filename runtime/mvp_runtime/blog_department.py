@@ -17,6 +17,10 @@ reads what it did, once a week, from the one place every step leaves a mark — 
   ``blog-preflight`` / ``blog_variety`` failed or could not run, and how many runs consumed a system instruction
   (none until P6). A report folder that is not mounted is ``None`` — absent, never zero. A report that does not
   parse as ``blog_run_report.v1`` is counted as unreadable and contributes nothing else.
+* **stages** (v0.3) — each stage's progress towards its switch condition (§4), from the records its own fire
+  writes: P2's comparison and P3's agreeing weeks as the message already showed them, and the shadows P4a–P7 (the
+  bundle days agreeing in a row, the feedback days, where the reported drafts sat in the instruction, the slot
+  checks). The switch is judged from these records, not from anyone's notes.
 
 Dates are KST calendar dates, as the vault writes them. A file without readable front matter is counted as
 unparsed, never guessed at; a platform folder with no posts at all refuses, like an absent one. Nothing here writes the vault, calls a model, or reaches the network; the vault
@@ -43,8 +47,8 @@ PLATFORMS = ("naver", "tistory")
 STATUSES = ("draft", "hold", "scheduled", "published")
 WINDOW_DAYS = 7
 RECORD_KIND = "blog_department_week"
-RECORD_SCHEMA = "schemas/blog_department_week.v0.2.schema.json"
-RECORD_SCHEMA_VERSION = "blog_department_week.v0.2"
+RECORD_SCHEMA = "schemas/blog_department_week.v0.3.schema.json"
+RECORD_SCHEMA_VERSION = "blog_department_week.v0.3"
 RUNS_DIR = ("ops", "blog-runs")
 RUN_REPORT_SCHEMA = "blog_run_report.v1"
 # Written by the lane's daily ``blog_verify`` fire (``blog/verify.py``); named here so the weekly report can read it
@@ -52,6 +56,17 @@ RUN_REPORT_SCHEMA = "blog_run_report.v1"
 VERIFY_RECORD_KIND = "blog_verification"
 # Written by the lane's daily ``blog_analyze`` fire (``blog/analysis.py``), one per week, again when its sources change.
 ANALYSIS_RECORD_KIND = "blog_analysis"
+# Written by the lane's shadows (``blog/kw_replay.py``, ``kw_direct.py``, ``feedback.py``, ``instruction.py``,
+# ``slot.py``); read by ``stages`` for each one's progress towards its switch condition (§4).
+KW_REPLAY_RECORD_KIND = "blog_kw_replay"
+KW_DIRECT_RECORD_KIND = "blog_kw_direct"
+FEEDBACK_RECORD_KIND = "blog_feedback"
+INSTRUCTION_RECORD_KIND = "blog_instruction"
+INSTRUCTION_CHECK_RECORD_KIND = "blog_instruction_check"
+SLOT_RECORD_KIND = "blog_slot"
+_PICK_SOURCES = ("in_instruction", "next_topics", "queue", "tistory_list", "history_filtered", "outside", "no_keyword")
+_SLOT_COUNTS = ("compared", "agreed", "differed", "moved", "not_compared", "tistory_checked", "tistory_agreed",
+                "tistory_differed", "tistory_moved", "tistory_not_checked")
 _KST = timedelta(hours=9)
 _FIELD = re.compile(r"^([a-z_]+):[ \t]*(.*)$")
 _DATE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
@@ -240,11 +255,139 @@ def analysis_summary(ledger: Any, *, now: str) -> dict[str, Any] | None:
     }
 
 
+def _latest(ledger: Any, kind: str, key: str) -> dict[str, Mapping[str, Any]]:
+    """Each ``kind`` record under its ``key`` value; appended in order, so the last one for a key is its latest
+    (a re-run after a regeneration supersedes the stale one)."""
+    out: dict[str, Mapping[str, Any]] = {}
+    for row in ledger.iter_records(kinds=[kind]):
+        record = row.get("record") if row.get("kind") == kind else None
+        if isinstance(record, Mapping) and record.get(key):
+            out[str(record[key])] = record
+    return out
+
+
+def _in_a_row(days: Mapping[str, bool]) -> int:
+    """How many recorded days, newest first, are good before the first that is not. A day with no record neither
+    counts nor breaks the run: the conditions count days that were checked, never days that were not."""
+    count = 0
+    for day in sorted(days, reverse=True):
+        if not days[day]:
+            break
+        count += 1
+    return count
+
+
+def _keyword_stage(ledger: Any, kind: str, since: str, until: str) -> dict[str, Any] | None:
+    """P4a (``blog_kw_replay``) or P4b (``blog_kw_direct``): each bundle's latest record. A bundle day is good when
+    every bundle of that day was compared and agreed; any other state — a stale generator, a replay miss, a block, an
+    error — breaks the run, as §4 counts only after a regeneration. The day is the bundle name's date, as root's cron
+    wrote it."""
+    bundles = _latest(ledger, kind, "bundle")
+    if not bundles:
+        return None
+    days: dict[str, bool] = {}
+    week = {"bundles": 0, "agreed": 0, "differed": 0, "stale": 0, "other": 0}
+    for name, record in bundles.items():
+        day = f"{name[:4]}-{name[4:6]}-{name[6:8]}"
+        compared = record.get("state") == "compared"
+        days[day] = days.get(day, True) and compared and record.get("agree") is True
+        if since <= day < until:
+            week["bundles"] += 1
+            if compared:
+                week["agreed" if record.get("agree") is True else "differed"] += 1
+            else:
+                week["stale" if record.get("state") == "generator_stale" else "other"] += 1
+    return {**week, "days": len(days), "first": min(days), "days_agreeing_in_a_row": _in_a_row(days)}
+
+
+def _feedback_stage(ledger: Any, since: str, until: str) -> dict[str, Any] | None:
+    """P5 (``blog_feedback``): the history days with a shadow record, and what the guideline moved this week."""
+    days = _latest(ledger, FEEDBACK_RECORD_KIND, "history_date")
+    if not days:
+        return None
+    week = [record["summary"] for day, record in days.items() if since <= day < until]
+    return {"days": len(days), "first": min(days), "week_days": len(week),
+            "week_days_moved": sum(1 for s in week if s["rank_moved"]),
+            "week_rank_moved": sum(int(s["rank_moved"]) for s in week),
+            "week_adjusted": sum(int(s["adjusted"]) for s in week)}
+
+
+def _instruction_stage(ledger: Any, since: str, until: str) -> dict[str, Any] | None:
+    """P6 (``blog_instruction`` and ``blog_instruction_check``): the mornings an instruction was built, and where
+    the week's reported drafts sat in it. ``outside`` is split by platform — it is what the switch must absorb or
+    close first (the proposal's P6 row). Keywords are counted, never carried."""
+    built = _latest(ledger, INSTRUCTION_RECORD_KIND, "run_date")
+    checks = _latest(ledger, INSTRUCTION_CHECK_RECORD_KIND, "run_date")
+    if not built and not checks:
+        return None
+    week_built = [r for day, r in built.items() if since <= day < until]
+    week_checks = [r for day, r in checks.items() if since <= day < until]
+    checked = [r for r in week_checks if r.get("state") == "checked"]
+    out: dict[str, Any] = {
+        "days": len(built), "first": min(built) if built else None, "week_built": len(week_built),
+        "week_history_not_today": sum(1 for r in week_built if r.get("history_today") is False),
+        "week_checked": len(checked), "week_no_instruction": len(week_checks) - len(checked),
+        "week_late": sum(1 for r in checked if r.get("timing") == "late"),
+        "drafts": sum(int(r["summary"]["drafts"]) for r in checked),
+        **{source: sum(int(r["summary"][source]) for r in checked) for source in _PICK_SOURCES},
+    }
+    for platform in ("naver", "tistory"):
+        out[f"outside_{platform}"] = sum(1 for r in checked for p in r.get("picks") or []
+                                         if p.get("source") == "outside" and p.get("platform") == platform)
+    return out
+
+
+def _slot_stage(ledger: Any, since: str, until: str) -> dict[str, Any] | None:
+    """P7 (``blog_slot``): the week's Naver comparisons and Tistory rule checks, summed. A v0.1 record (written
+    before the Tistory rules) counted Tistory drafts without checking them: they count as not checked."""
+    days = _latest(ledger, SLOT_RECORD_KIND, "run_date")
+    if not days:
+        return None
+    out: dict[str, Any] = {"days": len(days), "first": min(days), "week_days": 0, **{k: 0 for k in _SLOT_COUNTS}}
+    for day, record in days.items():
+        if not since <= day < until:
+            continue
+        summary = record["summary"]
+        out["week_days"] += 1
+        for key in _SLOT_COUNTS:
+            fallback = summary.get("tistory_not_compared", 0) if key == "tistory_not_checked" else 0
+            out[key] += int(summary.get(key, fallback))
+    return out
+
+
+def stages(ledger: Any, *, now: str) -> dict[str, Any]:
+    """Each shadow stage's progress towards its switch condition (§4), from its own records: the week ending at
+    ``now`` summed, plus the days on record and, for P4a/P4b, the bundle days agreeing in a row. A stage with no
+    record yet is None — never zero."""
+    since, until = _kst_date(now, -WINDOW_DAYS), _kst_date(now)
+    return {"kw_replay": _keyword_stage(ledger, KW_REPLAY_RECORD_KIND, since, until),
+            "kw_direct": _keyword_stage(ledger, KW_DIRECT_RECORD_KIND, since, until),
+            "feedback": _feedback_stage(ledger, since, until),
+            "instruction": _instruction_stage(ledger, since, until),
+            "slot": _slot_stage(ledger, since, until)}
+
+
+def _record_stages(observation: Mapping[str, Any]) -> dict[str, Any]:
+    """P2 and P3 as the weekly message reads them (counts only: the differing rule codes and the statistics stay in
+    the message), beside the shadows' progress."""
+    verification, analysis = observation.get("verification"), observation.get("analysis")
+    return {
+        "verify": None if verification is None else {
+            k: verification[k] for k in ("runs", "drafts", "compared", "agreed", "differed", "not_compared")},
+        "analysis": None if analysis is None else {
+            "sunday": analysis["week"]["sunday"], "compared": analysis["compared"], "agreed": analysis["agreed"],
+            "weeks_agreeing_in_a_row": analysis["weeks_agreeing_in_a_row"]},
+        **{k: None for k in ("kw_replay", "kw_direct", "feedback", "instruction", "slot")},
+        **(observation.get("stages") or {}),
+    }
+
+
 def build_record(observation: Mapping[str, Any], *, now: str) -> dict[str, Any]:
     """The week's observation as a ledger record, validated against its closed schema before it leaves.
     The schema is read from the code's own tree, never from a state root a caller passes."""
     body = {"window": {"since": observation["since"], "until": observation["until"], "ahead": observation["ahead"]},
-            "platforms": observation["platforms"], "runs": observation.get("runs")}
+            "platforms": observation["platforms"], "runs": observation.get("runs"),
+            "stages": _record_stages(observation)}
     record = {
         "schema_version": RECORD_SCHEMA_VERSION,
         "observation_id": integrity.short_id("blogweek", {"observed_at": now, **body}),

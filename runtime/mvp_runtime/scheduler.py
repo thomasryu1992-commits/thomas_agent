@@ -1586,7 +1586,8 @@ def _execute(
             crypto_status=lambda: build_status(repo_root, now=now),
             blog=lambda: {**blog_department.observe(now=now),
                           "verification": blog_department.verification_summary(ledger, now=now),
-                          "analysis": blog_department.analysis_summary(ledger, now=now)},
+                          "analysis": blog_department.analysis_summary(ledger, now=now),
+                          "stages": blog_department.stages(ledger, now=now)},
         )
         # Stage 2: the department's week on the ledger, whether or not the message then goes out —
         # the observation is the evidence (D8), the message is its delivery. A record that cannot be
