@@ -127,6 +127,9 @@ _RECORD_KINDS = (
     # A keyword-priority guideline from the recorded statistics, applied in shadow to the production run's candidates
     # (BLOG_DEPARTMENT v0.2 P5, 2026-11-02); appended by ``blog_feedback``.
     "blog_feedback",
+    # One keyword-pipeline run against the live web, compared with its root bundle
+    # (BLOG_DEPARTMENT v0.2 P4b, 2026-11-03); appended by ``blog_kw_direct``.
+    "blog_kw_direct",
     "programization_observation", "programization_pattern",
 )
 

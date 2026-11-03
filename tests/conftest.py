@@ -153,6 +153,10 @@ _GATE_ENV_VARS = (
     # 2026-10-07: the holdings lane's Binance spot + Simple Earn read (appendix C). Read-only, but
     # inheriting it would sign real requests with the venue key on the machine that holds it.
     "MVP_BINANCE_WALLET",
+    # 2026-11-03 (BLOG_DEPARTMENT v0.2 P4b, §7 N1): the keyword pipeline's direct shadow, one var per host group.
+    # Inheriting them would let a test that reaches `blog_kw_direct.fire` request Naver and Google for real.
+    "MVP_BLOG_WEB_READ",
+    "MVP_BLOG_OWN_READ",
 )
 
 

@@ -139,8 +139,10 @@ def generate(key: str, vault: Path, commit: str) -> str:
 # The vault's ``tools/kw_pipeline.py`` (with ``affiliate_fetch.py``'s note parser) is generated into ``blog/`` so the
 # system can re-run a recorded run (``KW_REPLAY_DIR`` bundle) and compare outputs. The edits differ from the checkers':
 #
-# - **No network, by substitution.** ``http`` is swapped for a call into the replay's transport, which answers only
-#   with the bodies the recorded run received (a URL it never fetched raises ``ReplayMiss``). ``urllib.request`` goes.
+# - **No network, by substitution.** ``http`` is swapped for a call into a transport, and ``urllib.request`` goes. The
+#   replay's transport answers only with the bodies the recorded run received (a URL it never fetched raises
+#   ``ReplayMiss``). The call carries the caller's headers, timeout and pause, which the replay ignores and P4b's direct
+#   transport (``blog/kw_direct.py``) uses: it is the one place a request leaves, through the env-gated fetchers.
 # - **The recorded run's clock and branches.** ``now``, ``time.time`` and ``time.sleep`` read the recording (sleep is a
 #   no-op); ``load_keys`` answers "present" exactly when the recorded run had a Search Ad key (no key is ever read), and
 #   ``decision_mode`` the recorded mode.
@@ -155,7 +157,8 @@ REPLAY_REPLACE = {
     "kw_pipeline": [
         ("import urllib.parse, urllib.request\n", "import urllib.parse\n"),
         # Nothing is signed: the replay sends no request and reads no key, so the Search Ad signature goes with hmac.
-        ("import base64, collections, datetime, glob, hashlib, hmac, html,", "import base64, collections, datetime, glob, hashlib, html,"),
+        ("import base64, collections, datetime, functools, glob, hashlib, hmac, html,",
+         "import base64, collections, datetime, functools, glob, hashlib, html,"),
         ('    sig = base64.b64encode(hmac.new(keys["SECRET_KEY"].encode(), f"{ts}.GET.{uri}".encode(), hashlib.sha256).digest()).decode()\n',
          '    sig = ""   # generated: nothing is signed (the replay sends no request)\n'),
         ('VAULT = os.environ.get("BLOG_VAULT") or ("/root/obsidian-thomas" if os.path.isdir("/root/obsidian-thomas") '
@@ -197,10 +200,11 @@ REPLAY_ALL = {
 REPLAY_SWAP = {
     "kw_pipeline": {
         "http": '''def http(url, headers=None, timeout=20, pause=0.3):
-    """Generated: the runtime opens no URL. The replay answers with the body the recorded run received for it."""
+    """Generated: this module opens no URL itself. The transport answers: the replay (P4a) with the body the recorded
+    run received, the direct shadow (P4b) through its env-gated fetchers, with the caller's headers and pacing."""
     if _TRANSPORT is None:
         raise ReplayMiss(url)
-    return _TRANSPORT(url)
+    return _TRANSPORT(url, headers=headers or UA_PC, timeout=timeout, pause=pause)
 ''',
         "now": '''def now():
     """Generated: the recorded run's clock — its start, then the time each recorded response arrived."""
