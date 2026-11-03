@@ -84,7 +84,7 @@ if [[ $kind == command || $kind == raw ]]; then
   if [[ $flat =~ $root_ref ]] && [[ $flat =~ $recursive ]]; then
     deny "a recursive read of the state root"
   fi
-  [[ $flat =~ holdings_board[^\;\&\|]*--(full|local|unclassified|classify|unclassify|reset-peak|cash-flow-cutover|migrate|shadow-started|flows|resolve|semantics-epoch|toss-continuity|adopt-ledger|rebalance|approve-candidates|autoinvest-approve|autoinvest-status)([^a-z-]|$) ]] \
+  [[ $flat =~ holdings_board[^\;\&\|]*--(full|local|unclassified|classify|unclassify|reset-peak|cash-flow-cutover|migrate|shadow-started|flows|resolve|semantics-epoch|toss-continuity|adopt-ledger|rebalance|approve-candidates|tax-kind|autoinvest-approve|autoinvest-status)([^a-z-]|$) ]] \
     && deny "a terminal-only holdings_board mode"
   # RB2' (2026-10-26): the candidate report prints raw Toss market data, which Toss's terms keep to the
   # investor's own use and MULTI_ASSET keeps out of any model prompt. Running it is Thomas's.

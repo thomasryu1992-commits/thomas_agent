@@ -636,9 +636,11 @@ def load_rebalance(*, now: str, root: Path | None = None, force: bool = False) -
     # The board and the positions must come from one fire; a mismatch is a fire that wrote one and not the other.
     rows = held.get("positions") if held and body and held.get("as_of") == body.get("as_of") else None
     gain, gain_note = _overseas_gain_for(_read_json(tax_estimate_path(root)), now=now)
+    # An unreadable classification file raises: a plan that silently dropped Thomas's tax kinds would misstate tax.
+    tax_kinds = dict(classification.load(state_dir(root)).tax_kinds)
     result = rebalance.plan_from_local(body, positions=rows, candidates=candidates, age_seconds=age,
                                        stale_after_seconds=STALE_AFTER_SECONDS, overseas_gain_ytd_krw=gain,
-                                       force=force)
+                                       tax_overrides=tax_kinds, force=force)
     result.notes.append(gain_note)
     return "\n".join(rebalance.render(result, as_of=(body or {}).get("as_of")))
 

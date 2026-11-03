@@ -356,3 +356,75 @@ def test_a_candidate_list_outside_the_rule_is_refused_before_writing(tmp_path, a
     with pytest.raises(ToolError) as refused:
         cl.set_candidates(state, asset_class, ids, now=NOW)
     assert refused.value.reason_code == cl.CLASSIFICATION_REFUSED and not cl.path(state).exists()
+
+
+# --- RB3: Thomas's per-instrument tax kind, kept beside the entries and candidates (2026-11-03) ------------------
+
+def test_the_overridable_tax_kinds_are_the_calculators():
+    assert cl.TAX_KINDS == set(rb.TAX_RATE)
+
+
+def test_a_tax_kind_is_kept_beside_the_entries_and_candidates_and_each_writer_keeps_the_others(tmp_path):
+    state = store.state_dir(tmp_path)
+    cl.set_tax_kind(state, "toss:domestic:WORLD", rb.TAX_FREE, now=NOW)
+    cl.apply(state, assign={"toss:domestic:BOND": "bonds"}, now=NOW)
+    cl.set_candidates(state, al.BONDS, ["toss:domestic:BOND"], now=NOW)
+    cl.set_tax_kind(state, "toss:overseas:VT", rb.TAXED_DIVIDEND, now=NOW)
+    loaded = cl.load(state)
+    assert loaded.tax_kinds == {"toss:domestic:WORLD": rb.TAX_FREE, "toss:overseas:VT": rb.TAXED_DIVIDEND}
+    assert set(loaded.entries) == {"toss:domestic:BOND"} and loaded.candidates == {al.BONDS: ["toss:domestic:BOND"]}
+    assert loaded.mapping_version == 4
+    cl.set_tax_kind(state, "toss:domestic:WORLD", "", now=NOW)
+    again = cl.load(state)
+    assert again.tax_kinds == {"toss:overseas:VT": rb.TAXED_DIVIDEND}
+    assert again.entries == loaded.entries and again.candidates == loaded.candidates
+
+
+@pytest.mark.parametrize(("instrument", "kind"), [
+    ("binance:BTC", rb.TAX_FREE),           # the calculator's coin lines are manual; an override is for Toss
+    ("toss:domestic:A", "exempt"),
+    ("toss:nowhere:A", rb.TAX_FREE),
+])
+def test_a_tax_kind_it_cannot_place_is_refused_before_writing(tmp_path, instrument, kind):
+    state = store.state_dir(tmp_path)
+    with pytest.raises(ToolError) as refused:
+        cl.set_tax_kind(state, instrument, kind, now=NOW)
+    assert refused.value.reason_code == cl.CLASSIFICATION_REFUSED and not cl.path(state).exists()
+
+
+def test_the_plan_taxes_an_overridden_instrument_by_its_named_kind_and_says_so(tmp_path):
+    _local(tmp_path)
+    cl.set_candidates(store.state_dir(tmp_path), al.BONDS, ["toss:domestic:BOND"], now=NOW)
+    by_table = store.load_rebalance(now=NOW, root=tmp_path)
+    assert "SELL toss:domestic:WORLD" in by_table and "est. tax    : 0 KRW" not in by_table
+    cl.set_tax_kind(store.state_dir(tmp_path), "toss:domestic:WORLD", rb.TAX_FREE, now=NOW)
+    named = store.load_rebalance(now=NOW, root=tmp_path)
+    assert "SELL toss:domestic:WORLD" in named and "est. tax    : 0 KRW" in named
+    assert "tax kind: 1 held instrument(s) taxed as Thomas named them" in named
+
+
+def test_an_unreadable_tax_kind_block_refuses_the_plan_rather_than_drop_it(tmp_path):
+    _local(tmp_path)
+    state = store.state_dir(tmp_path)
+    cl.set_tax_kind(state, "toss:domestic:WORLD", rb.TAX_FREE, now=NOW)
+    body = json.loads(cl.path(state).read_text(encoding="utf-8"))
+    body["tax_kinds"]["toss:domestic:WORLD"] = "exempt"
+    cl.path(state).write_text(json.dumps(body), encoding="utf-8")
+    with pytest.raises(ToolError) as unreadable:
+        store.load_rebalance(now=NOW, root=tmp_path)
+    assert unreadable.value.reason_code == cl.CLASSIFICATION_UNREADABLE
+    assert "WORLD" not in str(unreadable.value)
+
+
+def test_the_tax_kind_command_writes_as_the_service_user_and_refuses_a_bad_one(monkeypatch, tmp_path, capsys):
+    from runtime.mvp_runtime.cli_common import EXIT_BLOCKED
+    from scripts import holdings_board
+
+    monkeypatch.setattr(store, "_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(holdings_board, "assert_not_foreign_root_run", lambda *a, **k: None)
+    assert holdings_board.main(["--tax-kind", "toss:domestic:WORLD=tax_free"]) == 0
+    assert "1 override(s)" in capsys.readouterr().out
+    assert holdings_board.main(["--tax-kind", "toss:domestic:WORLD=exempt"]) == EXIT_BLOCKED
+    assert holdings_board.main(["--tax-kind", "toss:domestic:WORLD"]) == EXIT_BLOCKED
+    assert holdings_board.main(["--tax-kind", "toss:domestic:WORLD="]) == 0
+    assert dict(cl.load(store.state_dir(tmp_path)).tax_kinds) == {}

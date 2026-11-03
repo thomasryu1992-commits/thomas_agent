@@ -22,6 +22,11 @@ currency. The field is additive: a file without it reads as before.
 places yet, is entered in the class it was bought for (``autoinvest.classify_bought``), marked
 ``"source": "g6_buy"``. It never changes or removes an entry, Thomas's or its own.
 
+**Tax kind (REBALANCING_PROPOSAL RB3, §2.5).** The calculator derives each instrument's tax kind from its
+market and class. Where that table is wrong for one instrument (a domestic listing taxed another way), Thomas
+names the kind for that instrument (``holdings_board --tax-kind``), kept in its own block beside the entries
+and the candidates, Toss instruments only. Every writer here carries every block it does not change.
+
 **Fail closed.** A file that exists but does not parse, or carries an unknown class, raises
 :data:`CLASSIFICATION_UNREADABLE`; the allocation then treats every entry as absent and says so, so the
 band verdict stays withheld rather than resting on a guess.
@@ -49,6 +54,9 @@ ASSIGNABLE_CLASSES = frozenset({"global_equity", "domestic_equity", "bonds", "go
 # The exposure an entry may name. No yen: the D-C measurement found it indistinguishable from the dollar,
 # and nothing yen-denominated is held (Thomas 2026-10-20).
 CURRENCIES = frozenset({"krw", "usd"})
+# The tax kinds an override may name: the calculator's own (`rebalance.TAX_RATE`). Repeated by value; a test
+# pins it to the authority.
+TAX_KINDS = frozenset({"tax_free", "taxed_dividend", "overseas_deduction"})
 
 
 @dataclass(frozen=True)
@@ -59,6 +67,8 @@ class Classification:
     # REBALANCING_PROPOSAL RB2 (Thomas 2026-10-26): per class, the instruments Thomas approved for the
     # rebalancing calculator to buy into. They name instruments, so they live here, on this host only.
     candidates: Mapping[str, list[str]] = field(default_factory=dict)
+    # RB3 (§2.5): per Toss instrument, the tax kind Thomas named over the market-and-class table.
+    tax_kinds: Mapping[str, str] = field(default_factory=dict)
 
 
 def path(state_dir: Path) -> Path:
@@ -108,10 +118,29 @@ def load(state_dir: Path) -> Classification:
                 or not all(isinstance(i, str) and _valid_id(i) for i in ids)):
             raise ToolError(CLASSIFICATION_UNREADABLE, f"{FILENAME} carries a candidate list that is not valid")
         candidates[str(asset_class)] = list(ids)
+    tax_kinds: dict[str, str] = {}
+    for instrument, kind in (body.get("tax_kinds") or {}).items():
+        if not (str(instrument).startswith("toss:") and _valid_id(str(instrument))) or kind not in TAX_KINDS:
+            raise ToolError(CLASSIFICATION_UNREADABLE, f"{FILENAME} carries a tax kind that is not valid")
+        tax_kinds[str(instrument)] = str(kind)
     version = body.get("mapping_version")
     if not isinstance(version, int) or version < 0:
         raise ToolError(CLASSIFICATION_UNREADABLE, f"{FILENAME} has no mapping_version")
-    return Classification(mapping_version=version, entries=entries, currencies=currencies, candidates=candidates)
+    return Classification(mapping_version=version, entries=entries, currencies=currencies, candidates=candidates,
+                          tax_kinds=tax_kinds)
+
+
+def _write(target: Path, existing: Mapping[str, Any], version: int, stamp: str, **blocks: Any) -> None:
+    """One rewrite: the blocks a writer changes, every other block as it was, an empty block left out."""
+    body: dict[str, Any] = {"record_type": RECORD_TYPE, "mapping_version": version, "updated_at": stamp,
+                            "entries": blocks.get("entries", existing.get("entries") or {})}
+    for name in ("candidates", "tax_kinds"):
+        value = blocks.get(name, existing.get(name))
+        if value:
+            body[name] = value
+    tmp = target.with_suffix(".tmp")
+    tmp.write_text(json.dumps(body, ensure_ascii=False, sort_keys=True, indent=1), encoding="utf-8")
+    tmp.replace(target)
 
 
 def apply(state_dir: Path, *, assign: Mapping[str, str] | None = None, remove: tuple[str, ...] = (),
@@ -139,23 +168,15 @@ def apply(state_dir: Path, *, assign: Mapping[str, str] | None = None, remove: t
     target.parent.mkdir(parents=True, exist_ok=True)
     with locked(target.with_suffix(".lock"), code="HOLDINGS_CLASSIFICATION_LOCKED", label="holdings classification"):
         current = load(state_dir)
-        raw: dict[str, Any] = {}
-        kept: dict[str, Any] = {}
-        if target.exists():
-            existing = json.loads(target.read_text(encoding="utf-8"))
-            raw = existing.get("entries") or {}
-            kept = existing.get("candidates") or {}
+        existing = json.loads(target.read_text(encoding="utf-8")) if target.exists() else {}
+        raw: dict[str, Any] = dict(existing.get("entries") or {})
         for instrument in remove:
             raw.pop(instrument, None)
         for instrument, asset_class in assign.items():
             raw[instrument] = {"asset_class": asset_class, "approved_at": stamp,
                                **({"currency": currency[instrument]} if instrument in currency else {}),
                                **({"source": source} if source else {})}
-        body = {"record_type": RECORD_TYPE, "mapping_version": current.mapping_version + 1,
-                "updated_at": stamp, "entries": raw, **({"candidates": kept} if kept else {})}
-        tmp = target.with_suffix(".tmp")
-        tmp.write_text(json.dumps(body, ensure_ascii=False, sort_keys=True, indent=1), encoding="utf-8")
-        tmp.replace(target)
+        _write(target, existing, current.mapping_version + 1, stamp, entries=raw)
     return load(state_dir)
 
 
@@ -183,10 +204,27 @@ def set_candidates(state_dir: Path, asset_class: str, instruments: list[str], *,
             lists[asset_class] = list(instruments)
         else:
             lists.pop(asset_class, None)
-        body = {"record_type": RECORD_TYPE, "mapping_version": current.mapping_version + 1,
-                "updated_at": stamp, "entries": existing.get("entries") or {},
-                **({"candidates": lists} if lists else {})}
-        tmp = target.with_suffix(".tmp")
-        tmp.write_text(json.dumps(body, ensure_ascii=False, sort_keys=True, indent=1), encoding="utf-8")
-        tmp.replace(target)
+        _write(target, existing, current.mapping_version + 1, stamp, candidates=lists)
+    return load(state_dir)
+
+
+def set_tax_kind(state_dir: Path, instrument: str, kind: str, *, now: str | None = None) -> Classification:
+    """Name one Toss instrument's tax kind over §2.5's table (RB3); an empty kind returns it to the table. Keeps
+    every entry, list and other override; moves the version once. Refuses before anything is written."""
+    if not (instrument.startswith("toss:") and _valid_id(instrument)):
+        raise ToolError(CLASSIFICATION_REFUSED, "a tax kind is for toss:<market>:<SYMBOL>")
+    if kind and kind not in TAX_KINDS:
+        raise ToolError(CLASSIFICATION_REFUSED, f"tax kind must be one of {', '.join(sorted(TAX_KINDS))}")
+    stamp = now or timeutil.utc_now_iso()
+    target = path(state_dir)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with locked(target.with_suffix(".lock"), code="HOLDINGS_CLASSIFICATION_LOCKED", label="holdings classification"):
+        current = load(state_dir)
+        existing = json.loads(target.read_text(encoding="utf-8")) if target.exists() else {}
+        kinds = dict(existing.get("tax_kinds") or {})
+        if kind:
+            kinds[instrument] = kind
+        else:
+            kinds.pop(instrument, None)
+        _write(target, existing, current.mapping_version + 1, stamp, tax_kinds=kinds)
     return load(state_dir)

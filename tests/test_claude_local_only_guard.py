@@ -245,6 +245,8 @@ TERMINAL_ONLY = ("--full", "--local", "--unclassified", "--classify binance:X=co
                  "--adopt-ledger --by t --reason r --confirm 1a2b3c4d",
                  # REBALANCING_PROPOSAL (2026-10-26): the plan names instruments and amounts; approving names them.
                  "--rebalance", "--approve-candidates bonds=toss:domestic:X",
+                 # RB3 (2026-11-03): a tax-kind override names an instrument.
+                 "--tax-kind toss:domestic:X=tax_free",
                  # G6-buy (2026-10-26): approving a buy scenario spends money; its status names amounts.
                  "--autoinvest-approve 069500=1 --max-krw 100000", "--autoinvest-status")
 

@@ -12,6 +12,7 @@
     python -m scripts.holdings_board --flows                        # H6 exceptions, terminal only (H6d-min)
     python -m scripts.holdings_board --rebalance [--force]          # the rebalancing plan, terminal only
     python -m scripts.holdings_board --approve-candidates bonds=toss:domestic:A,toss:domestic:B   # override (RB2'')
+    python -m scripts.holdings_board --tax-kind toss:domestic:A=tax_free   # override §2.5's table (RB3), Thomas
     python -m scripts.holdings_board --autoinvest-approve "069500=1,114260=1" --max-krw 200000   # G6-buy, Thomas
     python -m scripts.holdings_board --autoinvest-approve           # show today's drafted scenario, approve on y
     python -m scripts.holdings_board --autoinvest-status            # the approved scenario and its journal
@@ -96,7 +97,12 @@ check: the adopted history is observed from the adoption on, so the cutover must
 (``--cash-flow-cutover AT --migrate --reason``) before ``history_completeness`` can pass. Interactive
 terminal, ``--by`` and ``--reason``, the service user. No amount, asset or event key is printed.
 
-Claude does not run the live read, ``--local``, ``--unclassified``, ``--classify``, ``--unclassify``,
+**``--tax-kind ID=KIND``** (REBALANCING_PROPOSAL RB3, §2.5) names one Toss instrument's tax kind
+(``tax_free``, ``taxed_dividend`` or ``overseas_deduction``) where the calculator's market-and-class table is
+wrong for it; ``ID=`` returns it to the table. It writes the host-local classification file and moves its
+version once, as the service user. The id is a holding: Thomas's, on his terminal.
+
+Claude does not run the live read, ``--local``, ``--unclassified``, ``--classify``, ``--unclassify``, ``--tax-kind``,
 ``--flows``, ``--resolve``, ``--semantics-epoch``, ``--toss-continuity`` or ``--adopt-ledger`` (their output or input names holdings
 or reads the local ledger, and would reach a model provider), and does not handle the keys.
 """
@@ -155,6 +161,9 @@ def main(argv: list[str] | None = None) -> int:
                       help="the rebalancing proposal over the last fire (REBALANCING_PROPOSAL; terminal only)")
     mode.add_argument("--approve-candidates", metavar="CLASS=ID[,ID...]",
                       help="override the automatic pick for a class (RB2''); CLASS= returns it to the automatic pick (Thomas)")
+    mode.add_argument("--tax-kind", metavar="ID=KIND",
+                      help="name one Toss instrument's tax kind over the calculator's table (RB3); ID= returns it "
+                           "to the table (Thomas)")
     mode.add_argument("--autoinvest-approve", metavar="SYMBOL=SHARES[,...]", nargs="?", const="",
                       help="approve one buy scenario of current domestic candidates; with no spec, show today's "
                            "drafted scenario and approve it on y (G6-buy; Thomas, terminal only)")
@@ -291,6 +300,20 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_BLOCKED
         print(f"candidates for {asset_class.strip()}: {len(chosen) or 'automatic pick again'} "
               f"(mapping_version {result.mapping_version})")
+        return EXIT_OK
+
+    if args.tax_kind is not None:
+        try:
+            assert_not_foreign_root_run()
+            instrument, sep, kind = args.tax_kind.partition("=")
+            if not sep:
+                raise ToolError(classification.CLASSIFICATION_REFUSED, "expected ID=KIND (ID= returns it to the table)")
+            result = classification.set_tax_kind(state_dir(), instrument.strip(), kind.strip())
+        except MvpRuntimeError as exc:
+            print(f"refused ({exc.reason_code}): {exc}")
+            return EXIT_BLOCKED
+        print(f"tax kind for {instrument.strip()}: {kind.strip() or 'the table again'} "
+              f"(mapping_version {result.mapping_version}; {len(result.tax_kinds)} override(s))")
         return EXIT_OK
 
     if args.rebalance:

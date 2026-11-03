@@ -4,7 +4,7 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **87**건: `DRAFT` 2 · `PARTIALLY DECIDED` 9 · `DECIDED` 22 · `IMPLEMENTED` 44 · `SUPERSEDED` 3 · `RECORD` 7
+제안서 **87**건: `DRAFT` 2 · `PARTIALLY DECIDED` 9 · `DECIDED` 21 · `IMPLEMENTED` 45 · `SUPERSEDED` 3 · `RECORD` 7
 
 ## Thomas 결정 대기 (11)
 
@@ -24,7 +24,7 @@
 | [BLOG_DEPARTMENT_V0.1.md](BLOG_DEPARTMENT_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-26 | 생산은 지금의 볼트 경로에서 시작하고, 런타임 블로그 레인(`blog_*` 10개 모듈)은 지웠다(#1319). v0.2(Thomas 2026-10-26): 통합할 수 있는 단계(키워드, 검증, 발행 계획, 분석, 피드백)는 시스템 안으로 옮기고, 원고 생성·발행·통계 수집만 외주로 둔다(§3). §7의 N1·S1·L2·L3·R1–R3은 권고대로 정했다(Thomas 2026-10-26). P0 관측(#1321)·P1 실행 보고(#1326)·P2 검증(#1328)은 배포됐고(2026-10-26), 전환 조건을 관찰 중이다. P3 분석(`blog_analyze`)은 2026-10-27에 배포됐다. P4는 재생 그림자(P4a)를 먼저 하기로 정했고(Thomas 2026-10-27), 2026-10-27에 배포됐다(재생 포트 재생성 #1337은 2026-11-01 머지). P5 피드백 그림자(`blog_feedback`)는 2026-11-03에 배포됐다. P4b 직접 조회 그림자(`blog_kw_direct`)는 미리 구현하기로 했고(Thomas 2026-11-03), opt-in 두 개(`MVP_BLOG_WEB_READ`·`MVP_BLOG_OWN_READ`)가 꺼진 채로 들어간다. 켜는 것은 P4a 조건을 채운 뒤 Thomas가 한다. P7은 네이버 슬롯 그림자(`blog_slot`)를 먼저 만들기로 했고, 티스토리는 다시 계획하지 않고 큐 규칙 검사로 같은 기록에 넣기로 했다(Thomas 2026-11-03). P6·P8은 시작하지 않았다. |
 | [G6_SELL_REBALANCE_V0.1.md](G6_SELL_REBALANCE_V0.1.md) | `DRAFT` | 2026-11-03 | G6(자동 리밸런싱)의 남은 절반인 매도를 다루는 결정 패킷 초안이다. **지금 묻지 않는다.** G6은 G1d(H6c, unit 권위 전환)가 끝난 뒤 다시 여는 별도 결정이므로(`THOMAS_AGENT_TARGET_ARCHITECTURE_V0.1.md` §6), H6c가 정해진 뒤 SQ1–SQ5를 묻는다. 그때까지 코드, 정책, env, 스케줄은 바뀌지 않는다. 미리 써 두는 이유는 H6c가 정해지는 날 바로 물을 수 있게 하기 위해서다. |
 
-## 결정됨 — 구현 남음 (22)
+## 결정됨 — 구현 남음 (21)
 
 결정은 끝났고 결정된 것이 아직 다 지어지지 않았다. 결정이 만든 구현 대기열이다.
 
@@ -50,10 +50,9 @@
 | [WEEKLY_MANAGEMENT_REPORT_V0.1.md](WEEKLY_MANAGEMENT_REPORT_V0.1.md) | `DECIDED` | 2026-10-25 | Q1=A(관제봇 토큰을 scheduler-maint에 `MVP_CONTROL_BOT_TOKEN`으로), Q2=보유자산 제외, Q3=월요일 09:00 KST, Q4=피드백은 집계만(Thomas 2026-10-25, "승인: WMR-1 Q1=A Q2=제외 Q3=월09KST Q4=집계만, 구현·PR"). 구현은 같은 날 PR로 올렸다(`management_report.py`, kind `management_report`). 배포와 스케줄 등록은 Thomas가 한다. |
 | [G6_BUY_CASH_AUTOINVEST_V0.1.md](G6_BUY_CASH_AUTOINVEST_V0.1.md) | `DECIDED` | 2026-10-26 | G6-buy(매수만, 일 50만 원 한도, H6c 선행 면제, 평일 장중 1회, env 기본 꺼짐), 시나리오 확인 뒤 실행, 정수 주 매수는 5만 원 미만 허용(RB4'')(Thomas). v0.1 경로(승인 명령, 실행기, 주문 어댑터)를 지었다. 첫 실행(2026-10-27)은 2건 체결, 1건 422 거부였다. 금 2주 단독 재시도도 422, 1주는 접수돼 시장가 증거금(상한가 기준)이 원인으로 보였고, 같은 날 지정가 주문으로 바꿨다(호가 누적 가격, +2% 안전선, 미체결분은 다음 거래일 이월). 시나리오 자동 작성(§2e, Thomas 2026-10-27)을 지었다: 보유 자산 실행이 거래일마다 시나리오를 만들고, Thomas가 터미널에서 확인해 승인한다. 자동 매수로 산 종목은 산 자산군으로 자동 분류한다(§2f). 글로벌 주식은 달러로 산다(§2g): Thomas가 앱에서 환전한 달러를 미국 정규장에서 금액 주문으로 쓴다. |
 | [HOLDINGS_STATUS_READ_AND_AUTO_FLOWS_V0.1.md](HOLDINGS_STATUS_READ_AND_AUTO_FLOWS_V0.1.md) | `DECIDED` | 2026-10-26 | R1 예, R2 예, R3 예, F1 A, F2 아니오(Thomas). PR-1(R1–R3: `toss_needs`, `holdings_status` v1.1, Claude 프로필, CLAUDE.md, #1314)과 PR-2(F1–F2: `quiet_window.v1`, Thomas 재분류 1회, 방향·개수 알림)를 지었다. 둘 다 병합·배포됐다(candidate-1329부터). 2026-10-28: 규칙이 닫지 않은 이유를 조건 이름으로 원장과 `--flows`에 남긴다(§3.2, Thomas). 같은 날 규칙 v2(§3.2a, Thomas): 체결 구간 포함, 1만 원 단위와 끝전 허용 범위, 미체결 주문 구간 제외. 2026-11-03: 규칙 v3(§3.2b, Thomas INC1–INC4): 체결·정산이 없는 창의 5천 원 미만 원화 유입을 이자(`income`)로 닫는다. 소액 유출은 그대로 Thomas가 본다. **결정 전 상태:** DRAFT — Thomas 결정 다섯 건(R1–R3, F1–F2)을 기다렸다. Thomas가 두 가지를 요청했다(2026-10-26). 하나는 holdings 검사의 이름과 상태만 Claude read door로 읽는 것이다(금액 없음). 다른 하나는 입출금을 사람이 닫지 않고 자동으로 확인하는 것이다. 코드·정책·스키마 변경은 없다. |
-| [REBALANCING_PROPOSAL_V0.1.md](REBALANCING_PROPOSAL_V0.1.md) | `DECIDED` | 2026-10-26 | RB1 예, RB2'' 후보 자동 선정(RB2'를 대신함), RB3' 토스 주문 내역 자동 계산, RB4' 5만 원·이월, RB5 엔진 제외·월 알림, RB6 지금(Thomas). PR-A(계산기, `--rebalance`·`--approve-candidates`, 종목 파일)와 PR-B(해외 실현 이익: 주문 내역 재구성, 일별 환율 기록, §2.3 3단계 공제 한도), PR-C(후보 선별 보고서 `scripts.rebalance_candidates`, Thomas 터미널), PR-D(월 밴드 알림: 매월 첫 평일부터 이탈 개수 한 번), RB2''(후보 자동 선정: 월 1회와 거래 불가 시, 수동은 덮어쓰기만)를 지었다. §2.3 4단계의 손실 통산 표시를 지었다(2026-11-03). 통산은 해외 직접 투자끼리만 된다는 정정과 함께다. 종목별 과세 유형 덮어쓰기는 남았다(계산기는 받지만 적는 곳이 없다). **결정 전 상태:** DRAFT 2026-10-26 — Thomas 결정 여섯 건(RB1–RB6)을 기다린다. RB2–RB4는 Thomas의 답(2026-10-26)대로 고쳤다: 후보 3~4개 승인 뒤 자동 선택, 해외 실현 이익은 Toss 주문 내역으로 자동 계산, 최소 거래 5만 원 고정·이월. Thomas의 요청(2026-10-26): 리밸런싱 제안을 터미널 전용으로 보여 주고, 주문은 Thomas가 낸다. 코드·정책·스키마 변경은 없다. |
 | [H6B_UNIT_SHADOW_V0.1.md](H6B_UNIT_SHADOW_V0.1.md) | `DECIDED` | 2026-10-28 | S1=A, S2=A, S3=A, S4=A, S5=A(Thomas, "승인: H6b-shadow S1=A S2=A S3=A S4=A S5=A, 설계 문서·구현·PR"). 같은 날 PR 하나로 지었다(`holdings/unit_shadow.py`, 아래 §3). 배포 전에는 아무것도 계산하지 않는다. H6c는 이 문서가 승인하지 않는다. |
 
-## 구현됨 (44)
+## 구현됨 (45)
 
 결정되고 지어졌다. 문서는 결정의 근거 기록으로 남는다.
 
@@ -103,6 +102,7 @@
 | [HOST_PRIVILEGE_SEPARATION_C6B_EXECUTION_V0.1.md](HOST_PRIVILEGE_SEPARATION_C6B_EXECUTION_V0.1.md) | `IMPLEMENTED` | 2026-10-20 | **C6b 완료:** b1–b8이 모두 끝났다(아래 §6). Claude는 `claude`(uid 2101)로 돈다. b8은 `C6B_CHECKS=PASS`(41행)이고, b7 뒤 재실행도 PASS다. b7은 `.env` 사본 5개를 지웠다. 보관 방식은 §3 b7 절차와 다르며, 이유는 §6에 있다. **이전 상태(b7 외 완료, 2026-10-20):** b2–b6, b1, b8이 끝났고 b7만 따로 확인을 기다렸다. **그 전 상태(실행 중, 2026-10-20):** 실행 승인을 받았다(아래 §6). b2·b3·b4·b5가 끝났고, b6은 사본까지 준비했다. b6의 crontab 설치는 b1 직전 마지막 root 작업이고, 그다음 b1(Mac 접속 사용자 변경)과 b8이 남았다. b7은 따로 확인한다. 준비 작업 P-1–P-6은 모두 끝났다(P-1–P-3·P-4b 적용, P-4 사본, P-5 토큰, P-6 #1258). **이전 상태:** PARTIALLY DECIDED 2026-10-19 — E-1–E-3이 권고안 A로 정해졌다(아래 결정). 준비 작업 P-1–P-6은 각각 승인을 기다리고, P-6(b8 시험 스크립트)은 같은 날 코드 PR 생성 승인을 받았다. C6b 실행은 별도 승인이다. 이 문서는 아무것도 실행하지 않았다. **원래 상태(작성 당시):** DRAFT 2026-10-19 — 결정 3건(E-1–E-3)과 준비 작업 6건(P-1–P-6)이 실행 승인보다 먼저였다. |
 | [FAMILY_EXHAUSTION_V0.1.md](FAMILY_EXHAUSTION_V0.1.md) | `IMPLEMENTED` | 2026-10-25 | Q1 B·Q2·Q3 결정(2026-09-24), §6 확인 완료(1h는 5심볼 모두가 의도, 2026-09-26). Q1 B의 퍼널 family 소진 절을 지었다(`strategy_funnel.family_exhaustion`, 2026-10-25). CONFIRMED는 INVALID가 아닌 증거만 센다. §0의 신호였던 OI family CONFIRMED는 뒤에 OI lookahead로 모두 INVALID가 됐다(아래 "구현 (2026-10-25)" 절). |
 | [WALK_FORWARD_TEMPORAL_STABILITY_V0.1.md](WALK_FORWARD_TEMPORAL_STABILITY_V0.1.md) | `IMPLEMENTED` | 2026-10-25 | **닫았다: PR-2 없음(W1, Thomas 2026-10-25).** §4 보고서를 처음 돌렸더니(2026-10-25) 유효한 증거로는 판별력이 없었다. 그대로 읽으면 CONFIRMED가 높아 보였지만 CONFIRMED 14개 중 12개가 OI lookahead(INVALID)였고, 그것을 빼면 CONFIRMED는 2개이며 중앙값이 CONTRADICTED보다 낮다(아래 "§4 결과" 절). PR-1(기록 전용)은 구현돼 그대로 둔다. 다시 여는 조건은 유효한 홀드아웃 CONFIRMED가 30개 이상 쌓이는 것이다. |
+| [REBALANCING_PROPOSAL_V0.1.md](REBALANCING_PROPOSAL_V0.1.md) | `IMPLEMENTED` | 2026-10-26 | RB1 예, RB2'' 후보 자동 선정(RB2'를 대신함), RB3' 토스 주문 내역 자동 계산, RB4' 5만 원·이월, RB5 엔진 제외·월 알림, RB6 지금(Thomas). PR-A(계산기, `--rebalance`·`--approve-candidates`, 종목 파일)와 PR-B(해외 실현 이익: 주문 내역 재구성, 일별 환율 기록, §2.3 3단계 공제 한도), PR-C(후보 선별 보고서 `scripts.rebalance_candidates`, Thomas 터미널), PR-D(월 밴드 알림: 매월 첫 평일부터 이탈 개수 한 번), RB2''(후보 자동 선정: 월 1회와 거래 불가 시, 수동은 덮어쓰기만)를 지었다. §2.3 4단계의 손실 통산 표시를 지었다(2026-11-03). 통산은 해외 직접 투자끼리만 된다는 정정과 함께다. 종목별 과세 유형 덮어쓰기도 지었다(2026-11-03, Thomas 터미널의 `--tax-kind`, §2.5). 이것으로 결정된 항목이 모두 지어졌다. 자동 실행(G6)은 이 문서의 범위가 아니다. **결정 전 상태:** DRAFT 2026-10-26 — Thomas 결정 여섯 건(RB1–RB6)을 기다린다. RB2–RB4는 Thomas의 답(2026-10-26)대로 고쳤다: 후보 3~4개 승인 뒤 자동 선택, 해외 실현 이익은 Toss 주문 내역으로 자동 계산, 최소 거래 5만 원 고정·이월. Thomas의 요청(2026-10-26): 리밸런싱 제안을 터미널 전용으로 보여 주고, 주문은 Thomas가 낸다. 코드·정책·스키마 변경은 없다. |
 
 ## 대체됨 (3)
 
