@@ -11,7 +11,8 @@
   domestic-listed ETF's gain is dividend income, taxed per sale, and nets with nothing.
 
 **Pure.** The terminal mode (``scripts/holdings_board.py --rebalance``) hands in the last fire's positions and
-class totals, Thomas's approved candidates and, when known, the year's realised overseas gain. Nothing here
+class totals, Thomas's approved candidates and tax-kind overrides and, when known, the year's realised overseas
+gain. Nothing here
 reads a file, a socket or the clock, and nothing it returns leaves the process: it names instruments and
 amounts, so it is LOCAL_ONLY under H3 and renders on Thomas's terminal only.
 
@@ -143,8 +144,12 @@ def plan(*, class_krw: Mapping[str, float], positions: Iterable[Position], compl
                   overseas_gain_ytd_krw=overseas_gain_ytd_krw)
     if not due and not force:
         return result
+    named = sum(1 for p in positions if tax_overrides and tax_overrides.get(p.instrument) in TAX_RATE)
+    if named:
+        result.notes.append(f"tax kind: {named} held instrument(s) taxed as Thomas named them (--tax-kind), "
+                            "not by the market-and-class table")
 
-    target = {c: nav * allocation.TARGET_PCT[c] / 100.0 for c in PLANNED}
+    target ={c: nav * allocation.TARGET_PCT[c] / 100.0 for c in PLANNED}
     excess = {c: max(0.0, class_krw.get(c, 0.0) - target[c]) for c in PLANNED if c != allocation.CASH}
     short = {c: max(0.0, target[c] - class_krw.get(c, 0.0)) for c in PLANNED if c != allocation.CASH}
 
@@ -313,7 +318,7 @@ def toss_positions(snapshot: Any, entries: Any) -> list[dict[str, Any]]:
 def plan_from_local(body: Any, *, positions: Any, candidates: Mapping[str, list[str]] | None,
                     age_seconds: float | None,
                     stale_after_seconds: float, overseas_gain_ytd_krw: float | None = None,
-                    force: bool = False) -> Plan:
+                    tax_overrides: Mapping[str, str] | None = None, force: bool = False) -> Plan:
     """The plan over the last fire's local file: refused when it is old, its allocation partial, or its
     positions missing (a fire before this calculator existed)."""
     if not isinstance(body, Mapping):
@@ -328,7 +333,8 @@ def plan_from_local(body: Any, *, positions: Any, candidates: Mapping[str, list[
     positions = [Position(str(r["instrument"]), str(r["asset_class"]), r.get("quantity"), float(r["value_krw"]),
                           r.get("pnl_krw")) for r in rows]
     return plan(class_krw=class_krw, positions=positions, complete=table.get("complete") is True,
-                candidates=candidates, overseas_gain_ytd_krw=overseas_gain_ytd_krw, force=force)
+                candidates=candidates, tax_overrides=tax_overrides, overseas_gain_ytd_krw=overseas_gain_ytd_krw,
+                force=force)
 
 
 def _won(value: float) -> str:
