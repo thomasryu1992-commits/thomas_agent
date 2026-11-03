@@ -1559,9 +1559,15 @@ class _Moved(Exception):
 # settlement adjustment: 0.1% of the KRW filled that KST day plus 100 KRW, at most 1,000 KRW). A window that
 # starts or ends with an open order is excluded instead: a pending buy holds buying power. The amount and the
 # remainder go on the resolution line in the LOCAL ledger only; nothing outward carries them.
+#
+# v3 (Thomas 2026-11-03, INC1–INC4): a KRW inflow too small to round to 10,000 KRW, in a window with no fill and no
+# settlement, is the account's own income (deposit interest) and is closed as ``income``. Beside a fill or a
+# settlement the same small change may be a fee or settlement adjustment, and an outflow may be a fee: both stay
+# Thomas's.
 QUIET_WINDOW_RULE_V1 = "rule:quiet_window.v1"
-QUIET_WINDOW_RULE = "rule:quiet_window.v2"
-RULE_IDS = frozenset({QUIET_WINDOW_RULE_V1, QUIET_WINDOW_RULE})
+QUIET_WINDOW_RULE_V2 = "rule:quiet_window.v2"
+QUIET_WINDOW_RULE = "rule:quiet_window.v3"
+RULE_IDS = frozenset({QUIET_WINDOW_RULE_V1, QUIET_WINDOW_RULE_V2, QUIET_WINDOW_RULE})
 QUIET_WINDOW_V1_STEP_KRW = 1000
 QUIET_WINDOW_STEP_KRW = 10_000
 QUIET_WINDOW_TOLERANCE_BASE_KRW = 100.0
@@ -1591,7 +1597,7 @@ def round_split(krw: float, day_fills_krw: float) -> tuple[float, float, float]:
 
 def quiet_window_verdict(result: Mapping[str, Any], *, truncated: bool, open_orders: tuple[Any, Any],
                          day_fills_krw: float) -> tuple[str | None, str | None]:
-    """``(kind, None)`` when v2 closes the window, else ``(None, reason)`` from :data:`QUIET_WINDOW_DECLINES`.
+    """``(kind, None)`` when the rule closes the window, else ``(None, reason)`` from :data:`QUIET_WINDOW_DECLINES`.
 
     ``open_orders`` is the open-order count at the window's start and end (None: not read, which declines).
     Kept: an untruncated and stable order read, no exchange pair, the KRW pocket open and the USD pocket
@@ -1609,12 +1615,20 @@ def quiet_window_verdict(result: Mapping[str, Any], *, truncated: bool, open_ord
         return None, "krw_not_open"
     if opened.get("USD") or abs(float(residual.get("USD") or 0.0)) >= 0.005:
         return None, "usd_moved"
-    amount, remainder, tolerance = round_split(float(residual.get("KRW") or 0.0), day_fills_krw)
+    krw = float(residual.get("KRW") or 0.0)
+    amount, remainder, tolerance = round_split(krw, day_fills_krw)
     if amount == 0:
-        return None, "too_small"
+        # v3 (INC1): only an inflow, and only where nothing traded or settled, is taken as income.
+        return ("income", None) if krw > 0 and not _traded(result) else (None, "too_small")
     if abs(remainder) > tolerance:
         return None, "not_round"
     return ("deposit" if amount > 0 else "withdrawal"), None
+
+
+def _traded(result: Mapping[str, Any]) -> bool:
+    """A fill (either side, either pocket) or a settlement in the window."""
+    return bool(result.get("settlements")) or any(
+        (result.get(side) or {}).get(pocket) for side in ("buy", "sell") for pocket in ("KRW", "USD"))
 
 
 def _v1_decline(result: Mapping[str, Any], *, truncated: bool) -> str | None:
@@ -1673,10 +1687,14 @@ def _day_fills_krw(orders: list[Mapping[str, Any]], *, since: str, until: str) -
 
 def _rule_resolution(target: str, kind: str, *, now: str, split: tuple[float, float, float]) -> dict[str, Any]:
     amount, remainder, tolerance = split
+    if kind == "income":         # v3: the whole small inflow is the income; nothing is left as an adjustment
+        amount, remainder = remainder, 0.0
     return {"event": EVENT_RESOLVED, "source": "ledger", "source_event_key": f"resolved:{target}",
             "resolves": target, "target_event": EVENT_TOSS_RESIDUAL, "category": CATEGORY_TOSS, "kind": kind,
-            "reason": "round KRW change: the nearest 10,000 KRW, the remainder within the day's fill tolerance; "
-                      "no open order, exchange or USD change",
+            "reason": ("small KRW inflow (under half of 10,000 KRW) with no fill or settlement in the window; "
+                       "no open order, exchange or USD change" if kind == "income" else
+                       "round KRW change: the nearest 10,000 KRW, the remainder within the day's fill tolerance; "
+                       "no open order, exchange or USD change"),
             "requested_by": QUIET_WINDOW_RULE, "timestamp": now, "review_status": "CLOSED",
             "evidence_status": "NOT_VALIDATED", "accounting_eligibility": "NOT_ELIGIBLE",
             # LOCAL ledger only (Q5): the amount the rule took as the flow, and what it left as an adjustment.
@@ -2232,7 +2250,7 @@ def rule_flows_untold(state_dir: Path) -> tuple[str | None, dict[str, int]]:
         token = hashlib.sha256("|".join(untold).encode("utf-8")).hexdigest()[:16]
         owed.setdefault("pending", {})[token] = untold
         _save_state(state_dir, state)
-    counts = {"deposit": 0, "withdrawal": 0}
+    counts = {"deposit": 0, "withdrawal": 0, "income": 0}
     for digest in untold:
         counts[ruled[digest]] = counts.get(ruled[digest], 0) + 1
     return token, counts

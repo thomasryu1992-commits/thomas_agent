@@ -1,12 +1,13 @@
 """Toss deposits and withdrawals by rule: quiet_window (HOLDINGS_STATUS_READ_AND_AUTO_FLOWS F1 A, F2; v2 Thomas
-2026-10-28).
+2026-10-28; v3 Thomas 2026-11-03).
 
 A window whose KRW change is a round amount is closed as a deposit or withdrawal by the rule, in the write that
 records it; anything else stays an exception for Thomas, who can re-close a rule's resolution once. v2: a fill or
 settlement in the window no longer excludes it; "round" is the nearest 10,000 KRW with a remainder within 0.1% of
 the day's KRW fills plus 100 KRW (at most 1,000 KRW); an open order at either end excludes it. The rule's flows
-are told by direction and count only, and its amounts stay on the local ledger. Synthetic fixtures only; no real
-holdings file is read.
+are told by direction and count only, and its amounts stay on the local ledger. v3: a KRW inflow too small to round
+to 10,000 KRW, in a window where nothing filled or settled, is closed as income (deposit interest). Synthetic
+fixtures only; no real holdings file is read.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from __future__ import annotations
 import pytest
 
 from runtime.mvp_runtime.errors import ToolError
-from runtime.mvp_runtime.holdings import cash_flows
+from runtime.mvp_runtime.holdings import cash_flows, unit_shadow
 from tests._h6d_support import events, ledger, order, resolve, set_cutover, start_epoch, toss_fire
 
 T0, T1, T2 = "2026-10-09T04:00:00Z", "2026-10-09T05:00:00Z", "2026-10-09T06:00:00Z"
@@ -43,7 +44,7 @@ def test_a_round_change_in_a_quiet_window_is_closed_by_the_rule(tmp_path, after,
     residual = _krw_residual(tmp_path)
     (line,) = _rule_lines(rows)
     assert line["resolves"] == residual["source_event_key"] and line["kind"] == kind
-    assert line["requested_by"] == cash_flows.QUIET_WINDOW_RULE == "rule:quiet_window.v2"
+    assert line["requested_by"] == cash_flows.QUIET_WINDOW_RULE == "rule:quiet_window.v3"
     assert line["evidence_status"] == "NOT_VALIDATED" and line["accounting_eligibility"] == "NOT_ELIGIBLE"
     assert cash_flows.post_cutover_exceptions(rows) == 0
     (view,) = cash_flows.flows_view(tmp_path)
@@ -100,7 +101,7 @@ def test_the_days_fills_count_beyond_the_window(tmp_path):
 def test_the_rule_names_the_condition_that_kept_a_krw_residual_open(tmp_path, case, reason):
     rows = _window(tmp_path, *{
         "not_round": (1_203_000,),
-        "too_small": (1_003_000,),                                                  # a dividend's size
+        "too_small": (997_000,),                                                    # a fee's size, outward
         "usd_moved": (1_200_000,),
         "truncated": (1_200_000,),
         "open_at_end": (1_200_000,),
@@ -151,19 +152,58 @@ def test_the_rule_flows_are_told_once_by_direction_and_count(tmp_path):
     _window(tmp_path, 1_200_000)
     toss_fire(tmp_path, 1_100_000, T2)                                              # a round withdrawal
     token, counts = cash_flows.rule_flows_untold(tmp_path)
-    assert token and counts == {"deposit": 1, "withdrawal": 1}
+    assert token and counts == {"deposit": 1, "withdrawal": 1, "income": 0}
     assert cash_flows.rule_flows_untold(tmp_path)[0] == token                     # undelivered: offered again
     cash_flows.mark_rule_flows_told(tmp_path, token=token, now=T2)
     assert cash_flows.rule_flows_untold(tmp_path) == (None, {})
 
 
-def test_a_v1_resolution_is_still_the_rules(tmp_path, monkeypatch):
-    monkeypatch.setattr(cash_flows, "QUIET_WINDOW_RULE", cash_flows.QUIET_WINDOW_RULE_V1)
+@pytest.mark.parametrize("older", ["QUIET_WINDOW_RULE_V1", "QUIET_WINDOW_RULE_V2"])
+def test_an_older_versions_resolution_is_still_the_rules(tmp_path, monkeypatch, older):
+    monkeypatch.setattr(cash_flows, "QUIET_WINDOW_RULE", getattr(cash_flows, older))
     _window(tmp_path, 1_200_000)
     monkeypatch.undo()
     (view,) = cash_flows.flows_view(tmp_path)
     assert view["closed_by"] == "rule" and view["rule_declined"] is None
-    assert cash_flows.rule_flows_untold(tmp_path)[1] == {"deposit": 1, "withdrawal": 0}
+    assert cash_flows.rule_flows_untold(tmp_path)[1] == {"deposit": 1, "withdrawal": 0, "income": 0}
+
+
+def test_a_small_inflow_in_a_quiet_window_is_closed_as_income(tmp_path):
+    rows = _window(tmp_path, 1_000_812)                                             # deposit interest
+    (line,) = _rule_lines(rows)
+    assert line["kind"] == "income" and line["requested_by"] == "rule:quiet_window.v3"
+    assert (line["rule_amount_krw"], line["rule_remainder_krw"]) == ("812", "0")
+    assert line["evidence_status"] == "NOT_VALIDATED" and line["accounting_eligibility"] == "NOT_ELIGIBLE"
+    assert cash_flows.post_cutover_exceptions(rows) == 0
+    assert cash_flows.rule_flows_untold(tmp_path)[1] == {"deposit": 0, "withdrawal": 0, "income": 1}
+
+
+@pytest.mark.parametrize(("traded", "after"), [
+    (order("b1", "BUY", "100000", "2026-10-09T04:30:00Z"), 900_812),                # a fill in the window
+    (order("s1", "SELL", "50000", "2026-10-07T01:00:00Z", settlement="2026-10-09"), 1_000_812)])  # a settlement
+def test_a_small_inflow_beside_a_fill_or_a_settlement_stays_open(tmp_path, traded, after):
+    # The same few hundred won there may be a fee or settlement adjustment, not interest (INC1).
+    rows = _window(tmp_path, after, [traded])
+    assert _rule_lines(rows) == []
+    assert _krw_residual(tmp_path)["quiet_window_declined"] == "too_small"
+
+
+def test_a_small_outflow_stays_open(tmp_path):
+    rows = _window(tmp_path, 999_188)                                               # INC2: maybe a fee
+    assert _rule_lines(rows) == [] and cash_flows.post_cutover_exceptions(rows) == 1
+    assert _krw_residual(tmp_path)["quiet_window_declined"] == "too_small"
+
+
+def test_income_by_rule_keeps_the_trade_evidence_and_issues_no_units(tmp_path):
+    start_epoch(tmp_path, now="2026-10-09T09:00:00Z")
+    toss_fire(tmp_path, 1_000_000, "2026-10-09T10:00:00Z")
+    toss_fire(tmp_path, 900_000, "2026-10-09T11:00:00Z", [order("b1", "BUY", "100000", "2026-10-09T10:30:00Z")])
+    toss_fire(tmp_path, 900_812, "2026-10-09T12:00:00Z")                            # interest, nothing else
+    (line,) = _rule_lines(ledger(tmp_path))
+    assert line["kind"] == "income"
+    evidence = cash_flows.toss_evidence(ledger(tmp_path), epoch=1, today_kst="2026-10-11")
+    assert evidence["buy_explained"] == 1 and evidence["problem_windows"] == 0
+    assert unit_shadow.unit_flows(ledger(tmp_path)) == []                           # income is the account's own
 
 
 def test_a_re_closed_flow_is_no_longer_the_rules_to_tell(tmp_path):
@@ -180,7 +220,8 @@ def _verdict(krw, *, fills=0.0, usd=0.0, open_orders=(0, 0)):
 
 @pytest.mark.parametrize(("krw", "expected"), [
     (200_000.0, ("deposit", None)), (200_099.0, ("deposit", None)), (200_101.0, (None, "not_round")),
-    (-50_000.0, ("withdrawal", None)), (4_999.0, (None, "too_small")), (15_000.0, (None, "not_round")),
+    (-50_000.0, ("withdrawal", None)), (4_999.0, ("income", None)), (-4_999.0, (None, "too_small")),
+    (15_000.0, (None, "not_round")),
     (0.0, (None, "too_small"))])
 def test_round_means_the_nearest_10000_within_the_tolerance(krw, expected):
     assert _verdict(krw) == expected

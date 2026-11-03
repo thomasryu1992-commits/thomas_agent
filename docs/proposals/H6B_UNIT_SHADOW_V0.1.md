@@ -22,7 +22,7 @@ D-H6-9(shadow는 판정에 쓰지 않는다)와 §4(unit 회계)는 이미 결�
   - 바이낸스: `flow_recorded`(CONFIRMED). 자산과 수량만 있고 원화 가치는 없다(`valuation_status: UNVALUED`).
     - cutover 뒤의 사건만 `ELIGIBLE`이다.
     - 카드·Pay 결제는 HELD다.
-  - 토스: `toss_residual`. 원화·달러 잔차 금액이 있다. 이것을 `flow_resolved`(Thomas 또는 `rule:quiet_window.v1/v2`)가 deposit / withdrawal / income / fee / read_incomplete / semantics_mismatch로 닫는다.
+  - 토스: `toss_residual`. 원화·달러 잔차 금액이 있다. 이것을 `flow_resolved`(Thomas 또는 `rule:quiet_window.v1/v2/v3`)가 deposit / withdrawal / income / fee / read_incomplete / semantics_mismatch로 닫는다.
 - [확인] 연쇄 해시 기록 도구 `holdings/chained_log.py`가 있다(기준선 기록이 쓴다).
 - [확인] 2026-10-28 현재 H6 준비 검사는 12개 중 11개가 PASS다. `toss_cash_semantics`가 매도 1건과 깨끗한 결제일 1일을 기다린다(`toss_needs: sell, settlement_day`).
 
