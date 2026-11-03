@@ -244,13 +244,19 @@ KIND_BLOG_KW_DIRECT = "blog_kw_direct"
 # draft's slot with the vault's rule on the vault as it stood when the draft was written, and record whether it is the
 # reported one. Maintenance, not risk: it reads the vault read-only and writes one record per run report.
 KIND_BLOG_SLOT = "blog_slot"
+# The instruction shadow (BLOG_DEPARTMENT v0.2 P6 built ahead, Thomas 2026-11-03): in the morning gap between the
+# production keyword run and the drafting cron, record the instruction the system would give; once the day's run report
+# arrives, record where each draft sits in it. Maintenance, not risk: it reads the vault read-only, opens no URL and
+# writes one instruction and one check a day. It fires every few minutes so one fire lands in the gap; outside it, a
+# fire with nothing to check returns without reading.
+KIND_BLOG_INSTRUCTION = "blog_instruction"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
                    KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE,
                    KIND_BREAKER_WATCH, KIND_ROUTE_WATCH, KIND_CANDLE_ARCHIVE,
                    KIND_NULL_CONTROL,
                    KIND_FORWARD_COHORT, KIND_HOLDINGS, KIND_MANAGEMENT_REPORT, KIND_BLOG_VERIFY,
                    KIND_BLOG_ANALYZE, KIND_BLOG_KW_REPLAY, KIND_BLOG_FEEDBACK, KIND_BLOG_KW_DIRECT,
-                   KIND_BLOG_SLOT})
+                   KIND_BLOG_SLOT, KIND_BLOG_INSTRUCTION})
 
 # The kinds whose lateness costs money rather than freshness.
 #
@@ -324,6 +330,7 @@ MAINTENANCE_KINDS: frozenset[str] = frozenset({
     KIND_FORWARD_COHORT,
     KIND_HOLDINGS, KIND_MANAGEMENT_REPORT, KIND_BLOG_VERIFY, KIND_BLOG_ANALYZE,
     KIND_BLOG_KW_REPLAY, KIND_BLOG_FEEDBACK, KIND_BLOG_KW_DIRECT, KIND_BLOG_SLOT,
+    KIND_BLOG_INSTRUCTION,
 })
 
 # How much of one pass the non-risk kinds may spend before it stops STARTING more of them.
@@ -1553,6 +1560,10 @@ def _execute(
         from .blog import slot as blog_slot
 
         return blog_slot.fire(ledger, now=now)
+    if schedule.kind == KIND_BLOG_INSTRUCTION:
+        from .blog import instruction as blog_instruction
+
+        return blog_instruction.fire(ledger, now=now)
     if schedule.kind == KIND_MANAGEMENT_REPORT:
         # WMR-1: read the four sections (each fails on its own) and send them on the control bot.
         # Unlike KIND_REPORT, a send that fails RAISES: a weekly report that vanished quietly is
