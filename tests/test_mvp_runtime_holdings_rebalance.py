@@ -194,6 +194,88 @@ def test_an_override_names_the_tax_kind():
     assert rb.tax_kind(position, {"toss:domestic:A": rb.TAX_FREE}) == rb.TAX_FREE
 
 
+# --- §8.5 step 4: overseas gains and losses of one year net; domestic-listed ETFs net with nothing ---------------
+
+def _with(*extra, bonds=30_000_000.0):
+    """The equity-heavy portfolio with ``extra`` positions held in bonds (under target, so never sold)."""
+    krw, positions = _equity_heavy()
+    positions = [p if p.instrument != "toss:domestic:KRBOND" else Position(p.instrument, p.asset_class, 3_000, bonds,
+                                                                             p.pnl_krw) for p in positions]
+    return krw, positions + list(extra)
+
+
+@pytest.mark.parametrize(("ytd", "taxed", "saved"), [
+    (2_400_000.0, 275_000, 60_500),        # step 4 sells 4.4M of USWORLD (ratio 1/16): 275,000 taxed
+    (3_000_000.0, 875_000, 66_000)])       # no room: 6M sold (375,000) + the 500,000 already over the deduction
+def test_an_overseas_holding_at_a_loss_is_shown_beside_a_taxed_overseas_gain(ytd, taxed, saved):
+    krw, positions = _with(Position("toss:overseas:USBOND", al.BONDS, 10, 1_000_000.0, -300_000.0))
+    out = rb.plan(class_krw=krw, positions=positions, complete=True, overseas_gain_ytd_krw=ytd,
+                  candidates={al.BONDS: ["toss:domestic:KRBOND"]})
+    assert out.loss_offset == {"taxed_gain_krw": taxed,
+                               "losers": [{"instrument": "toss:overseas:USBOND", "loss_krw": 300_000}],
+                               "tax_saved_krw": saved}                    # 0.22 × min(taxed, 300,000)
+    assert not any(o["instrument"] == "toss:overseas:USBOND" for o in out.orders)     # shown, never ordered
+
+
+def test_a_domestic_listed_etf_at_a_loss_is_never_offered_as_an_offset():
+    # Its loss is not overseas transfer income: KRGOLD's 15.4% is dividend income, taxed per sale.
+    krw, positions = _with(Position("toss:domestic:KRBOND2", al.BONDS, 100, 1_000_000.0, -300_000.0))
+    out = rb.plan(class_krw=krw, positions=positions, complete=True, overseas_gain_ytd_krw=2_400_000.0,
+                  candidates={al.BONDS: ["toss:domestic:KRBOND"]})
+    assert out.est_tax_krw > 0 and out.loss_offset is None
+
+
+def test_no_taxed_overseas_gain_means_no_offset_hint():
+    krw, positions = _with(Position("toss:overseas:USBOND", al.BONDS, 10, 1_000_000.0, -300_000.0))
+    out = rb.plan(class_krw=krw, positions=positions, complete=True, overseas_gain_ytd_krw=0.0,
+                  candidates={al.BONDS: ["toss:domestic:KRBOND"]})
+    assert not any(o["tax_kind"] == rb.OVERSEAS and o["est_tax_krw"] for o in out.orders)
+    assert out.loss_offset is None
+
+
+def test_an_overseas_loss_the_plan_sells_nets_against_its_overseas_gain():
+    # The deduction is used up. USLOSS (ratio −1/8) is sold first and realises −500,000; USWORLD's 2M then
+    # realises +125,000, which the loss covers: no tax, and USLOSS is not offered again as a hint.
+    krw, positions = _equity_heavy()
+    positions = [p for p in positions if p.instrument != "toss:domestic:KRWORLD"] + [
+        Position("toss:domestic:KRWORLD", al.GLOBAL_EQUITY, 800, 16_000_000.0, 3_200_000.0),
+        Position("toss:overseas:USLOSS", al.GLOBAL_EQUITY, 20, 4_000_000.0, -500_000.0)]
+    out = rb.plan(class_krw=krw, positions=positions, complete=True, overseas_gain_ytd_krw=2_500_000.0,
+                  candidates={al.BONDS: ["toss:domestic:KRBOND"]})
+    sells = {o["instrument"]: o for o in out.orders if o["side"] == "SELL"}
+    assert sells["toss:overseas:USLOSS"]["gain_krw"] == -500_000 and sells["toss:overseas:USWORLD"]["gain_krw"] == 125_000
+    assert sells["toss:overseas:USWORLD"]["est_tax_krw"] == 0 and out.est_tax_krw == 0
+    assert out.loss_offset is None
+
+
+def test_a_loss_the_plan_already_sells_is_counted_once_and_not_offered_again():
+    # 3M realised this year (500,000 over the deduction). The plan sells USLOSS (−500,000) and 2M of USWORLD
+    # (+125,000): 375,000 of loss is left for the year's excess, so 125,000 stays taxed. Only USBOND is offered.
+    krw, positions = _equity_heavy()
+    positions = [p for p in positions if p.instrument not in ("toss:domestic:KRWORLD", "toss:domestic:KRBOND")] + [
+        Position("toss:domestic:KRWORLD", al.GLOBAL_EQUITY, 800, 16_000_000.0, 3_200_000.0),
+        Position("toss:overseas:USLOSS", al.GLOBAL_EQUITY, 20, 4_000_000.0, -500_000.0),
+        Position("toss:domestic:KRBOND", al.BONDS, 3_000, 30_000_000.0, 100_000.0),
+        Position("toss:overseas:USBOND", al.BONDS, 10, 1_000_000.0, -300_000.0)]
+    out = rb.plan(class_krw=krw, positions=positions, complete=True, overseas_gain_ytd_krw=3_000_000.0,
+                  candidates={al.BONDS: ["toss:domestic:KRBOND"]})
+    assert out.loss_offset == {"taxed_gain_krw": 125_000,
+                               "losers": [{"instrument": "toss:overseas:USBOND", "loss_krw": 300_000}],
+                               "tax_saved_krw": 27_500}
+
+
+def test_the_render_lists_the_offset_and_says_it_is_not_in_the_plan():
+    krw, positions = _with(Position("toss:overseas:USBOND", al.BONDS, 10, 1_000_000.0, -300_000.0))
+    out = rb.plan(class_krw=krw, positions=positions, complete=True, overseas_gain_ytd_krw=2_400_000.0,
+                  candidates={al.BONDS: ["toss:domestic:KRBOND"]})
+    text = "\n".join(rb.render(out, as_of="2026-11-03T00:00:00Z"))
+    assert "loss offset : about 275,000 KRW of overseas gain is taxed this year" in text
+    assert "Not in the plan" in text and "toss:overseas:USBOND" in text and "up to 60,500 KRW" in text
+    plain = rb.plan(class_krw=krw, positions=positions[:-1], complete=True, overseas_gain_ytd_krw=2_400_000.0,
+                    candidates={al.BONDS: ["toss:domestic:KRBOND"]})
+    assert "loss offset" not in "\n".join(rb.render(plain, as_of="2026-11-03T00:00:00Z"))
+
+
 # --- wiring: the local positions file, Thomas's candidates, the terminal render -----------------------------
 
 import json  # noqa: E402

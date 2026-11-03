@@ -6,7 +6,9 @@
 - band b = min(5pp, 0.25 x target), with stock as one 40% sleeve and no band on cash;
 - one class outside its band returns *every* class to target;
 - executed cheapest tax first (§8.5): surplus cash, then tax-free sells, then overseas sells inside the year's
-  2.5M KRW deduction, then taxable sells.
+  2.5M KRW deduction, then taxable sells. Overseas gains and losses of the year are netted, and an overseas
+  holding at a loss the plan does not sell is shown beside a taxed overseas gain (step 4's offset hint). A
+  domestic-listed ETF's gain is dividend income, taxed per sale, and nets with nothing.
 
 **Pure.** The terminal mode (``scripts/holdings_board.py --rebalance``) hands in the last fire's positions and
 class totals, Thomas's approved candidates and, when known, the year's realised overseas gain. Nothing here
@@ -89,6 +91,7 @@ class Plan:
     after: dict[str, float] = field(default_factory=dict)
     est_tax_krw: float = 0.0
     overseas_gain_ytd_krw: float | None = None
+    loss_offset: dict[str, Any] | None = None      # §8.5 step 4: overseas holdings at a loss, shown, never ordered
     notes: list[str] = field(default_factory=list)
 
 
@@ -237,8 +240,14 @@ def plan(*, class_krw: Mapping[str, float], positions: Iterable[Position], compl
         (result.orders if order["amount_krw"] >= MIN_ORDER_KRW or whole_buy else result.carried).append(order)
     result.orders.sort(key=lambda o: (o["step"], o["side"] != "SELL", o["instrument"]))
 
-    # Tax: taxable steps by their rate on the gain; overseas gains above what is left of the deduction.
+    # Tax: taxable steps by their rate on the gain; overseas gains above what is left of the deduction. Overseas
+    # gains and losses of one year are netted (§8.5 step 4), so an overseas loss sold in this plan widens what goes
+    # untaxed. A domestic-listed ETF's gain is dividend income taxed on its own sale: it nets with nothing.
     left = deduction_left
+    plan_losses = sum(-o["gain_krw"] for o in result.orders if o["tax_kind"] == OVERSEAS and o["gain_krw"] < 0)
+    if plan_losses:
+        left = (left or 0.0) + plan_losses
+    taxed_overseas = 0.0
     for order in result.orders:
         gain = max(0.0, order["gain_krw"])
         kind = order["tax_kind"]
@@ -246,12 +255,30 @@ def plan(*, class_krw: Mapping[str, float], positions: Iterable[Position], compl
             covered = 0.0 if left is None else min(gain, left)
             if left is not None:
                 left -= covered
+            taxed_overseas += gain - covered
             order["est_tax_krw"] = round((gain - covered) * TAX_RATE[OVERSEAS])
         elif kind in TAX_RATE:
             order["est_tax_krw"] = round(gain * TAX_RATE[kind])
         else:
             order["est_tax_krw"] = 0
         result.est_tax_krw += order["est_tax_krw"]
+
+    # §8.5 step 4 (RB1): an overseas holding at an unrealised loss that this plan does not sell would offset this
+    # year's taxed overseas gain if sold in the same year. Shown, never ordered: selling it is Thomas's choice.
+    # The year's taxed overseas gain: this plan's, plus what was realised over the deduction before it, less what
+    # this plan's own overseas losses still cover after its gains.
+    ytd_excess = (0.0 if overseas_gain_ytd_krw is None
+                  else max(0.0, overseas_gain_ytd_krw - OVERSEAS_DEDUCTION_KRW))
+    taxed = taxed_overseas + max(0.0, ytd_excess - (left or 0.0))
+    selling = {o["instrument"] for o in result.orders if o["side"] == "SELL"}
+    losers = sorted(((p.instrument, -p.pnl_krw) for p in positions
+                     if tax_kind(p, tax_overrides) == OVERSEAS and p.pnl_krw is not None and p.pnl_krw < 0
+                     and p.instrument not in selling), key=lambda row: (-row[1], row[0]))
+    if taxed > 0 and losers:
+        offset = min(taxed, sum(loss for _instrument, loss in losers))
+        result.loss_offset = {"taxed_gain_krw": round(taxed),
+                              "losers": [{"instrument": i, "loss_krw": round(loss)} for i, loss in losers],
+                              "tax_saved_krw": round(offset * TAX_RATE[OVERSEAS])}
 
     after = dict(class_krw)
     for order in result.orders:
@@ -342,5 +369,12 @@ def render(result: Plan, *, as_of: Any) -> list[str]:
             else f"{_won(result.overseas_gain_ytd_krw)} of {_won(OVERSEAS_DEDUCTION_KRW)} deduction")
     lines += [f"overseas gain this year: {gain}", f"est. tax    : {_won(result.est_tax_krw)} KRW (estimate)",
               "fees        : not included"]
+    if result.loss_offset:
+        offset = result.loss_offset
+        lines.append(f"loss offset : about {_won(offset['taxed_gain_krw'])} KRW of overseas gain is taxed this year; "
+                     "selling an overseas holding at a loss in the same year offsets it (§8.5 step 4). "
+                     "Not in the plan; buying it back keeps the allocation:")
+        lines += [f"  {row['instrument']:28} unrealised loss {_won(row['loss_krw']):>14} KRW" for row in offset["losers"]]
+        lines.append(f"  est. tax saved: up to {_won(offset['tax_saved_krw'])} KRW (estimate)")
     lines += [f"note        : {n}" for n in result.notes]
     return lines
