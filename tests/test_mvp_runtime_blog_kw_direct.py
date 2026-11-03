@@ -14,6 +14,7 @@ import io
 import json
 import tarfile
 import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -69,7 +70,7 @@ def _transport(rows=(), web=None, own=None):
     return t, sleeps
 
 
-# --- the gate -----------------------------------------------------------------------------------------------------------
+# --- the gate -------------------------------------------------------------------------------------------------------
 
 def test_with_either_opt_in_unset_the_fire_reads_nothing(tmp_path, monkeypatch):
     ledger = LedgerStore(tmp_path / "state" / LEDGER_REL)
@@ -84,16 +85,17 @@ def test_with_either_opt_in_unset_the_fire_reads_nothing(tmp_path, monkeypatch):
 
 
 def test_the_gated_fetcher_rechecks_its_opt_in_before_each_request(monkeypatch):
-    def no_socket(*_a, **_k):
-        raise AssertionError("a request left after the opt-in was withdrawn")
-
-    monkeypatch.setattr(kd.urllib.request, "urlopen", no_socket)
     assert isinstance(kd.select_web_fetcher(), kd.InertFetcher)
     with pytest.raises(kd.DirectRefused):
         kd.select_own_fetcher().fetch(RSS, headers={}, timeout=1)
     _open(monkeypatch)
     web, own = kd.select_web_fetcher(), kd.select_own_fetcher()
     assert (web.live, web.provider_id, own.provider_id) == (True, kd.WEB_PROVIDER, kd.OWN_PROVIDER)
+
+    def no_socket(*_a, **_k):
+        raise AssertionError("a request left after the opt-in was withdrawn")
+
+    monkeypatch.setattr(web._opener, "open", no_socket)
     monkeypatch.delenv(kd.WEB_ENV)
     with pytest.raises(safety_gate.SafetyGateBlocked):
         web.fetch(AC, headers={}, timeout=1)
@@ -109,17 +111,45 @@ def test_the_gated_fetcher_sends_the_callers_headers(monkeypatch):
         def __exit__(self, *_):
             return False
 
-    def urlopen(request, timeout):
+    def open_(request, timeout):
         sent.update(url=request.full_url, ua=request.get_header("User-agent"), timeout=timeout)
         return Response("본문".encode("utf-8"))
 
     _open(monkeypatch)
-    monkeypatch.setattr(kd.urllib.request, "urlopen", urlopen)
-    assert kd.select_web_fetcher().fetch(AC, headers={"User-Agent": "UA"}, timeout=7) == "본문"
+    web = kd.select_web_fetcher()
+    monkeypatch.setattr(web._opener, "open", open_)
+    assert web.fetch(AC, headers={"User-Agent": "UA"}, timeout=7) == "본문"
     assert sent == {"url": AC, "ua": "UA", "timeout": 7}
 
 
-# --- the transport ------------------------------------------------------------------------------------------------------
+@pytest.mark.parametrize("target, follows", [
+    ("https://search.naver.com/search.naver?query=b", True),     # within the group
+    ("https://m.blog.naver.com/api/blogs/x", True),
+    ("https://example.com/", False),                            # out of every group
+    ("https://rss.blog.naver.com/thomasai.xml", False),         # the other group
+    ("http://search.naver.com/x", False),                       # not https
+])
+def test_a_redirect_is_followed_only_within_the_group(monkeypatch, target, follows):
+    _open(monkeypatch)
+    handler = next(h for h in kd.select_web_fetcher()._opener.handlers if isinstance(h, kd.GroupRedirects))
+    request = urllib.request.Request("https://search.naver.com/search.naver?query=a")
+    if follows:
+        assert handler.redirect_request(request, None, 302, "Found", {}, target).full_url == target
+    else:
+        with pytest.raises(kd.DirectRefused):
+            handler.redirect_request(request, None, 302, "Found", {}, target)
+
+
+def test_a_refused_redirect_is_counted_and_not_retried():
+    web = Fake(fail=[kd.DirectRefused("example.com")])
+    t, sleeps = _transport(web=web)
+    with pytest.raises(kd.DirectRefused):
+        t(AC)
+    assert (t.refused, len(web.asked), sleeps) == (1, 1, [0.3])
+    assert t.hosts["ac.search.naver.com"] == {"fetched": 0, "failed": 0} and t.blocked_by is None
+
+
+# --- the transport --------------------------------------------------------------------------------------------------
 
 def test_a_host_outside_both_groups_is_refused_and_never_requested():
     web, own = Fake(), Fake()
@@ -189,7 +219,7 @@ def test_the_clock_follows_the_recording():
     assert (t.clock.minute, t.epoch) == (12, 9.0)
 
 
-# --- one bundle, and the fire -------------------------------------------------------------------------------------------
+# --- one bundle, and the fire ---------------------------------------------------------------------------------------
 
 def _cand(kw, lane="AI 활용", score=10.0):
     return {"kw": kw, "lane": lane, "score": score, "decision": {"decision": "CREATE_NEW"}}

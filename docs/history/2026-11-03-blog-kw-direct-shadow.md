@@ -35,6 +35,8 @@ named `MVP_BLOG_WEB_READ`/`MVP_BLOG_OWN_READ`.
   `rss.blog.naver.com`, `blog.like.naver.com` and `thomasai.tistory.com`.
   - The pipeline reads its own RSS in every run, so P4b needs both.
   - A host in neither list is refused and never requested. So is plain http.
+  - A redirect is followed only to an https host of the same group. A plain opener follows a 3xx anywhere, which
+    would break the rule above the first time a listed host redirected elsewhere.
   - Each fetcher re-reads its opt-in before every request (`assert_authorization`).
 
 **What the record says.**
@@ -67,7 +69,8 @@ named `MVP_BLOG_WEB_READ`/`MVP_BLOG_OWN_READ`.
 - **Tests** (`tests/test_mvp_runtime_blog_kw_direct.py`):
   - off with either opt-in unset, and nothing read;
   - the gated fetcher re-checks before each request and sends the caller's headers;
-  - unlisted hosts and plain http are refused unrequested;
+  - unlisted hosts and plain http are refused unrequested, and a redirect out of the group is refused, counted and
+    not retried;
   - Search Ad comes from the recording only;
   - retry once, then raise; 429/403/503 and a withdrawn opt-in stop all later requests;
   - the clock follows the recording;

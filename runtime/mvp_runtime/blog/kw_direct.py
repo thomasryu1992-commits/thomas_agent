@@ -21,8 +21,9 @@ Decided by Thomas on 2026-11-03, each as recommended:
   ``MVP_BLOG_OWN_READ=enabled`` opens the reads of this blog. The pipeline reads its own RSS in every run, so P4b needs
   both, and with either unset the fire says ``off`` and reads nothing.
 
-A host outside both lists is refused, never requested. Request headers are not recorded (the caller's user agent and
-referer are sent as the vault tool sends them). The record carries counts per host, never a URL or a body.
+A host outside both lists is refused, never requested, and so is a redirect out of a group. Request headers are not
+recorded (the caller's user agent and referer are sent as the vault tool sends them). The record carries counts per
+host, never a URL or a body.
 """
 
 from __future__ import annotations
@@ -98,20 +99,36 @@ class InertFetcher:
         raise DirectRefused(f"{self.env_var} is not set to {OPT_IN!r}")
 
 
+class GroupRedirects(urllib.request.HTTPRedirectHandler):
+    """Follows a redirect only to an https host of the same group. A plain opener follows a 3xx anywhere, which would
+    make "a host outside the lists is never requested" false the first time a listed host redirects elsewhere."""
+
+    def __init__(self, hosts: tuple[str, ...]):
+        super().__init__()
+        self.hosts = hosts
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001 — urllib's signature
+        parts = urllib.parse.urlsplit(newurl)
+        if parts.scheme != "https" or (parts.hostname or "") not in self.hosts:
+            raise DirectRefused(parts.hostname or "no host")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 class GatedFetcher:
     """One host group's egress. Built only behind the opt-in, and re-checks it before every request."""
 
     live = True
 
-    def __init__(self, authorization: Authorization, provider_id: str):
+    def __init__(self, authorization: Authorization, provider_id: str, hosts: tuple[str, ...]):
         self._authorization = authorization
         self.provider_id = provider_id
+        self._opener = urllib.request.build_opener(GroupRedirects(hosts))
 
     def fetch(self, url: str, *, headers: Mapping[str, str], timeout: float) -> str:
         safety_gate.assert_authorization(self._authorization, required_flags=_NETWORK_FLAGS,
                                          provider_id=self.provider_id, now=timeutil.utc_now_iso())
         request = urllib.request.Request(url, headers=dict(headers))
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with self._opener.open(request, timeout=timeout) as response:
             return response.read().decode("utf-8", "ignore")
 
 
@@ -123,7 +140,7 @@ def select_web_fetcher() -> Any:
         flags=_NETWORK_FLAGS,
         provider_id=WEB_PROVIDER,
         default_factory=lambda: InertFetcher(WEB_ENV),
-        gated_factory=lambda authorization: GatedFetcher(authorization, WEB_PROVIDER),
+        gated_factory=lambda authorization: GatedFetcher(authorization, WEB_PROVIDER, WEB_HOSTS),
     )
 
 
@@ -135,7 +152,7 @@ def select_own_fetcher() -> Any:
         flags=_NETWORK_FLAGS,
         provider_id=OWN_PROVIDER,
         default_factory=lambda: InertFetcher(OWN_ENV),
-        gated_factory=lambda authorization: GatedFetcher(authorization, OWN_PROVIDER),
+        gated_factory=lambda authorization: GatedFetcher(authorization, OWN_PROVIDER, OWN_HOSTS),
     )
 
 
@@ -201,6 +218,10 @@ class DirectTransport:
         counts = self.hosts[host]
         try:
             body = fetcher.fetch(url, headers=headers or {}, timeout=timeout)
+        except DirectRefused:
+            # A redirect out of the group: refused, not followed, and not retried.
+            self.refused += 1
+            raise
         except SafetyGateBlocked:
             # The opt-in went away under a running fire: stop, as a block does.
             counts["failed"] += 1
@@ -242,7 +263,8 @@ def _iso(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def direct(bundle: Path, *, web: Any, own: Any, now: str, sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
+def direct(bundle: Path, *, web: Any, own: Any, now: str,
+           sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
     """Run one bundle against the web and compare with its recorded history. Never raises for a broken bundle."""
     from . import kw_pipeline as kp
 
