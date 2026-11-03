@@ -302,12 +302,14 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
                 f"[보유 자산] H6 예외 {ready['exceptions']}건(새 {ready['exceptions_new']}건) — cutover 이후 "
                 f"설명되지 않은 입출금이 있어 {cash_flows.READY_NAME}가 막혀 있습니다. Thomas 터미널에서 "
                 "확인(--flows) 후 해소(--resolve)할 수 있습니다."))
-        # F2 (Thomas 2026-10-26): what the quiet-window rule closed, by direction and count, never an amount.
+        # F2 (Thomas 2026-10-26): what the quiet-window rule closed, by kind and count, never an amount (v3 adds
+        # income, INC4).
         token, counts = cash_flows.rule_flows_untold(state_dir(root))
         if token:
             rule_flow_alert = (token, (
-                f"[보유 자산] 토스 입금 {counts.get('deposit', 0)}건·출금 {counts.get('withdrawal', 0)}건을 "
-                "규칙(quiet_window.v2)으로 자동 분류했습니다. 틀렸다면 Thomas 터미널에서 확인(--flows) 후 "
+                f"[보유 자산] 토스 입금 {counts.get('deposit', 0)}건·출금 {counts.get('withdrawal', 0)}건·"
+                f"이자 {counts.get('income', 0)}건을 규칙({cash_flows.QUIET_WINDOW_RULE.removeprefix('rule:')})으로 "
+                "자동 분류했습니다. 틀렸다면 Thomas 터미널에서 확인(--flows) 후 "
                 "다시 분류(--resolve)할 수 있습니다."))
         if binance_ok and toss_ok:
             # Last, so only a fire whose histories, ledger, Toss pass and readiness all ended counts.
