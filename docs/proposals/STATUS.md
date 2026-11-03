@@ -4,7 +4,7 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **87**건: `DRAFT` 2 · `PARTIALLY DECIDED` 9 · `DECIDED` 21 · `IMPLEMENTED` 45 · `SUPERSEDED` 3 · `RECORD` 7
+제안서 **87**건: `DRAFT` 2 · `PARTIALLY DECIDED` 9 · `DECIDED` 20 · `IMPLEMENTED` 46 · `SUPERSEDED` 3 · `RECORD` 7
 
 ## Thomas 결정 대기 (11)
 
@@ -24,7 +24,7 @@
 | [BLOG_DEPARTMENT_V0.1.md](BLOG_DEPARTMENT_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-26 | 생산은 지금의 볼트 경로에서 시작하고, 런타임 블로그 레인(`blog_*` 10개 모듈)은 지웠다(#1319). v0.2(Thomas 2026-10-26): 통합할 수 있는 단계(키워드, 검증, 발행 계획, 분석, 피드백)는 시스템 안으로 옮기고, 원고 생성·발행·통계 수집만 외주로 둔다(§3). §7의 N1·S1·L2·L3·R1–R3은 권고대로 정했다(Thomas 2026-10-26). P0 관측(#1321)·P1 실행 보고(#1326)·P2 검증(#1328)은 배포됐고(2026-10-26), 전환 조건을 관찰 중이다. P3 분석(`blog_analyze`)은 2026-10-27에 배포됐다. P4는 재생 그림자(P4a)를 먼저 하기로 정했고(Thomas 2026-10-27), 2026-10-27에 배포됐다(재생 포트 재생성 #1337은 2026-11-01 머지). P5 피드백 그림자(`blog_feedback`)는 2026-11-03에 배포됐다. P4b 직접 조회 그림자(`blog_kw_direct`)는 미리 구현하기로 했고(Thomas 2026-11-03), opt-in 두 개(`MVP_BLOG_WEB_READ`·`MVP_BLOG_OWN_READ`)가 꺼진 채로 들어간다. 켜는 것은 P4a 조건을 채운 뒤 Thomas가 한다. P7은 네이버 슬롯 그림자(`blog_slot`)를 먼저 만들기로 했고, 티스토리는 다시 계획하지 않고 큐 규칙 검사로 같은 기록에 넣기로 했다(Thomas 2026-11-03). P6·P8은 시작하지 않았다. |
 | [G6_SELL_REBALANCE_V0.1.md](G6_SELL_REBALANCE_V0.1.md) | `DRAFT` | 2026-11-03 | G6(자동 리밸런싱)의 남은 절반인 매도를 다루는 결정 패킷 초안이다. **지금 묻지 않는다.** G6은 G1d(H6c, unit 권위 전환)가 끝난 뒤 다시 여는 별도 결정이므로(`THOMAS_AGENT_TARGET_ARCHITECTURE_V0.1.md` §6), H6c가 정해진 뒤 SQ1–SQ5를 묻는다. 그때까지 코드, 정책, env, 스케줄은 바뀌지 않는다. 미리 써 두는 이유는 H6c가 정해지는 날 바로 물을 수 있게 하기 위해서다. |
 
-## 결정됨 — 구현 남음 (21)
+## 결정됨 — 구현 남음 (20)
 
 결정은 끝났고 결정된 것이 아직 다 지어지지 않았다. 결정이 만든 구현 대기열이다.
 
@@ -51,7 +51,7 @@
 | [HOLDINGS_STATUS_READ_AND_AUTO_FLOWS_V0.1.md](HOLDINGS_STATUS_READ_AND_AUTO_FLOWS_V0.1.md) | `DECIDED` | 2026-10-26 | R1 예, R2 예, R3 예, F1 A, F2 아니오(Thomas). PR-1(R1–R3: `toss_needs`, `holdings_status` v1.1, Claude 프로필, CLAUDE.md, #1314)과 PR-2(F1–F2: `quiet_window.v1`, Thomas 재분류 1회, 방향·개수 알림)를 지었다. 둘 다 병합·배포됐다(candidate-1329부터). 2026-10-28: 규칙이 닫지 않은 이유를 조건 이름으로 원장과 `--flows`에 남긴다(§3.2, Thomas). 같은 날 규칙 v2(§3.2a, Thomas): 체결 구간 포함, 1만 원 단위와 끝전 허용 범위, 미체결 주문 구간 제외. 2026-11-03: 규칙 v3(§3.2b, Thomas INC1–INC4): 체결·정산이 없는 창의 5천 원 미만 원화 유입을 이자(`income`)로 닫는다. 소액 유출은 그대로 Thomas가 본다. **결정 전 상태:** DRAFT — Thomas 결정 다섯 건(R1–R3, F1–F2)을 기다렸다. Thomas가 두 가지를 요청했다(2026-10-26). 하나는 holdings 검사의 이름과 상태만 Claude read door로 읽는 것이다(금액 없음). 다른 하나는 입출금을 사람이 닫지 않고 자동으로 확인하는 것이다. 코드·정책·스키마 변경은 없다. |
 | [H6B_UNIT_SHADOW_V0.1.md](H6B_UNIT_SHADOW_V0.1.md) | `DECIDED` | 2026-10-28 | S1=A, S2=A, S3=A, S4=A, S5=A(Thomas, "승인: H6b-shadow S1=A S2=A S3=A S4=A S5=A, 설계 문서·구현·PR"). 같은 날 PR 하나로 지었다(`holdings/unit_shadow.py`, 아래 §3). 배포 전에는 아무것도 계산하지 않는다. H6c는 이 문서가 승인하지 않는다. |
 
-## 구현됨 (45)
+## 구현됨 (46)
 
 결정되고 지어졌다. 문서는 결정의 근거 기록으로 남는다.
 
