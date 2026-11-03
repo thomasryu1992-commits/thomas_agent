@@ -133,6 +133,9 @@ _RECORD_KINDS = (
     # Each reported Naver draft's slot recomputed with the vault's rule, compared with the reported one
     # (BLOG_DEPARTMENT v0.2 P7, 2026-11-03); appended by ``blog_slot``.
     "blog_slot",
+    # The instruction the system would give the drafting cron, and where each reported draft sits in it
+    # (BLOG_DEPARTMENT v0.2 P6 shadow, 2026-11-03); appended by ``blog_instruction``.
+    "blog_instruction", "blog_instruction_check",
     "programization_observation", "programization_pattern",
 )
 

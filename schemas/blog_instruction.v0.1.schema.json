@@ -1,0 +1,197 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "blog_instruction.v0.1.schema.json",
+  "title": "Blog Instruction Shadow v0.1",
+  "description": "The instruction the system would hand the drafting cron for one KST day (BLOG_DEPARTMENT v0.2 P6, built ahead in shadow, Thomas 2026-11-03): the weekly review's open follow-ups, the production keyword run's new and uncovered candidates per lane in the order the latest P5 guideline gives them, and the cron's own Tistory ranking. Built after the production keyword run and before the drafting cron starts; nothing reads it yet. Keywords are public search phrases; no title, URL or path is recorded. No slot is carried: P7 (blog_slot) checks those.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "instruction_id",
+    "recorded_at",
+    "mode",
+    "run_date",
+    "history_date",
+    "history_today",
+    "feedback_id",
+    "naver",
+    "tistory",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "blog_instruction.v0.1"
+    },
+    "instruction_id": {
+      "type": "string",
+      "pattern": "^bloginstruction_[0-9a-f]{20}$"
+    },
+    "recorded_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "mode": {
+      "const": "shadow"
+    },
+    "run_date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "description": "The KST day of the drafting run the instruction is for."
+    },
+    "history_date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "description": "The production history file read (named by the run's UTC date)."
+    },
+    "history_today": {
+      "type": "boolean",
+      "description": "False when the morning's run wrote no history (it reused its queue) and the newest older one was read."
+    },
+    "feedback_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^blogfeedback_[0-9a-f]{20}$",
+      "description": "The P5 guideline applied; null when none was recorded yet (every factor 1)."
+    },
+    "naver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "next_topics",
+        "queue"
+      ],
+      "properties": {
+        "next_topics": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kw",
+              "lane"
+            ],
+            "properties": {
+              "kw": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "lane": {
+                "type": "string",
+                "maxLength": 40
+              }
+            }
+          }
+        },
+        "queue": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kw",
+              "lane",
+              "rank",
+              "rank_unadjusted",
+              "factor",
+              "season_days"
+            ],
+            "properties": {
+              "kw": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "lane": {
+                "type": "string",
+                "maxLength": 40
+              },
+              "rank": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "rank_unadjusted": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "factor": {
+                "enum": [
+                  0.8,
+                  1.0,
+                  1.2
+                ]
+              },
+              "season_days": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "description": "Days to the nearest season peak the calendar matches, if any."
+              }
+            }
+          }
+        }
+      }
+    },
+    "tistory": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80
+      },
+      "description": "tistory-pick --rank, best first; a keyword's rank is its position."
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "next_topics",
+        "queue",
+        "queue_lanes",
+        "filtered_not_create",
+        "filtered_covered",
+        "tistory"
+      ],
+      "properties": {
+        "next_topics": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queue": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queue_lanes": {
+          "type": "object",
+          "maxProperties": 20,
+          "propertyNames": {
+            "maxLength": 40
+          },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "filtered_not_create": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "filtered_covered": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tistory": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}
