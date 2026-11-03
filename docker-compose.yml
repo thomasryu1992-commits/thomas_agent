@@ -427,6 +427,11 @@ services:
       # Where the read-only vault mount above lands. A literal: it names a path inside this container.
       MVP_BLOG_VAULT_ROOT: /app/blog_vault
       MVP_KW_REPLAY_DIR: /app/kw_replay
+      # The keyword pipeline's direct shadow (BLOG_DEPARTMENT v0.2 P4b, §7 N1): each var IS the gate for its host
+      # group (`enabled`). Both unset by default; the `blog_kw_direct` fire then reads nothing. No credential rides
+      # with them: the Search Ad API stays recorded, so its key stays on pipeline-worker alone.
+      MVP_BLOG_WEB_READ: ${MVP_BLOG_WEB_READ:-}
+      MVP_BLOG_OWN_READ: ${MVP_BLOG_OWN_READ:-}
       # The holdings board's Toss Securities account read (P1-b of MULTI_ASSET_EXPANSION_V0.1.md;
       # KIS replaced by Toss, Thomas 2026-10-07). The `holdings_refresh` fire is a maintenance kind,
       # and this lane — not the risk lane — holds the key, so a brokerage key never sits next to the

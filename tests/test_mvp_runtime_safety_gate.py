@@ -254,6 +254,11 @@ def test_the_env_only_gate_has_exactly_the_capabilities_thomas_named():
         # opt-in (MVP_TOSS_ORDERS=buy_only) and provider id; BUY is a constant, domestic whole shares only, a
         # scenario Thomas approved. It inherits nothing from the crypto order adapters' authorization.
         "runtime/mvp_runtime/holdings/toss_orders.py",  # the Toss buy-order adapter
+        # Added 2026-11-03 (BLOG_DEPARTMENT v0.2 P4b; §7 N1 decided 2026-10-26, the build Thomas 2026-11-03): the
+        # keyword pipeline's direct shadow. Two opt-ins, one per host group (Naver and Google query hosts; this
+        # blog's reads), each with its own provider id; a host in neither list is refused, and the Search Ad API
+        # is never requested from here (its answers come from the root bundle).
+        "runtime/mvp_runtime/blog/kw_direct.py",  # the keyword pipeline's direct reads
     }, callers
 
 
