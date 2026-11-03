@@ -96,3 +96,14 @@ docker exec thomas-scheduler python -m runtime.mvp_runtime.scheduler_cli add --k
 ```
 
 Revoking means unsetting the variables and restarting the container.
+
+**Regenerated again the same day, from vault 83c84801 (before the first deploy).** The vault moved after 48352c60:
+`6d0d086d` caps the 가게 마케팅 queue at two candidates per cluster (`diverse_rows`), and the C3 change adds the third
+category `사장님 가게 마케팅` with rule M9 to `blog_taxonomy.py`.
+- Every one of those files is in `GENERATED_FROM_SHA256`. A root bundle run with them would have replayed
+  `generator_stale` against the 48352c60 port, so the ports are cut from 83c84801 instead. That covers the replay port,
+  its taxonomy, and the P2 `taxonomy.py`, which now knows the third category.
+- **Deploy order.** The bundle root recorded on 2026-11-03 ran vault 706609cd, which is the port deployed then. That
+  day's replay (22:00 KST) runs on the old image, and this one goes up after it. Root's vault checkout must be at
+  83c84801 before the 07:10 KST run on 2026-11-04. Every later vault change to these files needs the same regenerate,
+  then sync, then deploy order.
