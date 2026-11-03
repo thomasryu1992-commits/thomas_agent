@@ -13,16 +13,25 @@ the draft's own file name. The drafts written after this one carry higher 편 nu
 numbered above this one. The drafting shell runs ``naver_slot.py fix`` before it writes the report, so the reported
 value already has the rule's minutes. What is compared is the writer's choice of day and window.
 
-**What is not compared.**
-- **Tistory.** ``tools/tistory_queue.py`` reads the clock, re-checks the whole corpus with ``blog_variety`` in
-  subprocesses, and reads image files and the Mac-maintained ``browser_check``. Its answer is not a function of
-  state the vault keeps, so a recomputation hours later would mostly measure the corpus moving. Its drafts are
-  counted, never compared, until a recording step exists (P4a's precedent).
-- **A later move.** The record keeps the file's ``scheduled`` now beside the reported one (``moved``), so a slot
-  moved by hand after the report is visible and is not counted as a difference.
+**Tistory is checked against the queue's rules, not re-planned** (Thomas 2026-11-03, "규칙 검사"). The planner in
+``tools/tistory_queue.py`` reads the clock, re-checks the whole corpus with ``blog_variety`` in subprocesses, and
+reads image files and the Mac-maintained ``browser_check``, so its answer is not a function of state the vault keeps.
+What is a function of that state is whether a reported slot obeys the queue's rules. ``scripts/blog_vendor.py`` keeps
+those rules (the slots, the per-day caps, ``key``, ``jitter``, ``kind``, ``is_new``) in ``blog/tistory_queue.py``, and
+each reported Tistory draft gets five checks:
+- ``minute``: the reported minute is ``jitter`` of its slot and the file name (the queue's per-file offset).
+- ``unique``: no other Tistory post's current date takes the same slot, or the whole day for a date-only one.
+- ``only_cap`` / ``new_cap``: that day holds at most ``ONLY_PER_DAY`` Tistory-only posts and ``NEW_PER_DAY`` new
+  ones, counting this draft at its reported slot (null when the cap does not apply to the draft).
+- ``after_run``: the slot lies at least ``MARGIN_MIN`` minutes after the run started (the queue's cutoff).
+The same-day 1-C conflict, ``variety`` and ``browser_check`` are not checked.
 
-The record names a draft by its 편 number only, never its path (the file name is the keyword). Report paths are data
-written outside the system: anything that does not resolve under the vault's ``content/naver/`` is refused unopened.
+**A later move** is not a difference. The record keeps the file's ``scheduled`` now beside the reported one
+(``moved``), so a slot moved by hand after the report is visible.
+
+The record names a draft by its number only (편 number, Tistory file number), never its path (the file name is the
+keyword). Report paths are data written outside the system: anything that does not resolve under the vault's
+``content/naver/`` (or the queue's two levels of ``content/tistory/``) is refused unopened.
 """
 
 from __future__ import annotations
@@ -32,24 +41,29 @@ import json
 import os
 import re
 from collections.abc import Iterator
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Mapping
 
 RECORD_KIND = "blog_slot"
-RECORD_SCHEMA = "schemas/blog_slot.v0.1.schema.json"
-RECORD_SCHEMA_VERSION = "blog_slot.v0.1"
+RECORD_SCHEMA = "schemas/blog_slot.v0.2.schema.json"   # v0.1 (Naver only) stays for its records
+RECORD_SCHEMA_VERSION = "blog_slot.v0.2"
 LOOKBACK_DAYS = 3
 _SLOT = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
 
 
-def resolve(vault_root: Path, rel: Any) -> Path | None:
-    """The draft's path under ``<vault>/content/naver``, or None for anything that leaves it."""
-    if not isinstance(rel, str) or not rel.startswith("content/naver/") or not rel.endswith(".md"):
+def resolve(vault_root: Path, rel: Any, platform: str = "naver") -> Path | None:
+    """The draft's path under ``<vault>/content/<platform>``, or None for anything that leaves it. A Tistory path
+    must sit where the queue looks: in the folder or one subfolder down."""
+    if not isinstance(rel, str) or not rel.startswith(f"content/{platform}/") or not rel.endswith(".md"):
         return None
-    naver = (vault_root / "content" / "naver").resolve()
+    base = (vault_root / "content" / platform).resolve()
     path = (vault_root / rel).resolve()
-    return path if naver in path.parents else None
+    if base not in path.parents:
+        return None
+    if platform == "tistory" and base not in (path.parent, path.parent.parent):
+        return None
+    return path
 
 
 @contextlib.contextmanager
@@ -126,7 +140,78 @@ def compare_draft(vault_root: Path, draft: Mapping[str, Any]) -> dict[str, Any]:
     return row
 
 
-def build_record(run_date: str, rows: list[dict[str, Any]], tistory: int, *, now: str) -> dict[str, Any]:
+def tistory_schedule(vault_root: Path) -> dict[Path, tuple[dict[str, Any], str]]:
+    """Every Tistory post the queue sees, with the date it holds now: ``published`` for a published post, otherwise
+    ``scheduled`` for a scheduled post or a draft that carries one. Posts with no date (holds, undated drafts) are
+    left out, as the queue leaves them out of its occupancy."""
+    from . import tistory_queue as tq
+
+    base = vault_root / "content" / "tistory"
+    out: dict[Path, tuple[dict[str, Any], str]] = {}
+    for path in sorted(base.glob("*.md")) + sorted(base.glob("*/*.md")):
+        r = tq.fm(str(path))
+        status = r.get("status")
+        when = r.get("published") if status == "published" else r.get("scheduled") if status in ("scheduled", "draft") else None
+        if when:
+            out[path.resolve()] = (r, when)
+    return out
+
+
+def check_tistory(vault_root: Path, draft: Mapping[str, Any], started_at: Any,
+                  schedule: Mapping[Path, tuple[dict[str, Any], str]]) -> dict[str, Any]:
+    """One reported Tistory draft: its state and, when checked, the queue rules its reported slot passes."""
+    from .. import timeutil
+    from . import tistory_queue as tq
+
+    row: dict[str, Any] = {"number": None, "state": "", "agree": None, "reported": None, "file_now": None,
+                           "moved": None, "checks": None}
+    path = resolve(vault_root, draft.get("path"), "tistory")
+    if path is None:
+        row["state"] = "outside"
+        return row
+    number = re.match(r"(\d+)", path.name)
+    if not number:
+        row["state"] = "no_number"
+        return row
+    row["number"] = int(number[1])
+    if not path.is_file():
+        row["state"] = "missing"
+        return row
+    reported = draft.get("scheduled")
+    if not (isinstance(reported, str) and _SLOT.match(reported)):
+        row["state"] = "no_slot"
+        return row
+    row["reported"] = reported
+    try:
+        me = tq.fm(str(path))
+        now = me.get("scheduled") or None
+        row["file_now"] = now if isinstance(now, str) and _SLOT.match(now) else None
+        row["moved"] = row["file_now"] != reported
+        folded, day = tq.key(reported), reported[:10]
+        others = [(r, when) for p, (r, when) in schedule.items() if p != path]
+        on_day = [r for r, when in others if when[:10] == day] + [me]
+        try:
+            started = timeutil.parse_iso(started_at) if isinstance(started_at, str) else None
+        except ValueError:
+            started = None
+        at = datetime.combine(datetime.fromisoformat(day).date(), time.fromisoformat(reported[11:]), tq.KST)
+        checks = {
+            "minute": reported[11:] == tq.jitter(folded[11:], path.name),
+            "unique": not any(tq.key(when) in (folded, day) for _, when in others),
+            "only_cap": sum(1 for r in on_day if tq.kind(r) != "conversion") <= tq.ONLY_PER_DAY
+            if tq.kind(me) != "conversion" else None,
+            "new_cap": sum(1 for r in on_day if tq.is_new(r)) <= tq.NEW_PER_DAY if tq.is_new(me) else None,
+            "after_run": at >= started + timedelta(minutes=tq.MARGIN_MIN) if started is not None else None,
+        }
+    except Exception as exc:  # noqa: BLE001 — one draft's crash is recorded, never the whole report's
+        row["state"] = f"error:{type(exc).__name__}"
+        return row
+    row.update(state="checked", checks=checks, agree=all(v for v in checks.values() if v is not None))
+    return row
+
+
+def build_record(run_date: str, rows: list[dict[str, Any]], tistory: list[dict[str, Any]], *,
+                 now: str) -> dict[str, Any]:
     """One report's comparison as a ledger record, validated against its closed schema."""
     from runtime.read_only_kernel import integrity
 
@@ -137,13 +222,21 @@ def build_record(run_date: str, rows: list[dict[str, Any]], tistory: int, *, now
     summary = {"naver": len(rows), "compared": len(compared), "agreed": sum(1 for r in compared if r["agree"]),
                "differed": sum(1 for r in compared if not r["agree"]),
                "moved": sum(1 for r in compared if r["moved"]),
-               "not_compared": len(rows) - len(compared), "tistory_not_compared": tistory}
+               "not_compared": len(rows) - len(compared)}
+    checked = [r for r in tistory if r["state"] == "checked"]
+    summary.update(tistory=len(tistory), tistory_checked=len(checked),
+                   tistory_agreed=sum(1 for r in checked if r["agree"]),
+                   tistory_differed=sum(1 for r in checked if not r["agree"]),
+                   tistory_moved=sum(1 for r in checked if r["moved"]),
+                   tistory_not_checked=len(tistory) - len(checked))
     record = {
         "schema_version": RECORD_SCHEMA_VERSION,
-        "slot_id": integrity.short_id("blogslot", {"run_date": run_date, "checked_at": now, "drafts": rows}),
+        "slot_id": integrity.short_id("blogslot", {"run_date": run_date, "checked_at": now, "drafts": rows,
+                                                   "tistory": tistory}),
         "checked_at": now,
         "run_date": run_date,
         "drafts": rows,
+        "tistory": tistory,
         "summary": summary,
     }
     schema_cache.validate_against_schema(record, repo_root() / RECORD_SCHEMA, RECORD_KIND)
@@ -162,7 +255,8 @@ def fire(ledger: Any, *, now: str, vault_root: Path | None = None) -> str:
     done = {row["record"].get("run_date") for row in ledger.iter_records(kinds=[RECORD_KIND])
             if row.get("kind") == RECORD_KIND}
     recorded: list[str] = []
-    totals = {"compared": 0, "agreed": 0}
+    totals = {"compared": 0, "agreed": 0, "tistory_checked": 0, "tistory_agreed": 0}
+    schedule: dict[Path, tuple[dict[str, Any], str]] | None = None
     for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
         run_date = path.stem
         if not (re.fullmatch(r"\d{4}-\d{2}-\d{2}", run_date) and since <= run_date <= today.isoformat()) or run_date in done:
@@ -176,12 +270,16 @@ def fire(ledger: Any, *, now: str, vault_root: Path | None = None) -> str:
         drafts = [d for d in report.get("drafts") or [] if isinstance(d, Mapping)] \
             if isinstance(report.get("drafts"), list) else []
         rows = [compare_draft(root, d) for d in drafts if d.get("platform") == "naver"]
-        tistory = sum(1 for d in drafts if d.get("platform") == "tistory")
+        reported = [d for d in drafts if d.get("platform") == "tistory"]
+        if reported and schedule is None:
+            schedule = tistory_schedule(root)
+        tistory = [check_tistory(root, d, report.get("started_at"), schedule or {}) for d in reported]
         record = build_record(run_date, rows, tistory, now=now)
         ledger.append_records(record["slot_id"], {RECORD_KIND: record})
         recorded.append(run_date)
-        totals["compared"] += record["summary"]["compared"]
-        totals["agreed"] += record["summary"]["agreed"]
+        for key in totals:
+            totals[key] += record["summary"][key]
     if not recorded:
         return "blog_slot_nothing_new"
-    return f"blog_slotted={','.join(recorded)} compared={totals['compared']} agreed={totals['agreed']}"
+    return (f"blog_slotted={','.join(recorded)} compared={totals['compared']} agreed={totals['agreed']} "
+            f"tistory_checked={totals['tistory_checked']} tistory_agreed={totals['tistory_agreed']}")
