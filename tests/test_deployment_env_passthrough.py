@@ -54,6 +54,7 @@ from runtime.mvp_runtime.crypto import (
     live_pnl,
     testnet_execution,
 )
+from runtime.mvp_runtime.blog import kw_direct
 from runtime.mvp_runtime.holdings import binance_wallet, toss_account, toss_orders
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -526,6 +527,23 @@ def test_no_other_service_receives_the_binance_wallet_gate(service):
     """The wallet read rides the holdings fire, which runs on scheduler-maint only. The gate anywhere
     else would read as configured and read nothing."""
     assert binance_wallet.BINANCE_WALLET_ENV not in _service_environment(service)
+
+
+# BLOG_DEPARTMENT v0.2 P4b (Thomas 2026-11-03): the keyword pipeline's direct shadow runs as a maintenance fire,
+# beside the bundle folder it reads. Its two opt-ins reach scheduler-maint and nothing else, and no Search Ad
+# credential comes with them (that key stays on pipeline-worker; the Naver ad credential test pins that side).
+BLOG_DIRECT_GATES = (kw_direct.WEB_ENV, kw_direct.OWN_ENV)
+
+
+@pytest.mark.parametrize("env_var", BLOG_DIRECT_GATES)
+def test_the_maintenance_lane_receives_the_blog_direct_gates(env_var):
+    assert _service_environment("scheduler-maint").get(env_var) == "${%s:-}" % env_var
+
+
+@pytest.mark.parametrize("env_var", BLOG_DIRECT_GATES)
+@pytest.mark.parametrize("service", [s for s in _ALL_SERVICES if s != "scheduler-maint"])
+def test_no_other_service_receives_the_blog_direct_gates(service, env_var):
+    assert env_var not in _service_environment(service)
 
 
 # H1-a (Thomas 2026-10-07): the maintenance lane receives NO trading-capable credential. Option A had

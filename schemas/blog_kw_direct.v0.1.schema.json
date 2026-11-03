@@ -1,0 +1,355 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "blog_kw_direct.v0.1.schema.json",
+  "title": "Blog Keyword Direct Run v0.1",
+  "description": "One keyword-pipeline run by the system against the live web (BLOG_DEPARTMENT v0.2 P4b): a root bundle's inputs, caches, arguments and clock, with the Naver and Google hosts requested behind MVP_BLOG_WEB_READ and MVP_BLOG_OWN_READ and the Search Ad API answered from the bundle, compared with what the bundle's run wrote. Counts per host; no URL, title, header or response body is recorded. 'agree' is the switch condition, the top candidates per lane being the same set, and is null unless compared.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "direct_id",
+    "ran_at",
+    "bundle",
+    "run_started",
+    "lag_seconds",
+    "state",
+    "agree",
+    "blocked_by",
+    "stale",
+    "searchad",
+    "hosts",
+    "refused",
+    "comparison",
+    "differ"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "blog_kw_direct.v0.1"
+    },
+    "direct_id": {
+      "type": "string",
+      "pattern": "^blogkwdirect_[0-9a-f]{20}$"
+    },
+    "ran_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "bundle": {
+      "type": "string",
+      "pattern": "^\\d{8}-\\d{6}$"
+    },
+    "run_started": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 40
+    },
+    "lag_seconds": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "state": {
+      "type": "string",
+      "pattern": "^(compared|blocked|generator_stale|unreadable|error:[A-Za-z]{1,60})$"
+    },
+    "agree": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "blocked_by": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[a-z0-9.-]{1,60}:(\\d{3}|gate)$"
+    },
+    "stale": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "enum": [
+          "kw_pipeline.py",
+          "blog_taxonomy.py",
+          "affiliate_fetch.py"
+        ]
+      }
+    },
+    "searchad": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recorded",
+        "served",
+        "unrecorded"
+      ],
+      "properties": {
+        "recorded": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "served": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unrecorded": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "hosts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ac.search.naver.com",
+        "suggestqueries.google.com",
+        "search.naver.com",
+        "m.blog.naver.com",
+        "blog.naver.com",
+        "rss.blog.naver.com",
+        "blog.like.naver.com",
+        "thomasai.tistory.com"
+      ],
+      "properties": {
+        "ac.search.naver.com": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "fetched",
+            "failed"
+          ],
+          "properties": {
+            "fetched": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "suggestqueries.google.com": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "fetched",
+            "failed"
+          ],
+          "properties": {
+            "fetched": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "search.naver.com": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "fetched",
+            "failed"
+          ],
+          "properties": {
+            "fetched": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "m.blog.naver.com": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "fetched",
+            "failed"
+          ],
+          "properties": {
+            "fetched": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "blog.naver.com": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "fetched",
+            "failed"
+          ],
+          "properties": {
+            "fetched": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "rss.blog.naver.com": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "fetched",
+            "failed"
+          ],
+          "properties": {
+            "fetched": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "blog.like.naver.com": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "fetched",
+            "failed"
+          ],
+          "properties": {
+            "fetched": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "thomasai.tistory.com": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "fetched",
+            "failed"
+          ],
+          "properties": {
+            "fetched": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "refused": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "comparison": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "candidates_recorded",
+            "candidates_replayed",
+            "top_sets_equal",
+            "tistory_recorded",
+            "tistory_replayed",
+            "tistory_equal",
+            "out_of_league_equal",
+            "ranks_equal",
+            "fields_differing"
+          ],
+          "properties": {
+            "candidates_recorded": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "candidates_replayed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "top_sets_equal": {
+              "type": "boolean"
+            },
+            "tistory_recorded": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "tistory_replayed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "tistory_equal": {
+              "type": "boolean"
+            },
+            "out_of_league_equal": {
+              "type": "boolean"
+            },
+            "ranks_equal": {
+              "type": "boolean"
+            },
+            "fields_differing": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      ]
+    },
+    "differ": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kw",
+          "field"
+        ],
+        "properties": {
+          "kw": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "field": {
+            "enum": [
+              "missing",
+              "extra",
+              "lane",
+              "score",
+              "decision"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

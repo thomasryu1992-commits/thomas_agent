@@ -235,12 +235,17 @@ KIND_BLOG_KW_REPLAY = "blog_kw_replay"
 # the production keyword run's candidates. Maintenance, not risk: it reads the ledger and the vault read-only, and
 # nothing reads its record yet.
 KIND_BLOG_FEEDBACK = "blog_feedback"
+# The keyword pipeline's direct shadow (BLOG_DEPARTMENT v0.2 P4b, Thomas 2026-11-03): in the afternoon, run the day's
+# recorded bundle again with the Naver and Google requests made from here, behind MVP_BLOG_WEB_READ and
+# MVP_BLOG_OWN_READ, and record whether the top candidates per lane are the same. Maintenance, not risk: it reads the
+# read-only bundle folder and writes one record a day; with either opt-in unset it reads nothing.
+KIND_BLOG_KW_DIRECT = "blog_kw_direct"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
                    KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE,
                    KIND_BREAKER_WATCH, KIND_ROUTE_WATCH, KIND_CANDLE_ARCHIVE,
                    KIND_NULL_CONTROL,
                    KIND_FORWARD_COHORT, KIND_HOLDINGS, KIND_MANAGEMENT_REPORT, KIND_BLOG_VERIFY,
-                   KIND_BLOG_ANALYZE, KIND_BLOG_KW_REPLAY, KIND_BLOG_FEEDBACK})
+                   KIND_BLOG_ANALYZE, KIND_BLOG_KW_REPLAY, KIND_BLOG_FEEDBACK, KIND_BLOG_KW_DIRECT})
 
 # The kinds whose lateness costs money rather than freshness.
 #
@@ -313,7 +318,7 @@ MAINTENANCE_KINDS: frozenset[str] = frozenset({
     KIND_DATA_REVIEW, KIND_ROTATE, KIND_CANDLE_ARCHIVE, KIND_NULL_CONTROL,
     KIND_FORWARD_COHORT,
     KIND_HOLDINGS, KIND_MANAGEMENT_REPORT, KIND_BLOG_VERIFY, KIND_BLOG_ANALYZE,
-    KIND_BLOG_KW_REPLAY, KIND_BLOG_FEEDBACK,
+    KIND_BLOG_KW_REPLAY, KIND_BLOG_FEEDBACK, KIND_BLOG_KW_DIRECT,
 })
 
 # How much of one pass the non-risk kinds may spend before it stops STARTING more of them.
@@ -1535,6 +1540,10 @@ def _execute(
         from .blog import feedback as blog_feedback
 
         return blog_feedback.fire(ledger, now=now)
+    if schedule.kind == KIND_BLOG_KW_DIRECT:
+        from .blog import kw_direct as blog_kw_direct
+
+        return blog_kw_direct.fire(ledger, now=now)
     if schedule.kind == KIND_MANAGEMENT_REPORT:
         # WMR-1: read the four sections (each fails on its own) and send them on the control bot.
         # Unlike KIND_REPORT, a send that fails RAISES: a weekly report that vanished quietly is

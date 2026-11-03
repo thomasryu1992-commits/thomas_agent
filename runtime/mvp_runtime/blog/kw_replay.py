@@ -83,7 +83,8 @@ class Transport:
         self.clock: datetime | None = None
         self.epoch: float | None = None
 
-    def __call__(self, url: str) -> str:
+    def __call__(self, url: str, **_request: Any) -> str:
+        # The caller's headers, timeout and pause mean nothing to a recording.
         queue = self.bodies.get(url)
         if not queue:
             self.misses += 1
@@ -210,9 +211,30 @@ def _extract(bundle: Path, work: Path) -> None:
         shutil.copyfile(path, work / "cache" / path.name)
 
 
+def run_bundle(bundle: Path, meta: Mapping[str, Any], transport: Any, *, clock: datetime) -> dict[str, Any]:
+    """Run the generated pipeline once on a working copy of ``bundle`` (its inputs, its caches at the start, its
+    arguments, key presence and mode, the clock pinned at ``clock``), with ``transport`` answering every request, and
+    return the history file it wrote. P4a passes the recording; P4b (``kw_direct``) its gated fetchers."""
+    from . import affiliate, kw_taxonomy
+    from . import kw_pipeline as kp
+
+    with tempfile.TemporaryDirectory(prefix="kw-replay-") as tmp:
+        work = Path(tmp)
+        _extract(bundle, work)
+        # A fresh module state per bundle: the pipeline memoises registries and lookups in module globals.
+        for module in (kw_taxonomy, affiliate, kp):
+            importlib.reload(module)
+        kp.configure(work, cache_dir=work / "cache", clock=clock, epoch=float(meta["started_epoch"]),
+                     has_vol=bool(meta.get("has_vol")), decision_mode=str(meta.get("decision_mode")),
+                     transport=transport)
+        kp.CLICK_SHARE, kp.CLICK_SHARE_WHY = kp.measured_click_share()
+        with contextlib.redirect_stdout(io.StringIO()):
+            kp.run(_args(meta))
+        return json.loads((work / "analytics" / "keywords" / "history" / str(meta["history"])).read_text(encoding="utf-8"))
+
+
 def replay(bundle: Path) -> dict[str, Any]:
     """Re-run one bundle and compare. Never raises for a broken bundle; the state says what happened."""
-    from . import affiliate, kw_taxonomy
     from . import kw_pipeline as kp
 
     out: dict[str, Any] = {"bundle": bundle.name, "run_started": None, "state": "unreadable", "agree": None,
@@ -230,26 +252,13 @@ def replay(bundle: Path) -> dict[str, Any]:
         clock = datetime.fromisoformat(str(meta["started"]))
     except (OSError, KeyError, UnicodeDecodeError, ValueError, EOFError):
         return out
-    with tempfile.TemporaryDirectory(prefix="kw-replay-") as tmp:
-        work = Path(tmp)
-        try:
-            _extract(bundle, work)
-            # A fresh module state per bundle: the pipeline memoises registries and lookups in module globals.
-            for module in (kw_taxonomy, affiliate, kp):
-                importlib.reload(module)
-            transport = Transport(_http_rows(bundle), kp.ReplayMiss)
-            out["responses"] = transport.recorded
-            kp.configure(work, cache_dir=work / "cache", clock=clock, epoch=float(meta["started_epoch"]),
-                         has_vol=bool(meta.get("has_vol")), decision_mode=str(meta.get("decision_mode")),
-                         transport=transport)
-            kp.CLICK_SHARE, kp.CLICK_SHARE_WHY = kp.measured_click_share()
-            with contextlib.redirect_stdout(io.StringIO()):
-                kp.run(_args(meta))
-            replayed = json.loads((work / "analytics" / "keywords" / "history" / str(meta["history"]))
-                                  .read_text(encoding="utf-8"))
-        except Exception as exc:  # noqa: BLE001 — one broken bundle is a recorded state, never the fire's failure
-            out["state"] = f"error:{type(exc).__name__}"
-            return out
+    try:
+        transport = Transport(_http_rows(bundle), kp.ReplayMiss)
+        out["responses"] = transport.recorded
+        replayed = run_bundle(bundle, meta, transport, clock=clock)
+    except Exception as exc:  # noqa: BLE001 — one broken bundle is a recorded state, never the fire's failure
+        out["state"] = f"error:{type(exc).__name__}"
+        return out
     out["misses"] = transport.misses
     result = compare(recorded, replayed)
     out.update(comparison=result["comparison"], differ=result["differ"])
