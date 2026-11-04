@@ -258,8 +258,7 @@ def fire(ledger: Any, *, now: str, vault_root: Path | None = None) -> str:
     folder = root.joinpath(*blog_department.RUNS_DIR)
     today = (timeutil.parse_iso(now) + timedelta(hours=9)).date()
     since = (today - timedelta(days=LOOKBACK_DAYS)).isoformat()
-    done = {row["record"].get("run_date") for row in ledger.iter_records(kinds=[RECORD_KIND])
-            if row.get("kind") == RECORD_KIND}
+    done = {record.get("run_date") for record in blog_department.records(ledger, RECORD_KIND)}
     recorded: list[str] = []
     totals = {"compared": 0, "agreed": 0, "tistory_checked": 0, "tistory_agreed": 0}
     schedule: dict[Path, tuple[dict[str, Any], str]] | None = None

@@ -188,7 +188,7 @@ class _Ledger:
         self.rows.append({"kind": kind, "record": record})
         return self
 
-    def iter_records(self, kinds):
+    def iter_records_with_archive(self, *, appended_since=None, kinds=None):
         return iter([r for r in self.rows if r["kind"] in kinds])
 
 
