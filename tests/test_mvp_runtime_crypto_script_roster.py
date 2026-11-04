@@ -80,6 +80,7 @@ SCRIPTS: dict[str, str] = {
     # own cache under ~/research, outside the state root, from the venue's public endpoints.
     "scripts/research/fetch_public.py": READ,
     "scripts/research/lake.py": READ,
+    "scripts/research/cross_section_basket.py": READ,  # sandbox-only basket measurement over archive files, prints a report
     "scripts/research/pre_window_replay.py": READ,  # sandbox-only replay of cohort members and twins, prints a report               # paired L/F replay, prints a report
     "scripts/paired_family_window_check.py": READ,
     "scripts/pooled_mint_check.py": READ,

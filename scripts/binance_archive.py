@@ -17,6 +17,11 @@ nothing under ``.runtime_governance_state/``. It reads the OI store file read-on
 - ``export-oi`` writes the fetched hourly OI as ``oi_store``-shaped rows (JSONL on stdout), already
   relabelled to the hour's start, for ``scripts/import_archive_oi.py --confirm`` to append inside the container
   as the service user (step 2). The host never writes the store.
+- ``list-symbols`` and ``fetch-monthly`` serve the cross-section measurement
+  (``docs/proposals/MARKET_NEUTRAL_CROSS_SECTION_V0.1.md``, Thomas 2026-11-04 Q4). The first writes every
+  USDT perpetual the archive holds monthly 1d klines for, delisted ones included, from the archive's own
+  bucket listing. The second downloads one kind of monthly file (``klines-1d`` or ``fundingRate``), and only
+  the months each symbol's listing holds. Same checksum rule, same skip-if-present rule.
 - ``measure`` reads what was fetched and reports, per symbol:
   - the first and last day held and the missing days between them;
   - the span against the replay depths the factory needs (1,000 days below 1d, 2,000 bars at 1d);
@@ -43,11 +48,14 @@ import csv
 import hashlib
 import io
 import json
+import re
 import statistics
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ElementTree
 import zipfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -194,6 +202,112 @@ def fetch(dest: Path, *, symbols: Sequence[str], start: date, end: date, funding
     return counts
 
 
+# --- the archive's own listing, and the monthly files it holds --------------------------------------
+#
+# MARKET_NEUTRAL_CROSS_SECTION_V0.1 §3 and §8 (Thomas 2026-11-04, Q4): the cross-section universe is rebuilt
+# point in time, so it has to include perps that were delisted since. `exchangeInfo` drops some of them
+# (SRMUSDT and LUNAUSDT were absent on 2026-11-04) while the archive still serves their files, so the
+# symbol list comes from the archive's bucket listing, and each symbol's own listing says which months exist,
+# so a month the symbol never traded is never requested.
+
+LISTING_BASE = "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
+LISTING_PREFIX = "data/futures/um/monthly/"
+KLINES = "klines"
+KLINES_INTERVAL = "1d"
+SYMBOLS_FILENAME = "symbols.json"
+MONTHLY_KINDS = ("klines-1d", FUNDING)
+# A USDT-margined perpetual: quarterly contracts carry `_YYMMDD`, and USDC/BUSD pairs are another quote.
+_PERP_SYMBOL = re.compile(r"\A[A-Z0-9]{2,20}USDT\Z")
+_S3_NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
+
+
+def listing(prefix: str, *, opener: Opener = http_get, max_pages: int = 100) -> tuple[list[str], list[str]]:
+    """``(sub-prefixes, keys)`` under ``prefix`` in the archive's bucket, every page. Raises
+    :class:`ArchiveError` when a page does not parse or the listing never ends."""
+    prefixes: list[str] = []
+    keys: list[str] = []
+    marker = ""
+    for _ in range(max_pages):
+        query = {"prefix": prefix, "delimiter": "/"}
+        if marker:
+            query["marker"] = marker
+        body = opener(f"{LISTING_BASE}?{urllib.parse.urlencode(query)}")
+        if body is None:
+            raise ArchiveError(f"listing {prefix}: the bucket answered 404")
+        try:
+            root = ElementTree.fromstring(body)
+        except ElementTree.ParseError as exc:
+            raise ArchiveError(f"listing {prefix}: not XML") from exc
+        page_prefixes = [p.text or "" for p in root.iter(f"{_S3_NS}Prefix")
+                         if p.text and p.text != prefix and p.text.startswith(prefix)]
+        page_keys = [k.text or "" for k in root.iter(f"{_S3_NS}Key") if k.text]
+        prefixes += page_prefixes
+        keys += page_keys
+        if (root.findtext(f"{_S3_NS}IsTruncated") or "").strip().lower() != "true":
+            return sorted(set(prefixes)), sorted(set(keys))
+        marker = root.findtext(f"{_S3_NS}NextMarker") or max(page_prefixes + page_keys, default="")
+        if not marker:
+            raise ArchiveError(f"listing {prefix}: truncated with nothing to continue from")
+    raise ArchiveError(f"listing {prefix}: still truncated after {max_pages} pages")
+
+
+def archive_symbols(*, opener: Opener = http_get) -> list[str]:
+    """Every USDT perpetual the archive holds monthly 1d klines for, delisted ones included."""
+    prefixes, _ = listing(f"{LISTING_PREFIX}{KLINES}/", opener=opener)
+    names = (p.rstrip("/").rsplit("/", 1)[-1] for p in prefixes)
+    return sorted(n for n in names if _PERP_SYMBOL.fullmatch(n))
+
+
+def monthly_folder(kind: str, symbol: str) -> str:
+    """The bucket folder holding one symbol's monthly files of ``kind`` (see :data:`MONTHLY_KINDS`)."""
+    if kind == "klines-1d":
+        return f"{LISTING_PREFIX}{KLINES}/{symbol}/{KLINES_INTERVAL}/"
+    if kind == FUNDING:
+        return f"{LISTING_PREFIX}{FUNDING}/{symbol}/"
+    raise ValueError(f"unknown monthly kind {kind!r}")
+
+
+def monthly_local(dest: Path, kind: str, symbol: str, name: str) -> Path:
+    return dest / kind / symbol / name
+
+
+def _month_of(name: str) -> tuple[int, int] | None:
+    stem = name[:-4] if name.endswith(".zip") else name
+    try:
+        year, month = int(stem[-7:-3]), int(stem[-2:])
+    except ValueError:
+        return None
+    return (year, month) if stem[-3] == "-" and 1 <= month <= 12 else None
+
+
+def fetch_monthly(dest: Path, *, kind: str, symbols: Sequence[str], start: date, end: date,
+                  opener: Opener = http_get, pause: float = PAUSE_SECONDS,
+                  say: Callable[[str], None] = lambda _line: None) -> dict[str, dict[str, int]]:
+    """Every monthly ``kind`` file a symbol's own listing holds inside [start, end], checksum-verified.
+    A file already on disk is never asked for again, and a month the listing does not hold is never asked
+    for at all. Returns per-symbol counts."""
+    counts: dict[str, dict[str, int]] = {}
+    lo, hi = (start.year, start.month), (end.year, end.month)
+    for number, symbol in enumerate(symbols, 1):
+        tally = {"kept": 0, "present": 0, "missing": 0}
+        folder = monthly_folder(kind, symbol)
+        _, keys = listing(folder, opener=opener)
+        for key in keys:
+            name = key.rsplit("/", 1)[-1]
+            month = _month_of(name)
+            if not name.endswith(".zip") or month is None or not lo <= month <= hi:
+                continue
+            outcome = fetch_one(f"https://data.binance.vision/{key}", monthly_local(dest, kind, symbol, name),
+                                opener=opener)
+            tally[outcome] += 1
+            if outcome == "kept" and pause:
+                time.sleep(pause)
+        counts[symbol] = tally
+        say(f"[{number}/{len(symbols)}] {symbol}: kept {tally['kept']}, present {tally['present']}, "
+            f"missing {tally['missing']}")
+    return counts
+
+
 # --- reading what was fetched ---------------------------------------------------------------------
 
 def read_metrics_zip(path: Path) -> list[dict[str, str]]:
@@ -335,7 +449,45 @@ def main(argv: Sequence[str] | None = None) -> int:
     e = sub.add_parser("export-oi", help="hourly OI as oi_store rows (JSONL on stdout), for the importer")
     e.add_argument("--symbols", default=",".join(DEFAULT_SYMBOLS))
     e.add_argument("--dest", required=True, type=Path)
+    ls = sub.add_parser("list-symbols", help="every USDT perp with monthly 1d klines, delisted included, "
+                                             f"written to <dest>/{SYMBOLS_FILENAME}")
+    ls.add_argument("--dest", required=True, type=Path)
+    fm = sub.add_parser("fetch-monthly", help="a symbol's monthly files, only the months its listing holds")
+    fm.add_argument("--kind", required=True, choices=MONTHLY_KINDS)
+    fm.add_argument("--symbols", default=None, help=f"comma list; default: <dest>/{SYMBOLS_FILENAME}")
+    fm.add_argument("--start", required=True, type=date.fromisoformat)
+    fm.add_argument("--end", required=True, type=date.fromisoformat)
+    fm.add_argument("--dest", required=True, type=Path)
     args = parser.parse_args(argv)
+    if args.command == "list-symbols":
+        try:
+            names = archive_symbols()
+        except ArchiveError as exc:
+            print(f"REFUSED: {exc}", file=sys.stderr)
+            return 2
+        args.dest.mkdir(parents=True, exist_ok=True)
+        (args.dest / SYMBOLS_FILENAME).write_text(json.dumps(names, indent=0) + "\n", encoding="utf-8")
+        print(f"{len(names)} USDT perps in the archive -> {args.dest / SYMBOLS_FILENAME}")
+        return 0
+    if args.command == "fetch-monthly":
+        if args.symbols:
+            wanted = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+        else:
+            listed = args.dest / SYMBOLS_FILENAME
+            if not listed.exists():
+                print(f"REFUSED: no {listed}; run list-symbols first or pass --symbols", file=sys.stderr)
+                return 2
+            wanted = list(json.loads(listed.read_text(encoding="utf-8")))
+        try:
+            counts = fetch_monthly(args.dest, kind=args.kind, symbols=wanted, start=args.start, end=args.end,
+                                   say=print)
+        except ArchiveError as exc:
+            print(f"REFUSED: {exc}", file=sys.stderr)
+            return 2
+        kept = sum(t["kept"] for t in counts.values())
+        present = sum(t["present"] for t in counts.values())
+        print(f"{args.kind}: {len(counts)} symbols, kept {kept}, already present {present}")
+        return 0
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
     if args.command == "fetch":
         end = args.end or (datetime.now(timezone.utc).date() - timedelta(days=1))
