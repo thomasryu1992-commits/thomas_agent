@@ -447,3 +447,18 @@ def test_the_spot_holdout_reads_usdt_pairs_only_even_when_btc_pairs_sit_in_the_a
         (folder / f"{symbol}-1d-2017-08.zip").write_bytes(_zip_bytes(rows))
     assert xs.main(["universe", "--test", "spot-holdout", "--json", "--archive", str(tmp_path)]) == xs.EXIT_OK
     assert json.loads(capsys.readouterr().out)["members_ever"] == ["BNBUSDT", "BTCUSDT", "ETHUSDT", "LTCUSDT"]
+
+
+def test_the_report_names_the_fee_the_test_charged_not_the_runtime_default(tmp_path, monkeypatch, capsys):
+    # The spot holdout charged 10 bps but its report said 5 (CROSS_SECTION_SPOT_HOLDOUT_V0.1 결과, run
+    # 20261104T102324Z-304513): the provenance line read the runtime default instead of the test's fee.
+    monkeypatch.setattr(xs, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(xs, "measure", lambda *a, **k: {})
+    _snapshot(tmp_path)
+    folder = tmp_path / xs.KLINES_KIND / "BTCUSDT"
+    folder.mkdir(parents=True)
+    (folder / "BTCUSDT-1d-2018-01.zip").write_bytes(_zip_bytes(f"{_ms(date(2018, 1, 1))},1,1,1,1,1,0,5,1,1,1,0\n"))
+    for test, taker in (("spot-holdout", 10.0), ("v0.2", cost.DEFAULT_TAKER_FEE_BPS)):
+        assert xs.main(["run", "--test", test, "--json", "--archive", str(tmp_path)]) == xs.EXIT_OK
+        costs = json.loads(capsys.readouterr().out)["costs_bps"]
+        assert costs == {"taker": taker, "slippage": cost.DEFAULT_SLIPPAGE_BPS}

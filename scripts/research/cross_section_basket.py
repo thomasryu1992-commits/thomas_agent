@@ -585,13 +585,15 @@ def universe_hash(monthly: Mapping[date, Sequence[str]]) -> str:
     return hashlib.sha256(body.encode()).hexdigest()[:16]
 
 
-def provenance() -> dict[str, Any]:
+def provenance(fee_bps: float | None = None) -> dict[str, Any]:
+    """The run's provenance; ``costs_bps.taker`` is the fee the test charged (``simulate`` uses the same rule)."""
     from runtime.mvp_runtime.crypto import judgement_fingerprint
 
     snapshot = os.environ.get("RESEARCH_LAKE")
+    taker = cost.DEFAULT_TAKER_FEE_BPS if fee_bps is None else fee_bps
     return {"judgement_fingerprint": judgement_fingerprint.judgement_fingerprint()["short"],
             "lake_snapshot": Path(snapshot).name if snapshot else None,
-            "costs_bps": {"taker": cost.DEFAULT_TAKER_FEE_BPS, "slippage": cost.DEFAULT_SLIPPAGE_BPS}}
+            "costs_bps": {"taker": taker, "slippage": cost.DEFAULT_SLIPPAGE_BPS}}
 
 
 # --- the command line -------------------------------------------------------------------------------------
@@ -663,7 +665,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"not a coin perp, left out (contract types {contract_types_at}): "
                   f"{len([s for s in market.bars if not is_coin(market, s)])}")
         return EXIT_OK
-    report = {"measured_at": timeutil.utc_now_iso(), **provenance(), "contract_types_at": contract_types_at,
+    report = {"measured_at": timeutil.utc_now_iso(), **provenance(spec.get("fee_bps")), "contract_types_at": contract_types_at,
               **measure(market, named=named, test=args.test, say=(lambda *_a: None) if args.json else print)}
     if args.json:
         print(json.dumps(report, indent=1, sort_keys=True, default=str))
