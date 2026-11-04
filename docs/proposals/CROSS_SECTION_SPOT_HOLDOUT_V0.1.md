@@ -109,7 +109,7 @@ scripts/research/sandbox_run.sh --official -- python -m scripts.research.cross_s
 - 강제 청산 2회(순 −203 bps), 순위에서 빠진 구성원 3.
 - 2017년은 바스켓이 없어 0이다(판정 밖).
 - 펀딩 0. 현물이라 `funding_missing_leg_days` 4,817은 예상된 값이다.
-- **비용 표기 주의:** 보고서의 `costs_bps`(taker 5)는 런타임 상수를 그대로 적은 출처 줄이다. 이 시험의 체결 비용은 spec의 10 bps로 계산됐다(`TESTS["spot-holdout"]["fee_bps"]`, 시험 `test_the_spot_measurement_runs_in_its_own_window_at_its_own_fee_without_funding`). 출처 줄 표기는 후속으로 고친다.
+- **비용 표기 주의:** 보고서의 `costs_bps`(taker 5)는 런타임 상수를 그대로 적은 출처 줄이다. 이 시험의 체결 비용은 spec의 10 bps로 계산됐다(`TESTS["spot-holdout"]["fee_bps"]`, 시험 `test_the_spot_measurement_runs_in_its_own_window_at_its_own_fee_without_funding`). 출처 줄은 2026-11-04에 고쳤다. 이제 시험이 실제로 매긴 수수료를 적는다(`provenance(fee_bps)`, 시험 `test_the_report_names_the_fee_the_test_charged_not_the_runtime_default`). 이 실행의 기록 파일은 그대로 두며, 판정은 바뀌지 않는다.
 
 **읽는 법 (실행 전에 적은 대로) [추정]:**
 - **방향은 같다.** v0.2(2020–2026 선물)의 펀딩 제외 평균은 +135였고, 이 구간은 +82다. 무작위보다 크고, 판정한 두 해 모두 양이다.
