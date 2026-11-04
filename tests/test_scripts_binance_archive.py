@@ -229,3 +229,22 @@ def test_fetch_monthly_keeps_nothing_on_a_checksum_mismatch(tmp_path):
         ba.fetch_monthly(tmp_path, kind="fundingRate", symbols=["BTCUSDT"], start=date(2020, 1, 1),
                          end=date(2020, 1, 31), opener=bucket, pause=0)
     assert not list(tmp_path.rglob("*.zip"))
+
+
+def test_contract_types_keep_each_usdt_symbols_contract_type_and_nothing_else():
+    body = json.dumps({"symbols": [
+        {"symbol": "BTCUSDT", "contractType": "PERPETUAL"},
+        {"symbol": "XAUUSDT", "contractType": "TRADIFI_PERPETUAL"},
+        {"symbol": "BTCUSDT_261225", "contractType": "CURRENT_QUARTER"},
+        {"symbol": "ETHUSDC", "contractType": "PERPETUAL"},
+        {"symbol": "ODDUSDT"}]}).encode()
+    seen = []
+    kinds = ba.contract_types(opener=lambda url: seen.append(url) or body)
+    assert kinds == {"BTCUSDT": "PERPETUAL", "XAUUSDT": "TRADIFI_PERPETUAL"}
+    assert seen == [ba.EXCHANGE_INFO_URL]
+
+
+@pytest.mark.parametrize("body", [None, b"<html>", b'{"symbols": []}', b"[]"])
+def test_contract_types_refuse_an_answer_that_lists_nothing(body):
+    with pytest.raises(ba.ArchiveError):
+        ba.contract_types(opener=lambda _url: body)

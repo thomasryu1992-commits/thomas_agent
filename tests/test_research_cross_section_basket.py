@@ -5,6 +5,7 @@ random baseline and the pre-registered reading. Nothing here touches the network
 from __future__ import annotations
 
 import io
+import json
 import zipfile
 from datetime import date, datetime, timedelta, timezone
 
@@ -249,8 +250,36 @@ def test_run_refuses_outside_the_sandbox(tmp_path, capsys):
     assert "research sandbox only" in capsys.readouterr().err
 
 
+def test_a_tradfi_perp_is_left_out_however_large_and_a_symbol_the_snapshot_lacks_is_kept():
+    start = date(2026, 1, 1)
+    prices = {s: _flat(start, 200) for s in ("BTCUSDT", "XAUUSDT", "GONECOINUSDT")}
+    market = _market(prices, volumes={"BTCUSDT": 2.0, "XAUUSDT": 9.0, "GONECOINUSDT": 1.0})
+    market.contract_types = {"BTCUSDT": "PERPETUAL", "XAUUSDT": "TRADIFI_PERPETUAL"}
+    month = date(2026, 6, 1)
+    assert xs.universe_at(market, month) == ["BTCUSDT", "GONECOINUSDT"]
+    assert xs.universe_at(market, month, named=["XAUUSDT"]) == ["BTCUSDT", "GONECOINUSDT"]   # naming it is no way in
+
+
+def _snapshot(archive, kinds=None):
+    archive.mkdir(parents=True, exist_ok=True)
+    (archive / xs.CONTRACT_TYPES_FILENAME).write_text(json.dumps(
+        {"fetched_at": "2026-11-04T06:30:00Z", "contract_types": kinds or {"AUSDT": "PERPETUAL"}}))
+
+
+@pytest.mark.parametrize("command", ["universe", "run"])
+@pytest.mark.parametrize("body", [None, "{", '{"fetched_at": "x", "contract_types": {}}'])
+def test_both_commands_stop_blocked_without_a_readable_contract_type_snapshot(tmp_path, capsys, monkeypatch,
+                                                                              command, body):
+    monkeypatch.setattr(xs, "_in_sandbox", lambda: True)
+    if body is not None:
+        (tmp_path / xs.CONTRACT_TYPES_FILENAME).write_text(body)
+    assert xs.main([command, "--archive", str(tmp_path)]) == xs.EXIT_BLOCKED
+    assert xs.CONTRACT_TYPES_FILENAME in capsys.readouterr().err
+
+
 def test_universe_lists_the_months_and_every_member(tmp_path, capsys):
-    for symbol in ("AUSDT", "BUSDT", "CUSDT", "DUSDT"):
+    _snapshot(tmp_path, {"AUSDT": "PERPETUAL", "EUSDT": "TRADIFI_PERPETUAL"})
+    for symbol in ("AUSDT", "BUSDT", "CUSDT", "DUSDT", "EUSDT"):
         folder = tmp_path / xs.KLINES_KIND / symbol
         folder.mkdir(parents=True)
         rows = "".join(f"{_ms(d)},1,1,1,1,1,0,5,1,1,1,0\n" for d in _days(date(2019, 9, 1), 200))
@@ -259,3 +288,4 @@ def test_universe_lists_the_months_and_every_member(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "2020-01-01 k=2 AUSDT BUSDT CUSDT DUSDT" in out
     assert "members ever: 4" in out
+    assert "left out (contract types 2026-11-04T06:30:00Z): 1" in out

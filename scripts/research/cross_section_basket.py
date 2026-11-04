@@ -9,6 +9,12 @@ under ``<RESEARCH_CACHE>/archive``) and writes nothing.
   :data:`VOLUME_LOOKBACK_DAYS` days before it, among those with a bar the day before and a first bar at least
   :data:`MIN_AGE_DAYS` earlier, plus every named symbol that meets the same age and trading rule. Delisted
   symbols are in while they traded. Below :data:`MIN_UNIVERSE` members there is no basket.
+- **Coins only (§4, amended 2026-11-04 before the official run):** a USDT perp is a coin perp, contract type
+  :data:`COIN_CONTRACT`. The gold, oil and stock perps Binance has listed since 2025-12-11
+  (``TRADIFI_PERPETUAL``) are left out, read from the ``contract_types.json`` snapshot that
+  ``binance_archive.py contract-types`` writes beside the archive. A symbol the snapshot does not hold was
+  delisted before it was taken and is kept: the four that traded after 2025-12-11 are coin tokens (the
+  proposal's record lists them). Without the snapshot both commands stop BLOCKED.
 - **Basket:** ``k = max(2, floor(0.2·n))`` long and ``k`` short, weights ``+1/k`` and ``−1/k``, so the daily
   gross is the long side's mean return minus the short side's.
 - **Signals (§5, fixed):** ``S-REV`` (1-day return, losers long, rebalanced daily), ``S-MOM7`` and
@@ -57,6 +63,8 @@ from runtime.mvp_runtime.crypto import cost  # noqa: E402
 
 KLINES_KIND = "klines-1d"
 FUNDING_KIND = "fundingRate"
+CONTRACT_TYPES_FILENAME = "contract_types.json"     # binance_archive.CONTRACT_TYPES_FILENAME
+COIN_CONTRACT = "PERPETUAL"
 TOP_N = 10
 MIN_AGE_DAYS = 90
 VOLUME_LOOKBACK_DAYS = 30
@@ -91,6 +99,8 @@ class Market:
     """Daily bars and funding settlements per symbol, as the archive holds them."""
     bars: dict[str, dict[date, Bar]] = field(default_factory=dict)
     funding: dict[str, list[tuple[int, float]]] = field(default_factory=dict)
+    # {symbol: exchangeInfo contractType}; a symbol absent from it is a coin (delisted before the snapshot)
+    contract_types: dict[str, str] = field(default_factory=dict)
     _funding_by_day: dict[str, dict[date, float]] = field(default_factory=dict, repr=False)
 
     def funding_day(self, symbol: str) -> dict[date, float] | None:
@@ -150,6 +160,19 @@ def read_funding(folder: Path) -> list[tuple[int, float]]:
     return sorted(set(out))
 
 
+def read_contract_types(archive: Path) -> tuple[dict[str, str], str] | None:
+    """``({symbol: contractType}, fetched_at)`` from the snapshot, or None when it is missing or unreadable."""
+    try:
+        record = json.loads((archive / CONTRACT_TYPES_FILENAME).read_text(encoding="utf-8"))
+        kinds, fetched_at = record["contract_types"], record["fetched_at"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not isinstance(kinds, dict) or not kinds or not isinstance(fetched_at, str) \
+            or not all(isinstance(k, str) and isinstance(v, str) for k, v in kinds.items()):
+        return None
+    return dict(kinds), fetched_at
+
+
 def load_market(archive: Path, *, funding: bool = True) -> Market:
     market = Market()
     klines = archive / KLINES_KIND
@@ -173,8 +196,14 @@ def month_starts(start: date, end: date) -> list[date]:
     return out
 
 
+def is_coin(market: Market, symbol: str) -> bool:
+    return market.contract_types.get(symbol, COIN_CONTRACT) == COIN_CONTRACT
+
+
 def eligible(market: Market, symbol: str, month_start: date) -> bool:
-    """Trading the day before ``month_start`` and listed at least :data:`MIN_AGE_DAYS` before it."""
+    """A coin perp, trading the day before ``month_start`` and listed at least :data:`MIN_AGE_DAYS` before it."""
+    if not is_coin(market, symbol):
+        return False
     bars = market.bars.get(symbol) or {}
     first = market.first_day(symbol)
     return (month_start - timedelta(days=1)) in bars and first is not None \
@@ -426,6 +455,7 @@ def measure(market: Market, *, named: Sequence[str] = (), seeds: int = RANDOM_SE
         "overall": "LEAD_FOUND" if any(r["reading"] == "LEAD" for r in per_signal.values())
         else "NO_EDGE_IN_THIS_CROSS_SECTION",
         "universe": {"named": list(named), "members_ever": members,
+                     "not_coin_left_out": sorted(s for s in market.bars if not is_coin(market, s)),
                      "months_with_basket": sum(1 for m in monthly.values() if side_size(len(m))),
                      "hash": universe_hash(monthly)},
     }
@@ -476,22 +506,32 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run" and not _in_sandbox():
         print("refused: runs in the research sandbox only (scripts/research/sandbox_run.sh)", file=sys.stderr)
         return EXIT_USAGE
+    snapshot = read_contract_types(archive)
+    if snapshot is None:
+        print(f"BLOCKED: no readable {CONTRACT_TYPES_FILENAME} under {archive} "
+              "(python3 scripts/binance_archive.py contract-types --dest <archive>)", file=sys.stderr)
+        return EXIT_BLOCKED
     market = load_market(archive, funding=args.command == "run")
     if not market.bars:
         print(f"BLOCKED: no {KLINES_KIND} files under {archive}", file=sys.stderr)
         return EXIT_BLOCKED
+    market.contract_types, contract_types_at = snapshot
     if args.command == "universe":
         monthly = universes(market, named=named)
         members = sorted({s for m in monthly.values() for s in m})
         if args.json:
             print(json.dumps({"members_ever": members, "hash": universe_hash(monthly),
+                              "contract_types_at": contract_types_at,
+                              "not_coin_left_out": sorted(s for s in market.bars if not is_coin(market, s)),
                               "monthly": {m.isoformat(): v for m, v in monthly.items()}}, indent=1))
         else:
             for month, symbols in monthly.items():
                 print(f"{month.isoformat()} k={side_size(len(symbols))} {' '.join(symbols)}")
             print(f"members ever: {len(members)}: {','.join(members)}")
+            print(f"not a coin perp, left out (contract types {contract_types_at}): "
+                  f"{len([s for s in market.bars if not is_coin(market, s)])}")
         return EXIT_OK
-    report = {"measured_at": timeutil.utc_now_iso(), **provenance(),
+    report = {"measured_at": timeutil.utc_now_iso(), **provenance(), "contract_types_at": contract_types_at,
               **measure(market, named=named, say=(lambda *_a: None) if args.json else print)}
     if args.json:
         print(json.dumps(report, indent=1, sort_keys=True, default=str))

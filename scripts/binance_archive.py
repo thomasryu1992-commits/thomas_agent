@@ -21,7 +21,9 @@ nothing under ``.runtime_governance_state/``. It reads the OI store file read-on
   (``docs/proposals/MARKET_NEUTRAL_CROSS_SECTION_V0.1.md``, Thomas 2026-11-04 Q4). The first writes every
   USDT perpetual the archive holds monthly 1d klines for, delisted ones included, from the archive's own
   bucket listing. The second downloads one kind of monthly file (``klines-1d`` or ``fundingRate``), and only
-  the months each symbol's listing holds. Same checksum rule, same skip-if-present rule.
+  the months each symbol's listing holds. Same checksum rule, same skip-if-present rule. ``contract-types``
+  snapshots each USDT symbol's ``contractType`` from ``fapi/v1/exchangeInfo`` (public, keyless), so the
+  measurement can leave out the gold, oil and stock perps listed since 2025-12-11.
 - ``measure`` reads what was fetched and reports, per symbol:
   - the first and last day held and the missing days between them;
   - the span against the replay depths the factory needs (1,000 days below 1d, 2,000 bars at 1d);
@@ -258,6 +260,35 @@ def archive_symbols(*, opener: Opener = http_get) -> list[str]:
     return sorted(n for n in names if _PERP_SYMBOL.fullmatch(n))
 
 
+# The archive listing does not say what a symbol tracks. Since 2025-12-11 Binance also lists perps on gold,
+# crude oil and single stocks in the same `<NAME>USDT` form, and `exchangeInfo` tells them apart by
+# `contractType`: `TRADIFI_PERPETUAL`, against `PERPETUAL` for a coin. Measured 2026-11-04: 8 of the 96
+# symbols that ever entered the top-10 universe were TradFi, all from 2026-04 on. The snapshot is written
+# beside the archive because the research sandbox, which reads it, has no network. A delisted symbol is
+# absent from it, and the reader keeps an absent symbol as a coin (the measurement's own record says why).
+EXCHANGE_INFO_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+CONTRACT_TYPES_FILENAME = "contract_types.json"
+
+
+def contract_types(*, opener: Opener = http_get) -> dict[str, str]:
+    """``{symbol: contractType}`` for every USDT symbol ``exchangeInfo`` lists today. Raises
+    :class:`ArchiveError` when the answer is missing, not JSON or lists nothing."""
+    body = opener(EXCHANGE_INFO_URL)
+    if body is None:
+        raise ArchiveError("exchangeInfo answered 404")
+    try:
+        payload = json.loads(body)
+    except ValueError as exc:
+        raise ArchiveError("exchangeInfo: not JSON") from exc
+    rows = payload.get("symbols") if isinstance(payload, dict) else None
+    out = {row["symbol"]: row["contractType"] for row in rows or []
+           if isinstance(row, dict) and isinstance(row.get("symbol"), str)
+           and isinstance(row.get("contractType"), str) and _PERP_SYMBOL.fullmatch(row["symbol"])}
+    if not out:
+        raise ArchiveError("exchangeInfo: no USDT symbol with a contractType")
+    return dict(sorted(out.items()))
+
+
 def monthly_folder(kind: str, symbol: str) -> str:
     """The bucket folder holding one symbol's monthly files of ``kind`` (see :data:`MONTHLY_KINDS`)."""
     if kind == "klines-1d":
@@ -452,6 +483,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     ls = sub.add_parser("list-symbols", help="every USDT perp with monthly 1d klines, delisted included, "
                                              f"written to <dest>/{SYMBOLS_FILENAME}")
     ls.add_argument("--dest", required=True, type=Path)
+    ct = sub.add_parser("contract-types", help="each USDT symbol's contractType from exchangeInfo, written to "
+                                               f"<dest>/{CONTRACT_TYPES_FILENAME}")
+    ct.add_argument("--dest", required=True, type=Path)
     fm = sub.add_parser("fetch-monthly", help="a symbol's monthly files, only the months its listing holds")
     fm.add_argument("--kind", required=True, choices=MONTHLY_KINDS)
     fm.add_argument("--symbols", default=None, help=f"comma list; default: <dest>/{SYMBOLS_FILENAME}")
@@ -468,6 +502,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.dest.mkdir(parents=True, exist_ok=True)
         (args.dest / SYMBOLS_FILENAME).write_text(json.dumps(names, indent=0) + "\n", encoding="utf-8")
         print(f"{len(names)} USDT perps in the archive -> {args.dest / SYMBOLS_FILENAME}")
+        return 0
+    if args.command == "contract-types":
+        try:
+            kinds = contract_types()
+        except ArchiveError as exc:
+            print(f"REFUSED: {exc}", file=sys.stderr)
+            return 2
+        args.dest.mkdir(parents=True, exist_ok=True)
+        record = {"source": EXCHANGE_INFO_URL, "fetched_at": format_utc(datetime.now(timezone.utc)),
+                  "contract_types": kinds}
+        (args.dest / CONTRACT_TYPES_FILENAME).write_text(json.dumps(record, indent=0) + "\n", encoding="utf-8")
+        tally: dict[str, int] = {}
+        for kind in kinds.values():
+            tally[kind] = tally.get(kind, 0) + 1
+        print(f"{len(kinds)} USDT symbols {tally} -> {args.dest / CONTRACT_TYPES_FILENAME}")
         return 0
     if args.command == "fetch-monthly":
         if args.symbols:
