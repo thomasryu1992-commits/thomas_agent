@@ -248,3 +248,19 @@ def test_contract_types_keep_each_usdt_symbols_contract_type_and_nothing_else():
 def test_contract_types_refuse_an_answer_that_lists_nothing(body):
     with pytest.raises(ba.ArchiveError):
         ba.contract_types(opener=lambda _url: body)
+
+
+def test_the_spot_archive_is_listed_and_fetched_from_its_own_prefix_and_holds_no_funding():
+    assert ba.monthly_folder("klines-1d", "BTCUSDT", "spot") == "data/spot/monthly/klines/BTCUSDT/1d/"
+    assert ba.monthly_folder("klines-1d", "BTCUSDT") == "data/futures/um/monthly/klines/BTCUSDT/1d/"
+    with pytest.raises(ValueError):
+        ba.monthly_folder(ba.FUNDING, "BTCUSDT", "spot")
+    seen = []
+
+    def opener(url):
+        seen.append(url)
+        return _listing_page(["data/spot/monthly/klines/BTCUSDT/", "data/spot/monthly/klines/USDCUSDT/"])
+    assert ba.archive_symbols(opener=opener, market="spot") == ["BTCUSDT", "USDCUSDT"]
+    assert "prefix=data%2Fspot%2Fmonthly%2Fklines%2F" in seen[0]
+    assert ba.main(["fetch-monthly", "--market", "spot", "--kind", "fundingRate", "--symbols", "BTCUSDT",
+                    "--start", "2018-01-01", "--end", "2018-02-01", "--dest", "/nonexistent"]) == 2
