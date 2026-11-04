@@ -34,7 +34,7 @@ import os
 import re
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 from runtime.read_only_kernel import integrity
 
@@ -68,6 +68,9 @@ _PICK_SOURCES = ("in_instruction", "next_topics", "queue", "tistory_list", "hist
 _SLOT_COUNTS = ("compared", "agreed", "differed", "moved", "not_compared", "tistory_checked", "tistory_agreed",
                 "tistory_differed", "tistory_moved", "tistory_not_checked")
 _KST = timedelta(hours=9)
+# The department's first ledger record was written on 2026-10-26 (P0). An archive rotated before then holds none of
+# its kinds, so ``records`` never opens one.
+LEDGER_SINCE = "2026-10-26T00:00:00Z"
 _FIELD = re.compile(r"^([a-z_]+):[ \t]*(.*)$")
 _DATE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
 _WANTED = frozenset({"status", "created", "published", "scheduled"})
@@ -196,15 +199,26 @@ def observe(root: str | Path | None = None, *, now: str) -> dict[str, Any]:
             "runs": read_runs(base, since, until)}
 
 
+def records(ledger: Any, kind: str) -> Iterator[Mapping[str, Any]]:
+    """Every ``kind`` record, archives included, in append order. ``iter_records`` reads the active file only, and
+    rotation trims that to the newest rows. A done-set or a count built from it forgets whatever rotated out, so a
+    fire redoes the work and a run of days shrinks (2026-11-04: P4a replayed three bundles a second time). Every
+    reader of the department's kinds, the lane's and this module's, goes through here. Consume it to the end: the
+    appender's lock is held while it runs."""
+    for row in ledger.iter_records_with_archive(appended_since=LEDGER_SINCE, kinds=[kind]):
+        record = row.get("record") if row.get("kind") == kind else None
+        if isinstance(record, Mapping):
+            yield record
+
+
 def verification_summary(ledger: Any, *, now: str) -> dict[str, Any]:
     """The week's ``blog_verification`` records (run dates in ``[since, until)``), summed: how many reported drafts
     the system could compare, how many agreed, and which rule codes differed most. Never carries a path."""
     since, until = _kst_date(now, -WINDOW_DAYS), _kst_date(now)
     out = {"runs": 0, "drafts": 0, "compared": 0, "agreed": 0, "differed": 0, "not_compared": 0, "codes": []}
     counter: dict[str, int] = {}
-    for row in ledger.iter_records(kinds=[VERIFY_RECORD_KIND]):
-        record = row.get("record") if row.get("kind") == VERIFY_RECORD_KIND else None
-        if not isinstance(record, Mapping) or not since <= str(record.get("run_date")) < until:
+    for record in records(ledger, VERIFY_RECORD_KIND):
+        if not since <= str(record.get("run_date")) < until:
             continue
         out["runs"] += 1
         for key in ("drafts", "compared", "agreed", "differed", "not_compared"):
@@ -222,9 +236,8 @@ def analysis_summary(ledger: Any, *, now: str) -> dict[str, Any] | None:
     had — P3's switch condition. None when no week is recorded."""
     until = _kst_date(now)
     weeks: dict[str, Mapping[str, Any]] = {}
-    for row in ledger.iter_records(kinds=[ANALYSIS_RECORD_KIND]):
-        record = row.get("record") if row.get("kind") == ANALYSIS_RECORD_KIND else None
-        sunday = str((record or {}).get("week", {}).get("sunday")) if isinstance(record, Mapping) else ""
+    for record in records(ledger, ANALYSIS_RECORD_KIND):
+        sunday = str((record.get("week") or {}).get("sunday") or "")
         if sunday and sunday < until:
             weeks[sunday] = record          # appended in order: the last one for a week is its latest
     if not weeks:
@@ -259,9 +272,8 @@ def _latest(ledger: Any, kind: str, key: str) -> dict[str, Mapping[str, Any]]:
     """Each ``kind`` record under its ``key`` value; appended in order, so the last one for a key is its latest
     (a re-run after a regeneration supersedes the stale one)."""
     out: dict[str, Mapping[str, Any]] = {}
-    for row in ledger.iter_records(kinds=[kind]):
-        record = row.get("record") if row.get("kind") == kind else None
-        if isinstance(record, Mapping) and record.get(key):
+    for record in records(ledger, kind):
+        if record.get(key):
             out[str(record[key])] = record
     return out
 

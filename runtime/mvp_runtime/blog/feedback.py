@@ -229,10 +229,11 @@ RECORD_SCHEMA_VERSION = "blog_feedback.v0.1"
 
 def latest_week(ledger: Any, *, today: str) -> Mapping[str, Any] | None:
     """The latest ``blog_analysis`` record of the latest week that ended before ``today`` (KST)."""
+    from .. import blog_department
+
     weeks: dict[str, Mapping[str, Any]] = {}
-    for row in ledger.iter_records(kinds=[ANALYSIS_KIND]):
-        record = row.get("record") if row.get("kind") == ANALYSIS_KIND else None
-        sunday = str(((record or {}).get("week") or {}).get("sunday")) if isinstance(record, Mapping) else ""
+    for record in blog_department.records(ledger, ANALYSIS_KIND):
+        sunday = str((record.get("week") or {}).get("sunday") or "")
         if sunday and sunday < today:
             weeks[sunday] = record          # appended in order: the last one for a week is its latest
     return weeks[max(weeks)] if weeks else None
@@ -304,9 +305,8 @@ def fire(ledger: Any, *, now: str, vault_root: Path | None = None) -> str:
         return "blog_feedback_no_history"
     record = build_record(week, found[0], read_posts(root), found[1], now=now)
     last = None
-    for row in ledger.iter_records(kinds=[RECORD_KIND]):
-        if row.get("kind") == RECORD_KIND and isinstance(row.get("record"), Mapping):
-            last = row["record"].get("inputs_id")
+    for previous in blog_department.records(ledger, RECORD_KIND):
+        last = previous.get("inputs_id")
     if last == record["inputs_id"]:
         return "blog_feedback_nothing_new"
     ledger.append_records(record["feedback_id"], {RECORD_KIND: record})

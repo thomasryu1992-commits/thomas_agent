@@ -322,10 +322,8 @@ def fire(ledger: Any, *, now: str, vault_root: Path | None = None) -> str:
     today = (timeutil.parse_iso(now) + timedelta(hours=9)).date()
     since = (today - timedelta(days=LOOKBACK_DAYS)).isoformat()
     latest: dict[str, str] = {}
-    for row in ledger.iter_records(kinds=[RECORD_KIND]):
-        record = row.get("record") if row.get("kind") == RECORD_KIND else None
-        if isinstance(record, Mapping):
-            latest[str(_get(record, "week", "sunday"))] = str(record.get("sources_id"))
+    for record in blog_department.records(ledger, RECORD_KIND):
+        latest[str(_get(record, "week", "sunday"))] = str(record.get("sources_id"))
     recorded = []
     for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
         week_end = path.stem
