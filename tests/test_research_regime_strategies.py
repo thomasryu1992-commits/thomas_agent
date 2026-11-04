@@ -123,6 +123,12 @@ def test_b03_plus_d03_is_the_v02_momentum_basket_under_the_same_mechanics():
     long_leg = rs.run(data, rs.Rules(data, _labels(rs.BULL, start, 150)).basket("B03"), a, b)["daily"]
     short_leg = rs.run(data, rs.Rules(data, _labels(rs.BEAR, start, 150)).basket("D03"), a, b)["daily"]
     basket = xs.simulate(market, "S-MOM30", monthly, start=a, end=b)["daily"]
+    sunday = next(d for d in _days(a, 7) if d.weekday() == xs.SUNDAY)
+    longs = rs.Rules(data, _labels(rs.BULL, start, 150)).basket("B03")(sunday, {})
+    shorts = rs.Rules(data, _labels(rs.BEAR, start, 150)).basket("D03")(sunday, {})
+    assert longs and all(w > 0 for w in longs.values()) and shorts and all(w < 0 for w in shorts.values())
+    winners = sorted(prices, key=lambda s: -(prices[s][sunday] / prices[s][sunday - timedelta(days=30)]))
+    assert set(longs) == set(winners[:len(longs)]) and set(shorts) == set(winners[-len(shorts):])
     compared = 0
     for day, row in basket.items():
         if day == b:
@@ -283,3 +289,11 @@ def test_every_strategy_of_the_record_is_registered_once_in_its_regime():
         assert all(rs.STRATEGIES[i].regime == regime for i in ids)
     assert {s for s, v in rs.STRATEGIES.items() if "oi" in v.needs} == {"S11", "D11"}
     assert {s for s, v in rs.STRATEGIES.items() if v.kind == "basket"} == {"B03", "B07", "S04", "S09", "D03", "D07"}
+
+
+def test_the_oi_plan_covers_each_members_months_from_four_days_before():
+    monthly = {date(2021, 1, 1): ["AUSDT"], date(2021, 2, 1): ["AUSDT", "BUSDT"], date(2021, 3, 1): ["BUSDT"],
+               date(2021, 5, 1): ["AUSDT"]}
+    assert rs.oi_plan(monthly, start=date(2021, 1, 1), end=date(2021, 5, 10)) == [
+        ("AUSDT", date(2020, 12, 28), date(2021, 2, 28)), ("AUSDT", date(2021, 4, 27), date(2021, 5, 10)),
+        ("BUSDT", date(2021, 1, 28), date(2021, 3, 31))]

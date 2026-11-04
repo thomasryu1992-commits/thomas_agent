@@ -1046,6 +1046,33 @@ def read_oi(root: Path, symbols: Sequence[str]) -> dict[str, dict[date, float]]:
     return out
 
 
+def oi_plan(monthly: Mapping[date, Sequence[str]], start: date = WINDOW_START,
+            end: date = WINDOW_END) -> list[tuple[str, date, date]]:
+    """The metrics days S11 and D11 can read: each member's months from 4 days before the month, merged into
+    ``(symbol, first, last)`` spans for ``binance_archive.py fetch``."""
+    days: dict[str, set[date]] = {}
+    for month, members in monthly.items():
+        if not start <= month <= end:
+            continue
+        nxt = date(month.year + (month.month == 12), month.month % 12 + 1, 1)
+        for symbol in members:
+            day = month - timedelta(days=4)
+            while day < nxt and day <= end:
+                days.setdefault(symbol, set()).add(day)
+                day += timedelta(days=1)
+    out = []
+    for symbol in sorted(days):
+        run_start = prev = None
+        for day in sorted(days[symbol]):
+            if prev is None or day != prev + timedelta(days=1):
+                if prev is not None:
+                    out.append((symbol, run_start, prev))
+                run_start = day
+            prev = day
+        out.append((symbol, run_start, prev))
+    return out
+
+
 # --- the command line ---------------------------------------------------------------------------------------------
 
 def _cache() -> Path:
@@ -1120,14 +1147,14 @@ def read_stage_one(path: Path) -> dict[str, list[str]] | None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="regime_strategies", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("regimes", "stage1", "stage2"):
+    for name in ("regimes", "oi-plan", "stage1", "stage2"):
         p = sub.add_parser(name)
         p.add_argument("--archive", type=Path, default=None, help="default: $RESEARCH_CACHE/archive")
         p.add_argument("--metrics", type=Path, default=None, help="default: $RESEARCH_CACHE/archive-metrics")
     sub.choices["stage2"].add_argument("--stage1", type=Path, required=True,
                                        help="the stage-1 record (its JSON output) naming the candidates")
     args = parser.parse_args(argv)
-    if args.command != "regimes" and not xs._in_sandbox():
+    if args.command not in ("regimes", "oi-plan") and not xs._in_sandbox():
         print("refused: runs in the research sandbox only (scripts/research/sandbox_run.sh)", file=sys.stderr)
         return EXIT_USAGE
     picked = None
@@ -1138,6 +1165,16 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_BLOCKED
     archive = args.archive or _cache() / "archive"
     metrics = args.metrics or _cache() / "archive-metrics"
+    if args.command == "oi-plan":
+        market = xs.load_market(archive, funding=False)
+        snapshot = xs.read_contract_types(archive)
+        if snapshot is None:
+            print(f"BLOCKED: no {xs.CONTRACT_TYPES_FILENAME} under {archive}", file=sys.stderr)
+            return EXIT_BLOCKED
+        market.contract_types, _ = snapshot
+        for symbol, a, b in oi_plan(xs.universes(market, top_n=TOP_N, start=WINDOW_START, end=WINDOW_END)):
+            print(symbol, a.isoformat(), b.isoformat())
+        return EXIT_OK
     try:
         data, labelled = load(archive, metrics)
     except FileNotFoundError as exc:
