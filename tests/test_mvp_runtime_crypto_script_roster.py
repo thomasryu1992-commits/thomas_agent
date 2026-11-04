@@ -81,6 +81,7 @@ SCRIPTS: dict[str, str] = {
     "scripts/research/fetch_public.py": READ,
     "scripts/research/lake.py": READ,
     "scripts/research/cross_section_basket.py": READ,  # sandbox-only basket measurement over archive files, prints a report
+    "scripts/research/regime_strategies.py": READ,  # sandbox-only regime strategy screen/confirm over archive files, prints a report
     "scripts/research/pre_window_replay.py": READ,  # sandbox-only replay of cohort members and twins, prints a report               # paired L/F replay, prints a report
     "scripts/paired_family_window_check.py": READ,
     "scripts/pooled_mint_check.py": READ,

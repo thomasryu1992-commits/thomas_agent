@@ -62,7 +62,7 @@ def test_klines_are_read_with_or_without_a_header_and_in_either_time_unit(tmp_pa
     (folder / "BTCUSDT-1d-2020-01.zip").write_bytes(_zip_bytes(old))
     (folder / "BTCUSDT-1d-2026-10.zip").write_bytes(_zip_bytes(new))
     bars = xs.read_klines(folder)
-    assert bars[date(2020, 1, 1)] == xs.Bar(open=7189.4, close=7197.5, quote_volume=409678760.5)
+    assert bars[date(2020, 1, 1)] == xs.Bar(open=7189.4, close=7197.5, quote_volume=409678760.5, high=7260.0, low=7170.0)
     assert bars[date(2026, 10, 1)].close == 84829.6
 
 
