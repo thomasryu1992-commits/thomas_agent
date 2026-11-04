@@ -163,6 +163,25 @@ def test_the_daily_fire_records_each_bundle_once(tmp_path):
     assert len(rows) == 1 and rows[0]["state"] == "generator_stale" and rows[0]["agree"] is None
 
 
+def test_a_record_rotated_into_the_archive_still_counts_as_done_and_on_the_weekly_line(tmp_path):
+    # 2026-11-04 on the live host: the done-set read the active ledger only, so three bundles whose records had
+    # rotated out were replayed a second time, and the weekly report's day counts shrank with the active file.
+    from runtime.mvp_runtime import blog_department as bd, retention
+
+    ledger = LedgerStore(tmp_path / "state" / LEDGER_REL)
+    root = tmp_path / "bundles"
+    stale = dict(kp.GENERATED_FROM_SHA256, **{"kw_pipeline.py": "0" * 64})
+    _bundle(root, "20261027-071000", shas=stale)
+    _bundle(root, "20261028-071000", shas=stale)
+    assert kr.fire(ledger, now=NOW, root=root) == ("blog_kw_replayed=20261027-071000:generator_stale,"
+                                                   "20261028-071000:generator_stale")
+    assert retention.rotate_file(ledger, "records.jsonl", keep_rows=1, now="2026-10-29T00:00:00Z")["rotated"] == 1
+    active = [r["record"]["bundle"] for r in ledger.iter_records(kinds=[kr.RECORD_KIND]) if r["kind"] == kr.RECORD_KIND]
+    assert active == ["20261028-071000"]                    # the 10-27 record now lives in the archive only
+    assert kr.fire(ledger, now=NOW, root=root) == "blog_kw_replay_nothing_new"
+    assert bd.stages(ledger, now="2026-10-29T01:00:00Z")["kw_replay"]["days"] == 2
+
+
 def test_the_kind_is_maintenance_and_fires_through_the_scheduler(tmp_path, monkeypatch):
     assert KIND_BLOG_KW_REPLAY in KINDS and KIND_BLOG_KW_REPLAY in MAINTENANCE_KINDS
     monkeypatch.setenv(kr.REPLAY_DIR_ENV, str(tmp_path / "bundles"))

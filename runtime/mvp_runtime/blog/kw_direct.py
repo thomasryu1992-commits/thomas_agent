@@ -333,6 +333,8 @@ def fire(ledger: Any, *, now: str, root: Path | None = None,
          sleep: Callable[[float], None] = time.sleep) -> str:
     """Run today's bundle once, in the afternoon window, when both opt-ins are set. Every other case is a named
     no-op: ``off`` (an opt-in unset; nothing is read), ``no_bundles``, ``outside_window``, ``nothing_new``."""
+    from .. import blog_department
+
     web, own = select_web_fetcher(), select_own_fetcher()
     unset = [f.env_var for f in (web, own) if not f.live]
     if unset:
@@ -343,8 +345,7 @@ def fire(ledger: Any, *, now: str, root: Path | None = None,
     local = _iso(now).astimezone(KST)
     if not WINDOW_KST[0] <= local.hour < WINDOW_KST[1]:
         return "blog_kw_direct_outside_window"
-    done = {str(row["record"].get("bundle")) for row in ledger.iter_records(kinds=[RECORD_KIND])
-            if row.get("kind") == RECORD_KIND}
+    done = {str(record.get("bundle")) for record in blog_department.records(ledger, RECORD_KIND)}
     # One run a day: the day's newest bundle, and none once any of the day's bundles has a record.
     today = [b for b in kr.bundles(folder) if b.name.startswith(f"{local:%Y%m%d}-")]
     if not today or any(b.name in done for b in today):

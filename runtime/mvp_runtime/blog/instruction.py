@@ -92,10 +92,11 @@ def history_for(root: Path, utc_day: str) -> tuple[str, Mapping[str, Any]] | Non
 
 
 def latest_feedback(ledger: Any) -> Mapping[str, Any] | None:
+    from .. import blog_department
+
     last = None
-    for row in ledger.iter_records(kinds=[FEEDBACK_KIND]):
-        if row.get("kind") == FEEDBACK_KIND and isinstance(row.get("record"), Mapping):
-            last = row["record"]
+    for record in blog_department.records(ledger, FEEDBACK_KIND):
+        last = record
     return last
 
 
@@ -247,10 +248,11 @@ def build_check(run_date: str, report: Mapping[str, Any], instruction: Mapping[s
 
 def _records(ledger: Any, kind: str) -> dict[str, Mapping[str, Any]]:
     """The latest record per ``run_date`` of ``kind``."""
+    from .. import blog_department
+
     out: dict[str, Mapping[str, Any]] = {}
-    for row in ledger.iter_records(kinds=[kind]):
-        record = row.get("record") if row.get("kind") == kind else None
-        if isinstance(record, Mapping) and isinstance(record.get("run_date"), str):
+    for record in blog_department.records(ledger, kind):
+        if isinstance(record.get("run_date"), str):
             out[record["run_date"]] = record
     return out
 

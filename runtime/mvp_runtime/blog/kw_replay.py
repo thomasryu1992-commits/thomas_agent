@@ -291,11 +291,12 @@ def build_record(result: Mapping[str, Any], *, now: str) -> dict[str, Any]:
 def fire(ledger: Any, *, now: str, root: Path | None = None) -> str:
     """Replay up to ``PER_FIRE`` finished bundles that have no record yet, oldest first, one record each. An unset or
     absent bundle folder is ``blog_kw_replay_no_bundles`` (the root cron may not record yet), not a failure."""
+    from .. import blog_department
+
     folder = root if root is not None else replay_dir()
     if folder is None or not folder.is_dir():
         return "blog_kw_replay_no_bundles"
-    done = {str(row["record"].get("bundle")) for row in ledger.iter_records(kinds=[RECORD_KIND])
-            if row.get("kind") == RECORD_KIND}
+    done = {str(record.get("bundle")) for record in blog_department.records(ledger, RECORD_KIND)}
     todo = [b for b in bundles(folder) if b.name not in done][:PER_FIRE]
     if not todo:
         return "blog_kw_replay_nothing_new"
