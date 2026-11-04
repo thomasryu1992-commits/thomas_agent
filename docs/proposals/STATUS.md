@@ -4,7 +4,7 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **91**건: `DRAFT` 3 · `PARTIALLY DECIDED` 9 · `DECIDED` 16 · `IMPLEMENTED` 53 · `SUPERSEDED` 3 · `RECORD` 7
+제안서 **92**건: `DRAFT` 3 · `PARTIALLY DECIDED` 9 · `DECIDED` 17 · `IMPLEMENTED` 53 · `SUPERSEDED` 3 · `RECORD` 7
 
 ## Thomas 결정 대기 (12)
 
@@ -25,7 +25,7 @@
 | [G6_SELL_REBALANCE_V0.1.md](G6_SELL_REBALANCE_V0.1.md) | `DRAFT` | 2026-11-03 | G6(자동 리밸런싱)의 남은 절반인 매도를 다루는 결정 패킷 초안이다. **지금 묻지 않는다.** G6은 G1d(H6c, unit 권위 전환)가 끝난 뒤 다시 여는 별도 결정이므로(`THOMAS_AGENT_TARGET_ARCHITECTURE_V0.1.md` §6), H6c가 정해진 뒤 SQ1–SQ5를 묻는다. 그때까지 코드, 정책, env, 스케줄은 바뀌지 않는다. 미리 써 두는 이유는 H6c가 정해지는 날 바로 물을 수 있게 하기 위해서다. |
 | [H6C_UNIT_AUTHORITY_V0.1.md](H6C_UNIT_AUTHORITY_V0.1.md) | `DRAFT` | 2026-11-04 | H6c(G1d, unit 권위 전환)의 결정 패킷 초안이다. **지금 묻지 않는다.** Claude 도어의 `holdings_status`에 `h6c_askable`이 서면 HQ1–HQ6을 묻는다(`H6B_UNIT_SHADOW_V0.1.md` S5). 그때까지 코드, 정책, env, 스케줄은 바뀌지 않는다. 미리 써 두는 이유는 조건이 갖춰지는 날 바로 묻기 위해서다. 같은 날 Thomas가 해야 할 일(§2의 입금·출금)도 여기에 적는다. |
 
-## 결정됨 — 구현 남음 (16)
+## 결정됨 — 구현 남음 (17)
 
 결정은 끝났고 결정된 것이 아직 다 지어지지 않았다. 결정이 만든 구현 대기열이다.
 
@@ -46,6 +46,7 @@
 | [MINT_REALLOCATION_PRE_WINDOW_V0.1.md](MINT_REALLOCATION_PRE_WINDOW_V0.1.md) | `DECIDED` | 2026-10-25 | **Q4a 예: 11-14 읽기의 4h 기대 몫은 37.5%다(Thomas 2026-10-25).** Q1 B, Q2 1h·4h, Q3 하지 않음(Thomas 2026-10-23), Q4 예: 기계적 확인은 11-14에 한 번 읽고 교배 수는 보고만 한다(Thomas 2026-10-25). 틸트 뒤 BTCUSDT 1h에서 family 10개가 끊기던 결함은 #1300으로 고쳤다(`factory.shortfall_slice_start`). **확인 측정 통과(2026-10-23)**: 1h 두 family가 다시 LEAD이고, 4h `hybrid(fused)`는 NULL이다. topup 기울이기를 지었다(`factory.MINT_TILT_FAMILIES`). 판정, 홀드아웃, 문, 템플릿 목록은 바꾸지 않는다. |
 | [CROSS_SECTION_CARRY_AND_WIDE_MOMENTUM_V0.1.md](CROSS_SECTION_CARRY_AND_WIDE_MOMENTUM_V0.1.md) | `DECIDED` | 2026-11-04 | Thomas: Q2(상위 30개)와 Q3(앞 시험의 p값을 Holm 묶음에 넣음)는 기본값, Q1은 캐리와 모멘텀 상위 30을 비교한 뒤 둘 다 한 사전 등록으로 재는 권고에 "오케이". 구현은 `scripts/research/cross_section_basket.py --test v0.2`. 정식 실행은 2026-11-04 09:25Z에 한 번 했다. 결과는 S-MOM30(상위 30) LEAD, S-CARRY NULL이다(아래 "결과"). 다음 단계(생성기 방향, forward 측정)는 Thomas 결정이다. 판정 규칙, 문, factory, 템플릿, 스케줄은 바꾸지 않는다. |
 | [CROSS_SECTION_SPOT_HOLDOUT_V0.1.md](CROSS_SECTION_SPOT_HOLDOUT_V0.1.md) | `DECIDED` | 2026-11-04 | Thomas: forward 판정을 기다리지 않고, 손대지 않은 과거 구간에서 v0.2의 LEAD(S-MOM30, 상위 30)를 확인한다("일단 권고대로 가고"). 숏 다리는 가격으로 계산한다(Thomas: "차트상으로 숏 전략에 대한 흐름은 설계할 수 있잖아"). 구현은 `cross_section_basket.py --test spot-holdout`. 정식 실행은 2026-11-04 10:23Z에 한 번 했다. 결과는 HOLDOUT_NOT_CONFIRMED이고, 단측 p 하나만 넘지 못했다(아래 "결과"). |
+| [CRYPTO_REGIME_STRATEGY_SET_V0.1.md](CRYPTO_REGIME_STRATEGY_SET_V0.1.md) | `DECIDED` | 2026-11-04 | Thomas: §6 Q1–Q4 "기본값대로"(Q3는 B안, 선물 분기 홀드아웃). 국면 판별 규칙 하나와 전략 36개(국면당 12개), 두 단계 검증을 이대로 한다. 구현은 `scripts/research/regime_strategies.py`이고, 정식 실행은 병합 뒤 한 번 한다. 처음 지시: "상승장/횡보장/하락장인지를 구조적으로 파악해서 각각의 롱/숏 전략을 조금더 구체적으로 정한 뒤, 각각 시나리오에 맞는 전략을 10~20개 정도 구상"(국면마다 10~20개). |
 | [MARKET_NEUTRAL_CROSS_SECTION_V0.1.md](MARKET_NEUTRAL_CROSS_SECTION_V0.1.md) | `DECIDED` | 2026-11-04 | Q1: 매월 거래량 상위 10개에 Thomas가 지정한 심볼을 더한다(지정은 정식 실행 전에 고정). Q2–Q4는 권고대로: 신호 셋 고정(1일 반전, 7일·30일 모멘텀), 1d만, 아카이브 klines는 `claude` 계정의 `binance_archive.py`로 받는다. 구현은 지었다(`binance_archive.py list-symbols`·`fetch-monthly`·`contract-types`, `scripts/research/cross_section_basket.py`, 아래 "지은 것"). 정식 실행 전에 유니버스를 코인 무기한으로 좁혔다(아래 "사전 등록 수정"). 정식 실행은 2026-11-04 07:04Z에 한 번 했다. 결과는 세 신호 모두 NULL, 전체 판정은 NO_EDGE_IN_THIS_CROSS_SECTION이다(아래 "결과"). 판정 규칙, 문, factory, 템플릿, 스케줄은 바꾸지 않는다. |
 
 ## 구현됨 (53)
