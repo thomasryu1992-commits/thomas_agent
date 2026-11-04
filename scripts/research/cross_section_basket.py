@@ -637,6 +637,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"BLOCKED: no {KLINES_KIND} files under {archive}", file=sys.stderr)
         return EXIT_BLOCKED
     if spot:   # spot has no contract types: the base rule decides (CROSS_SECTION_SPOT_HOLDOUT_V0.1 §2)
+        # USDT pairs only (Thomas 2026-11-04): a BTC-quoted pair priced in BTC must never fill a month that has
+        # fewer than 30 USDT pairs.
+        market.bars = {s: b for s, b in market.bars.items() if s.endswith("USDT")}
         market.contract_types, contract_types_at = spot_kinds(market.bars), "spot-base-rule"
     else:
         market.contract_types, contract_types_at = snapshot

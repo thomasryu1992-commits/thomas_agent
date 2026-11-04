@@ -437,3 +437,13 @@ def test_the_spot_measurement_runs_in_its_own_window_at_its_own_fee_without_fund
     first = min(d for d, r in run["daily"].items() if r["cost"] > 0)
     assert run["daily"][first]["cost"] == pytest.approx(2 * (10.0 + cost.DEFAULT_SLIPPAGE_BPS) / 10_000)
     assert max(run["daily"]) <= date(2019, 12, 31)
+
+
+def test_the_spot_holdout_reads_usdt_pairs_only_even_when_btc_pairs_sit_in_the_archive(tmp_path, capsys):
+    for symbol in ("BTCUSDT", "ETHUSDT", "LTCUSDT", "BNBUSDT", "ETHBTC", "XRPBTC"):
+        folder = tmp_path / xs.KLINES_KIND / symbol
+        folder.mkdir(parents=True)
+        rows = "".join(f"{_ms(d)},1,1,1,1,1,0,5,1,1,1,0\n" for d in _days(date(2017, 8, 1), 400))
+        (folder / f"{symbol}-1d-2017-08.zip").write_bytes(_zip_bytes(rows))
+    assert xs.main(["universe", "--test", "spot-holdout", "--json", "--archive", str(tmp_path)]) == xs.EXIT_OK
+    assert json.loads(capsys.readouterr().out)["members_ever"] == ["BNBUSDT", "BTCUSDT", "ETHUSDT", "LTCUSDT"]
