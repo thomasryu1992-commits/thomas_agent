@@ -4,7 +4,7 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-10-26**: the dated block below only. No section was re-surveyed, so a section's own text
+Last updated: **2026-11-04**: the dated block below only. No section was re-surveyed, so a section's own text
 is still as of its last date.
 
 > **Since 2026-09-30, in one place.** Each line names the record that owns it. Live open decisions are on the
@@ -38,12 +38,28 @@ is still as of its last date.
 >   - The runner was upgraded in place on 2026-10-26 (`deploy_runner_c6a.py upgrade`).
 > - **Holdings:**
 >   - C7's five PRs were deployed on 2026-10-17 (`HOLDINGS_LEDGER_CHECKPOINT_V0.1.md` §12.7).
->   - H6b-shadow was decided and built on 2026-10-28 (`H6B_UNIT_SHADOW_V0.1.md`). It is display only. H6c is asked
-    when the Claude door shows `h6c_askable`: 14 shadow days, a deposit and a withdrawal applied, nothing held.
+>   - H6b-shadow was decided and built on 2026-10-28 (`H6B_UNIT_SHADOW_V0.1.md`, #1340). It is display only. H6c is
+>     asked when the Claude door shows `h6c_askable`: 14 days from the first point at which H6 was ready, a deposit
+>     and a withdrawal applied after that point, nothing held.
+>   - On 2026-11-04 H6 was not ready: `toss_cash_semantics` waits for the settlement day of the 2026-11-03 sell.
+>     The H6c packet is drafted ahead (`H6C_UNIT_AUTHORITY_V0.1.md`, #1359).
+>   - Toss deposits and withdrawals in quiet windows are closed by rule: `quiet_window` v1 (#1315), v2 (#1339) and
+>     v3 (#1346, small inflows as interest) (`HOLDINGS_STATUS_READ_AND_AUTO_FLOWS_V0.1.md`).
+> - **Toss orders and rebalancing:**
+>   - G6-buy is the first Toss order path. It buys only, behind `MVP_TOSS_ORDERS=buy_only`, from a scenario Thomas
+>     confirms (#1329–#1331, #1333–#1335, live since 2026-10-27; `G6_BUY_CASH_AUTOINVEST_V0.1.md`).
+>   - The sell half is drafted (`G6_SELL_REBALANCE_V0.1.md`, #1352). It is asked after H6c.
+>   - The rebalancing calculator is terminal-only and places no order. Every decided RB item is built (#1320, #1322, #1324, #1325, #1327,
+>     the step-4 loss offset #1348, the per-instrument tax kind #1353; `REBALANCING_PROPOSAL_V0.1.md`).
+> - **Blog department v0.2** (`BLOG_DEPARTMENT_V0.1.md`): P1–P7 are built as shadows beside the vault path (#1326,
+>   #1328, #1332, #1336, #1344, #1345 off, #1350, #1351, #1355). The weekly report shows each stage's progress
+>   towards its switch (#1356). Each switch is Thomas's once its condition is met. The status line there is the
+>   authority.
 > - **The weekly management report** (`WEEKLY_MANAGEMENT_REPORT_V0.1.md`) is deployed. Its schedule is added on
 >   2026-11-02 at 09:00 KST, and the first report arrives a week later.
-> - **Unblocked build items: none (2026-10-26).** The 2026-10-25 sweep built the last three (#1302–#1304). Every other
->   item waits on a date or on a Thomas decision.
+> - **Status sweep (2026-11-04, #1357):** seven decided proposals whose builds were done moved to IMPLEMENTED.
+> - **Unblocked build items: none (2026-11-04).** Every open item waits on a date (H6 on the 2026-11-05 settlement,
+>   the mint read on 2026-11-14, the epoch boundary on 2027-03-22) or on a Thomas decision (`STATUS.md`).
 
 Before that, **2026-09-30** — §L gains E3 (the fusion-parenting validation slice, decided 2026-09-30). Before that, **2026-09-28** — §L added (E1/E2 from the regime-episode RECORD, held until the first forward-cohort verdict). Before that, **2026-09-25** — §I's heading and its "nothing here is built" line corrected (decided
 2026-09-24, option C; PR1–PR3 built as #977–#979). No other section was re-surveyed. Before that,
