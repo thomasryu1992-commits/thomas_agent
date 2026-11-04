@@ -196,6 +196,27 @@ def test_the_random_twin_keeps_days_legs_and_holding_spans():
     assert all(w == held[0] for w in held)
 
 
+def test_the_random_twin_keeps_each_legs_direction_so_market_drift_cancels():
+    """A long strategy beats a coin-flip control whenever the market rises. The twin keeps the strategy's
+    directions and weights and redraws only the symbols, so in a market where every member moves alike the
+    twin earns what the strategy earns, every seed."""
+    start = date(2021, 1, 1)
+    prices = {f"S{i}USDT": {d: 100.0 * 1.01 ** k for k, d in enumerate(_days(start, 30))} for i in range(6)}
+    data = rs.Data(_market(prices), _monthly(prices, start, 30))
+    path = {start + timedelta(days=i): ({"S0USDT": 0.5, "S1USDT": 0.25, "S2USDT": -0.25} if 3 <= i < 12 else {})
+            for i in range(25)}
+    a, b = start + timedelta(days=2), start + timedelta(days=20)
+    mine = rs.run(data, lambda day, book: dict(path.get(day, {})), a, b)["daily"]
+    for k in range(8):
+        twin = rs.random_twin(data, path, "B01", f"seed/{k}")
+        for day in path:
+            w = twin(day, {})
+            # net exposure is kept (two legs drawn onto one symbol net out, as a book would)
+            assert sum(w.values()) == pytest.approx(sum(path[day].values()))
+        theirs = rs.run(data, twin, a, b)["daily"]
+        assert sum(r["gross"] for r in theirs.values()) == pytest.approx(sum(r["gross"] for r in mine.values()))
+
+
 # --- the reading -------------------------------------------------------------------------------------------
 
 def _row(regime="BULL", weeks=20, mean=50.0, t=2.0, p=0.02, trades=40, vs=10.0, years=None):
