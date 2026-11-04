@@ -1,6 +1,6 @@
 # 제안: 주간 경영 보고 — 레인 요약·대기 승인·실패 스케줄·피드백 통계를 관제봇으로 (DRAFT v0.1)
 
-**상태:** DECIDED 2026-10-25 — Q1=A(관제봇 토큰을 scheduler-maint에 `MVP_CONTROL_BOT_TOKEN`으로), Q2=보유자산 제외, Q3=월요일 09:00 KST, Q4=피드백은 집계만(Thomas 2026-10-25, "승인: WMR-1 Q1=A Q2=제외 Q3=월09KST Q4=집계만, 구현·PR"). 구현은 같은 날 PR로 올렸다(`management_report.py`, kind `management_report`). 배포와 스케줄 등록은 Thomas가 한다.
+**상태:** IMPLEMENTED 2026-10-25 — **2026-11-04 상태 정정:** #1310으로 지어져 배포됐고, 스케줄은 2026-11-02에 등록됐다(`docs/REMAINING_WORK.md` 머리). 첫 보고는 그다음 월요일 09:00 KST다. **이전 상태(DECIDED):** Q1=A(관제봇 토큰을 scheduler-maint에 `MVP_CONTROL_BOT_TOKEN`으로), Q2=보유자산 제외, Q3=월요일 09:00 KST, Q4=피드백은 집계만(Thomas 2026-10-25, "승인: WMR-1 Q1=A Q2=제외 Q3=월09KST Q4=집계만, 구현·PR"). 구현은 같은 날 PR로 올렸다(`management_report.py`, kind `management_report`). 배포와 스케줄 등록은 Thomas가 한다.
 **요청:** Thomas 2026-10-25 — "주간 경영 보고 스케줄 설계부터 시작해. 레인 요약, 대기 승인, 실패 스케줄, 피드백 통계를 묶어서 관제봇으로."
 **근거:** 2026-10-25 회사형 설계 점검. 비서 역할 중 빠진 것 세 가지가 확인됐다. 정기 경영 보고가 없고, 스케줄로 돈 분석은 결과를 보내지 않으며(`scheduler.py`의 analysis_task 분기), 피드백은 개수 세기 말고는 다시 읽히지 않는다(`store.py`). 이 문서는 첫째를 채우고, 둘째와 셋째는 보고에 숫자로 드러낸다.
 

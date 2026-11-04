@@ -1,6 +1,6 @@
 # 제안: Option C C6b 선행 조건 3 — root crontab 15줄 분류 (DRAFT v0.1)
 
-**상태:** DECIDED 2026-10-19 — **정정(2026-10-20):** 12번 kw-weekly는 `claude`로 옮기지 않고 root에 남는다. `kw-pipeline.py run`을 돌려 검색광고 키가 필요하고, K-1 A가 키를 root에만 두기 때문이다(C6b P-4 준비 중 확인). 이전 가능은 2줄(5·13)이다. K-1–K-4가 권고안대로 정해졌다(아래 결정). 분류 문서는 #1250(`3fce85c3`)으로 병합됐다. 실제 crontab 변경은 C6b의 b6 단계이고 C6b 실행 승인 뒤에 한다. 이 문서가 바꾼 호스트 설정은 없다. **원래 상태(작성 당시):** DRAFT 2026-10-19 — 결정 4건(K-1–K-4)이 Thomas를 기다렸다.
+**상태:** IMPLEMENTED 2026-10-19 — **2026-11-04 상태 정정:** 분류대로 crontab이 바뀌었다. C6b의 b6 단계(2026-10-20)에서 root에서 두 줄을 빼고 `claude` crontab에 두 줄을 넣었다(`HOST_PRIVILEGE_SEPARATION_C6B_EXECUTION_V0.1.md` §6). **이전 상태(DECIDED):** **정정(2026-10-20):** 12번 kw-weekly는 `claude`로 옮기지 않고 root에 남는다. `kw-pipeline.py run`을 돌려 검색광고 키가 필요하고, K-1 A가 키를 root에만 두기 때문이다(C6b P-4 준비 중 확인). 이전 가능은 2줄(5·13)이다. K-1–K-4가 권고안대로 정해졌다(아래 결정). 분류 문서는 #1250(`3fce85c3`)으로 병합됐다. 실제 crontab 변경은 C6b의 b6 단계이고 C6b 실행 승인 뒤에 한다. 이 문서가 바꾼 호스트 설정은 없다. **원래 상태(작성 당시):** DRAFT 2026-10-19 — 결정 4건(K-1–K-4)이 Thomas를 기다렸다.
 
 **결정(2026-10-19):** Thomas가 "권고안대로 승인할게"로 아래 줄을 승인했다(줄 문구는 Claude가 제시했다).
 - `결정: C6b cron K-1=A(검색광고 키는 root에 두고 kw-pipeline만 root cron), K-2=A(claude 홈에 볼트 사본, push 자격 별도 발급), K-3=A(측정 로그 3개를 /var/lib/thomas-measure root:claude 0750으로), K-4=holdout 줄 삭제·crontab 백업은 root cron으로 (Thomas 2026-10-19)`
