@@ -124,6 +124,9 @@ class Bar:
     open: float
     close: float
     quote_volume: float
+    # CRYPTO_REGIME_STRATEGY_SET_V0.1 reads the day's range (ATR, Donchian, the 30-day box); the baskets do not
+    high: float | None = None
+    low: float | None = None
 
 
 @dataclass
@@ -172,7 +175,8 @@ def read_klines(folder: Path) -> dict[date, Bar]:
         for row in _rows(path):
             try:
                 day = _utc_day(float(row[0]))
-                bar = Bar(open=float(row[1]), close=float(row[4]), quote_volume=float(row[7]))
+                bar = Bar(open=float(row[1]), close=float(row[4]), quote_volume=float(row[7]),
+                          high=float(row[2]), low=float(row[3]))
             except (ValueError, IndexError):
                 continue          # the header row
             if bar.open > 0 and bar.close > 0:

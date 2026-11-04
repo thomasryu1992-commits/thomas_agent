@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **92**건: `DRAFT` 4 · `PARTIALLY DECIDED` 9 · `DECIDED` 16 · `IMPLEMENTED` 53 · `SUPERSEDED` 3 · `RECORD` 7
+제안서 **92**건: `DRAFT` 3 · `PARTIALLY DECIDED` 9 · `DECIDED` 17 · `IMPLEMENTED` 53 · `SUPERSEDED` 3 · `RECORD` 7
 
-## Thomas 결정 대기 (13)
+## Thomas 결정 대기 (12)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -23,10 +23,9 @@
 | [TOTAL_ASSET_ALLOCATION_V0.1.md](TOTAL_ASSET_ALLOCATION_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-20 | **2026-11-03 사실 정정:** §8.5 4단계의 손익 통산은 해외 직접 투자(양도소득)끼리만 된다. 국내 상장 해외·채권·금 ETF의 매매차익은 배당소득이라 통산되지 않는다(2차 자료로 확인). **2026-10-20(3):** D-C 3단계가 정해지고 지어졌다. 원·달러 노출을 Thomas의 터미널 보드에만 보인다(H3 때문에 반출하지 않는다). 엔 줄은 없다(아래 결정 절). D-C의 세 단계가 모두 끝났다. **2026-10-20(2):** 미국채 수단은 국내 상장 ETF(7–10년, 환노출)다. 계좌는 Q3의 채권 배치를 따른다. D-D 답: 토스증권은 IRP를 제공하지 않는다. 그 비용은 Q3 재검토 조건에 넣었다(아래 결정 절). **2026-10-20:** D-A가 정해졌다. 채권 37 중 ¼(9.25)을 미국채 7–10년물, 환노출로 담는다(아래 결정 절). 목표 상수는 바뀌지 않는다. 열린 것: 미국채의 수단·계좌와 토스증권 IRP 제공 여부(D-D), D-C 3단계(통화별 노출 표시). **이전 상태(2026-10-16):** 열린 것: 미국채의 몫·만기·환헤지 여부·계좌(원·달러·엔 환율 측정 뒤 Thomas가 정한다)와 토스증권 IRP 제공 여부(Thomas 확인 대기). 2026-10-16 결정(아래 결정 절): 채권에 미국채를 함께 담고, 퇴직연금은 이 배분의 범위 밖이며, 원·달러·엔 환율 변동을 측정 → 표시 순서로 반영한다. 목표 수치는 미국채 몫이 정해질 때까지 그대로다. Q1–Q10 결정(2026-10-07). Q1·Q2·Q4 권고대로(중립형 배분, 5/25 밴드 월 점검, BTC 위험 기여도 상한 25%). Q3은 권고와 달리 토스 하나로 유지하고, 금은 토스증권 금 ETF로 담는다. Q5는 엔진 비중 0%에서 시작해 증거에 따라 늘리며 연구 일시 중지(D3)는 풀지 않는다. 실데이터 검증(`TOTAL_ASSET_ALLOCATION_VALIDATION_V0.1.md`) 뒤 Q6–Q10도 권고대로 결정했다 (§11): BTC 5 → 2.5%(줄인 몫은 현금), 국내주식 10% 유지, 국고채 3년 중심, 목표 대비 이탈은 표시만(D4 안), BTC 현물은 수동 입력·바이낸스 잔고는 목표 0%의 "엔진 증거금". 현재 목표: 주식 40·국고채 37·금 13·BTC 2.5·현금 7.5. 이탈 표시는 지어졌다 (§11.1, `holdings/allocation.py`, 2026-10-07). 남은 것: Q5의 첫 증액 질문(cohort 1 판정, 2027-03-22). 밴드(Q2)와 BTC 상한(Q4)은 P2의 한도 후보에서 뺐다(Thomas 2026-10-07, Q4 아래): 시스템은 비중 한도를 짓지 않는다. |
 | [BLOG_DEPARTMENT_V0.1.md](BLOG_DEPARTMENT_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-26 | 생산은 지금의 볼트 경로에서 시작하고, 런타임 블로그 레인(`blog_*` 10개 모듈)은 지웠다(#1319). v0.2(Thomas 2026-10-26): 통합할 수 있는 단계(키워드, 검증, 발행 계획, 분석, 피드백)는 시스템 안으로 옮기고, 원고 생성·발행·통계 수집만 외주로 둔다(§3). §7의 N1·S1·L2·L3·R1–R3은 권고대로 정했다(Thomas 2026-10-26). P0 관측(#1321)·P1 실행 보고(#1326)·P2 검증(#1328)은 배포됐고(2026-10-26), 전환 조건을 관찰 중이다. P3 분석(`blog_analyze`)은 2026-10-27에 배포됐다. P4는 재생 그림자(P4a)를 먼저 하기로 정했고(Thomas 2026-10-27), 2026-10-27에 배포됐다(재생 포트 재생성 #1337은 2026-11-01 머지). P5 피드백 그림자(`blog_feedback`)는 2026-11-03에 배포됐다. P4b 직접 조회 그림자(`blog_kw_direct`)는 미리 구현하기로 했고(Thomas 2026-11-03), opt-in 두 개(`MVP_BLOG_WEB_READ`·`MVP_BLOG_OWN_READ`)가 꺼진 채로 들어간다. 켜는 것은 P4a 조건을 채운 뒤 Thomas가 한다. P7은 네이버 슬롯 그림자(`blog_slot`)를 먼저 만들기로 했고, 티스토리는 다시 계획하지 않고 큐 규칙 검사로 같은 기록에 넣기로 했다(Thomas 2026-11-03). P6은 지시 그림자(`blog_instruction`)를 미리 만들어 두기로 했고(Thomas 2026-11-03), 크론은 아직 지시를 읽지 않는다. 주간 보고가 단계마다 전환 조건까지 온 정도를 싣기로 했다(Thomas 2026-11-03, "조건 진행표"). 전환은 조건을 채운 뒤에 한다. P8은 시작하지 않았다. |
 | [G6_SELL_REBALANCE_V0.1.md](G6_SELL_REBALANCE_V0.1.md) | `DRAFT` | 2026-11-03 | G6(자동 리밸런싱)의 남은 절반인 매도를 다루는 결정 패킷 초안이다. **지금 묻지 않는다.** G6은 G1d(H6c, unit 권위 전환)가 끝난 뒤 다시 여는 별도 결정이므로(`THOMAS_AGENT_TARGET_ARCHITECTURE_V0.1.md` §6), H6c가 정해진 뒤 SQ1–SQ5를 묻는다. 그때까지 코드, 정책, env, 스케줄은 바뀌지 않는다. 미리 써 두는 이유는 H6c가 정해지는 날 바로 물을 수 있게 하기 위해서다. |
-| [CRYPTO_REGIME_STRATEGY_SET_V0.1.md](CRYPTO_REGIME_STRATEGY_SET_V0.1.md) | `DRAFT` | 2026-11-04 | Thomas 지시: "상승장/횡보장/하락장인지를 구조적으로 파악해서 각각의 롱/숏 전략을 조금더 구체적으로 정한 뒤, 각각 시나리오에 맞는 전략을 10~20개 정도 구상"(국면마다 10~20개). 국면 판별 규칙 하나와 전략 36개(국면당 12개), 두 단계 검증 계획을 적는다. 측정은 Thomas 결정(§6) 뒤에 한다. |
 | [H6C_UNIT_AUTHORITY_V0.1.md](H6C_UNIT_AUTHORITY_V0.1.md) | `DRAFT` | 2026-11-04 | H6c(G1d, unit 권위 전환)의 결정 패킷 초안이다. **지금 묻지 않는다.** Claude 도어의 `holdings_status`에 `h6c_askable`이 서면 HQ1–HQ6을 묻는다(`H6B_UNIT_SHADOW_V0.1.md` S5). 그때까지 코드, 정책, env, 스케줄은 바뀌지 않는다. 미리 써 두는 이유는 조건이 갖춰지는 날 바로 묻기 위해서다. 같은 날 Thomas가 해야 할 일(§2의 입금·출금)도 여기에 적는다. |
 
-## 결정됨 — 구현 남음 (16)
+## 결정됨 — 구현 남음 (17)
 
 결정은 끝났고 결정된 것이 아직 다 지어지지 않았다. 결정이 만든 구현 대기열이다.
 
@@ -47,6 +46,7 @@
 | [MINT_REALLOCATION_PRE_WINDOW_V0.1.md](MINT_REALLOCATION_PRE_WINDOW_V0.1.md) | `DECIDED` | 2026-10-25 | **Q4a 예: 11-14 읽기의 4h 기대 몫은 37.5%다(Thomas 2026-10-25).** Q1 B, Q2 1h·4h, Q3 하지 않음(Thomas 2026-10-23), Q4 예: 기계적 확인은 11-14에 한 번 읽고 교배 수는 보고만 한다(Thomas 2026-10-25). 틸트 뒤 BTCUSDT 1h에서 family 10개가 끊기던 결함은 #1300으로 고쳤다(`factory.shortfall_slice_start`). **확인 측정 통과(2026-10-23)**: 1h 두 family가 다시 LEAD이고, 4h `hybrid(fused)`는 NULL이다. topup 기울이기를 지었다(`factory.MINT_TILT_FAMILIES`). 판정, 홀드아웃, 문, 템플릿 목록은 바꾸지 않는다. |
 | [CROSS_SECTION_CARRY_AND_WIDE_MOMENTUM_V0.1.md](CROSS_SECTION_CARRY_AND_WIDE_MOMENTUM_V0.1.md) | `DECIDED` | 2026-11-04 | Thomas: Q2(상위 30개)와 Q3(앞 시험의 p값을 Holm 묶음에 넣음)는 기본값, Q1은 캐리와 모멘텀 상위 30을 비교한 뒤 둘 다 한 사전 등록으로 재는 권고에 "오케이". 구현은 `scripts/research/cross_section_basket.py --test v0.2`. 정식 실행은 2026-11-04 09:25Z에 한 번 했다. 결과는 S-MOM30(상위 30) LEAD, S-CARRY NULL이다(아래 "결과"). 다음 단계(생성기 방향, forward 측정)는 Thomas 결정이다. 판정 규칙, 문, factory, 템플릿, 스케줄은 바꾸지 않는다. |
 | [CROSS_SECTION_SPOT_HOLDOUT_V0.1.md](CROSS_SECTION_SPOT_HOLDOUT_V0.1.md) | `DECIDED` | 2026-11-04 | Thomas: forward 판정을 기다리지 않고, 손대지 않은 과거 구간에서 v0.2의 LEAD(S-MOM30, 상위 30)를 확인한다("일단 권고대로 가고"). 숏 다리는 가격으로 계산한다(Thomas: "차트상으로 숏 전략에 대한 흐름은 설계할 수 있잖아"). 구현은 `cross_section_basket.py --test spot-holdout`. 정식 실행은 2026-11-04 10:23Z에 한 번 했다. 결과는 HOLDOUT_NOT_CONFIRMED이고, 단측 p 하나만 넘지 못했다(아래 "결과"). |
+| [CRYPTO_REGIME_STRATEGY_SET_V0.1.md](CRYPTO_REGIME_STRATEGY_SET_V0.1.md) | `DECIDED` | 2026-11-04 | Thomas: §6 Q1–Q4 "기본값대로"(Q3는 B안, 선물 분기 홀드아웃). 국면 판별 규칙 하나와 전략 36개(국면당 12개), 두 단계 검증을 이대로 한다. 구현은 `scripts/research/regime_strategies.py`이고, 정식 실행은 병합 뒤 한 번 한다. 처음 지시: "상승장/횡보장/하락장인지를 구조적으로 파악해서 각각의 롱/숏 전략을 조금더 구체적으로 정한 뒤, 각각 시나리오에 맞는 전략을 10~20개 정도 구상"(국면마다 10~20개). |
 | [MARKET_NEUTRAL_CROSS_SECTION_V0.1.md](MARKET_NEUTRAL_CROSS_SECTION_V0.1.md) | `DECIDED` | 2026-11-04 | Q1: 매월 거래량 상위 10개에 Thomas가 지정한 심볼을 더한다(지정은 정식 실행 전에 고정). Q2–Q4는 권고대로: 신호 셋 고정(1일 반전, 7일·30일 모멘텀), 1d만, 아카이브 klines는 `claude` 계정의 `binance_archive.py`로 받는다. 구현은 지었다(`binance_archive.py list-symbols`·`fetch-monthly`·`contract-types`, `scripts/research/cross_section_basket.py`, 아래 "지은 것"). 정식 실행 전에 유니버스를 코인 무기한으로 좁혔다(아래 "사전 등록 수정"). 정식 실행은 2026-11-04 07:04Z에 한 번 했다. 결과는 세 신호 모두 NULL, 전체 판정은 NO_EDGE_IN_THIS_CROSS_SECTION이다(아래 "결과"). 판정 규칙, 문, factory, 템플릿, 스케줄은 바꾸지 않는다. |
 
 ## 구현됨 (53)
