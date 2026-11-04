@@ -289,3 +289,92 @@ def test_universe_lists_the_months_and_every_member(tmp_path, capsys):
     assert "2020-01-01 k=2 AUSDT BUSDT CUSDT DUSDT" in out
     assert "members ever: 4" in out
     assert "left out (contract types 2026-11-04T06:30:00Z): 1" in out
+
+
+# --- test v0.2: carry and the wider momentum (CROSS_SECTION_CARRY_AND_WIDE_MOMENTUM_V0.1) ---------------------
+
+def _funding_market(rates_by_symbol: dict[str, dict[date, float]], start: date, n: int) -> xs.Market:
+    market = _market({s: _flat(start, n) for s in rates_by_symbol})
+    market.funding = {s: [(_ms(d) + 8 * 3_600_000, r) for d, r in rates.items()]
+                      for s, rates in rates_by_symbol.items() if rates}
+    return market
+
+
+def test_carry_longs_the_lowest_funding_and_shorts_the_highest_over_the_seven_days_to_the_decision():
+    start, day = date(2021, 1, 1), date(2021, 1, 20)
+    window = _days(day - timedelta(days=6), 7)
+    rates = {"AUSDT": {d: 0.0003 for d in window}, "BUSDT": {d: 0.0001 for d in window},
+             "CUSDT": {d: -0.0001 for d in window}, "DUSDT": {d: -0.0003 for d in window}}
+    # Outside the window: a huge rate the day before it and the day after the decision must not count.
+    rates["DUSDT"][day - timedelta(days=7)] = 1.0
+    rates["DUSDT"][day + timedelta(days=1)] = 1.0
+    market = _funding_market(rates, start, 40)
+    assert xs.trailing_funding(market, "DUSDT", day, 7) == pytest.approx(-0.0021)
+    weights = xs.target_weights(market, sorted(rates), day, "S-CARRY")
+    assert weights == {"DUSDT": 0.5, "CUSDT": 0.5, "AUSDT": -0.5, "BUSDT": -0.5}
+    lows = min(rates, key=lambda s: xs.trailing_funding(market, s, day, 7))
+    assert weights[lows] > 0
+
+
+def test_a_member_without_funding_in_the_window_sits_the_rebalance_out_and_is_counted():
+    start, day = date(2021, 1, 1), date(2021, 1, 10)       # a Sunday: the weekly decision
+    window = _days(day - timedelta(days=6), 7)
+    rates = {s: {d: 0.0001 * i for d in window} for i, s in enumerate(("AUSDT", "BUSDT", "CUSDT", "DUSDT"))}
+    rates["EUSDT"] = {}
+    market = _funding_market(rates, start, 30)
+    assert "EUSDT" not in xs.target_weights(market, sorted(rates), day, "S-CARRY")
+    run = xs.simulate(market, "S-CARRY", {date(2021, 1, 1): sorted(rates)}, start=date(2021, 1, 11),
+                      end=date(2021, 1, 11))
+    assert run["unranked_member_rebalances"] == 1
+
+
+@pytest.mark.parametrize("new_p,passing", [
+    ([0.019, 0.5], {0}),             # the smallest of five: 0.10/5 = 0.02
+    ([0.021, 0.5], set()),           # just over it, and the step-down stops there
+    ([0.019, 0.024], {0, 1}),        # second smallest: 0.10/4 = 0.025
+    ([0.019, 0.026], {0}),
+    ([None, 0.019], {1}),            # an untestable signal is no member of the family
+])
+def test_the_v02_family_carries_the_three_v01_p_values(new_p, passing):
+    assert xs.family_holm(xs.TESTS["v0.2"]["prior_p"], new_p, xs.HOLM_ALPHA) == passing
+
+
+def test_each_test_selects_its_own_universe_size_and_signals_and_v01_is_the_default(tmp_path, monkeypatch):
+    assert xs.TESTS["v0.1"] == {"top_n": 10, "signals": ("S-REV", "S-MOM7", "S-MOM30"), "prior_p": {}}
+    assert xs.TESTS["v0.2"]["top_n"] == 30 and xs.TESTS["v0.2"]["signals"] == ("S-CARRY", "S-MOM30")
+    # The v0.1 result as recorded in MARKET_NEUTRAL_CROSS_SECTION_V0.1 "결과" (run 20261104T070402Z-164942).
+    assert xs.TESTS["v0.2"]["prior_p"] == {"v0.1 S-REV": 0.13569777593264654,
+                                           "v0.1 S-MOM7": 0.28617573036292365,
+                                           "v0.1 S-MOM30": 0.12249320636703333}
+    seen = {}
+    monkeypatch.setattr(xs, "universes", lambda market, named=(), top_n=xs.TOP_N: seen.setdefault("top_n", top_n) and {})
+    monkeypatch.setattr(xs, "_in_sandbox", lambda: True)
+    _snapshot(tmp_path)
+    folder = tmp_path / xs.KLINES_KIND / "AUSDT"
+    folder.mkdir(parents=True)
+    (folder / "AUSDT-1d-2020-01.zip").write_bytes(_zip_bytes(f"{_ms(date(2020, 1, 1))},1,1,1,1,1,0,5,1,1,1,0\n"))
+    for argv, top_n in ((["universe"], 10), (["universe", "--test", "v0.2"], 30)):
+        seen.clear()
+        xs.main([*argv, "--archive", str(tmp_path)])
+        assert seen["top_n"] == top_n
+
+
+def test_the_v02_measurement_reports_its_family_the_correlation_and_the_mean_without_funding():
+    start = date(2019, 9, 1)
+    days = _days(start, 560)
+    symbols = [f"S{i}USDT" for i in range(6)]
+    prices = {s: {d: 100.0 * (1 + 0.002 * i) ** k * (1.02 if k % (i + 2) == 0 else 1.0)
+                  for k, d in enumerate(days)} for i, s in enumerate(symbols)}
+    market = _market(prices, volumes={s: float(10 - i) for i, s in enumerate(symbols)})
+    market.funding = {s: [(_ms(d) + 8 * 3_600_000, 0.0001 * (i - 2) * (1 + (k % 3))) for k, d in enumerate(days)]
+                      for i, s in enumerate(symbols)}
+    report = xs.measure(market, seeds=1, test="v0.2")
+    assert report["test"] == "v0.2" and report["top_n"] == 30
+    assert list(report["holm_family"]) == ["v0.1 S-REV", "v0.1 S-MOM7", "v0.1 S-MOM30", "v0.2 S-CARRY",
+                                           "v0.2 S-MOM30"]
+    assert set(report["signals"]) == {"S-CARRY", "S-MOM30"}
+    assert report["weekly_correlation"] is not None and -1 <= report["weekly_correlation"] <= 1
+    carry = report["signals"]["S-CARRY"]
+    assert carry["ex_funding_mean_bps"] is not None
+    assert carry["ex_funding_mean_bps"] != carry["mean_bps"]          # carry earns funding by construction
+    assert carry["funding_bps_per_day"] > 0

@@ -32,6 +32,11 @@ under ``<RESEARCH_CACHE>/archive``) and writes nothing.
   signals, the mean of (strategy − random) per week, and the calendar years with positive net. LEAD, NULL or
   ANTI per the pre-registered rule; the 95% interval is shown, never judged.
 
+- **Test v0.2 (``--test v0.2``, ``CROSS_SECTION_CARRY_AND_WIDE_MOMENTUM_V0.1``, Thomas 2026-11-04):** the top 30,
+  ``S-CARRY`` (funding settled over the 7 UTC days to the decision day; lowest long, highest short; weekly) and
+  ``S-MOM30``. Its Holm family is v0.1's three p values plus its own two. It also reports the weekly mean
+  without funding and the weekly correlation of its two signals, for display only.
+
 ``universe`` prints the monthly universes and every symbol that ever enters, which is the list
 ``fetch-monthly --kind fundingRate`` needs. ``run`` measures, in the research sandbox only.
 """
@@ -83,6 +88,18 @@ SIGNALS: dict[str, dict[str, Any]] = {
     "S-REV": {"lookback": 1, "winners_long": False, "rebalance": "daily"},
     "S-MOM7": {"lookback": 7, "winners_long": True, "rebalance": "weekly"},
     "S-MOM30": {"lookback": 30, "winners_long": True, "rebalance": "weekly"},
+    # CROSS_SECTION_CARRY_AND_WIDE_MOMENTUM_V0.1 §3: funding settled over the 7 UTC days to the decision day,
+    # lowest long, highest short (a descending sort, reversed).
+    "S-CARRY": {"score": "funding", "lookback": 7, "winners_long": False, "rebalance": "weekly"},
+}
+# One pre-registered test = one universe size and one signal set. v0.1 is MARKET_NEUTRAL_CROSS_SECTION_V0.1 as it
+# ran on 2026-11-04 (run 20261104T070402Z-164942); v0.2 is CROSS_SECTION_CARRY_AND_WIDE_MOMENTUM_V0.1. A later
+# test carries the earlier tests' p values into its Holm family, so the archive is not read twice for free.
+TESTS: dict[str, dict[str, Any]] = {
+    "v0.1": {"top_n": TOP_N, "signals": ("S-REV", "S-MOM7", "S-MOM30"), "prior_p": {}},
+    "v0.2": {"top_n": 30, "signals": ("S-CARRY", "S-MOM30"),
+             "prior_p": {"v0.1 S-REV": 0.13569777593264654, "v0.1 S-MOM7": 0.28617573036292365,
+                         "v0.1 S-MOM30": 0.12249320636703333}},
 }
 SUNDAY = 6
 
@@ -242,6 +259,22 @@ def trailing_return(market: Market, symbol: str, day: date, lookback: int) -> fl
     return None if now is None or then is None else now.close / then.close - 1
 
 
+def trailing_funding(market: Market, symbol: str, day: date, lookback: int) -> float | None:
+    """Rates settled on the UTC days ``day−lookback+1 … day``, summed; None when none settled in them. A
+    settlement stamped 00:00 of ``day+1`` belongs to the next day and is not read."""
+    by_day = market.funding_day(symbol) or {}
+    window = [by_day[d] for d in (day - timedelta(days=i) for i in range(lookback)) if d in by_day]
+    return sum(window) if window else None
+
+
+def scores(market: Market, members: Sequence[str], day: date, signal: str) -> list[tuple[str, float]]:
+    """The rankable members and their score at ``day``'s close; a member without one sits the rebalance out."""
+    rule = SIGNALS[signal]
+    read = trailing_funding if rule.get("score") == "funding" else trailing_return
+    scored = [(s, read(market, s, day, rule["lookback"])) for s in members]
+    return [(s, v) for s, v in scored if v is not None]
+
+
 def random_key(seed: str, day: date, symbol: str) -> str:
     return hashlib.sha256(f"{seed}|{day.isoformat()}|{symbol}".encode()).hexdigest()
 
@@ -251,8 +284,7 @@ def target_weights(market: Market, members: Sequence[str], day: date, signal: st
     """The basket decided at ``day``'s close: ``+1/k`` on the long side, ``−1/k`` on the short side.
     With ``seed`` the ranking is the seeded random draw instead of the signal."""
     rule = SIGNALS[signal]
-    scored = [(s, trailing_return(market, s, day, rule["lookback"])) for s in members]
-    scored = [(s, r) for s, r in scored if r is not None]
+    scored = scores(market, members, day, signal)
     k = side_size(len(scored))
     if k == 0:
         return {}
@@ -305,6 +337,7 @@ def simulate(market: Market, signal: str, monthly: Mapping[date, Sequence[str]],
     daily: dict[date, dict[str, float]] = {}
     forced = {"count": 0, "net": 0.0}
     funding_missing_days = 0
+    unranked = 0
 
     def month_of(day: date) -> date:
         return date(day.year, day.month, 1)
@@ -321,6 +354,7 @@ def simulate(market: Market, signal: str, monthly: Mapping[date, Sequence[str]],
         if is_rebalance_day(signal, decision):
             members = monthly.get(month_of(decision), ())
             target = target_weights(market, members, decision, signal, seed=seed)
+            unranked += len(members) - len(scores(market, members, decision, signal))
             for symbol in set(weights) | set(target):
                 trade_cost += abs(target.get(symbol, 0.0) - weights.get(symbol, 0.0)) * unit_cost(symbol, day)
             weights = target
@@ -353,7 +387,8 @@ def simulate(market: Market, signal: str, monthly: Mapping[date, Sequence[str]],
             weights.pop(symbol, None)
         daily[day] = {"gross": gross, "cost": trade_cost + exit_cost, "funding": paid_funding,
                       "net": gross - trade_cost - exit_cost + paid_funding}
-    return {"daily": daily, "forced_closes": forced, "funding_missing_leg_days": funding_missing_days}
+    return {"daily": daily, "forced_closes": forced, "funding_missing_leg_days": funding_missing_days,
+            "unranked_member_rebalances": unranked}
 
 
 # --- the reading ------------------------------------------------------------------------------------------
@@ -362,10 +397,11 @@ def week_of(day: date) -> date:
     return day - timedelta(days=day.weekday())
 
 
-def weekly(daily: Mapping[date, Mapping[str, float]]) -> dict[date, float]:
+def weekly(daily: Mapping[date, Mapping[str, float]], *, key: str = "net") -> dict[date, float]:
     out: dict[date, float] = {}
     for day, row in daily.items():
-        out[week_of(day)] = out.get(week_of(day), 0.0) + row["net"]
+        value = row["net"] - row["funding"] if key == "ex_funding" else row[key]
+        out[week_of(day)] = out.get(week_of(day), 0.0) + value
     return dict(sorted(out.items()))
 
 
@@ -409,11 +445,21 @@ def reading(*, holm_pass: bool, mean_bps: float | None, diff_mean_bps: float | N
     return "NULL"
 
 
-def measure(market: Market, *, named: Sequence[str] = (), seeds: int = RANDOM_SEEDS,
+def family_holm(prior_p: Mapping[str, float], new_p: Sequence[float | None], alpha: float) -> set[int]:
+    """Which of ``new_p`` pass Holm over the earlier tests' p values and the new ones together."""
+    testable = [i for i, p in enumerate(new_p) if p is not None]
+    pvalues = list(prior_p.values()) + [new_p[i] for i in testable]
+    offset = len(prior_p)
+    return {testable[j - offset] for j in holm(pvalues, alpha) if j >= offset}
+
+
+def measure(market: Market, *, named: Sequence[str] = (), seeds: int = RANDOM_SEEDS, test: str = "v0.1",
             say: Callable[[str], None] = lambda _l: None) -> dict[str, Any]:
-    monthly = universes(market, named=named)
+    spec = TESTS[test]
+    monthly = universes(market, named=named, top_n=spec["top_n"])
     per_signal: dict[str, dict[str, Any]] = {}
-    for signal in SIGNALS:
+    net_weeks: dict[str, dict[date, float]] = {}
+    for signal in spec["signals"]:
         say(f"{signal}: strategy")
         run = simulate(market, signal, monthly)
         weeks = weekly(run["daily"])
@@ -426,6 +472,7 @@ def measure(market: Market, *, named: Sequence[str] = (), seeds: int = RANDOM_SE
         sensitive = weekly(simulate(market, signal, monthly, slippage_low_multiplier=2.0)["daily"])
         days = run["daily"].values()
         years = positive_years(weeks)
+        net_weeks[signal] = weeks
         per_signal[signal] = {
             **summary(list(weeks.values())),
             "vs_random": summary([weeks[w] - baseline[w] for w in weeks]),
@@ -438,10 +485,11 @@ def measure(market: Market, *, named: Sequence[str] = (), seeds: int = RANDOM_SE
             "forced_closes": {"count": run["forced_closes"]["count"],
                               "net_bps": round(run["forced_closes"]["net"] * 1e4, 3)},
             "funding_missing_leg_days": run["funding_missing_leg_days"],
+            "unranked_member_rebalances": run["unranked_member_rebalances"],
+            "ex_funding_mean_bps": summary(list(weekly(run["daily"], key="ex_funding").values()))["mean_bps"],
         }
     names = list(per_signal)
-    testable = [i for i, s in enumerate(names) if per_signal[s]["p"] is not None]
-    passed = {testable[j] for j in holm([per_signal[names[i]]["p"] for i in testable], HOLM_ALPHA)}
+    passed = family_holm(spec["prior_p"], [per_signal[s]["p"] for s in names], HOLM_ALPHA)
     for i, signal in enumerate(names):
         row = per_signal[signal]
         row["holm_pass"] = i in passed
@@ -450,7 +498,16 @@ def measure(market: Market, *, named: Sequence[str] = (), seeds: int = RANDOM_SE
         row["reading"] = reading(holm_pass=row["holm_pass"], mean_bps=row["mean_bps"],
                                  diff_mean_bps=row["vs_random"]["mean_bps"], years_positive=row["years_positive"])
     members = sorted({s for m in monthly.values() for s in m})
+    correlation = None
+    if len(names) == 2:
+        common = sorted(set(net_weeks[names[0]]) & set(net_weeks[names[1]]))
+        a, b = [net_weeks[names[0]][w] for w in common], [net_weeks[names[1]][w] for w in common]
+        if len(common) > 2 and statistics.pstdev(a) > 0 and statistics.pstdev(b) > 0:
+            correlation = round(statistics.correlation(a, b), 4)
     return {
+        "test": test, "top_n": spec["top_n"], "holm_family": {**spec["prior_p"], **{
+            f"{test} {s}": per_signal[s]["p"] for s in names}},
+        "weekly_correlation": correlation,
         "signals": per_signal,
         "overall": "LEAD_FOUND" if any(r["reading"] == "LEAD" for r in per_signal.values())
         else "NO_EDGE_IN_THIS_CROSS_SECTION",
@@ -493,6 +550,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("universe", "run"):
         p = sub.add_parser(name)
+        p.add_argument("--test", choices=sorted(TESTS), default="v0.1",
+                       help="the pre-registered test: universe size and signals (default v0.1)")
         p.add_argument("--archive", type=Path, default=None, help="default: $RESEARCH_CACHE/archive")
         p.add_argument("--named", default="", help="comma list of the symbols Thomas named (§4, fixed before run)")
         p.add_argument("--json", action="store_true")
@@ -517,7 +576,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_BLOCKED
     market.contract_types, contract_types_at = snapshot
     if args.command == "universe":
-        monthly = universes(market, named=named)
+        monthly = universes(market, named=named, top_n=TESTS[args.test]["top_n"])
         members = sorted({s for m in monthly.values() for s in m})
         if args.json:
             print(json.dumps({"members_ever": members, "hash": universe_hash(monthly),
@@ -532,7 +591,7 @@ def main(argv: list[str] | None = None) -> int:
                   f"{len([s for s in market.bars if not is_coin(market, s)])}")
         return EXIT_OK
     report = {"measured_at": timeutil.utc_now_iso(), **provenance(), "contract_types_at": contract_types_at,
-              **measure(market, named=named, say=(lambda *_a: None) if args.json else print)}
+              **measure(market, named=named, test=args.test, say=(lambda *_a: None) if args.json else print)}
     if args.json:
         print(json.dumps(report, indent=1, sort_keys=True, default=str))
         return EXIT_OK
@@ -542,6 +601,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{signal}: weeks {row['weeks']} mean {row['mean_bps']} bps CI {row['ci_bps']} p {row['p']} "
               f"Holm {row['holm_pass']} | vs random {row['vs_random']['mean_bps']} | years+ {row['years_positive']}"
               f" | sensitivity {row['sensitivity_mean_bps']} -> {row['reading']}")
+    print(f"weekly correlation: {report['weekly_correlation']}")
     print(f"overall: {report['overall']}")
     return EXIT_OK
 
