@@ -70,6 +70,15 @@ KLINES_KIND = "klines-1d"
 FUNDING_KIND = "fundingRate"
 CONTRACT_TYPES_FILENAME = "contract_types.json"     # binance_archive.CONTRACT_TYPES_FILENAME
 COIN_CONTRACT = "PERPETUAL"
+SPOT_COIN = "SPOT"                       # a spot pair whose base is a coin (CROSS_SECTION_SPOT_HOLDOUT_V0.1 §2)
+SPOT_NOT_COIN = "SPOT_NOT_A_COIN"        # stablecoin, fiat or leveraged-token base
+COIN_KINDS = frozenset({COIN_CONTRACT, SPOT_COIN})
+# Fixed before the spot archive was read: bases that are a dollar, a fiat currency or a leveraged token are not
+# coins, so a pair on them is no member (a USDC/USDT pair tops the volume list and never moves).
+SPOT_NOT_COIN_BASES = frozenset({
+    "USDC", "BUSD", "TUSD", "TUSDB", "PAX", "USDP", "USDS", "USDSB", "DAI", "SUSD", "UST", "USTC", "FDUSD", "PYUSD",
+    "USD1", "XUSD", "AEUR", "EURI", "EUR", "GBP", "AUD", "JPY", "TRY", "RUB", "BRL", "NGN", "UAH", "ZAR", "PLN",
+    "RON", "ARS", "MXN", "COP", "CZK", "BKRW", "IDRT", "BIDR", "BVND"})
 TOP_N = 10
 MIN_AGE_DAYS = 90
 VOLUME_LOOKBACK_DAYS = 30
@@ -100,7 +109,13 @@ TESTS: dict[str, dict[str, Any]] = {
     "v0.2": {"top_n": 30, "signals": ("S-CARRY", "S-MOM30"),
              "prior_p": {"v0.1 S-REV": 0.13569777593264654, "v0.1 S-MOM7": 0.28617573036292365,
                          "v0.1 S-MOM30": 0.12249320636703333}},
+    # CROSS_SECTION_SPOT_HOLDOUT_V0.1: v0.2's LEAD (S-MOM30, top 30) on Binance spot 2017-08 → 2019-12, the span no
+    # crypto measurement here has read. No funding exists there; the taker fee is spot's 10 bps of the time.
+    "spot-holdout": {"top_n": 30, "signals": ("S-MOM30",), "prior_p": {}, "market": "spot",
+                     "start": date(2017, 8, 1), "end": date(2019, 12, 31), "fee_bps": 10.0,
+                     "reading": "holdout", "judged_years": (2018, 2019)},
 }
+HOLDOUT_ALPHA_ONE_SIDED = 0.05
 SUNDAY = 6
 
 
@@ -214,7 +229,21 @@ def month_starts(start: date, end: date) -> list[date]:
 
 
 def is_coin(market: Market, symbol: str) -> bool:
-    return market.contract_types.get(symbol, COIN_CONTRACT) == COIN_CONTRACT
+    return market.contract_types.get(symbol, COIN_CONTRACT) in COIN_KINDS
+
+
+def spot_kinds(symbols: Iterable[str]) -> dict[str, str]:
+    """Each spot USDT pair as a coin or not (:data:`SPOT_NOT_COIN_BASES`, and leveraged tokens: a base ending in
+    BULL or BEAR, or in UP or DOWN where the rest is itself a listed pair's base)."""
+    listed = set(symbols)
+    out: dict[str, str] = {}
+    for symbol in listed:
+        base = symbol[:-4]
+        leveraged = base.endswith(("BULL", "BEAR")) \
+            or any(base.endswith(tail) and len(base) > len(tail) and f"{base[:-len(tail)]}USDT" in listed
+                   for tail in ("UP", "DOWN"))
+        out[symbol] = SPOT_NOT_COIN if base in SPOT_NOT_COIN_BASES or leveraged else SPOT_COIN
+    return out
 
 
 def eligible(market: Market, symbol: str, month_start: date) -> bool:
@@ -243,8 +272,9 @@ def universe_at(market: Market, month_start: date, *, named: Sequence[str] = (),
     return sorted(members, key=lambda s: (-trailing_volume(market, s, month_start), s))
 
 
-def universes(market: Market, *, named: Sequence[str] = (), top_n: int = TOP_N) -> dict[date, list[str]]:
-    return {m: universe_at(market, m, named=named, top_n=top_n) for m in month_starts(START, END)}
+def universes(market: Market, *, named: Sequence[str] = (), top_n: int = TOP_N, start: date = START,
+              end: date = END) -> dict[date, list[str]]:
+    return {m: universe_at(market, m, named=named, top_n=top_n) for m in month_starts(start, end)}
 
 
 def side_size(members: int) -> int:
@@ -326,12 +356,13 @@ def member_volume_halves(market: Market, members: Sequence[str], month_start: da
 
 
 def simulate(market: Market, signal: str, monthly: Mapping[date, Sequence[str]], *, seed: str | None = None,
-             slippage_low_multiplier: float = 1.0, start: date = START, end: date = END) -> dict[str, Any]:
+             slippage_low_multiplier: float = 1.0, start: date = START, end: date = END,
+             fee_bps: float | None = None) -> dict[str, Any]:
     """Daily net returns of one signal's basket (or its seeded random twin) over [start, end].
 
     Day ``t`` holds the weights decided at the latest rebalance close before it, from ``t``'s open to
     ``t+1``'s. A leg whose ``t+1`` bar is missing is closed at ``t``'s close instead and stays flat."""
-    fee_bps = cost.DEFAULT_TAKER_FEE_BPS
+    fee_bps = cost.DEFAULT_TAKER_FEE_BPS if fee_bps is None else fee_bps
     slip_bps = cost.DEFAULT_SLIPPAGE_BPS
     weights: dict[str, float] = {}
     daily: dict[date, dict[str, float]] = {}
@@ -417,11 +448,11 @@ def summary(values: Sequence[float]) -> dict[str, Any]:
             "ci_bps": [round((mean - CONFIDENCE_Z * se) * 1e4, 3), round((mean + CONFIDENCE_Z * se) * 1e4, 3)]}
 
 
-def positive_years(weeks: Mapping[date, float]) -> dict[int, bool]:
+def positive_years(weeks: Mapping[date, float], years: Iterable[int] = YEARS) -> dict[int, bool]:
     totals: dict[int, float] = {}
     for monday, value in weeks.items():
         totals[monday.year] = totals.get(monday.year, 0.0) + value
-    return {year: totals.get(year, 0.0) > 0 for year in YEARS}
+    return {year: totals.get(year, 0.0) > 0 for year in years}
 
 
 def holm(pvalues: Sequence[float], alpha: float) -> set[int]:
@@ -445,6 +476,22 @@ def reading(*, holm_pass: bool, mean_bps: float | None, diff_mean_bps: float | N
     return "NULL"
 
 
+def one_sided_p(mean_bps: float | None, p_two_sided: float | None) -> float | None:
+    """P(mean > 0 by chance) from the two-sided normal p: half of it when the mean is positive."""
+    if mean_bps is None or p_two_sided is None:
+        return None
+    return p_two_sided / 2 if mean_bps > 0 else 1 - p_two_sided / 2
+
+
+def holdout_reading(*, mean_bps: float | None, p_one_sided: float | None, diff_mean_bps: float | None,
+                    judged_years: Mapping[int, bool]) -> str:
+    """CROSS_SECTION_SPOT_HOLDOUT_V0.1 §4: confirmed only when every condition holds."""
+    if mean_bps is not None and mean_bps > 0 and p_one_sided is not None \
+            and p_one_sided <= HOLDOUT_ALPHA_ONE_SIDED and (diff_mean_bps or 0) > 0 and all(judged_years.values()):
+        return "HOLDOUT_CONFIRMED"
+    return "HOLDOUT_NOT_CONFIRMED"
+
+
 def family_holm(prior_p: Mapping[str, float], new_p: Sequence[float | None], alpha: float) -> set[int]:
     """Which of ``new_p`` pass Holm over the earlier tests' p values and the new ones together."""
     testable = [i for i, p in enumerate(new_p) if p is not None]
@@ -456,22 +503,24 @@ def family_holm(prior_p: Mapping[str, float], new_p: Sequence[float | None], alp
 def measure(market: Market, *, named: Sequence[str] = (), seeds: int = RANDOM_SEEDS, test: str = "v0.1",
             say: Callable[[str], None] = lambda _l: None) -> dict[str, Any]:
     spec = TESTS[test]
-    monthly = universes(market, named=named, top_n=spec["top_n"])
+    start, end = spec.get("start", START), spec.get("end", END)
+    window = {"start": start, "end": end, "fee_bps": spec.get("fee_bps")}
+    monthly = universes(market, named=named, top_n=spec["top_n"], start=start, end=end)
     per_signal: dict[str, dict[str, Any]] = {}
     net_weeks: dict[str, dict[date, float]] = {}
     for signal in spec["signals"]:
         say(f"{signal}: strategy")
-        run = simulate(market, signal, monthly)
+        run = simulate(market, signal, monthly, **window)
         weeks = weekly(run["daily"])
         random_weeks: list[dict[date, float]] = []
         for k in range(1, seeds + 1):
             say(f"{signal}: random seed {k}/{seeds}")
-            random_weeks.append(weekly(simulate(market, signal, monthly, seed=f"xs-basket|{k}")["daily"]))
+            random_weeks.append(weekly(simulate(market, signal, monthly, seed=f"xs-basket|{k}", **window)["daily"]))
         baseline = {w: statistics.fmean(r.get(w, 0.0) for r in random_weeks) for w in weeks}
         say(f"{signal}: sensitivity")
-        sensitive = weekly(simulate(market, signal, monthly, slippage_low_multiplier=2.0)["daily"])
+        sensitive = weekly(simulate(market, signal, monthly, slippage_low_multiplier=2.0, **window)["daily"])
         days = run["daily"].values()
-        years = positive_years(weeks)
+        years = positive_years(weeks, range(start.year, end.year + 1))
         net_weeks[signal] = weeks
         per_signal[signal] = {
             **summary(list(weeks.values())),
@@ -495,8 +544,15 @@ def measure(market: Market, *, named: Sequence[str] = (), seeds: int = RANDOM_SE
         row["holm_pass"] = i in passed
         row["sensitivity_sign_flip"] = (row["mean_bps"] is not None and row["sensitivity_mean_bps"] is not None
                                         and (row["mean_bps"] > 0) != (row["sensitivity_mean_bps"] > 0))
-        row["reading"] = reading(holm_pass=row["holm_pass"], mean_bps=row["mean_bps"],
-                                 diff_mean_bps=row["vs_random"]["mean_bps"], years_positive=row["years_positive"])
+        if spec.get("reading") == "holdout":
+            row["p_one_sided"] = one_sided_p(row["mean_bps"], row["p"])
+            row["reading"] = holdout_reading(mean_bps=row["mean_bps"], p_one_sided=row["p_one_sided"],
+                                             diff_mean_bps=row["vs_random"]["mean_bps"],
+                                             judged_years={y: row["by_year"][str(y)] for y in spec["judged_years"]})
+        else:
+            row["reading"] = reading(holm_pass=row["holm_pass"], mean_bps=row["mean_bps"],
+                                     diff_mean_bps=row["vs_random"]["mean_bps"],
+                                     years_positive=row["years_positive"])
     members = sorted({s for m in monthly.values() for s in m})
     correlation = None
     if len(names) == 2:
@@ -509,7 +565,9 @@ def measure(market: Market, *, named: Sequence[str] = (), seeds: int = RANDOM_SE
             f"{test} {s}": per_signal[s]["p"] for s in names}},
         "weekly_correlation": correlation,
         "signals": per_signal,
-        "overall": "LEAD_FOUND" if any(r["reading"] == "LEAD" for r in per_signal.values())
+        "overall": ("HOLDOUT_CONFIRMED" if all(r["reading"] == "HOLDOUT_CONFIRMED" for r in per_signal.values())
+                    else "HOLDOUT_NOT_CONFIRMED") if spec.get("reading") == "holdout"
+        else "LEAD_FOUND" if any(r["reading"] == "LEAD" for r in per_signal.values())
         else "NO_EDGE_IN_THIS_CROSS_SECTION",
         "universe": {"named": list(named), "members_ever": members,
                      "not_coin_left_out": sorted(s for s in market.bars if not is_coin(market, s)),
@@ -534,8 +592,9 @@ def provenance() -> dict[str, Any]:
 
 # --- the command line -------------------------------------------------------------------------------------
 
-def _archive_default() -> Path:
-    return Path(os.environ.get("RESEARCH_CACHE", str(Path.home() / "research" / "cache"))) / "archive"
+def _archive_default(market: str = "um") -> Path:
+    cache = Path(os.environ.get("RESEARCH_CACHE", str(Path.home() / "research" / "cache")))
+    return cache / ("archive-spot" if market == "spot" else "archive")
 
 
 def _in_sandbox() -> bool:
@@ -552,21 +611,24 @@ def main(argv: list[str] | None = None) -> int:
         p = sub.add_parser(name)
         p.add_argument("--test", choices=sorted(TESTS), default="v0.1",
                        help="the pre-registered test: universe size and signals (default v0.1)")
-        p.add_argument("--archive", type=Path, default=None, help="default: $RESEARCH_CACHE/archive")
+        p.add_argument("--archive", type=Path, default=None,
+                       help="default: $RESEARCH_CACHE/archive (archive-spot for a spot test)")
         p.add_argument("--named", default="", help="comma list of the symbols Thomas named (§4, fixed before run)")
         p.add_argument("--json", action="store_true")
     sub.choices["run"].add_argument("--top-10-only", action="store_true",
                                     help="ignore --named (the display line beside the verdict, §4)")
     args = parser.parse_args(argv)
-    archive = args.archive or _archive_default()
+    spec = TESTS[args.test]
+    spot = spec.get("market") == "spot"
+    archive = args.archive or _archive_default(spec.get("market", "um"))
     named = [s.strip().upper() for s in args.named.split(",") if s.strip()]
     if args.command == "run" and getattr(args, "top_10_only", False):
         named = []
     if args.command == "run" and not _in_sandbox():
         print("refused: runs in the research sandbox only (scripts/research/sandbox_run.sh)", file=sys.stderr)
         return EXIT_USAGE
-    snapshot = read_contract_types(archive)
-    if snapshot is None:
+    snapshot = None if spot else read_contract_types(archive)
+    if snapshot is None and not spot:
         print(f"BLOCKED: no readable {CONTRACT_TYPES_FILENAME} under {archive} "
               "(python3 scripts/binance_archive.py contract-types --dest <archive>)", file=sys.stderr)
         return EXIT_BLOCKED
@@ -574,9 +636,13 @@ def main(argv: list[str] | None = None) -> int:
     if not market.bars:
         print(f"BLOCKED: no {KLINES_KIND} files under {archive}", file=sys.stderr)
         return EXIT_BLOCKED
-    market.contract_types, contract_types_at = snapshot
+    if spot:   # spot has no contract types: the base rule decides (CROSS_SECTION_SPOT_HOLDOUT_V0.1 §2)
+        market.contract_types, contract_types_at = spot_kinds(market.bars), "spot-base-rule"
+    else:
+        market.contract_types, contract_types_at = snapshot
     if args.command == "universe":
-        monthly = universes(market, named=named, top_n=TESTS[args.test]["top_n"])
+        monthly = universes(market, named=named, top_n=spec["top_n"], start=spec.get("start", START),
+                            end=spec.get("end", END))
         members = sorted({s for m in monthly.values() for s in m})
         if args.json:
             print(json.dumps({"members_ever": members, "hash": universe_hash(monthly),

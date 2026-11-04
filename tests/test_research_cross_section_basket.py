@@ -347,7 +347,7 @@ def test_each_test_selects_its_own_universe_size_and_signals_and_v01_is_the_defa
                                            "v0.1 S-MOM7": 0.28617573036292365,
                                            "v0.1 S-MOM30": 0.12249320636703333}
     seen = {}
-    monkeypatch.setattr(xs, "universes", lambda market, named=(), top_n=xs.TOP_N: seen.setdefault("top_n", top_n) and {})
+    monkeypatch.setattr(xs, "universes", lambda market, named=(), top_n=xs.TOP_N, **_w: seen.setdefault("top_n", top_n) and {})
     monkeypatch.setattr(xs, "_in_sandbox", lambda: True)
     _snapshot(tmp_path)
     folder = tmp_path / xs.KLINES_KIND / "AUSDT"
@@ -378,3 +378,62 @@ def test_the_v02_measurement_reports_its_family_the_correlation_and_the_mean_wit
     assert carry["ex_funding_mean_bps"] is not None
     assert carry["ex_funding_mean_bps"] != carry["mean_bps"]          # carry earns funding by construction
     assert carry["funding_bps_per_day"] > 0
+
+
+# --- the spot holdout (CROSS_SECTION_SPOT_HOLDOUT_V0.1) ----------------------------------------------------------
+
+def test_the_spot_holdout_is_v02s_lead_on_untouched_spot_history_at_spot_fees():
+    spec = xs.TESTS["spot-holdout"]
+    assert spec["signals"] == ("S-MOM30",) and spec["top_n"] == 30 and spec["market"] == "spot"
+    assert spec["start"] == date(2017, 8, 1) and spec["end"] == date(2019, 12, 31)
+    assert spec["end"] < xs.START                          # no day the futures tests read
+    assert spec["fee_bps"] == 10.0 and spec["prior_p"] == {}
+
+
+def test_spot_pairs_on_a_dollar_a_fiat_or_a_leveraged_token_are_no_members():
+    listed = ["BTCUSDT", "ETHUSDT", "USDCUSDT", "TUSDUSDT", "EURUSDT", "BNBBULLUSDT", "ETHBEARUSDT",
+              "BTCUPUSDT", "BTCDOWNUSDT", "JUPUSDT", "SUPERUSDT"]
+    kinds = xs.spot_kinds(listed)
+    coins = sorted(s for s, k in kinds.items() if k == xs.SPOT_COIN)
+    # JUP and SUPER end in UP but "J" and "SUPE" are no listed bases: they stay coins.
+    assert coins == ["BTCUSDT", "ETHUSDT", "JUPUSDT", "SUPERUSDT"]
+    start = date(2018, 1, 1)
+    market = _market({s: _flat(start, 200) for s in listed}, volumes={"USDCUSDT": 99.0, "BTCUSDT": 1.0})
+    market.contract_types = kinds
+    assert "USDCUSDT" not in xs.universe_at(market, date(2018, 6, 1))
+
+
+@pytest.mark.parametrize("mean,p1,diff,years,expected", [
+    (50.0, 0.04, 10.0, {2018: True, 2019: True}, "HOLDOUT_CONFIRMED"),
+    (50.0, 0.06, 10.0, {2018: True, 2019: True}, "HOLDOUT_NOT_CONFIRMED"),     # one-sided p over 0.05
+    (50.0, 0.04, -1.0, {2018: True, 2019: True}, "HOLDOUT_NOT_CONFIRMED"),     # no better than random
+    (50.0, 0.04, 10.0, {2018: True, 2019: False}, "HOLDOUT_NOT_CONFIRMED"),    # a judged year negative
+    (-50.0, 0.04, 10.0, {2018: True, 2019: True}, "HOLDOUT_NOT_CONFIRMED"),
+])
+def test_the_holdout_confirms_only_when_every_pre_registered_condition_holds(mean, p1, diff, years, expected):
+    assert xs.holdout_reading(mean_bps=mean, p_one_sided=p1, diff_mean_bps=diff, judged_years=years) == expected
+
+
+def test_the_one_sided_p_halves_a_positive_mean_and_complements_a_negative_one():
+    assert xs.one_sided_p(10.0, 0.08) == pytest.approx(0.04)
+    assert xs.one_sided_p(-10.0, 0.08) == pytest.approx(0.96)
+
+
+def test_the_spot_measurement_runs_in_its_own_window_at_its_own_fee_without_funding():
+    symbols = [f"S{i}USDT" for i in range(6)]
+    days = _days(date(2017, 5, 1), 1000)
+    prices = {s: {d: 100.0 * (1 + 0.001 * i) ** k for k, d in enumerate(days)} for i, s in enumerate(symbols)}
+    market = _market(prices, volumes={s: float(10 - i) for i, s in enumerate(symbols)})
+    market.contract_types = xs.spot_kinds(symbols)
+    report = xs.measure(market, seeds=1, test="spot-holdout")
+    row = report["signals"]["S-MOM30"]
+    assert set(row["by_year"]) == {"2017", "2018", "2019"}
+    assert row["funding_bps_per_day"] == 0.0 and row["ex_funding_mean_bps"] == row["mean_bps"]
+    assert row["reading"] in {"HOLDOUT_CONFIRMED", "HOLDOUT_NOT_CONFIRMED"} and "p_one_sided" in row
+    assert report["overall"] in {"HOLDOUT_CONFIRMED", "HOLDOUT_NOT_CONFIRMED"}
+    run = xs.simulate(market, "S-MOM30", xs.universes(market, top_n=30, start=date(2017, 8, 1),
+                                                      end=date(2019, 12, 31)),
+                      start=date(2017, 8, 1), end=date(2019, 12, 31), fee_bps=10.0)
+    first = min(d for d, r in run["daily"].items() if r["cost"] > 0)
+    assert run["daily"][first]["cost"] == pytest.approx(2 * (10.0 + cost.DEFAULT_SLIPPAGE_BPS) / 10_000)
+    assert max(run["daily"]) <= date(2019, 12, 31)
