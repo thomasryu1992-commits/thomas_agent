@@ -1,6 +1,6 @@
 # 제안: H6b-shadow — unitized NAV를 옆에서만 계산한다 (DRAFT v0.1)
 
-**상태:** DECIDED 2026-10-28 — S1=A, S2=A, S3=A, S4=A, S5=A(Thomas, "승인: H6b-shadow S1=A S2=A S3=A S4=A S5=A, 설계 문서·구현·PR"). 같은 날 PR 하나로 지었다(`holdings/unit_shadow.py`, 아래 §3). 배포 전에는 아무것도 계산하지 않는다. H6c는 이 문서가 승인하지 않는다.
+**상태:** IMPLEMENTED 2026-10-28 — **2026-11-04 상태 정정:** #1340으로 지어져 2026-10-28에 배포됐다(candidate-1340). Claude 도어의 `holdings_status`가 shadow 상태를 보인다. H6c는 여전히 이 문서가 승인하지 않는다(§2의 네 조건이 갖춰지면 묻는다). **이전 상태(DECIDED):** S1=A, S2=A, S3=A, S4=A, S5=A(Thomas, "승인: H6b-shadow S1=A S2=A S3=A S4=A S5=A, 설계 문서·구현·PR"). 같은 날 PR 하나로 지었다(`holdings/unit_shadow.py`, 아래 §3). 배포 전에는 아무것도 계산하지 않는다. H6c는 이 문서가 승인하지 않는다.
 
 **대상:** `PORTFOLIO_CASH_FLOW_LEDGER_V0.1.md` §7의 3단계(H6b-shadow). 그 문서의 D-H6-4(시작 100), D-H6-8(사건별 발행·소각),
 D-H6-9(shadow는 판정에 쓰지 않는다)와 §4(unit 회계)는 이미 결정됐다. 여기서는 그 결정이 정하지 않은 다섯 가지만 묻는다.
