@@ -214,6 +214,10 @@ def fetch(dest: Path, *, symbols: Sequence[str], start: date, end: date, funding
 
 LISTING_BASE = "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
 LISTING_PREFIX = "data/futures/um/monthly/"
+# CROSS_SECTION_SPOT_HOLDOUT_V0.1: the spot archive (from 2017-08) is the one span of Binance history no crypto
+# measurement here has read. Same bucket, same file shape, only klines (spot has no funding).
+SPOT_LISTING_PREFIX = "data/spot/monthly/"
+MARKETS = {"um": LISTING_PREFIX, "spot": SPOT_LISTING_PREFIX}
 KLINES = "klines"
 KLINES_INTERVAL = "1d"
 SYMBOLS_FILENAME = "symbols.json"
@@ -253,9 +257,10 @@ def listing(prefix: str, *, opener: Opener = http_get, max_pages: int = 100) -> 
     raise ArchiveError(f"listing {prefix}: still truncated after {max_pages} pages")
 
 
-def archive_symbols(*, opener: Opener = http_get) -> list[str]:
-    """Every USDT perpetual the archive holds monthly 1d klines for, delisted ones included."""
-    prefixes, _ = listing(f"{LISTING_PREFIX}{KLINES}/", opener=opener)
+def archive_symbols(*, opener: Opener = http_get, market: str = "um") -> list[str]:
+    """Every USDT symbol of ``market`` (``um`` perps, or ``spot`` pairs) the archive holds monthly 1d klines
+    for, delisted ones included."""
+    prefixes, _ = listing(f"{MARKETS[market]}{KLINES}/", opener=opener)
     names = (p.rstrip("/").rsplit("/", 1)[-1] for p in prefixes)
     return sorted(n for n in names if _PERP_SYMBOL.fullmatch(n))
 
@@ -289,11 +294,11 @@ def contract_types(*, opener: Opener = http_get) -> dict[str, str]:
     return dict(sorted(out.items()))
 
 
-def monthly_folder(kind: str, symbol: str) -> str:
+def monthly_folder(kind: str, symbol: str, market: str = "um") -> str:
     """The bucket folder holding one symbol's monthly files of ``kind`` (see :data:`MONTHLY_KINDS`)."""
     if kind == "klines-1d":
-        return f"{LISTING_PREFIX}{KLINES}/{symbol}/{KLINES_INTERVAL}/"
-    if kind == FUNDING:
+        return f"{MARKETS[market]}{KLINES}/{symbol}/{KLINES_INTERVAL}/"
+    if kind == FUNDING and market == "um":
         return f"{LISTING_PREFIX}{FUNDING}/{symbol}/"
     raise ValueError(f"unknown monthly kind {kind!r}")
 
@@ -312,7 +317,7 @@ def _month_of(name: str) -> tuple[int, int] | None:
 
 
 def fetch_monthly(dest: Path, *, kind: str, symbols: Sequence[str], start: date, end: date,
-                  opener: Opener = http_get, pause: float = PAUSE_SECONDS,
+                  opener: Opener = http_get, pause: float = PAUSE_SECONDS, market: str = "um",
                   say: Callable[[str], None] = lambda _line: None) -> dict[str, dict[str, int]]:
     """Every monthly ``kind`` file a symbol's own listing holds inside [start, end], checksum-verified.
     A file already on disk is never asked for again, and a month the listing does not hold is never asked
@@ -321,7 +326,7 @@ def fetch_monthly(dest: Path, *, kind: str, symbols: Sequence[str], start: date,
     lo, hi = (start.year, start.month), (end.year, end.month)
     for number, symbol in enumerate(symbols, 1):
         tally = {"kept": 0, "present": 0, "missing": 0}
-        folder = monthly_folder(kind, symbol)
+        folder = monthly_folder(kind, symbol, market)
         _, keys = listing(folder, opener=opener)
         for key in keys:
             name = key.rsplit("/", 1)[-1]
@@ -483,6 +488,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ls = sub.add_parser("list-symbols", help="every USDT perp with monthly 1d klines, delisted included, "
                                              f"written to <dest>/{SYMBOLS_FILENAME}")
     ls.add_argument("--dest", required=True, type=Path)
+    ls.add_argument("--market", choices=sorted(MARKETS), default="um")
     ct = sub.add_parser("contract-types", help="each USDT symbol's contractType from exchangeInfo, written to "
                                                f"<dest>/{CONTRACT_TYPES_FILENAME}")
     ct.add_argument("--dest", required=True, type=Path)
@@ -492,10 +498,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     fm.add_argument("--start", required=True, type=date.fromisoformat)
     fm.add_argument("--end", required=True, type=date.fromisoformat)
     fm.add_argument("--dest", required=True, type=Path)
+    fm.add_argument("--market", choices=sorted(MARKETS), default="um", help="spot holds klines-1d only")
     args = parser.parse_args(argv)
     if args.command == "list-symbols":
         try:
-            names = archive_symbols()
+            names = archive_symbols(market=args.market)
         except ArchiveError as exc:
             print(f"REFUSED: {exc}", file=sys.stderr)
             return 2
@@ -528,7 +535,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 2
             wanted = list(json.loads(listed.read_text(encoding="utf-8")))
         try:
+            if args.market == "spot" and args.kind != "klines-1d":
+                print("REFUSED: the spot archive holds no funding", file=sys.stderr)
+                return 2
             counts = fetch_monthly(args.dest, kind=args.kind, symbols=wanted, start=args.start, end=args.end,
+                                   market=args.market,
                                    say=print)
         except ArchiveError as exc:
             print(f"REFUSED: {exc}", file=sys.stderr)
