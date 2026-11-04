@@ -11,5 +11,6 @@
 - **Checked while writing:** the public archive serves delisted perps (`SRMUSDT`, `FTTUSDT`, and `LUNAUSDT` in
   its listing). `exchangeInfo` omits `SRMUSDT` and `LUNAUSDT`, so a point-in-time universe has to come from the
   archive listing.
-- **This PR changes:** `docs/proposals/MARKET_NEUTRAL_CROSS_SECTION_V0.1.md` (DRAFT, Q1–Q4 open), `STATUS.md`,
+- **This PR changes:** `docs/proposals/MARKET_NEUTRAL_CROSS_SECTION_V0.1.md` (DECIDED the same day: Q1 top 10 by
+  volume plus symbols Thomas names before the official run, Q2–Q4 as recommended), `STATUS.md`,
   and this entry. No code, factory, schedule or judgement rule changes. The 11-14 mint-share read stays valid.
