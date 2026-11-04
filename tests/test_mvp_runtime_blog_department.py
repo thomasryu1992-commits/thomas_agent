@@ -110,7 +110,9 @@ def test_an_empty_platform_folder_refuses_rather_than_reading_as_a_quiet_week(va
 
 def test_the_record_is_counts_only_and_satisfies_its_closed_schema(vault):
     record = bd.build_record(bd.observe(vault, now=NOW), now=NOW)
-    assert record["schema_version"] == "blog_department_week.v0.2" and record["observation_id"].startswith("blogweek_")
+    assert record["schema_version"] == "blog_department_week.v0.3" and record["observation_id"].startswith("blogweek_")
+    assert set(record["stages"]) == {"verify", "analysis", "kw_replay", "kw_direct", "feedback", "instruction", "slot"}
+    assert all(v is None for v in record["stages"].values())       # a week with no stage records reads as none, not zero
     assert "제목" not in json.dumps(record, ensure_ascii=False)
     assert "가" not in json.dumps(record["runs"], ensure_ascii=False)   # keywords are counted, never carried
     from runtime.mvp_runtime import schema_cache
@@ -170,6 +172,117 @@ def test_the_weekly_fire_records_the_department_week_on_the_ledger(vault, tmp_pa
     rows = [r for r in ledger.iter_records(kinds=[bd.RECORD_KIND]) if r["kind"] == bd.RECORD_KIND]
     assert len(rows) == 1 and rows[0]["record"]["platforms"]["naver"]["published"] == 1
     assert rows[0]["record"]["runs"]["reports"] == 2
+    assert rows[0]["record"]["stages"]["verify"]["runs"] == 0 and rows[0]["record"]["stages"]["slot"] is None
     terminal = [e for e in ledger.read_scheduler_events() if e["action"] in ("fired", "failed")][-1]
     assert terminal["action"] == "fired" and f"blog_recorded={rows[0]['record']['observation_id']}" in terminal["status"]
     assert "■ 블로그" in sent[0]
+
+
+class _Ledger:
+    """The shadows' records as the ledger yields them: appended in order, filtered by kind."""
+
+    def __init__(self):
+        self.rows: list[dict] = []
+
+    def add(self, kind, **record):
+        self.rows.append({"kind": kind, "record": record})
+        return self
+
+    def iter_records(self, kinds):
+        return iter([r for r in self.rows if r["kind"] in kinds])
+
+
+def _stage_ledger():
+    ledger = _Ledger()
+    for bundle, state, agree in (("20261018-221000", "compared", True),       # before the window: a day, not this week
+                                 ("20261020-221000", "generator_stale", None),
+                                 ("20261020-221000", "compared", True),       # re-replayed after the regeneration
+                                 ("20261021-221000", "compared", False),
+                                 ("20261022-221000", "replay_miss", None),
+                                 ("20261023-221000", "compared", True),
+                                 ("20261023-230000", "compared", True),       # 10-24 has no bundle: neither counts nor breaks
+                                 ("20261025-221000", "compared", True)):
+        ledger.add(bd.KW_REPLAY_RECORD_KIND, bundle=bundle, state=state, agree=agree)
+    for day, moved, adjusted in (("2026-10-18", 0, 0), ("2026-10-20", 3, 5), ("2026-10-21", 0, 2), ("2026-10-21", 1, 2)):
+        ledger.add(bd.FEEDBACK_RECORD_KIND, history_date=day, summary={"rank_moved": moved, "adjusted": adjusted})
+    for day, today in (("2026-10-17", True), ("2026-10-22", True), ("2026-10-23", False)):
+        ledger.add(bd.INSTRUCTION_RECORD_KIND, run_date=day, history_today=today)
+
+    def pick(platform, source, keyword):
+        return {"platform": platform, "keyword": keyword, "source": source, "lane": None, "rank": None,
+                "season_days": None}
+
+    def counts(**kw):
+        return {"drafts": 0, "picks": 0, **{s: 0 for s in bd._PICK_SOURCES}, **kw}
+
+    ledger.add(bd.INSTRUCTION_CHECK_RECORD_KIND, run_date="2026-10-21", state="no_instruction", timing=None, picks=[],
+               summary=counts(drafts=2))
+    ledger.add(bd.INSTRUCTION_CHECK_RECORD_KIND, run_date="2026-10-22", state="checked", timing="ready",
+               picks=[pick("naver", "queue", "가"), pick("naver", "next_topics", "나"), pick("tistory", "outside", "비밀")],
+               summary=counts(drafts=3, picks=3, in_instruction=2, next_topics=1, queue=1, outside=1))
+    ledger.add(bd.INSTRUCTION_CHECK_RECORD_KIND, run_date="2026-10-23", state="checked", timing="late",
+               picks=[pick("tistory", "tistory_list", "다"), pick("naver", "outside", "라")],
+               summary=counts(drafts=2, picks=2, in_instruction=1, tistory_list=1, outside=1))
+    # A v0.1 slot record (before the Tistory rules) beside a v0.2 one.
+    ledger.add(bd.SLOT_RECORD_KIND, run_date="2026-10-22", schema_version="blog_slot.v0.1",
+               summary={"naver": 2, "compared": 2, "agreed": 2, "differed": 0, "moved": 0, "not_compared": 0,
+                        "tistory_not_compared": 3})
+    ledger.add(bd.SLOT_RECORD_KIND, run_date="2026-10-23", schema_version="blog_slot.v0.2",
+               summary={"naver": 1, "compared": 1, "agreed": 0, "differed": 1, "moved": 1, "not_compared": 0,
+                        "tistory": 3, "tistory_checked": 2, "tistory_agreed": 1, "tistory_differed": 1,
+                        "tistory_moved": 0, "tistory_not_checked": 1})
+    return ledger
+
+
+def test_no_stage_record_is_none_never_zero():
+    assert bd.stages(_Ledger(), now=NOW) == {k: None for k in ("kw_replay", "kw_direct", "feedback", "instruction", "slot")}
+
+
+def test_the_keyword_shadow_counts_bundle_days_agreeing_in_a_row_and_any_other_state_breaks_the_run():
+    ledger = _stage_ledger()
+    s = bd.stages(ledger, now=NOW)["kw_replay"]
+    # The window is 10-19..10-25: six bundles, the re-replayed 10-20 counted once as its latest record.
+    assert s == {"bundles": 6, "agreed": 4, "differed": 1, "stale": 0, "other": 1, "days": 6, "first": "2026-10-18",
+                 "days_agreeing_in_a_row": 2}                       # 10-25, 10-23; 10-22's replay miss ends it
+    ledger.add(bd.KW_REPLAY_RECORD_KIND, bundle="20261025-230000", state="generator_stale", agree=None)
+    s = bd.stages(ledger, now=NOW)["kw_replay"]
+    assert s["stale"] == 1 and s["days_agreeing_in_a_row"] == 0     # one bad bundle makes its whole day bad
+    assert bd.stages(ledger, now=NOW)["kw_direct"] is None
+
+
+def test_the_feedback_instruction_and_slot_shadows_are_summed_over_the_week_by_their_latest_record():
+    s = bd.stages(_stage_ledger(), now=NOW)
+    assert s["feedback"] == {"days": 3, "first": "2026-10-18", "week_days": 2, "week_days_moved": 2,
+                             "week_rank_moved": 4, "week_adjusted": 7}
+    assert s["instruction"] == {
+        "days": 3, "first": "2026-10-17", "week_built": 2, "week_history_not_today": 1, "week_checked": 2,
+        "week_no_instruction": 1, "week_late": 1, "drafts": 5, "in_instruction": 3, "next_topics": 1, "queue": 1,
+        "tistory_list": 1, "history_filtered": 0, "outside": 2, "no_keyword": 0, "outside_naver": 1,
+        "outside_tistory": 1}
+    assert s["slot"] == {"days": 2, "first": "2026-10-22", "week_days": 2, "compared": 3, "agreed": 2, "differed": 1,
+                         "moved": 1, "not_compared": 0, "tistory_checked": 2, "tistory_agreed": 1,
+                         "tistory_differed": 1, "tistory_moved": 0, "tistory_not_checked": 4}
+
+
+def test_the_record_carries_every_stage_as_counts_and_the_report_renders_them(vault):
+    ledger = _stage_ledger()
+    observation = {**bd.observe(vault, now=NOW), "verification": bd.verification_summary(ledger, now=NOW),
+                   "analysis": None, "stages": bd.stages(ledger, now=NOW)}
+    record = bd.build_record(observation, now=NOW)        # validates against v0.3
+    assert record["stages"]["verify"] == {"runs": 0, "drafts": 0, "compared": 0, "agreed": 0, "differed": 0,
+                                          "not_compared": 0}
+    assert record["stages"]["analysis"] is None and record["stages"]["kw_direct"] is None
+    assert record["stages"]["instruction"]["outside_tistory"] == 1
+    text = json.dumps(record, ensure_ascii=False)
+    assert not any(k in text for k in ("가", "나", "다", "라", "비밀"))   # picks' keywords are counted, never carried
+
+    lines = "\n".join(mr._stage_lines(observation["stages"]))
+    assert "[키워드 재생 P4a] 이번 주 묶음 6 · 일치 4 · 다름 1 · 생성기 낡음 0 · 그 밖 1 · 연속 일치 2일(조건 14일)" in lines
+    assert "[키워드 직접 조회 P4b] 기록 없음" in lines
+    assert "[피드백 P5] 기록 3일(10-18부터, 조건 14일) · 이번 주 2일 · 순위가 바뀐 날 2 · 바뀐 순위 4 · 조정된 후보 7" in lines
+    assert "[지시 P6] 이번 주 지시 2일(이전 이력 사용 1) · 대조 2일 · 지시 없음 1 · 늦음 1" in lines
+    assert ("원고 5편 중 지시 안 3(후속 1 · 큐 1 · 티스토리 목록 1) · 이력에서 빠짐 0 · 밖 2(네이버 1 · 티스토리 1)"
+            " · 키워드 없음 0") in lines
+    assert "[슬롯 P7] 이번 주 2일 · 네이버 비교 3 · 일치 2 · 다름 1 · 옮김 1 · 비교 못 함 0" in lines
+    assert "티스토리 검사 2 · 통과 1 · 위반 1 · 옮김 0 · 검사 못 함 4" in lines
+    assert all("기록 없음" in line for line in mr._stage_lines(bd.stages(_Ledger(), now=NOW)) if line.startswith("  ["))
