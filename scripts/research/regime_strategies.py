@@ -882,9 +882,10 @@ def decider(rules: Rules, sid: str) -> Decide:
 # --- the random control ----------------------------------------------------------------------------------------
 
 def random_twin(data: Data, path: Mapping[date, Mapping[str, float]], sid: str, seed: str) -> Decide:
-    """§4: the same days, legs and holding spans, each leg's symbol and direction drawn from
-    ``sha256(seed|sid|entry day|symbol)`` among the entry day's members."""
-    episodes: dict[tuple[str, date], tuple[str, int]] = {}
+    """§4: the same days, legs, holding spans, weights and directions; each leg's symbol is drawn from
+    ``sha256(seed|sid|entry day|symbol)`` among the entry day's members. The direction is the strategy's own
+    (amendment 2026-11-04), so the twin carries the same market exposure and the gap is the symbol choice."""
+    episodes: dict[tuple[str, date], str] = {}
     out: dict[date, dict[str, float]] = {}
     running: dict[str, date] = {}
     for day in sorted(path):
@@ -901,9 +902,9 @@ def random_twin(data: Data, path: Mapping[date, Mapping[str, float]], sid: str, 
             if key not in episodes:
                 members = data.members(start) or [symbol]
                 h = hashlib.sha256(f"{seed}|{sid}|{start.isoformat()}|{symbol}".encode()).digest()
-                episodes[key] = (members[h[0] % len(members)], 1 if h[1] % 2 else -1)
-            other, sign = episodes[key]
-            target[other] = target.get(other, 0.0) + abs(w) * sign
+                episodes[key] = members[h[0] % len(members)]
+            other = episodes[key]
+            target[other] = target.get(other, 0.0) + w
         out[day] = target
 
     def decide(day: date, book: dict[str, float]) -> dict[str, float] | None:
