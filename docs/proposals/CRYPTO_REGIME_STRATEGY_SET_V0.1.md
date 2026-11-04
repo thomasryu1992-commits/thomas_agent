@@ -225,7 +225,9 @@
 - **두 번의 정식 실행:**
   - `stage1`은 거르기 구간만 읽고 후보를 기록한다.
   - `stage2`는 그 기록(JSON)을 입력으로 요구하며, 없거나 다른 시험의 기록이면 BLOCKED다. 홀드아웃은 `stage2`에서 한 번만 읽힌다.
+  - 1단계 기록에는 이 모듈의 `code_digest`(자기 바이트의 sha256 앞 16자)가 들어간다. `stage2`는 digest가 다르면 BLOCKED다. 그래서 두 단계 사이에 규칙을 고치면 1단계부터 다시 돌려야 한다.
   - 1단계 뒤 구현 버그를 찾으면 1단계만 다시 돌린다. 2단계 뒤에 고치면 새 시험이다.
+- **Holm 묶음의 앞 p값:** 판정 바닥을 넘은 파생 후보만 앞 시험의 p값을 데려온다. NOT_JUDGEABLE 후보는 시험이 아니므로 아무것도 데려오지 않는다. 같은 p값은 한 번만 들어간다.
 
 ## 정식 실행
 
@@ -235,6 +237,7 @@ scripts/research/sandbox_run.sh --official -- python -m scripts.research.regime_
 scripts/research/sandbox_run.sh --official -- python -m scripts.research.regime_strategies stage2 --stage1 <1단계 실행의 stdout 파일>
 ```
 
+- 첫 줄의 수집 반복은 이미 받은 파일은 건너뛰지만, 아카이브에 없는 파일(2026-11-04 수집 기준 약 7분의 1)은 다시 묻는다. 시간이 걸릴 뿐 결과는 같으므로 중간에 끊지 않는다.
 - 병합된 SHA의 깨끗한 체크아웃에서 돌린다. 08:00–09:00 UTC factory 창과 그 30분 전은 피한다.
 - 1단계와 2단계 사이에 구현을 고치면 1단계부터 다시 돌린다.
 

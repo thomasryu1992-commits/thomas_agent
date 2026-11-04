@@ -1002,9 +1002,9 @@ def judgeable(row: Mapping[str, Any]) -> bool:
 
 def family(rows: Mapping[str, Mapping[str, Any]]) -> dict[str, float]:
     """Holm family: every judgeable candidate's one-sided p, plus the prior p values of the tested hypotheses a
-    candidate derives from (each prior once)."""
+    judgeable candidate derives from (each prior once). A NOT_JUDGEABLE candidate is no test, so it brings none."""
     out = {sid: r["p_one_sided"] for sid, r in rows.items() if judgeable(r)}
-    for sid in rows:
+    for sid in list(out):
         out.update(PRIOR_P.get(PARENT.get(sid, ""), {}))
     return out
 
@@ -1092,9 +1092,14 @@ def load(archive: Path, metrics: Path) -> tuple[Data, dict[str, Any]]:
     return data, labels
 
 
+def code_digest() -> str:
+    """This module's own bytes, so stage 2 runs the code stage 1 ran (a changed rule means stage 1 again)."""
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
+
+
 def provenance(stage: int) -> dict[str, Any]:
     out = xs.provenance()
-    return {"spec": SPEC, "stage": stage, "measured_at": timeutil.utc_now_iso(), **out,
+    return {"spec": SPEC, "stage": stage, "measured_at": timeutil.utc_now_iso(), **out, "code_digest": code_digest(),
             "holdout_quarters": [f"{y}Q{q}" for y, q in holdout_quarters()],
             "rules": {"confirm_days": CONFIRM_DAYS, "embargo_days": EMBARGO_DAYS, "max_positions": MAX_POSITIONS,
                       "stop_atr": STOP_ATR, "trail_atr": TRAIL_ATR, "max_hold_days": MAX_HOLD_DAYS,
@@ -1132,6 +1137,7 @@ def read_stage_one(path: Path) -> dict[str, list[str]] | None:
     except (OSError, ValueError):
         return None
     if not isinstance(record, dict) or record.get("spec") != SPEC or record.get("stage") != 1 \
+            or record.get("code_digest") != code_digest() \
             or record.get("holdout_quarters") != [f"{y}Q{q}" for y, q in holdout_quarters()]:
         return None
     picked = record.get("candidates")
@@ -1161,7 +1167,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "stage2":
         picked = read_stage_one(args.stage1)
         if picked is None:
-            print(f"BLOCKED: {args.stage1} is not a stage-1 record of {SPEC}", file=sys.stderr)
+            print(f"BLOCKED: {args.stage1} is not a stage-1 record of {SPEC} run by this code "
+                  f"(code_digest {code_digest()})", file=sys.stderr)
             return EXIT_BLOCKED
     archive = args.archive or _cache() / "archive"
     metrics = args.metrics or _cache() / "archive-metrics"

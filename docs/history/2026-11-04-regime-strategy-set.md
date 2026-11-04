@@ -32,7 +32,11 @@ window, so their p values come along:
 **Pre-run smoke.** Every strategy ran on the screening spans without error. Only entry counts were printed,
 never returns. None has zero entries; S11 (12), D05 (14) and B05 (17) are rare by design.
 
-**Tests.** 22 in `tests/test_research_regime_strategies.py`. Thirteen mutants are caught:
+**Stage 2 checks the code.** The stage-1 record carries `code_digest`, the sha256 of the module's own bytes.
+`stage2` refuses a record whose digest differs, so a rule changed between stages forces stage 1 again.
+
+**Tests.** 22 in `tests/test_research_regime_strategies.py`. Fifteen mutants are caught:
 - floor ignored, priors dropped, two-sided p, no embargo, regime gate off
 - B03/D03 swapped, lag 2, no segment-end exit, stop 1.5, S04 parent dropped
-- years ignored, seed format, and the oi-plan span
+- years ignored, seed format, the oi-plan span
+- the digest check removed, and priors brought by a NOT_JUDGEABLE candidate

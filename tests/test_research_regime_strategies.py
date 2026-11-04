@@ -224,6 +224,8 @@ def test_below_the_floor_a_candidate_is_not_judgeable_and_leaves_the_family():
     verdicts = rs.confirm(rows)
     assert verdicts == {"B01": "NOT_JUDGEABLE", "B02": "NOT_JUDGEABLE", "B04": "CONFIRMED"}
     assert set(rs.family(rows)) == {"B04"}
+    # a derived candidate below the floor is no test, so it brings no prior p values either
+    assert set(rs.family({"D03": _row(regime="BEAR", weeks=12), "B04": _row()})) == {"B04"}
 
 
 def test_confirmation_needs_holm_random_and_a_majority_of_positive_years():
@@ -246,7 +248,8 @@ def test_the_p_value_is_one_sided():
 # --- the stage-1 record and the command line ----------------------------------------------------------------
 
 def _stage_one(tmp_path, **over):
-    record = {"spec": rs.SPEC, "stage": 1, "holdout_quarters": [f"{y}Q{q}" for y, q in rs.holdout_quarters()],
+    record = {"spec": rs.SPEC, "stage": 1, "code_digest": rs.code_digest(),
+              "holdout_quarters": [f"{y}Q{q}" for y, q in rs.holdout_quarters()],
               "candidates": {rs.BULL: ["B03"], rs.SIDEWAYS: [], rs.BEAR: ["D11", "D01"]}, **over}
     path = tmp_path / "stage1.json"
     path.write_text(json.dumps(record))
@@ -257,6 +260,7 @@ def test_stage_two_reads_only_this_tests_stage_one_record(tmp_path):
     assert rs.read_stage_one(_stage_one(tmp_path)) == {rs.BULL: ["B03"], rs.SIDEWAYS: [], rs.BEAR: ["D11", "D01"]}
     assert rs.read_stage_one(_stage_one(tmp_path, stage=2)) is None
     assert rs.read_stage_one(_stage_one(tmp_path, spec="X")) is None
+    assert rs.read_stage_one(_stage_one(tmp_path, code_digest="0" * 16)) is None    # the code changed between stages
     assert rs.read_stage_one(_stage_one(tmp_path, holdout_quarters=["2021Q1"])) is None
     assert rs.read_stage_one(_stage_one(tmp_path, candidates={rs.BULL: ["D01"], rs.SIDEWAYS: [], rs.BEAR: []})) is None
     assert rs.read_stage_one(_stage_one(tmp_path, candidates={rs.BULL: ["B01", "B02", "B04", "B05"],
