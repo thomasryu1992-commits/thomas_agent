@@ -268,7 +268,9 @@ def test_the_anchors_leave_every_forward_trade_room_to_close_before_the_data_end
     longest_1d_hold = timedelta(days=fr.HOLD_ALLOWANCE_BARS)
     assert at[-1] + timedelta(days=fr.FORWARD_DAYS) + longest_1d_hold <= fr.DATA_END
     first, last = fr.fire_span()
-    assert first == at[0] - timedelta(days=fr.WARM_START_DAYS) and last == at[-1] - timedelta(days=1)
+    assert first == at[0] - timedelta(days=fr.WARM_START_DAYS) and last == fr.DATA_END - timedelta(days=1)
+    # the real cohorts (frozen 2026-09-23, 10-01, 11-04) lie inside the fire span, for the sanity comparison
+    assert all(first < d <= last + timedelta(days=1) for d in (date(2026, 9, 23), date(2026, 10, 1), date(2026, 11, 4)))
 
 
 # --- arm B ---------------------------------------------------------------------------------------------

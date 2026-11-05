@@ -134,8 +134,10 @@ def replay_anchors() -> list[date]:
 
 
 def fire_span() -> tuple[date, date]:
-    """The days every context fires: from WARM_START_DAYS before the first anchor to the day before the last."""
-    return FIRST_ANCHOR - timedelta(days=WARM_START_DAYS), replay_anchors()[-1] - timedelta(days=1)
+    """The days every context fires: from WARM_START_DAYS before the first anchor to the day before the data ends.
+    Fires after the last anchor are scored never; they let the judge freeze the replayed store on the days the
+    real cohorts were frozen (2026-09-23, 10-01, 11-04), the §4 sanity comparison."""
+    return FIRST_ANCHOR - timedelta(days=WARM_START_DAYS), DATA_END - timedelta(days=1)
 
 
 def generation_id(day: date, context: Context) -> str:
@@ -658,7 +660,7 @@ def main(argv: list[str] | None = None) -> int:
     ps = sub.add_parser("simulate", help="fire one context daily over [--start, --end] into --out (resumable)")
     ps.add_argument("--context", required=True, choices=sorted(BY_NAME))
     ps.add_argument("--start", default=None, help="default: the fire span's first day")
-    ps.add_argument("--end", default=None, help="default: the day before the last anchor")
+    ps.add_argument("--end", default=None, help="default: the day before the data ends")
     ps.add_argument("--out", type=Path, required=True)
     ps.add_argument("--arm", default="A", choices=ARMS)
     pl = sub.add_parser("leak-check", help="one fire on the whole cache and on a cache cut at its instant")
