@@ -110,8 +110,9 @@ def test_an_empty_platform_folder_refuses_rather_than_reading_as_a_quiet_week(va
 
 def test_the_record_is_counts_only_and_satisfies_its_closed_schema(vault):
     record = bd.build_record(bd.observe(vault, now=NOW), now=NOW)
-    assert record["schema_version"] == "blog_department_week.v0.5" and record["observation_id"].startswith("blogweek_")
-    assert set(record["stages"]) == {"verify", "analysis", "kw_replay", "kw_direct", "feedback", "instruction", "slot"}
+    assert record["schema_version"] == "blog_department_week.v0.6" and record["observation_id"].startswith("blogweek_")
+    assert set(record["stages"]) == {"verify", "analysis", "kw_replay", "kw_direct", "feedback", "instruction", "slot",
+                                     "watch"}
     assert all(v is None for v in record["stages"].values())       # a week with no stage records reads as none, not zero
     assert "제목" not in json.dumps(record, ensure_ascii=False)
     assert "가" not in json.dumps(record["runs"], ensure_ascii=False)   # keywords are counted, never carried
@@ -238,7 +239,7 @@ def _stage_ledger():
 
 
 def test_no_stage_record_is_none_never_zero():
-    assert bd.stages(_Ledger(), now=NOW) == {k: None for k in ("kw_replay", "kw_direct", "feedback", "instruction", "slot")}
+    assert bd.stages(_Ledger(), now=NOW) == {k: None for k in ("kw_replay", "kw_direct", "feedback", "instruction", "slot", "watch")}
 
 
 def test_the_keyword_shadow_counts_the_agreeing_run_as_a_calendar_span_and_any_other_state_breaks_it():
@@ -287,7 +288,7 @@ def test_the_record_carries_every_stage_as_counts_and_the_report_renders_them(va
     ledger = _stage_ledger()
     observation = {**bd.observe(vault, now=NOW), "verification": bd.verification_summary(ledger, now=NOW),
                    "analysis": None, "stages": bd.stages(ledger, now=NOW)}
-    record = bd.build_record(observation, now=NOW)        # validates against v0.5
+    record = bd.build_record(observation, now=NOW)        # validates against v0.6
     assert record["stages"]["verify"] == {"runs": 0, "drafts": 0, "compared": 0, "agreed": 0, "differed": 0,
                                           "not_compared": 0}
     assert record["stages"]["analysis"] is None and record["stages"]["kw_direct"] is None
@@ -306,3 +307,21 @@ def test_the_record_carries_every_stage_as_counts_and_the_report_renders_them(va
     assert "[슬롯 P7] 이번 주 2일 · 네이버 비교 3 · 일치 2 · 다름 1 · 옮김 1 · 비교 못 함 0" in lines
     assert "티스토리 검사 2 · 통과 1 · 위반 1 · 옮김 0 · 검사 못 함 4" in lines
     assert all("기록 없음" in line for line in mr._stage_lines(bd.stages(_Ledger(), now=NOW)) if line.startswith("  ["))
+
+
+def test_the_watch_stage_counts_the_weeks_problem_days_per_check_and_names_the_latest_problems():
+    # P6 prerequisite (Thomas 2026-11-05): blog_watch records on a change or once a KST day.
+    ledger = _Ledger()
+    for at, problems in (("2026-10-18T03:00:00Z", ["RUN_REPORT"]),                  # before the window
+                         ("2026-10-20T03:00:00Z", ["RUN_REPORT", "MAC_DRAFT_STALE"]),
+                         ("2026-10-20T06:00:00Z", ["MAC_DRAFT_STALE"]),            # same KST day, counted once
+                         ("2026-10-24T16:00:00Z", ["WEEKLY_MISSING"])):            # 10-25 01:00 KST
+        ledger.add(bd.WATCH_RECORD_KIND, recorded_at=at, problems=problems)
+    s = bd.stages(ledger, now=NOW)["watch"]
+    assert s == {"days": 3, "first": "2026-10-18", "latest": "2026-10-25", "now_problems": ["WEEKLY_MISSING"],
+                 "week_problem_days": {"RUN_REPORT": 1, "MAC_DRAFT_STALE": 1, "MAC_TREND_STALE": 0,
+                                       "TREND_SEEDS_EMPTY": 0, "WEEKLY_MISSING": 1}}
+    lines = "\n".join(mr._stage_lines(bd.stages(ledger, now=NOW)))
+    assert "[외주 감시 P6 전제] 기록 3일(10-18부터) · 10-25 문제: 주간 스냅샷" in lines
+    assert "이번 주 문제 있던 날: 원고 크론 보고 1 · Mac 임시저장 1 · Mac 트렌드 0 · 트렌드 씨앗 0 · 주간 스냅샷 1" in lines
+

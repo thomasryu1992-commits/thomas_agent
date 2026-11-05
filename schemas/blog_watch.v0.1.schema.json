@@ -1,0 +1,354 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "blog_watch.v0.1.schema.json",
+  "title": "Blog Watch v0.1",
+  "description": "The outsourced side of the blog department, judged from the vault files mounted read-only (BLOG_DEPARTMENT v0.2, P6 prerequisite, Thomas 2026-11-05): the drafting cron's run report, the Mac's draft-saving and trend routines, the trend seeds, the weekly statistics and snapshot. Each check is ok, problem or unknown (a folder not mounted), with stable reason codes and the day it is about. Shadow: recorded when a state changes or once a KST day; nobody is notified until P6. Codes and dates only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "watch_id",
+    "recorded_at",
+    "mode",
+    "checks",
+    "problems",
+    "new",
+    "resolved"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "blog_watch.v0.1"
+    },
+    "watch_id": {
+      "type": "string",
+      "pattern": "^blogwatch_[0-9a-f]{20}$"
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "mode": {
+      "const": "shadow"
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "RUN_REPORT",
+        "MAC_DRAFT_STALE",
+        "MAC_TREND_STALE",
+        "TREND_SEEDS_EMPTY",
+        "WEEKLY_MISSING"
+      ],
+      "properties": {
+        "RUN_REPORT": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "reasons",
+            "subject"
+          ],
+          "properties": {
+            "state": {
+              "enum": [
+                "ok",
+                "problem",
+                "unknown"
+              ]
+            },
+            "reasons": {
+              "type": "array",
+              "maxItems": 4,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "unmounted",
+                  "missing",
+                  "unreadable",
+                  "draft_failed",
+                  "skipped",
+                  "no_log",
+                  "no_success",
+                  "stale",
+                  "failed_since",
+                  "cut_since",
+                  "trend_not_ok",
+                  "empty",
+                  "stats_missing",
+                  "snapshot_missing",
+                  "unfilled"
+                ]
+              }
+            },
+            "subject": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                }
+              ]
+            }
+          }
+        },
+        "MAC_DRAFT_STALE": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "reasons",
+            "subject"
+          ],
+          "properties": {
+            "state": {
+              "enum": [
+                "ok",
+                "problem",
+                "unknown"
+              ]
+            },
+            "reasons": {
+              "type": "array",
+              "maxItems": 4,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "unmounted",
+                  "missing",
+                  "unreadable",
+                  "draft_failed",
+                  "skipped",
+                  "no_log",
+                  "no_success",
+                  "stale",
+                  "failed_since",
+                  "cut_since",
+                  "trend_not_ok",
+                  "empty",
+                  "stats_missing",
+                  "snapshot_missing",
+                  "unfilled"
+                ]
+              }
+            },
+            "subject": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                }
+              ]
+            }
+          }
+        },
+        "MAC_TREND_STALE": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "reasons",
+            "subject"
+          ],
+          "properties": {
+            "state": {
+              "enum": [
+                "ok",
+                "problem",
+                "unknown"
+              ]
+            },
+            "reasons": {
+              "type": "array",
+              "maxItems": 4,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "unmounted",
+                  "missing",
+                  "unreadable",
+                  "draft_failed",
+                  "skipped",
+                  "no_log",
+                  "no_success",
+                  "stale",
+                  "failed_since",
+                  "cut_since",
+                  "trend_not_ok",
+                  "empty",
+                  "stats_missing",
+                  "snapshot_missing",
+                  "unfilled"
+                ]
+              }
+            },
+            "subject": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                }
+              ]
+            }
+          }
+        },
+        "TREND_SEEDS_EMPTY": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "reasons",
+            "subject"
+          ],
+          "properties": {
+            "state": {
+              "enum": [
+                "ok",
+                "problem",
+                "unknown"
+              ]
+            },
+            "reasons": {
+              "type": "array",
+              "maxItems": 4,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "unmounted",
+                  "missing",
+                  "unreadable",
+                  "draft_failed",
+                  "skipped",
+                  "no_log",
+                  "no_success",
+                  "stale",
+                  "failed_since",
+                  "cut_since",
+                  "trend_not_ok",
+                  "empty",
+                  "stats_missing",
+                  "snapshot_missing",
+                  "unfilled"
+                ]
+              }
+            },
+            "subject": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                }
+              ]
+            }
+          }
+        },
+        "WEEKLY_MISSING": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "reasons",
+            "subject"
+          ],
+          "properties": {
+            "state": {
+              "enum": [
+                "ok",
+                "problem",
+                "unknown"
+              ]
+            },
+            "reasons": {
+              "type": "array",
+              "maxItems": 4,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "unmounted",
+                  "missing",
+                  "unreadable",
+                  "draft_failed",
+                  "skipped",
+                  "no_log",
+                  "no_success",
+                  "stale",
+                  "failed_since",
+                  "cut_since",
+                  "trend_not_ok",
+                  "empty",
+                  "stats_missing",
+                  "snapshot_missing",
+                  "unfilled"
+                ]
+              }
+            },
+            "subject": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "problems": {
+      "type": "array",
+      "maxItems": 5,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "RUN_REPORT",
+          "MAC_DRAFT_STALE",
+          "MAC_TREND_STALE",
+          "TREND_SEEDS_EMPTY",
+          "WEEKLY_MISSING"
+        ]
+      }
+    },
+    "new": {
+      "type": "array",
+      "maxItems": 5,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "RUN_REPORT",
+          "MAC_DRAFT_STALE",
+          "MAC_TREND_STALE",
+          "TREND_SEEDS_EMPTY",
+          "WEEKLY_MISSING"
+        ]
+      }
+    },
+    "resolved": {
+      "type": "array",
+      "maxItems": 5,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "RUN_REPORT",
+          "MAC_DRAFT_STALE",
+          "MAC_TREND_STALE",
+          "TREND_SEEDS_EMPTY",
+          "WEEKLY_MISSING"
+        ]
+      }
+    }
+  }
+}

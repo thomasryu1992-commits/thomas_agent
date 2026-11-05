@@ -250,13 +250,17 @@ KIND_BLOG_SLOT = "blog_slot"
 # writes one instruction and one check a day. It fires every few minutes so one fire lands in the gap; outside it, a
 # fire with nothing to check returns without reading.
 KIND_BLOG_INSTRUCTION = "blog_instruction"
+# The outsourced-side watch (BLOG_DEPARTMENT v0.2 P6 prerequisite, Thomas 2026-11-05): judge the drafting cron's run
+# report, the Mac routines, the trend seeds and the weekly snapshot from the vault mounted read-only, and record when a
+# state changes or once a day. Maintenance, not risk: it reads a few vault files and notifies nobody (shadow until P6).
+KIND_BLOG_WATCH = "blog_watch"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
                    KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE,
                    KIND_BREAKER_WATCH, KIND_ROUTE_WATCH, KIND_CANDLE_ARCHIVE,
                    KIND_NULL_CONTROL,
                    KIND_FORWARD_COHORT, KIND_HOLDINGS, KIND_MANAGEMENT_REPORT, KIND_BLOG_VERIFY,
                    KIND_BLOG_ANALYZE, KIND_BLOG_KW_REPLAY, KIND_BLOG_FEEDBACK, KIND_BLOG_KW_DIRECT,
-                   KIND_BLOG_SLOT, KIND_BLOG_INSTRUCTION})
+                   KIND_BLOG_SLOT, KIND_BLOG_INSTRUCTION, KIND_BLOG_WATCH})
 
 # The kinds whose lateness costs money rather than freshness.
 #
@@ -330,7 +334,7 @@ MAINTENANCE_KINDS: frozenset[str] = frozenset({
     KIND_FORWARD_COHORT,
     KIND_HOLDINGS, KIND_MANAGEMENT_REPORT, KIND_BLOG_VERIFY, KIND_BLOG_ANALYZE,
     KIND_BLOG_KW_REPLAY, KIND_BLOG_FEEDBACK, KIND_BLOG_KW_DIRECT, KIND_BLOG_SLOT,
-    KIND_BLOG_INSTRUCTION,
+    KIND_BLOG_INSTRUCTION, KIND_BLOG_WATCH,
 })
 
 # How much of one pass the non-risk kinds may spend before it stops STARTING more of them.
@@ -1564,6 +1568,10 @@ def _execute(
         from .blog import instruction as blog_instruction
 
         return blog_instruction.fire(ledger, now=now)
+    if schedule.kind == KIND_BLOG_WATCH:
+        from .blog import watch as blog_watch
+
+        return blog_watch.fire(ledger, now=now)
     if schedule.kind == KIND_MANAGEMENT_REPORT:
         # WMR-1: read the four sections (each fails on its own) and send them on the control bot.
         # Unlike KIND_REPORT, a send that fails RAISES: a weekly report that vanished quietly is
