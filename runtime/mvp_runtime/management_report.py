@@ -249,6 +249,9 @@ def _stage_lines(stages: Mapping[str, Any]) -> list[str]:
                      f" · 티스토리 목록 {s['tistory_list']}) · 이력에서 빠짐 {s['history_filtered']}"
                      f" · 밖 {s['outside']}(네이버 {s['outside_naver']} · 티스토리 {s['outside_tistory']})"
                      f" · 키워드 없음 {s['no_keyword']}")
+        lines.append(f"    제휴 배치 {s['week_affiliate_placed']}(지시와 같음 {s['week_affiliate_matched']}"
+                     f" · 다름 {s['week_affiliate_differed']} · 판단 불가 {s['week_affiliate_unjudged']})"
+                     f" · 제휴 재고를 못 읽은 지시 {s['week_affiliate_unavailable']}일")
     s = stages.get("slot")
     lines.append("  [슬롯 P7] 기록 없음" if s is None else
                  f"  [슬롯 P7] 이번 주 {s['week_days']}일 · 네이버 비교 {s['compared']} · 일치 {s['agreed']}"

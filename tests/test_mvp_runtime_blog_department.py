@@ -110,7 +110,7 @@ def test_an_empty_platform_folder_refuses_rather_than_reading_as_a_quiet_week(va
 
 def test_the_record_is_counts_only_and_satisfies_its_closed_schema(vault):
     record = bd.build_record(bd.observe(vault, now=NOW), now=NOW)
-    assert record["schema_version"] == "blog_department_week.v0.4" and record["observation_id"].startswith("blogweek_")
+    assert record["schema_version"] == "blog_department_week.v0.5" and record["observation_id"].startswith("blogweek_")
     assert set(record["stages"]) == {"verify", "analysis", "kw_replay", "kw_direct", "feedback", "instruction", "slot"}
     assert all(v is None for v in record["stages"].values())       # a week with no stage records reads as none, not zero
     assert "제목" not in json.dumps(record, ensure_ascii=False)
@@ -205,8 +205,10 @@ def _stage_ledger():
         ledger.add(bd.KW_REPLAY_RECORD_KIND, bundle=bundle, state=state, agree=agree)
     for day, moved, adjusted in (("2026-10-18", 0, 0), ("2026-10-20", 3, 5), ("2026-10-21", 0, 2), ("2026-10-21", 1, 2)):
         ledger.add(bd.FEEDBACK_RECORD_KIND, history_date=day, summary={"rank_moved": moved, "adjusted": adjusted})
-    for day, today in (("2026-10-17", True), ("2026-10-22", True), ("2026-10-23", False)):
-        ledger.add(bd.INSTRUCTION_RECORD_KIND, run_date=day, history_today=today)
+    for day, today in (("2026-10-17", True), ("2026-10-22", True)):
+        ledger.add(bd.INSTRUCTION_RECORD_KIND, run_date=day, history_today=today)    # v0.1: no affiliate section
+    ledger.add(bd.INSTRUCTION_RECORD_KIND, run_date="2026-10-23", history_today=False,
+               affiliate={"state": "unavailable"})
 
     def pick(platform, source, keyword):
         return {"platform": platform, "keyword": keyword, "source": source, "lane": None, "rank": None,
@@ -222,7 +224,8 @@ def _stage_ledger():
                summary=counts(drafts=3, picks=3, in_instruction=2, next_topics=1, queue=1, outside=1))
     ledger.add(bd.INSTRUCTION_CHECK_RECORD_KIND, run_date="2026-10-23", state="checked", timing="late",
                picks=[pick("tistory", "tistory_list", "다"), pick("naver", "outside", "라")],
-               summary=counts(drafts=2, picks=2, in_instruction=1, tistory_list=1, outside=1))
+               summary=counts(drafts=2, picks=2, in_instruction=1, tistory_list=1, outside=1),
+               affiliate={"state": "compared", "placed": 3, "matched": 1, "differed": 1, "unjudged": 1})
     # A v0.1 slot record (before the Tistory rules) beside a v0.2 one.
     ledger.add(bd.SLOT_RECORD_KIND, run_date="2026-10-22", schema_version="blog_slot.v0.1",
                summary={"naver": 2, "compared": 2, "agreed": 2, "differed": 0, "moved": 0, "not_compared": 0,
@@ -273,7 +276,8 @@ def test_the_feedback_instruction_and_slot_shadows_are_summed_over_the_week_by_t
         "days": 3, "first": "2026-10-17", "week_built": 2, "week_history_not_today": 1, "week_checked": 2,
         "week_no_instruction": 1, "week_late": 1, "drafts": 5, "in_instruction": 3, "next_topics": 1, "queue": 1,
         "tistory_list": 1, "history_filtered": 0, "outside": 2, "no_keyword": 0, "outside_naver": 1,
-        "outside_tistory": 1}
+        "outside_tistory": 1, "week_affiliate_placed": 3, "week_affiliate_matched": 1, "week_affiliate_differed": 1,
+        "week_affiliate_unjudged": 1, "week_affiliate_unavailable": 1}
     assert s["slot"] == {"days": 2, "first": "2026-10-22", "week_days": 2, "compared": 3, "agreed": 2, "differed": 1,
                          "moved": 1, "not_compared": 0, "tistory_checked": 2, "tistory_agreed": 1,
                          "tistory_differed": 1, "tistory_moved": 0, "tistory_not_checked": 4}
@@ -283,7 +287,7 @@ def test_the_record_carries_every_stage_as_counts_and_the_report_renders_them(va
     ledger = _stage_ledger()
     observation = {**bd.observe(vault, now=NOW), "verification": bd.verification_summary(ledger, now=NOW),
                    "analysis": None, "stages": bd.stages(ledger, now=NOW)}
-    record = bd.build_record(observation, now=NOW)        # validates against v0.4
+    record = bd.build_record(observation, now=NOW)        # validates against v0.5
     assert record["stages"]["verify"] == {"runs": 0, "drafts": 0, "compared": 0, "agreed": 0, "differed": 0,
                                           "not_compared": 0}
     assert record["stages"]["analysis"] is None and record["stages"]["kw_direct"] is None
@@ -298,6 +302,7 @@ def test_the_record_carries_every_stage_as_counts_and_the_report_renders_them(va
     assert "[지시 P6] 이번 주 지시 2일(이전 이력 사용 1) · 대조 2일 · 지시 없음 1 · 늦음 1" in lines
     assert ("원고 5편 중 지시 안 3(후속 1 · 큐 1 · 티스토리 목록 1) · 이력에서 빠짐 0 · 밖 2(네이버 1 · 티스토리 1)"
             " · 키워드 없음 0") in lines
+    assert "제휴 배치 3(지시와 같음 1 · 다름 1 · 판단 불가 1) · 제휴 재고를 못 읽은 지시 1일" in lines
     assert "[슬롯 P7] 이번 주 2일 · 네이버 비교 3 · 일치 2 · 다름 1 · 옮김 1 · 비교 못 함 0" in lines
     assert "티스토리 검사 2 · 통과 1 · 위반 1 · 옮김 0 · 검사 못 함 4" in lines
     assert all("기록 없음" in line for line in mr._stage_lines(bd.stages(_Ledger(), now=NOW)) if line.startswith("  ["))
