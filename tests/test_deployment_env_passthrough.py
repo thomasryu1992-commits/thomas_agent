@@ -845,7 +845,8 @@ def test_memory_ceilings_sit_on_everything_but_the_money_path():
 # the drafting cron's run reports, since P2 the post images and the topic registries the verification's rules
 # read, and since P3 the whole analytics folder (the Mac's statistics, the capture rows, the weekly review's README;
 # the registries are inside it), and since P7 (2026-11-05) the affiliate product notes and price clips the morning
-# instruction's READY gate reads — read-only, on the maintenance lane — and no other service, and no other folder.
+# instruction's READY gate reads, and the Mac draft-saving routine's folder the outsourced-side watch reads —
+# read-only, on the maintenance lane — and no other service, and no other folder.
 
 def _vault_mounts(service: str) -> list[str]:
     return [str(v) for v in _service(service).get("volumes") or [] if "blog_vault" in str(v)]
@@ -858,6 +859,7 @@ def test_the_maintenance_lane_reads_the_vaults_post_folders_and_run_reports_read
     targets = sorted(m.rsplit(":", 2)[1] for m in mounts)   # "${VAR:-default}/…:target:ro"
     assert targets == ["/app/blog_vault/analytics", "/app/blog_vault/content/_assets",
                        "/app/blog_vault/content/naver", "/app/blog_vault/content/tistory", "/app/blog_vault/ops/blog-runs",
+                       "/app/blog_vault/ops/naver-draft",
                        "/app/blog_vault/제휴/클립", "/app/blog_vault/제휴/키워드"]
     assert all(m.endswith(":ro") for m in mounts), mounts
     assert all(m.startswith("${THOMAS_BLOG_VAULT_DIR:-") for m in mounts), mounts
@@ -866,7 +868,7 @@ def test_the_maintenance_lane_reads_the_vaults_post_folders_and_run_reports_read
     assert root == "/app/blog_vault"
     assert sorted([f"{root}/content/{p}" for p in blog_department.PLATFORMS]
                   + ["/".join((root, *blog_department.RUNS_DIR)), f"{root}/content/_assets",
-                     f"{root}/analytics", f"{root}/제휴/키워드", f"{root}/제휴/클립"]) == targets
+                     f"{root}/analytics", f"{root}/제휴/키워드", f"{root}/제휴/클립", f"{root}/ops/naver-draft"]) == targets
 
 
 @pytest.mark.parametrize("service", sorted(

@@ -380,6 +380,10 @@ services:
       # records the section as unavailable rather than reading every stock as unproven.
       - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/제휴/키워드:/app/blog_vault/제휴/키워드:ro
       - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/제휴/클립:/app/blog_vault/제휴/클립:ro
+      # P6 prerequisite (BLOG_DEPARTMENT v0.2, Thomas 2026-11-05 "ops/naver-draft 마운트"): the outsourced-side watch
+      # (blog_watch) reads the Mac draft-saving routine's log, daily.log. The folder also holds the Naver reservation
+      # state and audits; read-only, and the watch reads the log alone.
+      - ${THOMAS_BLOG_VAULT_DIR:-./blog_vault}/ops/naver-draft:/app/blog_vault/ops/naver-draft:ro
       # P4a (BLOG_DEPARTMENT v0.2, Thomas 2026-10-27 "재생 그림자 먼저"): the bundles root's keyword cron records on each full
       # run (KW_REPLAY_DIR), replayed offline by the daily blog_kw_replay. Read-only. The folder (default beside the
       # cron's own status under /var/lib/thomas-measure) must be readable by uid 10001 (0755, files 0644); empty or
