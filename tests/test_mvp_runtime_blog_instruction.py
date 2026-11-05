@@ -101,7 +101,7 @@ def _instructions(ledger, kind=bi.RECORD_KIND):
 
 
 def test_the_instruction_holds_what_the_cron_chooses_from(ledger, vault):
-    assert bi.fire(ledger, now=GAP, vault_root=vault) == "blog_instruction=2026-11-04(next=1,queue=4,tistory=2)"
+    assert bi.fire(ledger, now=GAP, vault_root=vault) == "blog_instruction=2026-11-04(next=1,queue=4,tistory=2,affiliate=unavailable)"
     [record] = _instructions(ledger)
     assert record["run_date"] == RUN_DATE and record["history_date"] == "2026-11-03" and record["history_today"]
     assert record["naver"]["next_topics"] == [{"kw": "다음 주제", "lane": "실무 가이드"}]
@@ -216,3 +216,24 @@ def test_the_kind_is_maintenance_and_fires_through_the_scheduler(ledger, vault, 
     run_due(store, now=GAP, control_store=ControlStore(state), ledger=ledger, repo_root=state)
     terminal = [e for e in ledger.read_scheduler_events() if e["action"] in ("fired", "failed")][-1]
     assert terminal["action"] == "fired" and terminal["status"].startswith("blog_instruction=2026-11-04")
+
+
+def test_the_mornings_affiliate_pick_is_compared_with_the_days_placement(ledger, vault, monkeypatch):
+    # P7 (Thomas 2026-11-05 "지시에 싣기"): the instruction names the stock it would place; the report's placement
+    # is compared with it by the stock's slug. Neither record carries the stock's file name.
+    pick = {"state": "built", "error": None, "stock": 2, "ready": 1, "held": 1, "needs_review": 0, "link_unready": 0,
+            "pick": {"id": bi.stock_id("업소용-냉장고"), "keyword": "업소용 냉장고"}, "deferred": None}
+    monkeypatch.setattr(bi, "affiliate_pick", lambda root: pick)
+    assert bi.fire(ledger, now=GAP, vault_root=vault).endswith("affiliate=built)")
+    assert _instructions(ledger)[0]["affiliate"] == pick
+    _report(vault, RUN_DATE, [("naver", "나 키워드")])
+    path = vault / "ops" / "blog-runs" / f"{RUN_DATE}.json"
+    report = json.loads(path.read_text(encoding="utf-8"))
+    report["affiliate_placed"] = [{"path": "content/naver/제휴/202편-업소용-냉장고.md", "episode": 202}]
+    path.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+    bi.fire(ledger, now=AFTER, vault_root=vault)
+    [check] = _instructions(ledger, bi.CHECK_KIND)
+    assert check["affiliate"] == {"state": "compared", "placed": 1, "matched": 1, "differed": 0, "unjudged": 0,
+                                  "placements": [{"episode": 202, "matched": True}]}
+    text = json.dumps([_instructions(ledger), check], ensure_ascii=False)
+    assert "제휴-" not in text and "202편" not in text and "content/" not in text

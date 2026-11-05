@@ -17,7 +17,7 @@ reads what it did, once a week, from the one place every step leaves a mark — 
   ``blog-preflight`` / ``blog_variety`` failed or could not run, and how many runs consumed a system instruction
   (none until P6). A report folder that is not mounted is ``None`` — absent, never zero. A report that does not
   parse as ``blog_run_report.v1`` is counted as unreadable and contributes nothing else.
-* **stages** (v0.3; v0.4 the P4a/P4b run) — each stage's progress towards its switch condition (§4), from the records its own fire
+* **stages** (v0.3; v0.4 the P4a/P4b run; v0.5 the affiliate placements) — each stage's progress towards its switch condition (§4), from the records its own fire
   writes: P2's comparison and P3's agreeing weeks as the message already showed them, and the shadows P4a–P7 (the
   calendar span of the newest run of agreeing bundle days, since v0.4; the feedback days, where the reported drafts sat in the instruction, the slot
   checks). The switch is judged from these records, not from anyone's notes.
@@ -47,8 +47,8 @@ PLATFORMS = ("naver", "tistory")
 STATUSES = ("draft", "hold", "scheduled", "published")
 WINDOW_DAYS = 7
 RECORD_KIND = "blog_department_week"
-RECORD_SCHEMA = "schemas/blog_department_week.v0.4.schema.json"
-RECORD_SCHEMA_VERSION = "blog_department_week.v0.4"
+RECORD_SCHEMA = "schemas/blog_department_week.v0.5.schema.json"
+RECORD_SCHEMA_VERSION = "blog_department_week.v0.5"
 RUNS_DIR = ("ops", "blog-runs")
 RUN_REPORT_SCHEMA = "blog_run_report.v1"
 # Written by the lane's daily ``blog_verify`` fire (``blog/verify.py``); named here so the weekly report can read it
@@ -362,6 +362,12 @@ def _instruction_stage(ledger: Any, since: str, until: str) -> dict[str, Any] | 
     for platform in ("naver", "tistory"):
         out[f"outside_{platform}"] = sum(1 for r in checked for p in r.get("picks") or []
                                          if p.get("source") == "outside" and p.get("platform") == platform)
+    # v0.5 (P7, 2026-11-05): the week's affiliate placements against the morning's pick. A v0.1 check carries none.
+    sections = [r["affiliate"] for r in week_checks if isinstance(r.get("affiliate"), Mapping)]
+    for key in ("placed", "matched", "differed", "unjudged"):
+        out[f"week_affiliate_{key}"] = sum(int(a.get(key) or 0) for a in sections)
+    out["week_affiliate_unavailable"] = sum(1 for r in week_built if isinstance(r.get("affiliate"), Mapping)
+                                            and r["affiliate"].get("state") != "built")
     return out
 
 
