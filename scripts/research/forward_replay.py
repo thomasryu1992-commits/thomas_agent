@@ -40,7 +40,6 @@ import math
 import os
 import platform
 import random
-import resource
 import shutil
 import statistics
 import sys
@@ -504,7 +503,11 @@ def _prepare(cache: Path | None) -> tuple[Path | None, str | None]:
     return cache, None
 
 
-def peak_mb() -> float:
+def peak_mb() -> float | None:
+    try:
+        import resource          # POSIX only; the replay runs on Linux and macOS, the suite also on Windows
+    except ImportError:
+        return None
     usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     return round(usage / (1024 * 1024 if sys.platform == "darwin" else 1024), 1)
 
