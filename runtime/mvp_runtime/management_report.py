@@ -218,6 +218,14 @@ def _analysis_line(analysis: Mapping[str, Any] | None) -> str:
             + f" · {skill} · 연속 일치 {analysis['weeks_agreeing_in_a_row']}주")
 
 
+def _keyword_run(s: Mapping[str, Any]) -> str:
+    """P4a/P4b's run as its switch condition counts it: calendar days from the run's first bundle day, both ends
+    included, with how many of them had a bundle (root's cron leaves one only on full-run days)."""
+    if s["run_first"] is None:
+        return "0일(조건 14일)"
+    return f"{s['run_days']}일({s['run_first'][5:]}부터, 묶음 {s['run_bundle_days']}일, 조건 14일)"
+
+
 def _stage_lines(stages: Mapping[str, Any]) -> list[str]:
     """The blog department's shadows (P4a–P7), each against its switch condition (BLOG_DEPARTMENT §4). A stage with
     no record yet says so; it is never shown as zero."""
@@ -226,7 +234,7 @@ def _stage_lines(stages: Mapping[str, Any]) -> list[str]:
         s = stages.get(key)
         lines.append(f"  [{label}] 기록 없음" if s is None else
                      f"  [{label}] 이번 주 묶음 {s['bundles']} · 일치 {s['agreed']} · 다름 {s['differed']}"
-                     f" · 생성기 낡음 {s['stale']} · 그 밖 {s['other']} · 연속 일치 {s['days_agreeing_in_a_row']}일(조건 14일)")
+                     f" · 생성기 낡음 {s['stale']} · 그 밖 {s['other']} · 연속 일치 {_keyword_run(s)}")
     s = stages.get("feedback")
     lines.append("  [피드백 P5] 기록 없음" if s is None else
                  f"  [피드백 P5] 기록 {s['days']}일({s['first'][5:]}부터, 조건 14일) · 이번 주 {s['week_days']}일"

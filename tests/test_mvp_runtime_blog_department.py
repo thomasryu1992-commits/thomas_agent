@@ -110,7 +110,7 @@ def test_an_empty_platform_folder_refuses_rather_than_reading_as_a_quiet_week(va
 
 def test_the_record_is_counts_only_and_satisfies_its_closed_schema(vault):
     record = bd.build_record(bd.observe(vault, now=NOW), now=NOW)
-    assert record["schema_version"] == "blog_department_week.v0.3" and record["observation_id"].startswith("blogweek_")
+    assert record["schema_version"] == "blog_department_week.v0.4" and record["observation_id"].startswith("blogweek_")
     assert set(record["stages"]) == {"verify", "analysis", "kw_replay", "kw_direct", "feedback", "instruction", "slot"}
     assert all(v is None for v in record["stages"].values())       # a week with no stage records reads as none, not zero
     assert "제목" not in json.dumps(record, ensure_ascii=False)
@@ -238,16 +238,31 @@ def test_no_stage_record_is_none_never_zero():
     assert bd.stages(_Ledger(), now=NOW) == {k: None for k in ("kw_replay", "kw_direct", "feedback", "instruction", "slot")}
 
 
-def test_the_keyword_shadow_counts_bundle_days_agreeing_in_a_row_and_any_other_state_breaks_the_run():
+def test_the_keyword_shadow_counts_the_agreeing_run_as_a_calendar_span_and_any_other_state_breaks_it():
     ledger = _stage_ledger()
     s = bd.stages(ledger, now=NOW)["kw_replay"]
     # The window is 10-19..10-25: six bundles, the re-replayed 10-20 counted once as its latest record.
     assert s == {"bundles": 6, "agreed": 4, "differed": 1, "stale": 0, "other": 1, "days": 6, "first": "2026-10-18",
-                 "days_agreeing_in_a_row": 2}                       # 10-25, 10-23; 10-22's replay miss ends it
+                 "run_first": "2026-10-23", "run_last": "2026-10-25", "run_days": 3,
+                 "run_bundle_days": 2}                              # 10-23..10-25; 10-22's replay miss ends it
     ledger.add(bd.KW_REPLAY_RECORD_KIND, bundle="20261025-230000", state="generator_stale", agree=None)
     s = bd.stages(ledger, now=NOW)["kw_replay"]
-    assert s["stale"] == 1 and s["days_agreeing_in_a_row"] == 0     # one bad bundle makes its whole day bad
+    assert s["stale"] == 1                                          # one bad bundle makes its whole day bad
+    assert (s["run_first"], s["run_last"], s["run_days"], s["run_bundle_days"]) == (None, None, 0, 0)
     assert bd.stages(ledger, now=NOW)["kw_direct"] is None
+
+
+def test_a_bundle_every_second_or_third_day_keeps_the_run_and_a_longer_gap_ends_it():
+    # 2026-11-04 on the live host: root's cron (--max-age 2) left bundles 10-28, 10-29, 10-30, 10-31, 11-02, 11-04.
+    # Counted as bundle days, "14 days" would have needed about four weeks of calendar.
+    ledger = _Ledger()
+    for day in ("20261101", "20261105", "20261107", "20261110", "20261112"):
+        ledger.add(bd.KW_REPLAY_RECORD_KIND, bundle=f"{day}-071000", state="compared", agree=True)
+    s = bd.stages(ledger, now="2026-11-16T00:00:00Z")["kw_replay"]
+    # 11-07 → 11-10 is a three-day gap, still a healthy cron; 11-01 → 11-05 (four days) was never checked.
+    assert (s["run_first"], s["run_last"], s["run_days"], s["run_bundle_days"]) == ("2026-11-05", "2026-11-12", 8, 4)
+    assert bd.BUNDLE_GAP_DAYS == 3
+    assert "연속 일치 8일(11-05부터, 묶음 4일, 조건 14일)" in "\n".join(mr._stage_lines(bd.stages(ledger, now="2026-11-16T00:00:00Z")))
 
 
 def test_the_feedback_instruction_and_slot_shadows_are_summed_over_the_week_by_their_latest_record():
@@ -268,7 +283,7 @@ def test_the_record_carries_every_stage_as_counts_and_the_report_renders_them(va
     ledger = _stage_ledger()
     observation = {**bd.observe(vault, now=NOW), "verification": bd.verification_summary(ledger, now=NOW),
                    "analysis": None, "stages": bd.stages(ledger, now=NOW)}
-    record = bd.build_record(observation, now=NOW)        # validates against v0.3
+    record = bd.build_record(observation, now=NOW)        # validates against v0.4
     assert record["stages"]["verify"] == {"runs": 0, "drafts": 0, "compared": 0, "agreed": 0, "differed": 0,
                                           "not_compared": 0}
     assert record["stages"]["analysis"] is None and record["stages"]["kw_direct"] is None
@@ -277,7 +292,7 @@ def test_the_record_carries_every_stage_as_counts_and_the_report_renders_them(va
     assert not any(k in text for k in ("가", "나", "다", "라", "비밀"))   # picks' keywords are counted, never carried
 
     lines = "\n".join(mr._stage_lines(observation["stages"]))
-    assert "[키워드 재생 P4a] 이번 주 묶음 6 · 일치 4 · 다름 1 · 생성기 낡음 0 · 그 밖 1 · 연속 일치 2일(조건 14일)" in lines
+    assert "[키워드 재생 P4a] 이번 주 묶음 6 · 일치 4 · 다름 1 · 생성기 낡음 0 · 그 밖 1 · 연속 일치 3일(10-23부터, 묶음 2일, 조건 14일)" in lines
     assert "[키워드 직접 조회 P4b] 기록 없음" in lines
     assert "[피드백 P5] 기록 3일(10-18부터, 조건 14일) · 이번 주 2일 · 순위가 바뀐 날 2 · 바뀐 순위 4 · 조정된 후보 7" in lines
     assert "[지시 P6] 이번 주 지시 2일(이전 이력 사용 1) · 대조 2일 · 지시 없음 1 · 늦음 1" in lines

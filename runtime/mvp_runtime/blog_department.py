@@ -17,9 +17,9 @@ reads what it did, once a week, from the one place every step leaves a mark — 
   ``blog-preflight`` / ``blog_variety`` failed or could not run, and how many runs consumed a system instruction
   (none until P6). A report folder that is not mounted is ``None`` — absent, never zero. A report that does not
   parse as ``blog_run_report.v1`` is counted as unreadable and contributes nothing else.
-* **stages** (v0.3) — each stage's progress towards its switch condition (§4), from the records its own fire
+* **stages** (v0.3; v0.4 the P4a/P4b run) — each stage's progress towards its switch condition (§4), from the records its own fire
   writes: P2's comparison and P3's agreeing weeks as the message already showed them, and the shadows P4a–P7 (the
-  bundle days agreeing in a row, the feedback days, where the reported drafts sat in the instruction, the slot
+  calendar span of the newest run of agreeing bundle days, since v0.4; the feedback days, where the reported drafts sat in the instruction, the slot
   checks). The switch is judged from these records, not from anyone's notes.
 
 Dates are KST calendar dates, as the vault writes them. A file without readable front matter is counted as
@@ -47,8 +47,8 @@ PLATFORMS = ("naver", "tistory")
 STATUSES = ("draft", "hold", "scheduled", "published")
 WINDOW_DAYS = 7
 RECORD_KIND = "blog_department_week"
-RECORD_SCHEMA = "schemas/blog_department_week.v0.3.schema.json"
-RECORD_SCHEMA_VERSION = "blog_department_week.v0.3"
+RECORD_SCHEMA = "schemas/blog_department_week.v0.4.schema.json"
+RECORD_SCHEMA_VERSION = "blog_department_week.v0.4"
 RUNS_DIR = ("ops", "blog-runs")
 RUN_REPORT_SCHEMA = "blog_run_report.v1"
 # Written by the lane's daily ``blog_verify`` fire (``blog/verify.py``); named here so the weekly report can read it
@@ -278,15 +278,31 @@ def _latest(ledger: Any, kind: str, key: str) -> dict[str, Mapping[str, Any]]:
     return out
 
 
-def _in_a_row(days: Mapping[str, bool]) -> int:
-    """How many recorded days, newest first, are good before the first that is not. A day with no record neither
-    counts nor breaks the run: the conditions count days that were checked, never days that were not."""
-    count = 0
+# Root's keyword cron runs ``kw-pipeline run --max-age 2``: it reuses ``queue.md`` while the file is younger than two
+# days, and a full run (the only kind that leaves a bundle) stamps the file when it ends, about half an hour after the
+# 07:10 KST start. So a healthy cron leaves a bundle at least every third day. A longer gap is a run that never came
+# and was never checked, and §4 counts only checked days, so it ends the run of agreeing days.
+BUNDLE_GAP_DAYS = 3
+
+
+def _agreeing_run(days: Mapping[str, bool]) -> dict[str, Any]:
+    """The newest run of bundle days that all agreed, as P4a/P4b's switch condition counts it (§4: fourteen days in
+    which every bundle received was compared and agreed). ``run_days`` is the calendar span from its first bundle day
+    to its last, both included; ``run_bundle_days`` is how many bundle days it holds. A day with no bundle neither
+    counts nor breaks the run, unless the gap to the next bundle day exceeds ``BUNDLE_GAP_DAYS``. A day that did not
+    agree, or such a gap, ends it."""
+    run: list[str] = []
     for day in sorted(days, reverse=True):
         if not days[day]:
             break
-        count += 1
-    return count
+        if run and (date.fromisoformat(run[-1]) - date.fromisoformat(day)).days > BUNDLE_GAP_DAYS:
+            break
+        run.append(day)
+    if not run:
+        return {"run_first": None, "run_last": None, "run_days": 0, "run_bundle_days": 0}
+    return {"run_first": run[-1], "run_last": run[0],
+            "run_days": (date.fromisoformat(run[0]) - date.fromisoformat(run[-1])).days + 1,
+            "run_bundle_days": len(run)}
 
 
 def _keyword_stage(ledger: Any, kind: str, since: str, until: str) -> dict[str, Any] | None:
@@ -309,7 +325,7 @@ def _keyword_stage(ledger: Any, kind: str, since: str, until: str) -> dict[str, 
                 week["agreed" if record.get("agree") is True else "differed"] += 1
             else:
                 week["stale" if record.get("state") == "generator_stale" else "other"] += 1
-    return {**week, "days": len(days), "first": min(days), "days_agreeing_in_a_row": _in_a_row(days)}
+    return {**week, "days": len(days), "first": min(days), **_agreeing_run(days)}
 
 
 def _feedback_stage(ledger: Any, since: str, until: str) -> dict[str, Any] | None:
