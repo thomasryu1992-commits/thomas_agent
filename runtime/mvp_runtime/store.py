@@ -136,6 +136,9 @@ _RECORD_KINDS = (
     # The instruction the system would give the drafting cron, and where each reported draft sits in it
     # (BLOG_DEPARTMENT v0.2 P6 shadow, 2026-11-03); appended by ``blog_instruction``.
     "blog_instruction", "blog_instruction_check",
+    # The outsourced side judged from the vault (BLOG_DEPARTMENT v0.2 P6 prerequisite, 2026-11-05); appended by
+    # ``blog_watch`` when a state changes or once a day.
+    "blog_watch",
     "programization_observation", "programization_pattern",
 )
 
