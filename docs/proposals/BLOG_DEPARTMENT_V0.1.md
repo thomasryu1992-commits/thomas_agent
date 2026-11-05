@@ -1,6 +1,6 @@
 # 제안: 블로그 부서 — 지금의 생산 로직을 정본으로 두고 조직의 루프에 녹인다 (V0.2)
 
-**상태:** PARTIALLY DECIDED 2026-10-26 — 생산은 지금의 볼트 경로에서 시작하고, 런타임 블로그 레인(`blog_*` 10개 모듈)은 지웠다(#1319). v0.2(Thomas 2026-10-26): 통합할 수 있는 단계(키워드, 검증, 발행 계획, 분석, 피드백)는 시스템 안으로 옮기고, 원고 생성·발행·통계 수집만 외주로 둔다(§3). §7의 N1·S1·L2·L3·R1–R3은 권고대로 정했다(Thomas 2026-10-26). P0 관측(#1321)·P1 실행 보고(#1326)·P2 검증(#1328)은 배포됐고(2026-10-26), 전환 조건을 관찰 중이다. P3 분석(`blog_analyze`)은 2026-10-27에 배포됐다. P4는 재생 그림자(P4a)를 먼저 하기로 정했고(Thomas 2026-10-27), 2026-10-27에 배포됐다(재생 포트 재생성 #1337은 2026-11-01 머지). P5 피드백 그림자(`blog_feedback`)는 2026-11-03에 배포됐다. P4b 직접 조회 그림자(`blog_kw_direct`)는 미리 구현하기로 했고(Thomas 2026-11-03), opt-in 두 개(`MVP_BLOG_WEB_READ`·`MVP_BLOG_OWN_READ`)가 꺼진 채로 들어간다. 켜는 것은 P4a 조건을 채운 뒤 Thomas가 한다. P7은 네이버 슬롯 그림자(`blog_slot`)를 먼저 만들기로 했고, 티스토리는 다시 계획하지 않고 큐 규칙 검사로 같은 기록에 넣기로 했다(Thomas 2026-11-03). P6은 지시 그림자(`blog_instruction`)를 미리 만들어 두기로 했고(Thomas 2026-11-03), 크론은 아직 지시를 읽지 않는다. 주간 보고가 단계마다 전환 조건까지 온 정도를 싣기로 했다(Thomas 2026-11-03, "조건 진행표"). 전환은 조건을 채운 뒤에 한다. P8은 시작하지 않았다.
+**상태:** PARTIALLY DECIDED 2026-10-26 — 생산은 지금의 볼트 경로에서 시작하고, 런타임 블로그 레인(`blog_*` 10개 모듈)은 지웠다(#1319). v0.2(Thomas 2026-10-26): 통합할 수 있는 단계(키워드, 검증, 발행 계획, 분석, 피드백)는 시스템 안으로 옮기고, 원고 생성·발행·통계 수집만 외주로 둔다(§3). §7의 N1·S1·L2·L3·R1–R3은 권고대로 정했다(Thomas 2026-10-26). P0 관측(#1321)·P1 실행 보고(#1326)·P2 검증(#1328)은 배포됐고(2026-10-26), 전환 조건을 관찰 중이다. P3 분석(`blog_analyze`)은 2026-10-27에 배포됐다. P4는 재생 그림자(P4a)를 먼저 하기로 정했고(Thomas 2026-10-27), 2026-10-27에 배포됐다(재생 포트 재생성 #1337은 2026-11-01 머지). P5 피드백 그림자(`blog_feedback`)는 2026-11-03에 배포됐다. P4b 직접 조회 그림자(`blog_kw_direct`)는 미리 구현하기로 했고(Thomas 2026-11-03), opt-in 두 개(`MVP_BLOG_WEB_READ`·`MVP_BLOG_OWN_READ`)가 꺼진 채로 들어간다. 켜는 것은 P4a 조건을 채운 뒤 Thomas가 한다. P7은 네이버 슬롯 그림자(`blog_slot`)를 먼저 만들기로 했고, 티스토리는 다시 계획하지 않고 큐 규칙 검사로 같은 기록에 넣기로 했다(Thomas 2026-11-03). P6은 지시 그림자(`blog_instruction`)를 미리 만들어 두기로 했고(Thomas 2026-11-03), 크론은 아직 지시를 읽지 않는다. 주간 보고가 단계마다 전환 조건까지 온 정도를 싣기로 했다(Thomas 2026-11-03, "조건 진행표"). 전환은 조건을 채운 뒤에 한다. 통합 배정인데 단계가 없던 도구 12개를 다시 배정했다(Thomas 2026-11-05, §7 "도구 배정"). P8은 시작하지 않았다.
 **요청:** Thomas 2026-10-26.
 - "지금 현재 네이버/티스토리 생산 중인 로직으로 갈 것이고, 기존에 있던 것들은 삭제 및 정리하고 회사형 조직 내에 기존 것을 녹이는게 맞는 것 같은데"
 - "그렇게 진행해주고, 해당 로직에 대해서도 기록을 해놔줘. 원고 발행만 해당 시스템에서 mac으로 요청을 하는 형태로 … 나머지 분석을 통한 피드백 등은 시스템 내부에서 루프 형태"
@@ -93,17 +93,17 @@
 
 | 단계 | 통합(레인으로 옮김) | 외주에 남음 |
 |---|---|---|
-| ① 키워드 | `kw_pipeline.py`, `kw_pool.py`, `kw-check.py`, `blog_taxonomy.py`, `ai_briefing_sources.py` | — (root 크론 `kw-daily.sh`는 P6에서 내린다) |
-| ② 원고 | — | `blog-daily-draft.sh`·`.prompt.md`, 스킬 `naver-blog-draft`·`naver-to-google-seo`, `blog-capture.py`(캡처 문을 거친다), 제휴 클립 3종(`affiliate-clips`, `affiliate_fetch`, `affiliate_link`) |
-| ③ 검증 | `blog-preflight.py`(원고 검사), `blog_variety.py`, `blog-tone.py`, `img-preflight.py`·`img_helpers.py`·`blogkit.py`, `source_status.py` | `blog-preflight`의 URL 생존 검사, `tistory_browser_check.py`·`tistory_verify.py`(Chrome) |
-| ④ 발행 계획 | `naver_slot.py`, `tistory_queue.py`의 슬롯 계산, `blog-affiliate-place.py` | — |
+| ① 키워드 | `kw_pipeline.py`, `blog_taxonomy.py` | `kw-check.py`(원고 스킬이 쓰는 중에 수요를 확인한다). root 크론 `kw-daily.sh`는 P6에서 내린다 |
+| ② 원고 | — | `blog-daily-draft.sh`·`.prompt.md`, 스킬 `naver-blog-draft`·`naver-to-google-seo`, `blog-capture.py`(캡처 문을 거친다), 제휴 클립 3종(`affiliate-clips`, `affiliate_fetch`, `affiliate_link`), 이미지 도구 `img-preflight.py`·`img_helpers.py`·`blogkit.py`(이미지를 만든 자리에서 그리고 검사한다. 픽셀 검사는 Pillow가 필요하고, 런타임 이미지에는 없다) |
+| ③ 검증 | `blog-preflight.py`(원고 검사), `blog_variety.py` | `blog-preflight`의 URL 생존 검사, `tistory_browser_check.py`·`tistory_verify.py`(Chrome) |
+| ④ 발행 계획 | `naver_slot.py`, `tistory_queue.py`의 슬롯 계산, `blog-affiliate-place.py`의 판단(READY·편집 보류, 다음 배치 편과 예약일. P7) | `blog-affiliate-place.py`의 쓰기(재고 원고에 편 번호·예약일을 붙여 옮긴다) |
 | ⑤ 발행 실행 | — | `naver_draft*`, `mac_ready.sh`, `naver_reserve.py`, `naver_version_gate.py`, `naver_patch.py`, `tistory_reserve_gate.py`, `md2paste.py`, `tistory_bold.py`, `tistory_backlinks.py`, `tistory_index_todo.py`, `tistory_version_gate.py`, `tistory_live2md.py`, `tistory-autopost-procedure.md`, `revision_log.py`(발행 후 수정 이력) |
-| ⑥ 통계 수집 | `blog-weekly.py`(로그인 없이 모으는 것) | `naver_stats_weekly.*`, `naver_trend_daily.py`, GSC 주간 수집(Mac 루틴) |
+| ⑥ 통계 수집 | — | `naver_stats_weekly.*`, `naver_trend_daily.py`, GSC 주간 수집(Mac 루틴), `blog-weekly.py`(주간 리뷰 스킬의 뼈대 수집. 정본 통계는 P3가 Mac 수집 파일에서 읽는다. 옮기면 내 블로그 조회 opt-in이 하나 더 필요한데 더 얻는 것은 공감 수 정도다) |
 | ⑦ 분석 | `kw_pipeline` `capture`(포착률), 주간 리뷰의 집계 부분 | 주간 리뷰의 해석·판단(스킬 `blog-weekly-review`) |
-| 감시 | `mac-routine-watch.py`, `weekly-snapshot-check.py` | — |
+| 감시 | `mac-routine-watch.py`의 판정(외주가 멈춘 날을 시스템이 안다. P6 전제) | — |
 | 블로그 아님 | 옮기지 않는다: 볼트·세션 운영, 프롬프트 라이브러리, 여행 | |
 
-`tistory_variety_asdraft.py`와 `tistory-engine-compare.py`는 일회성 도구라 옮기지 않는다. 알림(`notify_hermes.sh`, `claude_retry.sh`)은 외주 쪽의 실패 알림이라 남는다.
+`tistory_variety_asdraft.py`와 `tistory-engine-compare.py`는 일회성 도구라 옮기지 않는다. 2026-11-05 다시 본 다섯 개도 옮기지 않는다(§7 "도구 배정"): `kw_pool.py`, `ai_briefing_sources.py`, `blog-tone.py`, `source_status.py`, `weekly-snapshot-check.py`. 알림(`notify_hermes.sh`, `claude_retry.sh`)은 외주 쪽의 실패 알림이라 남는다.
 
 **지시가 없을 때(fail-closed).**
 - 그림자 기간(§4의 P4–P5): 외주는 지금처럼 자기 파이프라인으로 돈다. 시스템의 지시는 비교용이다.
@@ -124,8 +124,8 @@ v0.2에서 리팩토링은 통합 단계의 코드를 thomas_agent 저장소로 
 | P4a 키워드 재생 그림자 | `kw_pipeline`을 생성기(`scripts/blog_vendor.py`)로 레인 `blog/kw_pipeline.py`에 옮긴다. root 키워드 크론이 전체 실행할 때마다 `KW_REPLAY_DIR`에 묶음(시작 시각·인자·키 유무, 시작 때 캐시, 입력 글자 파일, 받은 응답, 출력)을 남기고, 매일 `blog_kw_replay`가 새 묶음을 네트워크 없이 다시 돌려 `blog_kw_replay`로 기록한다. 비교는 history 파일 기준이다: 후보 집합과 후보마다 레인·점수·판정, 레인별 점수 상위 10개 집합, 티스토리 후보 집합, 체급 밖 목록, 순위표 | 없음(응답은 기록에서만 온다) | 14일 동안 받은 묶음마다 `compared`이고 모두 같다. `generator_stale`이면 다시 생성해 PR로 올린 뒤 센다. 다르면 원인을 기록한다 |
 | P4b 키워드 직접 조회 | P4a 조건을 채운 뒤, 컨테이너가 §7 N1의 호스트를 env 게이트로 직접 조회해 같은 파이프라인을 그림자로 돌린다. 구현(2026-11-03, Thomas가 고른 기본값): 오후(13–22시 KST)에 그날 root 묶음 하나를 같은 입력·시작 캐시·시각으로 다시 돌리되, 네이버·구글 호스트만 `MVP_BLOG_WEB_READ`, 내 블로그 읽기만 `MVP_BLOG_OWN_READ`(둘 다 `enabled`) 뒤에서 직접 조회한다. 검색광고 API는 묶음의 응답으로 답하고 요청하지 않는다(키는 `pipeline-worker`에만 둔다). 429·403·503이 오면 그날은 더 조회하지 않고 `blocked`로 남긴다. 기록은 `blog_kw_direct`(호스트별 건수, URL·본문 없음) | §7 N1의 호스트 | 14일 동안 상위 후보 집합이 같다. 다른 날은 원인(조회 시각 차이 등)이 설명된다 |
 | P5 피드백 그림자 | P3 결과로 키워드 우선순위를 조정하는 지침을 만들어 P4 선정에 반영한다(그림자). 증거 기준은 #1183(비교군 5편 이상, 결측 30% 이하, 미검증 순위 미사용). 구현(2026-11-02): 매일 `blog_feedback`이 최신 `blog_analysis` 주로 네이버 클러스터마다 D+14가 지난 글의 주간 조회 중앙값을 전체 중앙값과 비교해 계수(2배 이상 1.2, 0.5배 이하 또는 상위 표 밖 0.8, 그 사이 1)를 정하고, 그날 볼트 키워드 이력의 후보에 그림자로 적용해 점수·레인 순위 전후를 기록한다. 순위표(`ranks`)는 읽지 않는다 | 없음 | 2주 그림자 기록. 지침이 바꾼 순위가 기록에 남는다 |
-| P6 전환 | `blog_instruction` 읽기를 연다. 원고 프롬프트·스킬이 볼트 큐 대신 지시를 읽는다. root 크론 `kw-daily.sh`를 내린다. 그림자(2026-11-03, Thomas가 고른 기본값 "P6 지시 그림자 미리"): 매일 아침 키워드 실행 뒤, 원고 크론 시작(08:02 KST) 전에 `blog_instruction`이 크론이 그날 고를 수 있는 집합을 지시로 기록한다. 집합은 세 가지다. 주간 후속 주제 중 열린 것(`next_topics.tsv`), 키워드 이력에서 새 글이 될 후보(`create_new`) 중 아직 다루지 않은 것을 레인별로 최신 P5 계수에 따라 정렬한 큐(시즌까지 남은 날 포함), 크론이 읽는 티스토리 순위(`tistory-pick --rank`)다. 그날 보고가 오면 원고마다 지시의 어디에 있었는지 기록한다(`blog_instruction_check`: `next_topics`·`queue`·`tistory_list`, 이력에는 있었지만 지시가 뺀 `history_filtered`, 어디에도 없던 `outside`). 지시가 크론 시작 전에 있었는지(`timing`)도 함께 남긴다. 슬롯은 싣지 않는다(P7이 검사한다). 읽기 문은 이 단계에서 열지 않는다. 실제 볼트에서 지난 보고를 되짚어 보면(2026-11-03), 11-03 원고 6편 중 5편이 지시 안에 있었다. 10-29~11-02에는 네이버 15편 중 10편이 큐 안(레인 순위 2~12위)에 있었고, 티스토리 15편은 하나도 지시 목록에 없었다(큐 밖의 변형이나 1-C 발굴). 다만 티스토리 순위는 지금의 거절 기록·후보 파일로 다시 만든 것이라 그날 크론이 본 목록과 다를 수 있다. 전환하면 크론은 지시 밖의 주제를 쓰지 못한다. 그래서 `outside`로 남는 출처(특히 티스토리 1-C 발굴, 공식 도움말 조회)를 지시에 넣을지, 닫을지를 전환 전에 정해야 한다 | — | P4a·P4b·P5 조건 충족, 고정 중인 줄(§6)의 고정이 풀림, Thomas 승인 |
-| P7 슬롯 통합 | 슬롯 계산을 지시에 싣는다. `naver_slot`·`tistory_queue`의 계산은 레인으로, 예약 실행 도구는 Mac·SSH 쪽에 남는다. 그림자(2026-11-03, Thomas가 고른 기본값: 보고된 새 원고마다 1회): `naver_slot`을 생성기로 레인 `blog/naver_slot.py`에 옮기고, 매일 `blog_slot`이 보고된 네이버 원고마다 그 원고를 쓴 시점의 볼트(번호가 더 큰 원고를 뺀 상태)에서 슬롯을 다시 계산해 보고된 `scheduled`와 비교한다. 보고 뒤 사람이 옮긴 슬롯은 `moved`로 따로 남긴다. 티스토리(`tistory_queue`)는 실행 시각·코퍼스 전체 variety 재검사·이미지·`browser_check`에 따라 답이 바뀌어 볼트 상태만으로 다시 계산할 수 없다. 그래서 다시 계획하지 않고 규칙을 검사한다(2026-11-03, Thomas가 고른 기본값). 큐의 규칙(칸·하루 상한·`key`·`jitter`·`kind`·`is_new`)만 생성기로 `blog/tistory_queue.py`에 옮기고, 보고된 티스토리 원고마다 분이 그 칸과 파일 이름의 `jitter`인지, 다른 글과 칸이 겹치지 않는지, 그날 전용 글·새 글이 상한 안인지, 슬롯이 실행 시작 뒤 `MARGIN_MIN`분 이후인지를 같은 `blog_slot` 기록(v0.2)에 남긴다. 1-C 같은 날 충돌·variety·`browser_check`는 검사하지 않는다 | 없음 | P6 뒤 2주 동안 지시 슬롯과 실제 예약이 같다 |
+| P6 전환 | `blog_instruction` 읽기를 연다. 원고 프롬프트·스킬이 볼트 큐 대신 지시를 읽는다. root 크론 `kw-daily.sh`를 내린다. 그림자(2026-11-03, Thomas가 고른 기본값 "P6 지시 그림자 미리"): 매일 아침 키워드 실행 뒤, 원고 크론 시작(08:02 KST) 전에 `blog_instruction`이 크론이 그날 고를 수 있는 집합을 지시로 기록한다. 집합은 세 가지다. 주간 후속 주제 중 열린 것(`next_topics.tsv`), 키워드 이력에서 새 글이 될 후보(`create_new`) 중 아직 다루지 않은 것을 레인별로 최신 P5 계수에 따라 정렬한 큐(시즌까지 남은 날 포함), 크론이 읽는 티스토리 순위(`tistory-pick --rank`)다. 그날 보고가 오면 원고마다 지시의 어디에 있었는지 기록한다(`blog_instruction_check`: `next_topics`·`queue`·`tistory_list`, 이력에는 있었지만 지시가 뺀 `history_filtered`, 어디에도 없던 `outside`). 지시가 크론 시작 전에 있었는지(`timing`)도 함께 남긴다. 슬롯은 싣지 않는다(P7이 검사한다). 읽기 문은 이 단계에서 열지 않는다. 실제 볼트에서 지난 보고를 되짚어 보면(2026-11-03), 11-03 원고 6편 중 5편이 지시 안에 있었다. 10-29~11-02에는 네이버 15편 중 10편이 큐 안(레인 순위 2~12위)에 있었고, 티스토리 15편은 하나도 지시 목록에 없었다(큐 밖의 변형이나 1-C 발굴). 다만 티스토리 순위는 지금의 거절 기록·후보 파일로 다시 만든 것이라 그날 크론이 본 목록과 다를 수 있다. 전환하면 크론은 지시 밖의 주제를 쓰지 못한다. 그래서 `outside`로 남는 출처(특히 티스토리 1-C 발굴, 공식 도움말 조회)를 지시에 넣을지, 닫을지를 전환 전에 정해야 한다. 전환 전에 `mac-routine-watch.py`의 판정(원고 크론 보고 없음·늦음, Mac 임시저장 루틴 멈춤)을 레인으로 옮긴다. 전환 뒤 외주가 멈춘 날을 시스템이 실패로 알아야 하기 때문이다(§3-2, 2026-11-05) | — | P4a·P4b·P5 조건 충족, 외주 감시가 레인에서 돈다, 고정 중인 줄(§6)의 고정이 풀림, Thomas 승인 |
+| P7 슬롯 통합 | 슬롯 계산을 지시에 싣는다. `naver_slot`·`tistory_queue`의 계산은 레인으로, 예약 실행 도구는 Mac·SSH 쪽에 남는다. 그림자(2026-11-03, Thomas가 고른 기본값: 보고된 새 원고마다 1회): `naver_slot`을 생성기로 레인 `blog/naver_slot.py`에 옮기고, 매일 `blog_slot`이 보고된 네이버 원고마다 그 원고를 쓴 시점의 볼트(번호가 더 큰 원고를 뺀 상태)에서 슬롯을 다시 계산해 보고된 `scheduled`와 비교한다. 보고 뒤 사람이 옮긴 슬롯은 `moved`로 따로 남긴다. 티스토리(`tistory_queue`)는 실행 시각·코퍼스 전체 variety 재검사·이미지·`browser_check`에 따라 답이 바뀌어 볼트 상태만으로 다시 계산할 수 없다. 그래서 다시 계획하지 않고 규칙을 검사한다(2026-11-03, Thomas가 고른 기본값). 큐의 규칙(칸·하루 상한·`key`·`jitter`·`kind`·`is_new`)만 생성기로 `blog/tistory_queue.py`에 옮기고, 보고된 티스토리 원고마다 분이 그 칸과 파일 이름의 `jitter`인지, 다른 글과 칸이 겹치지 않는지, 그날 전용 글·새 글이 상한 안인지, 슬롯이 실행 시작 뒤 `MARGIN_MIN`분 이후인지를 같은 `blog_slot` 기록(v0.2)에 남긴다. 1-C 같은 날 충돌·variety·`browser_check`는 검사하지 않는다. 제휴 배치(2026-11-05): `blog-affiliate-place.py`의 판단(재고마다 READY·편집 보류, 다음 배치 편)을 생성기로 옮기고, 보고된 제휴 배치마다 그 날짜의 볼트에서 다시 골라 같은 편이었는지 같은 기록에 남긴다. 원고 파일을 옮기고 번호·날짜를 붙이는 쓰기는 외주에 남는다 | 없음 | P6 뒤 2주 동안 지시 슬롯과 실제 예약이 같다. 제휴 배치는 같은 기간 고른 편이 같다 |
 | P8 정리 | 전환된 단계의 볼트·서버 스크립트 사본을 내린다. Mac 전용 도구만 볼트에 남는다 | — | 각 단계 전환 뒤 |
 
 **결정 없이 지금 할 수 있는 것:** 없다. P1은 크론 스크립트와 마운트를, P2 이후는 새 레인과 그 스케줄 종류를 만든다. 그래서 §7의 결정과 P0 배포가 먼저다.
@@ -171,6 +171,15 @@ Thomas가 정한 순서는 **설계 문서 → 검증 → 최적화 → 검증 �
 
 **결정 (Thomas 2026-10-27, "재생 그림자 먼저")**
 - **P4를 둘로 나눈다.** 먼저 P4a로 옮긴 코드가 같은 입력에서 같은 출력을 내는지 확인한다. root 크론이 실제 실행의 입력과 받은 응답을 묶음으로 남기고, 시스템은 그 묶음으로만 다시 돌린다. 이 단계는 컨테이너에 네트워크 권한을 열지 않는다. 직접 조회(P4b, §7 N1의 opt-in)는 P4a의 같음이 확인된 뒤에 한다. 처음부터 직접 조회하면 조회 시각이 달라 자동완성·검색 결과가 바뀌므로, 차이가 옮긴 코드의 오류인지 조회 차이인지 가를 수 없다.
+
+**결정 (Thomas 2026-11-05, "기본값대로") — 도구 배정.** §3-2에서 통합으로 배정했지만 §4의 어느 단계에도 없던 12개를 다시 배정했다. 호출처는 크론·서버 스크립트·스킬·볼트 `tools/`·`ops/`에서 찾았다.
+- 외주로 옮긴다(5): `kw-check.py`, `img-preflight.py`·`img_helpers.py`·`blogkit.py`, `blog-weekly.py`. 원고 작성과 주간 리뷰가 그 자리에서 쓰는 도구다.
+- 옮기지 않는다(5):
+  - `kw_pool.py`: 후보 풀 합치기는 2026-10-20에 `kw_pipeline` 안으로 들어갔고(옮긴 포트에 있다), 이 파일은 원고 크론이 남기는 측정 그림자다. P8에서 크론 줄을 내린다.
+  - `ai_briefing_sources.py`, `blog-tone.py`: 호출처가 없는 수동 조사·측정 도구다(`blog-tone`은 2026-10-07 "측정용, 의무 단계 아님").
+  - `source_status.py`: 운영에 연결하지 않은 시험판이다. 연결을 정할 때 P2 후보로 다시 본다.
+  - `weekly-snapshot-check.py`: 날짜가 정해진 1회 확인이고, 주간 보고가 대신한다. P8에서 내린다.
+- 단계에 넣는다(2): `blog-affiliate-place.py`의 판단은 P7, `mac-routine-watch.py`의 판정은 P6 전제(§4).
 
 **정할 것**
 - 없음. 아래 줄은 지난 기록이다(P0은 2026-10-26에 배포됐다).
