@@ -23,11 +23,24 @@ modules are the vault's code minus exactly what the runtime may not do.
   functions are kept (``KEEP``), each byte-for-byte, with the imports they need. The slot check (``blog/slot.py``)
   uses them to test a reported Tistory slot against the queue's rules without re-planning.
 
+- **P7 (2026-11-05): the affiliate pick.** Two sources live in the server scripts' git (``~/.claude/scripts``,
+  ``--scripts``), not the vault: ``blog-affiliate-place.py`` (the READY gate, the editorial hold, the stock order) and
+  ``affiliate-clips.py`` (the clip parser and the product evidence it reads). Both are cut by keeping
+  (``SCRIPT_KEEP``): the CLI, the placement writer and ``--sync-notes`` go. Their imports of the vault's
+  ``blog_taxonomy``/``affiliate_fetch`` (through ``sys.path`` and ``importlib``) become relative imports of the ports
+  already generated from those files. ``blog/instruction.py`` uses them to name the stock the cron would place today.
+- **P6 prerequisite (2026-11-05): the outsourced-side watch's rules.** ``mac-routine-watch.py`` judges the Mac routines
+  and the drafting cron from git history and host logs, none of which the container has. Only its pure rules are kept
+  (``watch_rules``): the run-block parser, the routine table and the deadlines, the Sunday arithmetic and the weekly
+  review's empty-template line. ``blog/watch.py`` applies them to the vault files mounted read-only.
+
 Everything else is byte-for-byte the vault's. Each generated file names its source file and the vault commit it was
 cut from. ``--check`` exits 1 when the committed modules differ from what the current vault would generate, which is
 the signal to regenerate in a PR (the equality the P2 switch condition measures).
 
-    python scripts/blog_vendor.py --vault /home/claude/obsidian-thomas [--check]
+    python scripts/blog_vendor.py --vault /home/claude/obsidian-thomas --scripts /home/claude/.claude/scripts [--check]
+
+Without ``--scripts`` the two script-sourced modules are neither written nor checked, and the run says so.
 """
 
 from __future__ import annotations
@@ -124,8 +137,63 @@ KEEP = {"tistory_queue": {"KST", "MARGIN_MIN", "SLOTS", "NEW_SINCE", "NEW_PER_DA
                           "fm", "kind", "key", "jitter", "is_new"}}
 KEEP_IMPORTS = {"re", "sys", "os", "glob", "json", "datetime", "hashlib"}
 
+# P7 (2026-11-05): sources in the server scripts' git, cut by keeping. Each keeps its own import set.
+SCRIPT_SOURCES = {"affiliate_clips": "affiliate-clips.py", "affiliate_place": "blog-affiliate-place.py",
+                  "watch_rules": "mac-routine-watch.py"}
+SCRIPT_KEEP = {
+    "affiliate_clips": {"VAULT", "KW_DIR", "CLIP_DIR", "NAVER_SECTION", "MODEL", "WON", "FIELD_HINTS",
+                        "front_matter", "note_targets", "products", "parse_clip"},
+    "affiliate_place": {"VAULT", "NAVER", "AFF", "ASSETS", "SLOT", "AI_TERM_RX", "V13_SCENE_RX", "V13_RUN_RX",
+                        "has_ai_story", "stock_key", "stock_files", "OK_CLUSTER", "OFF_STOCK", "NAVER_ME", "_norm",
+                        "AFFILIATE_POLICY_VERSION", "HOLD_F", "editorial_holds", "context", "readiness"},
+    "watch_rules": {"UTC", "KST", "ROUTINE_MAX_H", "ROUTINES", "DAILY_DEADLINE", "WEEKLY_DEADLINE", "RUN_HEADER",
+                    "RUN_EXIT", "run_blocks", "last_sunday", "TEMPLATE_LINE"},
+}
+SCRIPT_IMPORTS = {"affiliate_clips": {"glob", "json", "os", "re", "sys"},
+                  "affiliate_place": {"glob", "importlib.util", "json", "os", "re", "sys"},
+                  "watch_rules": {"datetime", "re"}}
+SCRIPT_REPLACE = {
+    "affiliate_clips": [
+        ('VAULT = os.environ.get("BLOG_VAULT", "/home/claude/obsidian-thomas")\n',
+         'VAULT = ""   # generated: set by configure(vault_root)\n'),
+        ('    sys.path.insert(0, os.path.join(VAULT, "tools"))\n    import affiliate_fetch as af\n',
+         '    from . import affiliate as af\n'),
+    ],
+    "affiliate_place": [
+        ('VAULT = os.environ.get("BLOG_VAULT", "/home/claude/obsidian-thomas")\n',
+         'VAULT = ""   # generated: set by configure(vault_root)\n'),
+        ('    sys.path.insert(0, os.path.join(VAULT, "tools"))\n    import blog_taxonomy as bt\n'
+         '    spec = importlib.util.spec_from_file_location("affclips", os.path.join(os.path.dirname(os.path.realpath(__file__)), "affiliate-clips.py"))\n'
+         '    ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)\n',
+         '    from . import taxonomy as bt\n    from . import affiliate_clips as ac\n'),
+    ],
+}
+SCRIPT_CONFIGURE = {
+    "watch_rules": "",
+    "affiliate_clips": '''
 
-def _keep(text: str, name: str, keep: set[str]) -> str:
+def configure(vault_root):
+    """Point the clip folders at a vault (generated: replaces the script's import-time BLOG_VAULT lookup)."""
+    global VAULT, KW_DIR, CLIP_DIR
+    VAULT = str(vault_root)
+    KW_DIR = os.path.join(VAULT, "제휴", "키워드")
+    CLIP_DIR = os.path.join(VAULT, "제휴", "클립")
+''',
+    "affiliate_place": '''
+
+def configure(vault_root):
+    """Point the stock folders at a vault (generated: replaces the script's import-time BLOG_VAULT lookup)."""
+    global VAULT, NAVER, AFF, ASSETS, HOLD_F
+    VAULT = str(vault_root)
+    NAVER = os.path.join(VAULT, "content", "naver")
+    AFF = os.path.join(NAVER, "제휴")
+    ASSETS = os.path.join(VAULT, "content", "_assets")
+    HOLD_F = os.path.join(VAULT, "analytics", "keywords", "affiliate_editorial_hold.tsv")
+''',
+}
+
+
+def _keep(text: str, name: str, keep: set[str], imports: set[str] = KEEP_IMPORTS) -> str:
     """Only the named top-level assignments and functions, in source order, and the import statements made of
     ``KEEP_IMPORTS`` alone. Anything else at top level (the planning, the subprocess re-runs, the print) goes."""
     tree = ast.parse(text)
@@ -134,7 +202,7 @@ def _keep(text: str, name: str, keep: set[str]) -> str:
     found: set[str] = set()
     for node in tree.body:
         if isinstance(node, ast.Import):
-            hit = {a.name for a in node.names} <= KEEP_IMPORTS
+            hit = {a.name for a in node.names} <= imports
         elif isinstance(node, ast.FunctionDef):
             hit = node.name in keep
             found |= {node.name} & keep
@@ -188,6 +256,21 @@ def generate(key: str, vault: Path, commit: str) -> str:
     header = (f"# GENERATED by scripts/blog_vendor.py from the vault's tools/{source} @ {commit}. Do not edit by hand:\n"
               f"# change the vault file and regenerate (BLOG_DEPARTMENT v0.2 {STAGE.get(key, 'P2')}). The edits are listed in that script.\n")
     return header + text.rstrip("\n") + "\n" + CONFIGURE.get(key, "")
+
+
+def generate_script(key: str, scripts: Path, commit: str) -> str:
+    """P7: a server-scripts source, kept by name, its imports made relative, its paths set by ``configure``."""
+    source = SCRIPT_SOURCES[key]
+    text = (scripts / source).read_text(encoding="utf-8")
+    text = _keep(text, source, SCRIPT_KEEP[key], SCRIPT_IMPORTS[key])
+    for old, new in SCRIPT_REPLACE.get(key, []):
+        if text.count(old) != 1:
+            raise SystemExit(f"{source}: expected exactly one occurrence of an edited line, found {text.count(old)}:\n{old}")
+        text = text.replace(old, new)
+    stage = "P6 prerequisite" if key == "watch_rules" else "P7"
+    header = (f"# GENERATED by scripts/blog_vendor.py from the server scripts' {source} @ {commit}. Do not edit by hand:\n"
+              f"# change the script and regenerate (BLOG_DEPARTMENT v0.2 {stage}). The edits are listed in that script.\n")
+    return header + text.rstrip("\n") + "\n" + SCRIPT_CONFIGURE[key]
 
 
 # --- P4a: the keyword pipeline, generated for offline replay (Thomas 2026-10-27 "재생 그림자 먼저") ------------------
@@ -409,6 +492,7 @@ def generate_replay(key: str, vault: Path, commit: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--vault", required=True, type=Path)
+    parser.add_argument("--scripts", type=Path, help="the server scripts' git (P7's affiliate sources)")
     parser.add_argument("--check", action="store_true", help="exit 1 if the committed modules are stale")
     args = parser.parse_args(argv)
     commit = subprocess.run(["git", "-C", str(args.vault), "log", "-1", "--format=%h", "--",
@@ -420,6 +504,13 @@ def main(argv: list[str] | None = None) -> int:
     stale = []
     jobs = [(key, lambda key=key: generate(key, args.vault, commit)) for key in SOURCES]
     jobs += [(key, lambda key=key: generate_replay(key, args.vault, replay_commit)) for key in REPLAY_SOURCES]
+    if args.scripts:
+        script_commit = subprocess.run(["git", "-C", str(args.scripts), "log", "-1", "--format=%h", "--",
+                                        *SCRIPT_SOURCES.values()],
+                                       capture_output=True, text=True, check=True).stdout.strip() or "unknown"
+        jobs += [(key, lambda key=key: generate_script(key, args.scripts, script_commit)) for key in SCRIPT_SOURCES]
+    else:
+        print("not checked (no --scripts): " + ", ".join(f"{k}.py" for k in SCRIPT_SOURCES))
     for key, make in jobs:
         path = OUT_DIR / f"{key}.py"
         text = make()
