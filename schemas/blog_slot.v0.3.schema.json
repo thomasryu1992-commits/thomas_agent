@@ -1,0 +1,324 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "blog_slot.v0.3.schema.json",
+  "title": "Blog Slot v0.3",
+  "description": "One drafting run's reported slots, checked by the vault's rules generated into the lane (BLOG_DEPARTMENT v0.2 P7, shadow). Naver: the naver_slot rule runs on the vault as it stood when each draft was written (drafts numbered above it left out) and the answer is compared with the reported scheduled; the record keeps the file's scheduled now (moved = changed since the report) and what the rule decided from (tail). Tistory (v0.2): the queue is not re-planned; each reported slot is checked against tistory_queue's rules (minute = jitter, unique slot, per-day caps, after the run's cutoff). No paths or titles: a draft is its number. v0.3 (2026-11-05): the day's affiliate placements (the report's affiliate_placed) are compared like the Naver drafts, flagged affiliate, and counted in the Naver totals and on their own.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "slot_id",
+    "checked_at",
+    "run_date",
+    "drafts",
+    "tistory",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "blog_slot.v0.3"
+    },
+    "slot_id": {
+      "type": "string",
+      "pattern": "^blogslot_[0-9a-f]{20}$"
+    },
+    "checked_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "run_date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "drafts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "episode",
+          "state",
+          "agree",
+          "reported",
+          "computed",
+          "file_now",
+          "moved",
+          "tail",
+          "affiliate"
+        ],
+        "properties": {
+          "episode": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "pattern": "^(compared|outside|no_episode|missing|no_slot|no_tail|error:[A-Za-z]{1,60})$"
+          },
+          "agree": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "reported": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}$"
+          },
+          "computed": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}$"
+          },
+          "file_now": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}$"
+          },
+          "moved": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "tail": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "date",
+                  "windows",
+                  "drafts"
+                ],
+                "properties": {
+                  "date": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                  },
+                  "windows": {
+                    "type": "array",
+                    "items": {
+                      "enum": [
+                        -1,
+                        0,
+                        1,
+                        2
+                      ]
+                    },
+                    "uniqueItems": true
+                  },
+                  "drafts": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              }
+            ]
+          },
+          "affiliate": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "tistory": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "number",
+          "state",
+          "agree",
+          "reported",
+          "file_now",
+          "moved",
+          "checks"
+        ],
+        "properties": {
+          "number": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "pattern": "^(checked|outside|no_number|missing|no_slot|error:[A-Za-z]{1,60})$"
+          },
+          "agree": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "reported": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}$"
+          },
+          "file_now": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}$"
+          },
+          "moved": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "checks": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "minute",
+                  "unique",
+                  "only_cap",
+                  "new_cap",
+                  "after_run"
+                ],
+                "properties": {
+                  "minute": {
+                    "type": "boolean"
+                  },
+                  "unique": {
+                    "type": "boolean"
+                  },
+                  "only_cap": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "new_cap": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "after_run": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "naver",
+        "compared",
+        "agreed",
+        "differed",
+        "moved",
+        "not_compared",
+        "tistory",
+        "tistory_checked",
+        "tistory_agreed",
+        "tistory_differed",
+        "tistory_moved",
+        "tistory_not_checked",
+        "affiliate",
+        "affiliate_compared",
+        "affiliate_agreed"
+      ],
+      "properties": {
+        "naver": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "compared": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "agreed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "differed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "moved": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "not_compared": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tistory": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tistory_checked": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tistory_agreed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tistory_differed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tistory_moved": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tistory_not_checked": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "affiliate": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "affiliate_compared": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "affiliate_agreed": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

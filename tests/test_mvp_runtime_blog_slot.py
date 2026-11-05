@@ -148,11 +148,46 @@ def test_the_daily_fire_records_each_report_once_without_paths(vault, tmp_path):
     assert len(records) == 1 and records[0]["summary"] == {
         "naver": 3, "compared": 3, "agreed": 3, "differed": 0, "moved": 0, "not_compared": 0,
         "tistory": 1, "tistory_checked": 0, "tistory_agreed": 0, "tistory_differed": 0, "tistory_moved": 0,
-        "tistory_not_checked": 1}
+        "tistory_not_checked": 1, "affiliate": 0, "affiliate_compared": 0, "affiliate_agreed": 0}
     assert records[0]["tistory"][0]["state"] == "missing"
     text = json.dumps(records[0], ensure_ascii=False)
     assert "키워드" not in text and "content/" not in text and ".md" not in text
     assert bs.fire(ledger, now=NOW, vault_root=vault) == "blog_slot_nothing_new"
+
+
+def test_an_affiliate_placement_is_compared_like_a_draft_and_counted_on_its_own(vault, tmp_path):
+    # v0.3 (2026-11-05): blog-affiliate-place.py moves a stock draft into content/naver/제휴/ with the writer's slot,
+    # and the report names it under affiliate_placed, not drafts. The rule reads that folder like any other draft.
+    _draft(vault, "160편-이전.md", "2026-11-14 10:20")
+    rows = _run(vault)
+    (vault / "content" / "naver" / "제휴").mkdir()
+    ns.configure(vault)
+    rel = _draft(vault, "제휴/173편-재고.md", "")
+    slot = ns.next_slot(str(vault), str(vault / rel))
+    _draft(vault, "제휴/173편-재고.md", slot)
+    hand = _draft(vault, "제휴/174편-손.md", "2026-12-01 10:30")
+    old = _draft(vault, "제휴/175편-옛보고.md", "2026-12-02 10:30")
+    report = {"schema": "blog_run_report.v1", "run_date": "2026-11-03", "steps": {"draft": 0}, "drafts": rows,
+              "affiliate_placed": [{"path": rel, "episode": 173, "scheduled": slot},
+                                   {"path": hand, "episode": 174, "scheduled": "2026-12-01 10:30"},
+                                   {"path": rows[0]["path"], "episode": 170, "scheduled": rows[0]["scheduled"]},
+                                   {"path": old, "episode": 175}]}   # a report before it carried the slot
+    (vault / "ops" / "blog-runs" / "2026-11-03.json").write_text(json.dumps(report, ensure_ascii=False),
+                                                                 encoding="utf-8")
+    ledger = LedgerStore(tmp_path / "state" / LEDGER_REL)
+    assert bs.fire(ledger, now=NOW, vault_root=vault) == \
+        "blog_slotted=2026-11-03 compared=5 agreed=4 tistory_checked=0 tistory_agreed=0"
+    [record] = [r["record"] for r in ledger.iter_records(kinds=[bs.RECORD_KIND]) if r["kind"] == bs.RECORD_KIND]
+    placed = {r["episode"]: r for r in record["drafts"] if r["affiliate"]}
+    assert set(placed) == {173, 174, 175}           # 170 is a draft of the report already, so not counted twice
+    assert placed[173]["state"] == "compared" and placed[173]["agree"] is True and placed[173]["computed"] == slot
+    assert placed[174]["state"] == "compared" and placed[174]["agree"] is False
+    assert placed[175]["state"] == "no_slot"
+    assert {k: record["summary"][k] for k in ("naver", "compared", "affiliate", "affiliate_compared",
+                                              "affiliate_agreed")} == \
+        {"naver": 6, "compared": 5, "affiliate": 3, "affiliate_compared": 2, "affiliate_agreed": 1}
+    text = json.dumps(record, ensure_ascii=False)
+    assert "재고" not in text and "content/" not in text and ".md" not in text
 
 
 def test_the_kind_is_maintenance_and_fires_through_the_scheduler(vault, tmp_path, monkeypatch):
@@ -296,7 +331,7 @@ def test_the_fire_records_the_tistory_checks_without_paths(vault, tmp_path):
     assert bs.fire(ledger, now=NOW, vault_root=vault) == \
         "blog_slotted=2026-11-03 compared=0 agreed=0 tistory_checked=2 tistory_agreed=1"
     record = next(r["record"] for r in ledger.iter_records(kinds=[bs.RECORD_KIND]) if r["kind"] == bs.RECORD_KIND)
-    assert record["schema_version"] == "blog_slot.v0.2"
+    assert record["schema_version"] == "blog_slot.v0.3"
     assert {k: record["summary"][k] for k in ("tistory", "tistory_checked", "tistory_agreed", "tistory_differed")} \
         == {"tistory": 2, "tistory_checked": 2, "tistory_agreed": 1, "tistory_differed": 1}
     text = json.dumps(record, ensure_ascii=False)
