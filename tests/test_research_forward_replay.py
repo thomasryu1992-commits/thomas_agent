@@ -268,4 +268,101 @@ def test_the_anchors_leave_every_forward_trade_room_to_close_before_the_data_end
     longest_1d_hold = timedelta(days=fr.HOLD_ALLOWANCE_BARS)
     assert at[-1] + timedelta(days=fr.FORWARD_DAYS) + longest_1d_hold <= fr.DATA_END
     first, last = fr.fire_span()
-    assert first == at[0] - timedelta(days=fr.WARM_START_DAYS) and last == at[-1] - timedelta(days=1)
+    assert first == at[0] - timedelta(days=fr.WARM_START_DAYS) and last == fr.DATA_END - timedelta(days=1)
+    # the real cohorts (frozen 2026-09-23, 10-01, 11-04) lie inside the fire span, for the sanity comparison
+    assert all(first < d <= last + timedelta(days=1) for d in (date(2026, 9, 23), date(2026, 10, 1), date(2026, 11, 4)))
+
+
+# --- arm B ---------------------------------------------------------------------------------------------
+
+from scripts.research import cross_section_basket as xs  # noqa: E402
+from scripts.research import regime_strategies as rs  # noqa: E402
+from scripts.research import regime_strategies_v02 as v2  # noqa: E402
+
+
+def _btc_daily(n=420):
+    import math
+    start = date(2021, 1, 1)
+    closes = [100.0 * (1.006 ** k if k < 250 else 1.006 ** 250 * 0.993 ** (k - 250)) * (1 + 0.03 * math.sin(k / 9))
+              for k in range(n)]
+    candles = [{"open_time": f"{(start + timedelta(days=k)).isoformat()}T00:00:00Z",
+                "close_time": f"{(start + timedelta(days=k)).isoformat()}T23:59:59.999Z",
+                "close": c, "high": c * 1.01} for k, c in enumerate(closes)]
+    return start, closes, candles
+
+
+def test_the_daily_regime_is_the_research_btc_only_label():
+    start, closes, candles = _btc_daily()
+    market = xs.Market()
+    prev = closes[0]
+    for k, c in enumerate(closes):
+        market.bars.setdefault(rs.BTC, {})[start + timedelta(days=k)] = xs.Bar(open=prev, close=c, quote_volume=1.0)
+        prev = c
+    research = v2.labels_from(v2.raw_btc_only, rs.Data(market, {}), start, start + timedelta(days=len(closes) - 1))
+    ours = {date.fromisoformat(t[:10]): label for t, label in fr.daily_regimes(candles)}
+    assert ours == research and len(set(ours.values())) >= 2
+
+
+def test_a_bar_sees_the_last_closed_daily_label_never_its_own_days():
+    start, closes, candles = _btc_daily()
+    series = fr.daily_regimes(candles)
+    labels = dict(series)
+    # a day whose own close changed the label: a bar inside it must still see the day before's
+    day = next(date.fromisoformat(t[:10]) for (t0, a), (t, b) in zip(series, series[1:]) if a != b)
+    bars = [{"open_time": f"{day.isoformat()}T{h:02d}:00:00Z", "close": 1.0, "high": 1.0} for h in range(24)]
+    cols = fr.arm_b_columns({"candles": bars, fr.DAILY_KEY: candles})
+    before = labels[f"{(day - timedelta(days=1)).isoformat()}T23:59:59.999Z"]
+    assert cols[fr.MKT_REGIME] == [before] * 24
+
+
+def test_near_high_is_the_close_over_the_ninety_bar_high():
+    bars = [{"open_time": str(i), "close": float(i % 50 + 1), "high": float(i % 50 + 2)} for i in range(120)]
+    near = fr.arm_b_columns({"candles": bars})[fr.NEAR_HIGH]
+    assert near[:89] == [None] * 89
+    assert near[100] == pytest.approx((100 % 50 + 1) / max(float(i % 50 + 2) for i in range(11, 101)) - 1)
+
+
+def test_exactly_the_odd_numbered_specs_carry_a_gate():
+    gates = [fr.gate_for({"strategy_id": f"S{n:03d}", "generation_id": "GEN-000123"}) for n in range(1, 9)]
+    assert [g is None for g in gates] == [False, True] * 4
+    assert set(g for g in gates if g) <= set(fr.REGIMES)
+    assert fr.gate_for({"strategy_id": "F-cross", "generation_id": "G"}) is None
+
+
+def test_arm_b_admits_its_columns_gates_the_draw_adds_the_template_and_restores_everything():
+    before = (template_space.NUMERIC_FEATURES, dict(template_space.CATEGORICAL_FEATURES),
+              dict(template_space._FEATURE_FEED), fr.backtest.build_feature_rows, fr.generator.build_spec_dict,
+              fr.generator.templates_for_timeframe, factory.templates_for_timeframe)
+    with fr.arm_b():
+        assert fr.NEAR_HIGH in template_space.NUMERIC_FEATURES and fr.MKT_REGIME in template_space.CATEGORICAL_FEATURES
+        assert any(t.family == fr.NEAR_HIGH_FAMILY for t in factory.templates_for_timeframe("1d"))
+        assert not any(t.family == fr.NEAR_HIGH_FAMILY for t in factory.templates_for_timeframe("1h"))
+        template = template_space.templates_for_timeframe("1d")[0]
+        params = dict(template.base_params)
+        odd = fr.generator.build_spec_dict(template, params, strategy_id="S001", generation_id="GEN-000001")
+        even = fr.generator.build_spec_dict(template, params, strategy_id="S002", generation_id="GEN-000001")
+        assert odd["entry_rules"]["conditions"][-1]["feature"] == fr.MKT_REGIME
+        assert all(c["feature"] != fr.MKT_REGIME for c in even["entry_rules"]["conditions"])
+        near = fr.generator.build_spec_dict(fr.NEAR_HIGH_TEMPLATE, dict(fr.NEAR_HIGH_TEMPLATE.base_params),
+                                            strategy_id="S001", generation_id="GEN-000001")
+        assert [c["feature"] for c in near["entry_rules"]["conditions"]] == [fr.NEAR_HIGH, fr.MKT_REGIME]
+        from runtime.mvp_runtime.crypto.strategy import StrategySpec
+        assert template_space.validate_strategy(StrategySpec.from_dict(near))["approved_for_backtest"] is True
+        assert template_space.validate_strategy(StrategySpec.from_dict(odd))["approved_for_backtest"] is True
+    from runtime.mvp_runtime.crypto.strategy import StrategySpec as _Spec
+    assert template_space.validate_strategy(_Spec.from_dict(near))["approved_for_backtest"] is False
+    after = (template_space.NUMERIC_FEATURES, dict(template_space.CATEGORICAL_FEATURES),
+             dict(template_space._FEATURE_FEED), fr.backtest.build_feature_rows, fr.generator.build_spec_dict,
+             fr.generator.templates_for_timeframe, factory.templates_for_timeframe)
+    assert after == before
+
+
+def test_arm_b_rows_gain_the_columns_only_when_the_snapshot_carries_btc_daily(monkeypatch):
+    start, closes, candles = _btc_daily()
+    monkeypatch.setattr(fr.backtest, "build_feature_rows", lambda snap: [{"close": 1.0}])
+    monkeypatch.setattr(fr, "arm_b_columns", lambda snap: {fr.MKT_REGIME: ["BULL"], fr.NEAR_HIGH: [-0.02]})
+    with fr.arm_b():
+        with_daily = fr.backtest.build_feature_rows({"candles": [{}], fr.DAILY_KEY: candles})
+        without = fr.backtest.build_feature_rows({"candles": [{}]})
+    assert with_daily == [{"close": 1.0, fr.MKT_REGIME: "BULL", fr.NEAR_HIGH: -0.02}]
+    assert without == [{"close": 1.0}]

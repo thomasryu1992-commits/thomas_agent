@@ -20,7 +20,7 @@
 | ETH 1h | 54 | 453MB |
 | pooled 1d | 13 | 136MB |
 
-Over the fire span (2021-12-08 → 2026-07-26, about 1,690 days) that comes to:
+Over the fire span (2021-12-08 → 2026-07-26, about 1,690 days; extended in part 2a to 2026-11-03, about 1,790) that comes to:
 - the server's share (pooled 4h and 1d): about 31 hours;
 - the five 1h contexts: about 110 single-process hours at the sandbox's speed, which the Mac runs in parallel.
 

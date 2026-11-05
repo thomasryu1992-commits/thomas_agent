@@ -55,8 +55,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE  # noqa: E402
-from runtime.mvp_runtime.crypto import factory, feed_assembly, forward_cohort, forward_cohort_null  # noqa: E402
-from runtime.mvp_runtime.crypto import market_data  # noqa: E402
+from runtime.mvp_runtime import timeutil  # noqa: E402
+from runtime.mvp_runtime.crypto import backtest, factory, feed_assembly, features, forward_cohort  # noqa: E402
+from runtime.mvp_runtime.crypto import forward_cohort_null, generator, market_data, template_space  # noqa: E402
 from runtime.mvp_runtime.crypto.backtest import _replay, build_replay_frame  # noqa: E402
 from runtime.mvp_runtime.crypto.candidate_identity import candidate_id  # noqa: E402
 from runtime.mvp_runtime.crypto.null_control import _slice  # noqa: E402
@@ -133,14 +134,142 @@ def replay_anchors() -> list[date]:
 
 
 def fire_span() -> tuple[date, date]:
-    """The days every context fires: from WARM_START_DAYS before the first anchor to the day before the last."""
-    return FIRST_ANCHOR - timedelta(days=WARM_START_DAYS), replay_anchors()[-1] - timedelta(days=1)
+    """The days every context fires: from WARM_START_DAYS before the first anchor to the day before the data ends.
+    Fires after the last anchor are scored never; they let the judge freeze the replayed store on the days the
+    real cohorts were frozen (2026-09-23, 10-01, 11-04), the §4 sanity comparison."""
+    return FIRST_ANCHOR - timedelta(days=WARM_START_DAYS), DATA_END - timedelta(days=1)
 
 
 def generation_id(day: date, context: Context) -> str:
     """The fire's generation id: day-major, context-minor, as if all seven fired each day in order."""
     index = (day - date(2019, 1, 1)).days * len(CONTEXTS) + CONTEXTS.index(context) + 1
     return f"GEN-{index:06d}"
+
+
+# --- arm B (§3): the market regime, the generator's gate and the near-high template ------------------------
+
+ARMS = ("A", "B")
+REGIMES = ("BULL", "SIDEWAYS", "BEAR")
+MKT_REGIME = "mkt_regime"
+NEAR_HIGH = "near_high_90"
+NEAR_HIGH_BARS = 90
+REGIME_CONFIRM_DAYS = 3                     # CRYPTO_REGIME_STRATEGY_SET_V0.1 §1, the btc_only rule
+DAILY_KEY = "mkt_daily_candles"
+NEAR_HIGH_FAMILY = "near_high_long"
+
+
+def _mean(values: Sequence[float], end: int, n: int) -> float | None:
+    return None if end + 1 < n else sum(values[end + 1 - n:end + 1]) / n
+
+
+def daily_regimes(daily: Sequence[Mapping[str, Any]]) -> list[tuple[str, str]]:
+    """``(close_time, label)`` per BTC daily candle: close above SMA200 with SMA50 up over 20 days is BULL,
+    the mirror BEAR, else SIDEWAYS; a new label needs REGIME_CONFIRM_DAYS identical readings in a row."""
+    candles = sorted(daily, key=lambda c: str(c["close_time"]))
+    closes = [float(c["close"]) for c in candles]
+    out: list[tuple[str, str]] = []
+    state, candidate, run = None, None, 0
+    for i, candle in enumerate(candles):
+        s200, s50, s50_then = _mean(closes, i, 200), _mean(closes, i, 50), _mean(closes, i - 20, 50) if i >= 20 else None
+        if None in (s200, s50, s50_then):
+            continue
+        up, slope = closes[i] > s200, s50 - s50_then
+        reading = "BULL" if up and slope > 0 else "BEAR" if not up and slope < 0 else "SIDEWAYS"
+        if state is None:
+            state = reading
+        elif reading != state:
+            run = run + 1 if reading == candidate else 1
+            candidate = reading
+            if run >= REGIME_CONFIRM_DAYS:
+                state, candidate, run = reading, None, 0
+        else:
+            candidate, run = None, 0
+        out.append((str(candle["close_time"]), state))
+    return out
+
+
+def arm_b_columns(snapshot: Mapping[str, Any]) -> dict[str, list[Any]]:
+    """``mkt_regime`` (the last BTC daily close at or before each bar's open, the HTF alignment rule) and
+    ``near_high_90`` (close over the 90-bar high, minus one) for the snapshot's own bars."""
+    candles = list(snapshot.get("candles") or [])
+    times = [str(c.get("open_time")) for c in candles]
+    events = [{"timestamp": t, MKT_REGIME: label} for t, label in daily_regimes(snapshot.get(DAILY_KEY) or [])]
+    regime = features._asof_align(times, events, (MKT_REGIME,), numeric=False)[MKT_REGIME]
+    highs = [float(c["high"]) for c in candles]
+    near = [None if i + 1 < NEAR_HIGH_BARS else float(candles[i]["close"]) / max(highs[i + 1 - NEAR_HIGH_BARS:i + 1]) - 1
+            for i in range(len(candles))]
+    return {MKT_REGIME: regime, NEAR_HIGH: near}
+
+
+def gate_for(spec: Mapping[str, Any]) -> str | None:
+    """Exactly half of each draw is gated: the odd-numbered specs (S001, S003, ...), each on one regime drawn
+    from the spec's own identity. The even-numbered ones and any id without a number carry no gate. The
+    train-only ablation lattice may still remove a gate that does not earn its place, as it may any condition."""
+    sid = str(spec.get("strategy_id") or "")
+    digits = "".join(ch for ch in sid if ch.isdigit())
+    if not digits or int(digits) % 2 == 0:
+        return None
+    digest = hashlib.sha256(f"{spec.get('generation_id')}|{sid}".encode()).digest()
+    return REGIMES[digest[0] % len(REGIMES)]
+
+
+def _near_high_entry(params: Mapping[str, float]) -> list[dict[str, Any]]:
+    return [{"feature": NEAR_HIGH, "comparison": ">=", "value": round(float(params["near_high_pct"]), 4)},
+            {"feature": MKT_REGIME, "comparison": "==", "value": "BULL"}]
+
+
+NEAR_HIGH_TEMPLATE = template_space.StrategyTemplate(
+    NEAR_HIGH_FAMILY, "long", "1d",
+    {"near_high_pct": template_space.ParamSpec(-0.10, -0.01), **template_space._EXIT_PARAMS},
+    {"near_high_pct": -0.05, **template_space._EXIT_BASE}, _near_high_entry)
+
+
+@contextlib.contextmanager
+def arm_b() -> Iterator[None]:
+    """Arm B inside one process, factory files untouched: the two columns on every replay frame, the
+    vocabulary that admits them, the gate on half of the generator's specs, and the 1d template."""
+    saved = (template_space.NUMERIC_FEATURES, dict(template_space.CATEGORICAL_FEATURES),
+             dict(template_space._FEATURE_FEED), backtest.build_feature_rows, generator.build_spec_dict,
+             generator.templates_for_timeframe, factory.templates_for_timeframe)
+    rows_of, build, rotation = saved[3], saved[4], saved[5]
+
+    def rows_with_regime(snapshot: Mapping[str, Any]) -> list[dict[str, Any]]:
+        rows = rows_of(snapshot)
+        if DAILY_KEY in snapshot:
+            extra = arm_b_columns(snapshot)
+            for i, row in enumerate(rows):
+                if row is not None:
+                    row[MKT_REGIME], row[NEAR_HIGH] = extra[MKT_REGIME][i], extra[NEAR_HIGH][i]
+        return rows
+
+    def gated_spec(template: Any, params: Any, **kwargs: Any) -> dict[str, Any]:
+        spec = build(template, params, **kwargs)
+        conditions = spec["entry_rules"]["conditions"]
+        regime = gate_for(spec)
+        if regime and template.family != NEAR_HIGH_FAMILY and len(conditions) < template_space.MAX_ENTRY_CONDITIONS:
+            conditions.append({"feature": MKT_REGIME, "comparison": "==", "value": regime})
+        return spec
+
+    def with_near_high(timeframe: str, **kwargs: Any) -> tuple[Any, ...]:
+        library = rotation(timeframe, **kwargs)
+        return (*library, NEAR_HIGH_TEMPLATE) if str(timeframe) == "1d" else library
+
+    template_space.NUMERIC_FEATURES = frozenset({*saved[0], NEAR_HIGH})
+    template_space.CATEGORICAL_FEATURES[MKT_REGIME] = frozenset(REGIMES)
+    template_space._FEATURE_FEED[MKT_REGIME] = template_space._FEATURE_FEED[NEAR_HIGH] = market_data.FEED_CANDLES
+    backtest.build_feature_rows = rows_with_regime
+    generator.build_spec_dict = gated_spec
+    generator.templates_for_timeframe = factory.templates_for_timeframe = with_near_high
+    try:
+        yield
+    finally:
+        template_space.NUMERIC_FEATURES = saved[0]
+        template_space.CATEGORICAL_FEATURES.clear()
+        template_space.CATEGORICAL_FEATURES.update(saved[1])
+        template_space._FEATURE_FEED.clear()
+        template_space._FEATURE_FEED.update(saved[2])
+        backtest.build_feature_rows, generator.build_spec_dict = saved[3], saved[4]
+        generator.templates_for_timeframe, factory.templates_for_timeframe = saved[5], saved[6]
 
 
 # --- one fire -----------------------------------------------------------------------------------------------
@@ -154,7 +283,8 @@ class _NoFeed:
         return _refuse
 
 
-def mining_snapshot(symbol: str, timeframe: str, *, now: str, state: Path, cache: Any) -> dict[str, Any] | None:
+def mining_snapshot(symbol: str, timeframe: str, *, now: str, state: Path, cache: Any,
+                    arm: str = "A") -> dict[str, Any] | None:
     """One leg, the scheduler's ``_mining_snapshot`` cut at ``now``. None when the cache cannot serve it."""
     with lake.as_of(now):
         collector = market_data.select_market_data_collector(now=now, root=state)
@@ -166,6 +296,13 @@ def mining_snapshot(symbol: str, timeframe: str, *, now: str, state: Path, cache
         feed_assembly.attach_mining_legs(
             built, collector=collector, timeframe=timeframe, now=now, root=state, liquidation_feed=_NoFeed(),
             candle_target=market_data.factory_candle_target, candle_cache=cache, record_vendor_daily=False)
+        if arm == "B":
+            try:
+                daily, _ = market_data.collect_market_data(market_data.REFERENCE_SYMBOL, "1d", collector=collector,
+                                                           now=now, limit=market_data.factory_candle_target("1d"))
+            except (ToolBlocked, ToolError):
+                return None
+            built[DAILY_KEY] = list(daily.get("candles") or [])
     return built
 
 
@@ -180,7 +317,7 @@ def fixed_generation(gid: str) -> Iterator[None]:
 
 
 def fire(context: Context, day: date, store: list[Mapping[str, Any]], *, state: Path,
-         run: Callable[..., dict[str, Any]] | None = None) -> dict[str, Any]:
+         run: Callable[..., dict[str, Any]] | None = None, arm: str = "A") -> dict[str, Any]:
     """One replayed fire: its new candidate rows, or why it minted nothing."""
     now = iso(day)
     started = time.monotonic()
@@ -188,12 +325,12 @@ def fire(context: Context, day: date, store: list[Mapping[str, Any]], *, state: 
         cache = market_data.PeerCandleCache(market_data.select_market_data_collector(now=now, root=state))
     legs = []
     for symbol in context.symbols:
-        leg = mining_snapshot(symbol, context.timeframe, now=now, state=state, cache=cache)
+        leg = mining_snapshot(symbol, context.timeframe, now=now, state=state, cache=cache, arm=arm)
         if leg is None:
             return {"day": day.isoformat(), "status": f"no_data:{symbol}", "candidates": [],
                     "seconds": round(time.monotonic() - started, 3)}
         legs.append(leg)
-    with fixed_generation(generation_id(day, context)):
+    with fixed_generation(generation_id(day, context)), (arm_b() if arm == "B" else contextlib.nullcontext()):
         result = (run or factory.run_factory)(
             legs[0], active_pool={}, existing_candidates=list(store), now=now, fusion_pairs=FUSION_PAIRS,
             positioning_eligible=False, cohort_snapshots=legs[1:] or None, trial_proposals=None)
@@ -267,7 +404,7 @@ def simulate(context: Context, start: date, end: date, out: Path, *, arm: str, c
         day = start
         while day <= end:
             if day.isoformat() not in done:
-                row = fire(context, day, store, state=state, run=run)
+                row = fire(context, day, store, state=state, run=run, arm=arm)
                 store.extend(row["candidates"])
                 fh.write(json.dumps(row, sort_keys=True, default=str) + "\n")
                 fh.flush()
@@ -328,19 +465,20 @@ def truncate_cache(source: Path, target: Path, instant: str) -> int:
     return dropped
 
 
-def leak_check(context: Context, day: date, *, cache_root: Path, work: Path, state: Path) -> dict[str, Any]:
+def leak_check(context: Context, day: date, *, cache_root: Path, work: Path, state: Path,
+               arm: str = "A") -> dict[str, Any]:
     """The fire at ``day`` on the whole cache and on a cache cut at the fire's instant: the same rows, or a leak."""
-    full = fire(context, day, [], state=state)
+    full = fire(context, day, [], state=state, arm=arm)
     cut = work / f"cut-{context.name}-{day.isoformat()}"
     dropped = truncate_cache(cache_root, cut, iso(day))
     lake.install(cache=cut, lake=None)
     try:
-        bounded = fire(context, day, [], state=state)
+        bounded = fire(context, day, [], state=state, arm=arm)
     finally:
         lake.install(cache=cache_root, lake=None)
         shutil.rmtree(cut, ignore_errors=True)
     same = full["status"] == bounded["status"] and _fingerprint(full["candidates"]) == _fingerprint(bounded["candidates"])
-    return {"context": context.name, "day": day.isoformat(), "rows_after_cut_dropped": dropped,
+    return {"context": context.name, "arm": arm, "day": day.isoformat(), "rows_after_cut_dropped": dropped,
             "candidates": len(full["candidates"]), "identical": same}
 
 
@@ -518,16 +656,18 @@ def main(argv: list[str] | None = None) -> int:
     pt = sub.add_parser("time-fires", help="one fire per context at --at: seconds, rows, peak memory")
     pt.add_argument("--at", required=True)
     pt.add_argument("--context", action="append", choices=sorted(BY_NAME))
+    pt.add_argument("--arm", default="A", choices=ARMS)
     ps = sub.add_parser("simulate", help="fire one context daily over [--start, --end] into --out (resumable)")
     ps.add_argument("--context", required=True, choices=sorted(BY_NAME))
     ps.add_argument("--start", default=None, help="default: the fire span's first day")
-    ps.add_argument("--end", default=None, help="default: the day before the last anchor")
+    ps.add_argument("--end", default=None, help="default: the day before the data ends")
     ps.add_argument("--out", type=Path, required=True)
-    ps.add_argument("--arm", default="A", choices=("A",))
+    ps.add_argument("--arm", default="A", choices=ARMS)
     pl = sub.add_parser("leak-check", help="one fire on the whole cache and on a cache cut at its instant")
     pl.add_argument("--context", required=True, choices=sorted(BY_NAME))
     pl.add_argument("--at", required=True)
     pl.add_argument("--work", type=Path, default=None, help="where the cut cache is written (default: the run dir)")
+    pl.add_argument("--arm", default="A", choices=ARMS)
     pc = sub.add_parser("compare-shards", help="the Mac / server identity check")
     pc.add_argument("a", type=Path)
     pc.add_argument("b", type=Path)
@@ -547,9 +687,15 @@ def main(argv: list[str] | None = None) -> int:
             day = parse_day(args.at)
             rows = []
             for context in [BY_NAME[n] for n in (args.context or [c.name for c in CONTEXTS])]:
-                row = fire(context, day, [], state=state)
-                rows.append({"context": context.name, "status": row["status"], "seconds": row["seconds"],
-                             "candidates": len(row["candidates"]), "peak_mb": peak_mb()})
+                row = fire(context, day, [], state=state, arm=args.arm)
+                rows.append({"context": context.name, "arm": args.arm, "status": row["status"], "seconds": row["seconds"],
+                             "candidates": len(row["candidates"]), "peak_mb": peak_mb(),
+                             "families": sorted({(c.get("strategy_spec") or {}).get("strategy_family")
+                                                 for c in row["candidates"]} - {None}),
+                             "gated": sum(1 for c in row["candidates"]
+                                          if any(x.get("feature") == MKT_REGIME for x in
+                                                 ((c.get("strategy_spec") or {}).get("entry_rules") or {})
+                                                 .get("conditions") or []))})
                 print(json.dumps(rows[-1]), file=sys.stderr, flush=True)
             print(json.dumps({"spec": SPEC, "at": day.isoformat(), "code_digest": code_digest(), "fires": rows},
                              indent=1, sort_keys=True))
@@ -557,7 +703,7 @@ def main(argv: list[str] | None = None) -> int:
         context = BY_NAME[args.context]
         if args.command == "leak-check":
             work = args.work or Path(os.environ.get("RESEARCH_RUN") or tmp)
-            result = leak_check(context, parse_day(args.at), cache_root=cache, work=work, state=state)
+            result = leak_check(context, parse_day(args.at), cache_root=cache, work=work, state=state, arm=args.arm)
             print(json.dumps({"spec": SPEC, "code_digest": code_digest(), **result}, indent=1, sort_keys=True))
             return EXIT_OK if result["identical"] else EXIT_BLOCKED
         first, last = fire_span()
