@@ -26,9 +26,11 @@ order the cron reads it:
 Naver and Tistory slots are not in it. P7 (``blog_slot``) already compares each reported slot with the rule, and a
 Tistory slot depends on the file name the writer has not chosen yet.
 
-**The moment.** The production keyword run starts at 22:10 UTC and writes ``history/<UTC date>.json``. The drafting
-cron starts at 23:02 UTC (08:02 KST). The instruction is built at the first fire inside that gap, once the day's
-history file exists. If the run reused its queue and wrote none, the build waits until ``LATE_FROM`` and uses the
+**The moment.** The production keyword run starts at 22:10 UTC (07:10 KST) and writes ``history/<KST date>.json``:
+``kw_pipeline`` names the file by its own KST clock, so the 11-05 file is committed at 2026-11-04T22:13Z. The drafting
+cron starts at 23:02 UTC (08:02 KST). The instruction is built at the first fire inside that gap, once the KST day's
+history file exists. Until 2026-11-05 this read the UTC date and so built every morning from the day before's history
+(docs/history/2026-11-05-blog-instruction-kst-history.md). If the run reused its queue and wrote none, the build waits until ``LATE_FROM`` and uses the
 newest older history, marked ``history_today: false``. After ``DRAFT_START`` nothing is built that day: the vault then
 holds the cron's own drafts, so a later instruction would already have seen what it is compared with. The port reads
 the vault through ``blog/kw_pipeline.py`` with no transport, so it opens no URL. The RSS read it would make fails and
@@ -90,11 +92,11 @@ KST = timezone(timedelta(hours=9))
 
 # --- the instruction ---------------------------------------------------------------------------------------------
 
-def history_for(root: Path, utc_day: str) -> tuple[str, Mapping[str, Any]] | None:
-    """The newest readable history file dated ``utc_day`` or earlier (the run names it by its UTC date)."""
+def history_for(root: Path, kst_day: str) -> tuple[str, Mapping[str, Any]] | None:
+    """The newest readable history file dated ``kst_day`` or earlier (the run names it by its KST date)."""
     folder = root.joinpath(*HISTORY_DIR)
     for path in sorted(folder.glob("*.json"), reverse=True) if folder.is_dir() else []:
-        if not _DAY.match(path.stem) or path.stem > utc_day:
+        if not _DAY.match(path.stem) or path.stem > kst_day:
             continue
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -348,8 +350,8 @@ def fire(ledger: Any, *, now: str, vault_root: Path | None = None) -> str:
     built = _records(ledger, RECORD_KIND)
     parts: list[str] = []
     if BUILD_FROM <= local.time() < DRAFT_START and run_date not in built:
-        found = history_for(root, at.date().isoformat())
-        today = found is not None and found[0] == at.date().isoformat()
+        found = history_for(root, run_date)
+        today = found is not None and found[0] == run_date
         if found is not None and (today or local.time() >= LATE_FROM):
             gathered = gather(root, found[1], run_date, clock=at)
             record = build_instruction(gathered, found[0], today, latest_feedback(ledger), run_date, now=now,
