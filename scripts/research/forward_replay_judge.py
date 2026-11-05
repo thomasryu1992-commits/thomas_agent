@@ -39,6 +39,7 @@ from runtime.mvp_runtime.crypto import feed_assembly, forward_cohort, market_dat
 from runtime.mvp_runtime.crypto.backtest import build_replay_frame  # noqa: E402
 from runtime.mvp_runtime.crypto.candidate_identity import candidate_id  # noqa: E402
 from runtime.mvp_runtime.errors import ToolBlocked, ToolError  # noqa: E402
+from runtime.mvp_runtime import timeutil  # noqa: E402
 from runtime.mvp_runtime.paths import repo_root  # noqa: E402
 from scripts.research import forward_replay as fr  # noqa: E402
 from scripts.research import lake  # noqa: E402
@@ -91,7 +92,7 @@ def window_end(anchor: date, timeframe: str) -> str:
     """The instant a member's window can be read up to: FORWARD_DAYS, then the hold allowance in bars."""
     minutes = market_data.TIMEFRAMES[timeframe] * fr.HOLD_ALLOWANCE_BARS
     end = datetime(anchor.year, anchor.month, anchor.day, tzinfo=timezone.utc) + timedelta(days=fr.FORWARD_DAYS)
-    return (end + timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return timeutil.format_iso(end + timedelta(minutes=minutes))
 
 
 def scoring_bars(timeframe: str) -> int:
