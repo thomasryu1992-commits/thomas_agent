@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **92**건: `DRAFT` 3 · `PARTIALLY DECIDED` 9 · `DECIDED` 17 · `IMPLEMENTED` 53 · `SUPERSEDED` 3 · `RECORD` 7
+제안서 **93**건: `DRAFT` 4 · `PARTIALLY DECIDED` 9 · `DECIDED` 17 · `IMPLEMENTED` 53 · `SUPERSEDED` 3 · `RECORD` 7
 
-## Thomas 결정 대기 (12)
+## Thomas 결정 대기 (13)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -24,6 +24,7 @@
 | [BLOG_DEPARTMENT_V0.1.md](BLOG_DEPARTMENT_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-26 | 생산은 지금의 볼트 경로에서 시작하고, 런타임 블로그 레인(`blog_*` 10개 모듈)은 지웠다(#1319). v0.2(Thomas 2026-10-26): 통합할 수 있는 단계(키워드, 검증, 발행 계획, 분석, 피드백)는 시스템 안으로 옮기고, 원고 생성·발행·통계 수집만 외주로 둔다(§3). §7의 N1·S1·L2·L3·R1–R3은 권고대로 정했다(Thomas 2026-10-26). P0 관측(#1321)·P1 실행 보고(#1326)·P2 검증(#1328)은 배포됐고(2026-10-26), 전환 조건을 관찰 중이다. P3 분석(`blog_analyze`)은 2026-10-27에 배포됐다. P4는 재생 그림자(P4a)를 먼저 하기로 정했고(Thomas 2026-10-27), 2026-10-27에 배포됐다(재생 포트 재생성 #1337은 2026-11-01 머지). P5 피드백 그림자(`blog_feedback`)는 2026-11-03에 배포됐다. P4b 직접 조회 그림자(`blog_kw_direct`)는 미리 구현하기로 했고(Thomas 2026-11-03), opt-in 두 개(`MVP_BLOG_WEB_READ`·`MVP_BLOG_OWN_READ`)가 꺼진 채로 들어간다. 켜는 것은 P4a 조건을 채운 뒤 Thomas가 한다. P7은 네이버 슬롯 그림자(`blog_slot`)를 먼저 만들기로 했고, 티스토리는 다시 계획하지 않고 큐 규칙 검사로 같은 기록에 넣기로 했다(Thomas 2026-11-03). P6은 지시 그림자(`blog_instruction`)를 미리 만들어 두기로 했고(Thomas 2026-11-03), 크론은 아직 지시를 읽지 않는다. 주간 보고가 단계마다 전환 조건까지 온 정도를 싣기로 했다(Thomas 2026-11-03, "조건 진행표"). 전환은 조건을 채운 뒤에 한다. P8은 시작하지 않았다. |
 | [G6_SELL_REBALANCE_V0.1.md](G6_SELL_REBALANCE_V0.1.md) | `DRAFT` | 2026-11-03 | G6(자동 리밸런싱)의 남은 절반인 매도를 다루는 결정 패킷 초안이다. **지금 묻지 않는다.** G6은 G1d(H6c, unit 권위 전환)가 끝난 뒤 다시 여는 별도 결정이므로(`THOMAS_AGENT_TARGET_ARCHITECTURE_V0.1.md` §6), H6c가 정해진 뒤 SQ1–SQ5를 묻는다. 그때까지 코드, 정책, env, 스케줄은 바뀌지 않는다. 미리 써 두는 이유는 H6c가 정해지는 날 바로 물을 수 있게 하기 위해서다. |
 | [H6C_UNIT_AUTHORITY_V0.1.md](H6C_UNIT_AUTHORITY_V0.1.md) | `DRAFT` | 2026-11-04 | H6c(G1d, unit 권위 전환)의 결정 패킷 초안이다. **지금 묻지 않는다.** Claude 도어의 `holdings_status`에 `h6c_askable`이 서면 HQ1–HQ6을 묻는다(`H6B_UNIT_SHADOW_V0.1.md` S5). 그때까지 코드, 정책, env, 스케줄은 바뀌지 않는다. 미리 써 두는 이유는 조건이 갖춰지는 날 바로 묻기 위해서다. 같은 날 Thomas가 해야 할 일(§2의 입금·출금)도 여기에 적는다. |
+| [CRYPTO_REGIME_STRATEGY_SET_V0.2.md](CRYPTO_REGIME_STRATEGY_SET_V0.2.md) | `DRAFT` | 2026-11-05 | Thomas가 계획 질문 Q1–Q5에 "기본값대로"라고 답했다. 내용은 두 층으로 나눈 판정, 현물 2018-03–2019-12 확인 표본, 선택 층의 forward 감시, 층마다 가설 최대 3개, 0단계 진단 먼저다. 이 문서는 0단계 결과와 거기서 고른 가설 4개, 그리고 판정 규칙을 적는다. §7의 승인 뒤에 구현하고 한 번 돌린다. |
 
 ## 결정됨 — 구현 남음 (17)
 
