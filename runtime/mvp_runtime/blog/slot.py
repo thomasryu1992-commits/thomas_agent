@@ -29,6 +29,12 @@ each reported Tistory draft gets five checks:
 - ``after_run``: the slot lies at least ``MARGIN_MIN`` minutes after the run started (the queue's cutoff).
 The same-day 1-C conflict, ``variety`` and ``browser_check`` are not checked.
 
+**Affiliate placements** (v0.3, 2026-11-05) are Naver posts too. ``blog-affiliate-place.py`` moves a stock draft to
+``content/naver/제휴/<N>편-<slug>.md`` with the slot the writer chose, and the run report names it under
+``affiliate_placed`` with its ``scheduled``, not under ``drafts``. Each is compared exactly as a draft (the rule already
+reads the 제휴 folder), flagged ``affiliate``, and counted in the Naver totals and on its own. A report written before
+the placement carried its slot gives ``no_slot``.
+
 **A later move** is not a difference. The record keeps the file's ``scheduled`` now beside the reported one
 (``moved``), so a slot moved by hand after the report is visible.
 
@@ -49,8 +55,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 RECORD_KIND = "blog_slot"
-RECORD_SCHEMA = "schemas/blog_slot.v0.2.schema.json"   # v0.1 (Naver only) stays for its records
-RECORD_SCHEMA_VERSION = "blog_slot.v0.2"
+RECORD_SCHEMA = "schemas/blog_slot.v0.3.schema.json"   # v0.1 (Naver only), v0.2 (no affiliate) stay for their records
+RECORD_SCHEMA_VERSION = "blog_slot.v0.3"
 LOOKBACK_DAYS = 3
 _SLOT = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
 
@@ -101,12 +107,13 @@ def _tail(ns: Any, vault: str, me: str) -> dict[str, Any]:
     return {"date": last, "windows": sorted(days[last]) if last else [], "drafts": counted}
 
 
-def compare_draft(vault_root: Path, draft: Mapping[str, Any]) -> dict[str, Any]:
-    """One reported Naver draft: its state and, when compared, whether the rule gives the reported slot."""
+def compare_draft(vault_root: Path, draft: Mapping[str, Any], *, affiliate: bool = False) -> dict[str, Any]:
+    """One reported Naver draft (or affiliate placement): its state and, when compared, whether the rule gives the
+    reported slot."""
     from . import naver_slot as ns
 
     row: dict[str, Any] = {"episode": None, "state": "", "agree": None, "reported": None, "computed": None,
-                           "file_now": None, "moved": None, "tail": None}
+                           "file_now": None, "moved": None, "tail": None, "affiliate": affiliate}
     path = resolve(vault_root, draft.get("path"))
     if path is None:
         row["state"] = "outside"
@@ -228,7 +235,10 @@ def build_record(run_date: str, rows: list[dict[str, Any]], tistory: list[dict[s
     summary = {"naver": len(rows), "compared": len(compared), "agreed": sum(1 for r in compared if r["agree"]),
                "differed": sum(1 for r in compared if not r["agree"]),
                "moved": sum(1 for r in compared if r["moved"]),
-               "not_compared": len(rows) - len(compared)}
+               "not_compared": len(rows) - len(compared),
+               "affiliate": sum(1 for r in rows if r["affiliate"]),
+               "affiliate_compared": sum(1 for r in compared if r["affiliate"]),
+               "affiliate_agreed": sum(1 for r in compared if r["affiliate"] and r["agree"])}
     checked = [r for r in tistory if r["state"] == "checked"]
     summary.update(tistory=len(tistory), tistory_checked=len(checked),
                    tistory_agreed=sum(1 for r in checked if r["agree"]),
@@ -275,6 +285,10 @@ def fire(ledger: Any, *, now: str, vault_root: Path | None = None) -> str:
         drafts = [d for d in report.get("drafts") or [] if isinstance(d, Mapping)] \
             if isinstance(report.get("drafts"), list) else []
         rows = [compare_draft(root, d) for d in drafts if d.get("platform") == "naver"]
+        named = {d.get("path") for d in drafts}
+        placed = report.get("affiliate_placed") if isinstance(report.get("affiliate_placed"), list) else []
+        rows += [compare_draft(root, p, affiliate=True) for p in placed
+                 if isinstance(p, Mapping) and p.get("path") not in named]
         reported = [d for d in drafts if d.get("platform") == "tistory"]
         if reported and schedule is None:
             schedule = tistory_schedule(root)
