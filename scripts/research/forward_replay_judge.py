@@ -5,6 +5,12 @@ shards carry that module's code digest, and nothing written after they started m
 
 - **Shards:** every ``*.jsonl`` under ``--shards``. Per arm, all seven contexts, one code digest, and every day of
   the fire span fired (or recorded why not). Anything short of that is BLOCKED, never judged on what is there.
+- **Memory (one arm per process):** an arm's shards are ~94,000 candidates, ~5 GB as dicts, and the sandbox holds
+  700 MB. :func:`load_shards` streams them into a *selection store*: a candidate id no row of which can ever be a
+  member (``eligible_members`` on the row alone) keeps only what the door's attempt count reads
+  (:func:`slim_row`), and the rest drop the evidence blocks selection never reads (``SELECTION_DROPS``). The
+  members' full rows are read again for scoring (:func:`member_rows`). Measured on real shards: the same members
+  and null twins at every anchor as the full store (``docs/history/2026-11-06-forward-replay-judge-memory.md``).
 - **Freeze and score:** ``forward_replay.freeze_all`` at the 55 anchors, ``score_cohort`` on frames cut at each
   window's end plus the hold allowance (:func:`scoring_frame`, the mining snapshot at a scoring depth).
 - **Checks (§4):** the fire leak records (``forward_replay leak-check`` output, one per arm × context × the first,
@@ -28,7 +34,7 @@ import tempfile
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -49,41 +55,127 @@ WARMUP_BARS = 400                     # pre_window_replay's: four times the long
 SANITY_MIN_MEMBERS = 1
 SANITY_SIZE_RATIO = 4.0
 B_BETTER_ALPHA = 0.05
+# A slim row's derivation: not in forward_cohort.PROMOTABLE_DERIVATION_TYPES, so the door skips the row as it would
+# have skipped the full one, while the row still charges its context in attempts_by_context.
+SLIM_DERIVATION = "replay_judge_slim"
+# Evidence blocks the selection chain (rank_candidates, eligible_members) does not read. regime_breakdown and
+# distribution_reference are NOT here although selection ignores them: the null twin reads them, and it gets the
+# member's full row anyway (member_rows), so dropping them would be safe but was measured, not assumed.
+SELECTION_DROPS = ("regime_breakdown", "per_symbol", "walk_forward", "distribution_reference", "liquidation_guard",
+                   "intrabar_gap", "entry_cost_door", "cooldown_door")
 
 
 # --- shards ------------------------------------------------------------------------------------------------
 
-def load_shards(directory: Path) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any], list[str]]:
-    """``{arm: store}``, ``{arm: code_digest}`` and the reasons the set cannot be judged (empty when it can)."""
+def shard_lines(path: Path) -> Iterator[dict[str, Any]]:
+    """A shard's rows one at a time, the manifest first (``forward_replay.read_shard`` reads the whole file)."""
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                yield json.loads(line)
+            except ValueError:
+                continue                                         # a torn last line, as read_shard skips it
+
+
+def _head(path: Path) -> dict[str, Any] | None:
+    for row in shard_lines(path):
+        return row.get("manifest")
+    return None
+
+
+def _candidates(path: Path) -> Iterator[dict[str, Any]]:
+    rows = shard_lines(path)
+    next(rows, None)
+    for fire in rows:
+        yield from fire.get("candidates") or []
+
+
+def can_be_member(record: Mapping[str, Any]) -> bool:
+    """The door's per-row filters alone: a row that fails them is never a member, whatever else is in the store."""
+    return bool(forward_cohort.eligible_members([record], {}))
+
+
+def slim_row(record: Mapping[str, Any]) -> dict[str, Any]:
+    """What a never-member row contributes to the selection: its id and time, and its attempt charge."""
+    evidence = record.get("backtest_evidence") if isinstance(record.get("backtest_evidence"), Mapping) else {}
+    kept: dict[str, Any] = {}
+    if isinstance(evidence.get("ablation"), Mapping) and "lattice_size" in evidence["ablation"]:
+        kept["ablation"] = {"lattice_size": evidence["ablation"]["lattice_size"]}
+    if isinstance(evidence.get("holdout"), Mapping) and "symbols" in evidence["holdout"]:
+        kept["holdout"] = {"symbols": evidence["holdout"]["symbols"]}
+    if "symbols_replayed" in evidence:
+        kept["symbols_replayed"] = evidence["symbols_replayed"]
+    spec = record.get("strategy_spec") if isinstance(record.get("strategy_spec"), Mapping) else {}
+    return {"candidate_id": candidate_id(record), "created_at_utc": record.get("created_at_utc"),
+            "derivation_type": SLIM_DERIVATION,
+            "strategy_spec": {"symbol_scope": spec.get("symbol_scope"), "timeframe": spec.get("timeframe")},
+            "backtest_evidence": kept}
+
+
+def selection_row(record: Mapping[str, Any]) -> dict[str, Any]:
+    evidence = record.get("backtest_evidence")
+    if not isinstance(evidence, Mapping):
+        return dict(record)
+    return {**record, "backtest_evidence": {k: v for k, v in evidence.items() if k not in SELECTION_DROPS}}
+
+
+def load_shards(directory: Path, *, arm: str | None = None,
+                ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any], list[str]]:
+    """``{arm: selection store}``, ``{arm: code_digest}`` and the reasons the set cannot be judged (empty when it
+    can). ``arm`` loads that arm's store only; the checks still cover every shard in the directory."""
     first, last = fr.fire_span()
     want_days = {(first + timedelta(days=i)).isoformat() for i in range((last - first).days + 1)}
-    stores: dict[str, list[dict[str, Any]]] = defaultdict(list)
     digests: dict[str, set[str]] = defaultdict(set)
     seen: dict[str, set[str]] = defaultdict(set)
+    paths: dict[str, list[Path]] = defaultdict(list)
     problems: list[str] = []
     for path in sorted(directory.glob("*.jsonl")):
-        head, fires = fr.read_shard(path)
+        head = _head(path)
         if head is None or head.get("spec") != SPEC or head.get("shard_version") != fr.SHARD_VERSION:
             problems.append(f"{path.name}: not a shard of {SPEC}")
             continue
-        arm, context = head["arm"], head["context"]
-        if context in seen[arm]:
-            problems.append(f"{path.name}: a second shard for {arm}/{context}")
+        shard_arm, context = head["arm"], head["context"]
+        if context in seen[shard_arm]:
+            problems.append(f"{path.name}: a second shard for {shard_arm}/{context}")
             continue
-        seen[arm].add(context)
-        digests[arm].add(head["code_digest"])
-        days = {f["day"] for f in fires}
-        missing = want_days - days
+        seen[shard_arm].add(context)
+        digests[shard_arm].add(head["code_digest"])
+        rows = shard_lines(path)
+        next(rows, None)
+        missing = want_days - {fire["day"] for fire in rows}
         if missing:
             problems.append(f"{path.name}: {len(missing)} fire days missing (first {min(missing)})")
-        stores[arm].extend(c for f in fires for c in f.get("candidates") or [])
-    for arm in sorted(seen):
-        absent = sorted({c.name for c in fr.CONTEXTS} - seen[arm])
+        paths[shard_arm].append(path)
+    for name in sorted(seen):
+        absent = sorted({c.name for c in fr.CONTEXTS} - seen[name])
         if absent:
-            problems.append(f"arm {arm}: no shard for {absent}")
-        if len(digests[arm]) != 1:
-            problems.append(f"arm {arm}: shards of {len(digests[arm])} code digests")
-    return dict(stores), {a: next(iter(d)) for a, d in digests.items() if len(d) == 1}, problems
+            problems.append(f"arm {name}: no shard for {absent}")
+        if len(digests[name]) != 1:
+            problems.append(f"arm {name}: shards of {len(digests[name])} code digests")
+    stores: dict[str, list[dict[str, Any]]] = {}
+    for name in sorted(paths):
+        if arm is not None and name != arm:
+            continue
+        members = {candidate_id(r) for path in paths[name] for r in _candidates(path) if can_be_member(r)}
+        stores[name] = [selection_row(r) if candidate_id(r) in members else slim_row(r)
+                        for path in paths[name] for r in _candidates(path)]
+    return stores, {a: next(iter(d)) for a, d in digests.items() if len(d) == 1}, problems
+
+
+def member_rows(directory: Path, arm: str, cids: Iterable[str]) -> dict[str, dict[str, Any]]:
+    """The full rows of ``cids``, the last of each in shard order (the full store's ``latest``)."""
+    wanted, out = set(cids), {}
+    for path in sorted(directory.glob("*.jsonl")):
+        head = _head(path)
+        if head is None or head.get("arm") != arm:
+            continue
+        for record in _candidates(path):
+            cid = candidate_id(record)
+            if cid in wanted:
+                out[cid] = record
+    return out
 
 
 # --- the scoring frame ----------------------------------------------------------------------------------------
@@ -140,15 +232,19 @@ def frames_source(arm: str, anchor: date, *, state: Path,
 
 
 def score_arm(arm: str, store: Sequence[Mapping[str, Any]], *, state: Path,
-              build: Callable[..., Any] = scoring_frame) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """The arm's replayed cohorts and one scored row per anchor."""
+              build: Callable[..., Any] = scoring_frame,
+              full_rows: Callable[[set[str]], Mapping[str, Mapping[str, Any]]] | None = None,
+              ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Mapping[str, Any]]]:
+    """The arm's replayed cohorts, one scored row per anchor, and the members' rows they were scored from.
+    ``full_rows`` returns the members' full rows (:func:`member_rows`); without it the store's own rows are used."""
     cohorts = fr.freeze_all(store, fr.replay_anchors())
-    latest = {candidate_id(r): r for r in store}
+    cids = {m["candidate_id"] for c in cohorts for m in c["members"]}
+    latest = dict(full_rows(cids)) if full_rows else {candidate_id(r): r for r in store}
     rows = []
     for cohort in cohorts:
         rows.append(fr.score_cohort(cohort, latest, frames_for=frames_source(arm, cohort["anchor"], state=state,
                                                                            build=build)))
-    return cohorts, rows
+    return cohorts, rows, latest
 
 
 # --- the checks -------------------------------------------------------------------------------------------
@@ -171,10 +267,9 @@ def fire_leak_ok(records: Iterable[Mapping[str, Any]], digests: Mapping[str, str
     return not missing, missing
 
 
-def scoring_leak_check(arm: str, cohorts: Sequence[Mapping[str, Any]], store: Sequence[Mapping[str, Any]], *,
+def scoring_leak_check(arm: str, cohorts: Sequence[Mapping[str, Any]], latest: Mapping[str, Mapping[str, Any]], *,
                        cache_root: Path, work: Path, state: Path) -> dict[str, Any]:
     """The check anchors scored on the whole cache and on one cut at the latest window end: the same values."""
-    latest = {candidate_id(r): r for r in store}
     out = {}
     for cohort in (c for c in cohorts if c["anchor"] in check_anchors()):
         anchor = cohort["anchor"]
@@ -228,51 +323,85 @@ def b_against_a(a: Sequence[Mapping[str, Any]], b: Sequence[Mapping[str, Any]]) 
 
 # --- the command line ---------------------------------------------------------------------------------------
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="forward_replay_judge", description=__doc__.splitlines()[0])
-    parser.add_argument("--shards", type=Path, required=True, help="the directory holding every arm's shards")
-    parser.add_argument("--leak-records", type=Path, required=True,
-                        help="a directory of forward_replay leak-check outputs (JSON), one per arm/context/anchor")
-    parser.add_argument("--work", type=Path, default=None, help="where cut caches are written (default: run dir)")
-    args = parser.parse_args(argv)
-    if not fr._in_sandbox():
-        print("refused: the judge runs in the research sandbox only (it reads the lake's real cohorts)",
-              file=sys.stderr)
-        return EXIT_USAGE
-    stores, digests, problems = load_shards(args.shards)
-    if problems:
-        print(json.dumps({"spec": SPEC, "verdict": "BLOCKED", "problems": problems}, indent=1))
-        return EXIT_BLOCKED
+def judge_arm(arm: str, shards: Path, leak_records: Path, *, work: Path | None = None) -> tuple[int, dict[str, Any]]:
+    """One arm's report: its fire leak records, reading, anchors, scoring leak check and (arm A) the sanity rule."""
+    stores, digests, problems = load_shards(shards, arm=arm)
+    if problems or arm not in stores:
+        return EXIT_BLOCKED, {"spec": SPEC, "arm": arm, "verdict": "BLOCKED",
+                              "problems": problems or [f"no shards for arm {arm}"]}
     records = []
-    for path in sorted(args.leak_records.glob("*.json")):
+    for path in sorted(leak_records.glob("*.json")):
         text = path.read_text(encoding="utf-8")
         try:     # the sandbox may append its own "research run ..." line after the report
             records.append(json.loads(text[text.index("{"):text.rindex("}") + 1]))
         except ValueError:
             continue
-    leak_fires, leak_missing = fire_leak_ok(records, digests)
+    leak_fires, leak_missing = fire_leak_ok(records, {arm: digests[arm]})
     cache = Path(os.environ.get("RESEARCH_CACHE", str(Path.home() / "research" / "cache")))
-    real = forward_cohort.read_cohorts(repo_root())
-    report: dict[str, Any] = {"spec": SPEC, "code_digests": digests, "fire_leak_ok": leak_fires,
-                              "fire_leak_missing": leak_missing, "arms": {}}
+    report: dict[str, Any] = {"spec": SPEC, "arm": arm, "code_digest": digests[arm], "fire_leak_ok": leak_fires,
+                              "fire_leak_missing": leak_missing}
     with tempfile.TemporaryDirectory(prefix="forward-replay-judge-") as tmp:
-        state, work = Path(tmp), args.work or Path(os.environ.get("RESEARCH_RUN") or tmp)
-        scored: dict[str, list[dict[str, Any]]] = {}
-        cohorts_of: dict[str, list[dict[str, Any]]] = {}
-        for arm in sorted(stores):
-            cohorts, rows = score_arm(arm, stores[arm], state=state)
-            scored[arm], cohorts_of[arm] = rows, cohorts
-            report["arms"][arm] = {"reading": fr.arm_reading(rows), "anchors": rows,
-                                   "scoring_leak": scoring_leak_check(arm, cohorts, stores[arm], cache_root=cache,
-                                                                      work=work, state=state)}
-        report["sanity"] = sanity(stores.get("A", []), cohorts_of.get("A", []), real)
-    leak_ok = leak_fires and all(r["scoring_leak"]["identical"] for r in report["arms"].values())
-    report["verdicts"] = fr.verdicts({a: r["reading"] for a, r in report["arms"].items()}, leak_ok=leak_ok,
-                                     sanity_ok=report["sanity"]["passed"])
-    if "A" in scored and "B" in scored:
-        report["b_against_a"] = b_against_a(scored["A"], scored["B"])
+        state, cut_root = Path(tmp), work or Path(os.environ.get("RESEARCH_RUN") or tmp)
+        store = stores[arm]
+        cohorts, rows, latest = score_arm(arm, store, state=state,
+                                          full_rows=lambda cids: member_rows(shards, arm, cids))
+        report["reading"], report["anchors"] = fr.arm_reading(rows), rows
+        report["scoring_leak"] = scoring_leak_check(arm, cohorts, latest, cache_root=cache, work=cut_root, state=state)
+        if arm == "A":
+            report["sanity"] = sanity(store, cohorts, forward_cohort.read_cohorts(repo_root()))
+    return EXIT_OK, report
+
+
+def combine(reports: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The verdicts over the per-arm reports: Holm across arms, the leak checks of every arm, A's sanity rule."""
+    by_arm = {r["arm"]: r for r in reports}
+    problems = [f"arm {r.get('arm')}: {r.get('verdict')}" for r in reports if "reading" not in r]
+    if len(by_arm) != len(reports):
+        problems.append("two reports for one arm")
+    if "A" not in by_arm:
+        problems.append("no arm A report (the sanity rule is A's)")
+    if problems:
+        return {"spec": SPEC, "verdict": "BLOCKED", "problems": problems}
+    leak_ok = all(r["fire_leak_ok"] and r["scoring_leak"]["identical"] for r in by_arm.values())
+    sanity_ok = bool(by_arm["A"]["sanity"]["passed"])
+    out: dict[str, Any] = {"spec": SPEC, "code_digests": {a: r["code_digest"] for a, r in by_arm.items()},
+                           "leak_ok": leak_ok, "sanity_ok": sanity_ok,
+                           "readings": {a: r["reading"] for a, r in sorted(by_arm.items())},
+                           "verdicts": fr.verdicts({a: r["reading"] for a, r in by_arm.items()}, leak_ok=leak_ok,
+                                                   sanity_ok=sanity_ok)}
+    if "A" in by_arm and "B" in by_arm:
+        out["b_against_a"] = b_against_a(by_arm["A"]["anchors"], by_arm["B"]["anchors"])
+    return out
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="forward_replay_judge", description=__doc__.splitlines()[0])
+    parser.add_argument("--arm", choices=fr.ARMS, help="judge this arm (one arm per process: the sandbox's memory)")
+    parser.add_argument("--shards", type=Path, help="the directory holding every arm's shards")
+    parser.add_argument("--leak-records", type=Path,
+                        help="a directory of forward_replay leak-check outputs (JSON), one per arm/context/anchor")
+    parser.add_argument("--work", type=Path, default=None, help="where cut caches are written (default: run dir)")
+    parser.add_argument("--combine", type=Path, nargs="+", default=None,
+                        help="instead: the per-arm reports to read the verdicts from")
+    args = parser.parse_args(argv)
+    if args.combine:
+        reports = []
+        for path in args.combine:
+            text = path.read_text(encoding="utf-8")
+            reports.append(json.loads(text[text.index("{"):text.rindex("}") + 1]))
+        out = combine(reports)
+        print(json.dumps(out, indent=1, sort_keys=True, default=str))
+        return EXIT_BLOCKED if out.get("verdict") == "BLOCKED" else EXIT_OK
+    if not (args.arm and args.shards and args.leak_records):
+        print("usage: --arm A|B --shards DIR --leak-records DIR, or --combine REPORT...", file=sys.stderr)
+        return EXIT_USAGE
+    if not fr._in_sandbox():
+        print("refused: the judge runs in the research sandbox only (it reads the lake's real cohorts)",
+              file=sys.stderr)
+        return EXIT_USAGE
+    code, report = judge_arm(args.arm, args.shards, args.leak_records, work=args.work)
     print(json.dumps(report, indent=1, sort_keys=True, default=str))
-    return EXIT_OK
+    return code
 
 
 if __name__ == "__main__":
