@@ -104,5 +104,64 @@ def test_b_is_better_only_when_its_paired_excess_over_a_is_significant():
 
 def test_the_judge_refuses_outside_the_sandbox(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(fr, "_in_sandbox", lambda: False)
-    assert judge.main(["--shards", str(tmp_path), "--leak-records", str(tmp_path)]) == judge.EXIT_USAGE
+    assert judge.main(["--arm", "A", "--shards", str(tmp_path), "--leak-records", str(tmp_path)]) == judge.EXIT_USAGE
     assert "sandbox" in capsys.readouterr().err
+    assert judge.main(["--shards", str(tmp_path)]) == judge.EXIT_USAGE          # one arm per process, named
+
+
+def _row(cid, *, scope=("BTCUSDT", "ETHUSDT"), lattice=3, ok=False, day="2024-01-01"):
+    return {"candidate_id": cid, "created_at_utc": f"{day}T08:10:00Z", "ok": ok, "derivation_type": "generated",
+            "strategy_spec": {"strategy_family": "breakout", "symbol_scope": list(scope), "timeframe": "4h"},
+            "backtest_evidence": {"ablation": {"lattice_size": lattice, "members": [1, 2, 3]},
+                                  "holdout": {"symbols": len(scope), "expectancy": 0.1},
+                                  "regime_breakdown": {"x": 1}, "per_symbol": {"y": 2}, "robustness": {"v": 3}}}
+
+
+def test_a_slim_row_charges_its_attempts_and_is_never_a_member():
+    from runtime.mvp_runtime.crypto import candidate_ranking, forward_cohort
+    rows = [_row("c1"), _row("c2", scope=("SOLUSDT",), lattice=1), _row("c3", lattice=7)]
+    rows[1]["backtest_evidence"]["holdout"]["symbols"] = 5                 # an F9 row: scored pooled
+    slim = [judge.slim_row(r) for r in rows]
+    assert candidate_ranking.attempts_by_context(slim) == candidate_ranking.attempts_by_context(rows)
+    assert candidate_ranking.pooled_context_keys(slim) == candidate_ranking.pooled_context_keys(rows)
+    assert all(forward_cohort.eligible_members([r], {}) == [] for r in slim)
+    assert [judge.candidate_id(r) for r in slim] == ["c1", "c2", "c3"]
+
+
+def test_the_selection_store_keeps_full_rows_only_for_ids_that_can_be_members(tmp_path, monkeypatch):
+    monkeypatch.setattr(judge, "can_be_member", lambda r: r["ok"])
+    days = _all_days()
+    for c in fr.CONTEXTS:
+        rows = [_row(f"{c.name}-x"), _row(f"{c.name}-y", ok=True)] if c.name == "pooled-4h" else []
+        _write(tmp_path / f"{c.name}.A.jsonl", "A", c.name, days[:1], rows=rows)
+        _write(tmp_path / f"{c.name}.B.jsonl", "B", c.name, days[:1], rows=[_row(f"b-{c.name}")])
+    # the later re-append of y is not itself admissible, but its id is: it stays full, so latest-wins sees it
+    with (tmp_path / "pooled-4h.A.jsonl").open("a") as fh:
+        fh.write(json.dumps({"day": days[1], "status": "fired", "candidates": [_row("pooled-4h-y", day="2024-02-01")]}) + "\n")
+    stores, _, _ = judge.load_shards(tmp_path, arm="A")
+    assert list(stores) == ["A"]
+    x, y, y2 = stores["A"]
+    assert x["derivation_type"] == judge.SLIM_DERIVATION and "robustness" not in x["backtest_evidence"]
+    assert y["derivation_type"] == "generated" and y2["derivation_type"] == "generated"
+    assert "regime_breakdown" not in y["backtest_evidence"] and "robustness" in y["backtest_evidence"]
+    full = judge.member_rows(tmp_path, "A", {"pooled-4h-y"})
+    assert full["pooled-4h-y"]["created_at_utc"].startswith("2024-02-01")
+    assert "regime_breakdown" in full["pooled-4h-y"]["backtest_evidence"]
+    assert judge.member_rows(tmp_path, "B", {"pooled-4h-y"}) == {}
+
+
+def _report(arm, mean, *, sanity=True, leak=True):
+    reading = {"anchors": 30, "mean_R": mean, "p_one_sided": 0.001 if mean > 0 else 0.9, "years_R": {"2023": mean}}
+    return {"spec": fr.SPEC, "arm": arm, "code_digest": "d1", "fire_leak_ok": leak,
+            "scoring_leak": {"identical": True}, "reading": reading,
+            "anchors": [{"anchor": str(i), "value_R": mean + (0.01 if i % 2 else -0.01)} for i in range(30)],
+            **({"sanity": {"passed": sanity}} if arm == "A" else {})}
+
+
+def test_the_verdicts_are_read_over_the_per_arm_reports():
+    out = judge.combine([_report("A", 0.1), _report("B", 0.3)])
+    assert out["verdicts"] == {"A": "REPLAY_CONFIRMED", "B": "REPLAY_CONFIRMED"} and out["b_against_a"]["b_better"]
+    assert judge.combine([_report("A", 0.1, sanity=False), _report("B", 0.3)])["verdicts"]["B"] == "BLOCKED"
+    assert judge.combine([_report("A", 0.1), _report("B", 0.3, leak=False)])["verdicts"]["A"] == "BLOCKED"
+    assert judge.combine([_report("B", 0.3)])["verdict"] == "BLOCKED"                     # no A, no sanity rule
+    assert judge.combine([_report("A", 0.1), {"arm": "B", "verdict": "BLOCKED"}])["verdict"] == "BLOCKED"
