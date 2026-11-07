@@ -80,6 +80,10 @@ SCRIPTS: dict[str, str] = {
     # own cache under ~/research, outside the state root, from the venue's public endpoints.
     "scripts/research/fetch_public.py": READ,
     "scripts/research/lake.py": READ,
+    "scripts/research/cross_section_basket.py": READ,  # sandbox-only basket measurement over archive files, prints a report
+    "scripts/research/regime_strategies.py": READ,  # sandbox-only regime strategy screen/confirm over archive files, prints a report
+    "scripts/research/forward_replay.py": READ,  # sandbox/Mac-only historical forward replay: re-runs factory fires on cached public data, writes only its own shard file
+    "scripts/research/forward_replay_judge.py": READ,  # sandbox-only: reads the replay shards and the lake's real cohorts, prints the verdict
     "scripts/research/pre_window_replay.py": READ,  # sandbox-only replay of cohort members and twins, prints a report               # paired L/F replay, prints a report
     "scripts/paired_family_window_check.py": READ,
     "scripts/pooled_mint_check.py": READ,

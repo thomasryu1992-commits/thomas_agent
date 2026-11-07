@@ -15,13 +15,22 @@ order the cron reads it:
   ``create_new``) and that no vault post covers yet, in score order after the latest P5 guideline (``blog_feedback``)
   is applied. Each entry carries its rank, its rank without the guideline, and the days to its season peak, if any;
 * ``tistory``: the cron's own Tistory list, ``tistory-pick --rank`` (``tistory_rank``), offline.
+* ``affiliate`` (v0.2, P7, Thomas 2026-11-05 "지시에 싣기"): the affiliate stock the cron would place today. The READY
+  gate, the editorial hold and the stock order are the server script ``blog-affiliate-place.py`` itself, generated
+  into ``blog/affiliate_place.py`` with the clip parser it reads (``blog/affiliate_clips.py``). The pick is the first
+  stock that is ready to place, in the script's order, exactly as its ``--list`` prints ``다음 배치:``; no ready stock
+  is the script's own deferral code. The stock is named by an id of its file's slug and its first keyword, never
+  its file name. Without the vault's ``제휴/`` folder (the clips and keyword notes) the gate would read every stock
+  as unproven, so the section says ``unavailable`` instead of picking.
 
 Naver and Tistory slots are not in it. P7 (``blog_slot``) already compares each reported slot with the rule, and a
 Tistory slot depends on the file name the writer has not chosen yet.
 
-**The moment.** The production keyword run starts at 22:10 UTC and writes ``history/<UTC date>.json``. The drafting
-cron starts at 23:02 UTC (08:02 KST). The instruction is built at the first fire inside that gap, once the day's
-history file exists. If the run reused its queue and wrote none, the build waits until ``LATE_FROM`` and uses the
+**The moment.** The production keyword run starts at 22:10 UTC (07:10 KST) and writes ``history/<KST date>.json``:
+``kw_pipeline`` names the file by its own KST clock, so the 11-05 file is committed at 2026-11-04T22:13Z. The drafting
+cron starts at 23:02 UTC (08:02 KST). The instruction is built at the first fire inside that gap, once the KST day's
+history file exists. Until 2026-11-05 this read the UTC date and so built every morning from the day before's history
+(docs/history/2026-11-05-blog-instruction-kst-history.md). If the run reused its queue and wrote none, the build waits until ``LATE_FROM`` and uses the
 newest older history, marked ``history_today: false``. After ``DRAFT_START`` nothing is built that day: the vault then
 holds the cron's own drafts, so a later instruction would already have seen what it is compared with. The port reads
 the vault through ``blog/kw_pipeline.py`` with no transport, so it opens no URL. The RSS read it would make fails and
@@ -32,6 +41,10 @@ the port falls back to the vault's status, as it does on any failed read.
 * ``next_topics``, ``queue`` (with lane and rank) or ``tistory_list`` (with rank): the pick was in the instruction;
 * ``history_filtered``: in the production history, but the instruction left it out (an update, or a covered keyword);
 * ``outside``: in none of them, e.g. a variant of a held keyword, or a Tistory question found by 1-C discovery.
+
+Since v0.2 the check also compares the day's affiliate placements (the report's ``affiliate_placed``, written by
+``blog-run-report.py`` since 2026-11-05) with the instruction's pick: the placed file keeps the stock's slug, so the
+same id names it. A report written before the field existed is ``not_reported``.
 
 ``outside`` is not a disagreement to fix in this module. Those are the sources P6 has to absorb or close, because
 after P6 the cron writes only what it was told. ``timing`` says whether the instruction existed before the cron
@@ -58,11 +71,11 @@ from .feedback import HISTORY_DIR, KW_MAX, apply_shadow
 from .kw_replay import _norm
 
 RECORD_KIND = "blog_instruction"
-RECORD_SCHEMA = "schemas/blog_instruction.v0.1.schema.json"
-RECORD_SCHEMA_VERSION = "blog_instruction.v0.1"
+RECORD_SCHEMA = "schemas/blog_instruction.v0.2.schema.json"
+RECORD_SCHEMA_VERSION = "blog_instruction.v0.2"
 CHECK_KIND = "blog_instruction_check"
-CHECK_SCHEMA = "schemas/blog_instruction_check.v0.1.schema.json"
-CHECK_SCHEMA_VERSION = "blog_instruction_check.v0.1"
+CHECK_SCHEMA = "schemas/blog_instruction_check.v0.2.schema.json"
+CHECK_SCHEMA_VERSION = "blog_instruction_check.v0.2"
 FEEDBACK_KIND = "blog_feedback"
 
 BUILD_FROM = time(7, 10)      # KST: kw-daily.sh starts (root cron 22:10 UTC)
@@ -71,16 +84,19 @@ DRAFT_START = time(8, 2)      # KST: blog-daily-draft.sh starts (23:02 UTC); not
 LOOKBACK_DAYS = 3
 LANE_MAX = 40
 _DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_STOCK = re.compile(r"^제휴-(.+)\.md$")            # a stock file, as blog-affiliate-place.py names it
+_PLACED = re.compile(r"^(\d+)편-(.+)\.md$")         # the same file once placed: the episode, then the stock's slug
+AFFILIATE_DIR = ("제휴",)                           # the clips and keyword notes the READY gate reads
 KST = timezone(timedelta(hours=9))
 
 
 # --- the instruction ---------------------------------------------------------------------------------------------
 
-def history_for(root: Path, utc_day: str) -> tuple[str, Mapping[str, Any]] | None:
-    """The newest readable history file dated ``utc_day`` or earlier (the run names it by its UTC date)."""
+def history_for(root: Path, kst_day: str) -> tuple[str, Mapping[str, Any]] | None:
+    """The newest readable history file dated ``kst_day`` or earlier (the run names it by its KST date)."""
     folder = root.joinpath(*HISTORY_DIR)
     for path in sorted(folder.glob("*.json"), reverse=True) if folder.is_dir() else []:
-        if not _DAY.match(path.stem) or path.stem > utc_day:
+        if not _DAY.match(path.stem) or path.stem > kst_day:
             continue
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -92,10 +108,11 @@ def history_for(root: Path, utc_day: str) -> tuple[str, Mapping[str, Any]] | Non
 
 
 def latest_feedback(ledger: Any) -> Mapping[str, Any] | None:
+    from .. import blog_department
+
     last = None
-    for row in ledger.iter_records(kinds=[FEEDBACK_KIND]):
-        if row.get("kind") == FEEDBACK_KIND and isinstance(row.get("record"), Mapping):
-            last = row["record"]
+    for record in blog_department.records(ledger, FEEDBACK_KIND):
+        last = record
     return last
 
 
@@ -147,8 +164,48 @@ def queue(kept: list[Mapping[str, Any]], feedback: Mapping[str, Any] | None) -> 
     return sorted(rows, key=lambda r: (r["lane"], r["rank"]))
 
 
+def stock_id(slug: str) -> str:
+    """The id a stock carries in the records: its file's slug, which placing it keeps (``NN편-{slug}.md``)."""
+    from runtime.read_only_kernel import integrity
+
+    return integrity.short_id("blogaffiliatestock", {"slug": slug})
+
+
+def affiliate_pick(root: Path) -> dict[str, Any]:
+    """The stock the cron would place today, by the generated script: each stock's state, and the first one ready to
+    place (``다음 배치:``). The script's own deferral code when none is. Read-only."""
+    from . import affiliate, affiliate_clips, affiliate_place, taxonomy
+
+    zero = {"stock": 0, "ready": 0, "held": 0, "needs_review": 0, "link_unready": 0, "pick": None, "deferred": None}
+    folder = root.joinpath(*AFFILIATE_DIR)
+    if not (folder / "키워드").is_dir() or not (folder / "클립").is_dir():
+        return {"state": "unavailable", "error": None, **zero}
+    for module in (taxonomy, affiliate, affiliate_clips, affiliate_place):
+        module.configure(root)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            ctx = affiliate_place.context()
+            states = Counter()
+            pick = None
+            for path in affiliate_place.stock_files():
+                state = affiliate_place.readiness(path, ctx)["state"]
+                states[state] += 1
+                match = _STOCK.match(Path(path).name)
+                if pick is None and state == "배치 가능" and match:
+                    keywords = ctx["bt"].load_articles([path])[0]["keywords"]
+                    pick = {"id": stock_id(match.group(1)),
+                            "keyword": str(keywords[0]).strip()[:KW_MAX] if keywords else None}
+    except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
+        return {"state": "error", "error": type(exc).__name__, **zero}
+    deferred = None if pick else ("NO_EDITORIALLY_ELIGIBLE_READY_STOCK" if states["편집 보류"] else "NO_READY_STOCK")
+    return {"state": "built", "error": None, "stock": sum(states.values()), "ready": states["배치 가능"],
+            "held": states["편집 보류"], "needs_review": states["보류"], "link_unready": states["링크 미준비"],
+            "pick": pick, "deferred": deferred}
+
+
 def build_instruction(gathered: Mapping[str, Any], history_date: str, history_today: bool,
-                      feedback: Mapping[str, Any] | None, run_date: str, *, now: str) -> dict[str, Any]:
+                      feedback: Mapping[str, Any] | None, run_date: str, *, now: str,
+                      affiliate: Mapping[str, Any]) -> dict[str, Any]:
     from runtime.read_only_kernel import integrity
 
     from .. import schema_cache
@@ -157,7 +214,8 @@ def build_instruction(gathered: Mapping[str, Any], history_date: str, history_to
     rows = queue(gathered["kept"], feedback)
     body = {"run_date": run_date, "history_date": history_date,
             "feedback_id": (feedback or {}).get("feedback_id"),
-            "naver": {"next_topics": gathered["next_topics"], "queue": rows}, "tistory": gathered["tistory"]}
+            "naver": {"next_topics": gathered["next_topics"], "queue": rows}, "tistory": gathered["tistory"],
+            "affiliate": dict(affiliate)}
     record = {
         "schema_version": RECORD_SCHEMA_VERSION,
         # The factors are floats, which a fingerprint payload refuses; the body goes in as its JSON text.
@@ -207,6 +265,30 @@ def locate(draft: Mapping[str, Any], instruction: Mapping[str, Any], history: Ma
     return {**row, "source": "outside"}
 
 
+def affiliate_check(report: Mapping[str, Any], instruction: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The day's affiliate placements against the instruction's pick. ``matched`` is None when the instruction made
+    no pick to compare with (none built, an older instruction, or the clips unavailable); a placement on a day the
+    instruction deferred is not a match."""
+    placed = report.get("affiliate_placed")
+    if not isinstance(placed, list):
+        return {"state": "not_reported", "placed": 0, "matched": 0, "differed": 0, "unjudged": 0, "placements": []}
+    section = (instruction or {}).get("affiliate") if isinstance((instruction or {}).get("affiliate"), Mapping) else None
+    judged = section is not None and section.get("state") == "built"
+    pick = (section or {}).get("pick") or {}
+    rows = []
+    for item in placed:
+        name = Path(str((item or {}).get("path") or "")).name if isinstance(item, Mapping) else ""
+        match = _PLACED.match(name)
+        if not match:
+            continue
+        rows.append({"episode": int(match.group(1)),
+                     "matched": (stock_id(match.group(2)) == pick.get("id")) if judged else None})
+    return {"state": "compared" if rows else "none_placed", "placed": len(rows),
+            "matched": sum(1 for r in rows if r["matched"] is True),
+            "differed": sum(1 for r in rows if r["matched"] is False),
+            "unjudged": sum(1 for r in rows if r["matched"] is None), "placements": rows}
+
+
 def build_check(run_date: str, report: Mapping[str, Any], instruction: Mapping[str, Any] | None,
                 history: Mapping[str, Any] | None, *, now: str) -> dict[str, Any]:
     from runtime.read_only_kernel import integrity
@@ -227,7 +309,7 @@ def build_check(run_date: str, report: Mapping[str, Any], instruction: Mapping[s
     sources = Counter(p["source"] for p in picks)
     body = {"run_date": run_date, "instruction_id": (instruction or {}).get("instruction_id"),
             "state": "checked" if instruction else "no_instruction", "started_at": started, "timing": timing,
-            "picks": picks}
+            "picks": picks, "affiliate": affiliate_check(report, instruction)}
     record = {
         "schema_version": CHECK_SCHEMA_VERSION,
         "check_id": integrity.short_id("bloginstructioncheck", {"at": now, **body}),
@@ -247,10 +329,11 @@ def build_check(run_date: str, report: Mapping[str, Any], instruction: Mapping[s
 
 def _records(ledger: Any, kind: str) -> dict[str, Mapping[str, Any]]:
     """The latest record per ``run_date`` of ``kind``."""
+    from .. import blog_department
+
     out: dict[str, Mapping[str, Any]] = {}
-    for row in ledger.iter_records(kinds=[kind]):
-        record = row.get("record") if row.get("kind") == kind else None
-        if isinstance(record, Mapping) and isinstance(record.get("run_date"), str):
+    for record in blog_department.records(ledger, kind):
+        if isinstance(record.get("run_date"), str):
             out[record["run_date"]] = record
     return out
 
@@ -267,16 +350,17 @@ def fire(ledger: Any, *, now: str, vault_root: Path | None = None) -> str:
     built = _records(ledger, RECORD_KIND)
     parts: list[str] = []
     if BUILD_FROM <= local.time() < DRAFT_START and run_date not in built:
-        found = history_for(root, at.date().isoformat())
-        today = found is not None and found[0] == at.date().isoformat()
+        found = history_for(root, run_date)
+        today = found is not None and found[0] == run_date
         if found is not None and (today or local.time() >= LATE_FROM):
-            record = build_instruction(gather(root, found[1], run_date, clock=at), found[0], today,
-                                       latest_feedback(ledger), run_date, now=now)
+            gathered = gather(root, found[1], run_date, clock=at)
+            record = build_instruction(gathered, found[0], today, latest_feedback(ledger), run_date, now=now,
+                                       affiliate=affiliate_pick(root))
             ledger.append_records(record["instruction_id"], {RECORD_KIND: record})
             built[run_date] = record
             s = record["summary"]
             parts.append(f"blog_instruction={run_date}(next={s['next_topics']},queue={s['queue']},"
-                         f"tistory={s['tistory']})")
+                         f"tistory={s['tistory']},affiliate={record['affiliate']['state']})")
         else:
             parts.append("blog_instruction_waiting_history")
 

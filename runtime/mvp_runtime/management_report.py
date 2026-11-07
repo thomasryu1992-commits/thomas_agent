@@ -218,6 +218,18 @@ def _analysis_line(analysis: Mapping[str, Any] | None) -> str:
             + f" · {skill} · 연속 일치 {analysis['weeks_agreeing_in_a_row']}주")
 
 
+def _keyword_run(s: Mapping[str, Any]) -> str:
+    """P4a/P4b's run as its switch condition counts it: calendar days from the run's first bundle day, both ends
+    included, with how many of them had a bundle (root's cron leaves one only on full-run days)."""
+    if s["run_first"] is None:
+        return "0일(조건 14일)"
+    return f"{s['run_days']}일({s['run_first'][5:]}부터, 묶음 {s['run_bundle_days']}일, 조건 14일)"
+
+
+_WATCH_LABELS = {"RUN_REPORT": "원고 크론 보고", "MAC_DRAFT_STALE": "Mac 임시저장", "MAC_TREND_STALE": "Mac 트렌드",
+                 "TREND_SEEDS_EMPTY": "트렌드 씨앗", "WEEKLY_MISSING": "주간 스냅샷"}
+
+
 def _stage_lines(stages: Mapping[str, Any]) -> list[str]:
     """The blog department's shadows (P4a–P7), each against its switch condition (BLOG_DEPARTMENT §4). A stage with
     no record yet says so; it is never shown as zero."""
@@ -226,7 +238,7 @@ def _stage_lines(stages: Mapping[str, Any]) -> list[str]:
         s = stages.get(key)
         lines.append(f"  [{label}] 기록 없음" if s is None else
                      f"  [{label}] 이번 주 묶음 {s['bundles']} · 일치 {s['agreed']} · 다름 {s['differed']}"
-                     f" · 생성기 낡음 {s['stale']} · 그 밖 {s['other']} · 연속 일치 {s['days_agreeing_in_a_row']}일(조건 14일)")
+                     f" · 생성기 낡음 {s['stale']} · 그 밖 {s['other']} · 연속 일치 {_keyword_run(s)}")
     s = stages.get("feedback")
     lines.append("  [피드백 P5] 기록 없음" if s is None else
                  f"  [피드백 P5] 기록 {s['days']}일({s['first'][5:]}부터, 조건 14일) · 이번 주 {s['week_days']}일"
@@ -241,12 +253,23 @@ def _stage_lines(stages: Mapping[str, Any]) -> list[str]:
                      f" · 티스토리 목록 {s['tistory_list']}) · 이력에서 빠짐 {s['history_filtered']}"
                      f" · 밖 {s['outside']}(네이버 {s['outside_naver']} · 티스토리 {s['outside_tistory']})"
                      f" · 키워드 없음 {s['no_keyword']}")
+        lines.append(f"    제휴 배치 {s['week_affiliate_placed']}(지시와 같음 {s['week_affiliate_matched']}"
+                     f" · 다름 {s['week_affiliate_differed']} · 판단 불가 {s['week_affiliate_unjudged']})"
+                     f" · 제휴 재고를 못 읽은 지시 {s['week_affiliate_unavailable']}일")
     s = stages.get("slot")
     lines.append("  [슬롯 P7] 기록 없음" if s is None else
                  f"  [슬롯 P7] 이번 주 {s['week_days']}일 · 네이버 비교 {s['compared']} · 일치 {s['agreed']}"
                  f" · 다름 {s['differed']} · 옮김 {s['moved']} · 비교 못 함 {s['not_compared']}"
                  f"\n    티스토리 검사 {s['tistory_checked']} · 통과 {s['tistory_agreed']} · 위반 {s['tistory_differed']}"
                  f" · 옮김 {s['tistory_moved']} · 검사 못 함 {s['tistory_not_checked']}")
+    s = stages.get("watch")
+    if s is None:
+        lines.append("  [외주 감시 P6 전제] 기록 없음")
+    else:
+        now = " · ".join(_WATCH_LABELS[c] for c in s["now_problems"]) or "없음"
+        week = " · ".join(f"{_WATCH_LABELS[c]} {n}" for c, n in s["week_problem_days"].items())
+        lines.append(f"  [외주 감시 P6 전제] 기록 {s['days']}일({s['first'][5:]}부터) · {s['latest'][5:]} 문제: {now}"
+                     f"\n    이번 주 문제 있던 날: {week}")
     return lines
 
 

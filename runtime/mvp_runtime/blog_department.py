@@ -17,9 +17,9 @@ reads what it did, once a week, from the one place every step leaves a mark — 
   ``blog-preflight`` / ``blog_variety`` failed or could not run, and how many runs consumed a system instruction
   (none until P6). A report folder that is not mounted is ``None`` — absent, never zero. A report that does not
   parse as ``blog_run_report.v1`` is counted as unreadable and contributes nothing else.
-* **stages** (v0.3) — each stage's progress towards its switch condition (§4), from the records its own fire
+* **stages** (v0.3; v0.4 the P4a/P4b run; v0.5 the affiliate placements; v0.6 the outsourced-side watch) — each stage's progress towards its switch condition (§4), from the records its own fire
   writes: P2's comparison and P3's agreeing weeks as the message already showed them, and the shadows P4a–P7 (the
-  bundle days agreeing in a row, the feedback days, where the reported drafts sat in the instruction, the slot
+  calendar span of the newest run of agreeing bundle days, since v0.4; the feedback days, where the reported drafts sat in the instruction, the slot
   checks). The switch is judged from these records, not from anyone's notes.
 
 Dates are KST calendar dates, as the vault writes them. A file without readable front matter is counted as
@@ -34,7 +34,7 @@ import os
 import re
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 from runtime.read_only_kernel import integrity
 
@@ -47,8 +47,8 @@ PLATFORMS = ("naver", "tistory")
 STATUSES = ("draft", "hold", "scheduled", "published")
 WINDOW_DAYS = 7
 RECORD_KIND = "blog_department_week"
-RECORD_SCHEMA = "schemas/blog_department_week.v0.3.schema.json"
-RECORD_SCHEMA_VERSION = "blog_department_week.v0.3"
+RECORD_SCHEMA = "schemas/blog_department_week.v0.6.schema.json"
+RECORD_SCHEMA_VERSION = "blog_department_week.v0.6"
 RUNS_DIR = ("ops", "blog-runs")
 RUN_REPORT_SCHEMA = "blog_run_report.v1"
 # Written by the lane's daily ``blog_verify`` fire (``blog/verify.py``); named here so the weekly report can read it
@@ -64,10 +64,15 @@ FEEDBACK_RECORD_KIND = "blog_feedback"
 INSTRUCTION_RECORD_KIND = "blog_instruction"
 INSTRUCTION_CHECK_RECORD_KIND = "blog_instruction_check"
 SLOT_RECORD_KIND = "blog_slot"
+WATCH_RECORD_KIND = "blog_watch"
+WATCH_CHECKS = ("RUN_REPORT", "MAC_DRAFT_STALE", "MAC_TREND_STALE", "TREND_SEEDS_EMPTY", "WEEKLY_MISSING")
 _PICK_SOURCES = ("in_instruction", "next_topics", "queue", "tistory_list", "history_filtered", "outside", "no_keyword")
 _SLOT_COUNTS = ("compared", "agreed", "differed", "moved", "not_compared", "tistory_checked", "tistory_agreed",
                 "tistory_differed", "tistory_moved", "tistory_not_checked")
 _KST = timedelta(hours=9)
+# The department's first ledger record was written on 2026-10-26 (P0). An archive rotated before then holds none of
+# its kinds, so ``records`` never opens one.
+LEDGER_SINCE = "2026-10-26T00:00:00Z"
 _FIELD = re.compile(r"^([a-z_]+):[ \t]*(.*)$")
 _DATE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
 _WANTED = frozenset({"status", "created", "published", "scheduled"})
@@ -196,15 +201,26 @@ def observe(root: str | Path | None = None, *, now: str) -> dict[str, Any]:
             "runs": read_runs(base, since, until)}
 
 
+def records(ledger: Any, kind: str) -> Iterator[Mapping[str, Any]]:
+    """Every ``kind`` record, archives included, in append order. ``iter_records`` reads the active file only, and
+    rotation trims that to the newest rows. A done-set or a count built from it forgets whatever rotated out, so a
+    fire redoes the work and a run of days shrinks (2026-11-04: P4a replayed three bundles a second time). Every
+    reader of the department's kinds, the lane's and this module's, goes through here. Consume it to the end: the
+    appender's lock is held while it runs."""
+    for row in ledger.iter_records_with_archive(appended_since=LEDGER_SINCE, kinds=[kind]):
+        record = row.get("record") if row.get("kind") == kind else None
+        if isinstance(record, Mapping):
+            yield record
+
+
 def verification_summary(ledger: Any, *, now: str) -> dict[str, Any]:
     """The week's ``blog_verification`` records (run dates in ``[since, until)``), summed: how many reported drafts
     the system could compare, how many agreed, and which rule codes differed most. Never carries a path."""
     since, until = _kst_date(now, -WINDOW_DAYS), _kst_date(now)
     out = {"runs": 0, "drafts": 0, "compared": 0, "agreed": 0, "differed": 0, "not_compared": 0, "codes": []}
     counter: dict[str, int] = {}
-    for row in ledger.iter_records(kinds=[VERIFY_RECORD_KIND]):
-        record = row.get("record") if row.get("kind") == VERIFY_RECORD_KIND else None
-        if not isinstance(record, Mapping) or not since <= str(record.get("run_date")) < until:
+    for record in records(ledger, VERIFY_RECORD_KIND):
+        if not since <= str(record.get("run_date")) < until:
             continue
         out["runs"] += 1
         for key in ("drafts", "compared", "agreed", "differed", "not_compared"):
@@ -222,9 +238,8 @@ def analysis_summary(ledger: Any, *, now: str) -> dict[str, Any] | None:
     had — P3's switch condition. None when no week is recorded."""
     until = _kst_date(now)
     weeks: dict[str, Mapping[str, Any]] = {}
-    for row in ledger.iter_records(kinds=[ANALYSIS_RECORD_KIND]):
-        record = row.get("record") if row.get("kind") == ANALYSIS_RECORD_KIND else None
-        sunday = str((record or {}).get("week", {}).get("sunday")) if isinstance(record, Mapping) else ""
+    for record in records(ledger, ANALYSIS_RECORD_KIND):
+        sunday = str((record.get("week") or {}).get("sunday") or "")
         if sunday and sunday < until:
             weeks[sunday] = record          # appended in order: the last one for a week is its latest
     if not weeks:
@@ -259,22 +274,37 @@ def _latest(ledger: Any, kind: str, key: str) -> dict[str, Mapping[str, Any]]:
     """Each ``kind`` record under its ``key`` value; appended in order, so the last one for a key is its latest
     (a re-run after a regeneration supersedes the stale one)."""
     out: dict[str, Mapping[str, Any]] = {}
-    for row in ledger.iter_records(kinds=[kind]):
-        record = row.get("record") if row.get("kind") == kind else None
-        if isinstance(record, Mapping) and record.get(key):
+    for record in records(ledger, kind):
+        if record.get(key):
             out[str(record[key])] = record
     return out
 
 
-def _in_a_row(days: Mapping[str, bool]) -> int:
-    """How many recorded days, newest first, are good before the first that is not. A day with no record neither
-    counts nor breaks the run: the conditions count days that were checked, never days that were not."""
-    count = 0
+# Root's keyword cron runs ``kw-pipeline run --max-age 2``: it reuses ``queue.md`` while the file is younger than two
+# days, and a full run (the only kind that leaves a bundle) stamps the file when it ends, about half an hour after the
+# 07:10 KST start. So a healthy cron leaves a bundle at least every third day. A longer gap is a run that never came
+# and was never checked, and §4 counts only checked days, so it ends the run of agreeing days.
+BUNDLE_GAP_DAYS = 3
+
+
+def _agreeing_run(days: Mapping[str, bool]) -> dict[str, Any]:
+    """The newest run of bundle days that all agreed, as P4a/P4b's switch condition counts it (§4: fourteen days in
+    which every bundle received was compared and agreed). ``run_days`` is the calendar span from its first bundle day
+    to its last, both included; ``run_bundle_days`` is how many bundle days it holds. A day with no bundle neither
+    counts nor breaks the run, unless the gap to the next bundle day exceeds ``BUNDLE_GAP_DAYS``. A day that did not
+    agree, or such a gap, ends it."""
+    run: list[str] = []
     for day in sorted(days, reverse=True):
         if not days[day]:
             break
-        count += 1
-    return count
+        if run and (date.fromisoformat(run[-1]) - date.fromisoformat(day)).days > BUNDLE_GAP_DAYS:
+            break
+        run.append(day)
+    if not run:
+        return {"run_first": None, "run_last": None, "run_days": 0, "run_bundle_days": 0}
+    return {"run_first": run[-1], "run_last": run[0],
+            "run_days": (date.fromisoformat(run[0]) - date.fromisoformat(run[-1])).days + 1,
+            "run_bundle_days": len(run)}
 
 
 def _keyword_stage(ledger: Any, kind: str, since: str, until: str) -> dict[str, Any] | None:
@@ -297,7 +327,7 @@ def _keyword_stage(ledger: Any, kind: str, since: str, until: str) -> dict[str, 
                 week["agreed" if record.get("agree") is True else "differed"] += 1
             else:
                 week["stale" if record.get("state") == "generator_stale" else "other"] += 1
-    return {**week, "days": len(days), "first": min(days), "days_agreeing_in_a_row": _in_a_row(days)}
+    return {**week, "days": len(days), "first": min(days), **_agreeing_run(days)}
 
 
 def _feedback_stage(ledger: Any, since: str, until: str) -> dict[str, Any] | None:
@@ -334,6 +364,12 @@ def _instruction_stage(ledger: Any, since: str, until: str) -> dict[str, Any] | 
     for platform in ("naver", "tistory"):
         out[f"outside_{platform}"] = sum(1 for r in checked for p in r.get("picks") or []
                                          if p.get("source") == "outside" and p.get("platform") == platform)
+    # v0.5 (P7, 2026-11-05): the week's affiliate placements against the morning's pick. A v0.1 check carries none.
+    sections = [r["affiliate"] for r in week_checks if isinstance(r.get("affiliate"), Mapping)]
+    for key in ("placed", "matched", "differed", "unjudged"):
+        out[f"week_affiliate_{key}"] = sum(int(a.get(key) or 0) for a in sections)
+    out["week_affiliate_unavailable"] = sum(1 for r in week_built if isinstance(r.get("affiliate"), Mapping)
+                                            and r["affiliate"].get("state") != "built")
     return out
 
 
@@ -364,7 +400,23 @@ def stages(ledger: Any, *, now: str) -> dict[str, Any]:
             "kw_direct": _keyword_stage(ledger, KW_DIRECT_RECORD_KIND, since, until),
             "feedback": _feedback_stage(ledger, since, until),
             "instruction": _instruction_stage(ledger, since, until),
-            "slot": _slot_stage(ledger, since, until)}
+            "slot": _slot_stage(ledger, since, until),
+            "watch": _watch_stage(ledger, since, until)}
+
+
+def _watch_stage(ledger: Any, since: str, until: str) -> dict[str, Any] | None:
+    """The outsourced-side watch (``blog_watch``, P6 prerequisite, v0.6): the KST days it recorded, its latest
+    problems, and for each check the week's days on which a record named it a problem."""
+    rows = [(_kst_date(r["recorded_at"]), r)
+            for r in records(ledger, WATCH_RECORD_KIND) if isinstance(r.get("recorded_at"), str)]
+    if not rows:
+        return None
+    days = sorted({day for day, _ in rows})
+    week = {code: len({day for day, r in rows if since <= day < until and code in (r.get("problems") or [])})
+            for code in WATCH_CHECKS}
+    return {"days": len(days), "first": days[0], "latest": rows[-1][0],
+            "now_problems": [c for c in WATCH_CHECKS if c in (rows[-1][1].get("problems") or [])],
+            "week_problem_days": week}
 
 
 def _record_stages(observation: Mapping[str, Any]) -> dict[str, Any]:
@@ -377,7 +429,7 @@ def _record_stages(observation: Mapping[str, Any]) -> dict[str, Any]:
         "analysis": None if analysis is None else {
             "sunday": analysis["week"]["sunday"], "compared": analysis["compared"], "agreed": analysis["agreed"],
             "weeks_agreeing_in_a_row": analysis["weeks_agreeing_in_a_row"]},
-        **{k: None for k in ("kw_replay", "kw_direct", "feedback", "instruction", "slot")},
+        **{k: None for k in ("kw_replay", "kw_direct", "feedback", "instruction", "slot", "watch")},
         **(observation.get("stages") or {}),
     }
 

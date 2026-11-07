@@ -2,7 +2,8 @@
 instruction the system would hand the drafting cron, built in the morning gap, and where each reported draft sits in it.
 
 The fixture vault holds one published Naver post (``보유 키워드``), the weekly review's follow-ups (one open, one closed),
-a season calendar, and the production history of 2026-11-03 (UTC). The history's candidates:
+a season calendar, and the production history of 2026-11-04, the KST date the keyword run names its file by (it runs
+at 2026-11-03T22:10Z). The history's candidates:
 
 * ``가 키워드`` (cluster ``aa``) and ``나 키워드`` (``bb``) in 실무 가이드, ``나`` scoring higher;
 * ``시즌 키워드``, which the calendar puts ten days before its peak;
@@ -39,7 +40,7 @@ def _cand(kw: str, lane: str, score: float, cluster: str = "unresolved", action:
 
 
 HISTORY = {
-    "date": "2026-11-03", "has_vol": True,
+    "date": "2026-11-04", "has_vol": True,
     "candidates": [
         _cand("가 키워드", "실무 가이드", 10.0, "aa"),
         _cand("나 키워드", "실무 가이드", 30.0, "bb"),
@@ -70,7 +71,7 @@ def vault(tmp_path, monkeypatch):
         "date\tkw\twhy\tlane\tclosed\n2026-11-01\t다음 주제\t주간 분석\t실무 가이드\t\n"
         "2026-11-01\t닫은 주제\t주간 분석\t실무 가이드\t접음\n", encoding="utf-8")
     (kw / "calendar.tsv").write_text("11-14\t3\t시즌\t연말 마감\n", encoding="utf-8")
-    _history(root, "2026-11-03")
+    _history(root, "2026-11-04")
     # The Tistory ranking reads the taxonomy and the Tistory corpus; its own order is the vault tool's business and is
     # pinned by the port's tests. Here it is the list the cron would read.
     real_port = bi._port
@@ -101,9 +102,9 @@ def _instructions(ledger, kind=bi.RECORD_KIND):
 
 
 def test_the_instruction_holds_what_the_cron_chooses_from(ledger, vault):
-    assert bi.fire(ledger, now=GAP, vault_root=vault) == "blog_instruction=2026-11-04(next=1,queue=4,tistory=2)"
+    assert bi.fire(ledger, now=GAP, vault_root=vault) == "blog_instruction=2026-11-04(next=1,queue=4,tistory=2,affiliate=unavailable)"
     [record] = _instructions(ledger)
-    assert record["run_date"] == RUN_DATE and record["history_date"] == "2026-11-03" and record["history_today"]
+    assert record["run_date"] == RUN_DATE and record["history_date"] == "2026-11-04" and record["history_today"]
     assert record["naver"]["next_topics"] == [{"kw": "다음 주제", "lane": "실무 가이드"}]
     queue = {q["kw"]: q for q in record["naver"]["queue"]}
     assert set(queue) == {"가 키워드", "나 키워드", "시즌 키워드", "바 키워드"}
@@ -139,13 +140,24 @@ def test_it_is_built_once_inside_the_morning_gap(ledger, vault):
     assert len(_instructions(ledger)) == 1
 
 
+def test_the_morning_reads_the_history_of_its_kst_day_not_of_the_utc_one(ledger, vault):
+    # The run names its file by KST, so at 22:40Z on 11-03 the day's file is 11-04 and 11-03 is yesterday's. Until
+    # 2026-11-05 the build looked the file up by the UTC date and took yesterday's while today's was already there.
+    yesterday = {**HISTORY, "date": "2026-11-03", "candidates": [_cand("어제 키워드", "실무 가이드", 99.0)]}
+    _history(vault, "2026-11-03", yesterday)
+    assert bi.fire(ledger, now=GAP, vault_root=vault).startswith("blog_instruction=2026-11-04")
+    [record] = _instructions(ledger)
+    assert record["history_date"] == "2026-11-04" and record["history_today"] is True
+    assert "어제 키워드" not in {q["kw"] for q in record["naver"]["queue"]}
+
+
 def test_a_morning_without_its_own_history_waits_then_reads_the_last_one(ledger, vault):
-    (vault / "analytics" / "keywords" / "history" / "2026-11-03.json").rename(
-        vault / "analytics" / "keywords" / "history" / "2026-11-02.json")
+    (vault / "analytics" / "keywords" / "history" / "2026-11-04.json").rename(
+        vault / "analytics" / "keywords" / "history" / "2026-11-03.json")
     assert bi.fire(ledger, now=GAP, vault_root=vault) == "blog_instruction_waiting_history"
     assert bi.fire(ledger, now=LATE, vault_root=vault).startswith("blog_instruction=2026-11-04")
     [record] = _instructions(ledger)
-    assert record["history_date"] == "2026-11-02" and record["history_today"] is False
+    assert record["history_date"] == "2026-11-03" and record["history_today"] is False
 
 
 def test_each_reported_draft_is_located_in_the_instruction(ledger, vault):
@@ -216,3 +228,24 @@ def test_the_kind_is_maintenance_and_fires_through_the_scheduler(ledger, vault, 
     run_due(store, now=GAP, control_store=ControlStore(state), ledger=ledger, repo_root=state)
     terminal = [e for e in ledger.read_scheduler_events() if e["action"] in ("fired", "failed")][-1]
     assert terminal["action"] == "fired" and terminal["status"].startswith("blog_instruction=2026-11-04")
+
+
+def test_the_mornings_affiliate_pick_is_compared_with_the_days_placement(ledger, vault, monkeypatch):
+    # P7 (Thomas 2026-11-05 "지시에 싣기"): the instruction names the stock it would place; the report's placement
+    # is compared with it by the stock's slug. Neither record carries the stock's file name.
+    pick = {"state": "built", "error": None, "stock": 2, "ready": 1, "held": 1, "needs_review": 0, "link_unready": 0,
+            "pick": {"id": bi.stock_id("업소용-냉장고"), "keyword": "업소용 냉장고"}, "deferred": None}
+    monkeypatch.setattr(bi, "affiliate_pick", lambda root: pick)
+    assert bi.fire(ledger, now=GAP, vault_root=vault).endswith("affiliate=built)")
+    assert _instructions(ledger)[0]["affiliate"] == pick
+    _report(vault, RUN_DATE, [("naver", "나 키워드")])
+    path = vault / "ops" / "blog-runs" / f"{RUN_DATE}.json"
+    report = json.loads(path.read_text(encoding="utf-8"))
+    report["affiliate_placed"] = [{"path": "content/naver/제휴/202편-업소용-냉장고.md", "episode": 202}]
+    path.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+    bi.fire(ledger, now=AFTER, vault_root=vault)
+    [check] = _instructions(ledger, bi.CHECK_KIND)
+    assert check["affiliate"] == {"state": "compared", "placed": 1, "matched": 1, "differed": 0, "unjudged": 0,
+                                  "placements": [{"episode": 202, "matched": True}]}
+    text = json.dumps([_instructions(ledger), check], ensure_ascii=False)
+    assert "제휴-" not in text and "202편" not in text and "content/" not in text
