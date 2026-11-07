@@ -476,6 +476,7 @@ def _store_fire(monkeypatch, tmp_path, *, flows=None, toss_orders=(), now=NOW):
                             holdings=(), collected_at=now, latency_ms=1, usd_krw_rate=1400.0)
     toss_feed = toss_account.TossHoldingsFeed()
     monkeypatch.setattr(toss_feed, "closed_orders", lambda **_kw: (list(toss_orders), False))
+    monkeypatch.setattr(toss_feed, "transactions", lambda **_kw: ([], False))       # §10: never the network
     monkeypatch.setattr(store, "read_holdings", lambda **_: (toss, None))
     monkeypatch.setattr(store, "_feed", lambda: toss_feed)
     monkeypatch.setattr(binance_wallet, "read_wallet", lambda **_: (wallet, None))

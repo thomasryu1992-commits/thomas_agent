@@ -39,11 +39,22 @@ class Feed:
 
 
 class Toss:
-    def __init__(self, orders=(), truncated=False, open_orders=()):
+    def __init__(self, orders=(), truncated=False, open_orders=(), transactions=()):
         self.orders, self.truncated, self.open = list(orders), truncated, open_orders
+        self.transactions_answer = transactions
 
     def closed_orders(self, **_kw):
         return list(self.orders), self.truncated
+
+    def transactions(self, **_kw):
+        """The transaction list (PORTFOLIO_CASH_FLOW_LEDGER §10): rows, or an exception to raise, or
+        ``(rows, truncated)``."""
+        answer = self.transactions_answer
+        if isinstance(answer, Exception):
+            raise answer
+        if isinstance(answer, tuple) and len(answer) == 2 and isinstance(answer[1], bool):
+            return list(answer[0]), answer[1]
+        return list(answer), False
 
     def open_orders(self, **_kw):
         if isinstance(self.open, Exception):
@@ -84,8 +95,9 @@ def order(oid, side: str, amount: str, filled_at: str, *, currency: str = "KRW",
 
 
 def toss_fire(state_dir, krw: float, now: str, orders=(), *, truncated: bool = False, usd: float = 0.0,
-              open_orders=()):
-    return cash_flows.collect_toss(Toss(orders, truncated, open_orders), snap(krw, usd), state_dir, now=now)
+              open_orders=(), transactions=()):
+    return cash_flows.collect_toss(Toss(orders, truncated, open_orders, transactions), snap(krw, usd), state_dir,
+                                   now=now)
 
 
 def ledger(state_dir) -> list[dict]:

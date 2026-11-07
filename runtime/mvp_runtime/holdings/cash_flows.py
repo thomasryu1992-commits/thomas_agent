@@ -1429,10 +1429,24 @@ def _distinct_orders(entries: list[list[str]]) -> int:
     return len(groups)
 
 
+def transaction_identity(row: Mapping[str, Any]) -> list[str]:
+    """One hash naming a transaction-list row without its contents (it carries no order id). LOCAL: ledger only."""
+    basis = "|".join(str(row.get(k) or "") for k in ("transactionType", "currency", "settlementDate", "assetClass",
+                                                      "symbol", "isinCode", "quantity", "transactionTime"))
+    return ["tx:" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]]
+
+
 def reconcile_window(previous: Mapping[str, Any], current: Mapping[str, Any], orders: list[Mapping[str, Any]],
-                     *, since: str, until: str, rate: float | None) -> dict[str, Any]:
+                     *, since: str, until: str, rate: float | None,
+                     transactions: list[Mapping[str, Any]] | None = None) -> dict[str, Any]:
     """One window's reconciliation: the pockets' change less what closed orders filled inside it explain.
-    Pure — :func:`reconciliation_digest` runs it over fixed cases, so a change to its behaviour is visible."""
+    Pure — :func:`reconciliation_digest` runs it over fixed cases, so a change to its behaviour is visible.
+
+    A settlement is a sell settling on the window's KST end day. The closed-order list's ``settlementDate``
+    comes back null live (probe 2026-11-07), so since PORTFOLIO_CASH_FLOW_LEDGER §10 (Thomas 2026-11-07, A) the
+    transaction list's sells are read too: a non-cancellation ``SELL`` whose ``settlementDate`` (the date, or the
+    expected date while unsettled) is that day, in a pocket's currency. Both sources may name one sale; it is
+    one settlement entry per source row, and the evidence counts windows, not entries."""
     start, end = timeutil.parse_iso(since), timeutil.parse_iso(until)
     today_kst = (end + timedelta(hours=9)).date().isoformat()
     explained = {"KRW": 0.0, "USD": 0.0}
@@ -1459,6 +1473,11 @@ def reconcile_window(previous: Mapping[str, Any], current: Mapping[str, Any], or
         bases.add(basis)
         if side in fills and digest:
             fills[side][effect[0]].append(digest)
+    for row in transactions or ():
+        currency = str(row.get("currency") or "?").upper()
+        if (str(row.get("transactionType") or "").upper() == "SELL" and row.get("isCancellation") is not True
+                and currency in explained and str(row.get("settlementDate") or "") == today_kst):
+            settlements.append({"order": transaction_identity(row), "day": today_kst, "pocket": currency})
     residual = {"KRW": (current["KRW"] - previous["KRW"]) - explained["KRW"],
                 "USD": (current["USD"] - previous["USD"]) - explained["USD"]}
     tolerance = {"KRW": 1.0, "USD": 0.01}
@@ -1489,6 +1508,8 @@ def collect_toss(feed: Any, snapshot: Any, state_dir: Path, *, now: str) -> dict
     usable = bool(previous and krw is not None and usd is not None and previous.get("KRW") is not None
                   and previous.get("USD") is not None and previous.get("at"))
     orders: list[Mapping[str, Any]] = []
+    transactions: list[Mapping[str, Any]] = []
+    transactions_read = False
     truncated = False
     query: dict[str, str] = {}
     if usable:
@@ -1499,6 +1520,7 @@ def collect_toss(feed: Any, snapshot: Any, state_dir: Path, *, now: str) -> dict
                  "date_to": (until + kst).date().isoformat()}
         orders, truncated = feed.closed_orders(**query)
         orders = list(orders)
+        transactions, transactions_read = _settling_sells(feed, since_kst=since + kst)
 
     def rows(existing: list[dict[str, Any]], state: dict[str, Any]) -> list[Mapping[str, Any]]:
         on_file = state.get("toss")
@@ -1515,7 +1537,8 @@ def collect_toss(feed: Any, snapshot: Any, state_dir: Path, *, now: str) -> dict
             # The ledger has a later window than this cash point: a stale cache, start over from now. The
             # stretch between that window's end and now gets no window; it is named, not left silent.
             return [_toss_skip(str(last["window_end"]), now, SKIP_CASH_POINT_BEHIND)]
-        return _toss_rows(existing, previous, current, orders, truncated, query, rate=rate, now=now)
+        return _toss_rows(existing, previous, current, orders, truncated, query, rate=rate, now=now,
+                          transactions=transactions, transactions_read=transactions_read)
 
     def patch(state: dict[str, Any], _after: list[dict[str, Any]]) -> None:
         state["toss"] = current
@@ -1579,7 +1602,7 @@ QUIET_WINDOW_TOLERANCE_CAP_KRW = 1000.0
 # amount. Written on the residual line as ``quiet_window_declined`` and shown on ``--flows``. ``settlement`` and
 # ``fill`` are v1's (a v1 line's derived reason); ``open_order`` and ``too_small`` are v2's.
 QUIET_WINDOW_DECLINES = ("orders_truncated", "exchange_pair", "identity_unstable", "settlement", "fill",
-                         "open_order", "krw_not_open", "usd_moved", "too_small", "not_round")
+                         "open_order", "krw_not_open", "usd_moved", "too_small", "not_round", "transactions_unread")
 # A line written before the field existed: the reason is derived from the stored window by v1, the rule then in
 # force. The stored amounts are rounded, so a decline below their precision (under one won, under a cent) — or
 # a window older than the rule — cannot be told from a pass.
@@ -1702,11 +1725,29 @@ def _rule_resolution(target: str, kind: str, *, now: str, split: tuple[float, fl
             "rule_tolerance_krw": f"{tolerance:.0f}"}
 
 
+def _settling_sells(feed: Any, *, since_kst: datetime) -> tuple[list[Mapping[str, Any]], bool]:
+    """The transaction list's sells settling from the window's first KST day on (``to`` left open, so an unsettled
+    sale shows under its expected date), and whether that read is whole. A refused, failed or truncated read, or
+    a feed without the read, is ``(rows, False)``: the window then cannot evidence a settlement day and spoils its
+    own (fail-closed), and the quiet-window rule declines it."""
+    reader = getattr(feed, "transactions", None)
+    if reader is None:
+        return [], False
+    try:
+        rows, truncated = reader(date_from=(since_kst - timedelta(days=1)).date().isoformat(), date_to=None,
+                                 transaction_types=("SELL",))
+    except Exception:  # noqa: BLE001 — the cash reconciliation stands without it; the window records the gap
+        return [], False
+    return [r for r in rows if isinstance(r, Mapping)], not truncated
+
+
 def _toss_rows(existing: list[dict[str, Any]], previous: Mapping[str, Any], current: Mapping[str, Any],
                orders: list[Mapping[str, Any]], truncated: bool, query: Mapping[str, str], *, rate: float | None,
-               now: str) -> list[dict[str, Any]]:
+               now: str, transactions: list[Mapping[str, Any]] | None = None,
+               transactions_read: bool = False) -> list[dict[str, Any]]:
     window = f"{previous['at']}..{now}"
-    result = reconcile_window(previous, current, orders, since=previous["at"], until=now, rate=rate)
+    result = reconcile_window(previous, current, orders, since=previous["at"], until=now, rate=rate,
+                              transactions=transactions)
     residual, open_ = result["residual"], result["open"]
     bounds = {"window_start": previous["at"], "window_end": now}
     out: list[dict[str, Any]] = [{
@@ -1716,6 +1757,7 @@ def _toss_rows(existing: list[dict[str, Any]], previous: Mapping[str, Any], curr
         "residual_status": {p: "OPEN" if flag else "CLEAR" for p, flag in open_.items()},
         "orders_truncated": bool(truncated), "exchange_pair": result["exchange"],
         "order_hash_basis": result["basis"], "identity_stable": result["identity_stable"], "orders_query": dict(query),
+        "transactions_read": bool(transactions_read),
         "source_confidence": UNRESOLVED if any(open_.values()) else RECONCILED, "accounting_status": "SHADOW_ONLY"}]
     if result["exchange"]:
         out.append({"event": EVENT_TOSS_EXCHANGE, "source": "toss", "source_event_key": f"toss:exchange:{window}",
@@ -1725,6 +1767,10 @@ def _toss_rows(existing: list[dict[str, Any]], previous: Mapping[str, Any], curr
         kind, declined = quiet_window_verdict(
             result, truncated=bool(truncated), open_orders=(previous.get("open_orders"), current.get("open_orders")),
             day_fills_krw=_day_fills_krw(orders, since=previous["at"], until=now))
+        if kind == "income" and not transactions_read:
+            # v3 takes a small inflow as income only where nothing settled; an unread transaction list cannot
+            # say so (§10). A round deposit or withdrawal does not depend on it and still closes.
+            kind, declined = None, "transactions_unread"
         for pocket, flag in open_.items():
             if flag:
                 out.append({"event": EVENT_TOSS_RESIDUAL, "source": "toss",
@@ -1857,6 +1903,10 @@ def toss_evidence(rows: list[Mapping[str, Any]], *, epoch: int, today_kst: str) 
     for v in verdicts:      # a residual, a truncated read or an exchange on the day spoils it too
         if v["end_kst"] in days and not all(v["clean"].values()):
             days[v["end_kst"]]["spoiled"] = True
+        # §10: a window that could not read the transaction list whole may have missed the day's settlement;
+        # the day is no evidence then. Windows written before the field existed read as whole.
+        if v["end_kst"] in days and v["row"].get("transactions_read", True) is False:
+            days[v["end_kst"]]["spoiled"] = True
     if after:               # and no day the problem window touched comes back
         for day in {v["end_kst"] for v in verdicts if v["problem"]}:
             if day in days:
@@ -1953,6 +2003,7 @@ SETTLEMENT_REASONS = (
     "exchange",               # a window ending that day matched an exchange pair
     "identity_unstable",      # a window ending that day held an order it could not name
     "late_amendment",         # a window ending that day was amended by a later read
+    "transactions_unread",    # a window ending that day could not read the transaction list whole
     "settlement_revised",     # a later read moved a settlement recorded for that day
     "problem_window",         # an unexplained window ended that day after the last problem
     "before_last_problem",    # windows ending that day predate the last unexplained window: not counted
@@ -1996,6 +2047,8 @@ def settlement_diagnosis(rows: list[Mapping[str, Any]], state: Mapping[str, Any]
             row["reasons"].add("identity_unstable")
         if v["late"]:
             row["reasons"].add("late_amendment")
+        if w.get("transactions_read", True) is False:
+            row["reasons"].add("transactions_unread")
         for a in v["late"]:
             if a.get("kind") == "settlement_revised":
                 day(str(a.get("day")))["reasons"].add("settlement_revised")
@@ -2077,13 +2130,23 @@ def reconciliation_fingerprint() -> str:
     return hashlib.sha256(shapes.encode("utf-8")).hexdigest()[:16]
 
 
+# The transaction list's sells every digest case reads (§10): one settling on the case's KST day, one a day later,
+# one cancelled, one a buy. Only the first is a settlement.
+_DIGEST_TRANSACTIONS: tuple[dict[str, Any], ...] = (
+    {"transactionType": "SELL", "currency": "KRW", "settlementDate": "2026-01-01", "isCancellation": False},
+    {"transactionType": "SELL", "currency": "KRW", "settlementDate": "2026-01-02", "isCancellation": False},
+    {"transactionType": "SELL", "currency": "KRW", "settlementDate": "2026-01-01", "isCancellation": True},
+    {"transactionType": "BUY", "currency": "KRW", "settlementDate": "2026-01-01", "isCancellation": False},
+)
+
+
 def reconciliation_digest() -> str:
     """What the reconciliation does to :data:`_DIGEST_CASES`, hashed. An epoch needs this to differ from
     the last epoch's: an unrelated code change leaves it as it was."""
     outputs = []
     for previous, current, orders, rate in _DIGEST_CASES:
         result = reconcile_window(previous, current, orders, since="2026-01-01T00:00:00Z",
-                                  until="2026-01-01T01:00:00Z", rate=rate)
+                                  until="2026-01-01T01:00:00Z", rate=rate, transactions=_DIGEST_TRANSACTIONS)
         result["residual"] = {p: round(v, 6) for p, v in result["residual"].items()}
         outputs.append(result)
     window = {"event": EVENT_TOSS_WINDOW, "epoch": 1, "source_event_key": "toss:window:a..b",
