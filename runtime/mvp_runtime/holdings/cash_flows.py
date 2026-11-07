@@ -1869,9 +1869,13 @@ def toss_evidence(rows: list[Mapping[str, Any]], *, epoch: int, today_kst: str) 
             "problem_windows": sum(1 for v in verdicts if v["problem"])}
 
 
+def _legacy_clean_days(counters: Mapping[str, Any], today_kst: str) -> list[str]:
+    return [d for d, row in (counters.get("settlement_days") or {}).items()
+            if d < today_kst and row.get("windows", 0) >= SETTLEMENT_MIN_WINDOWS and not row.get("unexplained")]
+
+
 def _legacy_semantics(counters: Mapping[str, Any], today_kst: str) -> tuple[str, str]:
-    clean = [d for d, row in (counters.get("settlement_days") or {}).items()
-             if d < today_kst and row.get("windows", 0) >= SETTLEMENT_MIN_WINDOWS and not row.get("unexplained")]
+    clean = _legacy_clean_days(counters, today_kst)
     if counters.get("activity_unexplained"):
         return "MIXED", f"{counters['activity_unexplained']} window(s) with a fill or settlement left a residual"
     missing = [name for name, ok in (("a buy", counters.get("buy_explained")),
@@ -1927,6 +1931,114 @@ def toss_needs(rows: list[Mapping[str, Any]], verdict: str, *, today_kst: str) -
     missing = [name for name, ok in (("buy", evidence["buy_explained"]), ("sell", evidence["sell_explained"]),
                                      ("settlement_day", evidence["clean_settlement_days"])) if not ok]
     return missing or ["review"]
+
+
+
+# --- settlement-day diagnosis (Thomas 2026-11-07) ----------------------------------------------------------
+#
+# Why ``toss_needs`` still says ``settlement_day``, as counts and closed reason codes a door can carry: per
+# KST day, how many windows ended on it, how many of the counted ones recorded a settlement, whether the day
+# is clean, and which of :func:`toss_evidence`'s conditions held it back. It mirrors that function rather
+# than extending it: ``toss_evidence``'s output is inside :func:`reconciliation_digest`, and a changed digest
+# is an epoch transition. ``clean`` is read off ``toss_evidence`` itself, so the two cannot disagree on it.
+# No order hash, window time, residual value or amount appears; a KST date is the exposure the door
+# already accepts (HOLDINGS_STATUS_READ_AND_AUTO_FLOWS §2.2).
+
+SETTLEMENT_REASONS = (
+    "no_settlement_record",   # no counted window ending that day read a sell settling on it
+    "too_few_windows",        # fewer than SETTLEMENT_MIN_WINDOWS counted windows recorded the settlement
+    "pocket_not_clear",       # a window that recorded the settlement left its own pocket's residual open
+    "residual_open",          # a window ending that day left a residual in either pocket
+    "truncated",              # a window ending that day read a truncated order list
+    "exchange",               # a window ending that day matched an exchange pair
+    "identity_unstable",      # a window ending that day held an order it could not name
+    "late_amendment",         # a window ending that day was amended by a later read
+    "settlement_revised",     # a later read moved a settlement recorded for that day
+    "problem_window",         # an unexplained window ended that day after the last problem
+    "before_last_problem",    # windows ending that day predate the last unexplained window: not counted
+    "not_yet_passed",         # the day is today (KST) or later
+)
+JUDGED_BY = ("legacy_counters", "windows")
+DIAGNOSIS_DAYS = 14
+
+
+def settlement_diagnosis(rows: list[Mapping[str, Any]], state: Mapping[str, Any], *,
+                         today_kst: str) -> dict[str, Any]:
+    """The settlement-day half of the Toss check, per KST day over the last :data:`DIAGNOSIS_DAYS` days."""
+    epoch = toss_epoch(rows)
+    evidence = toss_evidence(rows, epoch=epoch, today_kst=today_kst)
+    verdicts = _window_verdicts(rows, epoch)
+    after = max((_iso_ms(v["row"]["window_end"]) or 0 for v in verdicts if v["problem"]), default=0)
+    first = (date.fromisoformat(today_kst) - timedelta(days=DIAGNOSIS_DAYS - 1)).isoformat()
+    days: dict[str, dict[str, Any]] = {}
+
+    def day(name: str) -> dict[str, Any]:
+        return days.setdefault(name, {"windows": 0, "settlement_windows": set(), "reasons": set()})
+
+    entries = 0
+    for v in verdicts:
+        w = v["row"]
+        entries += len(w.get("settlements") or [])
+        row = day(v["end_kst"])
+        row["windows"] += 1
+        counted = (_iso_ms(w["window_start"]) or 0) >= after
+        if not counted:
+            row["reasons"].add("before_last_problem")
+        if v["problem"] and after:
+            row["reasons"].add("problem_window")
+        status = w.get("residual_status") or {}
+        if any(status.get(p) != "CLEAR" for p in ("KRW", "USD")):
+            row["reasons"].add("residual_open")
+        for flag, reason in (("orders_truncated", "truncated"), ("exchange_pair", "exchange")):
+            if w.get(flag):
+                row["reasons"].add(reason)
+        if w.get("identity_stable") is not True:
+            row["reasons"].add("identity_unstable")
+        if v["late"]:
+            row["reasons"].add("late_amendment")
+        for a in v["late"]:
+            if a.get("kind") == "settlement_revised":
+                day(str(a.get("day")))["reasons"].add("settlement_revised")
+        if counted:
+            for entry in w.get("settlements") or []:
+                target = day(str(entry.get("day")))
+                target["settlement_windows"].add(w["source_event_key"])
+                if not v["clean"].get(str(entry.get("pocket")), False):
+                    target["reasons"].add("pocket_not_clear")
+    clean = set(evidence["clean_settlement_days"])
+    out = []
+    for name in sorted(d for d in days if first <= d <= today_kst):
+        row = days[name]
+        settled = len(row["settlement_windows"])
+        reasons = set(row["reasons"])
+        if not settled:
+            reasons.add("no_settlement_record")
+        elif settled < SETTLEMENT_MIN_WINDOWS:
+            reasons.add("too_few_windows")
+        if name >= today_kst:
+            reasons.add("not_yet_passed")
+        out.append({"day": name, "windows": row["windows"], "settlement_windows": settled,
+                    "clean": name in clean, "reasons": [r for r in SETTLEMENT_REASONS if r in reasons]})
+    result: dict[str, Any] = {"epoch": epoch, "judged_by": "windows" if epoch else "legacy_counters",
+                              "settlement_entries": entries, "sells_explained": evidence["sell_explained"],
+                              "clean_days": len(clean), "days": out}
+    if not epoch:
+        legacy = _legacy(rows)
+        try:
+            counters = legacy.get("toss_evidence") if legacy else _legacy_fields(state)[0]
+        except ToolError:
+            counters = None
+        if isinstance(counters, Mapping):
+            result["legacy_clean_days"] = len(_legacy_clean_days(counters, today_kst))
+    return result
+
+
+def _diagnosis_or_none(rows: list[Mapping[str, Any]], state: Mapping[str, Any], *, today_kst: str) -> dict | None:
+    """The diagnosis explains the check; it never costs it. A defect here leaves it out of the snapshot."""
+    try:
+        return settlement_diagnosis(rows, state, today_kst=today_kst)
+    except Exception:  # noqa: BLE001 — readiness and its alerts must not depend on the explanation
+        return None
 
 
 # --- semantics epochs (H6d-min D4) -------------------------------------------------------------------------
@@ -2157,6 +2269,7 @@ def readiness(state_dir: Path, *, now: str, current: Mapping[str, Any] | None = 
     ready = all(value == PASS for value in checks.values())
     return {"checks": checks, "toss_note": toss_why, "toss_epoch": toss_epoch(rows),
             "toss_needs": toss_needs(rows, toss, today_kst=today_kst), "shadow_days": round(days, 1),
+            "toss_diagnosis": _diagnosis_or_none(rows, state, today_kst=today_kst),
             "shadow_success_dates": len(dates), "exceptions": len(exceptions), "ready": ready,
             "open_exception_keys": sorted(exceptions),
             # R-3 (가-수정): ``absent`` and ``observed`` both mean the history before the checkpoint is
