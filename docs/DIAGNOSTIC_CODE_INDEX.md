@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **659** distinct codes across **1335** raise sites
+- **659** distinct codes across **1336** raise sites
 - **22** exception classes carry them
 - **65** codes are raised from more than one module (see below)
 - **179** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -858,6 +858,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `listed_etfs` | `not isinstance(rows, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `open_orders` | `not isinstance(orders, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `stock_info` | `not isinstance(rows, list)` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `transactions` | `not isinstance(listed, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | `_parse` | `—` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | `_parse` | `not isinstance(rows, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | `competition` | `—` |
