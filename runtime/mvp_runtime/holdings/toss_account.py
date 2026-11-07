@@ -17,6 +17,8 @@ reads (accounts, holdings, cash buying power, the exchange rate and, since H6a, 
 by path constants, every one a GET, and has no method that places, modifies or cancels an order. Since
 RB2' (2026-10-26) the candidate report adds four more GETs: listed ETFs, stock info, daily candles and the
 account's commission rates. They serve Thomas's terminal only (raw quotes never reach a model prompt).
+Since 2026-11-07 (Thomas, option A) the feed also reads the account's transaction list, a GET: it is the
+settlement-day source the closed-order list could not be (its ``settlementDate`` comes back null).
 
 **What the official docs put on this module** (read 2026-10-07):
 
@@ -96,6 +98,11 @@ EXCHANGE_RATE_PATH = "/api/v1/exchange-rate"
 # orders already placed; the feed has no method that places, modifies or cancels one.
 ORDERS_PATH = "/api/v1/orders"
 ORDERS_PAGE_LIMIT = 100
+# H6 settlement source (Thomas 2026-11-07, option A): the transaction list — trades with ``settlementDate`` and
+# ``settled``, plus deposits, withdrawals, exchanges, dividends, interest and fees. A GET; read-only like the rest.
+# The live closed-order list returns ``execution.settlementDate: null`` on every filled order (probe 2026-11-07).
+TRANSACTIONS_PATH = "/api/v1/transactions"
+TRANSACTIONS_PAGE_LIMIT = 100
 # RB2' (Thomas 2026-10-26): the candidate screening report's reads — market data and listings, no account
 # data except the account's commission rates. Every one a GET (`scripts/rebalance_candidates.py`).
 STOCKS_ALL_PATH = "/api/v1/stocks/all"
@@ -308,6 +315,36 @@ class TossHoldingsFeed:
             if not isinstance(orders, list):
                 raise ToolError("MALFORMED_RESULT", "closed orders carried no list")
             rows.extend(order for order in orders if isinstance(order, dict))
+            cursor = result.get("nextCursor") if result.get("hasNext") else None
+            if not cursor:
+                return rows, False
+        return rows, True
+
+    def transactions(self, *, date_from: str | None, date_to: str | None,
+                     transaction_types: tuple[str, ...] = (), max_pages: int = 10,
+                     timeout_seconds: int = 10) -> tuple[list[dict[str, Any]], bool]:
+        """The account's transactions whose ``settlementDate`` falls in ``date_from``..``date_to`` (KST dates,
+        inclusive; an unsettled trade is filed under its expected date, and ``date_to=None`` keeps the unsettled
+        ones whose expected date is still ahead), optionally only ``transaction_types``, and whether the pages
+        ran out before the list did. Unsettled rows come first. Rows carry symbols and amounts and no order id:
+        in this process only. Unknown ``transactionType`` values pass through untouched (the spec says to allow
+        them); the caller decides what it reads."""
+        self._resolve_account(timeout_seconds=timeout_seconds)
+        rows: list[dict[str, Any]] = []
+        cursor: str | None = None
+        for _ in range(max_pages):
+            params = {"limit": str(TRANSACTIONS_PAGE_LIMIT)}
+            params.update({k: v for k, v in (("from", date_from), ("to", date_to)) if v is not None})
+            if transaction_types:
+                params["transactionTypes"] = ",".join(transaction_types)
+            if cursor:
+                params["cursor"] = cursor
+            result = self._get(TRANSACTIONS_PATH, params, account=True, what="transactions",
+                               timeout_seconds=timeout_seconds)
+            listed = result.get("transactions") if isinstance(result, dict) else None
+            if not isinstance(listed, list):
+                raise ToolError("MALFORMED_RESULT", "transactions carried no list")
+            rows.extend(row for row in listed if isinstance(row, dict))
             cursor = result.get("nextCursor") if result.get("hasNext") else None
             if not cursor:
                 return rows, False
