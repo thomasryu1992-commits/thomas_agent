@@ -5,7 +5,10 @@
 ``docs/proposals/PORTFOLIO_CASH_FLOW_LEDGER_V0.1.md`` H6a (Thomas 2026-10-08). For every Binance history
 in ``binance_wallet.FLOW_SOURCES`` and Toss's closed-order list, it prints PASS with a row count, or the
 refusal's reason code and the venue's own numeric code — never a row, an amount, an asset or a symbol.
-For Toss it also says whether the fields H6b would reconcile by are present on the rows it saw.
+For Toss it also says whether the fields H6b would reconcile by are present on the rows it saw, and, since
+2026-11-07 (Thomas, option A), what the transaction list holds: counts by type and settled state, the shape of
+``settlementDate`` and ``settled``, and — for sells only — each one's settlement date and asset class (a date
+and a class, never a symbol, ISIN, quantity, price or amount), because the H6 settlement day is read off them.
 
 Read-only: every request is a GET through the feeds' own allowlists. It writes nothing. It needs the
 lane's gates and keys, so it runs in scheduler-maint. The Toss read issues a token, which revokes the
@@ -62,6 +65,53 @@ def probe_toss(feed, *, today) -> list[str]:
             "toss    execution fields present  : " + ", ".join(f"{k} {v}/{len(rows)}" for k, v in present.items())]
 
 
+def _date_shape(value) -> str:
+    if value is None:
+        return "null"
+    text = str(value)
+    if len(text) == 10 and text[4] == "-" and text[7] == "-" and text.replace("-", "").isdigit():
+        return "YYYY-MM-DD"
+    return "other"
+
+
+def probe_toss_transactions(feed, *, today) -> list[str]:
+    """Two reads: every type over the last 30 settlement days with no upper bound (so unsettled trades show),
+    and the sells alone. Counts, shapes, and a sell's settlement date and asset class; no other value."""
+    try:
+        rows, truncated = feed.transactions(date_from=(today - timedelta(days=30)).isoformat(), date_to=None)
+        sells, sells_truncated = feed.transactions(date_from=(today - timedelta(days=30)).isoformat(), date_to=None,
+                                                   transaction_types=("SELL",))
+    except MvpRuntimeError as exc:
+        return [f"toss    {'transactions':26}: {_refusal(exc)}"]
+    counts: dict[str, int] = {}
+    for row in rows:
+        kind = str(row.get("transactionType"))
+        state = "settled" if row.get("settled") is True else "unsettled" if row.get("settled") is False else "settled?"
+        key = f"{kind}/{state}" + ("/cancel" if row.get("isCancellation") is True else "")
+        counts[key] = counts.get(key, 0) + 1
+    shapes: dict[str, int] = {}
+    for row in rows:
+        key = f"settlementDate {_date_shape(row.get('settlementDate'))}"
+        shapes[key] = shapes.get(key, 0) + 1
+    lines = [f"toss    {'transactions':26}: PASS rows={len(rows)} (settled since {(today - timedelta(days=30))}, "
+             f"plus unsettled){' TRUNCATED' if truncated else ''}",
+             "toss    transactions by type     : " + (", ".join(f"{k} {v}" for k, v in sorted(counts.items())) or "none"),
+             "toss    transactions shapes      : " + (", ".join(f"{k} {v}" for k, v in sorted(shapes.items())) or "none")]
+    lines.append(f"toss    {'transactions SELL':26}: rows={len(sells)}{' TRUNCATED' if sells_truncated else ''}")
+    for row in sells:
+        day = row.get("settlementDate")
+        shape = _date_shape(day)
+        settled = row.get("settled")
+        asset = row.get("assetClass")
+        currency = row.get("currency")
+        lines.append(f"toss      sell: settlementDate {day if shape == 'YYYY-MM-DD' else shape}"
+                     f" settled {settled if isinstance(settled, bool) else 'missing'}"
+                     f" assetClass {asset if asset in ('STOCK', 'BOND', 'OPTION', None) else 'other'}"
+                     f" currency {currency if currency in ('KRW', 'USD') else 'other'}"
+                     f" cancellation {row.get('isCancellation') is True}")
+    return lines
+
+
 def main(argv: list[str] | None = None) -> int:
     force_utf8_io()
     wallet = binance_wallet.select_wallet_feed()
@@ -76,6 +126,8 @@ def main(argv: list[str] | None = None) -> int:
     else:
         today = timeutil.parse_iso(timeutil.utc_now_iso()).date()
         for line in probe_toss(toss, today=today):
+            print(line)
+        for line in probe_toss_transactions(toss, today=today):
             print(line)
     return EXIT_OK
 
