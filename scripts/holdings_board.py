@@ -18,6 +18,7 @@
     python -m scripts.holdings_board --autoinvest-status            # the approved scenario and its journal
     python -m scripts.holdings_board --resolve KEY --kind deposit --by thomas --reason "..."   # terminal only
     python -m scripts.holdings_board --semantics-epoch --change-ref "#1203" --by thomas --reason "..."
+    python -m scripts.holdings_board --carry-evidence --by thomas --reason "..."   # once per epoch, terminal only
     python -m scripts.holdings_board --toss-continuity              # do the Toss windows tile the stretch since the cutover
     python -m scripts.holdings_board --adopt-ledger --by thomas --reason "..."                     # step one: what would be adopted
     python -m scripts.holdings_board --adopt-ledger --by thomas --reason "..." --confirm 1a2b3c4d  # step two: adopt
@@ -77,6 +78,12 @@ HELD (a review is not evidence, and nothing is eligible for accounting in H6b). 
 reconciliation digest and asks for its first 8 characters back. Both writes need an interactive
 terminal, ``--by`` and ``--reason``, and run as the service user (``docker exec -it -u 10001
 thomas-scheduler-maint ...``). The keys name venue events: these are Thomas's, on his terminal.
+
+**``--carry-evidence``** (PORTFOLIO_CASH_FLOW_LEDGER §11, Thomas 2026-11-07) carries the previous epoch's
+explained buys and sells and one settlement day into the current epoch, once. It reads the transaction list's
+settled sells (a Toss GET, which reissues the lane's token like ``--full``), checks that day's previous-epoch
+windows (at least 12, all clean), prints what it would carry, and asks for the settlement day typed back. Same
+terminal, ``--by``, ``--reason`` and service-user rules as the epoch.
 
 **``--toss-continuity``** (C7 D2, Thomas 2026-10-11) reads the verified ledger and says whether its Toss
 windows tile the stretch from the latest cutover to the last window: ``CONTINUOUS``, ``UNEXPLAINED_GAP``,
@@ -155,6 +162,8 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--resolve", metavar="KEY", help="close one H6 exception's review (Thomas, terminal only)")
     mode.add_argument("--semantics-epoch", action="store_true",
                       help="start a new Toss semantics epoch after a reconciliation change (Thomas, terminal only)")
+    mode.add_argument("--carry-evidence", action="store_true",
+                      help="carry the previous epoch's buy, sell and settlement day into this one (Thomas, once)")
     mode.add_argument("--toss-continuity", action="store_true",
                       help="whether the Toss windows tile the stretch since the cutover (C7 D2; terminal only)")
     mode.add_argument("--rebalance", action="store_true",
@@ -224,6 +233,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.flows or args.resolve or args.semantics_epoch:
         return _exceptions(args)
+
+    if args.carry_evidence:
+        return _carry_evidence(args)
 
     if args.toss_continuity:
         return _toss_continuity()
@@ -412,6 +424,42 @@ def _exceptions(args: argparse.Namespace) -> int:
                                                    interactive=True)
         print(f"toss semantics epoch {written['epoch']} started (previous: {written['previous_epoch_status']}); "
               "it starts WAITING")
+        return EXIT_OK
+    except MvpRuntimeError as exc:
+        print(f"refused ({exc.reason_code}): {exc}")
+        return EXIT_BLOCKED
+
+
+def _carry_evidence(args: argparse.Namespace) -> int:
+    """§11: show what the previous epoch can carry, then write it on the settlement day typed back."""
+    from datetime import timedelta
+
+    from runtime.mvp_runtime.holdings import cash_flows, toss_account
+
+    try:
+        assert_not_foreign_root_run()
+        if not _interactive():
+            raise ToolError(cash_flows.CARRY_REFUSED, "evidence is carried at an interactive terminal (docker exec -it)")
+        if not (args.by or "").strip() or not (args.reason or "").strip():
+            raise ToolError(cash_flows.CARRY_REFUSED, "carrying evidence needs --by and --reason")
+        feed = toss_account.select_holdings_feed()
+        if not isinstance(feed, toss_account.TossHoldingsFeed):
+            raise ToolError(cash_flows.CARRY_REFUSED,
+                            "the Toss account gate is off here: run it in thomas-scheduler-maint")
+        today = (timeutil.parse_iso(timeutil.utc_now_iso()) + timedelta(hours=9)).date()
+        sells, truncated = feed.transactions(date_from=(today - timedelta(days=60)).isoformat(), date_to=None,
+                                             transaction_types=("SELL",))
+        if truncated:
+            raise ToolError(cash_flows.CARRY_REFUSED, "the transaction list ran past its pages; nothing carried")
+        candidate = cash_flows.carry_candidate(cash_flows.verify(state_dir()), sells, today_kst=today.isoformat())
+        print(f"carry into epoch {candidate['epoch']} from epoch {candidate['from_epoch']}: "
+              f"buys {candidate['buys']}, sells {candidate['sells']}, settlement day {candidate['settlement_day']} "
+              f"({candidate['pocket']}, {candidate['day_windows']} windows, all clean)")
+        confirm = input("type the settlement day (YYYY-MM-DD) to carry it: ")
+        written = cash_flows.carry_evidence(state_dir(), sells, requested_by=args.by, reason=args.reason,
+                                            confirm=confirm, interactive=True)
+        print(f"carried into epoch {written['epoch']}: buys {written['buys']}, sells {written['sells']}, "
+              f"settlement day {written['settlement_day']}")
         return EXIT_OK
     except MvpRuntimeError as exc:
         print(f"refused ({exc.reason_code}): {exc}")
