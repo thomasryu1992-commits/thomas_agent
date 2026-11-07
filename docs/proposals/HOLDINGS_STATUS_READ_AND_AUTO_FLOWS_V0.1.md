@@ -95,7 +95,7 @@ v1.2의 `h6`에 `settlement` 블록 하나를 더한다. 같은 규칙을 따른
 | `h6.settlement.clean_days`, `legacy_clean_days` | 깨끗한 결제일 수(창 기준), epoch 0이면 고정 카운터 기준 수 | `toss_evidence`, 레거시 카운터 |
 | `h6.settlement.days[]` | 최근 14개 KST 날짜마다 `day`, `windows`(그날 끝난 창 수), `settlement_windows`(그날 결제를 기록한 셈에 드는 창 수), `clean`, `reasons` | `cash_flows.settlement_diagnosis` |
 
-`reasons`는 닫힌 목록이다: `no_settlement_record`, `too_few_windows`, `pocket_not_clear`, `residual_open`, `truncated`, `exchange`, `identity_unstable`, `late_amendment`, `settlement_revised`, `problem_window`, `before_last_problem`, `not_yet_passed`.
+`reasons`는 닫힌 목록이다: `no_settlement_record`, `too_few_windows`, `pocket_not_clear`, `residual_open`, `truncated`, `exchange`, `identity_unstable`, `late_amendment`, `transactions_unread`(2026-11-07, `PORTFOLIO_CASH_FLOW_LEDGER_V0.1.md` §10: 그날 끝난 창이 거래내역을 온전히 읽지 못했다), `settlement_revised`, `problem_window`, `before_last_problem`, `not_yet_passed`.
 
 - `clean`은 `toss_evidence`에서 그대로 가져온다. 진단과 판정이 서로 다른 답을 낼 수 없다.
 - 진단은 `toss_evidence`를 고치지 않고 따라 계산한다. `toss_evidence`의 출력은 `reconciliation_digest`에 들어 있고, digest가 바뀌면 epoch 전환이 되기 때문이다.
