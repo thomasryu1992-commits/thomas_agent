@@ -25,7 +25,17 @@
     settled rows. The evidence counts windows on a day, not orders, so identity across reads does not matter.
   - **`settled` is not required.** Whether the flag flips on the day itself is not observed yet. The expected
     date of an unsettled sale is what tells the fire, on the day, that the sale settles then.
-  - **Narrow failure.** A transient read failure must not raise a Toss exception that blocks H6. So it only
-    withdraws what depends on the list.
+  - **Narrow failure.** A read failure withdraws only what depends on the list. Fills, residuals and round
+    flows are untouched.
+    - A window with a small inflow and an unread list does stay open (`transactions_unread`). That is one Toss
+      exception for Thomas to resolve, and it is fail-closed on purpose.
+    - The same holds on a real settlement day. Before this, no window ever recorded a settlement, so v3 closed
+      every small inflow as income. From now on a small inflow on a settlement day stays open: one exception,
+      resolved at Thomas's terminal.
+- **Known gap, not built:** no `settlement_revised` amendment for transaction entries.
+  - An unsettled sale is recorded under its expected date. If it actually settles on another day, the earlier
+    entries stand and that day can count as a settlement day.
+  - The entry's hash includes the date, so a later read cannot be matched to withdraw it.
+  - Domestic T+2 is deterministic, so the risk is low. The spec warns that US dates can differ.
 - **Next:** after this deploys, Thomas starts epoch 1 (`--semantics-epoch`). Epoch 0's frozen counters hold no
   clean settlement day and can never pass. Epoch 1 gathers a buy, a sell and a settlement day again.
