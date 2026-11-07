@@ -28,6 +28,8 @@ instants and compared sizes and families. No real cohort ever held these symbols
 nothing and BLOCK every arm. What stands in: the held-out fire run on the original POOLED symbols reproduces the
 original `pooled-1d` shard's rows, hash for hash, before the official run. The test pins that `run_factory`
 receives the same arguments apart from the legs.
+Measured on the branch, both arms, on 2021-12-08, 12-09 and 2022-01-07 with the shard's own store (0, 8 and 240
+rows): identical. The original shards and today's `forward_replay` both hash to `2285b619`.
 
 **Why the fire span stops at the last anchor.** The original's fires after 2026-07-27 served only the sanity
 comparison at the 09-23, 10-01 and 11-04 freezes. Without it, nothing reads them. Stopping there also keeps every

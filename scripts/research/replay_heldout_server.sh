@@ -22,7 +22,7 @@ for arm in A B; do
     done
   done
 done
-# 3. the 1d shards, A then B (the 4h shards are the Mac's: replay_heldout_mac.sh)
+# 3. the 1d shards, A then B (the Mac runs all four; the first finished 1d copy is judged, overlaps compared)
 for arm in A B; do
   run simulate --context heldout-1d --arm "$arm" --out "$base/shards/heldout-1d.$arm.jsonl" \
     > "$base/logs/heldout-1d.$arm.log" 2>&1
