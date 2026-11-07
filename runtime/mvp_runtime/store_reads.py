@@ -676,14 +676,17 @@ def read_lane_digest(ledger: LedgerStore | None, argument: str | None, *, now: s
     }
 
 
-# --- reply contract v1.2 for holdings_status (HOLDINGS_STATUS_READ_AND_AUTO_FLOWS R1–R3, Thomas 2026-10-26;
-# H6B_UNIT_SHADOW S5, Thomas 2026-10-28) ---
+# --- reply contract v1.3 for holdings_status (HOLDINGS_STATUS_READ_AND_AUTO_FLOWS R1–R3, Thomas 2026-10-26;
+# H6B_UNIT_SHADOW S5, Thomas 2026-10-28; settlement diagnosis, Thomas 2026-11-07) ---
 #
 # The §4.19.2 v1 (freshness only) plus the H6 readiness checks by name and state, the open-exception count,
 # the shadow progress and what the Toss check still needs. Rebuilt from a closed allowlist over the stored
 # snapshot's ``cash_flows.readiness``: no amount, weight, holding, account, exception key, ``next_step`` or
 # ``toss_note`` text, and no key the snapshot gains later. v1.2 adds ``unit_shadow``: the H6b-shadow's state,
 # days, applied-flow and held counts and whether H6c may be asked — never NAV/unit or its drawdown (S5).
+# v1.3 adds ``h6.settlement``: why the Toss check's settlement day is not clean yet — the semantics epoch,
+# which judge decides it, and per KST day the window counts, ``clean`` and closed reason codes. No order
+# hash, window time, residual or amount (§2.1b).
 # ``holdings`` is a domain package, so it is imported here, at the read, never at module level
 # (tests/test_mvp_runtime_domain_isolation.py).
 
@@ -691,8 +694,60 @@ HOLDINGS_STATUS = "HOLDINGS_STATUS"
 _HOLDINGS_MISSING = "HOLDINGS_SNAPSHOT_MISSING"
 
 
+_KST_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}\Z")
+
+
+def _settlement_schema(reasons: tuple[str, ...], judges: tuple[str, ...], max_days: int) -> dict[str, Any]:
+    count = {"type": "integer", "minimum": 0}
+    day = {"type": "object", "additionalProperties": False,
+           "required": ["day", "windows", "settlement_windows", "clean", "reasons"],
+           "properties": {"day": {"type": "string", "pattern": _KST_DAY.pattern}, "windows": count,
+                          "settlement_windows": count, "clean": {"type": "boolean"},
+                          "reasons": {"type": "array", "uniqueItems": True, "items": {"enum": list(reasons)}}}}
+    return {"type": "object", "additionalProperties": False, "required": ["epoch", "judged_by", "days"],
+            "properties": {"epoch": count, "judged_by": {"enum": [*judges, "UNKNOWN"]},
+                           "settlement_entries": count, "sells_explained": count, "clean_days": count,
+                           "legacy_clean_days": count,
+                           "days": {"type": "array", "maxItems": max_days, "items": day}}}
+
+
+def _project_settlement(raw: Mapping[str, Any], reasons: tuple[str, ...], judges: tuple[str, ...],
+                        max_days: int) -> tuple[dict[str, Any] | None, bool]:
+    """The snapshot's ``toss_diagnosis`` rebuilt from its allowlist; (None, True) when it is unusable."""
+    epoch = _nonneg_int(raw.get("epoch"))
+    if epoch is None:
+        return None, True
+    judge = raw.get("judged_by")
+    partial = judge not in judges
+    out: dict[str, Any] = {"epoch": epoch, "judged_by": judge if judge in judges else "UNKNOWN"}
+    for name in ("settlement_entries", "sells_explained", "clean_days", "legacy_clean_days"):
+        number = _nonneg_int(raw.get(name))
+        if number is not None:
+            out[name] = number
+        elif name in raw:
+            partial = True
+    days = []
+    raw_days = raw.get("days") if isinstance(raw.get("days"), list) else []
+    partial = partial or not isinstance(raw.get("days"), list) or len(raw_days) > max_days
+    for row in raw_days[-max_days:]:
+        if not isinstance(row, Mapping) or not (isinstance(row.get("day"), str) and _KST_DAY.match(row["day"])):
+            partial = True
+            continue
+        windows, settled = _nonneg_int(row.get("windows")), _nonneg_int(row.get("settlement_windows"))
+        if windows is None or settled is None or not isinstance(row.get("clean"), bool):
+            partial = True
+            continue
+        listed = row.get("reasons") if isinstance(row.get("reasons"), list) else []
+        kept = [r for r in dict.fromkeys(listed) if isinstance(r, str) and r in reasons]
+        partial = partial or len(kept) != len(listed) or not isinstance(row.get("reasons"), list)
+        days.append({"day": row["day"], "windows": windows, "settlement_windows": settled,
+                     "clean": row["clean"], "reasons": kept})
+    out["days"] = days
+    return out, partial
+
+
 def _holdings_schema(checks: tuple[str, ...], statuses: tuple[str, ...], needs: tuple[str, ...],
-                     shadow_states: tuple[str, ...]) -> dict[str, Any]:
+                     shadow_states: tuple[str, ...], settlement: dict[str, Any]) -> dict[str, Any]:
     state = {"enum": [*statuses, "UNKNOWN"]}
     h6 = {"type": "object", "additionalProperties": False,
           "required": ["ready", "checks", "open_exceptions"],
@@ -704,6 +759,7 @@ def _holdings_schema(checks: tuple[str, ...], statuses: tuple[str, ...], needs: 
               "shadow_days": _NUMBER_SCHEMA,
               "shadow_success_dates": {"type": "integer", "minimum": 0},
               "toss_needs": {"type": "array", "uniqueItems": True, "items": {"enum": list(needs)}},
+              "settlement": settlement,
           }}
     count = {"type": "integer", "minimum": 0}
     shadow = {"type": "object", "additionalProperties": False, "required": ["state", "h6c_askable"],
@@ -722,13 +778,16 @@ def _holdings_schema(checks: tuple[str, ...], statuses: tuple[str, ...], needs: 
 
 
 def project_holdings_status(view: Any, *, now: str) -> dict[str, Any]:
-    """``holdings.store.load_holdings_view``'s data as the v1.2 contract. Refused whole on a schema defect."""
+    """``holdings.store.load_holdings_view``'s data as the v1.3 contract. Refused whole on a schema defect."""
     from .holdings import store as holdings_store         # domain package: at the read, never at import
 
     checks_known, statuses, needs_known = (holdings_store.READINESS_CHECKS, holdings_store.READINESS_STATUSES,
                                            holdings_store.TOSS_NEEDS)
     shadow_states = holdings_store.UNIT_SHADOW_STATES
-    schema = _holdings_schema(checks_known, statuses, needs_known, shadow_states)
+    reasons, judges, max_days = (holdings_store.SETTLEMENT_REASONS, holdings_store.TOSS_JUDGED_BY,
+                                 holdings_store.TOSS_DIAGNOSIS_DAYS)
+    schema = _holdings_schema(checks_known, statuses, needs_known, shadow_states,
+                              _settlement_schema(reasons, judges, max_days))
     partial = False
     if not isinstance(view, Mapping) or view.get("available") is not True:
         missing = isinstance(view, Mapping) and view.get("reason_code") == _HOLDINGS_MISSING
@@ -776,6 +835,14 @@ def project_holdings_status(view: Any, *, now: str) -> dict[str, Any]:
             kept = [n for n in dict.fromkeys(raw_needs) if n in needs_known]
             partial = partial or len(kept) != len(raw_needs)
             h6["toss_needs"] = kept
+        raw_diagnosis = readiness.get("toss_diagnosis")
+        if isinstance(raw_diagnosis, Mapping):
+            settlement, lost = _project_settlement(raw_diagnosis, reasons, judges, max_days)
+            partial = partial or lost
+            if settlement is not None:
+                h6["settlement"] = settlement
+        elif raw_diagnosis is not None:
+            partial = True
         data["h6"] = h6
     elif flows is not None:
         partial = True
@@ -825,6 +892,16 @@ def read_holdings_status(*, now: str, repo_root: Path | None, projection: str) -
         lines += [f"  {name}: {state}" for name, state in sorted(h6["checks"].items())]
         if "toss_needs" in h6:
             lines.append("toss needs: " + (", ".join(h6["toss_needs"]) or "nothing"))
+        settlement = h6.get("settlement")
+        if settlement is not None:
+            lines.append(f"toss settlement: epoch {settlement['epoch']}  judged by {settlement['judged_by']}"
+                         + "".join(f"  {name.replace('_', ' ')} {settlement[name]}" for name in
+                                   ("settlement_entries", "sells_explained", "clean_days", "legacy_clean_days")
+                                   if name in settlement))
+            lines += [f"  {row['day']}: windows {row['windows']}  settled {row['settlement_windows']}"
+                      f"  clean {'yes' if row['clean'] else 'no'}"
+                      + (f"  [{', '.join(row['reasons'])}]" if row["reasons"] else "")
+                      for row in settlement["days"]]
     shadow = data.get("unit_shadow")
     if shadow is not None:
         lines.append(f"unit shadow: {shadow['state']}"

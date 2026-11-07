@@ -80,6 +80,32 @@ v1.1에 `unit_shadow` 블록 하나를 더한다. 같은 규칙을 따른다: �
 
 NAV/unit, unit 고점, 낙폭, 보류 이유, 시작 시각은 나가지 않는다. 그 값들은 보드에만 보인다.
 
+### 2.1b v1.3 (결제일 진단, Thomas 2026-11-07)
+
+**왜:** 2026-11-07에 `toss_needs`가 여전히 `settlement_day`였다. 11-03 매도의 결제일(11-05)이 지났는데도 그랬다. 결제일이 왜 깨끗하지 않은지는 문에 나오지 않았다. 그래서 Thomas 없이는 원인을 좁힐 수 없었다. Thomas: "진단 추가 승인" (2026-11-07).
+
+v1.2의 `h6`에 `settlement` 블록 하나를 더한다. 같은 규칙을 따른다: 허용 목록으로 새로 만든다. 모르는 판정 주체나 사유는 버리거나 `UNKNOWN`으로 두고 `v1-partial`로 표시한다.
+
+| 필드 | 값 | 출처 |
+|---|---|---|
+| `h6.settlement.epoch` | 토스 의미 epoch, 0 이상의 정수 | `cash_flows.toss_epoch` |
+| `h6.settlement.judged_by` | `legacy_counters`(epoch 0: H6d 이전에 고정된 카운터가 판정한다) / `windows` | epoch에서 |
+| `h6.settlement.settlement_entries` | 그 epoch의 창들이 기록한 결제 항목 수 | 창 줄 |
+| `h6.settlement.sells_explained` | 증거로 인정된 매도 수 | `toss_evidence` |
+| `h6.settlement.clean_days`, `legacy_clean_days` | 깨끗한 결제일 수(창 기준), epoch 0이면 고정 카운터 기준 수 | `toss_evidence`, 레거시 카운터 |
+| `h6.settlement.days[]` | 최근 14개 KST 날짜마다 `day`, `windows`(그날 끝난 창 수), `settlement_windows`(그날 결제를 기록한 셈에 드는 창 수), `clean`, `reasons` | `cash_flows.settlement_diagnosis` |
+
+`reasons`는 닫힌 목록이다: `no_settlement_record`, `too_few_windows`, `pocket_not_clear`, `residual_open`, `truncated`, `exchange`, `identity_unstable`, `late_amendment`, `settlement_revised`, `problem_window`, `before_last_problem`, `not_yet_passed`.
+
+- `clean`은 `toss_evidence`에서 그대로 가져온다. 진단과 판정이 서로 다른 답을 낼 수 없다.
+- 진단은 `toss_evidence`를 고치지 않고 따라 계산한다. `toss_evidence`의 출력은 `reconciliation_digest`에 들어 있고, digest가 바뀌면 epoch 전환이 되기 때문이다.
+- 진단이 실패하면 스냅샷에서 빠질 뿐이다. 판정과 알림은 그대로 돈다.
+- **나가지 않는 것:** 주문 해시, 창 시각, 잔차 값, 금액, 포켓별 금액.
+- **남는 노출:** KST 날짜와 그날 잔차가 있었는지 여부다. "그날 현금이 설명 없이 움직였다"가 드러나지만 금액은 드러나지 않는다. §2.2가 이미 받아들인 예외 변화 시각과 같은 등급이다.
+- 읽는 법:
+  - 매도는 셌는데 `settlement_entries`가 0이면 `settlementDate` 형식이 코드의 `YYYY-MM-DD` 비교와 맞지 않는다는 신호다.
+  - `judged_by: legacy_counters`이면 창에서 깨끗한 결제일이 생겨도 검사는 PASS가 되지 않는다. 그 경우의 해법은 Thomas 터미널의 `--semantics-epoch`이고, 코드 수정이 아니다.
+
 ### 2.2 경계
 
 - **H3**(`holdings/disclosure.py`, "프로세스를 떠나는 표는 하나"): H3가 지키는 것은 종목별 몫이 드러나는 내역이다. `h6`에는 금액도 종목도 없고, 운영 검사의 이름과 상태만 있다. 그래서 H3의 "표"에 넣지 않고 운영 상태로 분류하는 것을 권고한다(R2).

@@ -176,8 +176,16 @@ def test_the_aggregate_view_still_passes_the_guard_and_keeps_its_keys(monkeypatc
     stored = json.loads(store.snapshot_path(tmp_path).read_text(encoding="utf-8"))
     # `toss_needs` (R3, Thomas 2026-10-26) is a closed list of what the Toss check waits for: no amount, no key.
     assert set(stored["cash_flows"]["readiness"]) == {"checks", "ready", "shadow_days", "shadow_success_dates",
-                                                      "exceptions", "toss_needs", "next_step"}
+                                                      "exceptions", "toss_needs", "toss_diagnosis", "next_step"}
     assert set(stored["cash_flows"]["readiness"]["toss_needs"]) <= set(cash_flows.TOSS_NEEDS)
+    # The settlement diagnosis (holdings_status v1.3, Thomas 2026-11-07) reaches the Claude door from the stored
+    # snapshot, not only from a hand-built view.
+    from runtime.mvp_runtime import store_reads
+
+    door = store_reads.read_holdings_status(now="2026-10-09T03:00:00Z", repo_root=tmp_path, projection=store_reads.PROJECTION_V1)
+    settlement = door["data"]["h6"]["settlement"]
+    assert settlement["epoch"] == 0 and settlement["judged_by"] == "legacy_counters"
+    assert "toss settlement: epoch 0" in door["reply"]
 
 
 def test_a_second_message_keeps_what_the_first_one_told(tmp_path):
