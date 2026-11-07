@@ -47,7 +47,8 @@ is still as of its last date.
 >     (`PORTFOLIO_CASH_FLOW_LEDGER_V0.1.md` §10).
 >     1. Read and probe the transaction list (#1397, deployed; the probe showed the 11-03 sell settled 11-05).
 >     2. Move the settlement day onto it (this change).
->     3. Then Thomas starts epoch 1, and a buy, a sell and a settlement day are gathered again.
+>     3. Thomas started epoch 1 (2026-11-07). The buy, sell and settlement day epoch 0 observed are carried into it
+>        once, checked by code, at Thomas's terminal (§11).
 >     The H6c packet is drafted ahead (`H6C_UNIT_AUTHORITY_V0.1.md`, #1359).
 >   - Toss deposits and withdrawals in quiet windows are closed by rule: `quiet_window` v1 (#1315), v2 (#1339) and
 >     v3 (#1346, small inflows as interest) (`HOLDINGS_STATUS_READ_AND_AUTO_FLOWS_V0.1.md`).

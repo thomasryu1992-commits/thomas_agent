@@ -133,6 +133,10 @@ SKIP_BEYOND_DEPTH = "beyond_query_depth"
 # C7 PR-C (D3, Thomas 2026-10-11): the operator's adoption of a ledger the checkpoint refuses — the one line
 # a refused ledger may still take, written only by ``adopt_ledger`` at Thomas's terminal (C7 §7).
 EVENT_LEDGER_ADOPTED = "ledger_adopted"
+# PORTFOLIO_CASH_FLOW_LEDGER §11 (Thomas 2026-11-07): the previous epoch's observed buy, sell and settlement day,
+# checked against its windows and the transaction list, carried into the current epoch once at Thomas's terminal.
+EVENT_TOSS_CARRIED = "toss_evidence_carried"
+CARRY_REFUSED = "TOSS_CARRY_REFUSED"
 ADOPT_REFUSED = "HOLDINGS_CASH_FLOW_ADOPT_REFUSED"
 NO_CUTOVER = "NO_CUTOVER"
 CUTOVER_REFUSED = "HOLDINGS_CASH_FLOW_CUTOVER_REFUSED"
@@ -181,6 +185,8 @@ REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
                    "cutover_generation", "provenance"),
     EVENT_TOSS_SKIPPED: ("window_start", "window_end", "reason"),
     EVENT_FLOW_SKIPPED: ("flow_source", "window_start", "window_end", "reason"),
+    EVENT_TOSS_CARRIED: ("epoch", "from_epoch", "settlement_day", "pocket", "buys", "sells", "day_windows",
+                         "transaction", "requested_by", "reason", "timestamp"),
     EVENT_LEDGER_ADOPTED: ("adopted", "replaced_checkpoint", "detector", "told_keys_dropped", "requested_by",
                            "reason", "timestamp"),
 }
@@ -1913,8 +1919,15 @@ def toss_evidence(rows: list[Mapping[str, Any]], *, epoch: int, today_kst: str) 
                 days[day]["spoiled"] = True
     clean_days = sorted(d for d, row in days.items()
                         if d < today_kst and len(row["windows"]) >= SETTLEMENT_MIN_WINDOWS and not row["spoiled"])
+    # §11: what Thomas carried from the previous epoch, once; a later problem voids it like any earlier evidence.
+    carried = [r for r in rows if r.get("event") == EVENT_TOSS_CARRIED and r.get("epoch") == epoch
+               and (_iso_ms(r.get("timestamp")) or 0) >= after]
+    clean_days = sorted({*clean_days, *(str(r["settlement_day"]) for r in carried
+                                        if str(r.get("settlement_day")) < today_kst)})
     unexplained = sum(len(v["unexplained"]) for v in verdicts)
-    return {"buy_explained": _distinct_orders(buys), "sell_explained": _distinct_orders(sells), "clean_settlement_days": clean_days,
+    return {"buy_explained": _distinct_orders(buys) + sum(int(r.get("buys") or 0) for r in carried),
+            "sell_explained": _distinct_orders(sells) + sum(int(r.get("sells") or 0) for r in carried),
+            "clean_settlement_days": clean_days,
             "activity_unexplained": unexplained, "windows": len(verdicts),
             "problem_windows": sum(1 for v in verdicts if v["problem"])}
 
@@ -2203,6 +2216,80 @@ def start_semantics_epoch(state_dir: Path, *, requested_by: str, reason: str, ch
         raise ToolError(EPOCH_REFUSED, "another epoch with this number was started at the same time")
     return written[0]
 
+
+
+# --- carrying the previous epoch's evidence (PORTFOLIO_CASH_FLOW_LEDGER §11, Thomas 2026-11-07) -------------
+#
+# Epoch 1 started on #1398 (the settlement day read off the transaction list). Epoch 0 had already seen a buy, a
+# sell and that sell's settlement day pass with no residual — only its windows could not name the day, because
+# the order list's settlementDate is null live. Thomas chose to carry those three across rather than trade again,
+# checked by code: the previous epoch's own evidence names the buys and sells; the transaction list names the
+# settlement day; the previous epoch's windows on that day must be at least SETTLEMENT_MIN_WINDOWS, all counted,
+# all clean in both pockets, none a problem or amended. Once per epoch, at an interactive terminal, typed back.
+
+def carry_candidate(rows: list[Mapping[str, Any]], transactions: list[Mapping[str, Any]], *,
+                    today_kst: str) -> dict[str, Any]:
+    """What may be carried into the current epoch, or :data:`CARRY_REFUSED` naming the first condition that fails.
+    Pure: the caller reads the transaction list (settled sells) and the verified ledger."""
+    epoch = toss_epoch(rows)
+    if epoch < 1:
+        raise ToolError(CARRY_REFUSED, "no epoch to carry into: Toss semantics is still in epoch 0")
+    if any(r.get("event") == EVENT_TOSS_CARRIED and r.get("epoch") == epoch for r in rows):
+        raise ToolError(CARRY_REFUSED, f"epoch {epoch} already carried evidence; it is carried once")
+    previous = epoch - 1
+    earlier = toss_evidence(rows, epoch=previous, today_kst=today_kst)
+    if earlier["buy_explained"] < 1 or earlier["sell_explained"] < 1:
+        raise ToolError(CARRY_REFUSED, f"epoch {previous} explained {earlier['buy_explained']} buy(s) and "
+                                       f"{earlier['sell_explained']} sell(s); both are needed")
+    verdicts = _window_verdicts(rows, previous)
+    after = max((_iso_ms(v["row"]["window_end"]) or 0 for v in verdicts if v["problem"]), default=0)
+    sells = sorted({(str(t.get("settlementDate")), str(t.get("currency") or "").upper(), transaction_identity(t)[0])
+                    for t in transactions
+                    if str(t.get("transactionType") or "").upper() == "SELL" and t.get("settled") is True
+                    and t.get("isCancellation") is not True and str(t.get("currency") or "").upper() in ("KRW", "USD")
+                    and str(t.get("settlementDate") or "") < today_kst}, reverse=True)
+    if not sells:
+        raise ToolError(CARRY_REFUSED, "the transaction list names no settled sell before today")
+    why: list[str] = []
+    for day, pocket, digest in sells:
+        on_day = [v for v in verdicts if v["end_kst"] == day]
+        if len(on_day) < SETTLEMENT_MIN_WINDOWS:
+            why.append(f"{day}: {len(on_day)} epoch-{previous} window(s), {SETTLEMENT_MIN_WINDOWS} needed")
+            continue
+        flawed = sum(1 for v in on_day if v["problem"] or v["late"] or not all(v["clean"].values())
+                     or (_iso_ms(v["row"]["window_start"]) or 0) < after
+                     or v["row"].get("transactions_read", True) is False)
+        if flawed:
+            why.append(f"{day}: {flawed} of {len(on_day)} window(s) not clean")
+            continue
+        return {"epoch": epoch, "from_epoch": previous, "settlement_day": day, "pocket": pocket,
+                "buys": earlier["buy_explained"], "sells": earlier["sell_explained"], "day_windows": len(on_day),
+                "transaction": digest}
+    raise ToolError(CARRY_REFUSED, "no settled sell's day qualifies: " + "; ".join(why))
+
+
+def carry_evidence(state_dir: Path, transactions: list[Mapping[str, Any]], *, requested_by: str, reason: str,
+                   confirm: str, interactive: bool, now: str | None = None) -> dict[str, Any]:
+    """Write the one ``toss_evidence_carried`` line for the current epoch, rechecked under the locks."""
+    if not interactive:
+        raise ToolError(CARRY_REFUSED, "evidence is carried at an interactive terminal")
+    if not (requested_by or "").strip() or not (reason or "").strip():
+        raise ToolError(CARRY_REFUSED, "carrying evidence needs --by and --reason")
+    now = now or timeutil.utc_now_iso()
+    today = (timeutil.parse_iso(now) + timedelta(hours=9)).date().isoformat()
+
+    def rows(existing: list[dict[str, Any]], _state: dict[str, Any]) -> list[Mapping[str, Any]]:
+        candidate = carry_candidate(existing, transactions, today_kst=today)
+        if (confirm or "").strip() != candidate["settlement_day"]:
+            raise ToolError(CARRY_REFUSED, "the typed day does not match the settlement day to carry")
+        return [{"event": EVENT_TOSS_CARRIED, "source": "ledger",
+                 "source_event_key": f"toss_carried:{candidate['epoch']}", **candidate,
+                 "requested_by": requested_by.strip(), "reason": reason.strip(), "timestamp": now}]
+
+    written = [r for r in _commit(state_dir, now=now, rows=rows) if r.get("event") == EVENT_TOSS_CARRIED]
+    if not written:
+        raise ToolError(CARRY_REFUSED, "another carry for this epoch was written at the same time")
+    return written[0]
 
 # --- C7 PR-B: history completeness (Thomas 2026-10-17: D2 = option C) --------------------------------------
 # HOLDINGS_LEDGER_CHECKPOINT_V0.1.md §2: a separate readiness key from ``ledger_state_consistency``. That one

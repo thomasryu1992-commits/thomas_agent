@@ -158,7 +158,8 @@ def test_the_terminal_only_modes_are_refused_by_the_claude_guard(tmp_path):
     from tests.test_claude_local_only_guard import _decision, _payload
 
     for flag in ("--flows", "--resolve pay:p1 --kind deposit --by t --reason r",
-                 "--semantics-epoch --change-ref '#1' --by t --reason r"):
+                 "--semantics-epoch --change-ref '#1' --by t --reason r",
+                 "--carry-evidence --by t --reason r"):                      # §11, Thomas 2026-11-07
         command = f"docker exec -it thomas-scheduler-maint python -m scripts.holdings_board {flag}"
         assert _decision(_payload("Bash", command=command), tmp_path) == "deny", flag
 
