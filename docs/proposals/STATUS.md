@@ -4,7 +4,7 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **98**건: `DRAFT` 3 · `PARTIALLY DECIDED` 9 · `DECIDED` 20 · `IMPLEMENTED` 55 · `SUPERSEDED` 4 · `RECORD` 7
+제안서 **98**건: `DRAFT` 3 · `PARTIALLY DECIDED` 9 · `DECIDED` 19 · `IMPLEMENTED` 56 · `SUPERSEDED` 4 · `RECORD` 7
 
 ## Thomas 결정 대기 (12)
 
@@ -25,7 +25,7 @@
 | [G6_SELL_REBALANCE_V0.1.md](G6_SELL_REBALANCE_V0.1.md) | `DRAFT` | 2026-11-03 | G6(자동 리밸런싱)의 남은 절반인 매도를 다루는 결정 패킷 초안이다. **지금 묻지 않는다.** G6은 G1d(H6c, unit 권위 전환)가 끝난 뒤 다시 여는 별도 결정이므로(`THOMAS_AGENT_TARGET_ARCHITECTURE_V0.1.md` §6), H6c가 정해진 뒤 SQ1–SQ5를 묻는다. 그때까지 코드, 정책, env, 스케줄은 바뀌지 않는다. 미리 써 두는 이유는 H6c가 정해지는 날 바로 물을 수 있게 하기 위해서다. |
 | [H6C_UNIT_AUTHORITY_V0.1.md](H6C_UNIT_AUTHORITY_V0.1.md) | `DRAFT` | 2026-11-04 | H6c(G1d, unit 권위 전환)의 결정 패킷 초안이다. **지금 묻지 않는다.** Claude 도어의 `holdings_status`에 `h6c_askable`이 서면 HQ1–HQ6을 묻는다(`H6B_UNIT_SHADOW_V0.1.md` S5). 그때까지 코드, 정책, env, 스케줄은 바뀌지 않는다. 미리 써 두는 이유는 조건이 갖춰지는 날 바로 묻기 위해서다. 같은 날 Thomas가 해야 할 일(§2의 입금·출금)도 여기에 적는다. |
 
-## 결정됨 — 구현 남음 (20)
+## 결정됨 — 구현 남음 (19)
 
 결정은 끝났고 결정된 것이 아직 다 지어지지 않았다. 결정이 만든 구현 대기열이다.
 
@@ -50,9 +50,8 @@
 | [CRYPTO_REGIME_STRATEGY_SET_V0.1.md](CRYPTO_REGIME_STRATEGY_SET_V0.1.md) | `DECIDED` | 2026-11-04 | Thomas: §6 Q1–Q4 "기본값대로"(Q3는 B안, 선물 분기 홀드아웃). 국면 판별 규칙 하나와 전략 36개(국면당 12개), 두 단계 검증을 이대로 한다. 구현은 `scripts/research/regime_strategies.py`이고, 정식 실행은 병합 뒤 한 번 한다. 1단계 뒤, 2단계와 홀드아웃 전에 무작위 대조를 "같은 방향"으로 고쳤다(Thomas "바꾸고 다시", 아래 "수정 (Thomas 2026-11-04, 1단계 뒤)"). **2단계 결과(2026-11-05): 후보 4개 모두 NOT_CONFIRMED, 확인된 전략 0개.** 홀드아웃은 이 실행으로 쓰였다. 처음 지시: "상승장/횡보장/하락장인지를 구조적으로 파악해서 각각의 롱/숏 전략을 조금더 구체적으로 정한 뒤, 각각 시나리오에 맞는 전략을 10~20개 정도 구상"(국면마다 10~20개). |
 | [MARKET_NEUTRAL_CROSS_SECTION_V0.1.md](MARKET_NEUTRAL_CROSS_SECTION_V0.1.md) | `DECIDED` | 2026-11-04 | Q1: 매월 거래량 상위 10개에 Thomas가 지정한 심볼을 더한다(지정은 정식 실행 전에 고정). Q2–Q4는 권고대로: 신호 셋 고정(1일 반전, 7일·30일 모멘텀), 1d만, 아카이브 klines는 `claude` 계정의 `binance_archive.py`로 받는다. 구현은 지었다(`binance_archive.py list-symbols`·`fetch-monthly`·`contract-types`, `scripts/research/cross_section_basket.py`, 아래 "지은 것"). 정식 실행 전에 유니버스를 코인 무기한으로 좁혔다(아래 "사전 등록 수정"). 정식 실행은 2026-11-04 07:04Z에 한 번 했다. 결과는 세 신호 모두 NULL, 전체 판정은 NO_EDGE_IN_THIS_CROSS_SECTION이다(아래 "결과"). 판정 규칙, 문, factory, 템플릿, 스케줄은 바꾸지 않는다. |
 | [CRYPTO_REGIME_STRATEGY_SET_V0.2.md](CRYPTO_REGIME_STRATEGY_SET_V0.2.md) | `DECIDED` | 2026-11-05 | Thomas: 계획 질문 Q1–Q5에 이어 §7 Q1–Q3도 "기본값대로"라고 답했다. 가설 4개(T1·S1·S2·S3)와 판정 규칙, 결과의 쓰임이 이대로 정해졌다. 구현은 `scripts/research/regime_strategies_v02.py`이고, 2026-11-05에 `stage0`(§2와 같음)와 `confirm-spot`을 한 번씩 돌렸다. **결과: 가설 4개 모두 NOT_CONFIRMED.** T1은 p 0.111로 α 0.10을 넘지 못했고, S1은 p 0.047로 Holm 첫 단계(0.025)를 넘지 못했다(아래 "확인 결과"). 현물 2018-03–2019-12 구간은 이 실행으로 닫혔다. |
-| [FUNDING_BASIS_V0.1.md](FUNDING_BASIS_V0.1.md) | `DECIDED` | 2026-11-08 | 사전 등록이다. 판정 규칙(§4)은 이 문서가 병합된 뒤 바뀌지 않는다. 남은 것은 병합 뒤 정식 실행 한 번이다. Thomas가 정한 것(2026-11-08): - 새 가설은 forward 판정 기간이 한 달 안이어야 만든다("판정기간 관문 < 한달내"). - 그 관문 아래 첫 후보로 펀딩 베이시스 측정을 시작한다("시작"). - §7 Q1–Q4는 모두 기본값이다("기본값대로"). |
 
-## 구현됨 (55)
+## 구현됨 (56)
 
 결정되고 지어졌다. 문서는 결정의 근거 기록으로 남는다.
 
@@ -112,6 +111,7 @@
 | [REBALANCING_PROPOSAL_V0.1.md](REBALANCING_PROPOSAL_V0.1.md) | `IMPLEMENTED` | 2026-10-26 | RB1 예, RB2'' 후보 자동 선정(RB2'를 대신함), RB3' 토스 주문 내역 자동 계산, RB4' 5만 원·이월, RB5 엔진 제외·월 알림, RB6 지금(Thomas). PR-A(계산기, `--rebalance`·`--approve-candidates`, 종목 파일)와 PR-B(해외 실현 이익: 주문 내역 재구성, 일별 환율 기록, §2.3 3단계 공제 한도), PR-C(후보 선별 보고서 `scripts.rebalance_candidates`, Thomas 터미널), PR-D(월 밴드 알림: 매월 첫 평일부터 이탈 개수 한 번), RB2''(후보 자동 선정: 월 1회와 거래 불가 시, 수동은 덮어쓰기만)를 지었다. §2.3 4단계의 손실 통산 표시를 지었다(2026-11-03). 통산은 해외 직접 투자끼리만 된다는 정정과 함께다. 종목별 과세 유형 덮어쓰기도 지었다(2026-11-03, Thomas 터미널의 `--tax-kind`, §2.5). 이것으로 결정된 항목이 모두 지어졌다. 자동 실행(G6)은 이 문서의 범위가 아니다. **결정 전 상태:** DRAFT 2026-10-26 — Thomas 결정 여섯 건(RB1–RB6)을 기다린다. RB2–RB4는 Thomas의 답(2026-10-26)대로 고쳤다: 후보 3~4개 승인 뒤 자동 선택, 해외 실현 이익은 Toss 주문 내역으로 자동 계산, 최소 거래 5만 원 고정·이월. Thomas의 요청(2026-10-26): 리밸런싱 제안을 터미널 전용으로 보여 주고, 주문은 Thomas가 낸다. 코드·정책·스키마 변경은 없다. |
 | [H6B_UNIT_SHADOW_V0.1.md](H6B_UNIT_SHADOW_V0.1.md) | `IMPLEMENTED` | 2026-10-28 | **2026-11-04 상태 정정:** #1340으로 지어져 2026-10-28에 배포됐다(candidate-1340). Claude 도어의 `holdings_status`가 shadow 상태를 보인다. H6c는 여전히 이 문서가 승인하지 않는다(§2의 네 조건이 갖춰지면 묻는다). **이전 상태(DECIDED):** S1=A, S2=A, S3=A, S4=A, S5=A(Thomas, "승인: H6b-shadow S1=A S2=A S3=A S4=A S5=A, 설계 문서·구현·PR"). 같은 날 PR 하나로 지었다(`holdings/unit_shadow.py`, 아래 §3). 배포 전에는 아무것도 계산하지 않는다. H6c는 이 문서가 승인하지 않는다. |
 | [HISTORICAL_FORWARD_REPLAY_V0.1.md](HISTORICAL_FORWARD_REPLAY_V0.1.md) | `IMPLEMENTED` | 2026-11-05 | 지어서 돌렸고, 2026-11-06에 판정이 났다. A·B 모두 REPLAY_NOT_CONFIRMED이고 B_BETTER도 아니다. 그래서 §7의 규칙 폐기와 §8의 factory 변경은 없다. 결과는 끝의 "판정 결과 (2026-11-06)"에 있다. Thomas가 정한 것(2026-11-05): - 런타임 국면·전략 선택과 전략 자동 생성 둘 다("둘다"). - 그 설계의 Q1–Q5 기본값("기본값대로 진행하는데"). - 과거 데이터로 forward를 검증하는 로직, 판정은 한 달 안("Forward가 한달 이내로 끝나야 해당 작업을 할 이유가 생겨"). - 재현이 긍정이면 실제 forward 규칙을 폐기하고, 2027-03-22를 기다리지 않음. - 일부는 맥에서 돌림("일부는 맥에서 돌릴 수 있게 하자"), 나머지는 기본값. |
+| [FUNDING_BASIS_V0.1.md](FUNDING_BASIS_V0.1.md) | `IMPLEMENTED` | 2026-11-08 | 사전 등록대로 한 번 돌렸고 판정이 났다. **GATE_FAIL**: B-ALL·B-POS 모두 한 달 시험의 확인 비율이 0.80에 못 미친다. §5에 따라 factory와 forward 코호트는 그대로이고, 심볼을 넓히는 일과 관문을 바꾸는 일은 Thomas가 정한다. 결과는 끝의 "판정 결과 (2026-11-08)"에 있다. Thomas가 정한 것(2026-11-08): - 새 가설은 forward 판정 기간이 한 달 안이어야 만든다("판정기간 관문 < 한달내"). - 그 관문 아래 첫 후보로 펀딩 베이시스 측정을 시작한다("시작"). - §7 Q1–Q4는 모두 기본값이다("기본값대로"). |
 | [HISTORICAL_FORWARD_REPLAY_HELDOUT_V0.1.md](HISTORICAL_FORWARD_REPLAY_HELDOUT_V0.1.md) | `IMPLEMENTED` | 2026-11-08 | 사전 등록대로 돌렸고 판정이 났다. A·B 모두 REPLAY_NOT_CONFIRMED이다. 그래서 §4 첫 행에 따라 이 재현 장치로 시세(klines)에서 진입 신호를 찾는 일을 닫는다. 레인 규모, 11-14 mint 판독, forward 코호트는 그대로다. 결과는 끝의 "판정 결과 (2026-11-08)"에 있다. Thomas가 정한 것(2026-11-07): - 확인 방법: 변형을 사전 등록하고, 원래 재현이 쓰지 않은 심볼로 확인한다. 멈춤 규칙도 둔다("기본값대로"). - 변형은 V2 하나다. 숏 계열 변형(V1)은 판정 단위로 다시 계산하니 근거가 사라져 뺐다. - 검정력이 모자라 실행하지 말자는 권고에 대해: "그래도 실행". |
 
 ## 대체됨 (4)
