@@ -1791,6 +1791,8 @@ def _toss_rows(existing: list[dict[str, Any]], previous: Mapping[str, Any], curr
                                                           _day_fills_krw(orders, since=previous["at"], until=now))))
     if not truncated:
         out.extend(_amendments(existing, orders))
+    if transactions_read:
+        out.extend(_transaction_amendments(existing, transactions or []))
     return out
 
 
@@ -1837,6 +1839,37 @@ def _amendments(existing: list[dict[str, Any]], orders: list[Mapping[str, Any]])
                                 "source_event_key": f"toss:amend:{wkey}:settlement_revised:{digest[0]}:{settled}",
                                 "kind": "settlement_revised", "order": digest, "pocket": entry.get("pocket"),
                                 "day": entry.get("day"), "revised_day": settled})
+    return out
+
+
+def _transaction_amendments(existing: list[dict[str, Any]],
+                            transactions: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """A transaction-list sale recorded as settling on one day that a later, whole read dates to another
+    (PORTFOLIO_CASH_FLOW_LEDGER §10): an unsettled sale is recorded under its expected date, and the spec warns
+    that the actual date can differ. The entry's hash covers the date, so the row is matched by hashing it again
+    with the recorded day in place of its own: the same sale, recorded then, dated otherwise now. One keyed
+    ``settlement_revised`` line per window, as for an order, so re-reading adds nothing. A row the read no
+    longer returns proves nothing and amends nothing."""
+    recorded = [(w, entry) for w in existing if w.get("event") == EVENT_TOSS_WINDOW
+                for entry in w.get("settlements") or []
+                if any(str(h).startswith("tx:") for h in entry.get("order") or ())]
+    out: list[dict[str, Any]] = []
+    for row in transactions:
+        settled = str(row.get("settlementDate") or "")
+        if (str(row.get("transactionType") or "").upper() != "SELL" or row.get("isCancellation") is True
+                or not settled):
+            continue
+        for w, entry in recorded:
+            day = str(entry.get("day") or "")
+            if not day or day == settled or not _same_order(
+                    entry.get("order"), transaction_identity({**row, "settlementDate": day})):
+                continue
+            wkey = f"{w['window_start']}..{w['window_end']}"
+            out.append({"event": EVENT_TOSS_AMENDED, "source": "toss", "window_start": w["window_start"],
+                        "window_end": w["window_end"], "amends": w["source_event_key"],
+                        "source_event_key": f"toss:amend:{wkey}:settlement_revised:{entry['order'][0]}:{settled}",
+                        "kind": "settlement_revised", "order": transaction_identity(row),
+                        "pocket": entry.get("pocket"), "day": day, "revised_day": settled})
     return out
 
 
