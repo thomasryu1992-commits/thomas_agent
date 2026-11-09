@@ -113,9 +113,21 @@ def test_a_delisting_inside_the_window_closes_at_the_last_trade_even_when_bars_g
     assert report["strategies"]["B-POS"]["verdict"] == s21.KEEP
 
 
-def test_a_short_universe_with_its_ranking_month_archived_blocks() -> None:
+def test_a_ranking_month_with_klines_for_fewer_perps_than_the_universe_blocks() -> None:
     with pytest.raises(v.Blocked):
-        _screen(_data(spot={"AUSDT": {"2026-12"}}))                     # BUSDT has no spot pair last month
+        _screen(_data(volumes={"2026-12": {"AUSDT": 2.0}}))             # the fetch missed BUSDT
+
+
+def test_a_ranking_month_missing_from_the_spot_archive_is_not_yet() -> None:
+    report = _screen(_data(spot={sym: {"2026-11"} for sym in SYMBOLS}))
+    assert report["status"] == s21.NOT_YET and report["short"] == ["spot 2026-12"]
+
+
+def test_a_top_perp_without_a_spot_pair_simply_drops_out_of_the_universe() -> None:
+    report = _screen(_data(spot={"AUSDT": {"2026-12"}, "BUSDT": {"2026-10"}}))
+    assert report["status"] == s21.JUDGED
+    assert report["universe"]["members"] == {"2027-01": 1}
+    assert set(report["strategies"]["B-POS"]["events"]) == {"AUSDT"}
 
 
 def test_exclusions_are_listed_and_too_many_block(monkeypatch: pytest.MonkeyPatch) -> None:

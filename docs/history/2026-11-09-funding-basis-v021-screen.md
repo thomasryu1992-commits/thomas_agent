@@ -15,9 +15,12 @@ lack bars, and blocks above 5%. That rule assumes the data is complete. In a for
 So the klines decide whether a perp was alive. A member whose derivative bars stop short of its last traded day
 is reported `NOT_YET`, never excluded or closed.
 
-**Why a short universe blocks instead of waiting.** Once a ranking month's klines exist, fewer than 30 members
-means the fetch missed perps or the spot archive. Waiting would never resolve it, so the run blocks and names
-the months.
+**What blocks and what waits.** A ranking month whose klines hold fewer than 30 perps means the fetch missed
+some. Waiting would never resolve it, so the run blocks and names the month. A ranking month absent from the spot
+archive is just not fetched yet: `NOT_YET`. Fewer than 30 *members* is normal and only shown. The top 30 are
+ranked first and those without a spot pair then drop; 40 of v0.2's 81 months had fewer, and 2025–2026 months had
+20–29. The first draft blocked on fewer than 30 members. A count on the real cache showed it would have blocked
+the official screen on a universe exactly as pre-registered.
 
 **Why only B-POS.** Only B-POS cleared the entry floor in the official v0.2.1 run. Screening B-ALL "for display"
 would produce a reading nobody pre-registered a use for.

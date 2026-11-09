@@ -12,8 +12,10 @@ zero, else ``SCREEN_DROP``. A strategy it keeps is still unconfirmed.
 - **Coverage before exclusion.** In a forward run, data not fetched yet looks like a gap. So:
   1. The perp kline archive must hold every ranking month (M − 1) and reach the window's last day. Otherwise
      ``NOT_YET``.
-  2. A window month with fewer than ``TOP_N`` members once its ranking month is archived means an incomplete fetch
-     (klines or spot archive). That is ``BLOCKED``, so it cannot sit as ``NOT_YET`` forever.
+  2. A ranking month whose klines hold fewer than ``TOP_N`` perps means an incomplete fetch: ``BLOCKED``, so it
+     cannot sit as ``NOT_YET`` forever. A ranking month absent from the spot archive is ``NOT_YET``. Fewer than
+     ``TOP_N`` members is normal (the top ``TOP_N`` are ranked first, then those without a spot pair drop; 40 of
+     v0.2's 81 months had fewer) and is only shown.
   3. Each member's derivative bars must reach its last traded member day. When that day is the window's last, its
      settlements must reach 16:00 of it, as in the v0.1 screen. A member short of that is ``NOT_YET``: it traded,
      so the shortfall is unfetched data, not a delisting.
@@ -80,10 +82,16 @@ def screen(data: Forward, *, start: date | None = None, end: date | None = None)
     if unranked or klines_through is None or klines_through < end:
         return _not_yet(head, klines_through, [f"klines {m}" for m in unranked] or ["klines"])
 
+    ranking = [v.prev_month(m) for m in months]
+    thin = {k: len(data.volumes[k]) for k in ranking if len(data.volumes[k]) < v.TOP_N}
+    if thin:                         # fewer perps with klines than the universe ranks: the fetch missed some
+        raise v.Blocked(f"ranking month with klines for fewer than {v.TOP_N} perps: {thin}")
+    unspotted = [k for k in ranking if not any(k in held for held in data.spot_months.values())]
+    if unspotted:
+        return _not_yet(head, klines_through, [f"spot {k}" for k in unspotted])
+
+    # Fewer than TOP_N members is normal: the top TOP_N are ranked first, then those without a spot pair drop.
     members = v.universe(data.volumes, data.spot_months, data.spot_listing, months)
-    thin = {m: len(ms) for m, ms in members.items() if len(ms) < v.TOP_N}
-    if thin:
-        raise v.Blocked(f"universe short of {v.TOP_N} with its ranking month archived: {thin}")
 
     months_of: dict[str, list[str]] = defaultdict(list)
     for month, symbols in members.items():
@@ -97,6 +105,8 @@ def screen(data: Forward, *, start: date | None = None, end: date | None = None)
             continue                                      # never traded while a member: nothing to hold
         last = max(days)
         s = data.series.get(symbol)
+        if s is not None and s.days:
+            reach.append(min(max(s.days), end))
         if s is None or not s.days or max(s.days) < last:
             short.append(symbol)
             continue
@@ -105,7 +115,6 @@ def screen(data: Forward, *, start: date | None = None, end: date | None = None)
         if settled < need:
             short.append(symbol)
             continue
-        reach.append(min(max(s.days), end))
         held[symbol] = s
     if short:
         return _not_yet(head, min([klines_through, *reach]), short)
