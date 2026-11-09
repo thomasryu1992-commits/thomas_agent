@@ -229,7 +229,7 @@ def _sharpe(values: Sequence[float]) -> float | None:
 
 def measure_strategy(strategy: str, inputs: Inputs, *, start: date = START, end: date = END) -> dict[str, Any]:
     months_by_symbol = member_months(inputs)
-    legs = {s: simulate_member(strategy, inputs.series[s], ms, inputs.traded.get(s, set()), start, end)
+    legs = {s: simulate_member(strategy, inputs.series[s], ms, inputs.traded[s], start, end)
             for s, ms in sorted(months_by_symbol.items()) if ms}
     daily, funding = fb.portfolio(legs)
     by = fb.by_month(daily)
