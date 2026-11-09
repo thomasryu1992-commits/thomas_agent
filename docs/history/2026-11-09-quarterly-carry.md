@@ -32,6 +32,6 @@ prices. That threshold is the cost model; a test raises the spot fee and the sam
 (a test asserts no price reaches its output), so the rules in §2–§4 were fixed without seeing a basis.
 
 **Why the span ends 2026-09-30, not 2026-10-31.** The load check found no 2026-10-28 row in the USD-M monthly
-archive for any BTC or ETH contract, dated or perpetual (other symbols were not checked), and the dated daily
-file answers 404; spot has the day. Under the pre-registered gap rule a held position would BLOCK there, so the end moved to the last
+archive for any BTC or ETH contract, dated or perpetual (other symbols were not checked), and the daily files
+(dated and perpetual) answer 404; spot has the day. Under the pre-registered gap rule a held position would BLOCK there, so the end moved to the last
 complete month without a gap, the same end the funding-basis runs used. No return had been computed.
