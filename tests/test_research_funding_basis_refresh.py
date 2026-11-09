@@ -132,3 +132,30 @@ def test_too_few_perps_in_the_months_klines_halts_before_any_derivative_read(cac
     with pytest.raises(rf.Halt):
         job.execute()
     assert not any("scripts.research.fetch_public" in c for c in fake.calls)
+
+
+class Flaky(Fake):
+    def __init__(self, fails: int) -> None:
+        super().__init__()
+        self.fails = fails
+
+    def __call__(self, argv: list[str]) -> tuple[int, str]:
+        if "spot" in argv and "fetch-monthly" in argv and self.fails:
+            self.calls.append(argv)
+            self.fails -= 1
+            return 1, "urllib.error.URLError: <urlopen error _ssl.c:1063: The handshake operation timed out>"
+        return super().__call__(argv)
+
+
+def test_an_archive_step_that_times_out_is_retried(cache: Path) -> None:
+    job, slept = _job(cache, Flaky(fails=1))
+    assert job.execute() == rf.EXIT_OK
+    assert slept[0] == rf.ARCHIVE_WAIT_SECONDS
+
+
+def test_an_archive_step_that_keeps_failing_halts_with_a_resume_note(cache: Path) -> None:
+    fake = Flaky(fails=rf.ARCHIVE_RETRIES + 1)
+    job, _ = _job(cache, fake)
+    with pytest.raises(rf.Halt, match="rerun"):
+        job.execute()
+    assert not any("scripts.research.fetch_public" in c for c in fake.calls)

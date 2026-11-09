@@ -17,7 +17,8 @@ own rules (checksums, skip-if-present, the IP weight budget, the factory window)
 Pacing (lessons of the v0.2 fetch, 2026-11-09): one derivative symbol at a time, :data:`PACE_SECONDS` apart; on
 the venue's weight stop, wait :data:`WEIGHT_WAIT_SECONDS` and retry up to :data:`WEIGHT_RETRIES` times. A 429 or
 418 stops the whole run. Any other failure (a 400 for a delisted perp) is listed at the end and the run goes on;
-the exit code is then BLOCKED. No network
+the exit code is then BLOCKED. An archive step that fails (a timed-out TLS handshake on 2026-11-09) is retried
+:data:`ARCHIVE_RETRIES` times, :data:`ARCHIVE_WAIT_SECONDS` apart, before the run halts. No network
 step starts in [07:30, 09:00) UTC (the factory window and the sandbox's own refusal); the run stops there and
 prints how to resume. Every step is safe to rerun: present files and cached rows are never fetched again.
 Symbol lists are passed as arguments, never through a file, so no last line can be dropped.
@@ -52,6 +53,8 @@ WEIGHT_RETRIES = 2
 QUIET_UTC = (dtime(7, 30), dtime(9, 0))
 WEIGHT_STOP = "weight this minute"            # fetch_public's message when the IP's minute weight is too high
 BAN_CODES = (429, 418)                        # fetch_public stops on these without retry; so does the whole run
+ARCHIVE_RETRIES = 2                           # an archive step (data.binance.vision) that fails is retried ...
+ARCHIVE_WAIT_SECONDS = 60                     # ... after this pause: every step skips what is already on disk
 ARCHIVE = ["scripts/binance_archive.py"]
 FETCH_PUBLIC = ["-m", "scripts.research.fetch_public"]
 
@@ -117,11 +120,15 @@ class Refresh:
                        "rerun the same command after 09:00 UTC to resume")
 
     def _step(self, label: str, argv: list[str]) -> None:
-        self._guard(label)
-        rc, last = self.run(argv)
-        self.say(f"{label}: rc={rc} {last}")
-        if rc != 0:
-            raise Halt(f"{label} failed (rc={rc}): {last}")
+        for attempt in range(ARCHIVE_RETRIES + 1):
+            if attempt:
+                self.sleep(ARCHIVE_WAIT_SECONDS)
+            self._guard(label)
+            rc, last = self.run(argv)
+            self.say(f"{label} try {attempt + 1}: rc={rc} {last}")
+            if rc == 0:
+                return
+        raise Halt(f"{label} failed {ARCHIVE_RETRIES + 1} times (rc={rc}): {last}; rerun the same command to resume")
 
     def _monthly(self, kind: str, symbols: Sequence[str], dest: Path, market: str = "um") -> list[str]:
         first, last = month_bounds(self.month)
