@@ -54,13 +54,13 @@ def test_a_member_every_month_is_the_v01_simulation_exactly() -> None:
     end = D0 + timedelta(days=60)
     months = set(v2.months_between(D0, end + timedelta(days=40)))
     for strategy in fb.STRATEGIES:
-        assert v2.simulate_member(strategy, s, months, D0, end).returns == \
+        assert v2.simulate_member(strategy, s, months, set(s.days), D0, end).returns == \
             fb.simulate_symbol(strategy, s, D0, end).returns
 
 
 def test_leaving_the_universe_closes_at_the_last_member_close_and_books_nothing_after() -> None:
     s = _series(D0 - timedelta(days=5), D0 + timedelta(days=70))
-    leg = v2.simulate_member("B-ALL", s, {"2021-03"}, D0, D0 + timedelta(days=60))
+    leg = v2.simulate_member("B-ALL", s, {"2021-03"}, set(s.days), D0, D0 + timedelta(days=60))
     last = date(2021, 3, 31)
     assert max(leg.returns) == last
     assert leg.entries == 1 and leg.exits == 1
@@ -70,8 +70,28 @@ def test_leaving_the_universe_closes_at_the_last_member_close_and_books_nothing_
 def test_a_perp_whose_bars_end_while_held_is_closed_at_its_last_close() -> None:
     last = D0 + timedelta(days=9)
     s = _series(D0 - timedelta(days=5), last)
-    leg = v2.simulate_member("B-ALL", s, {"2021-03", "2021-04"}, D0, D0 + timedelta(days=40))
+    leg = v2.simulate_member("B-ALL", s, {"2021-03", "2021-04"}, set(s.days), D0, D0 + timedelta(days=40))
     assert max(leg.returns) == last and leg.exits == 1
+
+
+def test_bars_that_outlive_trading_are_not_held_even_when_the_index_is_spliced() -> None:
+    """v0.2.1: delisted LUNAUSDT kept a frozen mark and a spliced index after its last trade (2022-05-13)."""
+    last_trade = D0 + timedelta(days=9)
+    s = _series(D0 - timedelta(days=5), D0 + timedelta(days=40),
+                index=lambda d: 100.0 if d <= D0 + timedelta(days=20) else 130_000.0)
+    traded = {d for d in s.days if d <= last_trade}
+    leg = v2.simulate_member("B-ALL", s, {"2021-03", "2021-04"}, traded, D0, D0 + timedelta(days=40))
+    assert max(leg.returns) == last_trade
+    assert leg.entries == 1 and leg.exits == 1 and leg.resets == 0
+    assert leg.returns[last_trade] == pytest.approx((3 * 0.0001 - fb._costs(1.0, 1.0)) / 2)
+
+
+def test_a_position_opens_only_at_a_close_the_perp_traded_on() -> None:
+    s = _series(D0 - timedelta(days=5), D0 + timedelta(days=20))
+    traded = {d for d in s.days if d >= D0}                         # first trade on D0: nothing to open at D0 - 1
+    leg = v2.simulate_member("B-ALL", s, {"2021-03"}, traded, D0, D0 + timedelta(days=20))
+    assert leg.returns[D0] == 0.0
+    assert leg.entries == 1 and leg.returns[D0 + timedelta(days=1)] < 0      # opened at D0's close
 
 
 def test_a_traded_day_without_a_derivative_bar_or_a_month_without_settlements_is_excluded() -> None:
@@ -90,7 +110,8 @@ def test_days_the_perp_did_not_trade_are_not_exclusions() -> None:
 
 def _inputs(series: fb.Series, months: list[str], excluded: list[str] = ()) -> v2.Inputs:
     return v2.Inputs(series={"TESTUSDT": series}, members={m: ["TESTUSDT"] for m in months},
-                     excluded={"TESTUSDT": list(excluded)} if excluded else {})
+                     excluded={"TESTUSDT": list(excluded)} if excluded else {},
+                     traded={"TESTUSDT": set(series.days)})
 
 
 def test_too_many_excluded_member_months_block() -> None:
