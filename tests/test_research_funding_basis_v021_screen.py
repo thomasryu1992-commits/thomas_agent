@@ -143,3 +143,52 @@ def test_exclusions_are_listed_and_too_many_block(monkeypatch: pytest.MonkeyPatc
 def test_the_command_refuses_outside_the_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(s21.xsb, "_in_sandbox", lambda: False)
     assert s21.main(["run"]) == s21.EXIT_USAGE
+
+
+# --- archive holes (FUNDING_BASIS_V0.2 §10, proposed 2026-11-09) -----------------------------------------------
+
+HOLE = START + timedelta(days=12)
+FILLERS = tuple(f"F{i}USDT" for i in range(6))           # non-members that set how many perps are alive
+
+
+def _with_gap(data: s21.Forward, gap: dict[str, set[date]]) -> s21.Forward:
+    data.traded = {**{f: set(_days(date(2026, 12, 1), END)) for f in FILLERS}, **data.traded}
+    data.traded = {sym: days - gap.get(sym, set()) for sym, days in data.traded.items()}
+    return data
+
+
+def test_a_market_wide_hole_with_derivative_bars_is_held_through_not_exited() -> None:
+    everyone = {sym: {HOLE} for sym in (*SYMBOLS, *FILLERS)}
+    clean, holed = _screen(_with_gap(_data(), {})), _screen(_with_gap(_data(), everyone))
+    assert holed["archive_holes"] == {HOLE.isoformat(): {"missing": 8, "alive": 8}}
+    assert holed["strategies"]["B-POS"]["events"]["AUSDT"]["entries"] == 1     # never left and re-entered
+    assert holed["strategies"]["B-POS"] == clean["strategies"]["B-POS"]
+
+
+def test_one_perp_missing_a_day_is_not_a_hole_and_still_exits_before_it() -> None:
+    report = _screen(_with_gap(_data(), {"AUSDT": {HOLE}}))                   # 1 of 8 alive: 12.5%
+    assert report["archive_holes"] == {}
+    assert report["strategies"]["B-POS"]["events"]["AUSDT"]["entries"] == 2      # out before the gap, back after
+
+
+def test_the_hole_share_is_a_floor() -> None:
+    two = _screen(_with_gap(_data(), {"AUSDT": {HOLE}, "F0USDT": {HOLE}}))  # 2 of 8: exactly 25%
+    assert two["archive_holes"] == {HOLE.isoformat(): {"missing": 2, "alive": 8}}
+    assert two["strategies"]["B-POS"]["events"]["AUSDT"]["entries"] == 1
+
+
+def test_a_hole_without_derivative_bars_is_excluded_not_held(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(v, "MAX_EXCLUDED_SHARE", 1.0)
+    everyone = {sym: {HOLE} for sym in (*SYMBOLS, *FILLERS)}
+    series = {"AUSDT": _series("AUSDT", skip={HOLE}), "BUSDT": _series("BUSDT")}
+    report = _screen(_with_gap(_data(series=series), everyone))
+    assert report["universe"]["excluded"] == {"AUSDT": ["2027-01"]}
+
+
+def test_a_hole_is_interior_only_and_a_hole_on_the_last_day_waits() -> None:
+    holes = {HOLE: (8, 8)}
+    filled = s21.fill_holes({"A": {HOLE - timedelta(days=1)}, "B": {HOLE - timedelta(days=1), HOLE + timedelta(days=1)}},
+                            holes)
+    assert HOLE not in filled["A"] and HOLE in filled["B"]                   # A's klines end before it: a delisting
+    last = {sym: {END} for sym in (*SYMBOLS, *FILLERS)}
+    assert _screen(_with_gap(_data(), last))["status"] == s21.NOT_YET       # no later kline proves it traded on
