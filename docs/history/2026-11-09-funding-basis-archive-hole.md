@@ -6,7 +6,7 @@ traded only when the archive has its kline, so it would read such a day as a del
 closed the day before and reopened the day after, paying two round trips for a day the perp traded.
 `scripts/research/funding_basis_v021_screen.py` now treats a day missing for at least 25% of the perps alive
 across it as an archive hole, and counts it as traded for every perp with klines on both sides. The proposal is
-`docs/proposals/FUNDING_BASIS_V0.2.md` §10. It waits on Thomas (Q1 the rule, Q2 the share).
+`docs/proposals/FUNDING_BASIS_V0.2.md` §10. Thomas took both defaults the same day (Q1 the rule, Q2 the 25% share).
 
 **Why the screen and not the v0.2.1 simulator.** The v0.2.1 entry run is judged. The same holes existed inside
 its span: 2022-02-26..28 and 2022-04-01..02, with about 34% of perps missing and 13–14 of 30 members each
