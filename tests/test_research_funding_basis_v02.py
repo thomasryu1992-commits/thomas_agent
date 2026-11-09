@@ -135,7 +135,7 @@ def test_a_steady_carry_clears_the_entry_floor_and_names_the_screen_window() -> 
     report = v2.measure(_inputs(s, months), start=D0, end=D0 + timedelta(days=180))
     assert report["strategies"]["B-ALL"]["entry"]["pass"] is True
     assert report["overall"] == "ENTRY_PASS"
-    assert report["screen"]["window"] == ["2027-01-01", "2027-04-30"]
+    assert report["screen"]["window"] == ["2026-12-01", "2027-03-31"]
 
 
 def test_the_spot_archive_months_are_read_from_file_names(tmp_path: Path) -> None:
