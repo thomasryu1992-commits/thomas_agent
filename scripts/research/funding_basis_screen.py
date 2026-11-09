@@ -78,7 +78,11 @@ def _days(first: date, last: date) -> list[date]:
 
 
 def screen_strategy(strategy: str, series: Mapping[str, fb.Series], start: date, end: date) -> dict[str, Any]:
-    legs = {name: fb.simulate_symbol(strategy, s, start, end) for name, s in series.items()}
+    return summarise(strategy, {name: fb.simulate_symbol(strategy, s, start, end) for name, s in series.items()})
+
+
+def summarise(strategy: str, legs: Mapping[str, fb.Leg]) -> dict[str, Any]:
+    """The verdict and the shown-only numbers over the legs' portfolio (also used by the v0.2.1 screen)."""
     daily, funding = fb.portfolio(legs)
     values = [daily[d] for d in sorted(daily)]
     mean = statistics.fmean(values)
