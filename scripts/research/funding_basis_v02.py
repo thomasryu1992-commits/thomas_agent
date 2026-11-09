@@ -13,6 +13,10 @@ nothing.
   spot pair). Seasoning as v0.1.
 - **Leaving:** a symbol that is held on the last day of its member month, and is not a member next month, is
   closed at that close with exit costs. A perp whose bars end while held (delisted) is closed at its last close.
+- **Traded days only (v0.2.1, Thomas 2026-11-09):** a position is held only on days the perp traded (the archive
+  has its 1d kline), opens only at a close on which it traded, and is closed at the last traded close before a day
+  it did not. v0.2 held on derivative bars alone, and bars can outlive trading: delisted LUNAUSDT's mark froze
+  after 2022-05-13 and its index was spliced to another asset on 2022-06-01.
 - **Missing data:** a member month in which the perp traded (the archive has its 1d kline) on a day that lacks
   the index, premium or mark bar, or in which no funding settled, is excluded for that symbol. Each exclusion is
   listed. A member perp with no readable series is excluded for all its member months. Days the perp did not
@@ -49,7 +53,7 @@ from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE  # 
 from scripts.research import cross_section_basket as xsb  # noqa: E402
 from scripts.research import funding_basis as fb  # noqa: E402
 
-SPEC = "FUNDING_BASIS_V0.2"
+SPEC = "FUNDING_BASIS_V0.2.1"                 # v0.2 + hold only on days the perp traded (Thomas 2026-11-09)
 START = fb.START
 END = fb.END
 TOP_N = 30
@@ -129,9 +133,10 @@ def missing_months(series: fb.Series, traded: set[date], months: Sequence[str]) 
 
 # --- one symbol with membership ---------------------------------------------------------------------------
 
-def simulate_member(strategy: str, series: fb.Series, member_months: set[str], start: date = START,
-                    end: date = END) -> fb.Leg:
-    """``fb.simulate_symbol`` with membership: returns only on member days; exit at the close before leaving."""
+def simulate_member(strategy: str, series: fb.Series, member_months: set[str], traded: set[date],
+                    start: date = START, end: date = END) -> fb.Leg:
+    """``fb.simulate_symbol`` with membership: returns only on member days the perp traded; it opens only at a
+    traded close and exits at the close before leaving or before a day it did not trade."""
     import bisect
 
     leg = fb.Leg()
@@ -143,7 +148,7 @@ def simulate_member(strategy: str, series: fb.Series, member_months: set[str], s
     value = 0.0
     day = start
     while day <= end:
-        if month_key(day) not in member_months or not series.eligible(day):
+        if month_key(day) not in member_months or not series.eligible(day) or day not in traded:
             if open_:
                 raise fb.DataGap(f"{series.name} {day}: open outside membership or without a bar")
             held_yesterday = False
@@ -155,7 +160,7 @@ def simulate_member(strategy: str, series: fb.Series, member_months: set[str], s
         if open_ and not hold:
             pnl -= fb._costs(prev.index / s0, prev.index * (1 + prev.premium) / p0)
             open_, leg.exits = False, leg.exits + 1
-        if not open_ and hold:
+        if not open_ and hold and day - timedelta(days=1) in traded:     # opens at a close it traded on
             s0, p0, m0 = prev.index, prev.index * (1 + prev.premium), prev.mark
             value, held_yesterday = 0.0, False
             pnl -= fb._costs(1.0, 1.0)
@@ -179,7 +184,7 @@ def simulate_member(strategy: str, series: fb.Series, member_months: set[str], s
                 value = new_value
                 tomorrow = day + timedelta(days=1)
                 leaving = (day == last_bar or month_key(tomorrow) not in member_months
-                           or tomorrow not in series.days)
+                           or tomorrow not in series.days or tomorrow not in traded)
                 if leaving:                                       # close at this close
                     pnl -= fb._costs(today.index / s0, today.index * (1 + today.premium) / p0)
                     open_, held_yesterday = False, False
@@ -207,6 +212,7 @@ class Inputs:
     series: dict[str, fb.Series]
     members: dict[str, list[str]]            # month -> members (before exclusions)
     excluded: dict[str, list[str]]          # symbol -> excluded member months
+    traded: dict[str, set[date]]            # symbol -> days the perp traded (archive 1d klines)
 
 
 def member_months(inputs: Inputs) -> dict[str, set[str]]:
@@ -223,7 +229,7 @@ def _sharpe(values: Sequence[float]) -> float | None:
 
 def measure_strategy(strategy: str, inputs: Inputs, *, start: date = START, end: date = END) -> dict[str, Any]:
     months_by_symbol = member_months(inputs)
-    legs = {s: simulate_member(strategy, inputs.series[s], ms, start, end)
+    legs = {s: simulate_member(strategy, inputs.series[s], ms, inputs.traded[s], start, end)
             for s, ms in sorted(months_by_symbol.items()) if ms}
     daily, funding = fb.portfolio(legs)
     by = fb.by_month(daily)
@@ -345,7 +351,8 @@ def load(cache: Path, *, start: date = START, end: date = END) -> Inputs:
         missing = missing_months(s, traded.get(symbol, set()), months)
         if missing:
             excluded[symbol] = missing
-    return Inputs(series=series, members=members, excluded=excluded)
+    return Inputs(series=series, members=members, excluded=excluded,
+                  traded={s: traded.get(s, set()) for s in series})
 
 
 def main(argv: list[str] | None = None) -> int:
