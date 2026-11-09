@@ -4,7 +4,7 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **98**건: `DRAFT` 3 · `PARTIALLY DECIDED` 9 · `DECIDED` 19 · `IMPLEMENTED` 56 · `SUPERSEDED` 4 · `RECORD` 7
+제안서 **99**건: `DRAFT` 3 · `PARTIALLY DECIDED` 9 · `DECIDED` 20 · `IMPLEMENTED` 56 · `SUPERSEDED` 4 · `RECORD` 7
 
 ## Thomas 결정 대기 (12)
 
@@ -25,7 +25,7 @@
 | [G6_SELL_REBALANCE_V0.1.md](G6_SELL_REBALANCE_V0.1.md) | `DRAFT` | 2026-11-03 | G6(자동 리밸런싱)의 남은 절반인 매도를 다루는 결정 패킷 초안이다. **지금 묻지 않는다.** G6은 G1d(H6c, unit 권위 전환)가 끝난 뒤 다시 여는 별도 결정이므로(`THOMAS_AGENT_TARGET_ARCHITECTURE_V0.1.md` §6), H6c가 정해진 뒤 SQ1–SQ5를 묻는다. 그때까지 코드, 정책, env, 스케줄은 바뀌지 않는다. 미리 써 두는 이유는 H6c가 정해지는 날 바로 물을 수 있게 하기 위해서다. |
 | [H6C_UNIT_AUTHORITY_V0.1.md](H6C_UNIT_AUTHORITY_V0.1.md) | `DRAFT` | 2026-11-04 | H6c(G1d, unit 권위 전환)의 결정 패킷 초안이다. **지금 묻지 않는다.** Claude 도어의 `holdings_status`에 `h6c_askable`이 서면 HQ1–HQ6을 묻는다(`H6B_UNIT_SHADOW_V0.1.md` S5). 그때까지 코드, 정책, env, 스케줄은 바뀌지 않는다. 미리 써 두는 이유는 조건이 갖춰지는 날 바로 묻기 위해서다. 같은 날 Thomas가 해야 할 일(§2의 입금·출금)도 여기에 적는다. |
 
-## 결정됨 — 구현 남음 (19)
+## 결정됨 — 구현 남음 (20)
 
 결정은 끝났고 결정된 것이 아직 다 지어지지 않았다. 결정이 만든 구현 대기열이다.
 
@@ -50,6 +50,7 @@
 | [CRYPTO_REGIME_STRATEGY_SET_V0.1.md](CRYPTO_REGIME_STRATEGY_SET_V0.1.md) | `DECIDED` | 2026-11-04 | Thomas: §6 Q1–Q4 "기본값대로"(Q3는 B안, 선물 분기 홀드아웃). 국면 판별 규칙 하나와 전략 36개(국면당 12개), 두 단계 검증을 이대로 한다. 구현은 `scripts/research/regime_strategies.py`이고, 정식 실행은 병합 뒤 한 번 한다. 1단계 뒤, 2단계와 홀드아웃 전에 무작위 대조를 "같은 방향"으로 고쳤다(Thomas "바꾸고 다시", 아래 "수정 (Thomas 2026-11-04, 1단계 뒤)"). **2단계 결과(2026-11-05): 후보 4개 모두 NOT_CONFIRMED, 확인된 전략 0개.** 홀드아웃은 이 실행으로 쓰였다. 처음 지시: "상승장/횡보장/하락장인지를 구조적으로 파악해서 각각의 롱/숏 전략을 조금더 구체적으로 정한 뒤, 각각 시나리오에 맞는 전략을 10~20개 정도 구상"(국면마다 10~20개). |
 | [MARKET_NEUTRAL_CROSS_SECTION_V0.1.md](MARKET_NEUTRAL_CROSS_SECTION_V0.1.md) | `DECIDED` | 2026-11-04 | Q1: 매월 거래량 상위 10개에 Thomas가 지정한 심볼을 더한다(지정은 정식 실행 전에 고정). Q2–Q4는 권고대로: 신호 셋 고정(1일 반전, 7일·30일 모멘텀), 1d만, 아카이브 klines는 `claude` 계정의 `binance_archive.py`로 받는다. 구현은 지었다(`binance_archive.py list-symbols`·`fetch-monthly`·`contract-types`, `scripts/research/cross_section_basket.py`, 아래 "지은 것"). 정식 실행 전에 유니버스를 코인 무기한으로 좁혔다(아래 "사전 등록 수정"). 정식 실행은 2026-11-04 07:04Z에 한 번 했다. 결과는 세 신호 모두 NULL, 전체 판정은 NO_EDGE_IN_THIS_CROSS_SECTION이다(아래 "결과"). 판정 규칙, 문, factory, 템플릿, 스케줄은 바꾸지 않는다. |
 | [CRYPTO_REGIME_STRATEGY_SET_V0.2.md](CRYPTO_REGIME_STRATEGY_SET_V0.2.md) | `DECIDED` | 2026-11-05 | Thomas: 계획 질문 Q1–Q5에 이어 §7 Q1–Q3도 "기본값대로"라고 답했다. 가설 4개(T1·S1·S2·S3)와 판정 규칙, 결과의 쓰임이 이대로 정해졌다. 구현은 `scripts/research/regime_strategies_v02.py`이고, 2026-11-05에 `stage0`(§2와 같음)와 `confirm-spot`을 한 번씩 돌렸다. **결과: 가설 4개 모두 NOT_CONFIRMED.** T1은 p 0.111로 α 0.10을 넘지 못했고, S1은 p 0.047로 Holm 첫 단계(0.025)를 넘지 못했다(아래 "확인 결과"). 현물 2018-03–2019-12 구간은 이 실행으로 닫혔다. |
+| [STRATEGY_SCREEN_GATE_V0.1.md](STRATEGY_SCREEN_GATE_V0.1.md) | `DECIDED` | 2026-11-09 | Thomas가 정한 것: - 관문을 2단계로 바꾼다. 1단계는 4개월 forward 선별(평균 > 0이면 남김), 2단계는 지금의 확인 규칙이다. 2026-11-08의 "한 달 안" 관문은 거둔다("ㄱㄱ"). - 새 가설은 과거 데이터로 추정한 연 샤프가 1.0 이상일 때만 만든다("ㄱㄱ"). - 9-24 결정(§1)과 겹친다는 것을 본 뒤에도 진행하고, 첫 후보는 펀딩 베이시스 하나다("그래도 진행"). |
 
 ## 구현됨 (56)
 
