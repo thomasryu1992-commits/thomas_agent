@@ -23,6 +23,13 @@ zero, else ``SCREEN_DROP``. A strategy it keeps is still unconfirmed.
      :data:`funding_basis_v02.MAX_EXCLUDED_SHARE` of member-months blocks.
 - **No early reading:** a ``NOT_YET`` report carries how far the data reaches and what is short, nothing about
   returns.
+- **Archive holes (proposed 2026-11-09, ``FUNDING_BASIS_V0.2.md`` §10):** the archive's 1d kline is the witness
+  that a perp traded. On 2026-10-28 it is missing for every perp alive that day, while their index, premium and
+  mark bars and funding settlements all exist: a publication defect, not a halt. A day missing from the klines of
+  at least :data:`HOLE_SHARE` of the perps alive across it is an archive hole, and counts as traded for each perp
+  with klines on both sides. The derivative bars then decide as on any other day: present, the day is held and
+  priced; absent, v0.2's missing-data exclusion fires. A halt or a delisting is per-symbol, and the trailing
+  "bars end" rule (the LUNA protection) is untouched: a hole is interior by definition.
 
 It reads only the research cache and writes nothing.
 """
@@ -35,7 +42,7 @@ import os
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -52,6 +59,7 @@ from scripts.research import funding_basis_v02 as v  # noqa: E402
 
 SPEC = sc.SPEC
 SCREENED = ("B-POS",)                    # cleared the entry floor in run 20261109T090121Z-3112463
+HOLE_SHARE = 0.25                        # a day missing for this share of the perps alive across it is a hole
 KEEP, DROP, NOT_YET, JUDGED = sc.KEEP, sc.DROP, sc.NOT_YET, sc.JUDGED
 
 
@@ -62,6 +70,37 @@ class Forward:
     spot_months: dict[str, set[str]]             # spot pair -> months archived
     spot_listing: set[str]
     series: dict[str, fb.Series | None]          # candidate member -> its derivative series (None: unreadable)
+
+
+def archive_holes(traded: Mapping[str, set[date]], share: float | None = None) -> dict[date, tuple[int, int]]:
+    """``{day: (missing, alive)}`` for every day missing from the klines of at least ``share`` of the perps
+    alive across it (a kline on some earlier and some later day)."""
+    share = HOLE_SHARE if share is None else share
+    spans = [(min(days), max(days), days) for days in traded.values() if days]
+    if not spans:
+        return {}
+    alive: dict[date, int] = defaultdict(int)
+    missing: dict[date, int] = defaultdict(int)
+    for first, last, days in spans:
+        day = first + timedelta(days=1)
+        while day < last:
+            alive[day] += 1
+            if day not in days:
+                missing[day] += 1
+            day += timedelta(days=1)
+    return {d: (n, alive[d]) for d, n in sorted(missing.items()) if n >= share * alive[d]}
+
+
+def fill_holes(traded: Mapping[str, set[date]], holes: Mapping[date, Any]) -> dict[str, set[date]]:
+    """Each perp's traded days plus the archive holes strictly inside its kline span."""
+    out = {}
+    for symbol, days in traded.items():
+        if days:
+            first, last = min(days), max(days)
+            out[symbol] = days | {d for d in holes if first < d < last}
+        else:
+            out[symbol] = set(days)
+    return out
 
 
 def _not_yet(head: dict[str, Any], data_through: date | None, short: list[str]) -> dict[str, Any]:
@@ -77,7 +116,11 @@ def screen(data: Forward, *, start: date | None = None, end: date | None = None)
     head = {"spec": SPEC, "model": v.SPEC, "window": [start.isoformat(), end.isoformat()],
             "strategies_screened": list(SCREENED)}
 
-    klines_through = max((max(days) for days in data.traded.values() if days), default=None)
+    holes = archive_holes(data.traded)
+    traded = fill_holes(data.traded, holes)
+    head["archive_holes"] = {d.isoformat(): {"missing": n, "alive": a} for d, (n, a) in holes.items()
+                             if start <= d <= end}
+    klines_through = max((max(days) for days in traded.values() if days), default=None)
     unranked = [v.prev_month(m) for m in months if not data.volumes.get(v.prev_month(m))]
     if unranked or klines_through is None or klines_through < end:
         return _not_yet(head, klines_through, [f"klines {m}" for m in unranked] or ["klines"])
@@ -100,7 +143,7 @@ def screen(data: Forward, *, start: date | None = None, end: date | None = None)
 
     short, reach, held = [], [], {}
     for symbol, ms in sorted(months_of.items()):
-        days = {d for d in data.traded.get(symbol, set()) if start <= d <= end and v.month_key(d) in ms}
+        days = {d for d in traded.get(symbol, set()) if start <= d <= end and v.month_key(d) in ms}
         if not days:
             continue                                      # never traded while a member: nothing to hold
         last = max(days)
@@ -121,11 +164,11 @@ def screen(data: Forward, *, start: date | None = None, end: date | None = None)
 
     excluded = {}
     for symbol, s in held.items():
-        missing = v.missing_months(s, data.traded[symbol], months_of[symbol])
+        missing = v.missing_months(s, traded[symbol], months_of[symbol])
         if missing:
             excluded[symbol] = missing
     inputs = v.Inputs(series=held, members=members, excluded=excluded,
-                      traded={s: data.traded[s] for s in held})
+                      traded={s: traded[s] for s in held})
     member_total = sum(len(ms) for ms in members.values())
     excluded_total = sum(len(ms) for ms in excluded.values())
     if excluded_total / member_total > v.MAX_EXCLUDED_SHARE:

@@ -159,3 +159,18 @@ def test_an_archive_step_that_keeps_failing_halts_with_a_resume_note(cache: Path
     with pytest.raises(rf.Halt, match="rerun"):
         job.execute()
     assert not any("scripts.research.fetch_public" in c for c in fake.calls)
+
+
+def test_an_archive_hole_in_the_month_is_reported(cache: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from datetime import timedelta
+
+    first, last = date(2026, 10, 1), date(2026, 11, 30)
+    hole = date(2026, 11, 12)
+    every = {first + timedelta(days=i) for i in range((last - first).days + 1)}
+    monkeypatch.setattr(v, "read_volumes", lambda *a, **k: (_volumes(), {f"P{i:02d}USDT": every - {hole}
+                                                                         for i in range(40)}))
+    said: list[str] = []
+    job = rf.Refresh(month=MONTH, cache=cache, run=Fake(), now=lambda: NOON, sleep=lambda _: None, say=said.append)
+    assert job.execute() == rf.EXIT_OK                                     # a warning, not a halt
+    assert job.holes == [hole]
+    assert any(line.startswith("WARNING archive holes in 2026-11: 2026-11-12") for line in said)

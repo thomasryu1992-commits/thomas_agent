@@ -45,6 +45,7 @@ if str(ROOT) not in sys.path:
 from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE  # noqa: E402
 from scripts.research import funding_basis as fb  # noqa: E402
 from scripts.research import funding_basis_v02 as v  # noqa: E402
+from scripts.research import funding_basis_v021_screen as s21  # noqa: E402
 
 TOP_N = v.TOP_N
 PACE_SECONDS = 20
@@ -105,6 +106,7 @@ class Refresh:
     sleep: Callable[[float], None] = time.sleep
     say: Callable[[str], None] = print
     failed: list[str] = field(default_factory=list)
+    holes: list[date] = field(default_factory=list)   # archive holes in the month (FUNDING_BASIS_V0.2 §10)
 
     @property
     def archive(self) -> Path:
@@ -154,7 +156,8 @@ class Refresh:
     def plan_targets(self) -> list[str]:
         perps = json.loads((self.archive / "symbols.json").read_text())
         contract_types = json.loads((self.archive / "contract_types.json").read_text())["contract_types"]
-        volumes, _ = v.read_volumes(self.archive, perps, contract_types)
+        volumes, traded = v.read_volumes(self.archive, perps, contract_types)
+        self.holes = [d for d in s21.archive_holes(traded) if v.month_key(d) == self.month]
         if not volumes.get(self.month):
             raise Halt(f"no perp klines for {self.month} in {self.archive}")
         if len(volumes[self.month]) < TOP_N:
@@ -174,6 +177,9 @@ class Refresh:
                                                 self.spot_archive, market="spot"))
         wanted = self.plan_targets()
         self.say(f"targets for {self.month}: {len(wanted)} symbols")
+        if self.holes:
+            self.say(f"WARNING archive holes in {self.month}: {','.join(d.isoformat() for d in self.holes)} — "
+                     "klines missing for most perps (FUNDING_BASIS_V0.2 §10); the screen counts them as traded")
         self._step("funding archive", self._monthly("fundingRate", wanted, self.archive))
         for i, symbol in enumerate(wanted):
             if i:
