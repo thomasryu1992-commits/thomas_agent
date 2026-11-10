@@ -158,6 +158,7 @@ CANDIDATES: dict[str, Candidate] = {
     "A04": Candidate(why="A03은 순위가 매주 바뀌어 비용이 컸다. 천천히 바뀌는 특성을 쓴다: 덜 유동적인 쪽(수익률 크기÷거래대금이 큰 쪽)을 사고 유동적인 쪽을 판다(비유동성 프리미엄).", features=(("illiquidity", 1.0),)),
     "A05": Candidate(why="A04에 변동성 비중을 더한다. 변동성 큰 비유동 코인 몇 개가 바스켓을 좌우하지 않게 한다.", features=(("illiquidity", 1.0),), inverse_vol=True),
     "A06": Candidate(why="A04(비유동성)와 A01(낮은 고유 변동성)은 좋은 해와 나쁜 해가 반대다. 한 점수로 섞는다: 비유동적이면서 고유 변동성이 낮은 쪽을 사고, 유동적이면서 고유 변동성이 높은 쪽을 판다.", features=(("illiquidity", 1.0), ("idio_vol", -1.0))),
+    "A07": Candidate(why="A06의 비용(25%)을 줄인다. 관찰 기간을 30일에서 90일로 늘려 순위가 덜 자주 바뀌게 한다.", features=(("illiquidity", 1.0), ("idio_vol", -1.0)), lookback=90),
 }
 
 
