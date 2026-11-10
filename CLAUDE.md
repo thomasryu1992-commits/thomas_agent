@@ -92,9 +92,11 @@ core thin while lanes grow, stated as rules:
     no LIVE_AUTONOMOUS until the first FORWARD_CONFIRMED lineage exists, and its questions are asked then
     (`RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md`). Neither approves a climb, an order path or a gate reopening.
 
-  The IV–RV measurement (Thomas 2026-10-06) no longer needs its exemption. Building it is still its own approval
-  (`THOMAS_AGENT_TARGET_ARCHITECTURE_V0.1.md` D-A6), and its data source is a new network read, named at the env-only
-  gate when built.
+  The IV–RV measurement (Thomas 2026-10-06) no longer needs its exemption. D-A6 was answered on 2026-11-10
+  (`RESEARCH_DATA_SOURCES_V0.1.md` Q1–Q2): Deribit's public data is read by the research sandbox's keyless
+  collection (`scripts/research/fetch_deribit.py`, `RESEARCH_SANDBOX_V0.1.md` §4.2), never by the runtime, so it is
+  not an env-gated capability. The observation (`scripts/research/iv_rv_observe.py`) is forward-only; a strategy on
+  it is pre-registered separately before any return is computed.
 
   Record: `docs/proposals/SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md`, "결정 (Thomas 2026-10-20)". The pause
   it lifts is in "결정 (Thomas 2026-09-26)" and "결정 (Thomas 2026-10-01)".
