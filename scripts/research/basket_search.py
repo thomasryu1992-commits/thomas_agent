@@ -161,6 +161,7 @@ CANDIDATES: dict[str, Candidate] = {
     "A07": Candidate(why="A06의 비용(25%)을 줄인다. 관찰 기간을 30일에서 90일로 늘려 순위가 덜 자주 바뀌게 한다.", features=(("illiquidity", 1.0), ("idio_vol", -1.0)), lookback=90),
     "A08": Candidate(why="섞은 점수는 기간에 약했다. 단일 변수인 A04(비유동성)가 기간을 90일로 늘려도 남는지 본다. 남으면 비용도 준다.", features=(("illiquidity", 1.0),), lookback=90),
     "A09": Candidate(why="아직 안 본 가설: 복권 같은 코인은 비싸다. 최근 30일의 하루 최대 수익률이 작은 쪽을 사고 큰 쪽을 판다(MAX 효과).", features=(("max", 1.0),), long_low=True),
+    "A10": Candidate(why="마지막 시도, 아직 안 본 가설: 수익률 분포가 오른쪽으로 치우친(왜도가 큰) 코인은 비싸다. 왜도가 작은 쪽을 사고 큰 쪽을 판다.", features=(("skew", 1.0),), long_low=True),
 }
 
 
