@@ -29,3 +29,13 @@ together) 1.547. The first candidate over the floor is final, so the search stop
 **Why this is not yet a result.** Three tries on this span produce a chance pass about 12% of the time, the two
 parts missed on their own, and 2022 contributes nothing. The verdict is one official run on 2025-01..2026-09 from
 the merged commit; a zero-edge rule passes that about 9% of the time.
+
+**Correction before the confirm run (same day).** A count of the inputs, dates and counts only, showed the
+baskets were never drawn from all thirty. The cache holds a coin's `metrics` files for the months it was in the
+universe plus four days before, and `oi_growth` needs the value thirty days back, so a coin new to the universe
+is unranked for most of its first month. What was measured is close to "coins in the top thirty this month and
+last": about 22 ranked, usually four a side (the first record said six). The filter reads nothing after the
+decision day (0 of 3,557 and 2,036 ranked pairs lean on a later month's membership), and the locked span has the
+same shape as the development span. Four development weeks in early 2022 had no basket because the exchange's
+all-account column is empty from 2021-12-31 to 2022-01-19. Thomas's go-ahead rested on the uncorrected text, so
+the confirm run was held and the choice is asked as Q3. Nothing was rebuilt or fetched.
