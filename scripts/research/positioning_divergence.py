@@ -54,6 +54,7 @@ from runtime.mvp_runtime.crypto.strategy import StrategySpec  # noqa: E402
 from runtime.mvp_runtime.errors import ToolBlocked, ToolError  # noqa: E402
 from runtime.mvp_runtime.paths import repo_root  # noqa: E402
 from scripts import binance_archive  # noqa: E402
+from scripts.lib.utctime import format_utc  # noqa: E402
 from scripts.research import lake  # noqa: E402
 from scripts.research import pre_window_replay as pwr  # noqa: E402
 
@@ -82,7 +83,7 @@ PAIRED = ("top_position", "global_account")     # the divergence needs both at o
 
 
 def _iso(moment: datetime) -> str:
-    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return format_utc(moment)
 
 
 def _day(value: str) -> date:
