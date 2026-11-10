@@ -72,7 +72,7 @@ def test_it_carries_states_and_counts_and_nothing_else():
 
 
 def test_the_reply_text_is_written_from_the_projection_alone():
-    out = store_reads.read_crypto_readiness(_board(), now=NOW, projection="v1")
+    out = store_reads.read_crypto_readiness(_board, now=NOW, projection="v1")
     assert out["action"] == "CRYPTO_READINESS_READ"
     assert out["reply"].splitlines() == [
         "live entry possible: no", "blocking: execution_stage", "unknown from here: live_gate_open",
@@ -119,7 +119,7 @@ def test_a_component_added_later_is_dropped_and_marks_the_reply_partial():
 def test_what_the_process_cannot_see_stays_unknown():
     data = store_reads.project_crypto_readiness(_board(live_entry_possible=None), now=NOW)
     assert data["live_entry_possible"] is None
-    assert store_reads.read_crypto_readiness(_board(live_entry_possible=None), now=NOW,
+    assert store_reads.read_crypto_readiness(lambda: _board(live_entry_possible=None), now=NOW,
                                              projection="v1")["reply"].startswith("live entry possible: unknown")
     odd = store_reads.project_crypto_readiness(_board(live_entry_possible="yes"), now=NOW)
     assert odd["live_entry_possible"] is None and odd["projection"] == "v1-partial"

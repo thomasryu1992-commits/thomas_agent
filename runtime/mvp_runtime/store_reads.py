@@ -1068,10 +1068,15 @@ def project_crypto_readiness(view: Any, *, now: str) -> dict[str, Any]:
     return _checked(data, _CRYPTO_READINESS_SCHEMA)
 
 
-def read_crypto_readiness(view: Any, *, now: str, projection: str) -> dict[str, Any]:
-    """The crypto live-readiness board for a projecting door (the Claude door). ``view`` is the board's own
-    structured data, built by the caller's domain dispatch; the reply text is written from the projection alone."""
+def read_crypto_readiness(build: Any, *, now: str, projection: str) -> dict[str, Any]:
+    """The crypto live-readiness board for a projecting door (the Claude door). ``build`` returns the board's own
+    structured data (the caller's domain dispatch); a board that cannot be built is refused without its message.
+    The reply text is written from the projection alone."""
     require_projection(projection)
+    try:
+        view = build()
+    except MvpRuntimeError:
+        raise ControlBlocked("READ_UNAVAILABLE", "the crypto readiness board could not be read") from None
     data = project_crypto_readiness(view, now=now)
     if not data["available"]:
         return {"reply": "crypto readiness: no board", "action": "CRYPTO_READINESS_READ", "data": data}

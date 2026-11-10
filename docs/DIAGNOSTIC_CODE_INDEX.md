@@ -6,7 +6,7 @@ Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **
 
 - **660** distinct codes across **1346** raise sites
 - **22** exception classes carry them
-- **66** codes are raised from more than one module (see below)
+- **65** codes are raised from more than one module (see below)
 - **179** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
 - **46** raise sites carry a human-readable **message** where a code would go, so there is nothing to look up — a different gap from the line above, and counted apart from it
 
@@ -63,7 +63,6 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `PLANNED_TASK_INVALID` | `prime.py`, `trial.py` |
 | `POLICY_UNAVAILABLE` | `approval.py`, `permission.py` |
 | `PROVIDER_ERROR` | `validator.py`, `worker.py` |
-| `READ_UNAVAILABLE` | `read_bridge.py`, `store_reads.py` |
 | `REGISTRY_UNAVAILABLE` | `planner.py`, `registry_console.py` |
 | `REGISTRY_UNRESOLVABLE` | `program_request.py`, `registration.py` |
 | `RESPONSE_TRUNCATED` | `validator.py`, `worker.py` |
@@ -1111,7 +1110,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `QUEUE_FULL` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | `submit_within_depth` | `depth >= limit` |
 | `READ_UID_ALLOWLIST_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/read_bridge.py` | `__init__` | `not self.allowed_client_uids` |
 | `READ_UID_ALLOWLIST_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/read_bridge.py` | `open_door` | `not socket_door.resolve_client_uids()` |
-| `READ_UNAVAILABLE` | `ControlBlocked` | `runtime/mvp_runtime/read_bridge.py` | `apply_read` | `command == 'crypto_readiness' and projection is not None` |
+| `READ_UNAVAILABLE` | `ControlBlocked` | `runtime/mvp_runtime/store_reads.py` | `read_crypto_readiness` | `—` |
 | `READ_UNAVAILABLE` | `ControlBlocked` | `runtime/mvp_runtime/store_reads.py` | `read_holdings_status` | `—` |
 | `REASON_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/pipeline_worker.py` | `apply_work` | `not isinstance(reason, str) or not reason.strip()` |
 | `REGISTRATION_MALFORMED` | `OperatorBlocked` | `runtime/mvp_runtime/operator.py` | `load_operator_registration` | `—` |

@@ -45,7 +45,7 @@ from typing import Any, Mapping
 from . import control, domain_console, memory_console, registry_console, socket_door, store_reads, timeutil
 from .approval_store import ApprovalStore
 from .control import ControlStore
-from .errors import ControlBlocked, MvpRuntimeError
+from .errors import ControlBlocked
 from .filelock import ACQUIRE_DEADLINE_SECONDS, ACQUIRE_POLL_SECONDS
 
 try:  # POSIX only; where it is missing the request log refuses rather than writing unlocked
@@ -220,14 +220,11 @@ def apply_read(
     elif command == "crypto_readiness" and projection is not None:
         # Under a reply contract the board's structured view is projected and its rendered text is dropped
         # (`store_reads.read_crypto_readiness`). The lane is reached through the domain console, the core's
-        # dispatch site; a failure to build the board is refused without its message.
-        try:
-            board = domain_console.apply_domain_command(spec, operator_id=ASSISTANT_ACTOR, now=now,
-                                                        repo_root=repo_root)
-        except MvpRuntimeError:
-            raise ControlBlocked("READ_UNAVAILABLE", "the crypto readiness board could not be read") from None
-        outcome = store_reads.read_crypto_readiness(board.get("data"), now=now or timeutil.utc_now_iso(),
-                                                    projection=projection)
+        # dispatch site; the contract refuses a board that cannot be built, without its message.
+        outcome = store_reads.read_crypto_readiness(
+            lambda: domain_console.apply_domain_command(spec, operator_id=ASSISTANT_ACTOR, now=now,
+                                                        repo_root=repo_root).get("data"),
+            now=now or timeutil.utc_now_iso(), projection=projection)
     elif family == _CONTROL and projection is not None and spec == control.CMD_STATUS:
         # Under a reply contract the typed state is read, never the rendered `/status` text
         # (`store_reads.read_runtime_status`). No profile serves this read today.
