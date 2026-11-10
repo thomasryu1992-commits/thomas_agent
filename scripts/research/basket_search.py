@@ -153,6 +153,7 @@ class Candidate:
 # (docs/proposals/BASKET_SEARCH_PROTOCOL_V0.1.md, "탐색 기록").
 CANDIDATES: dict[str, Candidate] = {
     "A01": Candidate(why="고유 변동성이 낮은 쪽을 사고 높은 쪽을 판다(고유 변동성 퍼즐). 변동성 비중.", features=(("idio_vol", 1.0),), long_low=True, inverse_vol=True),
+    "A02": Candidate(why="A01이 시장 하락에 베팅하는 꼴이라, 고유 변동성은 낮고 베타는 높은 쪽을 사서 양쪽의 베타 차이를 줄인다.", features=(("idio_vol", 1.0), ("beta", -1.0)), long_low=True, inverse_vol=True),
 }
 
 
