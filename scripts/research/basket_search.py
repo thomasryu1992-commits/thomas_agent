@@ -155,6 +155,7 @@ CANDIDATES: dict[str, Candidate] = {
     "A01": Candidate(why="고유 변동성이 낮은 쪽을 사고 높은 쪽을 판다(고유 변동성 퍼즐). 변동성 비중.", features=(("idio_vol", 1.0),), long_low=True, inverse_vol=True),
     "A02": Candidate(why="A01이 시장 하락에 베팅하는 꼴이라, 고유 변동성은 낮고 베타는 높은 쪽을 사서 양쪽의 베타 차이를 줄인다.", features=(("idio_vol", 1.0), ("beta", -1.0)), long_low=True, inverse_vol=True),
     "A03": Candidate(why="변동성 큰 쪽을 파는 구조가 2021년에 졌다. 변동성 대신 관심을 본다: 거래대금이 늘어난 쪽을 사고 줄어든 쪽을 판다.", features=(("volume_growth", 1.0),)),
+    "A04": Candidate(why="A03은 순위가 매주 바뀌어 비용이 컸다. 천천히 바뀌는 특성을 쓴다: 덜 유동적인 쪽(수익률 크기÷거래대금이 큰 쪽)을 사고 유동적인 쪽을 판다(비유동성 프리미엄).", features=(("illiquidity", 1.0),)),
 }
 
 
