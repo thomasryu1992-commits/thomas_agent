@@ -158,6 +158,7 @@ FEATURES: dict[str, bs.Feature] = {
 CANDIDATES: dict[str, bs.Candidate] = {
     "M01": bs.Candidate(why="쏠림 역행: 전체 계정의 롱 비중이 낮은 코인을 사고 높은 코인을 판다. 개인 계정이 몰린 쪽이 진다는 가설.", features=(("ls_level", 1.0),), long_low=True),
     "M02": bs.Candidate(why="레버리지 과열 역행: 미결제약정이 30일 동안 가장 많이 늘어난 코인을 팔고 가장 덜 늘어난 코인을 산다.", features=(("oi_growth", 1.0),), long_low=True),
+    "M03": bs.Candidate(why="M01과 M02가 둘 다 양이었다. 한 점수로 섞는다: 미결제약정이 덜 늘고 전체 계정의 롱 비중도 낮은 코인을 사고, 반대를 판다.", features=(("oi_growth", 1.0), ("ls_level", 1.0)), long_low=True),
 }
 
 
