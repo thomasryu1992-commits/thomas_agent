@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **108**건: `DRAFT` 3 · `PARTIALLY DECIDED` 10 · `DECIDED` 25 · `IMPLEMENTED` 59 · `SUPERSEDED` 4 · `RECORD` 7
+제안서 **109**건: `DRAFT` 3 · `PARTIALLY DECIDED` 11 · `DECIDED` 25 · `IMPLEMENTED` 59 · `SUPERSEDED` 4 · `RECORD` 7
 
-## Thomas 결정 대기 (13)
+## Thomas 결정 대기 (14)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -25,6 +25,7 @@
 | [G6_SELL_REBALANCE_V0.1.md](G6_SELL_REBALANCE_V0.1.md) | `DRAFT` | 2026-11-03 | G6(자동 리밸런싱)의 남은 절반인 매도를 다루는 결정 패킷 초안이다. **지금 묻지 않는다.** G6은 G1d(H6c, unit 권위 전환)가 끝난 뒤 다시 여는 별도 결정이므로(`THOMAS_AGENT_TARGET_ARCHITECTURE_V0.1.md` §6), H6c가 정해진 뒤 SQ1–SQ5를 묻는다. 그때까지 코드, 정책, env, 스케줄은 바뀌지 않는다. 미리 써 두는 이유는 H6c가 정해지는 날 바로 물을 수 있게 하기 위해서다. |
 | [H6C_UNIT_AUTHORITY_V0.1.md](H6C_UNIT_AUTHORITY_V0.1.md) | `DRAFT` | 2026-11-04 | H6c(G1d, unit 권위 전환)의 결정 패킷 초안이다. **지금 묻지 않는다.** Claude 도어의 `holdings_status`에 `h6c_askable`이 서면 HQ1–HQ6을 묻는다(`H6B_UNIT_SHADOW_V0.1.md` S5). 그때까지 코드, 정책, env, 스케줄은 바뀌지 않는다. 미리 써 두는 이유는 조건이 갖춰지는 날 바로 묻기 위해서다. 같은 날 Thomas가 해야 할 일(§2의 입금·출금)도 여기에 적는다. |
 | [CRYPTO_DESIGN_REVIEW_V0.1.md](CRYPTO_DESIGN_REVIEW_V0.1.md) | `PARTIALLY DECIDED` | 2026-11-10 | Thomas: 해결 방안을 권한 순서대로 진행한다("해결방안을 순서대로 진행하고 검증까지 진행해서 보고해"). 같은 날 결과: 방안 3(`POSITIONING_DIVERGENCE_V0.1`)은 ENTRY_FAIL, 방안 5(`VARIANCE_PREMIUM_V0.1`)는 PROXY_FAIL로 둘 다 닫았다(§4). 방안 1의 문서 정정은 이 문서와 함께 병합됐고, read door는 별도 PR(#1420)이며, 알림은 Thomas의 root `at` 작업으로 남아 있다. 남은 질문은 셋이다(§5): Q1은 2026-11-14 mint 판독 뒤에 묻고, Q2(수익 크기 바닥의 기준값)와 Q3은 답을 기다린다. 이 문서가 바꾸는 코드, 판정 규칙, 일정은 없다. |
+| [METRICS_BASKET_SEARCH_V0.1.md](METRICS_BASKET_SEARCH_V0.1.md) | `PARTIALLY DECIDED` | 2026-11-10 | Thomas: 거래소 지표의 횡단면으로 새 탐색 절차를 진행한다(예산 5회, "진행"). 절차는 `BASKET_SEARCH_PROTOCOL_V0.1` 그대로이고, 변수 목록과 탐색 구간만 다르다. §2의 세부(하루 값의 정의, 변수 다섯, 변수에 따른 탐색 구간)는 Claude가 첫 실행 전에 고정했고 §5에서 묻는다. 탐색 기록은 끝에 실행마다 적는다. 확인 구간은 아직 읽지 않았다. |
 
 ## 결정됨 — 구현 남음 (25)
 
