@@ -142,8 +142,9 @@ def _read(tmp_path, **kw):
 def test_the_claude_door_answers_it_through_the_contract_on_an_empty_state_root(tmp_path):
     assert "crypto_readiness" in CLAUDE.reads and "crypto_readiness" not in read_bridge._PROFILE_HELD_READS
     out = _read(tmp_path)
-    assert out["ok"] is True and out["data"]["projection"] in ("v1", "v1-partial")
-    assert out["data"]["live_entry_possible"] is not True          # nothing is armed on an empty root
+    assert out["ok"] is True and out["data"]["projection"] == "v1"  # the real board fits the contract: nothing dropped
+    assert out["data"]["live_entry_possible"] is False             # nothing is armed on an empty root
+    assert len(out["data"]["components"]) == len(store_reads.CRYPTO_READINESS_COMPONENTS)
     assert out["data"]["execution_stage"]["stage"] == "READ_ONLY"  # no ledger reads READ_ONLY (decision 9)
     assert set(out["data"]) <= set(store_reads._CRYPTO_READINESS_SCHEMA["properties"])
     assert out["reply"].startswith("live entry possible: ")
