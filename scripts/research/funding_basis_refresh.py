@@ -1,4 +1,4 @@
-"""Monthly data refresh for the funding-basis screens: one command per finished month, paced and resumable.
+"""Monthly data refresh for the screens (funding basis, premium convergence): one command per finished month.
 
 ``docs/proposals/FUNDING_BASIS_V0.2.md`` §9 and ``STRATEGY_SCREEN_GATE_V0.1.md`` §5. After month M ends and its
 monthly archive is published, this runs the existing public reads in order. It adds no network read of its own:
@@ -13,6 +13,10 @@ own rules (checksums, skip-if-present, the IP weight budget, the factory window)
 4. Month M's funding archive and the derivative series (``fetch_public --timeframe 1d``) for the targets:
    the top :data:`TOP_N` by volume in M (next month's candidates), the top in M − 1 (this month's candidates),
    and the v0.1 screen's eleven symbols. Members are a subset: the top by volume, then those with a spot pair.
+   Premium convergence's six symbols are among the targets (its funding comes from this archive too).
+5. The 1h index, premium and mark bars of premium convergence's six symbols (``fetch_public --timeframe 1h``,
+   ``PREMIUM_CONVERGENCE_V0.1.md`` §5), paced like step 4. Its screen window ends 2027-04-30, so this runs for every
+   month through ``--month 2027-04``, one month past the funding-basis window.
 
 Pacing (lessons of the v0.2 fetch, 2026-11-09): one derivative symbol at a time, :data:`PACE_SECONDS` apart; on
 the venue's weight stop, wait :data:`WEIGHT_WAIT_SECONDS` and retry up to :data:`WEIGHT_RETRIES` times. A 429 or
@@ -46,6 +50,7 @@ from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE  # 
 from scripts.research import funding_basis as fb  # noqa: E402
 from scripts.research import funding_basis_v02 as v  # noqa: E402
 from scripts.research import funding_basis_v021_screen as s21  # noqa: E402
+from scripts.research import premium_convergence as pc  # noqa: E402
 
 TOP_N = v.TOP_N
 PACE_SECONDS = 20
@@ -81,9 +86,10 @@ def top_by_volume(volumes: Mapping[str, Mapping[str, float]], month: str, n: int
 
 
 def targets(volumes: Mapping[str, Mapping[str, float]], month: str) -> list[str]:
-    """Derivative and funding targets after month ``month``: its top, last month's top, and v0.1's symbols."""
+    """Derivative and funding targets after month ``month``: its top, last month's top, v0.1's symbols and premium
+    convergence's."""
     return sorted(set(top_by_volume(volumes, month)) | set(top_by_volume(volumes, v.prev_month(month)))
-                  | set(fb.SYMBOLS))
+                  | set(fb.SYMBOLS) | set(pc.SYMBOLS))
 
 
 def spot_pairs(perps: Sequence[str], contract_types: Mapping[str, str], spot_listing: set[str]) -> list[str]:
@@ -138,20 +144,28 @@ class Refresh:
                 last.isoformat(), "--dest", str(dest), "--market", market]
         return argv + (["--symbols", ",".join(symbols)] if symbols else [])
 
-    def derivative(self, symbol: str) -> None:
+    def derivative(self, symbol: str, timeframe: str = "1d") -> None:
+        label = symbol if timeframe == "1d" else f"{symbol} {timeframe}"
         for attempt in range(WEIGHT_RETRIES + 1):
-            self._guard(f"fetch_public {symbol}")
-            rc, last = self.run([*FETCH_PUBLIC, "--cache", str(self.cache), "--symbol", symbol, "--timeframe", "1d"])
-            self.say(f"fetch_public {symbol} try {attempt + 1}: rc={rc} {last}")
+            self._guard(f"fetch_public {label}")
+            rc, last = self.run([*FETCH_PUBLIC, "--cache", str(self.cache), "--symbol", symbol,
+                                 "--timeframe", timeframe])
+            self.say(f"fetch_public {label} try {attempt + 1}: rc={rc} {last}")
             if rc == 0:
                 return
             if any(f"answered {code}" in last for code in BAN_CODES):
-                raise Halt(f"fetch_public {symbol}: {last} — the venue is limiting this IP, the whole run stops")
+                raise Halt(f"fetch_public {label}: {last} — the venue is limiting this IP, the whole run stops")
             if WEIGHT_STOP in last and attempt < WEIGHT_RETRIES:
                 self.sleep(WEIGHT_WAIT_SECONDS)
                 continue
             break                                    # this symbol failed (e.g. a 400 for a delisted perp)
-        self.failed.append(symbol)
+        self.failed.append(label)
+
+    def hourly(self) -> None:
+        """Step 5: premium convergence's 1h bars, one symbol at a time, :data:`PACE_SECONDS` apart."""
+        for symbol in pc.SYMBOLS:
+            self.sleep(PACE_SECONDS)
+            self.derivative(symbol, pc.TIMEFRAME)
 
     def plan_targets(self) -> list[str]:
         perps = json.loads((self.archive / "symbols.json").read_text())
@@ -185,10 +199,11 @@ class Refresh:
             if i:
                 self.sleep(PACE_SECONDS)
             self.derivative(symbol)
+        self.hourly()
         if self.failed:
             self.say(f"FAILED after retries: {','.join(self.failed)} — rerun the same command to resume")
             return EXIT_BLOCKED
-        self.say(f"done: {self.month}, {len(wanted)} derivative symbols")
+        self.say(f"done: {self.month}, {len(wanted)} derivative symbols, {len(pc.SYMBOLS)} at {pc.TIMEFRAME}")
         return EXIT_OK
 
 
@@ -211,7 +226,8 @@ def main(argv: list[str] | None = None, *, today: date | None = None) -> int:
     try:
         if args.plan:
             wanted = job.plan_targets()
-            print(json.dumps({"month": args.month, "targets": wanted, "count": len(wanted)}, indent=1))
+            print(json.dumps({"month": args.month, "targets": wanted, "count": len(wanted),
+                              "hourly": list(pc.SYMBOLS)}, indent=1))
             return EXIT_OK
         return job.execute()
     except Halt as halt:

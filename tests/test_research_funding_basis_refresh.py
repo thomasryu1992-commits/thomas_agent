@@ -12,6 +12,7 @@ import pytest
 from scripts.research import funding_basis as fb
 from scripts.research import funding_basis_refresh as rf
 from scripts.research import funding_basis_v02 as v
+from scripts.research import premium_convergence as pc
 
 MONTH = "2026-11"
 NOON = datetime(2026, 12, 2, 12, 0, tzinfo=timezone.utc)
@@ -62,11 +63,17 @@ def test_month_bounds_and_an_unfinished_month_is_refused() -> None:
     assert rf.main(["--month", "2026-11"], today=date(2026, 11, 30)) == rf.EXIT_USAGE
 
 
-def test_targets_are_this_and_last_months_top_by_volume_and_v01s_symbols() -> None:
+def test_targets_are_this_and_last_months_top_by_volume_and_v01s_and_premium_convergences_symbols() -> None:
     got = rf.targets(_volumes(), MONTH)
     top_nov = {f"P{i:02d}USDT" for i in range(10, 40)}               # volume rises with i in November
     top_oct = {f"P{i:02d}USDT" for i in range(0, 30)}
-    assert set(got) == top_nov | top_oct | set(fb.SYMBOLS)
+    assert set(got) == top_nov | top_oct | set(fb.SYMBOLS) | set(pc.SYMBOLS)
+    assert set(pc.SYMBOLS) <= set(got)                               # its funding comes from this archive
+
+
+def _symbols(calls: list[list[str]], timeframe: str) -> list[str]:
+    return [c[c.index("--symbol") + 1] for c in calls
+            if "scripts.research.fetch_public" in c and c[c.index("--timeframe") + 1] == timeframe]
 
 
 def test_spot_pairs_map_the_prefix_and_leave_out_tradfi_and_pairless_perps() -> None:
@@ -87,8 +94,11 @@ def test_the_reads_run_in_order_paced_one_symbol_at_a_time(cache: Path) -> None:
     assert spot_klines[spot_klines.index("--symbols") + 1] == "P00USDT,PEPEUSDT"
     wanted = rf.targets(_volumes(), MONTH)
     assert funding[funding.index("--symbols") + 1] == ",".join(wanted)
-    assert [c[c.index("--symbol") + 1] for c in fake.calls[6:]] == wanted
-    assert slept == [rf.PACE_SECONDS] * (len(wanted) - 1)
+    assert [c[c.index("--symbol") + 1] for c in fake.calls[6:6 + len(wanted)]] == wanted
+    assert _symbols(fake.calls, "1d") == wanted
+    assert fake.calls[6 + len(wanted):] == [[*rf.FETCH_PUBLIC, "--cache", str(cache), "--symbol", s, "--timeframe",
+                                             "1h"] for s in pc.SYMBOLS]   # premium convergence's 1h bars, last
+    assert slept == [rf.PACE_SECONDS] * (len(wanted) - 1 + len(pc.SYMBOLS))
 
 
 def test_a_weight_stop_waits_and_retries(cache: Path) -> None:
@@ -105,7 +115,23 @@ def test_a_symbol_that_keeps_failing_is_listed_and_the_run_goes_on(cache: Path) 
     job, _ = _job(cache, fake)
     assert job.execute() == rf.EXIT_BLOCKED
     assert job.failed == ["P10USDT", "P11USDT"]
-    assert fake.calls[-1][fake.calls[-1].index("--symbol") + 1] == rf.targets(_volumes(), MONTH)[-1]
+    assert _symbols(fake.calls, "1d")[-1] == rf.targets(_volumes(), MONTH)[-1]
+    assert _symbols(fake.calls, "1h") == list(pc.SYMBOLS)
+
+
+def test_an_hourly_read_that_fails_is_listed_by_symbol_and_timeframe(cache: Path) -> None:
+    class HourlyFails(Fake):
+        def __call__(self, argv: list[str]) -> tuple[int, str]:
+            if "1h" in argv and "SOLUSDT" in argv:
+                self.calls.append(argv)
+                return 3, "stopped after 1 request(s): venue answered 400 for x"
+            return super().__call__(argv)
+
+    fake = HourlyFails()
+    job, _ = _job(cache, fake)
+    assert job.execute() == rf.EXIT_BLOCKED
+    assert job.failed == ["SOLUSDT 1h"]
+    assert _symbols(fake.calls, "1h") == list(pc.SYMBOLS)            # the others still run
 
 
 def test_a_429_or_418_stops_the_whole_run(cache: Path) -> None:

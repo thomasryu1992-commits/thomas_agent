@@ -72,6 +72,7 @@
   - `binance_archive.py fetch-monthly --kind fundingRate`: 월간 펀딩 아카이브.
   - 08:00–09:00 UTC에는 돌리지 않는다.
   - 2026-11-09부터는 `python -m scripts.research.funding_basis_refresh --month <YYYY-MM>` 하나로 한다. v0.1의 11개 심볼과 `FUNDING_BASIS_V0.2` §9의 대상을 함께 채운다.
+  - 2026-11-10부터 같은 명령이 프리미엄 수렴 여섯 심볼의 1시간 바도 채운다(`PREMIUM_CONVERGENCE_V0.1` "선별 준비"). 그 창은 2027-04에 끝나므로 `--month 2027-04`까지 돌린다.
 - **정식 실행:** 2027-03 아카이브가 올라온 뒤 `sandbox_run.sh --official`로 한 번 한다. 결과는 이 문서 끝에 적는다.
 - **결과에 따라:**
 
