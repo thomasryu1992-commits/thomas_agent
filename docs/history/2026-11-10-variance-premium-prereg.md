@@ -9,8 +9,9 @@ Added:
 - `tests/test_research_variance_premium.py`.
 
 **Why a proxy first.** The tradable measurement needs years of expired-option trades, a collection of its own. The
-DVOL history is already in the cache. An index proxy that charges nothing is an upper bound: if it cannot clear the
-floor, the tradable version cannot either, and the collection is saved.
+DVOL history is already in the cache. An index proxy that charges nothing is close to an upper bound, as a judgement and not a theorem: a variance swap
+and a hedged option sale have different payoffs, so a failed proxy makes a passing option structure unlikely, not
+impossible. Thomas is asked (Q1) whether closing on that judgement is acceptable.
 
 **Why a pass does not go to the screen.** DVOL cannot be traded and the spread in volatility points is not on
 record here, so no cost is charged and none is invented. A pass earns the pre-registration of the tradable
