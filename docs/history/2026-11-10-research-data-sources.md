@@ -15,7 +15,7 @@ runtime case and asks Thomas (Q1) instead of deciding it.
 the one known at the time, so a historical test would look ahead. BNB rewards have no dataset and their
 execution is an account write.
 
-**Decided the same day.** Thomas took the defaults. Stage 1 then ran as 17 keyless requests (03:03–03:10 UTC, counts
+**Decided the same day.** Thomas took the defaults. Stage 1 then ran as about 12 keyless requests (03:03–03:10 UTC, counts
 and dates only): expired BTC option trades are public on `history.deribit.com` back to at least 2019-06 (with
 `iv`, `mark_price`, `index_price` per trade), and DVOL daily starts 2021-03-24 for BTC and ETH. Nothing was cached.
 DefiLlama and Tokenomist were never called. No code changed.
