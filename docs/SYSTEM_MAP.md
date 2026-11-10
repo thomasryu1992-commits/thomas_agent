@@ -89,7 +89,7 @@ Thomas 한 사람이 한 서버에서 돌리는 **거버넌스 우선 자율 에
 | `scheduler` (risk) | 크립토 사이클, 브레이커·경로 감시. **돈 경로** | 거래소 키, 라이브 변수 |
 | `scheduler-maint` (maintenance) | 팩토리, null control, 캔들 아카이브, 리포트, 데이터 리뷰, 보유자산 새로고침, 정리·회전, 주간 경영 보고 | 읽기 전용 거래소·증권 키, 시장 데이터 키, 관제봇 토큰(보고 전용 이름), 볼트 원고 폴더 두 개(읽기 전용 마운트) |
 | `pipeline-worker` | 위임받은 분석과 job(데이터 리뷰, 전략 제안) 실행. 분석 CLI의 `--naver-keywords`도 여기서 돈다 | 모델·검색·Naver 키 |
-| `claude-read-bridge` | Claude 계정의 읽기 전용 문(`claude` 프로필). 읽기 세 가지: `schedules`, `scheduler_events`, `holdings_status`(신선도와 검사 상태만, 금액 없음, #1314) | 없음(상태 루트를 읽기 전용으로 마운트) |
+| `claude-read-bridge` | Claude 계정의 읽기 전용 문(`claude` 프로필). 읽기 네 가지: `schedules`, `scheduler_events`, `holdings_status`(신선도와 검사 상태만, 금액 없음, #1314), `crypto_readiness`(구성 요소 상태와 개수만, 2026-11-10) | 없음(상태 루트를 읽기 전용으로 마운트) |
 
 **스케줄 종류 15개**(`scheduler.KINDS`):
 - **risk 3개:** `crypto_pipeline`, `crypto_breaker_watch`, `crypto_route_watch`

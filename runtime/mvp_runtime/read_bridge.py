@@ -217,6 +217,14 @@ def apply_read(
         # states only (`store_reads.read_holdings_status`, HOLDINGS_STATUS_READ_AND_AUTO_FLOWS R1).
         outcome = store_reads.read_holdings_status(now=now or timeutil.utc_now_iso(), repo_root=repo_root,
                                                    projection=projection)
+    elif command == "crypto_readiness" and projection is not None:
+        # Under a reply contract the board's structured view is projected and its rendered text is dropped
+        # (`store_reads.read_crypto_readiness`). The lane is reached through the domain console, the core's
+        # dispatch site; the contract refuses a board that cannot be built, without its message.
+        outcome = store_reads.read_crypto_readiness(
+            lambda: domain_console.apply_domain_command(spec, operator_id=ASSISTANT_ACTOR, now=now,
+                                                        repo_root=repo_root).get("data"),
+            now=now or timeutil.utc_now_iso(), projection=projection)
     elif family == _CONTROL and projection is not None and spec == control.CMD_STATUS:
         # Under a reply contract the typed state is read, never the rendered `/status` text
         # (`store_reads.read_runtime_status`). No profile serves this read today.
@@ -303,7 +311,8 @@ CLAUDE_PROFILE = "claude"
 
 # The reads a profiled door may carry at all: those answered through a closed reply contract. A read
 # joins this set when it has one, never by being added to a profile.
-_PROFILE_ADMISSIBLE_READS: frozenset[str] = frozenset({"schedules", "scheduler_events", "holdings_status"})
+_PROFILE_ADMISSIBLE_READS: frozenset[str] = frozenset({"schedules", "scheduler_events", "holdings_status",
+                                                       "crypto_readiness"})
 
 # D-11 f2 names four more reads for the Claude door. Traced field by field, each answers raw:
 # `heartbeat` puts `"<type>: <message>"` of a parse failure in `detail`; `runtime_status` carries the
@@ -312,12 +321,14 @@ _PROFILE_ADMISSIBLE_READS: frozenset[str] = frozenset({"schedules", "scheduler_e
 # sensitive read raw, so they are held out until each has a contract or Thomas decides otherwise.
 # `holdings_status` left this set on 2026-10-26 (HOLDINGS_STATUS_READ_AND_AUTO_FLOWS R1): it is answered through
 # contract v1.1 (`store_reads.project_holdings_status`), freshness and H6 check states, never the board.
-_PROFILE_HELD_READS: frozenset[str] = frozenset({"runtime_status", "heartbeat", "crypto_readiness"})
+# `crypto_readiness` left it on 2026-11-10 (CRYPTO_DESIGN_REVIEW_V0.1 방안 1): it is answered through
+# `store_reads.project_crypto_readiness`, component states and counts in closed vocabulary, never the board text.
+_PROFILE_HELD_READS: frozenset[str] = frozenset({"runtime_status", "heartbeat"})
 
 PROFILES: Mapping[str, DoorProfile] = MappingProxyType({
     CLAUDE_PROFILE: DoorProfile(
         name=CLAUDE_PROFILE,
-        reads=frozenset({"schedules", "scheduler_events", "holdings_status"}),
+        reads=frozenset({"schedules", "scheduler_events", "holdings_status", "crypto_readiness"}),
         projection=store_reads.PROJECTION_V1,
     ),
 })

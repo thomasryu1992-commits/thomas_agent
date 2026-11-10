@@ -909,3 +909,191 @@ def read_holdings_status(*, now: str, repo_root: Path | None, projection: str) -
                      + f"  deposits {shadow.get('deposits', 0)} / withdrawals {shadow.get('withdrawals', 0)}"
                      + f"  held {shadow.get('held', 0)}  H6c askable: {'yes' if shadow['h6c_askable'] else 'no'}")
     return {"reply": "\n".join(lines), "action": "HOLDINGS_STATUS_READ", "data": data}
+
+
+# --- crypto_readiness: reply contract v1 (CRYPTO_DESIGN_REVIEW_V0.1 방안 1, Thomas 2026-11-10) ---------------------
+#
+# What stands between this machine and a live crypto entry, as states and counts. The board's own structured view
+# (`crypto.readiness_model.readiness_data`) is the source; this projection carries only closed vocabulary from it.
+# Never carried: the rendered board text, a check row's detail, an error message, a stage id, hash or approval id,
+# an amount, an env value. The lists are literal here so this module imports no crypto module; a test pins them
+# against the lane's own constants.
+CRYPTO_READINESS_COMPONENTS: tuple[str, ...] = (
+    "live_capability_installed", "execution_stage", "live_gate_open", "runtime_control", "armed_strategy_count",
+    "venue_ready", "risk_ready", "account_ready", "trading_cycle_recent", "market_data_ready",
+    "reconciliation_ready",
+)
+CRYPTO_EXECUTION_STAGES: tuple[str, ...] = (
+    "READ_ONLY", "SHADOW", "PAPER", "SIGNED_TESTNET", "LIVE_AUTONOMOUS", "LIVE_SCALED",
+)
+_POLICY_VERSION = re.compile(r"^\d{1,4}\.\d{1,4}\.\d{1,4}\Z")
+_TRISTATE = {"enum": [True, False, None]}
+_COMPONENT_NAMES = {"type": "array", "uniqueItems": True, "items": {"enum": list(CRYPTO_READINESS_COMPONENTS)}}
+_CRYPTO_READINESS_SCHEMA: dict[str, Any] = {
+    "type": "object", "additionalProperties": False, "required": ["available", "as_of", "projection"],
+    "properties": {
+        "available": {"type": "boolean"},
+        "as_of": {"type": "string", "pattern": _ISO.pattern},
+        "board_as_of": {"type": "string", "pattern": _ISO.pattern},
+        "projection": {"enum": [PROJECTION_V1, PROJECTION_PARTIAL]},
+        "live_entry_possible": _TRISTATE,
+        "blocking": _COMPONENT_NAMES,
+        "unknown": _COMPONENT_NAMES,
+        "components": {
+            "type": "object", "additionalProperties": False,
+            "properties": {name: {"type": "object", "additionalProperties": False, "required": ["ok"],
+                                  "properties": {"ok": _TRISTATE,
+                                                 "reason": {"type": "string", "pattern": _CODE.pattern}}}
+                           for name in CRYPTO_READINESS_COMPONENTS}},
+        "execution_stage": {
+            "type": "object", "additionalProperties": False, "required": ["stage"],
+            "properties": {"stage": {"enum": list(CRYPTO_EXECUTION_STAGES)}, "valid": {"type": "boolean"},
+                           "admits_entry": {"type": "boolean"}, "anchor_behind": {"type": "boolean"},
+                           "reason_code": {"type": "string", "pattern": _CODE.pattern},
+                           "policy_version": {"type": "string", "pattern": _POLICY_VERSION.pattern}}},
+        "armed": {"type": "object", "additionalProperties": False, "required": ["known"],
+                  "properties": {"known": {"type": "boolean"}, "armed": {"type": "integer", "minimum": 0},
+                                 "occupying": {"type": "integer", "minimum": 0}}},
+        "recorded_gate": {"type": "object", "additionalProperties": False, "required": ["known"],
+                          "properties": {"known": {"type": "boolean"}, "open": _TRISTATE, "stale": {"type": "boolean"},
+                                         "recorded_at": {"type": "string", "pattern": _ISO.pattern},
+                                         "age_seconds": _NUMBER_SCHEMA}},
+        "venue_contract": {"type": "object", "additionalProperties": False,
+                           "properties": {name: _TRISTATE for name in
+                                          ("recorded", "stale", "usable", "version_current")}},
+    },
+}
+
+
+def _tristate(value: Any) -> tuple[bool | None, bool]:
+    """``(value, clean)``: True, False or None as given; anything else reads None and marks the reply partial."""
+    return (value, True) if value is None or isinstance(value, bool) else (None, False)
+
+
+def project_crypto_readiness(view: Any, *, now: str) -> dict[str, Any]:
+    """``readiness_data``'s board as the v1 contract. A value outside the closed vocabulary is dropped and the
+    reply says ``v1-partial``; a shape defect is refused whole."""
+    if not isinstance(view, Mapping):
+        return _checked({"available": False, "as_of": now, "projection": PROJECTION_PARTIAL}, _CRYPTO_READINESS_SCHEMA)
+    partial = False
+    data: dict[str, Any] = {"available": True, "as_of": now}
+    board_as_of = view.get("as_of")
+    if isinstance(board_as_of, str) and _ISO.match(board_as_of):
+        data["board_as_of"] = board_as_of
+    elif board_as_of is not None:
+        partial = True
+    data["live_entry_possible"], clean = _tristate(view.get("live_entry_possible"))
+    partial = partial or not clean
+
+    state = view.get("readiness") if isinstance(view.get("readiness"), Mapping) else {}
+    components: dict[str, Any] = {}
+    raw_components = state.get("components") if isinstance(state.get("components"), Mapping) else {}
+    for name, component in raw_components.items():
+        if name not in CRYPTO_READINESS_COMPONENTS or not isinstance(component, Mapping):
+            partial = True                                # a component this contract does not know is dropped
+            continue
+        ok, clean = _tristate(component.get("ok"))
+        row: dict[str, Any] = {"ok": ok}
+        reason = component.get("reason")
+        if isinstance(reason, str) and _CODE.match(reason):
+            row["reason"] = reason
+        else:
+            clean = False                                 # a reason that is not a code never leaves
+        partial = partial or not clean
+        components[name] = row
+    data["components"] = components
+    # The two lists are read off the projected components, never off the board's own strings ("name:REASON").
+    data["blocking"] = [n for n in CRYPTO_READINESS_COMPONENTS if n in components and components[n]["ok"] is False]
+    data["unknown"] = [n for n in CRYPTO_READINESS_COMPONENTS if n in components and components[n]["ok"] is None]
+    partial = partial or len(components) != len(CRYPTO_READINESS_COMPONENTS)   # a missing component is not "fine"
+
+    stage = view.get("execution_stage")
+    if isinstance(stage, Mapping) and stage.get("stage") in CRYPTO_EXECUTION_STAGES:
+        row = {"stage": stage["stage"]}
+        for key in ("valid", "admits_entry", "anchor_behind"):
+            if isinstance(stage.get(key), bool):
+                row[key] = stage[key]
+        code = stage.get("reason_code")
+        if isinstance(code, str) and _CODE.match(code):
+            row["reason_code"] = code
+        elif code is not None:
+            partial = True
+        version = stage.get("policy_version")
+        if isinstance(version, str) and _POLICY_VERSION.match(version):
+            row["policy_version"] = version
+        elif version is not None:
+            partial = True
+        data["execution_stage"] = row
+    else:
+        partial = True
+
+    armed = view.get("live_armed_strategies")
+    if isinstance(armed, Mapping):
+        row = {"known": armed.get("known") is True}
+        for key in ("armed", "occupying"):
+            count = _nonneg_int(armed.get(key))
+            if count is not None:
+                row[key] = count
+            elif armed.get(key) is not None:
+                partial = True
+        data["armed"] = row
+    else:
+        partial = True
+
+    gate = view.get("recorded_gate")
+    if isinstance(gate, Mapping):
+        row = {"known": gate.get("known") is True, "stale": gate.get("stale") is True}
+        row["open"], clean = _tristate(gate.get("open"))
+        partial = partial or not clean
+        recorded_at = gate.get("recorded_at")
+        if isinstance(recorded_at, str) and _ISO.match(recorded_at):
+            row["recorded_at"] = recorded_at
+        elif recorded_at is not None:
+            partial = True
+        age = _nonneg_number(gate.get("age_seconds"))
+        if age is not None:
+            row["age_seconds"] = age
+        data["recorded_gate"] = row
+    else:
+        partial = True
+
+    contract = view.get("venue_contract")
+    if isinstance(contract, Mapping):
+        row = {}
+        for key in ("recorded", "stale", "usable", "version_current"):
+            row[key], clean = _tristate(contract.get(key))
+            partial = partial or not clean
+        data["venue_contract"] = row
+    data["projection"] = PROJECTION_PARTIAL if partial else PROJECTION_V1
+    return _checked(data, _CRYPTO_READINESS_SCHEMA)
+
+
+def read_crypto_readiness(build: Any, *, now: str, projection: str) -> dict[str, Any]:
+    """The crypto live-readiness board for a projecting door (the Claude door). ``build`` returns the board's own
+    structured data (the caller's domain dispatch); a board that cannot be built is refused without its message.
+    The reply text is written from the projection alone."""
+    require_projection(projection)
+    try:
+        view = build()
+    except MvpRuntimeError:
+        raise ControlBlocked("READ_UNAVAILABLE", "the crypto readiness board could not be read") from None
+    data = project_crypto_readiness(view, now=now)
+    if not data["available"]:
+        return {"reply": "crypto readiness: no board", "action": "CRYPTO_READINESS_READ", "data": data}
+    word = {True: "yes", False: "no", None: "unknown"}
+    lines = [f"live entry possible: {word[data['live_entry_possible']]}",
+             "blocking: " + (", ".join(data["blocking"]) or "nothing"),
+             "unknown from here: " + (", ".join(data["unknown"]) or "nothing")]
+    stage = data.get("execution_stage")
+    if stage is not None:
+        lines.append(f"execution stage: {stage['stage']}"
+                     + ("" if stage.get("valid", True) else f" (not bound: {stage.get('reason_code', '?')})"))
+    armed = data.get("armed")
+    if armed is not None and armed["known"]:
+        lines.append(f"armed LIVE: {armed.get('armed', '?')} of {armed.get('occupying', '?')} occupying")
+    gate = data.get("recorded_gate")
+    if gate is not None and gate["known"]:
+        lines.append(f"recorded gate: {word[gate['open']].replace('yes', 'open').replace('no', 'closed')}"
+                     + (f" at {gate['recorded_at']}" if "recorded_at" in gate else "")
+                     + (" (stale)" if gate["stale"] else ""))
+    return {"reply": "\n".join(lines), "action": "CRYPTO_READINESS_READ", "data": data}
