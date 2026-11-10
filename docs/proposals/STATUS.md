@@ -4,7 +4,7 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **105**건: `DRAFT` 3 · `PARTIALLY DECIDED` 10 · `DECIDED` 24 · `IMPLEMENTED` 57 · `SUPERSEDED` 4 · `RECORD` 7
+제안서 **106**건: `DRAFT` 3 · `PARTIALLY DECIDED` 10 · `DECIDED` 25 · `IMPLEMENTED` 57 · `SUPERSEDED` 4 · `RECORD` 7
 
 ## Thomas 결정 대기 (13)
 
@@ -26,7 +26,7 @@
 | [H6C_UNIT_AUTHORITY_V0.1.md](H6C_UNIT_AUTHORITY_V0.1.md) | `DRAFT` | 2026-11-04 | H6c(G1d, unit 권위 전환)의 결정 패킷 초안이다. **지금 묻지 않는다.** Claude 도어의 `holdings_status`에 `h6c_askable`이 서면 HQ1–HQ6을 묻는다(`H6B_UNIT_SHADOW_V0.1.md` S5). 그때까지 코드, 정책, env, 스케줄은 바뀌지 않는다. 미리 써 두는 이유는 조건이 갖춰지는 날 바로 묻기 위해서다. 같은 날 Thomas가 해야 할 일(§2의 입금·출금)도 여기에 적는다. |
 | [CRYPTO_DESIGN_REVIEW_V0.1.md](CRYPTO_DESIGN_REVIEW_V0.1.md) | `PARTIALLY DECIDED` | 2026-11-10 | Thomas: 해결 방안을 권한 순서대로 진행한다("해결방안을 순서대로 진행하고 검증까지 진행해서 보고해"). 이 문서는 검토 기록과 남은 질문 셋이다. Q1은 2026-11-14 mint 판독 뒤에 묻고, Q2·Q3은 지금 묻는다(§5). 방안 1의 read door, 방안 3(포지셔닝), 방안 5(옵션)는 각각 따로 PR이다. 이 문서가 바꾸는 코드, 판정 규칙, 일정은 없다. |
 
-## 결정됨 — 구현 남음 (24)
+## 결정됨 — 구현 남음 (25)
 
 결정은 끝났고 결정된 것이 아직 다 지어지지 않았다. 결정이 만든 구현 대기열이다.
 
@@ -56,6 +56,7 @@
 | [POSITIONING_DIVERGENCE_V0.1.md](POSITIONING_DIVERGENCE_V0.1.md) | `DECIDED` | 2026-11-10 | Thomas: §7 Q1–Q4 모두 기본값이다("기본값대로"). 사전 등록한 대로 한 번 돌리고, 기간은 2023-01 – 2026-09이며, ENTRY_PASS면 선별 창은 2027-02-01 – 2027-05-31이고, `MINTING_DECIDED`는 따로 묻는다. 남은 것은 병합 뒤 정식 실행 한 번과 그 기록이다. 그 전에는 거래도 수익도 계산하지 않는다. 설계 검토의 방안 3이다(`CRYPTO_DESIGN_REVIEW_V0.1`). |
 | [PREMIUM_CONVERGENCE_V0.1.md](PREMIUM_CONVERGENCE_V0.1.md) | `DECIDED` | 2026-11-10 | 정식 실행이 **ENTRY_PASS**를 냈다. PC의 연 샤프는 1.021로 기준(1.0)을 겨우 넘었다. §5에 따라 2027-01-01 – 2027-04-30 창으로 선별한다. 선별 스크립트와 1시간 바 보충은 2026-11-10에 지었다(끝의 "선별 준비"). 남은 것은 2027-05 초의 정식 선별 한 번이다. 결과는 끝의 "판정 결과 (2026-11-10)"에 있다. Thomas가 정한 것(2026-11-10): - 세 번째 선별 후보로 프리미엄 수렴 전략을 사전 등록한다. 진입 기준은 연 샤프 1.0, 선별 창은 2027-01-01 – 2027-04-30이다("사전 등록 진행"). - §7 Q1–Q5는 모두 기본값(예)이다("기본값대로"). |
 | [RESEARCH_DATA_SOURCES_V0.1.md](RESEARCH_DATA_SOURCES_V0.1.md) | `DECIDED` | 2026-11-10 | Deribit 공개 옵션 시세를 연구 샌드박스에서만 읽는다. 1단계(무료 기록이 어디까지 닿는가)는 끝났다: 만기가 지난 옵션 체결이 2019-06부터 키 없이 닿는다(§7). 2단계(IV–RV 관측, D-A6)는 지었다(§8). 앞으로의 날짜만 관측한다. 남은 것은 3단계(따로 사전 등록)다. 언락 일정과 BNB 보상은 열지 않는다. Thomas가 정한 것(2026-11-10): - 새 데이터 출처를 검토한다("둘다해봐"). - §5 Q1–Q5는 모두 기본값(예)이다("기본값대로"). |
+| [VARIANCE_PREMIUM_V0.1.md](VARIANCE_PREMIUM_V0.1.md) | `DECIDED` | 2026-11-10 | Thomas: §7 Q1–Q3 모두 기본값이다("기본값대로"). 3단계를 3a(지수 대용, 필요조건)와 3b(거래 가능한 측정)로 나누고, 3a가 실패하면 이 방향을 닫는다. 3a를 사전 등록한 대로 한 번 돌리고, PROXY_PASS면 3b를 사전 등록한다. 남은 것은 병합 뒤 정식 실행 한 번과 그 기록이다. 그 전에는 과거의 내재 − 실현 값을 계산하지 않는다. 설계 검토의 방안 5다(`CRYPTO_DESIGN_REVIEW_V0.1`, `RESEARCH_DATA_SOURCES_V0.1` 3단계). |
 
 ## 구현됨 (57)
 
