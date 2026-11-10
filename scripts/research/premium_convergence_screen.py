@@ -12,7 +12,8 @@ unconfirmed. A window with no trade has a mean of exactly zero and is ``SCREEN_D
 - **Window:** :data:`premium_convergence.SCREEN_WINDOW` only (one source of truth, no override).
 - **Coverage before any simulation.** Data not fetched yet looks like a flat market (a missing hour is skipped
   while flat), so a short cache would read as ``SCREEN_DROP``. Each symbol needs:
-  1. index and mark bars through the window's last hour, and a premium bar at that hour too;
+  1. index/mark bars and premium bars that reach the window's last hour (a bar at or after it). A bar missing at
+     exactly that hour while a later one exists is a hole inside the data, not data still to come;
   2. funding settlements on every window day, through :data:`funding_basis_screen.LAST_SETTLEMENT_HOUR` of the last.
      Funding comes from the monthly archive (``funding_basis_refresh``), not from the 1h bars, so a month the
      refresh skipped would otherwise count as no funding.
@@ -59,12 +60,12 @@ def shortfall(series: pc.Series, start: date, end: date) -> list[str]:
     """What this symbol still lacks for the window, as dates only; empty when it is covered."""
     last_hour = pc._ms(end) + 23 * pc.HOUR_MS
     short = []
-    bars = [t for t in series.hours if t <= last_hour]
-    if not bars or max(bars) < last_hour:
-        short.append(f"{series.name} index/mark through {_iso_hour(max(bars)) if bars else None}")
-    priced = [t for t, h in series.hours.items() if h.premium is not None and t <= last_hour]
-    if not priced or max(priced) < last_hour:
-        short.append(f"{series.name} premium through {_iso_hour(max(priced)) if priced else None}")
+    bars = max(series.hours, default=None)            # a bar after the last hour means the data arrived
+    if bars is None or bars < last_hour:
+        short.append(f"{series.name} index/mark through {None if bars is None else _iso_hour(bars)}")
+    priced = max((t for t, h in series.hours.items() if h.premium is not None), default=None)
+    if priced is None or priced < last_hour:
+        short.append(f"{series.name} premium through {None if priced is None else _iso_hour(priced)}")
     settled = {datetime.fromtimestamp(t / 1000, tz=timezone.utc).date() for t in series.settlements}
     unsettled = [d for d in sc._days(start, end) if d not in settled]
     if unsettled:

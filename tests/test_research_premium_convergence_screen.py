@@ -107,8 +107,17 @@ def test_a_funding_month_the_refresh_skipped_is_not_yet():
 def test_funding_that_stops_before_the_last_days_afternoon_is_not_yet():
     out = ps.screen(_two(last_settlement_hour=8))
     _assert_not_yet_without_returns(out)
-    assert out["short"] == [f"BTCUSDT funding through 2027-04-30T08Z"]
+    assert out["short"] == ["BTCUSDT funding through 2027-04-30T08Z"]
     assert sc.LAST_SETTLEMENT_HOUR == 16
+
+
+def test_a_missing_last_hour_with_later_bars_is_a_hole_not_data_still_to_come():
+    flat = ps.screen(_two(last_hour=HOURS + 5, drop={HOURS - 1}))
+    assert flat["status"] == ps.JUDGED
+    assert flat["strategies"]["PC"]["window_missing_hours"]["BTCUSDT"] == {"index_or_mark": 1, "premium": 0}
+    held = {k: 0.003 for k in range(11, HOURS + 5)}
+    with pytest.raises(pc.DataGap):
+        ps.screen(_two(last_hour=HOURS + 5, drop={HOURS - 1}, premiums={10: 0.01, **held}))
 
 
 def test_a_hole_while_flat_is_skipped_and_counted():

@@ -31,3 +31,16 @@ month later, so the command runs through `--month 2027-04`.
 **Why a window without a trade is dropped.** Its mean is exactly zero, and the gate's rule is strictly above zero.
 That is the expected outcome given the near-zero trade count since 2024 (#1415). A test pins it, and a `>=`
 mutation is caught.
+
+**Why "reaches the last hour" means a bar at or after it.** If the venue lacks exactly 2027-04-30 23:00 but later
+bars exist, the data has arrived and the hole is interior. Demanding that one bar would pin `NOT_YET` forever.
+Checked against the real archive: from each symbol's first traded day to 2026-09-30, no day lacks a settlement, so
+the per-day funding rule does not strand the May run.
+
+**A stated default §5 left open.** A position open at the window's last close is marked there, with no exit
+cost. Both the entry run and `funding_basis.simulate_symbol` do the same.
+
+**The entry run's input digest no longer reproduces from the live cache.** The digest hashes every 1h bar, and the
+refresh extends them; the sandbox reads the live research cache, not a snapshot of it. The digest recorded at
+registration (`f532be5755ad3080`, from the load step) records the cache as it stood on 2026-11-10 and cannot be re-derived after this refresh. The
+funding-basis digests behave the same way once their monthly refresh extends the 1d bars.
