@@ -157,6 +157,7 @@ CANDIDATES: dict[str, Candidate] = {
     "A03": Candidate(why="변동성 큰 쪽을 파는 구조가 2021년에 졌다. 변동성 대신 관심을 본다: 거래대금이 늘어난 쪽을 사고 줄어든 쪽을 판다.", features=(("volume_growth", 1.0),)),
     "A04": Candidate(why="A03은 순위가 매주 바뀌어 비용이 컸다. 천천히 바뀌는 특성을 쓴다: 덜 유동적인 쪽(수익률 크기÷거래대금이 큰 쪽)을 사고 유동적인 쪽을 판다(비유동성 프리미엄).", features=(("illiquidity", 1.0),)),
     "A05": Candidate(why="A04에 변동성 비중을 더한다. 변동성 큰 비유동 코인 몇 개가 바스켓을 좌우하지 않게 한다.", features=(("illiquidity", 1.0),), inverse_vol=True),
+    "A06": Candidate(why="A04(비유동성)와 A01(낮은 고유 변동성)은 좋은 해와 나쁜 해가 반대다. 한 점수로 섞는다: 비유동적이면서 고유 변동성이 낮은 쪽을 사고, 유동적이면서 고유 변동성이 높은 쪽을 판다.", features=(("illiquidity", 1.0), ("idio_vol", -1.0))),
 }
 
 
