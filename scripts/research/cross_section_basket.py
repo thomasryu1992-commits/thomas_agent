@@ -361,8 +361,11 @@ def member_volume_halves(market: Market, members: Sequence[str], month_start: da
 
 def simulate(market: Market, signal: str, monthly: Mapping[date, Sequence[str]], *, seed: str | None = None,
              slippage_low_multiplier: float = 1.0, start: date = START, end: date = END,
-             fee_bps: float | None = None) -> dict[str, Any]:
+             fee_bps: float | None = None, weigher: Any = None) -> dict[str, Any]:
     """Daily net returns of one signal's basket (or its seeded random twin) over [start, end].
+
+    ``weigher`` replaces :func:`target_weights` (same arguments) for a strategy that sizes the same baskets
+    differently (``momentum_basket_screen``); None is every measurement registered before it.
 
     Day ``t`` holds the weights decided at the latest rebalance close before it, from ``t``'s open to
     ``t+1``'s. A leg whose ``t+1`` bar is missing is closed at ``t``'s close instead and stays flat."""
@@ -388,7 +391,7 @@ def simulate(market: Market, signal: str, monthly: Mapping[date, Sequence[str]],
         trade_cost = 0.0
         if is_rebalance_day(signal, decision):
             members = monthly.get(month_of(decision), ())
-            target = target_weights(market, members, decision, signal, seed=seed)
+            target = (weigher or target_weights)(market, members, decision, signal, seed=seed)
             unranked += len(members) - len(scores(market, members, decision, signal))
             for symbol in set(weights) | set(target):
                 trade_cost += abs(target.get(symbol, 0.0) - weights.get(symbol, 0.0)) * unit_cost(symbol, day)
