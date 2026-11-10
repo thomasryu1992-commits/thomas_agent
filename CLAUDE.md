@@ -96,7 +96,9 @@ core thin while lanes grow, stated as rules:
   (`RESEARCH_DATA_SOURCES_V0.1.md` Q1–Q2): Deribit's public data is read by the research sandbox's keyless
   collection (`scripts/research/fetch_deribit.py`, `RESEARCH_SANDBOX_V0.1.md` §4.2), never by the runtime, so it is
   not an env-gated capability. The observation (`scripts/research/iv_rv_observe.py`) is forward-only; a strategy on
-  it is pre-registered separately before any return is computed.
+  it is pre-registered separately before any return is computed. That pre-registration ran the same day (`VARIANCE_PREMIUM_V0.1.md`,
+  an index proxy): PROXY_FAIL, annual Sharpe 0.778. The direction is closed and the option-trade measurement (stage
+  3b) is not built. Reopening it is Thomas's decision, never a re-run on a subset.
 
   Record: `docs/proposals/SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md`, "결정 (Thomas 2026-10-20)". The pause
   it lifts is in "결정 (Thomas 2026-09-26)" and "결정 (Thomas 2026-10-01)".
