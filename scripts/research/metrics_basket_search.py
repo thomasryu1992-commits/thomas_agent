@@ -47,7 +47,7 @@ CONFIRM = bs.CONFIRM
 BUDGET = 5
 MIN_ROWS = 144                           # half of a day's 288 five-minute rows
 LONG_SPAN_FEATURES = frozenset({"oi_growth", "ls_level"})
-FINAL: str | None = None
+FINAL: str | None = "M03"              # the first candidate over the floor on its development span (2026-11-10)
 # daily column -> (archive column, whether it is a long/short ratio to turn into a long share)
 COLUMNS = {
     "oi": ("sum_open_interest", False),
