@@ -151,7 +151,9 @@ class Candidate:
 
 # The attempts, in the order they were run. Each was added, run on DEV once and recorded before the next was written
 # (docs/proposals/BASKET_SEARCH_PROTOCOL_V0.1.md, "탐색 기록").
-CANDIDATES: dict[str, Candidate] = {}
+CANDIDATES: dict[str, Candidate] = {
+    "A01": Candidate(why="고유 변동성이 낮은 쪽을 사고 높은 쪽을 판다(고유 변동성 퍼즐). 변동성 비중.", features=(("idio_vol", 1.0),), long_low=True, inverse_vol=True),
+}
 
 
 def scores(market: xsb.Market, members: Sequence[str], day: date, candidate: Candidate) -> dict[str, float]:
