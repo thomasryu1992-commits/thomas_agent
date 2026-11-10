@@ -67,6 +67,10 @@ STALE_AFTER_SECONDS = 3 * 60 * 60
 READINESS_CHECKS = cash_flows.READINESS_CHECKS
 READINESS_STATUSES = cash_flows.READINESS_STATUSES
 TOSS_NEEDS = cash_flows.TOSS_NEEDS
+# Why a settlement day is not yet clean, as closed codes (holdings_status v1.3, Thomas 2026-11-07).
+SETTLEMENT_REASONS = cash_flows.SETTLEMENT_REASONS
+TOSS_JUDGED_BY = cash_flows.JUDGED_BY
+TOSS_DIAGNOSIS_DAYS = cash_flows.DIAGNOSIS_DAYS
 # What the snapshot's `unit_shadow.state` may hold, handed out on the same rule (H6B_UNIT_SHADOW S5).
 UNIT_SHADOW_STATES = unit_shadow.STATES
 
@@ -288,6 +292,8 @@ def refresh(*, now: str, root: Path | None = None, timeout_seconds: int = 10) ->
         h6_ready = ready["ready"] is True
         flows["readiness"] = {key: ready[key] for key in ("checks", "ready", "shadow_days", "shadow_success_dates",
                                                           "exceptions", "toss_needs", "next_step")}
+        if ready.get("toss_diagnosis") is not None:     # optional: an explanation, never part of the verdict
+            flows["readiness"]["toss_diagnosis"] = ready["toss_diagnosis"]
         body["cash_flows"] = flows
         if ready["ready"] and not ready["told"]:
             readiness_alert = (

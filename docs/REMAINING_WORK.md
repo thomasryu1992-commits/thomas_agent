@@ -41,7 +41,14 @@ is still as of its last date.
 >   - H6b-shadow was decided and built on 2026-10-28 (`H6B_UNIT_SHADOW_V0.1.md`, #1340). It is display only. H6c is
 >     asked when the Claude door shows `h6c_askable`: 14 days from the first point at which H6 was ready, a deposit
 >     and a withdrawal applied after that point, nothing held.
->   - On 2026-11-04 H6 was not ready: `toss_cash_semantics` waits for the settlement day of the 2026-11-03 sell.
+>   - H6 is not ready, and on 2026-11-07 the door's settlement diagnosis (#1393) showed why. Toss semantics is
+>     still epoch 0, whose frozen counters hold no clean settlement day. The Toss order list returns a null
+>     `settlementDate` on every filled order. Thomas chose the transaction list as the settlement source
+>     (`PORTFOLIO_CASH_FLOW_LEDGER_V0.1.md` §10).
+>     1. Read and probe the transaction list (#1397, deployed; the probe showed the 11-03 sell settled 11-05).
+>     2. Move the settlement day onto it (this change).
+>     3. Thomas started epoch 1 (2026-11-07). The buy, sell and settlement day epoch 0 observed are carried into it
+>        once, checked by code, at Thomas's terminal (§11).
 >     The H6c packet is drafted ahead (`H6C_UNIT_AUTHORITY_V0.1.md`, #1359).
 >   - Toss deposits and withdrawals in quiet windows are closed by rule: `quiet_window` v1 (#1315), v2 (#1339) and
 >     v3 (#1346, small inflows as interest) (`HOLDINGS_STATUS_READ_AND_AUTO_FLOWS_V0.1.md`).
@@ -58,8 +65,8 @@ is still as of its last date.
 > - **The weekly management report** (`WEEKLY_MANAGEMENT_REPORT_V0.1.md`) is deployed. Its schedule is added on
 >   2026-11-02 at 09:00 KST, and the first report arrives a week later.
 > - **Status sweep (2026-11-04, #1357):** seven decided proposals whose builds were done moved to IMPLEMENTED.
-> - **Unblocked build items: none (2026-11-04).** Every open item waits on a date (H6 on the 2026-11-05 settlement,
->   the mint read on 2026-11-14, the epoch boundary on 2027-03-22) or on a Thomas decision (`STATUS.md`).
+> - **Unblocked build items (2026-11-07):** none once the H6 settlement source above is deployed. Everything else waits on a date (the mint
+>   read on 2026-11-14, the epoch boundary on 2027-03-22) or on a Thomas decision (`STATUS.md`).
 
 Before that, **2026-09-30** — §L gains E3 (the fusion-parenting validation slice, decided 2026-09-30). Before that, **2026-09-28** — §L added (E1/E2 from the regime-episode RECORD, held until the first forward-cohort verdict). Before that, **2026-09-25** — §I's heading and its "nothing here is built" line corrected (decided
 2026-09-24, option C; PR1–PR3 built as #977–#979). No other section was re-surveyed. Before that,

@@ -243,6 +243,8 @@ TERMINAL_ONLY = ("--full", "--local", "--unclassified", "--classify binance:X=co
                  "--reset-peak --reason r", "--cash-flow-cutover 2026-10-09T00:00:00Z", "--flows",
                  "--resolve pay:x --kind deposit", "--semantics-epoch --change-ref '#1'", "--toss-continuity",
                  "--adopt-ledger --by t --reason r --confirm 1a2b3c4d",
+                 # PORTFOLIO_CASH_FLOW_LEDGER §11 (2026-11-07): writes the ledger and reads the Toss account.
+                 "--carry-evidence --by t --reason r",
                  # REBALANCING_PROPOSAL (2026-10-26): the plan names instruments and amounts; approving names them.
                  "--rebalance", "--approve-candidates bonds=toss:domestic:X",
                  # RB3 (2026-11-03): a tax-kind override names an instrument.

@@ -17,6 +17,10 @@ shards carry that module's code digest, and nothing written after they started m
   middle and last anchor, all identical, same digest), the scoring leak check (:func:`scoring_leak_check`, the
   same three anchors on a cache cut at the window's end), and the real-cohort sanity rule.
 - **Reading:** ``forward_replay.arm_reading`` and ``verdicts`` per arm; B against A paired by anchor (B_BETTER).
+- **Designs (:data:`DESIGNS`):** ``original`` is the study above. ``heldout``
+  (``HISTORICAL_FORWARD_REPLAY_HELDOUT_V0.1.md``) is the same judge over ``forward_replay_heldout``'s two contexts
+  and fire span, without the real-cohort sanity rule (no real cohort ever held its symbols; the proposal says what
+  stands in for it). Each design reads only shards of its own spec.
 
 In the research sandbox only: it reads the lake's real cohorts. Writes nothing but its report.
 """
@@ -32,6 +36,7 @@ import statistics
 import sys
 import tempfile
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
@@ -48,6 +53,7 @@ from runtime.mvp_runtime.errors import ToolBlocked, ToolError  # noqa: E402
 from runtime.mvp_runtime import timeutil  # noqa: E402
 from runtime.mvp_runtime.paths import repo_root  # noqa: E402
 from scripts.research import forward_replay as fr  # noqa: E402
+from scripts.research import forward_replay_heldout as heldout  # noqa: E402
 from scripts.research import lake  # noqa: E402
 
 SPEC = fr.SPEC
@@ -63,6 +69,23 @@ SLIM_DERIVATION = "replay_judge_slim"
 # member's full row anyway (member_rows), so dropping them would be safe but was measured, not assumed.
 SELECTION_DROPS = ("regime_breakdown", "per_symbol", "walk_forward", "distribution_reference", "liquidation_guard",
                    "intrabar_gap", "entry_cost_door", "cooldown_door")
+
+
+@dataclass(frozen=True)
+class Design:
+    """What a study's shards must be: its spec, its contexts, the days each fires, and whether the real cohorts
+    are its sanity rule."""
+    name: str
+    spec: str
+    contexts: tuple[fr.Context, ...]
+    fire_span: Callable[[], tuple[date, date]]
+    real_cohort_sanity: bool
+
+
+ORIGINAL = Design("original", fr.SPEC, fr.CONTEXTS, fr.fire_span, True)
+HELDOUT = Design("heldout", heldout.SPEC, heldout.CONTEXTS, heldout.fire_span, False)
+DESIGNS = {d.name: d for d in (ORIGINAL, HELDOUT)}
+BY_SPEC = {d.spec: d for d in DESIGNS.values()}
 
 
 # --- shards ------------------------------------------------------------------------------------------------
@@ -121,11 +144,11 @@ def selection_row(record: Mapping[str, Any]) -> dict[str, Any]:
     return {**record, "backtest_evidence": {k: v for k, v in evidence.items() if k not in SELECTION_DROPS}}
 
 
-def load_shards(directory: Path, *, arm: str | None = None,
+def load_shards(directory: Path, *, arm: str | None = None, design: Design = ORIGINAL,
                 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any], list[str]]:
     """``{arm: selection store}``, ``{arm: code_digest}`` and the reasons the set cannot be judged (empty when it
     can). ``arm`` loads that arm's store only; the checks still cover every shard in the directory."""
-    first, last = fr.fire_span()
+    first, last = design.fire_span()
     want_days = {(first + timedelta(days=i)).isoformat() for i in range((last - first).days + 1)}
     digests: dict[str, set[str]] = defaultdict(set)
     seen: dict[str, set[str]] = defaultdict(set)
@@ -133,8 +156,8 @@ def load_shards(directory: Path, *, arm: str | None = None,
     problems: list[str] = []
     for path in sorted(directory.glob("*.jsonl")):
         head = _head(path)
-        if head is None or head.get("spec") != SPEC or head.get("shard_version") != fr.SHARD_VERSION:
-            problems.append(f"{path.name}: not a shard of {SPEC}")
+        if head is None or head.get("spec") != design.spec or head.get("shard_version") != fr.SHARD_VERSION:
+            problems.append(f"{path.name}: not a shard of {design.spec}")
             continue
         shard_arm, context = head["arm"], head["context"]
         if context in seen[shard_arm]:
@@ -149,7 +172,7 @@ def load_shards(directory: Path, *, arm: str | None = None,
             problems.append(f"{path.name}: {len(missing)} fire days missing (first {min(missing)})")
         paths[shard_arm].append(path)
     for name in sorted(seen):
-        absent = sorted({c.name for c in fr.CONTEXTS} - seen[name])
+        absent = sorted({c.name for c in design.contexts} - seen[name])
         if absent:
             problems.append(f"arm {name}: no shard for {absent}")
         if len(digests[name]) != 1:
@@ -164,12 +187,12 @@ def load_shards(directory: Path, *, arm: str | None = None,
     return stores, {a: next(iter(d)) for a, d in digests.items() if len(d) == 1}, problems
 
 
-def member_rows(directory: Path, arm: str, cids: Iterable[str]) -> dict[str, dict[str, Any]]:
+def member_rows(directory: Path, arm: str, cids: Iterable[str], *, spec: str = SPEC) -> dict[str, dict[str, Any]]:
     """The full rows of ``cids``, the last of each in shard order (the full store's ``latest``)."""
     wanted, out = set(cids), {}
     for path in sorted(directory.glob("*.jsonl")):
         head = _head(path)
-        if head is None or head.get("arm") != arm:
+        if head is None or head.get("arm") != arm or head.get("spec") != spec:
             continue
         for record in _candidates(path):
             cid = candidate_id(record)
@@ -254,12 +277,13 @@ def check_anchors() -> list[date]:
     return [at[0], at[len(at) // 2], at[-1]]
 
 
-def fire_leak_ok(records: Iterable[Mapping[str, Any]], digests: Mapping[str, str]) -> tuple[bool, list[str]]:
+def fire_leak_ok(records: Iterable[Mapping[str, Any]], digests: Mapping[str, str], *,
+                 contexts: Sequence[fr.Context] = fr.CONTEXTS) -> tuple[bool, list[str]]:
     """Every arm × context × check anchor has an identical leak record of the shards' own code."""
     have = {(r.get("arm", "A"), r.get("context"), r.get("day")): r for r in records}
     missing = []
     for arm, digest in digests.items():
-        for context in fr.CONTEXTS:
+        for context in contexts:
             for anchor in check_anchors():
                 r = have.get((arm, context.name, anchor.isoformat()))
                 if r is None or r.get("identical") is not True or r.get("code_digest") != digest:
@@ -323,11 +347,13 @@ def b_against_a(a: Sequence[Mapping[str, Any]], b: Sequence[Mapping[str, Any]]) 
 
 # --- the command line ---------------------------------------------------------------------------------------
 
-def judge_arm(arm: str, shards: Path, leak_records: Path, *, work: Path | None = None) -> tuple[int, dict[str, Any]]:
-    """One arm's report: its fire leak records, reading, anchors, scoring leak check and (arm A) the sanity rule."""
-    stores, digests, problems = load_shards(shards, arm=arm)
+def judge_arm(arm: str, shards: Path, leak_records: Path, *, work: Path | None = None,
+              design: Design = ORIGINAL) -> tuple[int, dict[str, Any]]:
+    """One arm's report: its fire leak records, reading, anchors, scoring leak check and (arm A, where the design
+    has it) the sanity rule."""
+    stores, digests, problems = load_shards(shards, arm=arm, design=design)
     if problems or arm not in stores:
-        return EXIT_BLOCKED, {"spec": SPEC, "arm": arm, "verdict": "BLOCKED",
+        return EXIT_BLOCKED, {"spec": design.spec, "arm": arm, "verdict": "BLOCKED",
                               "problems": problems or [f"no shards for arm {arm}"]}
     records = []
     for path in sorted(leak_records.glob("*.json")):
@@ -336,35 +362,43 @@ def judge_arm(arm: str, shards: Path, leak_records: Path, *, work: Path | None =
             records.append(json.loads(text[text.index("{"):text.rindex("}") + 1]))
         except ValueError:
             continue
-    leak_fires, leak_missing = fire_leak_ok(records, {arm: digests[arm]})
+    leak_fires, leak_missing = fire_leak_ok(records, {arm: digests[arm]}, contexts=design.contexts)
     cache = Path(os.environ.get("RESEARCH_CACHE", str(Path.home() / "research" / "cache")))
-    report: dict[str, Any] = {"spec": SPEC, "arm": arm, "code_digest": digests[arm], "fire_leak_ok": leak_fires,
+    report: dict[str, Any] = {"spec": design.spec, "arm": arm, "code_digest": digests[arm], "fire_leak_ok": leak_fires,
                               "fire_leak_missing": leak_missing}
     with tempfile.TemporaryDirectory(prefix="forward-replay-judge-") as tmp:
         state, cut_root = Path(tmp), work or Path(os.environ.get("RESEARCH_RUN") or tmp)
         store = stores[arm]
         cohorts, rows, latest = score_arm(arm, store, state=state,
-                                          full_rows=lambda cids: member_rows(shards, arm, cids))
+                                          full_rows=lambda cids: member_rows(shards, arm, cids,
+                                                                             spec=design.spec))
         report["reading"], report["anchors"] = fr.arm_reading(rows), rows
         report["scoring_leak"] = scoring_leak_check(arm, cohorts, latest, cache_root=cache, work=cut_root, state=state)
-        if arm == "A":
+        if arm == "A" and design.real_cohort_sanity:
             report["sanity"] = sanity(store, cohorts, forward_cohort.read_cohorts(repo_root()))
     return EXIT_OK, report
 
 
 def combine(reports: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """The verdicts over the per-arm reports: Holm across arms, the leak checks of every arm, A's sanity rule."""
+    """The verdicts over the per-arm reports: Holm across arms, the leak checks of every arm, A's sanity rule
+    (where the reports' design has one). Every report must be of one design."""
     by_arm = {r["arm"]: r for r in reports}
+    specs = {r.get("spec") for r in reports}
+    design = BY_SPEC.get(next(iter(specs))) if len(specs) == 1 else None
     problems = [f"arm {r.get('arm')}: {r.get('verdict')}" for r in reports if "reading" not in r]
+    if design is None:
+        problems.append(f"reports of {sorted(map(str, specs))}, not one known design")
     if len(by_arm) != len(reports):
         problems.append("two reports for one arm")
     if "A" not in by_arm:
         problems.append("no arm A report (the sanity rule is A's)")
-    if problems:
-        return {"spec": SPEC, "verdict": "BLOCKED", "problems": problems}
+    if problems or design is None:
+        return {"spec": design.spec if design else SPEC, "verdict": "BLOCKED", "problems": problems}
     leak_ok = all(r["fire_leak_ok"] and r["scoring_leak"]["identical"] for r in by_arm.values())
-    sanity_ok = bool(by_arm["A"]["sanity"]["passed"])
-    out: dict[str, Any] = {"spec": SPEC, "code_digests": {a: r["code_digest"] for a, r in by_arm.items()},
+    sanity_ok = bool(by_arm["A"]["sanity"]["passed"]) if design.real_cohort_sanity else True
+    out: dict[str, Any] = {"spec": design.spec, "design": design.name,
+                           "sanity": "real_cohorts" if design.real_cohort_sanity else "not_applicable",
+                           "code_digests": {a: r["code_digest"] for a, r in by_arm.items()},
                            "leak_ok": leak_ok, "sanity_ok": sanity_ok,
                            "readings": {a: r["reading"] for a, r in sorted(by_arm.items())},
                            "verdicts": fr.verdicts({a: r["reading"] for a, r in by_arm.items()}, leak_ok=leak_ok,
@@ -377,6 +411,8 @@ def combine(reports: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="forward_replay_judge", description=__doc__.splitlines()[0])
     parser.add_argument("--arm", choices=fr.ARMS, help="judge this arm (one arm per process: the sandbox's memory)")
+    parser.add_argument("--design", choices=sorted(DESIGNS), default=ORIGINAL.name,
+                        help="which study's shards (default: the original)")
     parser.add_argument("--shards", type=Path, help="the directory holding every arm's shards")
     parser.add_argument("--leak-records", type=Path,
                         help="a directory of forward_replay leak-check outputs (JSON), one per arm/context/anchor")
@@ -399,7 +435,7 @@ def main(argv: list[str] | None = None) -> int:
         print("refused: the judge runs in the research sandbox only (it reads the lake's real cohorts)",
               file=sys.stderr)
         return EXIT_USAGE
-    code, report = judge_arm(args.arm, args.shards, args.leak_records, work=args.work)
+    code, report = judge_arm(args.arm, args.shards, args.leak_records, work=args.work, design=DESIGNS[args.design])
     print(json.dumps(report, indent=1, sort_keys=True, default=str))
     return code
 

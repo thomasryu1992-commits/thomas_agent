@@ -133,6 +133,10 @@ SKIP_BEYOND_DEPTH = "beyond_query_depth"
 # C7 PR-C (D3, Thomas 2026-10-11): the operator's adoption of a ledger the checkpoint refuses — the one line
 # a refused ledger may still take, written only by ``adopt_ledger`` at Thomas's terminal (C7 §7).
 EVENT_LEDGER_ADOPTED = "ledger_adopted"
+# PORTFOLIO_CASH_FLOW_LEDGER §11 (Thomas 2026-11-07): the previous epoch's observed buy, sell and settlement day,
+# checked against its windows and the transaction list, carried into the current epoch once at Thomas's terminal.
+EVENT_TOSS_CARRIED = "toss_evidence_carried"
+CARRY_REFUSED = "TOSS_CARRY_REFUSED"
 ADOPT_REFUSED = "HOLDINGS_CASH_FLOW_ADOPT_REFUSED"
 NO_CUTOVER = "NO_CUTOVER"
 CUTOVER_REFUSED = "HOLDINGS_CASH_FLOW_CUTOVER_REFUSED"
@@ -181,6 +185,8 @@ REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
                    "cutover_generation", "provenance"),
     EVENT_TOSS_SKIPPED: ("window_start", "window_end", "reason"),
     EVENT_FLOW_SKIPPED: ("flow_source", "window_start", "window_end", "reason"),
+    EVENT_TOSS_CARRIED: ("epoch", "from_epoch", "settlement_day", "pocket", "buys", "sells", "day_windows",
+                         "transaction", "requested_by", "reason", "timestamp"),
     EVENT_LEDGER_ADOPTED: ("adopted", "replaced_checkpoint", "detector", "told_keys_dropped", "requested_by",
                            "reason", "timestamp"),
 }
@@ -1429,10 +1435,24 @@ def _distinct_orders(entries: list[list[str]]) -> int:
     return len(groups)
 
 
+def transaction_identity(row: Mapping[str, Any]) -> list[str]:
+    """One hash naming a transaction-list row without its contents (it carries no order id). LOCAL: ledger only."""
+    basis = "|".join(str(row.get(k) or "") for k in ("transactionType", "currency", "settlementDate", "assetClass",
+                                                      "symbol", "isinCode", "quantity", "transactionTime"))
+    return ["tx:" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]]
+
+
 def reconcile_window(previous: Mapping[str, Any], current: Mapping[str, Any], orders: list[Mapping[str, Any]],
-                     *, since: str, until: str, rate: float | None) -> dict[str, Any]:
+                     *, since: str, until: str, rate: float | None,
+                     transactions: list[Mapping[str, Any]] | None = None) -> dict[str, Any]:
     """One window's reconciliation: the pockets' change less what closed orders filled inside it explain.
-    Pure — :func:`reconciliation_digest` runs it over fixed cases, so a change to its behaviour is visible."""
+    Pure — :func:`reconciliation_digest` runs it over fixed cases, so a change to its behaviour is visible.
+
+    A settlement is a sell settling on the window's KST end day. The closed-order list's ``settlementDate``
+    comes back null live (probe 2026-11-07), so since PORTFOLIO_CASH_FLOW_LEDGER §10 (Thomas 2026-11-07, A) the
+    transaction list's sells are read too: a non-cancellation ``SELL`` whose ``settlementDate`` (the date, or the
+    expected date while unsettled) is that day, in a pocket's currency. Both sources may name one sale; it is
+    one settlement entry per source row, and the evidence counts windows, not entries."""
     start, end = timeutil.parse_iso(since), timeutil.parse_iso(until)
     today_kst = (end + timedelta(hours=9)).date().isoformat()
     explained = {"KRW": 0.0, "USD": 0.0}
@@ -1459,6 +1479,11 @@ def reconcile_window(previous: Mapping[str, Any], current: Mapping[str, Any], or
         bases.add(basis)
         if side in fills and digest:
             fills[side][effect[0]].append(digest)
+    for row in transactions or ():
+        currency = str(row.get("currency") or "?").upper()
+        if (str(row.get("transactionType") or "").upper() == "SELL" and row.get("isCancellation") is not True
+                and currency in explained and str(row.get("settlementDate") or "") == today_kst):
+            settlements.append({"order": transaction_identity(row), "day": today_kst, "pocket": currency})
     residual = {"KRW": (current["KRW"] - previous["KRW"]) - explained["KRW"],
                 "USD": (current["USD"] - previous["USD"]) - explained["USD"]}
     tolerance = {"KRW": 1.0, "USD": 0.01}
@@ -1489,6 +1514,8 @@ def collect_toss(feed: Any, snapshot: Any, state_dir: Path, *, now: str) -> dict
     usable = bool(previous and krw is not None and usd is not None and previous.get("KRW") is not None
                   and previous.get("USD") is not None and previous.get("at"))
     orders: list[Mapping[str, Any]] = []
+    transactions: list[Mapping[str, Any]] = []
+    transactions_read = False
     truncated = False
     query: dict[str, str] = {}
     if usable:
@@ -1499,6 +1526,7 @@ def collect_toss(feed: Any, snapshot: Any, state_dir: Path, *, now: str) -> dict
                  "date_to": (until + kst).date().isoformat()}
         orders, truncated = feed.closed_orders(**query)
         orders = list(orders)
+        transactions, transactions_read = _settling_sells(feed, since_kst=since + kst)
 
     def rows(existing: list[dict[str, Any]], state: dict[str, Any]) -> list[Mapping[str, Any]]:
         on_file = state.get("toss")
@@ -1515,7 +1543,8 @@ def collect_toss(feed: Any, snapshot: Any, state_dir: Path, *, now: str) -> dict
             # The ledger has a later window than this cash point: a stale cache, start over from now. The
             # stretch between that window's end and now gets no window; it is named, not left silent.
             return [_toss_skip(str(last["window_end"]), now, SKIP_CASH_POINT_BEHIND)]
-        return _toss_rows(existing, previous, current, orders, truncated, query, rate=rate, now=now)
+        return _toss_rows(existing, previous, current, orders, truncated, query, rate=rate, now=now,
+                          transactions=transactions, transactions_read=transactions_read)
 
     def patch(state: dict[str, Any], _after: list[dict[str, Any]]) -> None:
         state["toss"] = current
@@ -1579,7 +1608,7 @@ QUIET_WINDOW_TOLERANCE_CAP_KRW = 1000.0
 # amount. Written on the residual line as ``quiet_window_declined`` and shown on ``--flows``. ``settlement`` and
 # ``fill`` are v1's (a v1 line's derived reason); ``open_order`` and ``too_small`` are v2's.
 QUIET_WINDOW_DECLINES = ("orders_truncated", "exchange_pair", "identity_unstable", "settlement", "fill",
-                         "open_order", "krw_not_open", "usd_moved", "too_small", "not_round")
+                         "open_order", "krw_not_open", "usd_moved", "too_small", "not_round", "transactions_unread")
 # A line written before the field existed: the reason is derived from the stored window by v1, the rule then in
 # force. The stored amounts are rounded, so a decline below their precision (under one won, under a cent) — or
 # a window older than the rule — cannot be told from a pass.
@@ -1702,11 +1731,29 @@ def _rule_resolution(target: str, kind: str, *, now: str, split: tuple[float, fl
             "rule_tolerance_krw": f"{tolerance:.0f}"}
 
 
+def _settling_sells(feed: Any, *, since_kst: datetime) -> tuple[list[Mapping[str, Any]], bool]:
+    """The transaction list's sells settling from the window's first KST day on (``to`` left open, so an unsettled
+    sale shows under its expected date), and whether that read is whole. A refused, failed or truncated read, or
+    a feed without the read, is ``(rows, False)``: the window then cannot evidence a settlement day and spoils its
+    own (fail-closed), and the quiet-window rule declines it."""
+    reader = getattr(feed, "transactions", None)
+    if reader is None:
+        return [], False
+    try:
+        rows, truncated = reader(date_from=(since_kst - timedelta(days=1)).date().isoformat(), date_to=None,
+                                 transaction_types=("SELL",))
+    except Exception:  # noqa: BLE001 — the cash reconciliation stands without it; the window records the gap
+        return [], False
+    return [r for r in rows if isinstance(r, Mapping)], not truncated
+
+
 def _toss_rows(existing: list[dict[str, Any]], previous: Mapping[str, Any], current: Mapping[str, Any],
                orders: list[Mapping[str, Any]], truncated: bool, query: Mapping[str, str], *, rate: float | None,
-               now: str) -> list[dict[str, Any]]:
+               now: str, transactions: list[Mapping[str, Any]] | None = None,
+               transactions_read: bool = False) -> list[dict[str, Any]]:
     window = f"{previous['at']}..{now}"
-    result = reconcile_window(previous, current, orders, since=previous["at"], until=now, rate=rate)
+    result = reconcile_window(previous, current, orders, since=previous["at"], until=now, rate=rate,
+                              transactions=transactions)
     residual, open_ = result["residual"], result["open"]
     bounds = {"window_start": previous["at"], "window_end": now}
     out: list[dict[str, Any]] = [{
@@ -1716,6 +1763,7 @@ def _toss_rows(existing: list[dict[str, Any]], previous: Mapping[str, Any], curr
         "residual_status": {p: "OPEN" if flag else "CLEAR" for p, flag in open_.items()},
         "orders_truncated": bool(truncated), "exchange_pair": result["exchange"],
         "order_hash_basis": result["basis"], "identity_stable": result["identity_stable"], "orders_query": dict(query),
+        "transactions_read": bool(transactions_read),
         "source_confidence": UNRESOLVED if any(open_.values()) else RECONCILED, "accounting_status": "SHADOW_ONLY"}]
     if result["exchange"]:
         out.append({"event": EVENT_TOSS_EXCHANGE, "source": "toss", "source_event_key": f"toss:exchange:{window}",
@@ -1725,6 +1773,10 @@ def _toss_rows(existing: list[dict[str, Any]], previous: Mapping[str, Any], curr
         kind, declined = quiet_window_verdict(
             result, truncated=bool(truncated), open_orders=(previous.get("open_orders"), current.get("open_orders")),
             day_fills_krw=_day_fills_krw(orders, since=previous["at"], until=now))
+        if kind == "income" and not transactions_read:
+            # v3 takes a small inflow as income only where nothing settled; an unread transaction list cannot
+            # say so (§10). A round deposit or withdrawal does not depend on it and still closes.
+            kind, declined = None, "transactions_unread"
         for pocket, flag in open_.items():
             if flag:
                 out.append({"event": EVENT_TOSS_RESIDUAL, "source": "toss",
@@ -1739,6 +1791,8 @@ def _toss_rows(existing: list[dict[str, Any]], previous: Mapping[str, Any], curr
                                                           _day_fills_krw(orders, since=previous["at"], until=now))))
     if not truncated:
         out.extend(_amendments(existing, orders))
+    if transactions_read:
+        out.extend(_transaction_amendments(existing, transactions or []))
     return out
 
 
@@ -1785,6 +1839,37 @@ def _amendments(existing: list[dict[str, Any]], orders: list[Mapping[str, Any]])
                                 "source_event_key": f"toss:amend:{wkey}:settlement_revised:{digest[0]}:{settled}",
                                 "kind": "settlement_revised", "order": digest, "pocket": entry.get("pocket"),
                                 "day": entry.get("day"), "revised_day": settled})
+    return out
+
+
+def _transaction_amendments(existing: list[dict[str, Any]],
+                            transactions: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """A transaction-list sale recorded as settling on one day that a later, whole read dates to another
+    (PORTFOLIO_CASH_FLOW_LEDGER §10): an unsettled sale is recorded under its expected date, and the spec warns
+    that the actual date can differ. The entry's hash covers the date, so the row is matched by hashing it again
+    with the recorded day in place of its own: the same sale, recorded then, dated otherwise now. One keyed
+    ``settlement_revised`` line per window, as for an order, so re-reading adds nothing. A row the read no
+    longer returns proves nothing and amends nothing."""
+    recorded = [(w, entry) for w in existing if w.get("event") == EVENT_TOSS_WINDOW
+                for entry in w.get("settlements") or []
+                if any(str(h).startswith("tx:") for h in entry.get("order") or ())]
+    out: list[dict[str, Any]] = []
+    for row in transactions:
+        settled = str(row.get("settlementDate") or "")
+        if (str(row.get("transactionType") or "").upper() != "SELL" or row.get("isCancellation") is True
+                or not settled):
+            continue
+        for w, entry in recorded:
+            day = str(entry.get("day") or "")
+            if not day or day == settled or not _same_order(
+                    entry.get("order"), transaction_identity({**row, "settlementDate": day})):
+                continue
+            wkey = f"{w['window_start']}..{w['window_end']}"
+            out.append({"event": EVENT_TOSS_AMENDED, "source": "toss", "window_start": w["window_start"],
+                        "window_end": w["window_end"], "amends": w["source_event_key"],
+                        "source_event_key": f"toss:amend:{wkey}:settlement_revised:{entry['order'][0]}:{settled}",
+                        "kind": "settlement_revised", "order": transaction_identity(row),
+                        "pocket": entry.get("pocket"), "day": day, "revised_day": settled})
     return out
 
 
@@ -1857,21 +1942,36 @@ def toss_evidence(rows: list[Mapping[str, Any]], *, epoch: int, today_kst: str) 
     for v in verdicts:      # a residual, a truncated read or an exchange on the day spoils it too
         if v["end_kst"] in days and not all(v["clean"].values()):
             days[v["end_kst"]]["spoiled"] = True
+        # §10: a window that could not read the transaction list whole may have missed the day's settlement;
+        # the day is no evidence then. Windows written before the field existed read as whole.
+        if v["end_kst"] in days and v["row"].get("transactions_read", True) is False:
+            days[v["end_kst"]]["spoiled"] = True
     if after:               # and no day the problem window touched comes back
         for day in {v["end_kst"] for v in verdicts if v["problem"]}:
             if day in days:
                 days[day]["spoiled"] = True
     clean_days = sorted(d for d, row in days.items()
                         if d < today_kst and len(row["windows"]) >= SETTLEMENT_MIN_WINDOWS and not row["spoiled"])
+    # §11: what Thomas carried from the previous epoch, once; a later problem voids it like any earlier evidence.
+    carried = [r for r in rows if r.get("event") == EVENT_TOSS_CARRIED and r.get("epoch") == epoch
+               and (_iso_ms(r.get("timestamp")) or 0) >= after]
+    clean_days = sorted({*clean_days, *(str(r["settlement_day"]) for r in carried
+                                        if str(r.get("settlement_day")) < today_kst)})
     unexplained = sum(len(v["unexplained"]) for v in verdicts)
-    return {"buy_explained": _distinct_orders(buys), "sell_explained": _distinct_orders(sells), "clean_settlement_days": clean_days,
+    return {"buy_explained": _distinct_orders(buys) + sum(int(r.get("buys") or 0) for r in carried),
+            "sell_explained": _distinct_orders(sells) + sum(int(r.get("sells") or 0) for r in carried),
+            "clean_settlement_days": clean_days,
             "activity_unexplained": unexplained, "windows": len(verdicts),
             "problem_windows": sum(1 for v in verdicts if v["problem"])}
 
 
+def _legacy_clean_days(counters: Mapping[str, Any], today_kst: str) -> list[str]:
+    return [d for d, row in (counters.get("settlement_days") or {}).items()
+            if d < today_kst and row.get("windows", 0) >= SETTLEMENT_MIN_WINDOWS and not row.get("unexplained")]
+
+
 def _legacy_semantics(counters: Mapping[str, Any], today_kst: str) -> tuple[str, str]:
-    clean = [d for d, row in (counters.get("settlement_days") or {}).items()
-             if d < today_kst and row.get("windows", 0) >= SETTLEMENT_MIN_WINDOWS and not row.get("unexplained")]
+    clean = _legacy_clean_days(counters, today_kst)
     if counters.get("activity_unexplained"):
         return "MIXED", f"{counters['activity_unexplained']} window(s) with a fill or settlement left a residual"
     missing = [name for name, ok in (("a buy", counters.get("buy_explained")),
@@ -1929,6 +2029,117 @@ def toss_needs(rows: list[Mapping[str, Any]], verdict: str, *, today_kst: str) -
     return missing or ["review"]
 
 
+
+# --- settlement-day diagnosis (Thomas 2026-11-07) ----------------------------------------------------------
+#
+# Why ``toss_needs`` still says ``settlement_day``, as counts and closed reason codes a door can carry: per
+# KST day, how many windows ended on it, how many of the counted ones recorded a settlement, whether the day
+# is clean, and which of :func:`toss_evidence`'s conditions held it back. It mirrors that function rather
+# than extending it: ``toss_evidence``'s output is inside :func:`reconciliation_digest`, and a changed digest
+# is an epoch transition. ``clean`` is read off ``toss_evidence`` itself, so the two cannot disagree on it.
+# No order hash, window time, residual value or amount appears; a KST date is the exposure the door
+# already accepts (HOLDINGS_STATUS_READ_AND_AUTO_FLOWS §2.2).
+
+SETTLEMENT_REASONS = (
+    "no_settlement_record",   # no counted window ending that day read a sell settling on it
+    "too_few_windows",        # fewer than SETTLEMENT_MIN_WINDOWS counted windows recorded the settlement
+    "pocket_not_clear",       # a window that recorded the settlement left its own pocket's residual open
+    "residual_open",          # a window ending that day left a residual in either pocket
+    "truncated",              # a window ending that day read a truncated order list
+    "exchange",               # a window ending that day matched an exchange pair
+    "identity_unstable",      # a window ending that day held an order it could not name
+    "late_amendment",         # a window ending that day was amended by a later read
+    "transactions_unread",    # a window ending that day could not read the transaction list whole
+    "settlement_revised",     # a later read moved a settlement recorded for that day
+    "problem_window",         # an unexplained window ended that day after the last problem
+    "before_last_problem",    # windows ending that day predate the last unexplained window: not counted
+    "not_yet_passed",         # the day is today (KST) or later
+)
+JUDGED_BY = ("legacy_counters", "windows")
+DIAGNOSIS_DAYS = 14
+
+
+def settlement_diagnosis(rows: list[Mapping[str, Any]], state: Mapping[str, Any], *,
+                         today_kst: str) -> dict[str, Any]:
+    """The settlement-day half of the Toss check, per KST day over the last :data:`DIAGNOSIS_DAYS` days."""
+    epoch = toss_epoch(rows)
+    evidence = toss_evidence(rows, epoch=epoch, today_kst=today_kst)
+    verdicts = _window_verdicts(rows, epoch)
+    after = max((_iso_ms(v["row"]["window_end"]) or 0 for v in verdicts if v["problem"]), default=0)
+    first = (date.fromisoformat(today_kst) - timedelta(days=DIAGNOSIS_DAYS - 1)).isoformat()
+    days: dict[str, dict[str, Any]] = {}
+
+    def day(name: str) -> dict[str, Any]:
+        return days.setdefault(name, {"windows": 0, "settlement_windows": set(), "reasons": set()})
+
+    entries = 0
+    for v in verdicts:
+        w = v["row"]
+        entries += len(w.get("settlements") or [])
+        row = day(v["end_kst"])
+        row["windows"] += 1
+        counted = (_iso_ms(w["window_start"]) or 0) >= after
+        if not counted:
+            row["reasons"].add("before_last_problem")
+        if v["problem"] and after:
+            row["reasons"].add("problem_window")
+        status = w.get("residual_status") or {}
+        if any(status.get(p) != "CLEAR" for p in ("KRW", "USD")):
+            row["reasons"].add("residual_open")
+        for flag, reason in (("orders_truncated", "truncated"), ("exchange_pair", "exchange")):
+            if w.get(flag):
+                row["reasons"].add(reason)
+        if w.get("identity_stable") is not True:
+            row["reasons"].add("identity_unstable")
+        if v["late"]:
+            row["reasons"].add("late_amendment")
+        if w.get("transactions_read", True) is False:
+            row["reasons"].add("transactions_unread")
+        for a in v["late"]:
+            if a.get("kind") == "settlement_revised":
+                day(str(a.get("day")))["reasons"].add("settlement_revised")
+        if counted:
+            for entry in w.get("settlements") or []:
+                target = day(str(entry.get("day")))
+                target["settlement_windows"].add(w["source_event_key"])
+                if not v["clean"].get(str(entry.get("pocket")), False):
+                    target["reasons"].add("pocket_not_clear")
+    clean = set(evidence["clean_settlement_days"])
+    out = []
+    for name in sorted(d for d in days if first <= d <= today_kst):
+        row = days[name]
+        settled = len(row["settlement_windows"])
+        reasons = set(row["reasons"])
+        if not settled:
+            reasons.add("no_settlement_record")
+        elif settled < SETTLEMENT_MIN_WINDOWS:
+            reasons.add("too_few_windows")
+        if name >= today_kst:
+            reasons.add("not_yet_passed")
+        out.append({"day": name, "windows": row["windows"], "settlement_windows": settled,
+                    "clean": name in clean, "reasons": [r for r in SETTLEMENT_REASONS if r in reasons]})
+    result: dict[str, Any] = {"epoch": epoch, "judged_by": "windows" if epoch else "legacy_counters",
+                              "settlement_entries": entries, "sells_explained": evidence["sell_explained"],
+                              "clean_days": len(clean), "days": out}
+    if not epoch:
+        legacy = _legacy(rows)
+        try:
+            counters = legacy.get("toss_evidence") if legacy else _legacy_fields(state)[0]
+        except ToolError:
+            counters = None
+        if isinstance(counters, Mapping):
+            result["legacy_clean_days"] = len(_legacy_clean_days(counters, today_kst))
+    return result
+
+
+def _diagnosis_or_none(rows: list[Mapping[str, Any]], state: Mapping[str, Any], *, today_kst: str) -> dict | None:
+    """The diagnosis explains the check; it never costs it. A defect here leaves it out of the snapshot."""
+    try:
+        return settlement_diagnosis(rows, state, today_kst=today_kst)
+    except Exception:  # noqa: BLE001 — readiness and its alerts must not depend on the explanation
+        return None
+
+
 # --- semantics epochs (H6d-min D4) -------------------------------------------------------------------------
 
 # Fixed synthetic windows the reconciliation is run over; their outputs are the behaviour an epoch names.
@@ -1965,13 +2176,23 @@ def reconciliation_fingerprint() -> str:
     return hashlib.sha256(shapes.encode("utf-8")).hexdigest()[:16]
 
 
+# The transaction list's sells every digest case reads (§10): one settling on the case's KST day, one a day later,
+# one cancelled, one a buy. Only the first is a settlement.
+_DIGEST_TRANSACTIONS: tuple[dict[str, Any], ...] = (
+    {"transactionType": "SELL", "currency": "KRW", "settlementDate": "2026-01-01", "isCancellation": False},
+    {"transactionType": "SELL", "currency": "KRW", "settlementDate": "2026-01-02", "isCancellation": False},
+    {"transactionType": "SELL", "currency": "KRW", "settlementDate": "2026-01-01", "isCancellation": True},
+    {"transactionType": "BUY", "currency": "KRW", "settlementDate": "2026-01-01", "isCancellation": False},
+)
+
+
 def reconciliation_digest() -> str:
     """What the reconciliation does to :data:`_DIGEST_CASES`, hashed. An epoch needs this to differ from
     the last epoch's: an unrelated code change leaves it as it was."""
     outputs = []
     for previous, current, orders, rate in _DIGEST_CASES:
         result = reconcile_window(previous, current, orders, since="2026-01-01T00:00:00Z",
-                                  until="2026-01-01T01:00:00Z", rate=rate)
+                                  until="2026-01-01T01:00:00Z", rate=rate, transactions=_DIGEST_TRANSACTIONS)
         result["residual"] = {p: round(v, 6) for p, v in result["residual"].items()}
         outputs.append(result)
     window = {"event": EVENT_TOSS_WINDOW, "epoch": 1, "source_event_key": "toss:window:a..b",
@@ -2028,6 +2249,80 @@ def start_semantics_epoch(state_dir: Path, *, requested_by: str, reason: str, ch
         raise ToolError(EPOCH_REFUSED, "another epoch with this number was started at the same time")
     return written[0]
 
+
+
+# --- carrying the previous epoch's evidence (PORTFOLIO_CASH_FLOW_LEDGER §11, Thomas 2026-11-07) -------------
+#
+# Epoch 1 started on #1398 (the settlement day read off the transaction list). Epoch 0 had already seen a buy, a
+# sell and that sell's settlement day pass with no residual — only its windows could not name the day, because
+# the order list's settlementDate is null live. Thomas chose to carry those three across rather than trade again,
+# checked by code: the previous epoch's own evidence names the buys and sells; the transaction list names the
+# settlement day; the previous epoch's windows on that day must be at least SETTLEMENT_MIN_WINDOWS, all counted,
+# all clean in both pockets, none a problem or amended. Once per epoch, at an interactive terminal, typed back.
+
+def carry_candidate(rows: list[Mapping[str, Any]], transactions: list[Mapping[str, Any]], *,
+                    today_kst: str) -> dict[str, Any]:
+    """What may be carried into the current epoch, or :data:`CARRY_REFUSED` naming the first condition that fails.
+    Pure: the caller reads the transaction list (settled sells) and the verified ledger."""
+    epoch = toss_epoch(rows)
+    if epoch < 1:
+        raise ToolError(CARRY_REFUSED, "no epoch to carry into: Toss semantics is still in epoch 0")
+    if any(r.get("event") == EVENT_TOSS_CARRIED and r.get("epoch") == epoch for r in rows):
+        raise ToolError(CARRY_REFUSED, f"epoch {epoch} already carried evidence; it is carried once")
+    previous = epoch - 1
+    earlier = toss_evidence(rows, epoch=previous, today_kst=today_kst)
+    if earlier["buy_explained"] < 1 or earlier["sell_explained"] < 1:
+        raise ToolError(CARRY_REFUSED, f"epoch {previous} explained {earlier['buy_explained']} buy(s) and "
+                                       f"{earlier['sell_explained']} sell(s); both are needed")
+    verdicts = _window_verdicts(rows, previous)
+    after = max((_iso_ms(v["row"]["window_end"]) or 0 for v in verdicts if v["problem"]), default=0)
+    sells = sorted({(str(t.get("settlementDate")), str(t.get("currency") or "").upper(), transaction_identity(t)[0])
+                    for t in transactions
+                    if str(t.get("transactionType") or "").upper() == "SELL" and t.get("settled") is True
+                    and t.get("isCancellation") is not True and str(t.get("currency") or "").upper() in ("KRW", "USD")
+                    and str(t.get("settlementDate") or "") < today_kst}, reverse=True)
+    if not sells:
+        raise ToolError(CARRY_REFUSED, "the transaction list names no settled sell before today")
+    why: list[str] = []
+    for day, pocket, digest in sells:
+        on_day = [v for v in verdicts if v["end_kst"] == day]
+        if len(on_day) < SETTLEMENT_MIN_WINDOWS:
+            why.append(f"{day}: {len(on_day)} epoch-{previous} window(s), {SETTLEMENT_MIN_WINDOWS} needed")
+            continue
+        flawed = sum(1 for v in on_day if v["problem"] or v["late"] or not all(v["clean"].values())
+                     or (_iso_ms(v["row"]["window_start"]) or 0) < after
+                     or v["row"].get("transactions_read", True) is False)
+        if flawed:
+            why.append(f"{day}: {flawed} of {len(on_day)} window(s) not clean")
+            continue
+        return {"epoch": epoch, "from_epoch": previous, "settlement_day": day, "pocket": pocket,
+                "buys": earlier["buy_explained"], "sells": earlier["sell_explained"], "day_windows": len(on_day),
+                "transaction": digest}
+    raise ToolError(CARRY_REFUSED, "no settled sell's day qualifies: " + "; ".join(why))
+
+
+def carry_evidence(state_dir: Path, transactions: list[Mapping[str, Any]], *, requested_by: str, reason: str,
+                   confirm: str, interactive: bool, now: str | None = None) -> dict[str, Any]:
+    """Write the one ``toss_evidence_carried`` line for the current epoch, rechecked under the locks."""
+    if not interactive:
+        raise ToolError(CARRY_REFUSED, "evidence is carried at an interactive terminal")
+    if not (requested_by or "").strip() or not (reason or "").strip():
+        raise ToolError(CARRY_REFUSED, "carrying evidence needs --by and --reason")
+    now = now or timeutil.utc_now_iso()
+    today = (timeutil.parse_iso(now) + timedelta(hours=9)).date().isoformat()
+
+    def rows(existing: list[dict[str, Any]], _state: dict[str, Any]) -> list[Mapping[str, Any]]:
+        candidate = carry_candidate(existing, transactions, today_kst=today)
+        if (confirm or "").strip() != candidate["settlement_day"]:
+            raise ToolError(CARRY_REFUSED, "the typed day does not match the settlement day to carry")
+        return [{"event": EVENT_TOSS_CARRIED, "source": "ledger",
+                 "source_event_key": f"toss_carried:{candidate['epoch']}", **candidate,
+                 "requested_by": requested_by.strip(), "reason": reason.strip(), "timestamp": now}]
+
+    written = [r for r in _commit(state_dir, now=now, rows=rows) if r.get("event") == EVENT_TOSS_CARRIED]
+    if not written:
+        raise ToolError(CARRY_REFUSED, "another carry for this epoch was written at the same time")
+    return written[0]
 
 # --- C7 PR-B: history completeness (Thomas 2026-10-17: D2 = option C) --------------------------------------
 # HOLDINGS_LEDGER_CHECKPOINT_V0.1.md §2: a separate readiness key from ``ledger_state_consistency``. That one
@@ -2157,6 +2452,7 @@ def readiness(state_dir: Path, *, now: str, current: Mapping[str, Any] | None = 
     ready = all(value == PASS for value in checks.values())
     return {"checks": checks, "toss_note": toss_why, "toss_epoch": toss_epoch(rows),
             "toss_needs": toss_needs(rows, toss, today_kst=today_kst), "shadow_days": round(days, 1),
+            "toss_diagnosis": _diagnosis_or_none(rows, state, today_kst=today_kst),
             "shadow_success_dates": len(dates), "exceptions": len(exceptions), "ready": ready,
             "open_exception_keys": sorted(exceptions),
             # R-3 (가-수정): ``absent`` and ``observed`` both mean the history before the checkpoint is
