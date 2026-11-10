@@ -32,8 +32,9 @@ FAKE_PATH = "/root/fake-state/holdings/x.json"
 SID = "schedule_" + "a" * 20
 RID = "srun_" + "b" * 20
 # `holdings_status` joined on 2026-10-26 through its contract v1.1 (HOLDINGS_STATUS_READ_AND_AUTO_FLOWS R1).
-CLAUDE_READS = frozenset({"schedules", "scheduler_events", "holdings_status"})
-HELD = frozenset({"runtime_status", "heartbeat", "crypto_readiness"})
+# `crypto_readiness` joined on 2026-11-10 through its contract v1 (CRYPTO_DESIGN_REVIEW_V0.1 방안 1).
+CLAUDE_READS = frozenset({"schedules", "scheduler_events", "holdings_status", "crypto_readiness"})
+HELD = frozenset({"runtime_status", "heartbeat"})
 CLAUDE = read_bridge.PROFILES[read_bridge.CLAUDE_PROFILE]
 REPO = Path(__file__).resolve().parents[1]
 
