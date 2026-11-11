@@ -287,6 +287,16 @@ def test_the_slot_over_its_target_is_the_one_that_sells():
     assert sell.draft(plan, slot_rows=slots)["items"] == []
 
 
+def test_a_coin_alone_breach_drafts_no_toss_sell():
+    """Q2 execution B: BTC alone outside its band, gold 1pp over target inside its band. Before B the plan sold
+    the gold; now the only line is the manual coin one, which this path never places."""
+    classes = {**AT_TARGET, al.COIN: 360_000.0, al.GOLD: 1_400_000.0, al.CASH: 640_000.0}
+    plan = _plan(classes, [{**GOLD_HELD[0], "quantity": 70, "value_krw": 1_400_000.0}])
+    assert plan.scope == "coin_only"
+    result = sell.draft(plan, slot_rows=_slots(classes, GOLD_HELD))
+    assert result["items"] == [] and result["left_out"]["manual"] == 1
+
+
 def test_a_line_under_fifty_thousand_is_not_placed():
     classes = {**AT_TARGET, al.GOLD: 2_000_000.0, al.DOMESTIC_EQUITY: 1_460_000.0, al.BONDS: 2_540_000.0}
     held = GOLD_HELD + [{"instrument": DOM, "asset_class": al.DOMESTIC_EQUITY, "quantity": 36.5,
