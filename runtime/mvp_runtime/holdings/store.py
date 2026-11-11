@@ -540,7 +540,7 @@ def refresh_autosell_proposal(*, now: str, root: Path | None = None) -> dict[str
             candidates=effective_candidates(root),
             us_bonds=(_read_json(auto_candidates_path(root)) or {}).get("us_bonds") or [])
     status = autosell.refresh(feed, state_dir(root), now=now, plan=plan, slot_rows=slot_rows,
-                              as_of=(body or {}).get("as_of"))
+                              currencies=dict(entries.currencies), as_of=(body or {}).get("as_of"))
     return {"status": status, "alert": autosell.proposal_notice(state_dir(root))}
 
 

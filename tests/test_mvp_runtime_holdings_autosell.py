@@ -18,7 +18,7 @@ from runtime.mvp_runtime.holdings import allocation as al
 from runtime.mvp_runtime.holdings import autoinvest as ai
 from runtime.mvp_runtime.holdings import autoinvest_proposal as ap
 from runtime.mvp_runtime.holdings import autosell as sell
-from runtime.mvp_runtime.holdings import rebalance, store, toss_account, toss_orders
+from runtime.mvp_runtime.holdings import classification, rebalance, store, toss_account, toss_orders
 
 DOM, KR3, US10, GOLD, WORLD = ("toss:domestic:069500", "toss:domestic:114260", "toss:domestic:308620",
                                "toss:domestic:411060", "toss:overseas:VT")
@@ -250,19 +250,41 @@ def test_a_domestic_holding_named_as_an_overseas_tax_kind_is_left_out():
     assert result["items"] == [] and result["left_out"]["tax_kind"] >= 1
 
 
-def test_a_sell_never_takes_a_buy_slots_instrument_below_its_target():
-    """Bonds are over as a class, but the Korean slot is under its three quarters: the buy draft would buy the
-    very instrument the plan sells. The sell side yields."""
-    classes = {**AT_TARGET, al.BONDS: 4_500_000.0, al.GOLD: 500_000.0}
-    held = [{"instrument": KR3, "asset_class": al.BONDS, "quantity": 40, "value_krw": 2_000_000.0, "pnl_krw": -50_000.0},
-            {"instrument": US10, "asset_class": al.BONDS, "quantity": 250, "value_krw": 2_500_000.0, "pnl_krw": 100_000.0}]
-    plan = _plan(classes, held)
-    assert [o["instrument"] for o in plan.orders if o["side"] == "SELL"] == [KR3]      # the smaller gain ratio first
-    slots = _slots(classes, held, currencies={US10: "usd"})
-    kr = next(s for s in slots if s["instrument"] == KR3)
-    assert kr["held_krw"] < kr["target_krw"]
-    result = sell.draft(plan, slot_rows=slots)
+BONDS_OVER = {**AT_TARGET, al.BONDS: 4_500_000.0, al.GOLD: 500_000.0}
+OTHER_KR = "toss:domestic:148070"                 # a Korean bond that is not the slot's candidate
+
+
+def _bonds(kr=KR3, kr_pnl=-50_000.0, us_pnl=100_000.0):
+    return [{"instrument": kr, "asset_class": al.BONDS, "quantity": 40, "value_krw": 2_000_000.0, "pnl_krw": kr_pnl},
+            {"instrument": US10, "asset_class": al.BONDS, "quantity": 250, "value_krw": 2_500_000.0, "pnl_krw": us_pnl}]
+
+
+@pytest.mark.parametrize("kr", [KR3, OTHER_KR])
+def test_a_sell_never_takes_a_buy_slot_below_its_target(kr):
+    """Bonds are over as a class, but the Korean slot is under its three quarters, so the buy draft is filling
+    it. The plan sells the Korean bond (the smaller gain ratio). The sell side yields, whether the bond is the
+    slot's candidate or another bond the slot holds."""
+    held = _bonds(kr)
+    plan = _plan(BONDS_OVER, held)
+    assert [o["instrument"] for o in plan.orders if o["side"] == "SELL"] == [kr]
+    slots = _slots(BONDS_OVER, held, currencies={US10: "usd"})
+    assert {s["key"] for s in slots if s["asset_class"] == al.BONDS} == {"bonds_kr3y", sell.US_BOND_SLOT}
+    kr_slot = next(s for s in slots if s["key"] == "bonds_kr3y")
+    assert kr_slot["held_krw"] < kr_slot["target_krw"]
+    result = sell.draft(plan, slot_rows=slots, currencies={US10: "usd"})
     assert result["items"] == [] and result["left_out"]["kept_for_buy_slot"] == 1
+
+
+def test_the_slot_over_its_target_is_the_one_that_sells():
+    held = _bonds(kr_pnl=100_000.0, us_pnl=-50_000.0)             # now the US bond has the smaller gain ratio
+    plan = _plan(BONDS_OVER, held)
+    assert [o["instrument"] for o in plan.orders if o["side"] == "SELL"] == [US10]
+    slots = _slots(BONDS_OVER, held, currencies={US10: "usd"})
+    result = sell.draft(plan, slot_rows=slots, currencies={US10: "usd"})
+    # The US slot holds 2.5M against 925k: the plan's 800k fits it, and the day's cap cuts it to 48 shares.
+    assert [(i["instrument"], i["quantity"], i["est_krw"]) for i in result["items"]] == [(US10, 48, 480_000)]
+    # Without Thomas's USD entry the bond counts in the Korean slot, which is under target: it is kept.
+    assert sell.draft(plan, slot_rows=slots)["items"] == []
 
 
 def test_a_line_under_fifty_thousand_is_not_placed():
@@ -626,12 +648,12 @@ def _store_feed():
     return feed
 
 
-def _fire_files(tmp_path, now=OPEN):
+def _fire_files(tmp_path, now=OPEN, classes=GOLD_OVER, held=GOLD_HELD):
     state = store.state_dir(tmp_path)
     state.mkdir(parents=True, exist_ok=True)
-    board = {"as_of": now, "allocation": {"complete": True, "classes": {c: {"krw": v} for c, v in GOLD_OVER.items()}}}
+    board = {"as_of": now, "allocation": {"complete": True, "classes": {c: {"krw": v} for c, v in classes.items()}}}
     store.local_path(tmp_path).write_text(json.dumps(board), encoding="utf-8")
-    store.positions_path(tmp_path).write_text(json.dumps({"as_of": now, "positions": GOLD_HELD}), encoding="utf-8")
+    store.positions_path(tmp_path).write_text(json.dumps({"as_of": now, "positions": held}), encoding="utf-8")
     store.auto_candidates_path(tmp_path).write_text(json.dumps({"candidates": CANDIDATES, "us_bonds": [US10]}),
                                                     encoding="utf-8")
     return state
@@ -667,6 +689,16 @@ def test_behind_buy_sell_the_store_drafts_from_the_plan_the_terminal_shows(monke
     store.run_autosell(now=LATER, root=tmp_path)
     ((orders, buying),) = seen
     assert isinstance(orders, toss_orders.TossSellOrders) and buying == {}
+
+
+def test_the_store_places_a_bond_in_its_slot_by_thomas_currency_entry(monkeypatch, tmp_path):
+    held = _bonds(kr_pnl=100_000.0, us_pnl=-50_000.0)
+    state = _fire_files(tmp_path, classes=BONDS_OVER, held=held)
+    classification.apply(state, assign={US10: al.BONDS}, currency={US10: "usd"}, now=OPEN)
+    monkeypatch.setattr(store, "_feed", _store_feed)
+    _gate(monkeypatch, "buy_sell")
+    assert store.refresh_autosell_proposal(now=OPEN, root=tmp_path)["status"] == "drafted"
+    assert [(i["instrument"], i["quantity"]) for i in sell.read_proposal(state)["items"]] == [(US10, 48)]
 
 
 def test_before_the_months_check_day_nothing_is_read(monkeypatch, tmp_path):

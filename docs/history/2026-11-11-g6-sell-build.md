@@ -26,9 +26,9 @@
     kind is tax-free or domestic taxable. An overseas holding stays out whatever tax kind Thomas named for it.
   - A line is cut to what the day's cap still has (500,000 KRW less 3% headroom), in the plan's tax order.
     The gain and the estimated tax are recomputed for what is kept.
-  - A line never takes a buy slot's instrument below that slot's target. Bonds are one class to the plan and
-    two slots to the buy draft, so without this the two drafts could trade the same instrument against each
-    other.
+  - A line never takes a buy slot below its target. Bonds are one class to the plan and two slots to the buy
+    draft (Korean 3y and US 7-10y), so without this the sell draft could sell from the slot the buy draft is
+    filling. A bond sits in the US slot when Thomas's entry exposes it to USD, as the buy draft counts it.
   - A line under 50,000 KRW is not placed (RB4'). Nothing that is cut is stored.
   - It runs once a month, on the first trading day from the monthly check day (RB5) on. Only a verdict spends
     the month: `drafted`, `nothing_to_sell` or `not_due`. A closed gate, a refused or stale plan, a closed
@@ -68,8 +68,8 @@
   - A monthly draft with a 500,000 KRW cap sells at most that much per month. A larger rebalance takes
     several months or manual sells.
   - A band that leaves mid-month waits for the next monthly check.
-  - When the plan's only sell line is a buy slot's instrument that is under its slot target, nothing is
-    drafted. `--rebalance` still shows the line.
+  - When the plan's only sell line is in a buy slot that is under its target, nothing is drafted.
+    `--rebalance` still shows the line.
 - **Unverified until the first real sell** (the packet's §6; Toss has no demo server):
   - Toss's rejection codes for a sell, and whether a field gives the sellable quantity. A rejection stops the
     scenario and keeps what Toss said in the journal.
@@ -89,4 +89,4 @@
     crash after intent; non-ETF; expiry.
   - Store and scheduler: the closed gate writes nothing; the draft agrees with `load_rebalance`; delivery
     before marking; a failing step does not stop the fire. The terminal approves only on `y`.
-  - 51 mutations were each caught.
+  - 54 mutations were each caught.

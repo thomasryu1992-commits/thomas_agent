@@ -6,8 +6,8 @@ code. It is the sell half of G6 and mirrors G6-buy (``autoinvest.py``) line for 
 - :func:`draft` is pure. It takes the rebalancing calculator's plan (the same one ``--rebalance`` shows) and keeps
   the sell lines this path may place (SQ1, SQ2): a domestic instrument, whole shares, taxed as a tax-free or a
   domestic-listed taxable ETF. Overseas and manual lines stay Thomas's. A line is cut to what fits the day's
-  500,000 KRW (SQ4) and never takes a buy slot's instrument below that slot's target, so the buy draft and the
-  sell draft cannot work against each other. What is cut is not stored: the next monthly check finds it again.
+  500,000 KRW (SQ4) and never takes a buy slot below its target, so the sell draft does not sell from a slot the
+  buy draft is filling. What is cut is not stored: the next monthly check finds it again.
 - :func:`refresh` is the fire's half of drafting. Once a month, on the first trading day from the monthly check
   day (RB5) on, it reads the plan's verdict. Only a verdict consumes the month: a closed gate, a refused plan, a
   closed market day or a failed read leave it for the next fire.
@@ -68,6 +68,9 @@ MAX_AGE = timedelta(days=4)        # a Friday draft is still approvable on Monda
 # SQ2: what this path may sell. An overseas direct holding is Thomas's, whatever tax kind he named for it.
 SOLD_KINDS = (rebalance.TAX_FREE, rebalance.TAXED_DIVIDEND)
 _DOMESTIC = re.compile(r"^toss:domestic:[0-9A-Za-z]{6}$")
+# The buy draft's US Treasury slot (``autoinvest_proposal.slots``): a bond Thomas's entries expose to USD is held
+# there, every other bond in the Korean slot.
+US_BOND_SLOT = "bonds_us7_10y"
 
 PENDING, EXECUTED, STOPPED, UNKNOWN, EXPIRED = (autoinvest.PENDING, autoinvest.EXECUTED, autoinvest.STOPPED,
                                                 autoinvest.UNKNOWN, autoinvest.EXPIRED)
@@ -144,14 +147,25 @@ def _active(scenario: Mapping[str, Any]) -> bool:
 
 # --- the pure half: the plan's sell lines this path may place ---------------------------------------------------
 
-def draft(plan: rebalance.Plan, *, slot_rows: list[Mapping[str, Any]]) -> dict[str, Any]:
+def _slot_of(order: Mapping[str, Any], slot_rows: list[Mapping[str, Any]], currencies: Mapping[str, str]) -> str | None:
+    """The buy slot a sold holding sits in, as the buy draft counts it: its class's one slot, or for split bonds
+    the US slot when Thomas's entries expose it to USD and the Korean slot otherwise. None: the class has no slot."""
+    rows = [row for row in slot_rows if row["asset_class"] == order.get("asset_class")]
+    if len(rows) <= 1:
+        return str(rows[0]["key"]) if rows else None
+    usd = currencies.get(str(order.get("instrument"))) == "usd"
+    return next((str(row["key"]) for row in rows if (row["key"] == US_BOND_SLOT) == usd), None)
+
+
+def draft(plan: rebalance.Plan, *, slot_rows: list[Mapping[str, Any]],
+          currencies: Mapping[str, str] | None = None) -> dict[str, Any]:
     """The sell scenario the plan allows today: ``items`` (instrument, whole quantity, estimate, tax kind and the
     estimated gain and tax of what is kept), the totals, and ``left_out`` as counts by reason.
 
     A line is kept in the plan's own tax order. Its amount is the least of the plan's amount, what the day's cap
-    still has, and (for a buy slot's instrument) what the slot holds over its target. Under 50,000 KRW it is not
-    placed (RB4') and not stored."""
-    room = {str(row["instrument"]): max(0.0, float(row["held_krw"]) - float(row["target_krw"])) for row in slot_rows}
+    still has, and what its buy slot still holds over the slot's target. Under 50,000 KRW it is not placed (RB4')
+    and not stored."""
+    room = {str(row["key"]): max(0.0, float(row["held_krw"]) - float(row["target_krw"])) for row in slot_rows}
     budget = DAILY_SELL_CAP_KRW * (1 - HEADROOM)
     items: list[dict[str, Any]] = []
     left_out = {"manual": 0, "overseas": 0, "tax_kind": 0, "kept_for_buy_slot": 0, "over_cap": 0, "below_minimum": 0}
@@ -176,7 +190,8 @@ def draft(plan: rebalance.Plan, *, slot_rows: list[Mapping[str, Any]]) -> dict[s
         if quantity < 1 or amount <= 0:
             continue
         price = amount / quantity
-        slot_room = room.get(instrument, math.inf)
+        slot = _slot_of(order, slot_rows, currencies or {})
+        slot_room = room.get(slot, math.inf)
         take = min(quantity, math.floor(min(amount, slot_room, budget) / price + 1e-9))
         # One reason per line that is cut or dropped: the slot it would empty, the cap, or RB4's minimum.
         cut = None if take >= quantity else "kept_for_buy_slot" if slot_room < min(amount, budget) else "over_cap"
@@ -195,6 +210,8 @@ def draft(plan: rebalance.Plan, *, slot_rows: list[Mapping[str, Any]]) -> dict[s
                       "tax_kind": kind, "gain_krw": round(gain),
                       "est_tax_krw": round(max(0.0, gain) * rebalance.TAX_RATE[kind])})
         budget -= kept
+        if slot in room:
+            room[slot] -= kept
     return {"items": items, "estimate_krw": sum(i["est_krw"] for i in items),
             "est_tax_krw": sum(i["est_tax_krw"] for i in items), "left_out": left_out,
             "status": "drafted" if items else "nothing_to_sell"}
@@ -203,7 +220,7 @@ def draft(plan: rebalance.Plan, *, slot_rows: list[Mapping[str, Any]]) -> dict[s
 # --- the fire's half of drafting --------------------------------------------------------------------------------
 
 def refresh(feed: Any, state_dir: Path, *, now: str, plan: rebalance.Plan, slot_rows: list[Mapping[str, Any]],
-            as_of: Any = None) -> str:
+            currencies: Mapping[str, str] | None = None, as_of: Any = None) -> str:
     """This month's check, once: on a trading day, over a plan that could be judged, while no sell scenario is
     active. Returns a status word. ``drafted`` writes the draft and its notice; ``not_due`` and ``nothing_to_sell``
     write only the month's verdict. Every other word leaves the month open. A failed read raises ``ToolError``."""
@@ -217,7 +234,8 @@ def refresh(feed: Any, state_dir: Path, *, now: str, plan: rebalance.Plan, slot_
         return "plan_refused"
     if autoinvest._session(feed.kr_market_day(today), today) is None:
         return "not_trading_day"
-    result = draft(plan, slot_rows=slot_rows) if plan.status == "due" else {"items": [], "status": "not_due"}
+    result = (draft(plan, slot_rows=slot_rows, currencies=currencies) if plan.status == "due"
+              else {"items": [], "status": "not_due"})
     body: dict[str, Any] = {"checked_month": month, "checked_at": now, "verdict": result["status"]}
     if result["items"]:
         names: dict[str, str] = {}
