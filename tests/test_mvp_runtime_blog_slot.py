@@ -358,18 +358,29 @@ def test_a_run_on_the_new_windows_agrees_and_a_fast_draft_is_left_out_of_it(vaul
     assert [f["computed"][11:13] for f in found] == ["13", "16", "10"]
 
 
-def test_a_fast_draft_is_compared_with_the_evening_after_it_was_written(vault):
+def test_a_fast_draft_is_compared_with_the_evening_it_was_written(vault):
     _draft(vault, "160편-이전.md", "2026-11-30 10:20")
     ns.configure(vault)
     rel = _fast_draft(vault, "170편-빠른.md", "", "2026-11-25")
     slot = ns.next_fast(str(vault), str(vault / rel), today=__import__("datetime").date(2026, 11, 25))
     _fast_draft(vault, "170편-빠른.md", slot, "2026-11-25")
     found = bs.compare_draft(vault, {"path": rel, "platform": "naver", "scheduled": slot})
-    assert found["state"] == "compared" and found["agree"] is True and slot.startswith("2026-11-26 19:")
-    wrong = bs.compare_draft(vault, {"path": rel, "platform": "naver", "scheduled": "2026-11-27 19:30"})
+    assert found["state"] == "compared" and found["agree"] is True and slot.startswith("2026-11-25 19:")   # the same evening
+    wrong = bs.compare_draft(vault, {"path": rel, "platform": "naver", "scheduled": "2026-11-26 19:30"})
     assert wrong["agree"] is False
     (vault / rel).write_text(f"---\ntitle: \"시험\"\nstatus: draft\nfast: true\nscheduled: {slot}\n---\n본문\n", encoding="utf-8")
     assert bs.compare_draft(vault, {"path": rel, "platform": "naver", "scheduled": slot})["state"] == "no_created"
+
+
+def test_a_fast_draft_goes_to_the_next_free_evening_when_its_day_is_taken(vault):
+    _draft(vault, "160편-이전.md", "2026-11-30 10:20")
+    _fast_draft(vault, "165편-먼저.md", "2026-11-25 19:20", "2026-11-25")
+    ns.configure(vault)
+    rel = _fast_draft(vault, "170편-빠른.md", "", "2026-11-25")
+    slot = ns.next_fast(str(vault), str(vault / rel), today=__import__("datetime").date(2026, 11, 25))
+    _fast_draft(vault, "170편-빠른.md", slot, "2026-11-25")
+    found = bs.compare_draft(vault, {"path": rel, "platform": "naver", "scheduled": slot})
+    assert slot.startswith("2026-11-26 19:") and found["agree"] is True
 
 
 def _fast_post(vault, name, scheduled):
