@@ -32,8 +32,8 @@ each reported Tistory draft gets five checks:
 The same-day 1-C conflict, ``variety`` and ``browser_check`` are not checked.
 
 **Fast drafts** (Thomas 2026-11-11: four a day, three regular and one fast). A Naver draft with ``fast: true`` is
-compared with ``next_fast``, not ``next_slot``: the evening slot of the day after the draft was written, taken from its
-``created`` date (no ``created`` gives ``no_created``). The rule leaves fast drafts out of the regular days and windows.
+compared with ``next_fast``, not ``next_slot``: the first free evening slot from the day the draft was written
+(Thomas 2026-11-11, "당일 저녁부터 순차적으로"), taken from its ``created`` date (no ``created`` gives ``no_created``). The rule leaves fast drafts out of the regular days and windows.
 
 **Affiliate placements** (v0.3, 2026-11-05) are Naver posts too. ``blog-affiliate-place.py`` moves a stock draft to
 ``content/naver/제휴/<N>편-<slug>.md`` with the slot the writer chose, and the run report names it under
