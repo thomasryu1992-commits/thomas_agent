@@ -19,13 +19,15 @@ SPAN = (date(2025, 1, 1), LAST)
 N = 40
 HOURLY = "S03USDT"                       # a member whose funding settles 24 times a day in March
 HOT = (date(2025, 3, 10), date(2025, 3, 19))
+FOUR_HOURLY = "S05USDT"                  # a member that settles six times a day: neither stressed nor control
 
 
 def _ms(day: date, hour: int) -> int:
     return int(datetime(day.year, day.month, day.day, hour, tzinfo=timezone.utc).timestamp() * 1000)
 
 
-def _market() -> xsb.Market:
+def _market(only_eight_hourly: str | None = None) -> xsb.Market:
+    """``only_eight_hourly``: every coin but this one settles six times a day (so the control pool is that coin)."""
     market = xsb.Market()
     days = [FIRST + timedelta(days=k) for k in range((LAST - FIRST).days + 1)]
     for i in range(N):
@@ -34,6 +36,8 @@ def _market() -> xsb.Market:
         funding = []
         for d in days:
             hours = range(24) if name in (HOURLY, "S39USDT") and HOT[0] <= d <= HOT[1] else (0, 8, 16)
+            six = name == FOUR_HOURLY or (only_eight_hourly is not None and name != only_eight_hourly and len(hours) == 3)
+            hours = (0, 4, 8, 12, 16, 20) if six else hours
             funding += [(_ms(d, h), 0.0001) for h in hours]
         market.funding[name] = funding
     return market
@@ -57,7 +61,9 @@ def test_the_selection_is_by_membership_and_settlement_count_never_by_position()
     assert stressed == [(HOURLY, HOT[0] + timedelta(days=k)) for k in range(10)]      # S39 is never a member
     assert len(control) == len(stressed) and not set(control) & set(stressed)
     assert all(SPAN[0] <= d <= SPAN[1] for _, d in control)
-    assert all(s != "S39USDT" for s, _ in control)
+    assert all(s not in ("S39USDT", FOUR_HOURLY) for s, _ in control)
+    narrow = sd.member_days(_market(only_eight_hourly="S07USDT"), SPAN)             # the pool is one coin's days
+    assert len(narrow[sd.CONTROL]) == 10 and {s for s, _ in narrow[sd.CONTROL]} == {"S07USDT"}
     assert sd.member_days(market, SPAN)[sd.CONTROL] == control                         # the seeded draw repeats
     assert (sd.STRESSED_SETTLEMENTS, sd.CONTROL_SETTLEMENTS) == (9, 3)
     assert sd.SPAN == bs.CONFIRM and sd.SPAN[1] < bs.RESERVED_FROM
