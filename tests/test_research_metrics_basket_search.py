@@ -179,6 +179,17 @@ def test_the_locked_span_opens_only_for_the_final_candidate(monkeypatch, capsys,
     assert _run(monkeypatch, ["confirm", "--candidate", "M02", *cache], CANDIDATES=registry, FINAL="M02") == ms.EXIT_BLOCKED
 
 
+def test_the_metrics_search_spans_end_before_the_reserved_days(monkeypatch, capsys, tmp_path):
+    for span in (ms.DEV_LONG, ms.DEV_SHORT, ms.CONFIRM):
+        bs.check_search_span(span)
+        assert span[1] < bs.RESERVED_FROM
+    argv = ["explore", "--candidate", "M04", "--cache", str(tmp_path)]
+    assert _run(monkeypatch, argv) == ms.EXIT_BLOCKED
+    capsys.readouterr()
+    assert _run(monkeypatch, argv, DEV_LONG=(date(2026, 1, 1), date(2026, 12, 31))) == ms.EXIT_USAGE
+    assert "reserved" in capsys.readouterr().err
+
+
 def test_the_spent_locked_span_refuses_the_final_candidate_as_shipped(monkeypatch, capsys, tmp_path):
     # M04 read the span once on 2026-11-11. With the shipped registry and FINAL, a second confirm is refused.
     assert ms.FINAL in ms.CANDIDATES

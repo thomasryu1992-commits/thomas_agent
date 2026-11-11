@@ -175,6 +175,22 @@ def test_the_locked_span_opens_only_for_the_final_candidate(monkeypatch, capsys,
                 CANDIDATES=registry, FINAL="A02") == bs.EXIT_BLOCKED
 
 
+def test_no_search_span_reaches_the_reserved_days(monkeypatch, capsys, tmp_path):
+    # NEXT_LOCKED_SPAN_V0.1: days from 2026-10-01 are kept for a later protocol's confirm span.
+    assert bs.RESERVED_FROM == date(2026, 10, 1)
+    for span in (bs.DEV, bs.CONFIRM):
+        bs.check_search_span(span)                                 # the registered spans end before it
+    for end in (date(2026, 10, 1), date(2027, 6, 30)):
+        with pytest.raises(ValueError, match="reserved"):
+            bs.check_search_span((date(2026, 1, 1), end))
+    registry = {"A02": bs.Candidate(why="t", features=(("max", 1.0),))}
+    argv = ["explore", "--candidate", "A02", "--archive", str(tmp_path)]
+    assert _run(monkeypatch, argv, CANDIDATES=registry) == bs.EXIT_BLOCKED          # as registered: only the archive is missing
+    capsys.readouterr()
+    assert _run(monkeypatch, argv, CANDIDATES=registry, DEV=(date(2026, 1, 1), date(2026, 10, 31))) == bs.EXIT_USAGE
+    assert "reserved" in capsys.readouterr().err                   # a tool edited to read further is refused
+
+
 def test_the_spent_locked_span_refuses_even_a_final_candidate(monkeypatch, capsys, tmp_path):
     # The span was read once on 2026-11-11 (METRICS_BASKET_SEARCH_V0.1, M04). As shipped, no candidate reaches it.
     registry = {"A02": bs.Candidate(why="t", features=(("max", 1.0),))}
