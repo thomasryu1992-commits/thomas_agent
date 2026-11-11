@@ -92,6 +92,17 @@ def test_tax_kind_and_currency_exposure_follow_the_decided_tables():
     us = {c.instrument: c for c in r["bonds_us7_10y"]}
     assert us["toss:domestic:308620"].fx == "USD"
     assert us["toss:domestic:999901"].fx == "hedged" and "D-A decided unhedged" in us["toss:domestic:999901"].note
+    gold = {c.instrument: c for c in r["gold"]}
+    assert gold["toss:domestic:411060"].fx == "USD" and gold["toss:domestic:411060"].note is None
+    assert gold["toss:domestic:132030"].fx == "hedged" and "held unhedged" in gold["toss:domestic:132030"].note
+
+
+def test_gold_is_picked_unhedged_even_when_the_hedged_one_trades_more():
+    """2026-11-11: the allocation counts gold as dollar exposure, so a "(H)" gold ETF is shown, never picked."""
+    picks = cd.auto_picks(_ranked(**{"132030": _candles(15_000, 5_000_000)}))
+    assert picks[al.GOLD] == ["toss:domestic:411060"]
+    only_hedged = cd.auto_picks(_ranked(**{"411060": []}))
+    assert only_hedged[al.GOLD] == []                  # nothing unhedged: the caller keeps its last pick
 
 
 @pytest.mark.parametrize("detail", [{"status": "DELISTED"}, {"leverageFactor": "2.0"}, {"leverageFactor": "-1.0"},
@@ -289,6 +300,20 @@ def test_an_override_set_after_the_pick_wins_at_once_without_waiting_for_a_scree
     assert store.effective_candidates(tmp_path)[al.GOLD] == ["toss:domestic:132030"]
     cl.set_candidates(store.state_dir(tmp_path), al.GOLD, [], now=OCT)  # withdrawn: the automatic pick again
     assert store.effective_candidates(tmp_path)[al.GOLD] == _auto(tmp_path)["candidates"][al.GOLD]
+
+
+def test_a_pick_made_under_older_rules_is_screened_again_once(tmp_path):
+    feed = _StubFeed()
+    _refresh(feed, tmp_path)
+    assert _auto(tmp_path)["rules_version"] == cd.RULES_VERSION
+    body = _auto(tmp_path)
+    body["candidates"][al.GOLD] = ["toss:domestic:132030"]      # a hedged gold pick from before 2026-11-11
+    del body["rules_version"]
+    store.auto_candidates_path(tmp_path).write_text(json.dumps(body), encoding="utf-8")
+    assert _refresh(feed, tmp_path, now="2026-10-28T01:00:00Z") == "rules" and feed.screens() == 2
+    assert _auto(tmp_path)["candidates"][al.GOLD] == ["toss:domestic:411060"]
+    assert "선정 규칙 변경" in store.candidate_notice(tmp_path)[1]
+    assert _refresh(feed, tmp_path, now="2026-10-28T02:00:00Z") is None and feed.screens() == 2
 
 
 def test_a_class_the_screen_finds_nothing_for_keeps_its_last_pick(tmp_path):

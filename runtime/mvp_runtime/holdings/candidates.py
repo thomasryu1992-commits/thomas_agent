@@ -12,7 +12,8 @@ the automatic pick never touches a class he set.
 - domestic equity: the KOSPI 200, as a domestic equity ETF (gain tax-free);
 - bonds: Korean 3-year government bonds at the centre; a quarter in US Treasuries 7-10y, unhedged, as a
   domestic-listed ETF (D-A, 2026-10-20);
-- gold: a Toss-traded gold ETF (Q3).
+- gold: a Toss-traded gold ETF (Q3), unhedged: the allocation counts gold as dollar exposure
+  (``allocation.CURRENCY_DEFAULT``), and a hedged ("(H)") gold ETF is not that exposure (Thomas 2026-11-11).
 
 **What Toss cannot say.** There is no index, hedge or expense-ratio field (``openapi.json`` v1.2.24,
 ``StockInfo``). Exposure is matched by name, the hedge by Korea's "(H)" naming convention, and the expense ratio
@@ -40,6 +41,9 @@ LIQUIDITY_DAYS = 20
 POOL_LIMIT = 80
 SHOWN = 4
 PICKS = 3
+# What the rules pick by. A file written under another version is screened again once (store), so a change
+# to the rules reaches the pick at the next fire instead of the next month. 2: gold unhedged (2026-11-11).
+RULES_VERSION = 2
 
 _ALWAYS_OUT = re.compile(r"레버리지|인버스|커버드콜|covered call|buywrite|\b[23]x\b|ultra|bear|short|2배|3배", re.I)
 HEDGED = re.compile(r"\(H\)|hedged|헤지", re.I)
@@ -150,8 +154,9 @@ def rank(shortlists: Mapping[str, list[dict[str, Any]]], *, info: Mapping[str, M
             ident = instrument(symbol, market)
             kind = tax_kind(Position(ident, rule.asset_class, None, 0.0, None))
             hedged = bool(HEDGED.search(row["name"]))
-            fx = "USD" if us else ("hedged" if hedged else ("USD" if key == "bonds_us7_10y" else "KRW"))
-            note = "hedged; D-A decided unhedged" if key == "bonds_us7_10y" and hedged else None
+            fx = "USD" if us else ("hedged" if hedged else ("USD" if key in ("bonds_us7_10y", "gold") else "KRW"))
+            note = ("hedged; D-A decided unhedged" if key == "bonds_us7_10y" and hedged
+                    else "hedged; gold is held unhedged" if key == "gold" and hedged else None)
             ranked.append(Candidate(ident, row["name"], market, value, days, fees.get("US" if us else "KR"),
                                     kind, fx, note))
         out[key] = sorted(ranked, key=lambda c: (c.avg_value_krw is None, -(c.avg_value_krw or 0.0), c.instrument))
@@ -161,12 +166,13 @@ def rank(shortlists: Mapping[str, list[dict[str, Any]]], *, info: Mapping[str, M
 def auto_picks(ranked: Mapping[str, list[Candidate]]) -> dict[str, list[str]]:
     """RB2'': per class, the PICKS most-traded candidates with a known trading value; bonds take three Korean 3y
     plus the most-traded unhedged US 7-10y (the calculator fills candidates evenly, so 3 + 1 holds the decided
-    quarter). A class with nothing tradable maps to an empty list: the caller keeps the last pick for it."""
+    quarter); gold takes unhedged ETFs only (2026-11-11). A class with nothing tradable maps to an empty list: the
+    caller keeps the last pick for it."""
     return {allocation.GLOBAL_EQUITY: _top(ranked, "global_equity", PICKS),
             allocation.DOMESTIC_EQUITY: _top(ranked, "domestic_equity", PICKS),
             allocation.BONDS: (_top(ranked, "bonds_kr3y", PICKS) + us_bond_pick(ranked)
                                if _top(ranked, "bonds_kr3y", PICKS) else []),
-            allocation.GOLD: _top(ranked, "gold", PICKS)}
+            allocation.GOLD: _top(ranked, "gold", PICKS, unhedged_only=True)}
 
 
 def _top(ranked: Mapping[str, list[Candidate]], key: str, n: int, unhedged_only: bool = False) -> list[str]:

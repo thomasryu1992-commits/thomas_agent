@@ -413,7 +413,8 @@ def refresh_auto_candidates(feed: Any, *, now: str, root: Path | None = None, sl
     # A pick from before the US bond was recorded apart (G6 §2e) is screened again once, to record it.
     trigger = ("monthly" if body.get("screened_month") != month
                else "untradable" if any(i not in manual_ids for i in untradable)
-               else "bond_split" if "us_bonds" not in body else None)
+               else "bond_split" if "us_bonds" not in body
+               else "rules" if body.get("rules_version") != candidates_mod.RULES_VERSION else None)
     if trigger is not None:
         ranked, _ = candidates_mod.collect(feed, **({"sleep": sleep} if sleep else {}))
         picks = candidates_mod.auto_picks(ranked)
@@ -421,6 +422,7 @@ def refresh_auto_candidates(feed: Any, *, now: str, root: Path | None = None, sl
         us_bonds = candidates_mod.us_bond_pick(ranked)
         body["us_bonds"] = us_bonds if picks.get(allocation.BONDS) else body.get("us_bonds", [])
         body.update({"screened_at": now, "screened_month": month, "trigger": trigger,
+                     "rules_version": candidates_mod.RULES_VERSION,
                      "kept": sorted(cls for cls, ids in picks.items() if not ids and cls not in manual)})
     body.update({"record_type": AUTO_CANDIDATES_RECORD_TYPE, "candidates": auto,
                  "manual_untradable": sorted(i for i in untradable if i in manual_ids)})
@@ -438,7 +440,8 @@ def candidate_notice(root: Path | None = None) -> tuple[str, str] | None:
     token = f"{body['screened_at']}|{len(bad)}"
     if body.get("told_token") == token:
         return None
-    label = {"monthly": "월 점검", "untradable": "거래 불가 후보 교체"}.get(body.get("trigger"), "갱신")
+    label = {"monthly": "월 점검", "untradable": "거래 불가 후보 교체",
+             "rules": "선정 규칙 변경"}.get(body.get("trigger"), "갱신")
     text = (f"[보유 자산] 리밸런싱 후보 자동 선정({label}) — 자산군 {len(body.get('candidates') or {})}개"
             + (f", 찾지 못해 이전 후보 유지 {len(body['kept'])}개" if body.get("kept") else "") + ".")
     if bad:
