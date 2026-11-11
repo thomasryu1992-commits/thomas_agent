@@ -50,6 +50,10 @@ FINAL: str | None = None                 # the one candidate ``confirm`` may run
 # The locked span was read once, on 2026-11-11, by METRICS_BASKET_SEARCH_V0.1's final candidate M04. It is spent for
 # every protocol that shares it: ``confirm`` refuses every candidate here and in ``metrics_basket_search``.
 CONFIRM_SPENT: str | None = "METRICS_BASKET_SEARCH_V0.1 M04, run 20261111T041212Z-3935191"
+# NEXT_LOCKED_SPAN_V0.1 (2026-11-11): archive days from here on are kept unread by every development/confirm search,
+# so a later protocol has a span to confirm on. A search tool may not measure a span that reaches into it; the
+# forward screens, the factory's cohorts and the forward-only observations read these days by their own registrations.
+RESERVED_FROM = date(2026, 10, 1)
 
 
 def _returns(market: xsb.Market, symbol: str, day: date, lookback: int) -> list[tuple[date, float]]:
@@ -219,6 +223,12 @@ def cut(market: xsb.Market, end: date) -> xsb.Market:
         contract_types=market.contract_types)
 
 
+def check_search_span(span: tuple[date, date]) -> None:
+    """Raise unless ``span`` ends before the reserved days (:data:`RESERVED_FROM`)."""
+    if span[1] >= RESERVED_FROM:
+        raise ValueError(f"a search span may not reach {RESERVED_FROM} or later (reserved, NEXT_LOCKED_SPAN_V0.1)")
+
+
 def _complete_months(start: date, end: date) -> list[str]:
     return [m.strftime("%Y-%m") for m in xsb.month_starts(start, end)
             if m >= start and (date(m.year + (m.month == 12), m.month % 12 + 1, 1) - timedelta(days=1)) <= end]
@@ -292,12 +302,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"refused: the locked span is read once, for the final candidate ({FINAL}), not for "
               f"{args.candidate}", file=sys.stderr)
         return EXIT_USAGE
+    span = DEV if args.command == "explore" else CONFIRM
+    try:
+        check_search_span(span)
+    except ValueError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return EXIT_USAGE
     archive = args.archive or xsb._archive_default()
     snapshot = xsb.read_contract_types(archive)
     if snapshot is None:
         print(f"BLOCKED: no readable {xsb.CONTRACT_TYPES_FILENAME} under {archive}", file=sys.stderr)
         return EXIT_BLOCKED
-    span = DEV if args.command == "explore" else CONFIRM
     market = xsb.load_market(archive)
     market.contract_types = snapshot[0]
     market = cut(market, span[1])                      # before anything is computed

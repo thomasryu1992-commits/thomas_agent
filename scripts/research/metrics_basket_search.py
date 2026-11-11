@@ -245,6 +245,12 @@ def main(argv: list[str] | None = None) -> int:
     if not {name for name, _ in candidate.features} <= set(FEATURES):
         print("refused: the candidate names a feature outside this protocol's list", file=sys.stderr)
         return EXIT_USAGE
+    span = dev_span(candidate) if args.command == "explore" else CONFIRM
+    try:
+        bs.check_search_span(span)
+    except ValueError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return EXIT_USAGE
     archive = cache / "archive"
     snapshot = xsb.read_contract_types(archive)
     daily = load_daily(cache)
@@ -252,7 +258,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"BLOCKED: no contract types under {archive} or no derived metrics under {cache} "
               "(run `build` on the host first)", file=sys.stderr)
         return EXIT_BLOCKED
-    span = dev_span(candidate) if args.command == "explore" else CONFIRM
     market = xsb.load_market(archive)
     market.contract_types = snapshot[0]
     market = cut(market, daily, span[1])               # before anything is computed
