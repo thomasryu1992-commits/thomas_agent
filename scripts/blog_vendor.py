@@ -306,6 +306,10 @@ REPLAY_REPLACE = {
         ('C_AC, C_SERP, C_PROF, C_CHAN = (Cache(n) for n in ("ac", "serp", "prof", "chan"))\n',
          "C_AC = C_SERP = C_PROF = C_CHAN = None   # generated: built by configure()\n"),
         ('REPLAY_DIR = os.environ.get("KW_REPLAY_DIR", "")\n', 'REPLAY_DIR = ""   # generated: a replay never records\n'),
+        # Vault 464b2630 (2026-11-11): the trend-seed queue entry is an env switch, off by default. The replay reads
+        # no environment, so it takes the vault default; a root run with the switch on shows up as a disagreement.
+        ('TREND_READ = os.environ.get("KW_TREND_READ", "0") == "1"\n',
+         "TREND_READ = False   # generated: the vault default (KW_TREND_READ unset); a replay reads no environment\n"),
     ],
     "affiliate": [
         ("VAULT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\n", 'VAULT = ""   # generated: set by configure()\n'),
