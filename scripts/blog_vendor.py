@@ -292,7 +292,11 @@ def generate_script(key: str, scripts: Path, commit: str) -> str:
 #   the control flow the comparison is meant to test.
 # - **Nothing at import time.** The module-level caches and ``POSTS_PER_DAY`` are built by ``configure``; every
 #   module-level assignment that depends on a path is re-run there (found by name, below), so none is listed by hand.
-REPLAY_SOURCES = {"kw_pipeline": "kw_pipeline.py", "affiliate": "affiliate_fetch.py", "kw_taxonomy": "blog_taxonomy.py"}
+# Vault 8898cc4f (2026-11-11): ``update_stock`` counts "the same device" with the Mac issuing tool's ``kind()``
+# (``tools/affiliate_link.py``), so that file is ported too — only ``kind``, ``jload`` and ``excluded`` and the
+# constants they read; the browser-driving rest (Playwright, Brand Connect) goes.
+REPLAY_SOURCES = {"kw_pipeline": "kw_pipeline.py", "affiliate": "affiliate_fetch.py", "kw_taxonomy": "blog_taxonomy.py",
+                  "affiliate_link": "affiliate_link.py"}
 
 REPLAY_REPLACE = {
     "kw_pipeline": [
@@ -316,6 +320,10 @@ REPLAY_REPLACE = {
     "affiliate": [
         ("VAULT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\n", 'VAULT = ""   # generated: set by configure()\n'),
     ],
+    "affiliate_link": [
+        ("sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\n", ""),
+        ("VAULT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\n", 'VAULT = ""   # generated: set by configure()\n'),
+    ],
     # The pipeline's own copy of the taxonomy: the checkers' edits, but its writers kept (the pipeline appends the
     # update hand-over and the discrepancy rows, into the replay's working copy).
     "kw_taxonomy": REPLACE["taxonomy"],
@@ -328,6 +336,7 @@ REPLAY_LINES = {
     ],
     "affiliate": [],
     "kw_taxonomy": [],
+    "affiliate_link": [],
 }
 # Every occurrence (at least one must exist).
 REPLAY_ALL = {
@@ -335,12 +344,14 @@ REPLAY_ALL = {
         ("sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))", "pass"),
         ("import blog_taxonomy as bt", "from . import kw_taxonomy as bt"),
         ("import affiliate_fetch as af", "from . import affiliate as af"),
+        ("import affiliate_link as al", "from . import affiliate_link as al"),
         ("os.path.dirname(os.path.realpath(__file__))", "_TOOLS_DIR"),
         ("time.time()", "_epoch()"),
         ("time.sleep(", "_sleep("),
     ],
     "affiliate": [],
     "kw_taxonomy": [],
+    "affiliate_link": [],
 }
 REPLAY_SWAP = {
     "kw_pipeline": {
@@ -367,11 +378,14 @@ REPLAY_SWAP = {
     },
     "affiliate": {},
     "kw_taxonomy": {},
+    "affiliate_link": {},
 }
 REPLAY_DROP = {"kw_pipeline": {"main"},
                "kw_taxonomy": {"live_category", "cmd_classify", "cmd_validate", "cmd_discrepancy", "cmd_decide", "main"}}
 # affiliate_fetch is a Mac tool (it drives Chrome); only its note parser is used by the pipeline.
-REPLAY_KEEP_FUNCTIONS = {"affiliate": {"norm", "_is_text_line", "_strip_label", "targets", "clean_url"}}
+REPLAY_KEEP_FUNCTIONS = {"affiliate": {"norm", "_is_text_line", "_strip_label", "targets", "clean_url"},
+                         # affiliate_link is a Mac tool too (it drives Brand Connect); the stock reads only these three.
+                         "affiliate_link": {"kind", "jload", "excluded"}}
 
 REPLAY_TAIL = {
     "kw_pipeline": '''
@@ -409,9 +423,10 @@ def configure(vault_root, *, cache_dir, clock, epoch, has_vol, decision_mode, tr
     C_AC, C_SERP, C_PROF, C_CHAN = (Cache(n) for n in ("ac", "serp", "prof", "chan"))
     C_VOL = Cache("vol", flush_every=5000)
     POSTS_PER_DAY = _naver_day_max()
-    from . import affiliate, kw_taxonomy
+    from . import affiliate, affiliate_link, kw_taxonomy
     kw_taxonomy.configure(VAULT)
     affiliate.configure(VAULT)
+    affiliate_link.configure(VAULT)
 ''',
     "affiliate": '''
 
@@ -424,6 +439,15 @@ def configure(vault_root):
     DEBUG_DIR = os.path.join(CLIP_DIR, "_debug")
 ''',
     "kw_taxonomy": CONFIGURE["taxonomy"],
+    "affiliate_link": '''
+
+def configure(vault_root):
+    """Point the issuing tool's state files (keywords.json, exclude.txt) at a vault (generated: replaces the import-time
+    __file__ lookup)."""
+    global VAULT
+    {path_globals}
+    VAULT = str(vault_root)
+{path_assignments}''',
 }
 _PATH_ROOTS = {"VAULT", "CACHE_DIR", "_TOOLS_DIR"}
 
@@ -479,7 +503,7 @@ def generate_replay(key: str, vault: Path, commit: str) -> str:
     if text.startswith("#!"):
         text = text.split("\n", 1)[1]
     tail = REPLAY_TAIL[key]
-    if key == "kw_pipeline":
+    if "{path_assignments}" in tail:
         assignments, names = _path_assignments(text)
         tail = tail.replace("{path_globals}", "global " + ", ".join(names) if names else "pass")
         tail = tail.replace("{path_assignments}", "".join("    " + line if line.strip() else line
@@ -488,7 +512,7 @@ def generate_replay(key: str, vault: Path, commit: str) -> str:
         # What a bundle is replayed against: the recording names the sha of each file it ran; a different one means the
         # generated module is stale for that bundle, and the replay says so instead of comparing.
         shas = {name: hashlib.sha256((vault / "tools" / name).read_bytes()).hexdigest()
-                for name in ("kw_pipeline.py", "blog_taxonomy.py", "affiliate_fetch.py")}
+                for name in ("kw_pipeline.py", "blog_taxonomy.py", "affiliate_fetch.py", "affiliate_link.py")}
         tail += f"\n\nGENERATED_FROM_SHA256 = {shas!r}\n"
     header = (f"# GENERATED by scripts/blog_vendor.py from the vault's tools/{source} @ {commit}. Do not edit by hand:\n"
               f"# change the vault file and regenerate (BLOG_DEPARTMENT v0.2 P4a). The edits are listed in that script.\n")

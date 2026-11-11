@@ -99,7 +99,8 @@ def test_a_day_chosen_by_hand_differs_and_the_record_says_what_the_rule_saw(vaul
     rel = _draft(vault, "170편-손.md", "2026-11-20 18:00")
     found = bs.compare_draft(vault, {"path": rel, "platform": "naver", "scheduled": "2026-11-20 18:00"})
     assert found["state"] == "compared" and found["agree"] is False
-    assert found["computed"].startswith("2026-11-14 15:") and found["reported"] == "2026-11-20 18:00"
+    # The day's second window: 13:00 since vault naver_slot moved CUTOVER to 2026-11-12 (dac1759d); 15:00 before.
+    assert found["computed"].startswith("2026-11-14 13:") and found["reported"] == "2026-11-20 18:00"
     assert found["tail"] == {"date": "2026-11-14", "windows": [0], "drafts": 1}
 
 
