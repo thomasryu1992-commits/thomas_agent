@@ -9,7 +9,7 @@ protocol's §3 named. `scripts/research/metrics_basket_screen.py`, `docs/proposa
   2025-10). The momentum screen asks for a settlement on every day a member has a bar, so a member delisted inside
   the window would hold it at NOT_YET for good. Here a settlement is required only on a day the coin traded, and a
   day without one is excused when that month's funding file is on disk. The momentum screen is left as registered;
-  the gap is a follow-up for its owner's decision.
+  the gap is a follow-up for its owner's decision (taken up the same day: `2026-11-11-momentum-screen-funding-coverage.md`).
 - *Metrics the archive had not published yet.* `binance_archive.fetch` never asks again for a name in
   `missing.json`. A day asked before the archive publishes it (day D-1 was a 404 on 2026-11-11, D-2 was served)
   would stay "not served" and read as an unrankable coin, which is how M03 came to rank 22 of 30. So `refresh`

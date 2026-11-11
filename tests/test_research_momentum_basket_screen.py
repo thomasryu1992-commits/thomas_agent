@@ -145,9 +145,66 @@ def test_a_members_missing_funding_month_is_not_yet_and_named():
     market.funding["S04USDT"] = [(t, r) for t, r in market.funding["S04USDT"] if not april[0] <= t < april[1]]
     out = mb.screen(market)
     _assert_not_yet_without_returns(out)
-    assert out["short"] == ["S04USDT funding 2027-04: 30 of 30 day(s)"]
+    assert out["short"] == ["S04USDT funding 2027-04: 30 day(s)"]
     assert "S04USDT" in mb.funding_plan(market, W0, W1)["2027-04"]
     assert sorted(mb.funding_plan(market, W0, W1)) == ["2027-02", "2027-03", "2027-04", "2027-05"]
+
+
+def _judged(market, **kw):
+    return mb.screen(market, **kw)["strategies"]
+
+
+def test_a_member_delisted_inside_the_window_no_longer_holds_the_screen_at_not_yet():
+    # Amended 2026-11-11: a delisted coin keeps flat zero-volume bars and its funding files stop (HIFIUSDT, 2025-10).
+    market = _market()
+    cut = date(2027, 4, 20)
+    bars = market.bars["S05USDT"]
+    for d in [d for d in bars if d >= cut]:
+        bars[d] = xsb.Bar(open=1.0, close=1.0, quote_volume=0.0)
+    market.funding["S05USDT"] = [(t, r) for t, r in market.funding["S05USDT"] if t < _ms(cut)]
+    out = mb.screen(market)
+    assert out["status"] == mb.JUDGED and out["excused_funding_days"] == 0
+
+
+def test_a_traded_day_without_funding_is_excused_only_when_the_months_file_is_on_disk():
+    def without_a_day():
+        market = _market()
+        day = _ms(date(2027, 3, 9))
+        market.funding["S06USDT"] = [(t, r) for t, r in market.funding["S06USDT"] if not day <= t < day + 86_400_000]
+        return market
+
+    assert mb.screen(without_a_day())["short"] == ["S06USDT funding 2027-03: 1 day(s)"]
+    asked = mb.screen(without_a_day(), funding_months={("S06USDT", "2027-03")})
+    assert asked["status"] == mb.JUDGED and asked["excused_funding_days"] == 1
+    assert _judged(without_a_day(), funding_months={("S06USDT", "2027-03")}) != {}     # a verdict, not a shortfall
+
+
+def test_a_leg_held_into_the_next_month_needs_that_weeks_funding():
+    def guest_without(day):                                        # heavy volume through December only
+        market = _market()
+        bars = market.bars["S35USDT"]
+        for d, b in list(bars.items()):
+            bars[d] = xsb.Bar(open=b.open, close=b.close, quote_volume=5000.0 if d < date(2027, 1, 1) else 1.0)
+        start = _ms(day)
+        market.funding["S35USDT"] = [(t, r) for t, r in market.funding["S35USDT"] if not start <= t < start + 86_400_000]
+        return market
+
+    table = mb.universes(guest_without(date(2027, 2, 3)), W0, W1)
+    assert "S35USDT" in table[date(2027, 1, 1)] and "S35USDT" not in table[date(2027, 2, 1)]
+    assert mb.screen(guest_without(date(2027, 2, 3)))["short"] == ["S35USDT funding 2027-02: 1 day(s)"]
+    assert mb.screen(guest_without(date(2027, 2, 12)))["status"] == mb.JUDGED      # past the held-over week
+    assert "S35USDT" in mb.funding_plan(guest_without(date(2027, 2, 3)), W0, W1)["2027-02"]
+
+
+def test_the_amended_coverage_does_not_move_the_judged_numbers():
+    market = _market()
+    plain = mb.screen(market)
+    cut = xsb.Market(bars={s: {d: b for d, b in bars.items() if d <= W1} for s, bars in market.bars.items()},
+                     funding=market.funding, contract_types=market.contract_types)
+    direct = xsb.simulate(cut, mb.SIGNAL, mb.universes(market, W0, W1), start=W0, end=W1, weigher=mb.vol_weights)
+    assert plain["strategies"]["M"]["sum_pct"] == round(sum(v["net"] for v in direct["daily"].values()) * 100, 4)
+    assert _judged(_market(), funding_months={("S01USDT", "2027-03")}) == plain["strategies"]
+    assert plain["excused_funding_days"] == 0
 
 
 def test_funding_of_a_coin_outside_the_universe_is_not_asked_for():
