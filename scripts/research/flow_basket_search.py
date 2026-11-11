@@ -46,6 +46,7 @@ REFERENCE = "M04"                         # the screened candidate a pass is com
 CANDIDATES: dict[str, bs.Candidate] = {
     "F01": bs.Candidate(why="상위 트레이더 추종: 상위 트레이더(증거금이 큰 계정)의 롱 비중이 높은 코인을 사고 낮은 코인을 판다. 더 잘 아는 쪽을 따라간다는 가설.", features=(("top_level", 1.0),)),
     "F02": bs.Candidate(why="테이커 매수 추종: 테이커(시장가) 매수 비중이 높은 코인을 사고 낮은 코인을 판다. 시장가로 사는 쪽이 꾸준히 많으면 수요가 이어진다는 가설.", features=(("taker_level", 1.0),)),
+    "F03": bs.Candidate(why="F01과 F02가 둘 다 미달이라, 미리 정한 대로 두 순위를 같은 방향으로 더한다: 상위 트레이더 롱 비중과 테이커 매수 비중이 둘 다 높은 쪽을 사고 둘 다 낮은 쪽을 판다.", features=(("top_level", 1.0), ("taker_level", 1.0))),
 }
 
 
