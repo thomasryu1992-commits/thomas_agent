@@ -238,7 +238,8 @@ def test_the_generated_queue_keeps_only_its_rules():
     names = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
     names |= {n.targets[0].id for n in tree.body if isinstance(n, ast.Assign)}
     assert names == {"KST", "MARGIN_MIN", "SLOTS", "NEW_SINCE", "NEW_PER_DAY", "ONLY_PER_DAY",
-                     "fm", "kind", "key", "jitter", "is_new"}
+                     "fm", "kind", "key", "jitter", "is_new",
+                     "OLD_SLOTS", "NEW_SLOTS", "FAST_SLOT", "SLOT_CUTOVER", "FAST_PER_DAY", "is_fast", "slots_for"}
     imported = {a.name for n in tree.body if isinstance(n, ast.Import) for a in n.names}
     assert not {"subprocess", "shutil", "tempfile"} & imported
     assert "print(" not in source and '"w"' not in source
@@ -336,3 +337,60 @@ def test_the_fire_records_the_tistory_checks_without_paths(vault, tmp_path):
         == {"tistory": 2, "tistory_checked": 2, "tistory_agreed": 1, "tistory_differed": 1}
     text = json.dumps(record, ensure_ascii=False)
     assert "tool-name" not in text and "content/" not in text and ".md" not in text
+
+
+# --- Four a day (Thomas 2026-11-11): new windows from the cutover, and one fast draft outside the regular counts ---
+
+def _fast_draft(vault, name, scheduled, created):
+    path = vault / "content" / "naver" / name
+    path.write_text(f"---\ntitle: \"시험\"\nstatus: draft\nfast: true\ncreated: {created}\nscheduled: {scheduled}\n---\n본문\n",
+                    encoding="utf-8")
+    return f"content/naver/{name}"
+
+
+def test_a_run_on_the_new_windows_agrees_and_a_fast_draft_is_left_out_of_it(vault):
+    _draft(vault, "160편-이전.md", f"{ns.CUTOVER} 10:20")
+    _fast_draft(vault, "165편-빠른.md", f"{ns.CUTOVER} 19:30", "2026-11-21")
+    rows = _run(vault)
+    found = [bs.compare_draft(vault, r) for r in rows]
+    assert all(f["state"] == "compared" and f["agree"] for f in found), found
+    assert found[0]["tail"] == {"date": ns.CUTOVER, "windows": [0], "drafts": 1}   # the fast draft is not counted
+    assert [f["computed"][11:13] for f in found] == ["13", "16", "10"]
+
+
+def test_a_fast_draft_is_compared_with_the_evening_after_it_was_written(vault):
+    _draft(vault, "160편-이전.md", "2026-11-30 10:20")
+    ns.configure(vault)
+    rel = _fast_draft(vault, "170편-빠른.md", "", "2026-11-25")
+    slot = ns.next_fast(str(vault), str(vault / rel), today=__import__("datetime").date(2026, 11, 25))
+    _fast_draft(vault, "170편-빠른.md", slot, "2026-11-25")
+    found = bs.compare_draft(vault, {"path": rel, "platform": "naver", "scheduled": slot})
+    assert found["state"] == "compared" and found["agree"] is True and slot.startswith("2026-11-26 19:")
+    wrong = bs.compare_draft(vault, {"path": rel, "platform": "naver", "scheduled": "2026-11-27 19:30"})
+    assert wrong["agree"] is False
+    (vault / rel).write_text(f"---\ntitle: \"시험\"\nstatus: draft\nfast: true\nscheduled: {slot}\n---\n본문\n", encoding="utf-8")
+    assert bs.compare_draft(vault, {"path": rel, "platform": "naver", "scheduled": slot})["state"] == "no_created"
+
+
+def _fast_post(vault, name, scheduled):
+    rel = _post(vault, name, "draft", scheduled=scheduled)
+    path = vault / rel
+    path.write_text(path.read_text(encoding="utf-8").replace("status: draft", "status: draft\nfast: true", 1), encoding="utf-8")
+    return rel
+
+
+def test_a_fast_tistory_post_is_outside_the_regular_caps_and_has_its_own(vault):
+    day = "2026-11-20"
+    for i, s in enumerate(tq.NEW_SLOTS):
+        _post(vault, f"16{i}-r.md", "scheduled", scheduled=_at(day, s, f"16{i}-r.md"))
+    reported = _at(day, tq.FAST_SLOT, "170-fast.md")
+    rel = _fast_post(vault, "170-fast.md", reported)
+    checks = _check(vault, rel, reported)["checks"]
+    assert checks["minute"] and checks["unique"] and checks["only_cap"] is True and checks["new_cap"] is None
+    regular = _check(vault, "content/tistory/162-r.md", _at(day, tq.NEW_SLOTS[2], "162-r.md"),
+                     siblings=("content/tistory/170-fast.md",))["checks"]
+    assert regular["only_cap"] is True and regular["new_cap"] is True        # the fast post is not counted
+    _post(vault, "171-fast.md", "scheduled", scheduled=_at(day, "19:30", "171-fast.md"))
+    p = vault / "content/tistory/171-fast.md"
+    p.write_text(p.read_text(encoding="utf-8").replace("status: scheduled", "status: scheduled\nfast: true", 1), encoding="utf-8")
+    assert _check(vault, rel, reported)["checks"]["only_cap"] is False      # two fast posts that day
