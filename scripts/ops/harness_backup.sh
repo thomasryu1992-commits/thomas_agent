@@ -64,10 +64,26 @@ THOMAS=thomas_agent
 STAMP="${HARNESS_BACKUP_STAMP:-$(date -u +%Y%m%d-%H%M)}"   # override for tests only
 AGE="${AGE_BIN:-age}"
 RECIPIENTS="${HARNESS_BACKUP_AGE_RECIPIENTS:-/root/backups/age-recipients.txt}"
+# Where the Claude account reads the transcripts lines (2026-11-11). DEST sits under /root, which the
+# account Claude runs as cannot open, so the prompt collector judged this backup UNKNOWN every day since C6b.
+# Every transcripts* line is copied here as well, never core's or the candles'. The directory is created at
+# install, root:claude 0750 like the rest of /var/lib/thomas-measure; while it is absent nothing is copied.
+# The copy is best effort: it never changes the run's outcome or its exit code.
+STATUS_DIR="${HARNESS_BACKUP_STATUS_DIR:-/var/lib/thomas-measure/transcripts-backup}"
 umask 077
 mkdir -p "$DEST" && chmod 700 "$DEST"
 
-log() { echo "$(date -u +%FT%TZ) $*" >> "$DEST/backup.log"; }
+log() {
+  local line
+  line="$(date -u +%FT%TZ) $*"
+  echo "$line" >> "$DEST/backup.log"
+  case "$MODE" in
+    transcripts*)
+      if [ -d "$STATUS_DIR" ] && [ ! -L "$STATUS_DIR/backup.log" ]; then
+        { echo "$line" >> "$STATUS_DIR/backup.log" && chmod 0644 "$STATUS_DIR/backup.log"; } 2>/dev/null || true
+      fi ;;
+  esac
+}
 
 # The encryption precondition, checked before anything is written. Prints the reason on failure.
 # Only the key's prefix is ever logged; a public key is not a secret, but the log needs no more.
