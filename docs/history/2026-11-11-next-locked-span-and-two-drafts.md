@@ -14,7 +14,7 @@ after a screen passes. The draft asks to move it before the first verdict becaus
 screen that half of all null strategies pass; it carries no computed family-wise figure because the strategies
 overlap. It is a DRAFT and Q6 stands until Thomas answers.
 
-**Why the cost draft fetches nothing.** `bookDepth` exists in the public archive for the stressed coins (probed, one
-sample file read in memory), but it is a new file kind and the tool's client name carries the project. Both are
+**Why the cost draft fetches nothing.** `bookDepth` exists in the public archive (listings probed for PIPPIN and BTC
+only; two files read in memory and not kept: one `bookDepth` day and one `aggTrades` day of about 100 MB), but it is a new file kind and the tool's client name carries the project. Both are
 Thomas's to answer first. The draft fixes what may be printed: depth and impact at stated sizes, never a
 cost-adjusted return of the spent span.
