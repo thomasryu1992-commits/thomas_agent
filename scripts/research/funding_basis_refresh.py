@@ -1,4 +1,5 @@
-"""Monthly data refresh for the screens (funding basis, premium convergence): one command per finished month.
+"""Monthly data refresh for the screens (funding basis, premium convergence, the two baskets): one command per
+finished month.
 
 ``docs/proposals/FUNDING_BASIS_V0.2.md`` §9 and ``STRATEGY_SCREEN_GATE_V0.1.md`` §5. After month M ends and its
 monthly archive is published, this runs the existing public reads in order. It adds no network read of its own:
@@ -17,6 +18,10 @@ own rules (checksums, skip-if-present, the IP weight budget, the factory window)
 5. The 1h index, premium and mark bars of premium convergence's six symbols (``fetch_public --timeframe 1h``,
    ``PREMIUM_CONVERGENCE_V0.1.md`` §5), paced like step 4. Its screen window ends 2027-04-30, so this runs for every
    month through ``--month 2027-04``, one month past the funding-basis window.
+6. The metrics basket screen's own files (``METRICS_BASKET_SCREEN_V0.1.md``): ``metrics_basket_screen refresh``
+   fetches the daily ``metrics`` files and the funding months its window's members need, as far as the klines can
+   name members, then rebuilds the daily values. It finds nothing to do before the 2027-01 klines exist; its window
+   ends 2027-06-30, so this command runs for every month through ``--month 2027-06``.
 
 Pacing (lessons of the v0.2 fetch, 2026-11-09): one derivative symbol at a time, :data:`PACE_SECONDS` apart; on
 the venue's weight stop, wait :data:`WEIGHT_WAIT_SECONDS` and retry up to :data:`WEIGHT_RETRIES` times. A 429 or
@@ -63,6 +68,7 @@ ARCHIVE_RETRIES = 2                           # an archive step (data.binance.vi
 ARCHIVE_WAIT_SECONDS = 60                     # ... after this pause: every step skips what is already on disk
 ARCHIVE = ["scripts/binance_archive.py"]
 FETCH_PUBLIC = ["-m", "scripts.research.fetch_public"]
+METRICS_SCREEN = ["-m", "scripts.research.metrics_basket_screen", "refresh"]
 
 Runner = Callable[[list[str]], tuple[int, str]]
 
@@ -200,6 +206,7 @@ class Refresh:
                 self.sleep(PACE_SECONDS)
             self.derivative(symbol)
         self.hourly()
+        self._step("metrics basket screen files", [*METRICS_SCREEN, "--cache", str(self.cache)])
         if self.failed:
             self.say(f"FAILED after retries: {','.join(self.failed)} — rerun the same command to resume")
             return EXIT_BLOCKED
