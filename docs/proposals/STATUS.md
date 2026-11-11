@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **110**건: `DRAFT` 3 · `PARTIALLY DECIDED` 11 · `DECIDED` 26 · `IMPLEMENTED` 59 · `SUPERSEDED` 4 · `RECORD` 7
+제안서 **113**건: `DRAFT` 6 · `PARTIALLY DECIDED` 11 · `DECIDED` 26 · `IMPLEMENTED` 59 · `SUPERSEDED` 4 · `RECORD` 7
 
-## Thomas 결정 대기 (14)
+## Thomas 결정 대기 (17)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -26,6 +26,9 @@
 | [H6C_UNIT_AUTHORITY_V0.1.md](H6C_UNIT_AUTHORITY_V0.1.md) | `DRAFT` | 2026-11-04 | H6c(G1d, unit 권위 전환)의 결정 패킷 초안이다. **지금 묻지 않는다.** Claude 도어의 `holdings_status`에 `h6c_askable`이 서면 HQ1–HQ6을 묻는다(`H6B_UNIT_SHADOW_V0.1.md` S5). 그때까지 코드, 정책, env, 스케줄은 바뀌지 않는다. 미리 써 두는 이유는 조건이 갖춰지는 날 바로 묻기 위해서다. 같은 날 Thomas가 해야 할 일(§2의 입금·출금)도 여기에 적는다. |
 | [CRYPTO_DESIGN_REVIEW_V0.1.md](CRYPTO_DESIGN_REVIEW_V0.1.md) | `PARTIALLY DECIDED` | 2026-11-10 | Thomas: 해결 방안을 권한 순서대로 진행한다("해결방안을 순서대로 진행하고 검증까지 진행해서 보고해"). 같은 날 결과: 방안 3(`POSITIONING_DIVERGENCE_V0.1`)은 ENTRY_FAIL, 방안 5(`VARIANCE_PREMIUM_V0.1`)는 PROXY_FAIL로 둘 다 닫았다(§4). 방안 1의 문서 정정은 이 문서와 함께 병합됐고, read door는 별도 PR(#1420)이며, 알림은 Thomas의 root `at` 작업으로 남아 있다. 남은 질문은 셋이다(§5): Q1은 2026-11-14 mint 판독 뒤에 묻고, Q2(수익 크기 바닥의 기준값)와 Q3은 답을 기다린다. 이 문서가 바꾸는 코드, 판정 규칙, 일정은 없다. |
 | [METRICS_BASKET_SEARCH_V0.1.md](METRICS_BASKET_SEARCH_V0.1.md) | `PARTIALLY DECIDED` | 2026-11-11 | **확인 실행 결과: 통과(연 샤프 1.357, 2025-01 – 2026-09, 한 번).** 최종 후보 M04(30개 전체로 다시 잰 것, 탐색 연 샤프 1.134)를 Thomas의 "병합하고 확인"(2026-11-11)에 따라 병합된 SHA에서 한 번 돌렸다. 확인 구간은 소진됐고 `confirm` 명령은 닫혔다. 수익의 절반 가까이가 펀딩이고 2026년에 몰려 있다("확인 결과" 절). 통과가 여는 것은 forward 4개월 선별의 별도 사전 등록뿐이다(§3). 경과: Thomas 2026-11-10 "진행"; M03(탐색 1.547)은 약 22개에서만 골라져 확인하지 않았다("정정" 절); Thomas 2026-11-11 "30개 전체로 다시"(Q3의 (나)), "그 조건으로 진행"(Q4). Thomas 2026-11-11: Q5의 진단을 진행한다("진단 진행"). **진단 결과: 확인 구간의 수익은 탐색 구간보다 더 소수의 코인에 몰려 있다. 순기여가 큰 코인 넷이 합의 152%이고(탐색 구간은 79%), 하루 9번 이상 펀딩이 정산되는 보유일(전체의 3%)이 합의 78%를 만들었다("진단 결과" 절). 판정은 그대로다.** Thomas 2026-11-11: forward 4개월 선별을 사전 등록한다("등록 진행", Q6 → `METRICS_BASKET_SCREEN_V0.1`). 남은 질문은 §5의 Q1 – Q2(탐색 전에 Claude가 고정한 세부)다. |
+| [NEXT_LOCKED_SPAN_V0.1.md](NEXT_LOCKED_SPAN_V0.1.md) | `DRAFT` | 2026-11-11 | Thomas의 답을 기다린다(§4 N1 – N2). 탐색 도구가 2026-10-01 이후의 날을 재지 못하게 하는 경계를 함께 넣었다. 그 경계는 지금의 탐색 구간에 영향을 주지 않는다(모두 2026-09-30 전에 끝난다). |
+| [SCREEN_STAGE2_V0.1.md](SCREEN_STAGE2_V0.1.md) | `DRAFT` | 2026-11-11 | Thomas의 답을 기다린다(§6 S1 – S4). 이 문서는 이미 정한 결정 하나의 **시점**을 다시 묻는다: `STRATEGY_SCREEN_GATE_V0.1` Q6(2026-11-09, "기본값대로")은 2단계 확인 규칙을 "선별을 통과한 뒤 별도 제안으로" 정하기로 했다. 여기서는 그것을 첫 선별 판정(2027-04 초) 전에 정하자고 제안한다. 답이 없으면 Q6이 그대로다. 코드, 판정 규칙, 일정은 바뀌지 않는다. |
+| [STRESSED_COIN_COST_V0.1.md](STRESSED_COIN_COST_V0.1.md) | `DRAFT` | 2026-11-11 | Thomas의 답을 기다린다(§5 C1 – C4). 받은 데이터는 없다. 아카이브에 자료가 있는지만 조회했다(§2). 답이 있기 전에는 아무것도 받지 않는다. |
 
 ## 결정됨 — 구현 남음 (26)
 
