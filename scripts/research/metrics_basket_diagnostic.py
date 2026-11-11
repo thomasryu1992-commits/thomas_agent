@@ -152,9 +152,10 @@ def _parts(rows: list[dict[str, Any]]) -> dict[str, float]:
     return out
 
 
-def summarise(legs: list[dict[str, Any]], sim: Mapping[str, Any]) -> dict[str, Any]:
+def summarise(legs: list[dict[str, Any]], sim: Mapping[str, Any], end: date) -> dict[str, Any]:
     """The fixed cuts of the proposal's "진단" section; sums of the recorded total only."""
     held = [r for r in legs if r["weight"]]
+    forced = [r for r in held if r["forced"]]
     by_month, by_coin, by_week = defaultdict(list), defaultdict(list), defaultdict(list)
     for r in legs:
         by_month[r["day"].strftime("%Y-%m")].append(r)
@@ -189,11 +190,13 @@ def summarise(legs: list[dict[str, Any]], sim: Mapping[str, Any]) -> dict[str, A
         "by_side_pct": {side: _parts([r for r in held if (r["weight"] > 0) == (side == "long")])
                         for side in ("long", "short")},
         "by_settlements_per_day": {k: {"leg_days": len(rows), **_parts(rows)} for k, rows in sorted(by_class.items())},
-        # the engine counts a leg still held on the span's last day as a forced close; only the others are delistings
+        # the engine counts every leg whose next bar is missing: a leg still held on the span's last day, a hole in a
+        # coin's bars, and a coin whose bars end inside the span. Only the last is a delisting.
         "near_last_bar": {**near, "forced_closes": {
             "count": sim["forced_closes"]["count"], "net_pct": _pct(sim["forced_closes"]["net"]),
-            "on_the_spans_last_day": sum(1 for r in held if r["forced"] and r["days_to_last_bar"] is None),
-            "inside_the_span": sum(1 for r in held if r["forced"] and r["days_to_last_bar"] is not None)}},
+            "on_the_spans_last_day": sum(1 for r in forced if r["day"] == end),
+            "a_hole_in_the_bars": sum(1 for r in forced if r["day"] != end and r["days_to_last_bar"] is None),
+            "bars_end_inside_the_span": sum(1 for r in forced if r["day"] != end and r["days_to_last_bar"] is not None)}},
         "leg_days": len(held),
     }
 
@@ -204,7 +207,7 @@ def diagnose(market: xsb.Market, candidate: bs.Candidate, span: tuple[date, date
     legs, sim = attribute(market, candidate, span, features)
     if recorded is not None:
         check_recorded(sim, span, recorded)
-    return {"span": [d.isoformat() for d in span], "reconciled_days": len(sim["daily"]), **summarise(legs, sim)}
+    return {"span": [d.isoformat() for d in span], "reconciled_days": len(sim["daily"]), **summarise(legs, sim, span[1])}
 
 
 def main(argv: list[str] | None = None) -> int:

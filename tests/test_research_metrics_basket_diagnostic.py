@@ -91,7 +91,8 @@ def test_the_cuts_name_the_delisting_the_settlement_interval_and_the_concentrati
     body = md.diagnose(_market(), CANDIDATE, SPAN, ms.FEATURES)
     near = body["near_last_bar"]
     assert near["forced_closes"]["count"] == 13
-    assert near["forced_closes"]["on_the_spans_last_day"] == 12 and near["forced_closes"]["inside_the_span"] == 1
+    assert near["forced_closes"]["on_the_spans_last_day"] == 12 and near["forced_closes"]["a_hole_in_the_bars"] == 0
+    assert near["forced_closes"]["bars_end_inside_the_span"] == 1
     assert 0 < near["within_7_days"]["leg_days"] <= 8 < near["within_14_days"]["leg_days"] <= 15
     classes = body["by_settlements_per_day"]
     assert set(classes) == {"3", "9+"} and classes["9+"]["leg_days"] > 100          # the hourly coin is a held short
@@ -114,6 +115,15 @@ def _flat(value, prefix=""):
             yield from _flat(v, prefix)
     else:
         yield prefix
+
+
+def test_a_hole_in_a_coins_bars_is_a_forced_close_but_not_a_delisting():
+    market = _market()
+    hole = date(2023, 5, 10)                                       # a Wednesday; the long leg's bar is missing
+    market.bars["S38USDT"].pop(hole)
+    closes = md.diagnose(market, CANDIDATE, SPAN, ms.FEATURES)["near_last_bar"]["forced_closes"]
+    assert closes["a_hole_in_the_bars"] == 1 and closes["bars_end_inside_the_span"] == 1
+    assert closes["count"] == closes["on_the_spans_last_day"] + 2
 
 
 def test_it_prints_no_sharpe_no_verdict_and_no_what_if():
