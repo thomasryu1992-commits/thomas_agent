@@ -55,7 +55,9 @@ is still as of its last date.
 > - **Toss orders and rebalancing:**
 >   - G6-buy is the first Toss order path. It buys only, behind `MVP_TOSS_ORDERS=buy_only`, from a scenario Thomas
 >     confirms (#1329–#1331, #1333–#1335, live since 2026-10-27; `G6_BUY_CASH_AUTOINVEST_V0.1.md`).
->   - The sell half is drafted (`G6_SELL_REBALANCE_V0.1.md`, #1352). It is asked after H6c.
+>   - The sell half is decided (`G6_SELL_REBALANCE_V0.1.md`, Thomas 2026-11-11, every item as recommended): domestic
+>     ETF sells only, from a scenario Thomas confirms, 500,000 KRW a day. The code is built behind a closed gate and
+>     turned on only after H6c is decided. Not built yet.
 >   - The rebalancing calculator is terminal-only and places no order. Every decided RB item is built (#1320, #1322, #1324, #1325, #1327,
 >     the step-4 loss offset #1348, the per-instrument tax kind #1353; `REBALANCING_PROPOSAL_V0.1.md`).
 > - **Blog department v0.2** (`BLOG_DEPARTMENT_V0.1.md`): P1–P7 are built as shadows beside the vault path (#1326,
