@@ -20,3 +20,20 @@ unrankable coin. Here an unranked member-decision must map to one of three named
 
 **The driver lives in the tool.** The refill for M04 ran from a scratch file. `fetch` here is resumable, retries a
 network error instead of recording it as missing, and stops inside the quiet window.
+
+**What the fetch taught.** The log showed one line for hours because Python block-buffers a redirected stdout, so a
+mid-run read said "no retries" when six had happened (503s on two spans, all recovered). The tally also
+undercounts: files kept by an attempt that later raised come back as "present" on the retry. The file times, not
+the tally, show nothing predated the run. And the probe's "every member has files from 36 days before" was wrong
+for one symbol (BNXUSDT starts a month late); why the probe missed it was not traced. The counts caught it as a
+named cause, which is what the stop rule is for.
+
+**The sign was checked on raw files before the run,** by code that shares nothing with `daily_values`: the −1% band's
+average price sits below the +1% band's on four files, and the hand-computed imbalance equals the derived line to
+the last digit. D01 then came out at −1.652 with both neighbours beside it. Because the sign was pinned first, that
+is a finding about the market and not a bug to chase; because the direction was pinned first, it is not a pass
+either. The reverse was not computed on this span.
+
+**Result.** D01 −1.652, D02 0.838 (floor cleared at 17.56%/yr on total position, Sharpe not). Closed after two
+attempts; nothing goes to a forward screen.
+
