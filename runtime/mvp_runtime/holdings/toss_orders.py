@@ -1,6 +1,7 @@
-"""The Toss buy-order adapter (G6-buy, Thomas 2026-10-26) — the one way this repo places a Toss order.
+"""The Toss order adapters (G6-buy, Thomas 2026-10-26; G6-sell, Thomas 2026-11-11) — the one way this repo places
+a Toss order.
 
-``docs/proposals/G6_BUY_CASH_AUTOINVEST_V0.1.md``: buy only, a scenario Thomas approved.
+``docs/proposals/G6_BUY_CASH_AUTOINVEST_V0.1.md``: a buy scenario Thomas approved.
 - Domestic: whole shares, limit orders at a price the caller read off the book. This is so since 2026-10-27:
   the market orders before reserved cash at the upper price limit, and a second order was refused.
 - US (§2g, 2026-10-27): a market buy by dollar amount, from the USD cash Thomas exchanged in the app; the API
@@ -8,12 +9,21 @@
 
 This module is the order half; the reads stay in ``toss_account.TossHoldingsFeed``, which keeps no order method.
 
-**Gate.** ``MVP_TOSS_ORDERS=buy_only`` on scheduler-maint, the environment alone (CLAUDE.md, env-only gate).
-Unset, :func:`select_buy_orders` returns :class:`NoBuyOrders` and nothing capable is built. Every POST re-reads
-the variable first (``safety_gate.assert_authorization``). Thomas sets it; Claude never does.
+**Gate.** ``MVP_TOSS_ORDERS`` on scheduler-maint, the environment alone (CLAUDE.md, env-only gate).
+- ``buy_only`` builds the buy adapter and nothing else.
+- ``buy_sell`` (G6-sell) builds the buy adapter and the sell adapter, each under its own provider id.
+- Unset or any other value: :func:`select_buy_orders` returns :class:`NoBuyOrders`, :func:`select_sell_orders`
+  returns :class:`NoSellOrders`, and nothing capable is built.
+Every POST re-reads the variable first (``safety_gate.assert_authorization``) against the value the adapter was
+built under, so changing the value takes a restart: an adapter built under the other value is refused at egress.
+Thomas sets it; Claude never does.
 
-**One direction.** ``side`` is the constant ``BUY``. There is no sell, modify or cancel method, and the only
-path is ``POST /api/v1/orders``.
+**One direction per adapter.** :class:`TossBuyOrders` sends ``side`` ``BUY`` and :class:`TossSellOrders` sends
+``SELL``; each refuses, at the POST, a body whose side is not its own. Under ``buy_only`` no sell method exists.
+There is no modify or cancel method, and the only path is ``POST /api/v1/orders``.
+
+**Sells (G6-sell, ``docs/proposals/G6_SELL_REBALANCE_V0.1.md``).** Whole domestic shares, limit DAY, at a price
+the caller read off the bid side of the book. No US sell, no amount sell, no market sell.
 
 **One token.** Toss keeps one valid token per client, so the adapter borrows the holdings feed's: same object,
 same process. Issuing its own would revoke the lane's on every order. On a ``token-revoked``/``expired-token``
@@ -40,9 +50,12 @@ from .toss_account import ACCOUNT_HEADER, BASE_URL, ORDERS_PATH, TossHoldingsFee
 
 TOSS_ORDERS_ENV = "MVP_TOSS_ORDERS"
 BUY_ONLY = "buy_only"
+BUY_SELL = "buy_sell"
 TOSS_ORDERS_PROVIDER = "toss_orders"
+TOSS_SELL_ORDERS_PROVIDER = "toss_sell_orders"
 _FLAGS = (NETWORK_ACCESS,)
 SIDE = "BUY"
+SELL_SIDE = "SELL"
 ORDER_REJECTED = "TOSS_ORDER_REJECTED"
 ORDER_UNKNOWN = "TOSS_ORDER_UNKNOWN"
 ORDER_REFUSED = "TOSS_ORDER_REFUSED"
@@ -117,11 +130,22 @@ _US_SYMBOL = re.compile(r"^[A-Z][A-Z.\-]{0,9}$")
 _USD_AMOUNT = re.compile(r"^\d+(\.\d{1,2})?$")
 
 
-class TossBuyOrders:
-    """Buys through the holdings feed's token: limit buys of whole domestic shares, and (G6 §2g) US market buys
-    by dollar amount from the account's USD cash."""
+class NoSellOrders:
+    """The inert default of the sell side: no sell can be placed."""
 
-    enabled = True
+    enabled = False
+
+    def sell_kr(self, symbol: str, quantity: int, *, price: int, client_order_id: str,
+                timeout_seconds: int = 10) -> str:
+        raise ToolError(ORDER_REFUSED, f"{TOSS_ORDERS_ENV} is not {BUY_SELL}: no sell path")
+
+
+class _TossOrders:
+    """The POST both adapters share. It has no order method of its own: a subclass names its one side and its
+    provider id, and the POST refuses a body of any other side."""
+
+    _side = ""
+    _provider = ""
 
     def __init__(self, authorization: Authorization, feed: TossHoldingsFeed) -> None:
         self._authorization = authorization
@@ -129,9 +153,11 @@ class TossBuyOrders:
 
     def _check_gate(self) -> None:
         safety_gate.assert_authorization(self._authorization, required_flags=_FLAGS,
-                                         provider_id=TOSS_ORDERS_PROVIDER, now=timeutil.utc_now_iso())
+                                         provider_id=self._provider, now=timeutil.utc_now_iso())
 
     def _post_once(self, body: dict[str, Any], *, token: str, timeout_seconds: int) -> str:
+        if not self._side or body.get("side") != self._side:
+            raise ToolError(ORDER_REFUSED, "this adapter sends one side only")
         self._check_gate()                  # the egress re-check: the env var is read again, right here
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json",
                    "Content-Type": "application/json", ACCOUNT_HEADER: str(self._feed._account[0])}
@@ -156,16 +182,41 @@ class TossBuyOrders:
             raise OrderUnknown("accepted without an orderId")
         return str(order_id)
 
+    def _send(self, body: dict[str, Any], *, timeout_seconds: int) -> str:
+        self._feed._resolve_account(timeout_seconds=timeout_seconds)
+        token = self._feed._access_token(timeout_seconds=timeout_seconds)
+        try:
+            return self._post_once(body, token=token, timeout_seconds=timeout_seconds)
+        except OrderRejected as exc:
+            if exc.status != 401 or exc.toss_code not in _TOKEN_CODES:
+                raise
+        self._feed._token = None
+        token = self._feed._issue_token(timeout_seconds=timeout_seconds)
+        return self._post_once(body, token=token, timeout_seconds=timeout_seconds)
+
+
+def _check_kr(symbol: Any, quantity: Any, price: Any, what: str) -> None:
+    if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity < 1:
+        raise ToolError(ORDER_REFUSED, f"a domestic {what} is a whole number of shares, at least one")
+    if not isinstance(price, int) or isinstance(price, bool) or price < 1:
+        raise ToolError(ORDER_REFUSED, "a domestic limit price is a whole number of KRW")
+    if not isinstance(symbol, str) or not symbol.isalnum() or len(symbol) != 6:
+        raise ToolError(ORDER_REFUSED, "a domestic symbol is a 6-character KRX code")
+
+
+class TossBuyOrders(_TossOrders):
+    """Buys through the holdings feed's token: limit buys of whole domestic shares, and (G6 §2g) US market buys
+    by dollar amount from the account's USD cash."""
+
+    enabled = True
+    _side = SIDE
+    _provider = TOSS_ORDERS_PROVIDER
+
     def buy_kr(self, symbol: str, quantity: int, *, price: int, client_order_id: str,
                timeout_seconds: int = 10) -> str:
         """Place one LIMIT DAY BUY of ``quantity`` whole shares of the domestic ``symbol`` at ``price`` KRW (a price
         read off the book, so it sits on a tick); returns Toss's orderId. Unfilled at the close, Toss cancels it."""
-        if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity < 1:
-            raise ToolError(ORDER_REFUSED, "a domestic buy is a whole number of shares, at least one")
-        if not isinstance(price, int) or isinstance(price, bool) or price < 1:
-            raise ToolError(ORDER_REFUSED, "a domestic limit price is a whole number of KRW")
-        if not symbol or not symbol.isalnum() or len(symbol) != 6:
-            raise ToolError(ORDER_REFUSED, "a domestic symbol is a 6-character KRX code")
+        _check_kr(symbol, quantity, price, "buy")
         body = {"clientOrderId": client_order_id, "symbol": symbol, "side": SIDE, "orderType": "LIMIT",
                 "timeInForce": "DAY", "quantity": str(quantity), "price": str(price)}
         return self._send(body, timeout_seconds=timeout_seconds)
@@ -181,29 +232,54 @@ class TossBuyOrders:
                 "orderAmount": amount_usd}
         return self._send(body, timeout_seconds=timeout_seconds)
 
-    def _send(self, body: dict[str, Any], *, timeout_seconds: int) -> str:
-        self._feed._resolve_account(timeout_seconds=timeout_seconds)
-        token = self._feed._access_token(timeout_seconds=timeout_seconds)
-        try:
-            return self._post_once(body, token=token, timeout_seconds=timeout_seconds)
-        except OrderRejected as exc:
-            if exc.status != 401 or exc.toss_code not in _TOKEN_CODES:
-                raise
-        self._feed._token = None
-        token = self._feed._issue_token(timeout_seconds=timeout_seconds)
-        return self._post_once(body, token=token, timeout_seconds=timeout_seconds)
+
+class TossSellOrders(_TossOrders):
+    """G6-sell (Thomas 2026-11-11): limit sells of whole domestic shares through the holdings feed's token. Built
+    only behind ``MVP_TOSS_ORDERS=buy_sell``; it has no buy method and no US, amount or market sell."""
+
+    enabled = True
+    _side = SELL_SIDE
+    _provider = TOSS_SELL_ORDERS_PROVIDER
+
+    def sell_kr(self, symbol: str, quantity: int, *, price: int, client_order_id: str,
+                timeout_seconds: int = 10) -> str:
+        """Place one LIMIT DAY SELL of ``quantity`` whole shares of the domestic ``symbol`` at ``price`` KRW (a
+        price read off the bid side of the book); returns Toss's orderId. Unfilled at the close, Toss cancels it."""
+        _check_kr(symbol, quantity, price, "sell")
+        body = {"clientOrderId": client_order_id, "symbol": symbol, "side": SELL_SIDE, "orderType": "LIMIT",
+                "timeInForce": "DAY", "quantity": str(quantity), "price": str(price)}
+        return self._send(body, timeout_seconds=timeout_seconds)
 
 
 def select_buy_orders(feed: Any) -> NoBuyOrders | TossBuyOrders:
-    """The order adapter for this fire: capable only behind ``MVP_TOSS_ORDERS=buy_only`` and over a real Toss
-    feed (the token it borrows)."""
+    """The buy adapter for this fire: capable behind ``MVP_TOSS_ORDERS=buy_only`` or ``buy_sell`` and over a real
+    Toss feed (the token it borrows). Its authorization names the value it was built under."""
     if not isinstance(feed, TossHoldingsFeed):
         return NoBuyOrders()
+
+    def under(value: str, default_factory: Any) -> Any:
+        return safety_gate.select_env_gated(
+            env_var=TOSS_ORDERS_ENV,
+            opt_in_value=value,
+            flags=_FLAGS,
+            provider_id=TOSS_ORDERS_PROVIDER,
+            default_factory=default_factory,
+            gated_factory=lambda authorization: TossBuyOrders(authorization, feed),
+        )
+
+    return under(BUY_ONLY, lambda: under(BUY_SELL, NoBuyOrders))
+
+
+def select_sell_orders(feed: Any) -> NoSellOrders | TossSellOrders:
+    """The sell adapter for this fire (G6-sell): capable only behind ``MVP_TOSS_ORDERS=buy_sell`` and over a real
+    Toss feed. ``buy_only`` builds nothing here."""
+    if not isinstance(feed, TossHoldingsFeed):
+        return NoSellOrders()
     return safety_gate.select_env_gated(
         env_var=TOSS_ORDERS_ENV,
-        opt_in_value=BUY_ONLY,
+        opt_in_value=BUY_SELL,
         flags=_FLAGS,
-        provider_id=TOSS_ORDERS_PROVIDER,
-        default_factory=NoBuyOrders,
-        gated_factory=lambda authorization: TossBuyOrders(authorization, feed),
+        provider_id=TOSS_SELL_ORDERS_PROVIDER,
+        default_factory=NoSellOrders,
+        gated_factory=lambda authorization: TossSellOrders(authorization, feed),
     )

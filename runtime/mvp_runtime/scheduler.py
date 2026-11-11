@@ -1445,6 +1445,36 @@ def _execute(
                         status = f"{status}; autoinvest proposal told"
             except Exception as exc:  # noqa: BLE001 — a draft must not stop scheduling
                 status = f"{status}; autoinvest proposal error:{getattr(exc, 'reason_code', type(exc).__name__)}"
+            # G6-sell (Thomas 2026-11-11): Thomas's confirmed sell scenario, then this month's draft. Both are
+            # inert unless MVP_TOSS_ORDERS=buy_sell; neither raises into the fire.
+            try:
+                sell = holdings_store.run_autosell(now=now, root=repo_root)
+                if sell.get("status") not in ("off", "none", "no_feed", "outside_session", "done_today", "waiting"):
+                    status = f"{status}; autosell {sell['status']}"
+                if sell.get("alert"):
+                    token, text = sell["alert"]
+                    failure = _tell(text)
+                    if failure:
+                        status = f"{status}; autosell not sent:{failure}"
+                    else:
+                        holdings_store.mark_autosell_told(token, now=now, root=repo_root)
+                        status = f"{status}; autosell told"
+            except Exception as exc:  # noqa: BLE001 — an order step must not stop scheduling
+                status = f"{status}; autosell error:{getattr(exc, 'reason_code', type(exc).__name__)}"
+            try:
+                sell_draft = holdings_store.refresh_autosell_proposal(now=now, root=repo_root)
+                if sell_draft.get("status") == "drafted":
+                    status = f"{status}; autosell proposal drafted"
+                if sell_draft.get("alert"):
+                    token, text = sell_draft["alert"]
+                    failure = _tell(text)
+                    if failure:
+                        status = f"{status}; autosell proposal not sent:{failure}"
+                    else:
+                        holdings_store.mark_sell_proposal_told(token, now=now, root=repo_root)
+                        status = f"{status}; autosell proposal told"
+            except Exception as exc:  # noqa: BLE001 — a draft must not stop scheduling
+                status = f"{status}; autosell proposal error:{getattr(exc, 'reason_code', type(exc).__name__)}"
         # RB2'' (Thomas 2026-10-26): a new automatic candidate pick, or a manual one that stopped trading — counts.
         if result.get("candidate_alert"):
             token, text = result["candidate_alert"]
