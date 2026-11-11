@@ -59,3 +59,9 @@ not the development span's: funding is +78.6% of a +163.9% sum (it was +2.8% of 
 and 10 of 21 months lost. Where the funding came from was not read; that diagnostic is asked as Q5. The span is shared
 with `basket_search`, so the marker lives there (`CONFIRM_SPENT`) and both tools now refuse every `confirm`: the tool
 never required `--official`, and with `FINAL = "M04"` on main any session could have read the span again.
+
+**Diagnostic (Thomas 2026-11-11, "진단 진행", Q5).** `metrics_basket_diagnostic.py` splits the engine's own daily rows
+per held coin and refuses to print unless the split adds back to them and to the recorded report. It takes the baskets
+from the engine through a recording weigher instead of touching `cross_section_basket` or `basket_search`, because
+those carry other registered measurements. It prints no Sharpe and no what-if: a number comparable to the floor under
+a changed definition would be a second judgement of a spent span. The cuts were fixed and pushed before the read.
