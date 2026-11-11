@@ -18,9 +18,13 @@ changed definition. The tool prints depth and impact only; a test fails if a ret
 `kind` (two values, anything else is refused) rather than a second fetch function. The client name no longer
 carries the project: Thomas's default answer to the draft's C2.
 
-**The result in one line.** Within one percent of the mid, a stressed day holds about a twenty-first of what an
-ordinary day holds; the 3 bps assumption stands at 1k a leg, is about right at the median for 10k with a heavy
-tail, and is optimistic about sevenfold at 50k. The spread itself is not in the data.
+**The result, and what it cannot say.** On a stressed member-day the thin side holds about 121k USD within one
+percent of the mid. From depth alone a 50k leg moves the fill about 21 bps at the median, seven times the engine's
+3 bps: there the assumption is optimistic. At 1k and 10k the depth impact is under or near 3 bps, which does not
+show the assumption holds, because the spread is not in the data; the reading rule written before the fetch said
+otherwise and was wrong on that point. The control class (2.5M USD) shares no coin with the stressed class, so the
+twenty-one-fold gap mixes funding stress with coin size.
 
 **Stage 2's floor.** "못해도 연 수익이 15% 이상", on total position ("총액 15%"): for a basket engine, whose sums are
-on one side's notional, a twelve-month sum of 30%.
+on one side's notional, a twelve-month sum of 30%. The carry measurements already report on capital `2N` (`funding_basis.CAPITAL = 2.0`,
+`premium_convergence`'s position "capital 2"), so their figures compare to 15% directly.
