@@ -31,6 +31,9 @@ def _no_real_claude_home(tmp_path, monkeypatch):
     """The Claude home defaults to /home/claude. A run that forgot to name its scratch one must fail on a
     missing directory here, never archive this host's real transcripts into a test's tmp_path."""
     monkeypatch.setenv("HARNESS_BACKUP_CLAUDE_ROOT", str(tmp_path / "no-claude-home-named-by-this-test"))
+    # The status copy defaults to /var/lib/thomas-measure/transcripts-backup. A test must never append to the
+    # host's real one; this missing directory means "not installed" unless a test names its own.
+    monkeypatch.setenv("HARNESS_BACKUP_STATUS_DIR", str(tmp_path / "no-status-dir-named-by-this-test"))
 
 STUB_AGE = """#!/bin/bash
 # -R <file> -o <out>: behave per $STUB_AGE_MODE.  -d -i <key> <file>: strip the version line (restore tests)
@@ -846,3 +849,53 @@ def test_core_takes_the_user_config_from_the_claude_home_and_the_repo_config_fro
     assert body["thomas_agent/.claude/settings.local.json"] == b"x\n"         # the checkout's, from the host
     assert not any(n.endswith(".credentials.json") for n in body)
     assert "claude-config=4/5" in (dest / "backup.log").read_text(encoding="utf-8").split()
+
+
+# The status copy (2026-11-11): the transcripts lines, where the Claude account can read them.
+
+def test_transcripts_lines_are_copied_where_the_claude_account_reads_them(tmp_path, monkeypatch):
+    status = tmp_path / "status"
+    status.mkdir()
+    monkeypatch.setenv("HARNESS_BACKUP_STATUS_DIR", str(status))
+    host = _transcripts_host(tmp_path)
+    out, dest, log = _run_transcripts(tmp_path, host)
+    assert out.returncode == 0, out.stderr
+    copy = status / "backup.log"
+    assert copy.read_text(encoding="utf-8") == log           # the same line, byte for byte
+    assert " OK mode=transcripts kind=full " in copy.read_text(encoding="utf-8")
+    assert oct(copy.stat().st_mode & 0o777) == "0o644"        # readable through the root:claude 0750 directory
+    out, dest, log = _run_transcripts(tmp_path, host, recipients="age1short\n")
+    assert out.returncode == 3
+    assert copy.read_text(encoding="utf-8").splitlines()[-1] == log.splitlines()[-1]
+    assert "FAILED mode=transcripts stage=encrypt" in copy.read_text(encoding="utf-8").splitlines()[-1]
+
+
+def test_core_lines_never_reach_the_status_copy(tmp_path, monkeypatch):
+    status = tmp_path / "status"
+    status.mkdir()
+    monkeypatch.setenv("HARNESS_BACKUP_STATUS_DIR", str(status))
+    out, dest, log = _run(tmp_path)
+    assert out.returncode == 0, out.stderr
+    assert " OK mode=core " in log
+    assert not (status / "backup.log").exists()
+
+
+def test_a_status_copy_that_cannot_be_written_changes_nothing(tmp_path, monkeypatch):
+    status = tmp_path / "status"
+    status.mkdir()
+    target = tmp_path / "elsewhere.txt"
+    target.write_text("untouched\n", encoding="utf-8")
+    (status / "backup.log").symlink_to(target)               # never followed
+    monkeypatch.setenv("HARNESS_BACKUP_STATUS_DIR", str(status))
+    out, dest, log = _run_transcripts(tmp_path, _transcripts_host(tmp_path))
+    assert out.returncode == 0, out.stderr
+    assert " OK mode=transcripts kind=full " in log
+    assert target.read_text(encoding="utf-8") == "untouched\n"
+    (status / "backup.log").unlink()
+    status.chmod(0o500)                                       # a directory the run cannot write
+    try:
+        out, dest, log = _run_transcripts(tmp_path, _transcripts_host(tmp_path / "again"))
+    finally:
+        status.chmod(0o700)
+    assert out.returncode == 0, out.stderr
+    assert log.splitlines()[-1].split(" ", 1)[1].startswith("OK mode=transcripts ")
