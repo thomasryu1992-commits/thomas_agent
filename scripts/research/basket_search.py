@@ -54,6 +54,11 @@ CONFIRM_SPENT: str | None = "METRICS_BASKET_SEARCH_V0.1 M04, run 20261111T041212
 # so a later protocol has a span to confirm on. A search tool may not measure a span that reaches into it; the
 # forward screens, the factory's cohorts and the forward-only observations read these days by their own registrations.
 RESERVED_FROM = date(2026, 10, 1)
+# CRYPTO_DESIGN_REVIEW_V0.1 Q2 (Thomas 2026-11-11): a NEW candidate must also earn at least this much a year, net, on
+# total position over its development span. A book here carries one unit a side, so total position is two units.
+# Candidates measured before this date keep the rule they were measured under.
+ENTRY_RETURN_TOTAL_PCT = 15.0
+POSITION_TOTAL = 2.0
 
 
 def _returns(market: xsb.Market, symbol: str, day: date, lookback: int) -> list[tuple[date, float]]:
@@ -227,6 +232,26 @@ def check_search_span(span: tuple[date, date]) -> None:
     """Raise unless ``span`` ends before the reserved days (:data:`RESERVED_FROM`)."""
     if span[1] >= RESERVED_FROM:
         raise ValueError(f"a search span may not reach {RESERVED_FROM} or later (reserved, NEXT_LOCKED_SPAN_V0.1)")
+
+
+def check_development_span(span: tuple[date, date]) -> None:
+    """Raise unless ``span`` ends inside development: the confirm span 2025-01..2026-09 was read once and a later
+    candidate is checked forward only; whether it may serve as development data is Thomas's to say."""
+    check_search_span(span)
+    if span[1] > DEV[1]:
+        raise ValueError(f"a development span may not reach past {DEV[1]} (the confirm span is spent; forward only)")
+
+
+def total_position_annual_pct(sum_pct: float, months: int) -> float | None:
+    """The net sum over ``months`` complete months as a yearly rate on total position (:data:`POSITION_TOTAL`)."""
+    return round(sum_pct / POSITION_TOTAL / (months / 12), 2) if months else None
+
+
+def clears_entry(report: Mapping[str, Any]) -> bool:
+    """The entry rule for a new candidate: annual Sharpe at the floor and the yearly net return on total position."""
+    yearly = total_position_annual_pct(report["sum_pct"], report["months"])
+    sharpe = report.get("annual_sharpe")
+    return sharpe is not None and sharpe >= ENTRY_SHARPE and yearly is not None and yearly >= ENTRY_RETURN_TOTAL_PCT
 
 
 def _complete_months(start: date, end: date) -> list[str]:
