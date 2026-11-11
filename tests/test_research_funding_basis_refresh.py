@@ -96,8 +96,9 @@ def test_the_reads_run_in_order_paced_one_symbol_at_a_time(cache: Path) -> None:
     assert funding[funding.index("--symbols") + 1] == ",".join(wanted)
     assert [c[c.index("--symbol") + 1] for c in fake.calls[6:6 + len(wanted)]] == wanted
     assert _symbols(fake.calls, "1d") == wanted
-    assert fake.calls[6 + len(wanted):] == [[*rf.FETCH_PUBLIC, "--cache", str(cache), "--symbol", s, "--timeframe",
-                                             "1h"] for s in pc.SYMBOLS]   # premium convergence's 1h bars, last
+    assert fake.calls[6 + len(wanted):-1] == [[*rf.FETCH_PUBLIC, "--cache", str(cache), "--symbol", s, "--timeframe",
+                                               "1h"] for s in pc.SYMBOLS]   # premium convergence's 1h bars
+    assert fake.calls[-1] == [*rf.METRICS_SCREEN, "--cache", str(cache)]    # the metrics basket screen's files, last
     assert slept == [rf.PACE_SECONDS] * (len(wanted) - 1 + len(pc.SYMBOLS))
 
 
