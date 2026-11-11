@@ -4,8 +4,8 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-11-04**: the dated block below only. No section was re-surveyed, so a section's own text
-is still as of its last date.
+Last updated: **2026-11-11**: the holdings and Toss-order lines of the dated block below. The rest of the block is
+as of 2026-11-04. No section was re-surveyed, so a section's own text is still as of its last date.
 
 > **Since 2026-09-30, in one place.** Each line names the record that owns it. Live open decisions are on the
 > generated `docs/proposals/STATUS.md`, not here.
@@ -41,15 +41,19 @@ is still as of its last date.
 >   - H6b-shadow was decided and built on 2026-10-28 (`H6B_UNIT_SHADOW_V0.1.md`, #1340). It is display only. H6c is
 >     asked when the Claude door shows `h6c_askable`: 14 days from the first point at which H6 was ready, a deposit
 >     and a withdrawal applied after that point, nothing held.
->   - H6 is not ready, and on 2026-11-07 the door's settlement diagnosis (#1393) showed why. Toss semantics is
->     still epoch 0, whose frozen counters hold no clean settlement day. The Toss order list returns a null
->     `settlementDate` on every filled order. Thomas chose the transaction list as the settlement source
->     (`PORTFOLIO_CASH_FLOW_LEDGER_V0.1.md` §10).
->     1. Read and probe the transaction list (#1397, deployed; the probe showed the 11-03 sell settled 11-05).
->     2. Move the settlement day onto it (this change).
->     3. Thomas started epoch 1 (2026-11-07). The buy, sell and settlement day epoch 0 observed are carried into it
->        once, checked by code, at Thomas's terminal (§11).
->     The H6c packet is drafted ahead (`H6C_UNIT_AUTHORITY_V0.1.md`, #1359).
+>   - H6 has been ready since 2026-11-08 (all twelve checks). What held it until then: on 2026-11-07 the door's
+>     settlement diagnosis (#1393) showed Toss semantics was still epoch 0, whose frozen counters held no clean
+>     settlement day, and the Toss order list returns a null `settlementDate` on every filled order. Thomas chose
+>     the transaction list as the settlement source (`PORTFOLIO_CASH_FLOW_LEDGER_V0.1.md` §10).
+>     1. Read and probe the transaction list (#1397; the probe showed the 11-03 sell settled 11-05).
+>     2. Move the settlement day onto it (#1398).
+>     3. Thomas started epoch 1 (2026-11-07) and carried the buy, sell and settlement day epoch 0 observed into it
+>        once, checked by code, at his terminal (#1399, 2026-11-08; §11).
+>     4. A sale whose settlement date moves amends the windows that recorded it (#1400).
+>     The transaction-list settlement path has not seen a real sell yet.
+>   - The unit shadow has run since 2026-11-08 03:33Z. A deposit and a withdrawal have applied since. H6c can be
+>     asked from 2026-11-22 03:33Z, once the door shows `h6c_askable`. Its packet is drafted ahead
+>     (`H6C_UNIT_AUTHORITY_V0.1.md`, #1359).
 >   - Toss deposits and withdrawals in quiet windows are closed by rule: `quiet_window` v1 (#1315), v2 (#1339) and
 >     v3 (#1346, small inflows as interest) (`HOLDINGS_STATUS_READ_AND_AUTO_FLOWS_V0.1.md`).
 > - **Toss orders and rebalancing:**
@@ -57,7 +61,8 @@ is still as of its last date.
 >     confirms (#1329–#1331, #1333–#1335, live since 2026-10-27; `G6_BUY_CASH_AUTOINVEST_V0.1.md`).
 >   - The sell half is decided (`G6_SELL_REBALANCE_V0.1.md`, Thomas 2026-11-11, every item as recommended): domestic
 >     ETF sells only, from a scenario Thomas confirms, 500,000 KRW a day. The code is built behind a closed gate
->     (#1437, `MVP_TOSS_ORDERS=buy_sell`). Thomas turns it on after H6c is decided. Not deployed.
+>     (#1437, `MVP_TOSS_ORDERS=buy_sell`), deployed closed on 2026-11-11 (`candidate-1437`). Thomas turns it on after
+>     H6c is decided.
 >   - The rebalancing calculator is terminal-only and places no order. Every decided RB item is built (#1320, #1322, #1324, #1325, #1327,
 >     the step-4 loss offset #1348, the per-instrument tax kind #1353; `REBALANCING_PROPOSAL_V0.1.md`).
 > - **Blog department v0.2** (`BLOG_DEPARTMENT_V0.1.md`): P1–P7 are built as shadows beside the vault path (#1326,
