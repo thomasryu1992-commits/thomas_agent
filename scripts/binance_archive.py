@@ -73,13 +73,18 @@ DEFAULT_SYMBOLS = ("BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "DOGEUSDT")
 METRICS = "metrics"
 FUNDING = "fundingRate"
 MISSING_FILENAME = "missing.json"
+# The daily file kinds ``fetch`` takes. ``bookDepth`` (STRESSED_COIN_COST_V0.1): the cumulative depth within ±1%..±5%
+# of the mid, about every 30 seconds; the same bucket and checksum rule as ``metrics``.
+BOOK_DEPTH = "bookDepth"
+DAILY_KINDS = (METRICS, BOOK_DEPTH)
 # The archive's on-the-hour reading closes the hour before it; the store labels the hour's start.
 LABEL_SHIFT = timedelta(hours=1)
 # The factory's replay depths (`market_data.FACTORY_DEPTH_DAYS`, `MIN_FACTORY_BARS` at 1d), stated here
 # rather than imported because this script runs outside the runtime. `measure` reports against both.
 DEPTH_BELOW_1D_DAYS = 1000
 DEPTH_1D_DAYS = 2000
-USER_AGENT = "thomas-agent-archive-measure/0.1"
+# A generic client name: nothing on the wire names the project or its owner (Thomas 2026-11-11).
+USER_AGENT = "archive-fetch/0.1"
 PAUSE_SECONDS = 0.1
 
 Opener = Callable[[str], bytes | None]
@@ -174,15 +179,20 @@ def months(start: date, end: date) -> Iterable[tuple[int, int]]:
 
 
 def fetch(dest: Path, *, symbols: Sequence[str], start: date, end: date, funding: bool = False,
-          opener: Opener = http_get, pause: float = PAUSE_SECONDS) -> dict[str, dict[str, int]]:
-    """Download every file in range that is not already on disk. Returns per-symbol counts."""
+          kind: str | None = None, opener: Opener = http_get, pause: float = PAUSE_SECONDS,
+          ) -> dict[str, dict[str, int]]:
+    """Download every daily ``kind`` file in range that is not already on disk (``metrics`` unless named).
+    Returns per-symbol counts."""
+    kind = METRICS if kind is None else kind
+    if kind not in DAILY_KINDS:
+        raise ValueError(f"unknown daily kind {kind!r}; this reader takes {', '.join(DAILY_KINDS)}")
     missing_path = dest / MISSING_FILENAME
     missing: dict[str, list[str]] = json.loads(missing_path.read_text()) if missing_path.exists() else {}
     known_missing = {name for names in missing.values() for name in names}
     counts: dict[str, dict[str, int]] = {}
     for symbol in symbols:
         tally = {"kept": 0, "present": 0, "missing": 0}
-        jobs = [(daily_url(symbol, METRICS, d), local_path(dest, METRICS, symbol, daily_name(symbol, METRICS, d)))
+        jobs = [(daily_url(symbol, kind, d), local_path(dest, kind, symbol, daily_name(symbol, kind, d)))
                 for d in days(start, end)]
         if funding:
             jobs += [(monthly_url(symbol, FUNDING, y, m),
@@ -477,6 +487,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     f.add_argument("--end", type=date.fromisoformat, default=None, help="default: yesterday (UTC)")
     f.add_argument("--dest", required=True, type=Path)
     f.add_argument("--funding", action="store_true", help="also the monthly fundingRate files")
+    f.add_argument("--kind", choices=DAILY_KINDS, default=METRICS, help="the daily file kind (default: metrics)")
     m = sub.add_parser("measure", help="coverage per symbol and OI alignment against the store")
     m.add_argument("--symbols", default=",".join(DEFAULT_SYMBOLS))
     m.add_argument("--dest", required=True, type=Path)
@@ -552,7 +563,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "fetch":
         end = args.end or (datetime.now(timezone.utc).date() - timedelta(days=1))
         try:
-            counts = fetch(args.dest, symbols=symbols, start=args.start, end=end, funding=args.funding)
+            counts = fetch(args.dest, symbols=symbols, start=args.start, end=end, funding=args.funding,
+                           kind=args.kind)
         except ArchiveError as exc:
             print(f"REFUSED: {exc}", file=sys.stderr)
             return 2
