@@ -221,6 +221,21 @@ local state and review queue) when it exists. Member paths are relative to the C
 copy and none of Claude's sessions. The OK line ends `root=<dir>`, and backup_watch.sh check 7 reports
 any other root. A run whose last OK line names another root, or none, is a **full**.
 
+**The status copy** (2026-11-11). Every `transcripts*` line (OK, FAILED, SKIPPED) is also appended to
+`/var/lib/thomas-measure/transcripts-backup/backup.log` (`HARNESS_BACKUP_STATUS_DIR`), 0644 in a
+root:claude 0750 directory, because `/root` is closed to the account Claude runs as. The prompt
+collector's "원본 암호화 백업" check reads that copy; before it existed the check was UNKNOWN every day.
+Core and candles lines are never copied. While the directory is absent nothing is copied, and a copy
+that cannot be written never changes the run. Create it once, root-owned, before or after reinstalling:
+
+```bash
+install -d -o root -g claude -m 0750 /var/lib/thomas-measure/transcripts-backup
+grep ' mode=transcripts' /root/backups/governance-state/backup.log | tail -3 > /var/lib/thomas-measure/transcripts-backup/backup.log; chmod 0644 /var/lib/thomas-measure/transcripts-backup/backup.log
+```
+
+The second line seeds the copy with the last three lines, so the next collector run reads them without
+waiting for 07:55Z.
+
 **The root-era set** (`transcripts-rootera`, Thomas 2026-10-30). The sessions from before C6b exist only
 under `/root/.claude`, and the daily set no longer reads it, so its last copies would leave with the next
 two weekly fulls. Run it once by hand, after reinstalling the script. It writes
