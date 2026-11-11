@@ -213,3 +213,21 @@ def test_build_writes_the_daily_values_and_a_fingerprint_that_moves_with_them(tm
     first = ds.fingerprint(tmp_path)
     (ds.derived_dir(tmp_path) / "ABCUSDT.jsonl").write_text("[]\n")
     assert ds.fingerprint(tmp_path) != first
+
+
+def test_the_first_attempt_buys_the_thicker_bid_side_and_its_neighbours_only_move_the_band_or_the_window():
+    first = ds.CANDIDATES["D01"]
+    assert list(ds.CANDIDATES)[0] == "D01"
+    assert (first.features, first.lookback, first.long_low, first.inverse_vol) == ((("imbalance_1", 1.0),), 7, False, False)
+    shown = ds.NEIGHBOURS["D01"]
+    assert set(shown) == {"band_5pct", "lookback_30"}
+    assert (shown["band_5pct"].features, shown["band_5pct"].lookback) == ((("imbalance_5", 1.0),), 7)
+    assert (shown["lookback_30"].features, shown["lookback_30"].lookback) == ((("imbalance_1", 1.0),), 30)
+    assert all(not n.long_low and not n.inverse_vol for n in shown.values())       # the same direction, never flipped
+    assert set(ds.NEIGHBOURS) <= set(ds.CANDIDATES)
+    # a day whose bids are thicker scores higher: the sign the hypothesis is stated in
+    day = date(2024, 3, 3)
+    stamp = lambda k: f"{datetime(2024, 3, 3, tzinfo=timezone.utc) + timedelta(seconds=30 * k):%Y-%m-%d %H:%M:%S}"  # noqa: E731
+    rows = [{"timestamp": stamp(k), "percentage": str(pct), "depth": "1", "notional": str(n)}
+            for k in range(1200) for pct, n in ((-1, 300.0), (1, 100.0), (-5, 300.0), (5, 100.0))]
+    assert ds.daily_values(rows, day)["imb1"] == pytest.approx(0.5)
