@@ -16,6 +16,8 @@
     python -m scripts.holdings_board --autoinvest-approve "069500=1,114260=1" --max-krw 200000   # G6-buy, Thomas
     python -m scripts.holdings_board --autoinvest-approve           # show today's drafted scenario, approve on y
     python -m scripts.holdings_board --autoinvest-status            # the approved scenario and its journal
+    python -m scripts.holdings_board --autosell-approve             # G6-sell: show this month's sell draft, approve on y
+    python -m scripts.holdings_board --autosell-status              # the approved sell scenario and its journal
     python -m scripts.holdings_board --resolve KEY --kind deposit --by thomas --reason "..."   # terminal only
     python -m scripts.holdings_board --semantics-epoch --change-ref "#1203" --by thomas --reason "..."
     python -m scripts.holdings_board --carry-evidence --by thomas --reason "..."   # once per epoch, terminal only
@@ -178,6 +180,10 @@ def main(argv: list[str] | None = None) -> int:
                            "drafted scenario and approve it on y (G6-buy; Thomas, terminal only)")
     mode.add_argument("--autoinvest-status", action="store_true",
                       help="the approved buy scenario and its order journal (G6-buy; terminal only)")
+    mode.add_argument("--autosell-approve", action="store_true",
+                      help="show this month's drafted sell scenario and approve it on y (G6-sell; Thomas, terminal only)")
+    mode.add_argument("--autosell-status", action="store_true",
+                      help="the approved sell scenario and its order journal (G6-sell; terminal only)")
     mode.add_argument("--adopt-ledger", action="store_true",
                       help="adopt a ledger the checkpoint refuses, in two runs (C7 PR-C; Thomas, terminal only)")
     parser.add_argument("--confirm", help="the 8 characters the first --adopt-ledger run printed (step two)")
@@ -289,6 +295,29 @@ def main(argv: list[str] | None = None) -> int:
               f"expires {body['expires_at']}; placed at the next domestic regular session if MVP_TOSS_ORDERS=buy_only")
         return EXIT_OK
 
+    if args.autosell_approve:
+        try:
+            assert_not_foreign_root_run()
+            body = _approve_sell_proposal()
+        except MvpRuntimeError as exc:
+            print(f"refused ({exc.reason_code}): {exc}")
+            return EXIT_BLOCKED
+        if body is None:
+            return EXIT_BLOCKED
+        print(f"autosell    : {body['scenario_id']} pending, {len(body['items'])} sell order(s), expires "
+              f"{body['expires_at']}; placed at the next domestic regular session if MVP_TOSS_ORDERS=buy_sell")
+        return EXIT_OK
+
+    if args.autosell_status:
+        from runtime.mvp_runtime.holdings import autosell
+
+        try:
+            print("\n".join(autosell.render_status(state_dir())))
+        except MvpRuntimeError as exc:
+            print(f"autosell    : unreadable ({exc.reason_code})")
+            return EXIT_BLOCKED
+        return EXIT_OK
+
     if args.autoinvest_status:
         from runtime.mvp_runtime.holdings import autoinvest
 
@@ -376,6 +405,26 @@ def _approve_proposal(candidates: dict) -> dict | None:
         print("not approved (type y with the keyboard in English input)")
         return None
     return autoinvest_proposal.approve(state_dir(), now=timeutil.utc_now_iso(), candidates=candidates)
+
+
+def _approve_sell_proposal() -> dict | None:
+    """G6-sell: show this month's drafted sell scenario and approve it on Thomas's ``y`` at a terminal, never
+    otherwise."""
+    from runtime.mvp_runtime.holdings import autosell
+    from runtime.mvp_runtime.holdings.store import approve_autosell
+
+    print("\n".join(autosell.render(state_dir())))
+    body = autosell.read_proposal(state_dir())
+    if not body.get("items") or body.get("approved_scenario"):
+        print("nothing to approve: no new sell draft (one is drafted at the monthly check, when a band is outside)")
+        return None
+    if not _interactive():
+        print("refused: the draft is approved at an interactive terminal (docker exec -it)")
+        return None
+    if _answer("approve this sell scenario? [y/N] ") != "y":
+        print("not approved (type y with the keyboard in English input)")
+        return None
+    return approve_autosell(now=timeutil.utc_now_iso())
 
 
 def _answer(prompt: str) -> str:

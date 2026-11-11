@@ -456,6 +456,10 @@ services:
       # shares of current domestic candidates, only a scenario Thomas approved, 500,000 KRW a day at most.
       # `buy_only` builds the adapter; unset = no order can be placed. It borrows the feed's token above. Thomas
       # sets it; revoking it means unsetting it and recreating this service.
+      # G6-sell (Thomas 2026-11-11, G6_SELL_REBALANCE_V0.1.md): `buy_sell` builds the buy adapter and a sell
+      # adapter (limit sells of whole domestic shares, only a sell scenario Thomas confirmed, 500,000 KRW a day).
+      # Under `buy_only` no sell method exists and no sell draft is written. Turned on after H6c, by Thomas;
+      # changing the value means recreating this service.
       MVP_TOSS_ORDERS: ${MVP_TOSS_ORDERS:-}
       # The holdings board's Binance spot + Simple Earn read (appendix C of MULTI_ASSET_EXPANSION_V0.1.md,
       # Thomas 2026-10-07). Its gate only. The account key pair it was first given (option A) was

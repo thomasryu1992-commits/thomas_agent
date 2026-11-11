@@ -500,7 +500,7 @@ MAINTENANCE_LANE_SELECTORS = {
     toss_account.TOSS_CLIENT_SECRET_ENV: "the Toss OAuth client secret",
     toss_account.TOSS_ACCOUNT_SEQ_ENV: "which brokerage account, when the client sees more than one",
     # G6-buy (Thomas 2026-10-26): the buy-order gate rides the same fire and borrows the same token.
-    toss_orders.TOSS_ORDERS_ENV: "the G6-buy order gate (buy_only)",
+    toss_orders.TOSS_ORDERS_ENV: "the G6 order gate (buy_only; buy_sell adds the G6-sell adapter)",
     # The holdings board's Binance spot + Simple Earn read (Thomas 2026-10-07, appendix C): the same
     # `holdings_refresh` fire. Its gate only — the account key pair was removed by H1-a (below).
     binance_wallet.BINANCE_WALLET_ENV: "the holdings lane's Binance wallet gate",

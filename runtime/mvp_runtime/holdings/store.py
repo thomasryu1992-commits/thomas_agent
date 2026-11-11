@@ -490,6 +490,81 @@ def refresh_autoinvest_proposal(*, now: str, root: Path | None = None) -> dict[s
     return {"status": status, "alert": autoinvest_proposal.notice(state_dir(root))}
 
 
+def run_autosell(*, now: str, root: Path | None = None) -> dict[str, Any]:
+    """G6-sell (Thomas 2026-11-11): one look at Thomas's approved sell scenario, through this fire's Toss feed and
+    the sell adapter its gate builds (``MVP_TOSS_ORDERS=buy_sell``). Returns the step's status and, until it is
+    marked told, its notice (counts and state only)."""
+    from . import autoinvest, autosell, toss_orders
+
+    feed = _feed()
+    if not isinstance(feed, TossHoldingsFeed):
+        return {"status": "no_feed", "alert": None}
+    orders = toss_orders.select_sell_orders(feed)
+    if not orders.enabled and not autosell.scenario_path(state_dir(root)).exists():
+        return {"status": "off", "alert": None}      # the gate is closed and nothing was ever approved
+    try:
+        buying = autoinvest._read(state_dir(root))
+    except ToolError:
+        buying = None                       # an unreadable buy scenario holds the sell: it may name the same share
+    result = autosell.run(feed, orders, state_dir(root), now=now, buy_scenario=buying)
+    return {**result, "alert": autosell.notice(state_dir(root))}
+
+
+def refresh_autosell_proposal(*, now: str, root: Path | None = None) -> dict[str, Any]:
+    """G6-sell: this month's drafted sell scenario, from the same plan ``--rebalance`` shows, once the monthly
+    check day (RB5) has come. With the sell gate closed it reads and writes nothing. It orders nothing: Thomas
+    confirms the draft on his terminal."""
+    from . import autoinvest_proposal, autosell, toss_orders
+
+    feed = _feed()
+    if not isinstance(feed, TossHoldingsFeed):
+        return {"status": "no_feed", "alert": None}
+    if not toss_orders.select_sell_orders(feed).enabled:
+        return {"status": "off", "alert": None}
+    today = overseas_gain.kst_day(now)
+    if today < _first_weekday(today[:7]):
+        return {"status": "before_check_day", "alert": autosell.proposal_notice(state_dir(root))}
+    if autosell.read_proposal(state_dir(root)).get("checked_month") == today[:7]:
+        return {"status": "checked_this_month", "alert": autosell.proposal_notice(state_dir(root))}
+    try:
+        entries = classification.load(state_dir(root))
+        plan, body, rows = rebalance_plan(now=now, root=root)
+    except ToolError:
+        return {"status": "classification_unreadable", "alert": autosell.proposal_notice(state_dir(root))}
+    slot_rows: list[dict[str, Any]] = []
+    table = (body or {}).get("allocation")
+    if isinstance(table, Mapping) and isinstance(rows, list):
+        class_krw = {name: float((row or {}).get("krw") or 0.0) for name, row in (table.get("classes") or {}).items()}
+        slot_rows, _notes = autoinvest_proposal.slots(
+            class_krw=class_krw, positions=rows, currencies=dict(entries.currencies),
+            candidates=effective_candidates(root),
+            us_bonds=(_read_json(auto_candidates_path(root)) or {}).get("us_bonds") or [])
+    status = autosell.refresh(feed, state_dir(root), now=now, plan=plan, slot_rows=slot_rows,
+                              currencies=dict(entries.currencies), as_of=(body or {}).get("as_of"))
+    return {"status": status, "alert": autosell.proposal_notice(state_dir(root))}
+
+
+def approve_autosell(*, now: str, root: Path | None = None) -> dict[str, Any]:
+    """G6-sell: turn the shown sell draft into Thomas's scenario (``holdings_board --autosell-approve``, his
+    terminal), checked against the last fire's positions."""
+    from . import autosell
+
+    rows = (_read_json(positions_path(root)) or {}).get("positions")
+    return autosell.approve(state_dir(root), now=now, positions=rows if isinstance(rows, list) else None)
+
+
+def mark_autosell_told(token: str, *, now: str, root: Path | None = None) -> None:
+    from . import autosell
+
+    autosell.mark_told(state_dir(root), token, now=now)
+
+
+def mark_sell_proposal_told(token: str, *, now: str, root: Path | None = None) -> None:
+    from . import autosell
+
+    autosell.mark_proposal_told(state_dir(root), token, now=now)
+
+
 def mark_autoinvest_told(token: str, *, now: str, root: Path | None = None) -> None:
     from . import autoinvest
 
@@ -632,9 +707,9 @@ def load_local_view(*, now: str, root: Path | None = None) -> str:
     return "\n".join(lines)
 
 
-def load_rebalance(*, now: str, root: Path | None = None, force: bool = False) -> str:
-    """The rebalancing proposal over the last fire (``holdings_board --rebalance``), for Thomas's terminal only.
-    Names instruments and amounts: never route it to a door, a channel or a model prompt."""
+def rebalance_plan(*, now: str, root: Path | None = None, force: bool = False) -> tuple[Any, Any, Any]:
+    """The rebalancing plan over the last fire, built one way for ``--rebalance`` and for the G6-sell draft so the
+    two cannot disagree. Returns (plan, the local board, the positions of the same fire or None). LOCAL_ONLY."""
     body = _read_json(local_path(root))
     held = _read_json(positions_path(root))
     candidates = effective_candidates(root)
@@ -648,6 +723,13 @@ def load_rebalance(*, now: str, root: Path | None = None, force: bool = False) -
                                        stale_after_seconds=STALE_AFTER_SECONDS, overseas_gain_ytd_krw=gain,
                                        tax_overrides=tax_kinds, force=force)
     result.notes.append(gain_note)
+    return result, body, rows
+
+
+def load_rebalance(*, now: str, root: Path | None = None, force: bool = False) -> str:
+    """The rebalancing proposal over the last fire (``holdings_board --rebalance``), for Thomas's terminal only.
+    Names instruments and amounts: never route it to a door, a channel or a model prompt."""
+    result, body, _rows = rebalance_plan(now=now, root=root, force=force)
     return "\n".join(rebalance.render(result, as_of=(body or {}).get("as_of")))
 
 
