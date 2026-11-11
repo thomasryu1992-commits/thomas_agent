@@ -253,7 +253,11 @@ def test_the_env_only_gate_has_exactly_the_capabilities_thomas_named():
         # Added 2026-10-26 (Thomas, G6-buy, G6_BUY_CASH_AUTOINVEST_V0.1.md): the Toss buy-order adapter. Its own
         # opt-in (MVP_TOSS_ORDERS=buy_only) and provider id; BUY is a constant, domestic whole shares only, a
         # scenario Thomas approved. It inherits nothing from the crypto order adapters' authorization.
-        "runtime/mvp_runtime/holdings/toss_orders.py",  # the Toss buy-order adapter
+        # 2026-11-11 (Thomas, G6-sell, G6_SELL_REBALANCE_V0.1.md): a second call site in the same file,
+        # `select_sell_orders`, behind the same variable's other value (`buy_sell`) with its own provider id
+        # (`toss_sell_orders`). A set of paths cannot see a second site, so the capability is pinned by what it
+        # does in tests/test_mvp_runtime_holdings_autosell.py: unset or `buy_only` builds no sell and posts none.
+        "runtime/mvp_runtime/holdings/toss_orders.py",  # the Toss buy-order and sell-order adapters
         # Added 2026-11-03 (BLOG_DEPARTMENT v0.2 P4b; §7 N1 decided 2026-10-26, the build Thomas 2026-11-03): the
         # keyword pipeline's direct shadow. Two opt-ins, one per host group (Naver and Google query hosts; this
         # blog's reads), each with its own provider id; a host in neither list is refused, and the Search Ad API

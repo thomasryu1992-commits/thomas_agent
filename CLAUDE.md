@@ -59,8 +59,9 @@ core thin while lanes grow, stated as rules:
   why the per-machine grants were retired and what that gave up: `docs/BUILD_HISTORY.md`.
 - **Claude does not touch the live money path.** The crypto stack can place a real order.
   Claude does not run it, does not handle keys, does not enable live trading. The same holds for the
-  Toss buy path (G6-buy, Thomas 2026-10-26): Claude never sets `MVP_TOSS_ORDERS` and never runs
-  `holdings_board --autoinvest-approve` or `--autoinvest-status`.
+  Toss buy path (G6-buy, Thomas 2026-10-26) and the Toss sell path (G6-sell, Thomas 2026-11-11): Claude never
+  sets `MVP_TOSS_ORDERS` (`buy_only` or `buy_sell`) and never runs `holdings_board --autoinvest-approve`,
+  `--autoinvest-status`, `--autosell-approve` or `--autosell-status`.
 - **Claude reads the holdings lane only through two outward surfaces.** The one table,
   `docker exec thomas-scheduler python -m scripts.holdings_board` (or `--json`), which only Thomas's terminal
   can run since C6b; and the Claude read door's `holdings_status` (`python3 scripts/claude_read.py

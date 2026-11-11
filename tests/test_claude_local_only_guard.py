@@ -60,6 +60,9 @@ DENIED = [
     ("Bash", "cat holdings_autoinvest.json"),
     ("Bash", "cat holdings_autoinvest_proposal.json"),
     ("Bash", "tail holdings_autoinvest_journal.jsonl"),
+    ("Bash", "cat holdings_autosell.json"),                 # G6-sell (2026-11-11): the sell scenario, draft and journal
+    ("Bash", "cat holdings_autosell_proposal.json"),
+    ("Bash", "tail holdings_autosell_journal.jsonl"),
     ("Bash", "cat .runtime_governance_state/*/holdings_x"),
     ("Bash", "ls .runtime_governance_state/h*"),
     ("Bash", "grep -r usd .runtime_governance_state"),
@@ -250,7 +253,9 @@ TERMINAL_ONLY = ("--full", "--local", "--unclassified", "--classify binance:X=co
                  # RB3 (2026-11-03): a tax-kind override names an instrument.
                  "--tax-kind toss:domestic:X=tax_free",
                  # G6-buy (2026-10-26): approving a buy scenario spends money; its status names amounts.
-                 "--autoinvest-approve 069500=1 --max-krw 100000", "--autoinvest-status")
+                 "--autoinvest-approve 069500=1 --max-krw 100000", "--autoinvest-status",
+                 # G6-sell (2026-11-11): approving a sell scenario sells holdings; its status names amounts.
+                 "--autosell-approve", "--autosell-status")
 
 
 def _board_modes() -> set[str]:

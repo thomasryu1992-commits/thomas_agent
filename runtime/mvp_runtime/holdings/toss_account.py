@@ -430,6 +430,36 @@ class TossHoldingsFeed:
                 continue
         return sorted(levels)
 
+    def bids(self, symbol: str, *, timeout_seconds: int = 10) -> list[tuple[float, float]]:
+        """The bid side of ``symbol``'s book, highest price first, as (price, volume); unreadable levels left out
+        (G6-sell). The ``bids`` key mirrors ``asks``; an answer without it is an empty side, which holds the day."""
+        book = self._get(ORDERBOOK_PATH, {"symbol": symbol}, account=False, what="orderbook",
+                         timeout_seconds=timeout_seconds)
+        levels = []
+        for row in (book.get("bids") if isinstance(book, dict) else None) or []:
+            try:
+                levels.append((float(row["price"]), float(row["volume"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return sorted(levels, reverse=True)
+
+    def domestic_quantities(self, *, timeout_seconds: int = 10) -> dict[str, float]:
+        """Shares held per domestic symbol, read now (G6-sell re-reads them right before a sell). A holding whose
+        quantity cannot be read is left out, so it counts as not held."""
+        self._resolve_account(timeout_seconds=timeout_seconds)
+        overview = self._get(HOLDINGS_PATH, account=True, what="holdings", timeout_seconds=timeout_seconds)
+        if not isinstance(overview, dict):
+            raise ToolError("MALFORMED_RESULT", "holdings returned no overview")
+        out: dict[str, float] = {}
+        for row in overview.get("items") or []:
+            if not isinstance(row, dict) or row.get("marketCountry") != "KR":
+                continue
+            try:
+                out[str(row.get("symbol") or "").strip()] = float(row["quantity"])
+            except (KeyError, TypeError, ValueError):
+                continue
+        return out
+
     def fill_state(self, order_id: str, *, timeout_seconds: int = 10) -> dict[str, Any]:
         """One placed order's status and filled quantity (``GET /api/v1/orders/{orderId}``), still a read."""
         self._resolve_account(timeout_seconds=timeout_seconds)
