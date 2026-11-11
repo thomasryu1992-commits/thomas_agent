@@ -231,3 +231,14 @@ def test_the_first_attempt_buys_the_thicker_bid_side_and_its_neighbours_only_mov
     rows = [{"timestamp": stamp(k), "percentage": str(pct), "depth": "1", "notional": str(n)}
             for k in range(1200) for pct, n in ((-1, 300.0), (1, 100.0), (-5, 300.0), (5, 100.0))]
     assert ds.daily_values(rows, day)["imb1"] == pytest.approx(0.5)
+
+
+def test_the_second_attempt_buys_the_deepening_book_and_its_neighbour_only_moves_the_gap():
+    assert list(ds.CANDIDATES) == ["D01", "D02"] and len(ds.CANDIDATES) == ds.BUDGET
+    second = ds.CANDIDATES["D02"]
+    assert (second.features, second.lookback, second.long_low, second.inverse_vol) == ((("depth_growth", 1.0),), 30, False, False)
+    assert second.lookback == ds.GROWTH_GAP_DAYS
+    shown = ds.NEIGHBOURS["D02"]
+    assert set(shown) == {"gap_14"}
+    assert (shown["gap_14"].features, shown["gap_14"].lookback, shown["gap_14"].long_low) == ((("depth_growth", 1.0),), 14, False)
+    assert set(ds.NEIGHBOURS) == set(ds.CANDIDATES)

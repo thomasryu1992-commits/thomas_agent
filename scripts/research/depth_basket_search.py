@@ -60,12 +60,16 @@ Daily = dict[str, dict[date, dict[str, float | None]]]
 # The attempts, in the order they were run. Each is added in its own commit, run once, and recorded before the next.
 CANDIDATES: dict[str, bs.Candidate] = {
     "D01": bs.Candidate(why="받쳐 주는 매수 호가가 두꺼우면 팔려도 덜 밀리고, 사려는 쪽이 기다리고 있다고 본다: 지난 7일 ±1% 불균형 평균이 높은 쪽(매수 호가가 두꺼운 쪽)을 사고 낮은 쪽을 판다.", features=(("imbalance_1", 1.0),), lookback=7),
+    "D02": bs.Candidate(why="D01(연 샤프 −1.652)은 넘지 못했다. 미리 정한 둘째 가설: 호가를 대는 쪽이 자본을 더 넣는 코인에 관심과 유동성이 들어온다고 본다. ±1% 깊이가 한 달 전보다 늘어난 쪽(지난 7일 평균 ÷ 30일 전까지의 7일 평균)을 사고 줄어든 쪽을 판다.", features=(("depth_growth", 1.0),), lookback=30),
 }
 # What is run beside a candidate and shown only: the same hypothesis at another band and another lookback.
 NEIGHBOURS: dict[str, dict[str, bs.Candidate]] = {
     "D01": {
         "band_5pct": bs.Candidate(why="D01과 같은 가설을 ±5% 구간에서.", features=(("imbalance_5", 1.0),), lookback=7),
         "lookback_30": bs.Candidate(why="D01과 같은 가설을 30일 평균으로.", features=(("imbalance_1", 1.0),), lookback=30),
+    },
+    "D02": {
+        "gap_14": bs.Candidate(why="D02와 같은 가설을 14일 전과 비교해서.", features=(("depth_growth", 1.0),), lookback=14),
     },
 }
 
