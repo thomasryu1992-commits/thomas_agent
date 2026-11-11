@@ -21,8 +21,13 @@ writes nothing, and it reads no day before the window as a result: the past was 
   2. a day missing from the klines of a quarter of the perps alive across it (an archive hole,
      ``FUNDING_BASIS_V0.2`` §10) inside the window or the 31 days before it is ``BLOCKED``: the basket would read
      it as every leg ending, and no rule for it is registered here;
-  3. every member of a window month's universe needs a funding settlement on each of its traded days in that
-     month's part of the window, else ``NOT_YET`` (``plan`` lists the symbols to fetch).
+  3. a member needs a funding settlement on each day it traded (quote volume above zero) inside its month's part
+     of the window and the week after it (a leg decided in one month is held into the next), unless that month's
+     funding file is on disk: then the archive was asked and has none for that day (a delisted coin keeps flat
+     zero-volume bars and its funding files stop). Else ``NOT_YET`` (``plan`` lists the symbols to fetch).
+     Amended 2026-11-11, before the window opened (``MOMENTUM_BASKET_V0.1`` "수정"): the rule as first registered
+     asked for a settlement on every day with a bar, so a member delisted inside the window held it at ``NOT_YET``
+     for good. ``metrics_basket_screen`` uses this same function.
 - **Shown, never judged:** the same baskets at equal weights, the mean of eight seeded random baskets, weekly
   means, costs, funding and forced closes.
 """
@@ -55,6 +60,7 @@ VOL_LOOKBACK_DAYS = xsb.SIGNALS[SIGNAL]["lookback"]      # the signal's own 30 d
 MIN_VOL_RETURNS = 20
 SCREEN_WINDOW = (date(2027, 2, 1), date(2027, 5, 31))
 RANDOM_SEEDS = xsb.RANDOM_SEEDS
+HELD_OVER_DAYS = 7                        # a leg decided in one month is held at most a week into the next
 KEEP, DROP, NOT_YET, JUDGED = sc.KEEP, sc.DROP, sc.NOT_YET, sc.JUDGED
 
 
@@ -105,12 +111,45 @@ def universes(market: xsb.Market, start: date, end: date) -> dict[date, list[str
 
 
 def funding_plan(market: xsb.Market, start: date, end: date) -> dict[str, list[str]]:
-    """``{YYYY-MM: members}`` whose funding the window needs. Symbols and months only."""
+    """``{YYYY-MM: symbols}`` whose funding the window needs: the month's members, then the month before's (their
+    legs are held into its first week). Symbols and months only."""
     monthly = universes(market, start, end)
-    return {m.strftime("%Y-%m"): list(monthly[m]) for m in xsb.month_starts(start, end)}
+    out = {}
+    for m in xsb.month_starts(start, end):
+        before = monthly.get(_month(m - timedelta(days=1)), [])
+        out[m.strftime("%Y-%m")] = list(monthly[m]) + [s for s in before if s not in monthly[m]]
+    return out
 
 
-def shortfall(market: xsb.Market, start: date, end: date) -> list[str]:
+def read_funding_months(archive: Path) -> set[tuple[str, str]]:
+    """``{(symbol, "YYYY-MM")}`` of the monthly funding files on disk."""
+    return {(path.parent.name, path.stem[-7:]) for path in (archive / xsb.FUNDING_KIND).glob("*/*.zip")}
+
+
+def funding_shortfall(market: xsb.Market, monthly: Mapping[date, Sequence[str]], start: date, end: date,
+                      funding_months: frozenset[tuple[str, str]] | set[tuple[str, str]] = frozenset(),
+                      ) -> tuple[list[str], int]:
+    """``(short, excused_days)`` for the members of every month in ``monthly``: a day a member traded inside its
+    month's part of [start, end], or the :data:`HELD_OVER_DAYS` after it, needs a settlement unless that day's
+    monthly funding file is in ``funding_months``. Symbols, months and counts only."""
+    lacking: dict[tuple[str, str], set[date]] = {}
+    excused: set[tuple[str, date]] = set()
+    for first in sorted(monthly):
+        lo, hi = max(first, start), min(_month_end(first) + timedelta(days=HELD_OVER_DAYS), end)
+        for symbol in monthly[first]:
+            bars, settled = market.bars[symbol], market.funding_day(symbol) or {}
+            for day in (d for d in bars if lo <= d <= hi and bars[d].quote_volume > 0 and d not in settled):
+                key = day.strftime("%Y-%m")
+                if (symbol, key) in funding_months:
+                    excused.add((symbol, day))
+                else:
+                    lacking.setdefault((symbol, key), set()).add(day)     # a day two months ask for counts once
+    short = [f"{symbol} funding {key}: {len(days)} day(s)" for (symbol, key), days in sorted(lacking.items())]
+    return short, len(excused)
+
+
+def shortfall(market: xsb.Market, start: date, end: date,
+              funding_months: frozenset[tuple[str, str]] | set[tuple[str, str]] = frozenset()) -> list[str]:
     """What the archive still lacks for the window, as symbols and dates only; empty when it is covered."""
     short: list[str] = []
     last = max((max(bars) for bars in market.bars.values() if bars), default=None)
@@ -123,16 +162,7 @@ def shortfall(market: xsb.Market, start: date, end: date) -> list[str]:
             short.append(f"klines {first:%Y-%m}: {alive} perps")
     if short:
         return short                       # the universe cannot be named before the klines are there
-    monthly = universes(market, start, end)
-    for first in xsb.month_starts(start, end):
-        lo, hi = max(first, start), min(_month_end(first), end)
-        for symbol in monthly[first]:
-            settled = market.funding_day(symbol) or {}
-            traded = [d for d in market.bars[symbol] if lo <= d <= hi]
-            missing = [d for d in traded if d not in settled]
-            if missing:
-                short.append(f"{symbol} funding {first:%Y-%m}: {len(missing)} of {len(traded)} day(s)")
-    return short
+    return funding_shortfall(market, universes(market, start, end), start, end, funding_months)[0]
 
 
 def holes(market: xsb.Market, start: date, end: date) -> list[date]:
@@ -159,12 +189,13 @@ def _shown(sim: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def screen(market: xsb.Market) -> dict[str, Any]:
+def screen(market: xsb.Market, funding_months: frozenset[tuple[str, str]] | set[tuple[str, str]] = frozenset(),
+           ) -> dict[str, Any]:
     """The report. ``NOT_YET`` carries only what is short; ``JUDGED`` carries the verdict."""
     start, end = SCREEN_WINDOW
     head = {"spec": SPEC, "model": MODEL, "signal": SIGNAL, "top_n": TOP_N,
             "window": [start.isoformat(), end.isoformat()], "strategies_screened": ["M"]}
-    short = shortfall(market, start, end)
+    short = shortfall(market, start, end, funding_months)
     if short:
         return {**head, "status": NOT_YET, "short": short}
     gaps = holes(market, start, end)
@@ -180,6 +211,7 @@ def screen(market: xsb.Market) -> dict[str, Any]:
     random = [_shown(run(weigher=vol_weights, seed=f"{MODEL}|{k}"))["mean_bps_per_day"] for k in range(RANDOM_SEEDS)]
     return {**head, "status": JUDGED, "universe_hash": xsb.universe_hash(monthly),
             "strategies": {"M": judged},
+            "excused_funding_days": funding_shortfall(market, monthly, start, end, funding_months)[1],
             "shown_only": {"equal_weight": _shown(run()),
                            "random_baskets_mean_bps_per_day": round(statistics.fmean(random), 4)}}
 
@@ -202,15 +234,16 @@ def main(argv: list[str] | None = None) -> int:
     market = xsb.load_market(archive)
     market.contract_types = snapshot[0]
     start, end = SCREEN_WINDOW
+    funding_months = read_funding_months(archive)
     if args.command == "plan":
-        short = shortfall(market, start, end)
+        short = shortfall(market, start, end, funding_months)
         klines_short = [line for line in short if line.startswith("klines")]
         plan = None if klines_short else funding_plan(market, start, end)
         print(json.dumps({"window": [start.isoformat(), end.isoformat()], "short": short, "funding": plan},
                          indent=1, sort_keys=True))
         return EXIT_OK
     try:
-        report = {"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), **screen(market)}
+        report = {"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), **screen(market, funding_months)}
     except Hole as hole:
         print(f"BLOCKED: {hole}", file=sys.stderr)
         return EXIT_BLOCKED
