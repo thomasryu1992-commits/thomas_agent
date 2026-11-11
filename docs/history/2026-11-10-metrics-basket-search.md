@@ -65,3 +65,6 @@ per held coin and refuses to print unless the split adds back to them and to the
 from the engine through a recording weigher instead of touching `cross_section_basket` or `basket_search`, because
 those carry other registered measurements. It prints no Sharpe and no what-if: a number comparable to the floor under
 a changed definition would be a second judgement of a spent span. The cuts were fixed and pushed before the read.
+The read: four coins (SIREN, AKE, LAB, PIPPIN) made +249% against a +164% sum, and the 3% of leg-days on coins whose
+funding settles nine or more times a day made +127% of it; the development span's pass came from ordinary legs. The
+guess written before the read (the days before a delisting) was wrong. `LOCKED_READ` now refuses the locked span.

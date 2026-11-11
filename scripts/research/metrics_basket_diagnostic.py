@@ -44,7 +44,7 @@ RECORDED = {
     "confirm": {"sum_pct": 163.85, "funding_pct": 78.58, "cost_pct": 11.94, "forced_closes": 13},
 }
 # The run that read the locked span for this diagnostic. Once set, ``--span confirm`` is refused: Q5 was one read.
-LOCKED_READ: str | None = None
+LOCKED_READ: str | None = "20261111T044034Z-3951732"
 TOLERANCE = 1e-9
 NEAR_LAST_BAR = (7, 14)                  # days before a coin's last bar, for a coin whose bars end inside the span
 TOP_COINS = (1, 3, 5)

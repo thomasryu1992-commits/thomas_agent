@@ -150,3 +150,10 @@ def test_the_door_is_one_candidate_in_the_sandbox_and_the_locked_span_once(monke
     assert _run(monkeypatch, ["--span", "dev", "--cache", str(tmp_path)], LOCKED_READ="a-run") == md.EXIT_BLOCKED
     assert json.dumps(md.RECORDED["confirm"]) == json.dumps(
         {"sum_pct": 163.85, "funding_pct": 78.58, "cost_pct": 11.94, "forced_closes": 13})
+
+
+def test_as_shipped_the_locked_span_was_read_and_is_refused(monkeypatch, capsys, tmp_path):
+    # The one read happened on 2026-11-11 (Q5). Nothing is patched here but the sandbox door.
+    assert _run(monkeypatch, ["--span", "confirm", "--cache", str(tmp_path)]) == md.EXIT_USAGE
+    assert "once" in capsys.readouterr().err
+    assert _run(monkeypatch, ["--span", "dev", "--cache", str(tmp_path)]) == md.EXIT_BLOCKED
