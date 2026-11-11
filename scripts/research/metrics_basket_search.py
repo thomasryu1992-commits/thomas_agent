@@ -50,7 +50,8 @@ MIN_ROWS = 144                           # half of a day's 288 five-minute rows
 LONG_SPAN_FEATURES = frozenset({"oi_growth", "ls_level"})
 # M03 cleared the floor on 2026-11-10 but was measured on the coins the cache could rank (about 22 of 30). Thomas
 # 2026-11-11: re-measure on the refilled cache as M04; M03 as measured is never confirmed. M04 cleared the floor on
-# 2026-11-11 (annual Sharpe 1.134 on the full cross-section), so the locked span is read once, for M04.
+# 2026-11-11 (annual Sharpe 1.134 on the full cross-section), so the locked span is read once, for M04. That read
+# happened the same day (annual Sharpe 1.357, a pass); ``basket_search.CONFIRM_SPENT`` now refuses every confirm.
 FINAL: str | None = "M04"
 PLAN_LOOKBACK = 30                       # days before a member month that a 30-day feature reads
 # daily column -> (archive column, whether it is a long/short ratio to turn into a long share)
@@ -232,6 +233,9 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_USAGE
     if len(CANDIDATES) > BUDGET:
         print(f"refused: {len(CANDIDATES)} candidates are over the budget of {BUDGET}", file=sys.stderr)
+        return EXIT_USAGE
+    if args.command == "confirm" and bs.CONFIRM_SPENT:
+        print(f"refused: the locked span is spent, it was read once ({bs.CONFIRM_SPENT})", file=sys.stderr)
         return EXIT_USAGE
     if args.command == "confirm" and args.candidate != FINAL:
         print(f"refused: the locked span is read once, for the final candidate ({FINAL}), not for "

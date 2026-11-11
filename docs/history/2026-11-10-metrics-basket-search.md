@@ -52,3 +52,10 @@ side on 134 of 157 development weeks and 74 of 91 locked-span weeks; every unran
 (the exchange's empty all-account column in early 2022, days the archive does not serve, the stub files after a
 delisting). One development run: annual Sharpe 1.134 (M03 was 1.547), all three years positive. M04 is the final
 candidate, `FINAL = "M04"`, and the locked span is read once after the merge, on that fingerprint.
+
+**Confirm (Thomas 2026-11-11, "병합하고 확인").** #1426 merged as de464517. From that SHA the development number
+was reproduced in all 20 report fields, then the locked span was read once: annual Sharpe 1.357, a pass. The shape is
+not the development span's: funding is +78.6% of a +163.9% sum (it was +2.8% of +144.0%), 2026 made nearly all of it
+and 10 of 21 months lost. Where the funding came from was not read; that diagnostic is asked as Q5. The span is shared
+with `basket_search`, so the marker lives there (`CONFIRM_SPENT`) and both tools now refuse every `confirm`: the tool
+never required `--official`, and with `FINAL = "M04"` on main any session could have read the span again.

@@ -165,6 +165,7 @@ def _run(monkeypatch, argv, **patch):
 
 
 def test_the_locked_span_opens_only_for_the_final_candidate(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(bs, "CONFIRM_SPENT", None)                 # the rule as it stood while the span was unread
     registry = {"M01": CROWD_FADE, "M02": bs.Candidate(why="t", features=(("oi_growth", 1.0),))}
     cache = ["--cache", str(tmp_path)]
     assert _run(monkeypatch, ["confirm", "--candidate", "M01", *cache], CANDIDATES=registry, FINAL=None) == ms.EXIT_USAGE
@@ -176,6 +177,14 @@ def test_the_locked_span_opens_only_for_the_final_candidate(monkeypatch, capsys,
     price = {"M01": bs.Candidate(why="t", features=(("vol", 1.0),))}                 # a price feature is not this list
     assert _run(monkeypatch, ["explore", "--candidate", "M01", *cache], CANDIDATES=price) == ms.EXIT_USAGE
     assert _run(monkeypatch, ["confirm", "--candidate", "M02", *cache], CANDIDATES=registry, FINAL="M02") == ms.EXIT_BLOCKED
+
+
+def test_the_spent_locked_span_refuses_the_final_candidate_as_shipped(monkeypatch, capsys, tmp_path):
+    # M04 read the span once on 2026-11-11. With the shipped registry and FINAL, a second confirm is refused.
+    assert ms.FINAL in ms.CANDIDATES
+    assert _run(monkeypatch, ["confirm", "--candidate", ms.FINAL, "--cache", str(tmp_path)]) == ms.EXIT_USAGE
+    assert "spent" in capsys.readouterr().err
+    assert _run(monkeypatch, ["explore", "--candidate", ms.FINAL, "--cache", str(tmp_path)]) == ms.EXIT_BLOCKED
 
 
 def test_it_refuses_outside_the_sandbox_and_lists_anywhere(monkeypatch, capsys):
