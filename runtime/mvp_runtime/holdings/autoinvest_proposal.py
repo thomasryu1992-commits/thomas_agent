@@ -20,10 +20,11 @@
 world ETF) is a dollar slot. It fills in ``USD_STEP_KRW`` steps from the account's USD cash (less 3%), and
 when that runs out, from the KRW budget as an exchange Thomas makes in the app: Toss's API never converts. The
 draft orders the dollars there are as one amount; the part that needs exchanging is shown on Thomas's terminal
-(``exchange_krw``), and Telegram says only that an exchange is needed. Once he exchanges, the next draft spends it.
+(``exchange_krw``), and Telegram says that an exchange is needed and, since Thomas 2026-11-11, how many dollars
+(rounded up). Once he exchanges, the next draft spends it.
 
-:func:`slots` and :func:`draft` are pure. The draft names instruments and amounts, so its file
-``holdings_autoinvest_proposal.json`` is LOCAL_ONLY; the Telegram line carries counts only (H3).
+:func:`slots` and :func:`draft` are pure. The draft names instruments and amounts, so its file is LOCAL_ONLY; the
+Telegram line carries counts (H3) and the dollars to exchange (Thomas 2026-11-11).
 """
 
 from __future__ import annotations
@@ -265,10 +266,24 @@ def refresh(feed: Any, state_dir: Path, *, now: str, board: Mapping[str, Any] | 
     return result["status"]
 
 
+def _exchange_usd(result: Mapping[str, Any]) -> str:
+    """The dollars to exchange, rounded up to a whole dollar so an exchange of that size covers the slot ("$72"), or
+    "" when no rate gave a dollar figure."""
+    usd = float(result.get("exchange_usd") or 0.0)
+    return f"${math.ceil(usd):,}" if usd > 0 else ""
+
+
 def _notice_text(result: Mapping[str, Any]) -> str:
-    """Counts and words only (H3): how many items, and whether an exchange is needed, never an amount."""
-    exchange = " 글로벌 주식 몫은 달러 환전이 필요합니다(금액은 터미널)." if result["exchange_krw"] else ""
+    """Counts and words (H3), with one exception (Thomas 2026-11-11): the dollars to exchange. Thomas makes that
+    exchange in the app, so the figure he needs travels with the notice; it is a currency total for the global
+    equity slot, never a KRW amount, an instrument's quantity, or a holding."""
+    usd = _exchange_usd(result) if result["exchange_krw"] else ""
+    exchange = ((f" 글로벌 주식 몫은 달러 환전이 필요합니다: 약 {usd}." if usd
+                 else " 글로벌 주식 몫은 달러 환전이 필요합니다(금액은 터미널).") if result["exchange_krw"] else "")
     if not result["items"]:
+        if usd:
+            return (f"[보유 자산] 매수 시나리오 — 지금 주문할 몫은 없고, 글로벌 주식 몫은 달러 환전이 필요합니다: 약 {usd}. "
+                    "앱에서 환전하면 다음 거래일 시나리오가 그 달러로 삽니다. 자세한 내역은 Thomas 터미널(--autoinvest-approve).")
         return ("[보유 자산] 매수 시나리오 — 지금 주문할 몫은 없고, 글로벌 주식 몫은 달러 환전이 필요합니다. 금액은 Thomas "
                 "터미널(--autoinvest-approve)에서 확인하세요. 환전하면 다음 거래일 시나리오가 그 달러로 삽니다.")
     shares = sum(int(i.get("quantity") or 0) for i in result["items"])
