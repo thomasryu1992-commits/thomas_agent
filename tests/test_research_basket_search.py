@@ -162,6 +162,7 @@ def _run(monkeypatch, argv, **patch):
 
 
 def test_the_locked_span_opens_only_for_the_final_candidate(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(bs, "CONFIRM_SPENT", None)                 # the rule as it stood while the span was unread
     registry = {"A01": LOW_VOL, "A02": bs.Candidate(why="t", features=(("max", 1.0),))}
     assert _run(monkeypatch, ["confirm", "--candidate", "A01"], CANDIDATES=registry, FINAL=None) == bs.EXIT_USAGE
     assert _run(monkeypatch, ["confirm", "--candidate", "A01"], CANDIDATES=registry, FINAL="A02") == bs.EXIT_USAGE
@@ -172,6 +173,16 @@ def test_the_locked_span_opens_only_for_the_final_candidate(monkeypatch, capsys,
     # the final one gets as far as the archive, which is not there
     assert _run(monkeypatch, ["confirm", "--candidate", "A02", "--archive", str(tmp_path)],
                 CANDIDATES=registry, FINAL="A02") == bs.EXIT_BLOCKED
+
+
+def test_the_spent_locked_span_refuses_even_a_final_candidate(monkeypatch, capsys, tmp_path):
+    # The span was read once on 2026-11-11 (METRICS_BASKET_SEARCH_V0.1, M04). As shipped, no candidate reaches it.
+    registry = {"A02": bs.Candidate(why="t", features=(("max", 1.0),))}
+    assert _run(monkeypatch, ["confirm", "--candidate", "A02", "--archive", str(tmp_path)],
+                CANDIDATES=registry, FINAL="A02") == bs.EXIT_USAGE
+    assert "spent" in capsys.readouterr().err
+    assert _run(monkeypatch, ["explore", "--candidate", "A02", "--archive", str(tmp_path)],
+                CANDIDATES=registry, FINAL="A02") == bs.EXIT_BLOCKED          # exploring is not what was spent
 
 
 def test_it_refuses_outside_the_sandbox_and_lists_anywhere(monkeypatch, capsys):

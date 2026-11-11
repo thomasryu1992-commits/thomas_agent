@@ -47,6 +47,9 @@ CADENCE = "S-MOM30"                      # only its weekly cadence is used; the 
 REFERENCE = "BTCUSDT"                    # the market leg of beta and idiosyncratic volatility
 MIN_SHARE = 2 / 3                        # of a lookback's daily returns a member needs to be ranked
 FINAL: str | None = None                 # the one candidate ``confirm`` may run; set when DEV is cleared
+# The locked span was read once, on 2026-11-11, by METRICS_BASKET_SEARCH_V0.1's final candidate M04. It is spent for
+# every protocol that shares it: ``confirm`` refuses every candidate here and in ``metrics_basket_search``.
+CONFIRM_SPENT: str | None = "METRICS_BASKET_SEARCH_V0.1 M04, run 20261111T041212Z-3935191"
 
 
 def _returns(market: xsb.Market, symbol: str, day: date, lookback: int) -> list[tuple[date, float]]:
@@ -281,6 +284,9 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_USAGE
     if len(CANDIDATES) > BUDGET:
         print(f"refused: {len(CANDIDATES)} candidates are over the budget of {BUDGET}", file=sys.stderr)
+        return EXIT_USAGE
+    if args.command == "confirm" and CONFIRM_SPENT:
+        print(f"refused: the locked span is spent, it was read once ({CONFIRM_SPENT})", file=sys.stderr)
         return EXIT_USAGE
     if args.command == "confirm" and args.candidate != FINAL:
         print(f"refused: the locked span is read once, for the final candidate ({FINAL}), not for "

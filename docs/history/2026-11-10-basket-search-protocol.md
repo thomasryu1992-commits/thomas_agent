@@ -28,3 +28,7 @@ stopped at the budget; `FINAL` is empty and the locked span was never read.
 
 **Why the default is not to raise the budget.** More draws from the same feature list make a chance pass more
 likely, not a real one. If the search continues, the thing to change is the search space.
+
+**The locked span was spent on 2026-11-11** by `METRICS_BASKET_SEARCH_V0.1` (M04, one read, a pass). `CONFIRM_SPENT`
+in `basket_search.py` makes `confirm` refuse every candidate in both tools; a later candidate here can only be
+checked forward.
