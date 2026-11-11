@@ -57,7 +57,6 @@ STRATEGY = "M04"
 TOP_N = bs.TOP_N
 SCREEN_WINDOW = (date(2027, 3, 1), date(2027, 6, 30))
 LOOKBACK_DAYS = ms.PLAN_LOOKBACK          # the 30 days a feature reads before a decision
-HELD_OVER_DAYS = 7                        # a leg decided in one month is held at most a week into the next
 PUBLICATION_LAG_DAYS = 3                  # the archive served day D-2 and not D-1 on 2026-11-11; never ask younger
 RANDOM_SEEDS = xsb.RANDOM_SEEDS
 KEEP, DROP, NOT_YET, JUDGED = sc.KEEP, sc.DROP, sc.NOT_YET, sc.JUDGED
@@ -96,19 +95,12 @@ def coverage(market: xsb.Market, daily: ms.Daily, start: date, end: date, *, abs
     if short:
         return {"short": short, "excused": {}}             # the universe cannot be named before the klines are there
     monthly = universes(market, start, end)
-    excused = {"funding_days": 0, "metrics_days": 0}
+    # one owner for the funding rule: the momentum basket screen's (amended 2026-11-11 to this rule)
+    short, funding_excused = mbs.funding_shortfall(market, monthly, start, end, funding_months)
+    excused = {"funding_days": funding_excused, "metrics_days": 0}
     for first in xsb.month_starts(start - timedelta(days=1), end):
         for symbol in monthly[first]:
-            bars, settled = market.bars[symbol], market.funding_day(symbol) or {}
-            lo, hi = max(first, start), min(_month_end(first) + timedelta(days=HELD_OVER_DAYS), end)
-            lacking: dict[str, int] = {}
-            for day in (d for d in bars if lo <= d <= hi and bars[d].quote_volume > 0 and d not in settled):
-                key = day.strftime("%Y-%m")
-                if (symbol, key) in funding_months:
-                    excused["funding_days"] += 1
-                else:
-                    lacking[key] = lacking.get(key, 0) + 1
-            short += [f"{symbol} funding {key}: {n} day(s)" for key, n in sorted(lacking.items())]
+            bars = market.bars[symbol]
             rows, missing = daily.get(symbol) or {}, 0
             lo, hi = first - timedelta(days=LOOKBACK_DAYS), min(_month_end(first), end)
             for day in (d for d in bars if lo <= d <= hi and d not in rows):
@@ -169,11 +161,7 @@ def read_absent(cache: Path) -> set[str]:
         return set()
 
 
-def read_funding_months(archive: Path) -> set[tuple[str, str]]:
-    out = set()
-    for path in (archive / xsb.FUNDING_KIND).glob("*/*.zip"):
-        out.add((path.parent.name, path.stem[-7:]))
-    return out
+read_funding_months = mbs.read_funding_months
 
 
 def read_refreshed_through(cache: Path) -> date | None:
