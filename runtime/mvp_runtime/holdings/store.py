@@ -608,10 +608,25 @@ def band_notice(body: Mapping[str, Any], *, now: str, root: Path | None = None) 
     result = rebalance.plan(class_krw=class_krw, positions=[], complete=table.get("complete") is True)
     if result.status == "refused":
         return month, ("[보유 자산] 월 리밸런싱 점검 — 이번 달은 판정할 수 없습니다(자산 합계가 완전하지 않음). "
-                       "분류와 읽기를 확인한 뒤 Thomas 터미널에서 --rebalance로 보세요.")
+                       "분류와 읽기를 확인한 뒤 Thomas 터미널에서 --rebalance로 보세요." + _annual_review_line(month))
     outside = sum(1 for row in result.drift.values() if row["outside"])
     return month, (f"[보유 자산] 월 리밸런싱 점검 — 밴드 이탈 {outside}개. "
-                   + ("Thomas 터미널에서 --rebalance로 계획을 확인하세요." if outside else "리밸런싱할 것이 없습니다."))
+                   + ("Thomas 터미널에서 --rebalance로 계획을 확인하세요." if outside else "리밸런싱할 것이 없습니다.")
+                   + _annual_review_line(month))
+
+
+# The annual review (Thomas 2026-11-11, TOTAL_ASSET_ALLOCATION_V0.1 "결정 (Thomas 2026-11-11) — 재검토 조건"): every
+# October, the month Q1–Q10 were decided (2026-10-07), from 2027 on. It rides on that month's band notice; nothing
+# else is scheduled for it.
+ANNUAL_REVIEW_MONTH = 10
+FIRST_ANNUAL_REVIEW = "2027-10"
+
+
+def _annual_review_line(month: str) -> str:
+    if month < FIRST_ANNUAL_REVIEW or int(month[5:7]) != ANNUAL_REVIEW_MONTH:
+        return ""
+    return (" 이번 달은 자산배분 연례 재검토 달입니다: Q7(국내주식 10%)과 Q3(토스 단일)의 재검토 조건을 봅니다. "
+            "Claude에게 연례 재검토를 요청하고, 금융소득(배당·이자·과세 ETF 매도 차익) 연간 합계는 Thomas가 확인하세요.")
 
 
 def mark_band_told(month: str, *, now: str, root: Path | None = None) -> None:
