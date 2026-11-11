@@ -55,7 +55,8 @@
   - The sell journal is its own file. The buy path reads every row of the buy journal as a buy, for its
     daily cap and for classifying what it bought.
   - A scenario is valid for 7 days. Telegram carries counts and state only.
-- **New feed reads:** `TossHoldingsFeed.bids` (the bid side, highest first) and `domestic_quantities`.
+- **New feed reads:** `TossHoldingsFeed.bids` (the bid side, highest first) and `domestic_quantities`. (Replaced
+  the same day by `free_shares`: `2026-11-11-g6-sell-sellable-quantity.md`.)
 - **Governance, in this PR** (the same set G6-buy's PR #1329 changed; nothing versioned was bumped there or here):
   - the env-gate roster's comment names the second call site in `toss_orders.py`. A set of paths cannot see a
     second site, so the capability is pinned by behaviour in `tests/test_mvp_runtime_holdings_autosell.py`;
