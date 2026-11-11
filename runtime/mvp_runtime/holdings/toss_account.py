@@ -117,6 +117,9 @@ KR_CALENDAR_PATH = "/api/v1/market-calendar/KR"
 US_CALENDAR_PATH = "/api/v1/market-calendar/US"
 # G6-buy limit orders (Thomas 2026-10-27): the price comes from the book; a placed order's fill is read back.
 ORDERBOOK_PATH = "/api/v1/orderbook"
+# G6-sell (Thomas 2026-11-11): what one symbol can be sold for now, net of shares already in a pending sell. A GET of
+# the account (spec 1.2.28, group ORDER_INFO); it places nothing.
+SELLABLE_PATH = "/api/v1/sellable-quantity"
 ACCOUNT_HEADER = "X-Tossinvest-Account"
 BROKERAGE = "BROKERAGE"
 
@@ -443,22 +446,17 @@ class TossHoldingsFeed:
                 continue
         return sorted(levels, reverse=True)
 
-    def domestic_quantities(self, *, timeout_seconds: int = 10) -> dict[str, float]:
-        """Shares held per domestic symbol, read now (G6-sell re-reads them right before a sell). A holding whose
-        quantity cannot be read is left out, so it counts as not held."""
+    def free_shares(self, symbol: str, *, timeout_seconds: int = 10) -> float:
+        """How many shares of ``symbol`` Toss would sell now (G6-sell re-reads it right before a sell). Unlike the
+        holding, it leaves out shares already in a pending sell, such as one Thomas placed in the app. An answer
+        without a readable number raises: a count that cannot be read holds the day, never guesses."""
         self._resolve_account(timeout_seconds=timeout_seconds)
-        overview = self._get(HOLDINGS_PATH, account=True, what="holdings", timeout_seconds=timeout_seconds)
-        if not isinstance(overview, dict):
-            raise ToolError("MALFORMED_RESULT", "holdings returned no overview")
-        out: dict[str, float] = {}
-        for row in overview.get("items") or []:
-            if not isinstance(row, dict) or row.get("marketCountry") != "KR":
-                continue
-            try:
-                out[str(row.get("symbol") or "").strip()] = float(row["quantity"])
-            except (KeyError, TypeError, ValueError):
-                continue
-        return out
+        row = self._get(SELLABLE_PATH, {"symbol": symbol}, account=True, what="sellable quantity",
+                        timeout_seconds=timeout_seconds)
+        try:
+            return float((row or {})["sellableQuantity"])
+        except (KeyError, TypeError, ValueError):
+            raise ToolError("MALFORMED_RESULT", "sellable quantity carried no readable number") from None
 
     def fill_state(self, order_id: str, *, timeout_seconds: int = 10) -> dict[str, Any]:
         """One placed order's status and filled quantity (``GET /api/v1/orders/{orderId}``), still a read."""

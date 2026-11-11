@@ -178,18 +178,27 @@ def test_a_rejected_sell_is_told_apart_from_an_unknown_one(monkeypatch):
         orders.sell_kr("069500", 1, price=40_000, client_order_id="c2")
 
 
-def test_the_feed_reads_the_bid_side_highest_first_and_the_shares_held(monkeypatch):
+def test_the_feed_reads_the_bid_side_highest_first_and_the_free_shares(monkeypatch):
     feed = _toss_feed()
     answers = {toss_account.ORDERBOOK_PATH: {"asks": [{"price": "101", "volume": "5"}],
                                              "bids": [{"price": "99", "volume": "3"}, {"price": "100", "volume": "2"},
                                                       {"price": "x", "volume": "1"}]},
-               toss_account.HOLDINGS_PATH: {"items": [{"marketCountry": "KR", "symbol": "069500", "quantity": "7"},
-                                                      {"marketCountry": "US", "symbol": "VT", "quantity": "1.5"},
-                                                      {"marketCountry": "KR", "symbol": "411060", "quantity": None}]}}
-    monkeypatch.setattr(feed, "_get", lambda path, *a, **kw: answers[path])
+               toss_account.SELLABLE_PATH: {"sellableQuantity": "7"}}
+    asked = []
+
+    def get(path, params=None, **kw):
+        asked.append((path, params, kw.get("account")))
+        return answers[path]
+
+    monkeypatch.setattr(feed, "_get", get)
     monkeypatch.setattr(feed, "_resolve_account", lambda **_kw: (7, "x"))
     assert feed.bids("069500") == [(100.0, 2.0), (99.0, 3.0)]
-    assert feed.domestic_quantities() == {"069500": 7.0}
+    assert feed.free_shares("069500") == 7.0
+    assert asked[-1] == ("/api/v1/sellable-quantity", {"symbol": "069500"}, True)
+    for bad in ({}, {"sellableQuantity": None}, {"sellableQuantity": "x"}, None):
+        answers[toss_account.SELLABLE_PATH] = bad
+        with pytest.raises(ToolError):
+            feed.free_shares("069500")
     answers[toss_account.ORDERBOOK_PATH] = {"asks": [{"price": "101", "volume": "5"}]}
     assert feed.bids("069500") == []                     # no bid side named: an empty side, which holds the day
 
@@ -337,8 +346,9 @@ class _Feed:
             return self.books[symbol]
         return [(self.bid.get(symbol, self.prices[symbol]), self.depth)]
 
-    def domestic_quantities(self, **_):
-        return dict(self.held)
+    def free_shares(self, symbol, **_):
+        self.reads.append(("sellable", symbol))
+        return self.held.get(symbol, 0.0)
 
     def fill_state(self, order_id, **_):
         return self.fills.get(order_id, {"status": "PENDING", "filled": 0})
@@ -521,6 +531,15 @@ def test_a_miss_holds_the_whole_scenario_for_the_day_and_the_next_trading_day_tr
     assert _run(tmp_path, orders=orders, now=NEXT_DAY) == "ordered:1"
 
 
+def test_shares_already_in_a_pending_sell_are_not_counted_again(tmp_path):
+    """100 held, but 80 sit in a sell Thomas placed in the app: Toss would sell 20, so 24 holds the day. The holding
+    alone would have passed, and the order would have been refused and stopped the scenario."""
+    _approved(tmp_path)
+    orders, feed = _Orders(), _Feed(held={"411060": 20.0})
+    assert _run(tmp_path, feed, orders) == "hold:holding_short" and orders.calls == []
+    assert ("sellable", "411060") in feed.reads and "판매 가능 수량" in sell.notice(tmp_path)[1]
+
+
 def test_a_bid_two_percent_under_the_last_is_still_placed(tmp_path):
     _approved(tmp_path)
     assert _run(tmp_path, _Feed(bid={"411060": 19_600})) == "ordered:1"
@@ -550,7 +569,7 @@ def test_with_the_sell_path_off_it_holds_and_says_so_once(tmp_path):
     assert _run(tmp_path, orders=_Off(), now=LATER) == "hold:orders_off" and sell.notice(tmp_path) is None
 
 
-@pytest.mark.parametrize("broken", ["kr_market_day", "stock_info", "last_prices", "bids", "domestic_quantities"])
+@pytest.mark.parametrize("broken", ["kr_market_day", "stock_info", "last_prices", "bids", "free_shares"])
 def test_a_read_that_fails_holds_and_never_half_orders(tmp_path, broken):
     _approved(tmp_path)
     feed, orders = _Feed(), _Orders()
@@ -653,7 +672,7 @@ def test_no_approval_replaces_a_scenario_with_an_open_order(tmp_path):
 def _store_feed():
     feed = toss_account.TossHoldingsFeed.__new__(toss_account.TossHoldingsFeed)
     stub = _Feed()
-    for name in ("kr_market_day", "stock_info", "last_prices", "bids", "domestic_quantities", "fill_state"):
+    for name in ("kr_market_day", "stock_info", "last_prices", "bids", "free_shares", "fill_state"):
         setattr(feed, name, getattr(stub, name))
     return feed
 

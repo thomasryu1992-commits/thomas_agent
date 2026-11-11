@@ -862,9 +862,9 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `closed_orders` | `not isinstance(orders, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `commission_rates` | `not isinstance(rows, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `daily_candles` | `not isinstance(candles, list)` |
-| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `domestic_quantities` | `not isinstance(overview, dict)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `fill_state` | `—` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `fill_state` | `not isinstance(row, dict)` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `free_shares` | `—` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `holdings_snapshot` | `not isinstance(overview, dict)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `listed_etfs` | `not isinstance(rows, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/holdings/toss_account.py` | `open_orders` | `not isinstance(orders, list)` |
