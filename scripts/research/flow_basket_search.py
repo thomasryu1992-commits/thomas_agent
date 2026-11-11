@@ -77,7 +77,8 @@ def ranked_counts(market: xsb.Market, features: tuple[str, ...], span: tuple[dat
 
 def reference_overlap(market: xsb.Market, candidate: bs.Candidate, span: tuple[date, date]) -> dict[str, Any]:
     """On decisions where both hold a basket: the share of the candidate's legs that the reference holds on the same
-    side. Positions only; a random basket of a fifth a side lands near a fifth of a fifth."""
+    side. Positions only; with a fifth of the members on each side, a random leg lands on the reference's side
+    about a fifth of the time."""
     monthly = _monthly(market, span)
     mine, theirs = bs.weigher(candidate, ms.FEATURES), bs.weigher(ms.CANDIDATES[REFERENCE], ms.FEATURES)
     shares = []
