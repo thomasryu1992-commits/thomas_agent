@@ -49,9 +49,9 @@ BUDGET = 5
 MIN_ROWS = 144                           # half of a day's 288 five-minute rows
 LONG_SPAN_FEATURES = frozenset({"oi_growth", "ls_level"})
 # M03 cleared the floor on 2026-11-10 but was measured on the coins the cache could rank (about 22 of 30). Thomas
-# 2026-11-11: re-measure on the refilled cache as M04. M03 as measured is never confirmed; the locked span stays shut
-# until M04 has a development result.
-FINAL: str | None = None
+# 2026-11-11: re-measure on the refilled cache as M04; M03 as measured is never confirmed. M04 cleared the floor on
+# 2026-11-11 (annual Sharpe 1.134 on the full cross-section), so the locked span is read once, for M04.
+FINAL: str | None = "M04"
 PLAN_LOOKBACK = 30                       # days before a member month that a 30-day feature reads
 # daily column -> (archive column, whether it is a long/short ratio to turn into a long share)
 COLUMNS = {

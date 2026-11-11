@@ -45,3 +45,10 @@ measured; `FINAL` is empty, so the confirm command opens for nothing. The same d
 is run once on a cache refilled by `plan` (each member month plus the 30 days before it). If M04 misses the floor
 the search closes with the locked span unread. A development pass by M04 is weak: it overlaps M03 on about three
 quarters of its coin-weeks, so the evidence is still the single confirm run.
+
+**M04 (2026-11-11).** The refill fetched 12,072 files; 164 days are not in the archive (asked twice). The rebuilt
+daily values keep all 56,083 old rows unchanged (fingerprint `7dbbbe7fb8e3b09c`). M04 ranks 30 coins and holds six a
+side on 134 of 157 development weeks and 74 of 91 locked-span weeks; every unranked coin-decision has a named cause
+(the exchange's empty all-account column in early 2022, days the archive does not serve, the stub files after a
+delisting). One development run: annual Sharpe 1.134 (M03 was 1.547), all three years positive. M04 is the final
+candidate, `FINAL = "M04"`, and the locked span is read once after the merge, on that fingerprint.
