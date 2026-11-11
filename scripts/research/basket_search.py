@@ -165,9 +165,12 @@ CANDIDATES: dict[str, Candidate] = {
 }
 
 
-def scores(market: xsb.Market, members: Sequence[str], day: date, candidate: Candidate) -> dict[str, float]:
-    """``{member: score}`` over the members that have every feature; ranks are percentiles in (0, 1]."""
-    values = {name: {s: FEATURES[name](market, s, day, candidate.lookback) for s in members}
+def scores(market: xsb.Market, members: Sequence[str], day: date, candidate: Candidate,
+           features: Mapping[str, Feature] | None = None) -> dict[str, float]:
+    """``{member: score}`` over the members that have every feature; ranks are percentiles in (0, 1].
+    ``features`` is another protocol's feature list (``metrics_basket_search``); None is this module's."""
+    features = FEATURES if features is None else features
+    values = {name: {s: features[name](market, s, day, candidate.lookback) for s in members}
               for name, _ in candidate.features}
     ranked = [s for s in members if all(values[name][s] is not None for name, _ in candidate.features)]
     out = dict.fromkeys(ranked, 0.0)
@@ -178,11 +181,11 @@ def scores(market: xsb.Market, members: Sequence[str], day: date, candidate: Can
     return out
 
 
-def weigher(candidate: Candidate) -> Callable[..., dict[str, float]]:
+def weigher(candidate: Candidate, features: Mapping[str, Feature] | None = None) -> Callable[..., dict[str, float]]:
     """A ``cross_section_basket.simulate`` weigher for one candidate (or, with ``seed``, its random twin)."""
     def weights(market: xsb.Market, members: Sequence[str], day: date, signal: str,
                 *, seed: str | None = None) -> dict[str, float]:
-        scored = scores(market, members, day, candidate)
+        scored = scores(market, members, day, candidate, features)
         vols = {s: _vol(market, s, day, candidate.lookback) for s in scored} if candidate.inverse_vol else {}
         usable = [s for s in scored if not candidate.inverse_vol or vols[s]]
         k = xsb.side_size(len(usable))
@@ -231,13 +234,14 @@ def annual_sharpe(daily: Mapping[date, Mapping[str, float]], start: date, end: d
     return round(statistics.fmean(values) / statistics.stdev(values) * math.sqrt(12), 3), values
 
 
-def measure(market: xsb.Market, candidate: Candidate, span: tuple[date, date]) -> dict[str, Any]:
+def measure(market: xsb.Market, candidate: Candidate, span: tuple[date, date],
+            features: Mapping[str, Feature] | None = None) -> dict[str, Any]:
     """One candidate over one span, on a market already cut at the span's end."""
     start, end = span
     monthly = xsb.universes(market, top_n=TOP_N, start=date(start.year, start.month, 1) - timedelta(days=1), end=end)
     monthly = {date(m.year, m.month, 1): v for m, v in monthly.items()}
     run = lambda **kw: xsb.simulate(market, CADENCE, monthly, start=start, end=end,  # noqa: E731
-                                    weigher=weigher(candidate), **kw)
+                                    weigher=weigher(candidate, features), **kw)
     sim = run()
     sharpe, values = annual_sharpe(sim["daily"], start, end)
     weeks = xsb.weekly(sim["daily"])
