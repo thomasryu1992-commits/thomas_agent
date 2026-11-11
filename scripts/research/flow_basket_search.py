@@ -44,6 +44,7 @@ REFERENCE = "M04"                         # the screened candidate a pass is com
 
 # The attempts, in the order they were run. Each is added in its own commit, run once, and recorded before the next.
 CANDIDATES: dict[str, bs.Candidate] = {
+    "F01": bs.Candidate(why="상위 트레이더 추종: 상위 트레이더(증거금이 큰 계정)의 롱 비중이 높은 코인을 사고 낮은 코인을 판다. 더 잘 아는 쪽을 따라간다는 가설.", features=(("top_level", 1.0),)),
 }
 
 
