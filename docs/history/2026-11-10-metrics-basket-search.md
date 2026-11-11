@@ -39,3 +39,9 @@ decision day (0 of 3,557 and 2,036 ranked pairs lean on a later month's membersh
 same shape as the development span. Four development weeks in early 2022 had no basket because the exchange's
 all-account column is empty from 2021-12-31 to 2022-01-19. Thomas's go-ahead rested on the uncorrected text, so
 the confirm run was held and the choice is asked as Q3. Nothing was rebuilt or fetched.
+
+**Re-measurement (Thomas 2026-11-11, "30개 전체로 다시").** M03 is withdrawn as final and is never confirmed as
+measured; `FINAL` is empty, so the confirm command opens for nothing. The same definition is registered as M04 and
+is run once on a cache refilled by `plan` (each member month plus the 30 days before it). If M04 misses the floor
+the search closes with the locked span unread. A development pass by M04 is weak: it overlaps M03 on about three
+quarters of its coin-weeks, so the evidence is still the single confirm run.

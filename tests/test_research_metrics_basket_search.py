@@ -129,6 +129,18 @@ def test_the_registry_stays_inside_the_budget_and_the_feature_list():
         assert candidate.features and {name for name, _ in candidate.features} <= set(ms.FEATURES)
 
 
+def test_the_fetch_plan_covers_the_lookback_before_every_member_month():
+    monthly = {date(2024, 2, 1): ["NEW", "OLD"], date(2024, 3, 1): ["OLD"], date(2024, 6, 1): ["NEW"],
+               date(2026, 9, 1): ["LATE"]}
+    plan = ms.fetch_plan(monthly, end=date(2026, 9, 20))
+    # a coin new in February needs January's days: oi_growth on Feb 1 reads Jan 2 (30 days back)
+    assert ("NEW", date(2024, 1, 2), date(2024, 2, 29)) in plan
+    assert ("NEW", date(2024, 5, 2), date(2024, 6, 30)) in plan          # a gap makes a second span
+    assert ("OLD", date(2024, 1, 2), date(2024, 3, 31)) in plan          # adjoining months merge
+    assert ("LATE", date(2026, 8, 2), date(2026, 9, 20)) in plan         # nothing past the end
+    assert len(plan) == 4 and ms.PLAN_LOOKBACK == 30
+
+
 def test_build_writes_daily_values_and_load_reads_them_back(tmp_path):
     day = date(2023, 5, 7)
     folder = tmp_path / "archive-metrics" / "metrics" / "ABCUSDT"

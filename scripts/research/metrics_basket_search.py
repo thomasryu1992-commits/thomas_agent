@@ -2,7 +2,8 @@
 
 ``docs/proposals/METRICS_BASKET_SEARCH_V0.1.md`` (Thomas 2026-11-10: "진행"). The engine, the rule and the locked
 span are ``basket_search``'s; only the feature list and the development spans differ. ``explore`` and ``confirm`` run
-in the research sandbox and write nothing; ``build`` runs on the host and writes only the derived daily file.
+in the research sandbox and write nothing; ``build`` runs on the host and writes only the derived daily file;
+``plan`` runs on the host and prints the ``symbol first last`` spans to fetch (:func:`fetch_plan`).
 
 - **Source:** the archive's daily ``metrics`` files (5-minute rows), already in the research cache.
 - **Daily value:** the mean of a UTC day's rows, per column, when at least :data:`MIN_ROWS` of them carry a value.
@@ -47,7 +48,11 @@ CONFIRM = bs.CONFIRM
 BUDGET = 5
 MIN_ROWS = 144                           # half of a day's 288 five-minute rows
 LONG_SPAN_FEATURES = frozenset({"oi_growth", "ls_level"})
-FINAL: str | None = "M03"              # the first candidate over the floor on its development span (2026-11-10)
+# M03 cleared the floor on 2026-11-10 but was measured on the coins the cache could rank (about 22 of 30). Thomas
+# 2026-11-11: re-measure on the refilled cache as M04. M03 as measured is never confirmed; the locked span stays shut
+# until M04 has a development result.
+FINAL: str | None = None
+PLAN_LOOKBACK = 30                       # days before a member month that a 30-day feature reads
 # daily column -> (archive column, whether it is a long/short ratio to turn into a long share)
 COLUMNS = {
     "oi": ("sum_open_interest", False),
@@ -97,6 +102,31 @@ def build(cache: Path, *, say: Any = print) -> int:
         written += len(lines)
     say(f"built {written} symbol-day(s) under {derived_path(cache, 'X').parent}")
     return written
+
+
+def fetch_plan(monthly: Mapping[date, Iterable[str]], *, lookback: int = PLAN_LOOKBACK,
+               end: date = CONFIRM[1]) -> list[tuple[str, date, date]]:
+    """The metrics days a ``lookback``-day feature reads: each member month and the ``lookback`` days before it,
+    merged into ``(symbol, first, last)`` spans for ``binance_archive.py fetch``. A coin new to the universe needs
+    the days before its first month, or it stays unranked for most of that month (the 2026-11-10 correction)."""
+    days: dict[str, set[date]] = {}
+    for month, members in monthly.items():
+        nxt = date(month.year + (month.month == 12), month.month % 12 + 1, 1)
+        for symbol in members:
+            day = month - timedelta(days=lookback)
+            while day < nxt and day <= end:
+                days.setdefault(symbol, set()).add(day)
+                day += timedelta(days=1)
+    out = []
+    for symbol in sorted(days):
+        first = last = None
+        for day in sorted(days[symbol]):
+            if last is not None and day - last > timedelta(days=1):
+                out.append((symbol, first, last))
+                first = None
+            first, last = first or day, day
+        out.append((symbol, first, last))
+    return out
 
 
 def load_daily(cache: Path) -> Daily:
@@ -159,6 +189,7 @@ CANDIDATES: dict[str, bs.Candidate] = {
     "M01": bs.Candidate(why="쏠림 역행: 전체 계정의 롱 비중이 낮은 코인을 사고 높은 코인을 판다. 개인 계정이 몰린 쪽이 진다는 가설.", features=(("ls_level", 1.0),), long_low=True),
     "M02": bs.Candidate(why="레버리지 과열 역행: 미결제약정이 30일 동안 가장 많이 늘어난 코인을 팔고 가장 덜 늘어난 코인을 산다.", features=(("oi_growth", 1.0),), long_low=True),
     "M03": bs.Candidate(why="M01과 M02가 둘 다 양이었다. 한 점수로 섞는다: 미결제약정이 덜 늘고 전체 계정의 롱 비중도 낮은 코인을 사고, 반대를 판다.", features=(("oi_growth", 1.0), ("ls_level", 1.0)), long_low=True),
+    "M04": bs.Candidate(why="M03과 같은 정의를, 새로 든 코인의 30일 전 지표까지 받은 캐시에서 다시 잰다(Thomas 2026-11-11). M03은 지난달에도 상위 30이던 코인에서만 골랐다.", features=(("oi_growth", 1.0), ("ls_level", 1.0)), long_low=True),
 }
 
 
@@ -169,7 +200,7 @@ def dev_span(candidate: bs.Candidate) -> tuple[date, date]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="metrics_basket_search", description=__doc__.splitlines()[0])
-    parser.add_argument("command", choices=("list", "build", "explore", "confirm"))
+    parser.add_argument("command", choices=("list", "plan", "build", "explore", "confirm"))
     parser.add_argument("--candidate", default=None)
     parser.add_argument("--cache", type=Path, default=None, help="default: $RESEARCH_CACHE")
     args = parser.parse_args(argv)
@@ -181,6 +212,17 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_OK
     if args.command == "build":
         build(cache)
+        return EXIT_OK
+    if args.command == "plan":                        # host: volumes and dates only, for the fetch
+        snapshot = xsb.read_contract_types(cache / "archive")
+        if snapshot is None:
+            print(f"BLOCKED: no contract types under {cache / 'archive'}", file=sys.stderr)
+            return EXIT_BLOCKED
+        market = xsb.load_market(cache / "archive", funding=False)
+        market.contract_types = snapshot[0]
+        monthly = xsb.universes(market, top_n=bs.TOP_N, start=DEV_LONG[0], end=CONFIRM[1])
+        for symbol, first, last in fetch_plan(monthly):
+            print(symbol, first.isoformat(), last.isoformat())
         return EXIT_OK
     if not xsb._in_sandbox():
         print("refused: runs in the research sandbox only (scripts/research/sandbox_run.sh)", file=sys.stderr)
