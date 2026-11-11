@@ -134,7 +134,9 @@ SWAP = {"preflight": {"_resolves": OFFLINE_RESOLVES}}
 
 # Sources cut by keeping, not removing: only these top-level names survive, plus the imports in KEEP_IMPORTS.
 KEEP = {"tistory_queue": {"KST", "MARGIN_MIN", "SLOTS", "NEW_SINCE", "NEW_PER_DAY", "ONLY_PER_DAY",
-                          "fm", "kind", "key", "jitter", "is_new"}}
+                          "fm", "kind", "key", "jitter", "is_new",
+                          # vault 45b4cb52 (Thomas 2026-11-11, four a day): the new and old slots, the fast slot and its cap
+                          "OLD_SLOTS", "NEW_SLOTS", "FAST_SLOT", "SLOT_CUTOVER", "FAST_PER_DAY", "is_fast", "slots_for"}}
 KEEP_IMPORTS = {"re", "sys", "os", "glob", "json", "datetime", "hashlib"}
 
 # P7 (2026-11-05): sources in the server scripts' git, cut by keeping. Each keeps its own import set.

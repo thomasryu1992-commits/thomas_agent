@@ -25,9 +25,15 @@ each reported Tistory draft gets five checks:
   the queue placed while planning). Any other draft with an old ``scheduled`` is left out: a draft the Mac's variety
   pass held keeps its slot in the file, and the queue hands that slot to the next draft.
 - ``only_cap`` / ``new_cap``: that day holds at most ``ONLY_PER_DAY`` Tistory-only posts and ``NEW_PER_DAY`` new
-  ones, counting this draft at its reported slot (null when the cap does not apply to the draft).
+  ones, counting this draft at its reported slot (null when the cap does not apply to the draft). Fast posts
+  (``fast: true``, Thomas 2026-11-11) are outside both counts; for a fast draft ``only_cap`` is the fast cap instead
+  (at most ``FAST_PER_DAY`` fast posts that day) and ``new_cap`` is null, so the record's closed shape does not move.
 - ``after_run``: the slot lies at least ``MARGIN_MIN`` minutes after the run started (the queue's cutoff).
 The same-day 1-C conflict, ``variety`` and ``browser_check`` are not checked.
+
+**Fast drafts** (Thomas 2026-11-11: four a day, three regular and one fast). A Naver draft with ``fast: true`` is
+compared with ``next_fast``, not ``next_slot``: the evening slot of the day after the draft was written, taken from its
+``created`` date (no ``created`` gives ``no_created``). The rule leaves fast drafts out of the regular days and windows.
 
 **Affiliate placements** (v0.3, 2026-11-05) are Naver posts too. ``blog-affiliate-place.py`` moves a stock draft to
 ``content/naver/제휴/<N>편-<slug>.md`` with the slot the writer chose, and the run report names it under
@@ -50,7 +56,7 @@ import json
 import os
 import re
 from collections.abc import Iterator
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -97,12 +103,13 @@ def _tail(ns: Any, vault: str, me: str) -> dict[str, Any]:
     days: dict[str, set[int]] = {}
     counted = 0
     for f, d in ns.drafts(vault):
-        if os.path.basename(f) == me or d.get("status") != "draft":
+        if os.path.basename(f) == me or d.get("status") != "draft" or ns.is_fast(d):
             continue
         counted += 1
         w = ns.when(d.get("scheduled", ""))
-        if w:
-            days.setdefault(w[0], set()).add(ns.window_of(w[1]) if w[1] else -1)
+        if w:   # the same reading as the rule's next_slot: a day from the cutover on is counted by order
+            days.setdefault(w[0], set()).add(len(days.get(w[0], ())) if w[1] and w[0] >= ns.CUTOVER
+                                             else ns.window_of(w[1]) if w[1] else -1)
     last = max(days) if days else None
     return {"date": last, "windows": sorted(days[last]) if last else [], "drafts": counted}
 
@@ -131,15 +138,22 @@ def compare_draft(vault_root: Path, draft: Mapping[str, Any], *, affiliate: bool
         row["state"] = "no_slot"
         return row
     row["reported"] = reported
-    now = ns.fm(path.read_text(encoding="utf-8")).get("scheduled") or None
+    front = ns.fm(path.read_text(encoding="utf-8"))
+    now = front.get("scheduled") or None
     row["file_now"] = now if isinstance(now, str) and _SLOT.match(now) else None
     row["moved"] = row["file_now"] != reported
     ns.configure(vault_root)
     me = path.name
+    fast = ns.is_fast(front)
+    written = re.match(r"\d{4}-\d{2}-\d{2}", front.get("created") or "")
+    if fast and not written:
+        row["state"] = "no_created"
+        return row
     try:
         with _as_of(ns, episode, me):
             row["tail"] = _tail(ns, ns.VAULT, me)
-            computed = ns.next_slot(ns.VAULT, str(path))
+            computed = (ns.next_fast(ns.VAULT, str(path), today=date.fromisoformat(written[0])) if fast
+                        else ns.next_slot(ns.VAULT, str(path)))
     except SystemExit:          # the rule's own refusal: no draft has a scheduled day to continue from
         row["state"] = "no_tail"
         return row
@@ -208,12 +222,15 @@ def check_tistory(vault_root: Path, draft: Mapping[str, Any], started_at: Any,
         except ValueError:
             started = None
         at = datetime.combine(datetime.fromisoformat(day).date(), time.fromisoformat(reported[11:]), tq.KST)
+        regular = [r for r in on_day if not tq.is_fast(r)]
         checks = {
             "minute": reported[11:] == tq.jitter(folded[11:], path.name),
             "unique": not any(tq.key(when) in (folded, day) for _, when in others),
-            "only_cap": sum(1 for r in on_day if tq.kind(r) != "conversion") <= tq.ONLY_PER_DAY
-            if tq.kind(me) != "conversion" else None,
-            "new_cap": sum(1 for r in on_day if tq.is_new(r)) <= tq.NEW_PER_DAY if tq.is_new(me) else None,
+            "only_cap": (sum(1 for r in on_day if tq.is_fast(r)) <= tq.FAST_PER_DAY if tq.is_fast(me)
+                         else sum(1 for r in regular if tq.kind(r) != "conversion") <= tq.ONLY_PER_DAY
+                         if tq.kind(me) != "conversion" else None),
+            "new_cap": (sum(1 for r in regular if tq.is_new(r)) <= tq.NEW_PER_DAY
+                        if tq.is_new(me) and not tq.is_fast(me) else None),
             "after_run": at >= started + timedelta(minutes=tq.MARGIN_MIN) if started is not None else None,
         }
     except Exception as exc:  # noqa: BLE001 — one draft's crash is recorded, never the whole report's
