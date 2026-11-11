@@ -23,3 +23,8 @@ what trend-following adds over holding. The directions and the two lookbacks wer
 **Why development stops at 2024-12-31 in code.** The confirm span was read once by M04 and its breakdown is known;
 the record said later candidates are checked forward only. `check_development_span` makes both tools refuse a span
 that reaches it. Using it as development data is asked as a question, not taken.
+
+**Result.** Nothing cleared the entry rule. Flow baskets: F01 −0.769, F02 0.782, F03 0.575. Trend excess: T01
+0.056, T02 −0.365. The full trend book at 30 days shows a Sharpe of 1.361 beside an always-long 0.677, and at 90
+days 0.398 beside 0.666: one lookback, one bear year. It was a shown-only number under a rule fixed before the run,
+and it is recorded as that. Both searches are closed and no forward slot is asked for.
