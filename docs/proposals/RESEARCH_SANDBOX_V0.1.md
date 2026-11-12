@@ -95,6 +95,9 @@ Claude가 비밀을 보지 않고도 측정을 혼자 반복하게 한다. 키�
 - **Deribit 공개 시세 (2026-11-10, `RESEARCH_DATA_SOURCES_V0.1.md` Q1):** `scripts/research/fetch_deribit.py`가 DVOL 일봉(BTC·ETH)을 키 없이 받아 `~/research/cache/deribit/`에 쌓는다.
   - 요청 사이 1초 이상, 다시 시도하지 않음, 200이 아니거나 오류 응답이면 멈춤, 팩토리 창(08:00 – 09:00 UTC)에는 받지 않음.
   - 닫힌 날만 쓰고, 이미 받은 날은 다시 받지 않는다. 운영 런타임은 이 출처를 읽지 않는다.
+- **전 종목의 최우선 호가 (2026-11-12, `SPREAD_OBSERVATION_V0.1.md` P1 – P5):** `scripts/research/spread_sample.py`가 `GET /fapi/v1/ticker/bookTicker`를 15분에 한 번 불러 `~/research/cache/spread/`에 쌓는다. 요청 가중치 5, 키 없음.
+  - 이 절의 수집 가운데 처음으로 일정(`claude` 계정의 cron)에 따라 돈다. 위의 IP 예산 규칙을 그대로 지킨다: 팩토리 창에는 부르지 않고, 429·418이나 사용량 1,200 이상이면 그 회차를 적지 않고 멈추며, 다시 시도하지 않는다.
+  - 표시 전용이다. 운영 런타임은 이 출처를 읽지 않고, 판정이나 탐색의 신호로 쓰지 않는다.
 
 ### 4.3 샌드박스 실행 (계산 평면)
 
