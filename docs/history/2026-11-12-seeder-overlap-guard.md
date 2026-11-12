@@ -57,3 +57,10 @@ liquidation door refusing one entry in the first) through `record_seed`, dry and
 edges; the start-of-walk rule; the live append left alone; the same case
 through the real `seed_lineage` with only the fetch replaced; and `main` going on past a refusal to the other
 contexts and ending blocked. Twenty-two mutations of the rule and of the seeder's handling were each caught.
+
+**Decided after the merge (Thomas 2026-11-12, "기본값대로").** Both open questions took their defaults. The four
+existing rows stay as they are, on record only: the store is sealed and append-only, and what the judge counts is
+not changed, so that lineage is still counted at 27 rows where one past gives 24 or 26. A context the guard refuses
+stays refused, with no override added: it gets no further seeded rows, its live rows accrue as before, and since the
+seeder is a hand-run tool that re-walks every context, each run names it again and ends ``EXIT_BLOCKED`` until the
+walk and the store agree. Deploying the guard is not part of this decision.
