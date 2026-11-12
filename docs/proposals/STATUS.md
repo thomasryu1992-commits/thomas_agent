@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **124**건: `DRAFT` 3 · `PARTIALLY DECIDED` 12 · `DECIDED` 34 · `IMPLEMENTED` 64 · `SUPERSEDED` 4 · `RECORD` 7
+제안서 **125**건: `DRAFT` 4 · `PARTIALLY DECIDED` 12 · `DECIDED` 34 · `IMPLEMENTED` 64 · `SUPERSEDED` 4 · `RECORD` 7
 
-## Thomas 결정 대기 (15)
+## Thomas 결정 대기 (16)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -25,6 +25,7 @@
 | [H6C_UNIT_AUTHORITY_V0.1.md](H6C_UNIT_AUTHORITY_V0.1.md) | `DRAFT` | 2026-11-04 | H6c(G1d, unit 권위 전환)의 결정 패킷 초안이다. **지금 묻지 않는다.** Claude 도어의 `holdings_status`에 `h6c_askable`이 서면 HQ1–HQ7을 묻는다(HQ7은 2026-11-11에 더했다)(`H6B_UNIT_SHADOW_V0.1.md` S5). 그때까지 코드, 정책, env, 스케줄은 바뀌지 않는다. 미리 써 두는 이유는 조건이 갖춰지는 날 바로 묻기 위해서다. 같은 날 Thomas가 해야 할 일(§2의 입금·출금)도 여기에 적는다. |
 | [CRYPTO_DESIGN_REVIEW_V0.1.md](CRYPTO_DESIGN_REVIEW_V0.1.md) | `PARTIALLY DECIDED` | 2026-11-11 | Thomas: 해결 방안을 권한 순서대로 진행한다("해결방안을 순서대로 진행하고 검증까지 진행해서 보고해"). 같은 날 결과: 방안 3(`POSITIONING_DIVERGENCE_V0.1`)은 ENTRY_FAIL, 방안 5(`VARIANCE_PREMIUM_V0.1`)는 PROXY_FAIL로 둘 다 닫았다(§4). 방안 1의 문서 정정은 이 문서와 함께 병합됐고, read door는 별도 PR(#1420)이며, 알림은 Thomas의 root `at` 작업으로 남아 있다. Q2는 2026-11-11에 답을 받았다: 새 후보의 진입 조건에 포지션 총액 대비 연 순수익 15%를 더한다("순서대로 전부", §5). 남은 질문은 둘이다: Q1은 2026-11-14 mint 판독 뒤에 묻고, Q3은 2단계 확인 규칙 쪽이 `SCREEN_STAGE2_V0.1`로 정해졌고(2026-11-11, 첫 선별 판정 전에 정한다) 현물 실행 경로를 언제 정하는지만 남았다. 이 문서가 바꾸는 코드, 판정 규칙, 일정은 없다. |
 | [FACTORY_GENERATOR_REDESIGN_V0.1.md](FACTORY_GENERATOR_REDESIGN_V0.1.md) | `PARTIALLY DECIDED` | 2026-11-12 | Thomas 2026-11-12: F1 – F4를 기본값대로 정했다("기본값대로 하고 factory는 좋은 방향이 있으면 수정하자"). 바스켓을 factory의 단위로 넣지 않고(G1), 순위 유니버스를 넓히지 않는다(G2). **그 뒤의 선행 확인(§9)에서 둘이 바뀌었다.** 청산 계열(G3)은 내지 않는다: 1d에서는 자료가 닿지 않고, 1h·4h에서는 전날 합계만 읽으며, 같은 자료의 미결제약정 계열이 같은 수정 뒤에 사라졌다. 그리고 가설 트라이얼 통로가 한도 4개에 막혀 2026-09-28부터 새 트라이얼이 열리지 못했다. F5(거래 없는 트라이얼 셋을 닫는다)와 F6(다시 막히지 않게 하는 규칙을 2026-11-14 뒤 PR로 낸다)도 같은 날 기본값대로 정했다. **Thomas가 방향을 더했다(§9.4): 전략의 개수를 막지 말고 최대한 많이 가져가며, 많아졌을 때의 변수를 정리한다.** 그 정리는 따로 쓰는 문서에서 하고, 트라이얼 한도 자체는 거기서 다시 본다. 가설 양식을 트라이얼 제안에 넣는 것(G5)은 2026-11-14 뒤 F6과 같은 PR에 담는다. "좋은 방향이 있으면 수정하자"는 Claude가 이렇게 읽었다: 가설 양식을 채운 방향이 서면 factory의 생성 쪽 변경을 PR로 가져온다. 검증 장치와 판정 규칙, 병합 승인, 2026-11-14 판독은 그대로다. factory는 이 문서로 바뀌지 않았다. |
+| [POOL_OVERLAP_MEASUREMENT_V0.1.md](POOL_OVERLAP_MEASUREMENT_V0.1.md) | `DRAFT` | 2026-11-12 | Thomas 2026-11-12: 측정을 제안서로 쓴다("제안서 쓰기", `SAME_SYMBOL_NETTING_AND_RISK_BUDGET_V0.1` N1). 무엇을 셀지를 돌리기 전에 고정한다. 아직 아무것도 세지 않았다. §5의 O1에 답을 받으면 도구를 짓고 한 번 돌린다. |
 | [SAME_SYMBOL_NETTING_AND_RISK_BUDGET_V0.1.md](SAME_SYMBOL_NETTING_AND_RISK_BUDGET_V0.1.md) | `DRAFT` | 2026-11-12 | Thomas 2026-11-12: 설계 문서를 지금 쓴다("기본값대로", `MANY_STRATEGIES_V0.1` M2, 설계만). 이 문서는 설계의 뼈대와 아직 풀지 못한 문제를 적는다. 아무것도 짓지 않았고, 측정하지 않았다. 기본값은 모두 "짓지 않는다"이다. §8의 N1에 답을 받으면 측정 하나를 따로 제안한다. |
 | [SPOT_SHARE_SEARCH_V0.1.md](SPOT_SHARE_SEARCH_V0.1.md) | `PARTIALLY DECIDED` | 2026-11-12 | Thomas 2026-11-12: 현물 비중을 한 번, M04와의 겹침 조건을 걸고 잰다("기본값대로", `SEARCH_CANDIDATE_SURVEY_V0.1` V1). **결과: 넘지 못했다.** S01(현물 비중이 높은 쪽을 산다)의 연 샤프는 0.455이고 포지션 총액 대비 연 12.25%다(기준 1.0과 15%). 예산 한 번을 써서 닫았고 forward 선별에 올릴 것은 없다. **남은 질문:** 탐색 전에 Claude가 고정한 세부인 §5의 Q1 – Q3(창과 구간, 겹침 한도, 같은 자산 확인)은 기본값으로 진행했고 Thomas의 답을 기다린다. |
 
