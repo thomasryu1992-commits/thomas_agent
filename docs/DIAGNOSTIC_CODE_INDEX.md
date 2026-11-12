@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **661** distinct codes across **1359** raise sites
+- **662** distinct codes across **1360** raise sites
 - **22** exception classes carry them
 - **65** codes are raised from more than one module (see below)
 - **179** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -485,6 +485,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `FORWARD_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | `read_sealed_rows` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
 | `FORWARD_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | `read_sealed_rows` | `record.get('provenance') != provenance` |
 | `FORWARD_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | `read_sealed_rows` | `—` |
+| `FORWARD_SEED_DIVERGED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | `assert_seed_agrees` | `clashes` |
 | `FRONTDESK_ROLE_HASH_MISMATCH` | `OperatorBlocked` | `runtime/mvp_runtime/frontdesk.py` | `_require_active_role` | `actual != expected` |
 | `FRONTDESK_ROLE_INACTIVE` | `OperatorBlocked` | `runtime/mvp_runtime/frontdesk.py` | `_require_active_role` | `entry.get('status') != 'active'` |
 | `FRONTDESK_ROLE_MISCONFIGURED` | `OperatorBlocked` | `runtime/mvp_runtime/frontdesk.py` | `_require_active_role` | `entry.get('routable') is not False` |
