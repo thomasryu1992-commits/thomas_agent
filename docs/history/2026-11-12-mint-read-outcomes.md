@@ -27,8 +27,20 @@ inside. Causes are not listed, because the topup code was not traced for this.
 (F6), the design review's Q1 and the netting stage-1 proposal do not, so they open once the read is done, whatever it
 says. Anything that changes templates, families or the rotation would wait for a re-registered window, if one is set.
 
-**What was already seen of the window.** 2026-10-24 and three fires of 10-25, both in the document since 10-25.
-Nothing after that was read while writing this.
+**What was already seen of the window.** The six-family share is known for 2026-10-24 and three fires of 10-25, in the
+document since 10-25, and was never computed after that. The same file was read for other work, though: row counts by
+context and by derivation type (11-05, 11-10), row counts per day from 11-01 (11-10), the trial rows, and the ids and
+mint times of the lineages in the forward book (11-12). My first draft said the rest of the window "was not read"; the
+session's own command record says otherwise, and the section now lists what was looked at. No count by family was.
+
+**One reading is the tool's, not the registration's.** The share leaves crossover rows out of both numerator and
+denominator. The registered words drop the crossover COUNT as a criterion and compute the expectation at zero
+crossover; they do not say the rows leave the share. The tool has done it that way since it was written on 11-10,
+before any window share was computed. It is listed in Q5 as its own item.
+
+**The read is made mechanical.** The first output goes to a file that refuses to be overwritten, over a snapshot
+resolved to its named directory. The registered 36% and 37.5% decide; the pre-fix BTCUSDT 1h fires move the expectation
+by at most 0.25 points and are a note, not a second verdict.
 
 Open: Q5 (keep this reading and these actions), default yes. The read happens once on 11-14 under the registered
 criteria whether or not Q5 is answered.
