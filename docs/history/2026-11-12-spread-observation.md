@@ -26,3 +26,12 @@ the env gate list, because the runtime does not read it); the sandbox doc now sa
 **The stall question is only half answered.** The monthly refresh prints the coverage on one line, so a dead
 sampler shows within a month. An alert within a day would have to live in root's watch, which is a blog watch
 and root's to install. That is asked as P6 after the first month shows how often samples are actually missed.
+
+**The install, and two things it taught.** The code is pinned as a `git archive` export of the merged commit, not
+as a worktree: merged worktrees get swept on this host, and an export cannot drift with a branch. The exact cron
+command was run once under an empty environment before it was installed, which gave the first real sample; then
+two consecutive cron slots were watched. The windows suite had failed on the cron-line test because the line was
+built from `Path` objects, which spell themselves with backslashes there; the line is for a Linux crontab, so it
+now spells its paths the POSIX way on every platform. And `crontab <file>` could not read a file under the
+session's scratchpad (it reported a truncated path), so the new table was installed from `~/research/spread/`.
+
