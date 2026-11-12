@@ -49,9 +49,9 @@ def _market(*, spot_leads: bool = True, crowded_like_m04: bool | None = None):
     return perp, spot, metrics
 
 
-def _held(perp, spot, metrics=None, listing=None):
+def _held(perp, spot, metrics=None, listing=None, files=None):
     listing = set(spot.bars) if listing is None else listing
-    return sp.attach(ms.cut(perp, metrics or {}, SPAN[1]), spot, listing, SPAN[1])
+    return sp.attach(ms.cut(perp, metrics or {}, SPAN[1]), spot, listing, SPAN[1], files)
 
 
 def test_the_share_is_spot_over_spot_plus_perp_and_reads_the_decision_day_and_earlier_only():
@@ -109,17 +109,23 @@ def test_every_unranked_member_gets_a_named_cause_or_is_unexplained():
     for k in range(15):                                              # S05's ticker is another coin for 15 days
         d = decision - timedelta(days=k)
         spot.bars["S05USDT"][d] = xsb.Bar(open=1.0, close=spot.bars["S05USDT"][d].close * 3, quote_volume=1.0)
-    for k in range(3, 16):                                           # S06 lacks bars inside its own range, in a served month
-        del spot.bars["S06USDT"][decision - timedelta(days=k)]
+    for k in range(3, 16):                                           # S06 and S08 lack bars inside their own range,
+        del spot.bars["S06USDT"][decision - timedelta(days=k)]       # in a served month: S06's file is on disk
+        del spot.bars["S08USDT"][decision - timedelta(days=k)]       # (the pair was halted), S08's is not
     served = {name: ["2021-12", "2022-01", "2022-02", "2022-03"] for name in spot.bars}
     served["S03USDT"] = ["2022-03"]
-    held = _held(perp, spot, listing=listing)
+    files = {"S06USDT": {"2022-02", "2022-03"}, "S08USDT": {"2022-03"}}
+    held = _held(perp, spot, listing=listing, files=files)
     counts = sp.ranked_counts(held, HIGH, span, served)
-    assert counts["decisions"] == 1 and counts["members_ranked_side_weeks"] == [[30, 24, 4, 1]]
+    assert counts["decisions"] == 1 and counts["members_ranked_side_weeks"] == [[30, 23, 4, 1]]
     assert counts["unranked_by_cause"] == {
         "no spot pair": 1, "the perp is younger than the window": 1, "the archive does not serve the spot month": 1,
-        "outside the spot pair's first and last day": 1, "another asset under the same ticker": 1, "UNEXPLAINED": 1}
-    assert counts["unexplained_count"] == 1 and counts["unexplained"] == [("S06USDT", decision.isoformat())]
+        "outside the spot pair's first and last day": 1, "another asset under the same ticker": 1,
+        "the spot file on disk holds no bar for the day": 1,
+        "UNEXPLAINED + the spot file on disk holds no bar for the day": 1}
+    assert counts["unexplained_count"] == 1 and counts["unexplained"] == [("S08USDT", decision.isoformat())]
+    blind = sp.ranked_counts(_held(perp, spot, listing=listing), HIGH, span, served)       # no file list: never excused
+    assert blind["unexplained_count"] == 2
     clean_perp, clean_spot, _ = _market()
     whole = sp.ranked_counts(_held(clean_perp, clean_spot), HIGH, SPAN, {})
     assert whole["members_ranked_side_weeks"] == [[30, 30, 6, 52]] and whole["unexplained_count"] == 0
@@ -242,3 +248,11 @@ def test_the_fingerprint_follows_the_spot_files_and_the_served_months(tmp_path):
     sp.derived_dir(tmp_path).mkdir(parents=True)
     (sp.derived_dir(tmp_path) / sp.SERVED_FILENAME).write_text('{"AUSDT": ["2022-01"]}', encoding="utf-8")
     assert len({one, two, sp.fingerprint(tmp_path, ["AUSDT"])}) == 3
+
+
+def test_the_months_on_disk_are_read_from_the_spot_folder(tmp_path):
+    folder = tmp_path / sp.SPOT_DIR / sp.KLINES / "AUSDT"
+    folder.mkdir(parents=True)
+    for name in ("AUSDT-1d-2022-10.zip", "AUSDT-1d-2022-11.zip", "notes.txt"):
+        (folder / name).write_bytes(b"x")
+    assert sp.months_on_disk(tmp_path) == {"AUSDT": {"2022-10", "2022-11"}}

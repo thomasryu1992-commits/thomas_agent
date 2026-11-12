@@ -15,8 +15,8 @@ condition). The engine, universe, cadence, costs and entry rule are ``basket_sea
   old LUNA and the new one). A day enters the window only when the perp's close is within :data:`PRICE_BAND` of the
   spot's close (times 1000 for a ``1000``-prefixed perp whose spot pair is unprefixed).
 - **Every unranked member has a named cause**, or nothing runs: no spot pair, the perp is younger than the window,
-  the archive does not serve the spot month, the day is outside the spot pair's own first and last day, or the
-  ticker is another asset.
+  the archive does not serve the spot month, the day is outside the spot pair's own first and last day, the
+  ticker is another asset, or (added after the first counts) the month's file on disk holds no bar for the day.
 - **Span:** :data:`basket_search.DEV`, the same 60 months as the ten price attempts. The universe has under four
   members until 2020-04, so the first weeks hold no basket; that is the span's own shape, not a choice made here.
 
@@ -91,11 +91,23 @@ def pair_of(perp: str, spot_listing: set[str]) -> tuple[str, float] | None:
     return pair, 1.0
 
 
-def attach(held: xsb.Market, spot: xsb.Market, spot_listing: set[str], end: date) -> xsb.Market:
-    """Hang the spot bars (cut at ``end``) and each perp's pair on a market already cut at ``end``."""
+def attach(held: xsb.Market, spot: xsb.Market, spot_listing: set[str], end: date,
+           files: Mapping[str, set[str]] | None = None) -> xsb.Market:
+    """Hang the spot bars (cut at ``end``) and each perp's pair on a market already cut at ``end``. ``files`` is
+    the spot months on disk per pair; the causes read it, the feature does not."""
     held.spot = {s: {d: b for d, b in bars.items() if d <= end} for s, bars in spot.bars.items()}
     held.spot_of = {perp: pair_of(perp, spot_listing) for perp in held.bars}
+    held.spot_files = {pair: set(months) for pair, months in (files or {}).items()}
     return held
+
+
+def months_on_disk(cache: Path) -> dict[str, set[str]]:
+    """Each spot pair's monthly files on disk, as ``YYYY-MM``."""
+    out: dict[str, set[str]] = {}
+    for folder in sorted(p for p in (cache / SPOT_DIR / KLINES).iterdir() if p.is_dir()):
+        months = {ba._month_of(path.name) for path in folder.glob("*.zip")}
+        out[folder.name] = {f"{m[0]:04d}-{m[1]:02d}" for m in months if m}
+    return out
 
 
 def _days(market: xsb.Market, symbol: str, day: date, lookback: int) -> tuple[list[tuple[float, float]], Counter]:
@@ -166,6 +178,10 @@ def _cause(market: xsb.Market, symbol: str, day: date, lookback: int, served: Ma
             found.add("the archive does not serve the spot month")
         elif first is not None and (d < first or d > last):
             found.add("outside the spot pair's first and last day")
+        elif f"{d:%Y-%m}" in getattr(market, "spot_files", {}).get(pair, ()):
+            # added after the first counts (2026-11-12): the month's file is on disk and holds no bar for the day —
+            # the pair was halted (FTTUSDT from 2022-11-16). A served month whose file is NOT on disk stays unexplained.
+            found.add("the spot file on disk holds no bar for the day")
         else:
             found.add("UNEXPLAINED")
     if why["another asset"]:
@@ -364,7 +380,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"BLOCKED: no {SERVED_FILENAME} under {derived_dir(cache)} (run `fetch` on the host first)", file=sys.stderr)
         return EXIT_BLOCKED
     held = attach(ms.cut(market, ms.load_daily(cache), DEV[1]), xsb.load_market(cache / SPOT_DIR, funding=False),
-                  spot_listing, DEV[1])                              # before anything is computed
+                  spot_listing, DEV[1], months_on_disk(cache))       # before anything is computed
     pairs = sorted({link[0] for link in held.spot_of.values() if link})
     if args.command == "counts":
         print(json.dumps({"span": [d.isoformat() for d in DEV], "fingerprint": fingerprint(cache, pairs),
