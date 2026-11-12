@@ -201,3 +201,34 @@ def test_fetch_asks_the_owner_tools_for_the_windows_inputs(monkeypatch, tmp_path
     assert fp.fetch(tmp_path, quiet=lambda: True, **kw) == fp.EXIT_BLOCKED and calls == []
     monkeypatch.setattr(fp.xsb, "load_market", lambda archive, funding=True: _held(date(2022, 12, 1)))
     assert fp.fetch(tmp_path, quiet=lambda: False, **kw) == fp.EXIT_BLOCKED and fp.NOT_YET in said[-1]
+
+
+def test_the_sources_fingerprint_follows_the_files_the_definitions_compute_from(tmp_path, monkeypatch):
+    for name in fp.SOURCE_FILES:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"# {name}\nvalue = 1\n".encode())
+    one = fp.sources_fingerprint(tmp_path)
+    assert fp.sources_fingerprint(tmp_path) == one and len(one) == 16
+    engine = tmp_path / "scripts/research/cross_section_basket.py"
+    engine.write_bytes(engine.read_bytes().replace(b"\n", b"\r\n"))
+    assert fp.sources_fingerprint(tmp_path) == one                           # a checkout's line endings are not a change
+    (tmp_path / "runtime/mvp_runtime/crypto/cost.py").write_bytes(b"value = 2\n")
+    assert fp.sources_fingerprint(tmp_path) != one                           # a cost constant is
+    assert {"scripts/research/cross_section_basket.py", "runtime/mvp_runtime/crypto/cost.py",
+            "scripts/research/spot_share_search.py"} <= set(fp.SOURCE_FILES) and len(fp.SOURCE_FILES) == 7
+    assert all((fp.ROOT / name).is_file() for name in fp.SOURCE_FILES)
+
+
+def test_the_report_says_whether_the_sources_changed_and_never_stops_on_it(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(fp.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(fp, "WINDOW", SPAN)
+    monkeypatch.setattr(fp.xsb, "provenance", lambda: {"lake_snapshot": None})
+    monkeypatch.setattr(fp, "hold", lambda cache: (_held(), set(), {}))
+    monkeypatch.setattr(fp, "read", lambda market: {"members": {}, "judgement": None})
+    monkeypatch.setattr(fp, "sources_fingerprint", lambda: fp.REGISTERED_SOURCES)
+    assert fp.main(["run", "--cache", str(tmp_path)], today=date(2028, 1, 1)) == fp.EXIT_OK
+    assert json.loads(capsys.readouterr().out)["sources_changed_since_registration"] is False
+    monkeypatch.setattr(fp, "sources_fingerprint", lambda: "another")
+    assert fp.main(["run", "--cache", str(tmp_path)], today=date(2028, 1, 1)) == fp.EXIT_OK
+    assert json.loads(capsys.readouterr().out)["sources_changed_since_registration"] is True

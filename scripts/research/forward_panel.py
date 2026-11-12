@@ -6,7 +6,8 @@ measurement says about what follows. This reads all sixteen closed definitions o
 
 - **As registered.** Each member is its owner tool's candidate: sign, window, weights and the engine's costs
   unchanged. :data:`REGISTERED` is the fingerprint of those definitions on the day this was registered; a member
-  that changes afterwards stops the run.
+  that changes afterwards stops the run. The feature functions, the engine and the cost constants are not in that
+  fingerprint; :data:`REGISTERED_SOURCES` records their files, and the report says whether they changed.
 - **Not in the panel:** anything with an official read still ahead, and its relatives — M03 / M04 and their two
   inputs (M01, M02), the momentum basket and the trend book beside it (T01, T02), the carry screens. Computing those
   here would show a registered read early.
@@ -67,6 +68,16 @@ DEVELOPMENT_SHARPE: dict[str, float] = {
     "A09": 0.339, "A10": 0.178, "F01": -0.769, "F02": 0.782, "F03": 0.575, "D01": -1.652, "D02": 0.838, "S01": 0.455,
 }
 REGISTERED = "44c2622dbe2fcde4"            # ``definitions_fingerprint()`` on 2026-11-12, the day of registration
+# The definitions name features; what those features compute lives in these files, with the engine and its costs.
+# Their contents on the day of registration are recorded in the proposal (§7). A change does not stop the run —
+# another change may touch them for its own reasons — but the report says so, and the read then names what changed.
+SOURCE_FILES = (
+    "scripts/research/cross_section_basket.py", "scripts/research/basket_search.py",
+    "scripts/research/flow_basket_search.py", "scripts/research/metrics_basket_search.py",
+    "scripts/research/depth_basket_search.py", "scripts/research/spot_share_search.py",
+    "runtime/mvp_runtime/crypto/cost.py",
+)
+REGISTERED_SOURCES = "30def8e887d2fa0e"
 
 
 def members() -> list[tuple[str, bs.Candidate, Any]]:
@@ -81,6 +92,14 @@ def definitions_fingerprint() -> str:
         entry.pop("why", None)
         body[name] = entry
     return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def sources_fingerprint(root: Path = ROOT) -> str:
+    """The contents of :data:`SOURCE_FILES`, line endings normalised so the value is the same on every platform."""
+    digest = hashlib.sha256()
+    for name in SOURCE_FILES:
+        digest.update(name.encode() + b"\0" + (root / name).read_bytes().replace(b"\r\n", b"\n") + b"\0")
+    return digest.hexdigest()[:16]
 
 
 # --- reading -----------------------------------------------------------------------------------------------------
@@ -261,6 +280,7 @@ def main(argv: list[str] | None = None, *, today: date | None = None) -> int:
     if args.command == "list":
         print(json.dumps({"spec": SPEC, "window": [d.isoformat() for d in WINDOW], "read_from": READ_FROM.isoformat(),
                           "registered": REGISTERED, "definitions_now": fingerprint,
+                          "registered_sources": REGISTERED_SOURCES, "sources_now": sources_fingerprint(),
                           "members": {name: {**{k: v for k, v in candidate.as_dict().items() if k != "why"},
                                              "development_annual_sharpe": DEVELOPMENT_SHARPE[name]}
                                       for name, candidate, _ in members()}}, indent=1))
@@ -297,6 +317,7 @@ def main(argv: list[str] | None = None, *, today: date | None = None) -> int:
               file=sys.stderr)
         return EXIT_BLOCKED
     report = {"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC, "registered": REGISTERED,
+              "sources_changed_since_registration": sources_fingerprint() != REGISTERED_SOURCES,
               "window": [d.isoformat() for d in WINDOW], "counts": counted, **read(market)}
     print(json.dumps(report, indent=1, sort_keys=True, ensure_ascii=False))
     return EXIT_OK
