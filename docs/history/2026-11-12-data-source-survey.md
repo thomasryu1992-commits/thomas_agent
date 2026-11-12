@@ -1,6 +1,6 @@
 # 2026-11-12 — a survey of new data sources that ends at "nothing to run yet"
 
-`docs/proposals/DATA_SOURCE_SURVEY_V0.1.md` (DRAFT). Public documentation only; no new host was called.
+`docs/proposals/DATA_SOURCE_SURVEY_V0.1.md`. Public documentation only; no new host was called.
 
 **Why the bar was written before the sources were read.** After the spot share search closed, everything computable
 from disk had been tried (22 attempts on the same years), and Thomas asked to keep investigating. The remaining
@@ -16,3 +16,8 @@ search summary, or unknown. The literature is search summaries only, so no effec
 fee and TVL history: free and keyless by its own free-endpoint list, but with no market cap (so growth, not a value
 ratio), unknown coverage of the top 30, and unknown restatement. The one next step that documents cannot settle is
 a count-only probe of coverage, which is a new network read and therefore asked, not done.
+
+**How it closed (Thomas 2026-11-12, "기본값대로").** All three questions were answered no: no count-only probe of
+DefiLlama, no use of Coin Metrics' non-commercial data, no count-only probe of Upbit. No new host was called at any
+point, and nothing was built. The status line reads IMPLEMENTED because every item is decided and nothing remains
+to build; the document stays as the reason the same survey need not be repeated.
