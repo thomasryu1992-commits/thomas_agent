@@ -32,20 +32,20 @@ the twin trade once per leg for every trade the parent made across all of them.
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any, Mapping
 
 from runtime.read_only_kernel import integrity
 
-from .. import jsonl
+from .. import jsonl, timeutil
 from ..errors import ToolError
 from ..filelock import locked
 from . import forward_book
 from .candidate_identity import candidate_id
 from .candidate_ranking import candidate_quality
-from .factory import is_trial
-from .factory import MAX_OPEN_TRIALS
+from .factory import expected_forward_trades, is_trial
 from .forward_cohort import (
     FORWARD_COHORT_LOCKED, WalkTrack, first_verdict_suffix, load_book_at, maturity_of,
     synthesize_entry, unparseable_suffix, walk_track,
@@ -68,7 +68,7 @@ TRIAL_SEED_PREFIX = "trial|"
 
 # Thomas's close of a trial (PR4). The candidate store is append-only and self-hashed, so a trial
 # row cannot be marked closed; this is its own sealed store, read like the null arm's records.
-# Not a ledger kind: the ledger rotates, and the factory's cap reads these forever.
+# Not a ledger kind: the ledger rotates, and the walk reads these forever.
 TRIAL_CLOSES_FILENAME = "hypothesis_trial_closes.jsonl"
 TRIAL_CLOSE_VERSION = "hypothesis_trial_close.v1"
 CLOSE_GRADUATE = "graduate"
@@ -77,6 +77,18 @@ CLOSE_DECISIONS = (CLOSE_GRADUATE, CLOSE_RETIRE)
 # The holdout status a graduation needs (HYPOTHESIS_TRIAL_V0.1 Q5: no new threshold; installing a
 # family into `factory.TEMPLATES` is a Thomas PR on the existing holdout gate).
 GRADUATION_HOLDOUT_STATUS = "CONFIRMED"
+
+# When an open trial that has never entered is marked overdue (Thomas 2026-11-12,
+# FACTORY_GENERATOR_REDESIGN_V0.1 F6 rule 2). The mark is a display: it closes nothing, and the
+# close stays Thomas's (`close_trial`) until he says a deadline may close on its own.
+#
+# Not a flat 30 days. The pace screen admits a 1d trial expecting ten trades in 180 days, and such
+# a trial has no trade in its first 30 days about one time in five by chance alone. So the deadline
+# is the wait after which no entry at all would be a 1-in-100 event at the trial's own mint pace
+# (Poisson: ln(100) / trades-per-day), and never shorter than the floor below. A pace that cannot
+# be read gets the floor.
+TRIAL_IDLE_MIN_DAYS = 30
+TRIAL_IDLE_CHANCE = 0.01
 
 HYPOTHESIS_TRIAL_CLOSES_UNREADABLE = "HYPOTHESIS_TRIAL_CLOSES_UNREADABLE"
 HYPOTHESIS_TRIAL_CLOSES_TAMPERED = "HYPOTHESIS_TRIAL_CLOSES_TAMPERED"
@@ -144,6 +156,23 @@ def trial_twin(record: Mapping[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def idle_deadline_days(record: Mapping[str, Any]) -> int:
+    """Days after the mint by which a trial at its own backtest pace would almost surely have
+    entered once (see :data:`TRIAL_IDLE_MIN_DAYS`). Pure: a function of the sealed row."""
+    spec = record.get("strategy_spec") or {}
+    per_day = expected_forward_trades(record.get("backtest_evidence") or {}, spec.get("timeframe"), days=1)
+    if per_day is None:
+        return TRIAL_IDLE_MIN_DAYS
+    return max(TRIAL_IDLE_MIN_DAYS, math.ceil(math.log(1.0 / TRIAL_IDLE_CHANCE) / per_day))
+
+
+def _days_between(start: Any, end: Any) -> float | None:
+    try:
+        return (timeutil.parse_iso(str(end)) - timeutil.parse_iso(str(start))).total_seconds() / 86400.0
+    except (ValueError, TypeError):
+        return None
+
+
 # --- closing a trial (Thomas) --------------------------------------------------------------------
 
 def read_trial_closes(root: Path | None = None) -> list[dict[str, Any]]:
@@ -173,14 +202,14 @@ def close_trial(
     root: Path | None, candidate: str, *, decision: str, reason: str, now: str, apply: bool = False,
 ) -> dict[str, Any]:
     """Thomas's close of one trial: graduated (he will install it into ``factory.TEMPLATES`` by PR)
-    or retired. Frees its slot under :data:`factory.MAX_OPEN_TRIALS`, stops its walk and its twin's,
+    or retired. Stops its walk and its twin's,
     and seals the forward record as it stood — the evidence the decision was taken on. Appended
     only with ``apply``.
 
     Refuses: an id that is not a trial, one already closed, an empty reason, and a graduation of a
     trial whose own holdout is not CONFIRMED (Q5 — the install gate is the existing one; a close
     cannot promise an install that gate would refuse). The proposal it came from stays screened:
-    closing frees a slot, it never re-queues the proposal."""
+    closing never re-queues the proposal."""
     if decision not in CLOSE_DECISIONS:
         raise ToolError(HYPOTHESIS_TRIAL_CLOSE_INVALID, f"decision must be one of {CLOSE_DECISIONS}")
     if not reason.strip():
@@ -349,15 +378,31 @@ def _judged(walk_id: str, started: Any, spec: Mapping[str, Any]) -> dict[str, An
     return {"candidate_id": walk_id, "created_at_utc": started, "strategy_spec": dict(spec)}
 
 
-def trial_report(root: Path | None = None) -> list[dict[str, Any]]:
+def trial_report(root: Path | None = None, *, now: str | None = None) -> list[dict[str, Any]]:
     """Each trial's forward numbers and its twin's, side by side. Reads only.
 
     Judged exactly as a cohort member is (`forward_confirmation.judge_forward`, cutoff at the mint)
     and its twin exactly as a null twin is. The pair is the comparison the option exists for; the
-    judge's status on the trial alone opens nothing."""
+    judge's status on the trial alone opens nothing.
+
+    Every line carries its ``idle_deadline_days``. Given ``now``, an OPEN trial that has never
+    entered — no settled row, and no open counted on any leg of its positions book, so a trial
+    holding its first position is not idle — and is older than that deadline reads
+    ``idle_overdue``. A display for the operator's close; nothing here closes a trial."""
     rows = read_trial_outcomes(root)
     null_rows_ = read_trial_null_outcomes(root)
     closes = {str(c["candidate_id"]): c for c in read_trial_closes(root)}
+    opens: dict[str, int] = {}
+    if now is not None:
+        for entry in (load_trial_positions(root).get("entries") or {}).values():
+            if isinstance(entry, Mapping):
+                # `strategy_id` is the walk's candidate id (`synthesize_entry`); the entry's
+                # `lineage` is a prefixed key of it, not the id.
+                walked = str(entry.get("strategy_id") or "")
+                count = entry.get("opens_count")
+                held = 1 if entry.get("position") else 0
+                opens[walked] = opens.get(walked, 0) + max(
+                    int(count) if isinstance(count, int) and not isinstance(count, bool) else 0, held)
     lines: list[dict[str, Any]] = []
     for record in trial_rows(root):
         spec = record.get("strategy_spec") or {}
@@ -379,6 +424,13 @@ def trial_report(root: Path | None = None) -> list[dict[str, Any]]:
         close = closes.get(cid)
         line["close"] = None if close is None else {
             k: close.get(k) for k in ("decision", "reason", "closed_at_utc")}
+        line["idle_deadline_days"] = idle_deadline_days(record)
+        if now is not None:
+            age = _days_between(record.get("created_at_utc"), now)
+            line["age_days"] = None if age is None else round(age, 1)
+            line["idle_overdue"] = bool(
+                close is None and age is not None and age >= line["idle_deadline_days"]
+                and not line.get("closed_count") and not opens.get(cid))
         twin = trial_twin(record)
         if twin is not None:
             twin_line = {
@@ -395,13 +447,14 @@ def trial_report(root: Path | None = None) -> list[dict[str, Any]]:
     return lines
 
 
-def board_summary(root: Path | None = None) -> dict[str, Any] | None:
+def board_summary(root: Path | None = None, *, now: str | None = None) -> dict[str, Any] | None:
     """What the daily board shows of the trials; None before any trial is minted. Reads only.
 
-    Open against the cap and closed; then per timeframe the null line's cells — confirmed ·
+    Open and closed, and — given ``now`` — how many open trials are past their idle deadline
+    without ever entering; then per timeframe the null line's cells — confirmed ·
     contradicted / lineages, today's look and every look since the walk began stamping — for the
     trials and for their twins (`forward_cohort_null.arm_counts`, the same counter)."""
-    lines = trial_report(root)
+    lines = trial_report(root, now=now)
     if not lines:
         return None
     twins = [line["twin"] for line in lines if line.get("twin")]
@@ -409,7 +462,7 @@ def board_summary(root: Path | None = None) -> dict[str, Any] | None:
         "trials": len(lines),
         "open": sum(1 for line in lines if line.get("close") is None),
         "closed": sum(1 for line in lines if line.get("close") is not None),
-        "cap": MAX_OPEN_TRIALS,
+        "idle_overdue": sum(1 for line in lines if line.get("idle_overdue")),
         "with_rows": sum(1 for line in lines if (line.get("priceable_count") or 0) > 0),
         "real": arm_counts(lines, load_trial_positions(root)["verdicts"]),
         "null": arm_counts(twins, load_trial_null_positions(root)["verdicts"], id_key="null_id"),
@@ -420,6 +473,7 @@ __all__ = [
     "board_summary",
     "close_trial",
     "closed_trial_ids",
+    "idle_deadline_days",
     "read_trial_closes",
     "TRIAL_NULL_TRACK",
     "TRIAL_TRACK",

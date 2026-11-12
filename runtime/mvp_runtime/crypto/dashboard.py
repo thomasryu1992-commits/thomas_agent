@@ -212,10 +212,10 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
     except MvpRuntimeError as exc:
         null_arm = None
         warnings.append(f"forward cohort null arm unreadable ({exc.reason_code})")
-    # The hypothesis trials (HYPOTHESIS_TRIAL_V0.1, option C): open against the cap, and their
-    # judge outcomes beside their coin-flip twins'. Research; it opens no door.
+    # The hypothesis trials (HYPOTHESIS_TRIAL_V0.1, option C): open, closed, overdue without an
+    # entry, and their judge outcomes beside their coin-flip twins'. Research; it opens no door.
     try:
-        trials_board = forward_trial.board_summary(root)
+        trials_board = forward_trial.board_summary(root, now=now)
     except MvpRuntimeError as exc:
         trials_board = None
         warnings.append(f"hypothesis trial stores unreadable ({exc.reason_code})")
@@ -986,12 +986,14 @@ def render_status_text(status: dict[str, Any]) -> str:
             # Until the twins have rows, 0·0 on the null side is "nothing yet", not "nothing passed".
             + f" (null 기록 {sum(c.get('with_rows', 0) for c in null.values())}계보)"
             + _ever_tail(real, null))
-    # The trials against the cap, then the null line's cells for trials vs their twins.
+    # The trials (no cap since 2026-11-12), then the null line's cells for trials vs their twins.
     trials = status.get("hypothesis_trials") or {}
     if trials.get("trials"):
         t_real, t_null = trials.get("real") or {}, trials.get("null") or {}
         lines.append(
-            f"       트라이얼 열림 {trials.get('open')}/{trials.get('cap')} · 종료 {trials.get('closed')} · "
+            f"       트라이얼 열림 {trials.get('open')} · 종료 {trials.get('closed')} · "
+            + (f"기한 지남 {trials.get('idle_overdue')} · " if trials.get("idle_overdue") else "")
+            +
             f"기록 {trials.get('with_rows')} · 확정·반박/계보 " + " · ".join(
                 f"{tf} {_arm(t_real.get(tf))} vs null {_arm(t_null.get(tf))}"
                 for tf in sorted(set(t_real) | set(t_null), key=lambda t: (_TIMEFRAME_ORDER.get(t, 99), t)))

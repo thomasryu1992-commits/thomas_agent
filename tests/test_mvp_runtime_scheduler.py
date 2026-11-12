@@ -1471,6 +1471,13 @@ def test_a_proposer_fire_names_the_frames_timeframe_and_only_when_it_has_one(mon
     sched.delegate_proposal_generation(existing_families=[], focus=None, repo_root=None)
     assert sent[0]["proposal_inputs"]["timeframe"] == "1h"
     assert "timeframe" not in sent[1]["proposal_inputs"]
+    # What the trial screens refused crosses the same way: named when there is any, absent when
+    # there is none — so a fire with nothing refused sends the frame it always sent.
+    refused = [{"family": "funding_spike_short", "reason": "too_slow"}]
+    sched.delegate_proposal_generation(existing_families=[], focus=None, repo_root=None,
+                                       recent_refusals=refused)
+    assert sent[2]["proposal_inputs"]["recent_refusals"] == refused
+    assert "recent_refusals" not in sent[0]["proposal_inputs"]
 
 
 @pytest.mark.parametrize("reply", [

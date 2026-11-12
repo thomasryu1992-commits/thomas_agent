@@ -9,6 +9,7 @@ twin's rate is per leg, not the pooled count over one leg's bars).
 from __future__ import annotations
 
 import json
+import math
 
 import pytest
 
@@ -20,7 +21,7 @@ from runtime.mvp_runtime.crypto import pool_state
 from runtime.mvp_runtime.crypto.candidate_ranking import expected_replayed_bars
 from runtime.mvp_runtime.errors import ToolError
 from tests.test_mvp_runtime_crypto_forward_cohort import (
-    NOW, _cohort_schedule, _frame, _install_cohort, _record,
+    NOW, SELECTED, _cohort_schedule, _frame, _install_cohort, _record,
 )
 
 
@@ -304,14 +305,14 @@ def test_an_edited_close_is_refused(tmp_path):
     assert exc.value.reason_code == ftr.HYPOTHESIS_TRIAL_CLOSES_TAMPERED
 
 
-def test_a_close_frees_the_slot_but_never_re_queues_the_proposal(tmp_path):
+def test_a_close_leaves_the_open_count_but_never_re_queues_the_proposal(tmp_path):
     from runtime.mvp_runtime.crypto import factory
-    trials = [_eager_trial(f"cand_{i}") for i in range(factory.MAX_OPEN_TRIALS)]
+    trials = [_eager_trial(f"cand_{i}") for i in range(6)]
     _store(tmp_path, *trials)
     rows = pool_state.read_candidates(tmp_path)
-    assert factory.open_trial_count(rows) == factory.MAX_OPEN_TRIALS
+    assert factory.open_trial_count(rows) == 6
     ftr.close_trial(tmp_path, "cand_0", decision="retire", reason="r", now=NOW, apply=True)
-    assert factory.open_trial_count(rows, ftr.closed_trial_ids(tmp_path)) == factory.MAX_OPEN_TRIALS - 1
+    assert factory.open_trial_count(rows, ftr.closed_trial_ids(tmp_path)) == 5
     assert "src-cand_0" in factory.trial_source_hashes(rows)
 
 
@@ -322,7 +323,8 @@ def test_the_board_summary_counts_open_closed_and_both_arms_per_timeframe(tmp_pa
     _walk(tmp_path, FRAME)
     ftr.close_trial(tmp_path, "cand_u", decision="retire", reason="r", now=NOW, apply=True)
     board = ftr.board_summary(tmp_path)
-    assert (board["trials"], board["open"], board["closed"], board["cap"]) == (2, 1, 1, 4)
+    assert (board["trials"], board["open"], board["closed"]) == (2, 1, 1)
+    assert "cap" not in board, "there is no cap on open trials to show"
     assert set(board["real"]) == {"1d"} and set(board["null"]) == {"1d"}, "twins filed under their timeframe"
     assert board["real"]["1d"]["members"] == 2 and board["null"]["1d"]["members"] == 2
     assert ftr.board_summary(tmp_path / "empty") is None
@@ -335,7 +337,7 @@ def test_the_board_prints_the_trial_line(tmp_path):
     status = build_status(tmp_path, now=NOW)
     assert status["hypothesis_trials"]["open"] == 1
     text = render_status_text(status)
-    assert "트라이얼 열림 1/4 · 종료 0 · 기록 1 · 확정·반박/계보 1d " in text
+    assert "트라이얼 열림 1 · 종료 0 · 기록 1 · 확정·반박/계보 1d " in text
     assert "hypothesis_trials" in build_status(tmp_path / "empty", now=NOW)
     assert build_status(tmp_path / "empty", now=NOW)["hypothesis_trials"] is None
 
@@ -360,7 +362,7 @@ def test_the_script_lists_and_closes_only_with_apply(tmp_path, capsys):
     from scripts import hypothesis_trial as script
     _store(tmp_path, _eager_trial("cand_t"))
     assert script.main(["list"], root=tmp_path) == 0
-    assert "1 open of 4 slots" in capsys.readouterr().out
+    assert "1 open; 0 closed" in capsys.readouterr().out
     assert script.main(["close", "cand_t", "--retire", "--reason", "r"], root=tmp_path) == 0
     assert "DRY RUN" in capsys.readouterr().out and not ftr._closes_path(tmp_path).exists()
     assert script.main(["close", "cand_t", "--graduate", "--reason", "r", "--apply"], root=tmp_path) == 2
@@ -368,3 +370,68 @@ def test_the_script_lists_and_closes_only_with_apply(tmp_path, capsys):
     assert ftr.closed_trial_ids(tmp_path) == frozenset()
     assert script.main(["close", "cand_t", "--retire", "--reason", "r", "--apply"], root=tmp_path) == 0
     assert ftr.closed_trial_ids(tmp_path) == {"cand_t"}
+
+
+# --- the idle deadline: a mark, never a close (Thomas 2026-11-12, F6 rule 2) ----------------------
+
+def _later(days):
+    from runtime.mvp_runtime import timeutil
+    return timeutil.plus_minutes(SELECTED, int(days * 1440))
+
+
+def test_the_idle_deadline_follows_the_trials_own_pace_and_never_goes_under_the_floor():
+    # One trade a bar on daily bars: no entry in a week would already be absurd, so the floor rules.
+    assert ftr.idle_deadline_days(_eager_trial("cand_fast")) == ftr.TRIAL_IDLE_MIN_DAYS
+    # 60 trades over the replay: at that pace no entry in 30 days is ordinary luck, so it waits
+    # until silence is a 1-in-100 event — ln(100) / trades-per-day.
+    slow = _trial("cand_slow")
+    per_day = 60 / expected_replayed_bars("1d")
+    assert ftr.idle_deadline_days(slow) == math.ceil(math.log(100) / per_day) > ftr.TRIAL_IDLE_MIN_DAYS
+    # A row that cannot say its pace gets the floor rather than no deadline.
+    unreadable = _trial("cand_x"); unreadable["backtest_evidence"].pop("bars_replayed")
+    assert ftr.idle_deadline_days(unreadable) == ftr.TRIAL_IDLE_MIN_DAYS
+
+
+def test_only_an_open_trial_that_never_entered_and_is_past_its_deadline_reads_overdue(tmp_path):
+    _store(tmp_path, _eager_trial("cand_idle"), _trial("cand_slow", family="other"),
+           _eager_trial("cand_shut", family="third"))
+    ftr.close_trial(tmp_path, "cand_shut", decision="retire", reason="r", now=NOW, apply=True)
+
+    def overdue(now):
+        return {line["candidate_id"]: line["idle_overdue"] for line in ftr.trial_report(tmp_path, now=now)}
+
+    before, after = _later(ftr.TRIAL_IDLE_MIN_DAYS - 1), _later(ftr.TRIAL_IDLE_MIN_DAYS + 1)
+    assert overdue(before) == {"cand_idle": False, "cand_slow": False, "cand_shut": False}
+    # Past the floor: the fast one is overdue; the slow one's own deadline is months away; a
+    # closed trial is never overdue.
+    assert overdue(after) == {"cand_idle": True, "cand_slow": False, "cand_shut": False}
+    assert ftr.board_summary(tmp_path, now=after)["idle_overdue"] == 1
+    # The mark closes nothing: the trial is still open and still walked.
+    assert ftr.closed_trial_ids(tmp_path) == frozenset({"cand_shut"})
+    assert "idle_overdue" not in ftr.trial_report(tmp_path)[0], "asked without a clock, it does not guess"
+
+
+def test_a_trial_that_has_entered_is_not_idle_even_with_nothing_settled(tmp_path):
+    """A trial holding its first position has no settled row yet. The positions book is what says
+    it entered — and without reading it, this trial would be marked overdue while in a trade."""
+    _store(tmp_path, _eager_trial("cand_t"))
+    summary = _walk(tmp_path, _frame(range(1, 12)))["trials"]
+    assert summary["opened"] >= 1 and summary["settled"] == 0, "entered, nothing settled"
+    assert ftr.read_trial_outcomes(tmp_path) == []
+    (line,) = ftr.trial_report(tmp_path, now=_later(400))
+    assert line["closed_count"] == 0 and line["idle_overdue"] is False
+    # The same trial with no book at all (never walked) is what overdue means.
+    _store(tmp_path / "unwalked", _eager_trial("cand_t"))
+    (unwalked,) = ftr.trial_report(tmp_path / "unwalked", now=_later(400))
+    assert unwalked["idle_overdue"] is True
+
+
+def test_the_script_names_an_overdue_trial_and_closes_nothing(tmp_path, capsys, monkeypatch):
+    from runtime.mvp_runtime import timeutil
+    from scripts import hypothesis_trial as script
+    _store(tmp_path, _eager_trial("cand_idle"))
+    monkeypatch.setattr(timeutil, "utc_now_iso", lambda: _later(ftr.TRIAL_IDLE_MIN_DAYS + 5))
+    assert script.main(["list"], root=tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "idle past its deadline, never entered: cand_idle" in out
+    assert not ftr._closes_path(tmp_path).exists()
