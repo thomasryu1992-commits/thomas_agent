@@ -25,3 +25,19 @@ and no template reads them; five symbols, daily, from 2024-01, with a recorded r
 reopens), and requiring the hypothesis form of model-proposed trials. Each direction is tabled against the
 fingerprint, new authority, the record it reopens and when it could get a verdict, and the yardstick is two
 measures that already exist, fixed before the directions were listed.
+
+**The pre-checks changed the answer, which is what they were for.** F3 said the liquidation pair would be filed
+only if a depth and resolution check passed. It did not. The series reaches the 1h and 4h replay but not 1d's
+2,000 days; since the 2026-10-21 look-ahead fix a bar reads the previous day's total, which cannot express "absorb
+a liquidation as it happens"; the same vendor's daily open interest lost all thirteen confirmations under the same
+fix; and a liquidation trial had already been minted and contradicted in September. So the pair is withdrawn and
+the 10% prior is recorded as too high.
+
+**Looking at the trial channel before changing its prompt found the real fault.** G5 was to require the hypothesis
+form of model-proposed trials. The research export shows six trials minted in four days in late September, two
+closed, and the remaining four sitting at the cap ever since: three have made no forward trade in six weeks and one
+has made four. A slot frees only when Thomas closes a trial, and no rule ever asks him to. The factory's one
+hypothesis-first generation path has therefore been idle since 2026-09-28. Fixing that (retire the idle three, then
+a mint-time frequency screen and an idle-trial deadline) is a generator change outside the judgement fingerprint,
+and it matters more than what the proposals say.
+
