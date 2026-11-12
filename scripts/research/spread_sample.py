@@ -192,9 +192,9 @@ def brief(report: dict[str, Any]) -> str:
 def cron_line(code: Path, log: Path) -> str:
     """The crontab line, so the schedule the tests count is the schedule that is installed."""
     minutes, hours = ",".join(map(str, CRON_MINUTES)), ",".join(map(str, CRON_HOURS))
-    lock = log.parent / "sample.lock"
-    return (f"{minutes} {hours} * * * cd {code} && /usr/bin/flock -n {lock} /usr/bin/python3 -m "
-            f"scripts.research.spread_sample sample >> {log} 2>&1")
+    lock = log.parent / "sample.lock"                       # POSIX spellings: the line is for a Linux crontab
+    return (f"{minutes} {hours} * * * cd {code.as_posix()} && /usr/bin/flock -n {lock.as_posix()} /usr/bin/python3 -m "
+            f"scripts.research.spread_sample sample >> {log.as_posix()} 2>&1")
 
 
 def main(argv: Iterable[str] | None = None) -> int:
