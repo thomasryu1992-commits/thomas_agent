@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **118**건: `DRAFT` 2 · `PARTIALLY DECIDED` 11 · `DECIDED` 30 · `IMPLEMENTED` 64 · `SUPERSEDED` 4 · `RECORD` 7
+제안서 **119**건: `DRAFT` 3 · `PARTIALLY DECIDED` 11 · `DECIDED` 30 · `IMPLEMENTED` 64 · `SUPERSEDED` 4 · `RECORD` 7
 
-## Thomas 결정 대기 (13)
+## Thomas 결정 대기 (14)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -25,6 +25,7 @@
 | [H6C_UNIT_AUTHORITY_V0.1.md](H6C_UNIT_AUTHORITY_V0.1.md) | `DRAFT` | 2026-11-04 | H6c(G1d, unit 권위 전환)의 결정 패킷 초안이다. **지금 묻지 않는다.** Claude 도어의 `holdings_status`에 `h6c_askable`이 서면 HQ1–HQ7을 묻는다(HQ7은 2026-11-11에 더했다)(`H6B_UNIT_SHADOW_V0.1.md` S5). 그때까지 코드, 정책, env, 스케줄은 바뀌지 않는다. 미리 써 두는 이유는 조건이 갖춰지는 날 바로 묻기 위해서다. 같은 날 Thomas가 해야 할 일(§2의 입금·출금)도 여기에 적는다. |
 | [CRYPTO_DESIGN_REVIEW_V0.1.md](CRYPTO_DESIGN_REVIEW_V0.1.md) | `PARTIALLY DECIDED` | 2026-11-11 | Thomas: 해결 방안을 권한 순서대로 진행한다("해결방안을 순서대로 진행하고 검증까지 진행해서 보고해"). 같은 날 결과: 방안 3(`POSITIONING_DIVERGENCE_V0.1`)은 ENTRY_FAIL, 방안 5(`VARIANCE_PREMIUM_V0.1`)는 PROXY_FAIL로 둘 다 닫았다(§4). 방안 1의 문서 정정은 이 문서와 함께 병합됐고, read door는 별도 PR(#1420)이며, 알림은 Thomas의 root `at` 작업으로 남아 있다. Q2는 2026-11-11에 답을 받았다: 새 후보의 진입 조건에 포지션 총액 대비 연 순수익 15%를 더한다("순서대로 전부", §5). 남은 질문은 둘이다: Q1은 2026-11-14 mint 판독 뒤에 묻고, Q3은 2단계 확인 규칙 쪽이 `SCREEN_STAGE2_V0.1`로 정해졌고(2026-11-11, 첫 선별 판정 전에 정한다) 현물 실행 경로를 언제 정하는지만 남았다. 이 문서가 바꾸는 코드, 판정 규칙, 일정은 없다. |
 | [SPOT_SHARE_SEARCH_V0.1.md](SPOT_SHARE_SEARCH_V0.1.md) | `PARTIALLY DECIDED` | 2026-11-12 | Thomas 2026-11-12: 현물 비중을 한 번, M04와의 겹침 조건을 걸고 잰다("기본값대로", `SEARCH_CANDIDATE_SURVEY_V0.1` V1). **결과: 넘지 못했다.** S01(현물 비중이 높은 쪽을 산다)의 연 샤프는 0.455이고 포지션 총액 대비 연 12.25%다(기준 1.0과 15%). 예산 한 번을 써서 닫았고 forward 선별에 올릴 것은 없다. **남은 질문:** 탐색 전에 Claude가 고정한 세부인 §5의 Q1 – Q3(창과 구간, 겹침 한도, 같은 자산 확인)은 기본값으로 진행했고 Thomas의 답을 기다린다. |
+| [STRATEGY_SYSTEM_REVIEW_V0.1.md](STRATEGY_SYSTEM_REVIEW_V0.1.md) | `DRAFT` | 2026-11-12 | Thomas 2026-11-12: 신호를 더 찾는 것이 아니라 "어떻게 하면 좋은 전략 시스템을 만들지"를 조사한다. 범위는 (1) 이미 정한 연구 쪽 규칙도 선택지로 올린다("응"), (2) 연구 쪽 후보 경로와 factory 둘 다 본다, (3) 자본은 한 다리 1천 – 1만 달러로 가정한다("기본값"). 이 문서는 채점과 선택지다. 코드, 판정 규칙, 일정은 바꾸지 않는다. 선택지 A – F의 기본값은 모두 "별도 제안으로 쓴다"이거나 "지금은 아니다"이고, §7의 R1 – R5에 답을 받은 뒤에 움직인다. |
 
 ## 결정됨 — 구현 남음 (30)
 
