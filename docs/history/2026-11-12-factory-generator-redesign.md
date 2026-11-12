@@ -71,4 +71,12 @@ matters before the fee saving does. Overlapped time mixes timeframes on four of 
 close time is, what "already open" means for entries stamped in one cycle, or what happens when one strategy's rows
 touch. They were written into the record before the run. The proposal had also said a strategy cannot hold two
 positions on one symbol; one seeded DOGE 4h strategy has a row spanning three of its own. The tool counts that once
-and reports it. The cause is not known and was left as a follow-up.
+and reports it.
+
+**Those rows are two seeder runs that walked different pasts.** The three inner rows came with the first seed on
+2026-08-30. The long one came alone on 2026-09-02, hours after #822 lowered the liquidation guard's assumed leverage
+from 20 to 5: its stop sits 5.72% from entry, refused at 20x and admitted at 5x. The second walk took that entry and
+held it, so the three later entries had no room; ids come from entry times, so only the new row was appended and both
+pasts stayed. The seeder is idempotent only while the doors, exits and data are the same between runs, and nothing
+reports when they are not. The forward judge counts every closed row after selection and does not look at overlap.
+One lineage, four rows; no fix was made here.
