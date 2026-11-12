@@ -22,6 +22,8 @@ own rules (checksums, skip-if-present, the IP weight budget, the factory window)
    fetches the daily ``metrics`` files and the funding months its window's members need, as far as the klines can
    name members, then rebuilds the daily values. It finds nothing to do before the 2027-01 klines exist; its window
    ends 2027-06-30, so this command runs for every month through ``--month 2027-06``.
+7. The spread observation's coverage, one line (``SPREAD_OBSERVATION_V0.1.md`` P5): the days held and the days short
+   of a full day's samples. It fetches nothing; a sampler that stopped shows here at the latest.
 
 Pacing (lessons of the v0.2 fetch, 2026-11-09): one derivative symbol at a time, :data:`PACE_SECONDS` apart; on
 the venue's weight stop, wait :data:`WEIGHT_WAIT_SECONDS` and retry up to :data:`WEIGHT_RETRIES` times. A 429 or
@@ -69,6 +71,7 @@ ARCHIVE_WAIT_SECONDS = 60                     # ... after this pause: every step
 ARCHIVE = ["scripts/binance_archive.py"]
 FETCH_PUBLIC = ["-m", "scripts.research.fetch_public"]
 METRICS_SCREEN = ["-m", "scripts.research.metrics_basket_screen", "refresh"]
+SPREAD_COVERAGE = ["-m", "scripts.research.spread_sample", "coverage", "--brief"]
 
 Runner = Callable[[list[str]], tuple[int, str]]
 
@@ -207,6 +210,7 @@ class Refresh:
             self.derivative(symbol)
         self.hourly()
         self._step("metrics basket screen files", [*METRICS_SCREEN, "--cache", str(self.cache)])
+        self._step("spread observation coverage", [*SPREAD_COVERAGE, "--cache", str(self.cache)])
         if self.failed:
             self.say(f"FAILED after retries: {','.join(self.failed)} — rerun the same command to resume")
             return EXIT_BLOCKED
