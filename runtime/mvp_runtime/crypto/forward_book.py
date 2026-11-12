@@ -90,6 +90,10 @@ FORWARD_HISTORY_UNREADABLE = "FORWARD_HISTORY_UNREADABLE"
 FORWARD_HISTORY_TAMPERED = "FORWARD_HISTORY_TAMPERED"
 FORWARD_HISTORY_DUPLICATE = "FORWARD_HISTORY_DUPLICATE"
 FORWARD_STORE_LOCKED = "FORWARD_STORE_LOCKED"
+# A seed walk produced a row the store does not hold, over a span where the store already
+# holds another row of the same lineage-context: two walks that saw different doors, exits
+# or data. See :func:`seed_divergence`.
+FORWARD_SEED_DIVERGED = "FORWARD_SEED_DIVERGED"
 # An occupying pool entry whose stored spec no longer parses. It cannot be walked, so its
 # lineage accrues no forward evidence; that used to be a bare `continue` nobody could see
 # (system review 2026-09-26). Reported on the summary and the cycle's reason codes.
@@ -329,8 +333,101 @@ def _append_outcomes(records: list[dict[str, Any]], *, root: Path | None) -> Non
     the book rewrite COMPLETES the settlement instead of doubling it — and the same
     property is what makes re-seeding idempotent: historical timestamps make seeded ids
     deterministic, so a second seed of the same span re-mints the same settlement ids and
-    they are all skipped here."""
+    they are all skipped here. That holds while the two walks see the same doors, exits
+    and data; a walk that saw different ones mints different ids, which nothing here can
+    tell from new evidence — the seeder asks :func:`assert_seed_agrees` first."""
     append_sealed_rows(records, path=_outcomes_path(root), read=lambda: read_forward_outcomes(root))
+
+
+def _span(row: Mapping[str, Any]) -> tuple[Any, Any] | None:
+    """A row's open and close as instants, or None when it cannot place both."""
+    try:
+        return (timeutil.parse_iso(str(row.get("opened_at_utc") or "")),
+                timeutil.parse_iso(str(row.get("created_at_utc") or "")))
+    except (ValueError, TypeError):
+        return None
+
+
+def seed_divergence(
+    walked: Sequence[Mapping[str, Any]], stored: Iterable[Mapping[str, Any]], *,
+    lineage: str, symbol: str, timeframe: str, mint: str,
+) -> list[dict[str, Any]]:
+    """Where a seed walk contradicts what its own lineage-context already holds. Pure.
+
+    A lineage holds one virtual position per (symbol, timeframe), so two of its rows can
+    never be open at once. A walk's NEW row (a settlement id the store lacks) that is open
+    while a STORED row of the same context is open therefore belongs to a different past
+    than the one that wrote the store: the two walks did not see the same entry doors, exit
+    rules or data. Found 2026-11-12 in the live book: a re-seed hours after the liquidation
+    guard's assumed leverage went from 20 to 5 admitted an entry the first seed had refused,
+    held it for 35 bars, and its one new row was appended across three rows the first seed
+    had written. Both pasts then counted as forward evidence.
+
+    Each clash is ``{"new": (opened, closed), "stored": (opened, closed)}`` in the rows' own
+    stamps. Strict on both ends: a position that opens on the bar another closed on is the
+    kernel's own order (settle first, then enter), not an overlap.
+
+    Only stored rows that opened at or after ``mint`` are compared. A row from before the
+    walk's start was written by a walk that started earlier (the seed start moved to the
+    selecting row on 2026-09-23) and is not the judge's evidence, so it is not this guard's
+    either. A walk that begins without a position the stored walk was holding can still
+    clash with that lineage's stored rows from after the start, and is then refused. Stored rows are never compared with
+    each other: a context that already holds two pasts and whose walk mints nothing new has
+    nothing to refuse.
+
+    What this cannot see: a walk that adds a row in a gap the stored rows leave, or one
+    that no longer reproduces a stored row. Both are divergence without an impossible
+    position, and both pass."""
+    held = list(stored)
+    recorded = {row.get("settlement_id") for row in held if row.get("settlement_id")}
+    try:
+        start = timeutil.parse_iso(str(mint or ""))
+    except (ValueError, TypeError):
+        start = None  # a start that cannot be read narrows nothing
+    theirs = []
+    for row in held:
+        if (outcome_attribution_key(row) != lineage or str(row.get("symbol")) != symbol
+                or str(row.get("timeframe")) != timeframe):
+            continue
+        span = _span(row)
+        if span is not None and (start is None or span[0] >= start):
+            theirs.append((span, row))
+    clashes: list[dict[str, Any]] = []
+    for row in walked:
+        if row.get("settlement_id") in recorded:
+            continue
+        span = _span(row)
+        if span is None:
+            continue
+        for other, kept in theirs:
+            if span[0] < other[1] and other[0] < span[1]:
+                clashes.append({
+                    "new": (row.get("opened_at_utc"), row.get("created_at_utc")),
+                    "stored": (kept.get("opened_at_utc"), kept.get("created_at_utc")),
+                })
+    return clashes
+
+
+def assert_seed_agrees(
+    walked: Sequence[Mapping[str, Any]], stored: Iterable[Mapping[str, Any]], *,
+    lineage: str, symbol: str, timeframe: str, mint: str,
+) -> None:
+    """Refuse a seed walk that :func:`seed_divergence` finds at odds with the store.
+
+    The whole walk, not the clashing rows: once two walks disagree, which of this walk's
+    other rows the first walk would have minted is not knowable from here."""
+    clashes = seed_divergence(walked, stored, lineage=lineage, symbol=symbol,
+                              timeframe=timeframe, mint=mint)
+    if clashes:
+        new = sorted({clash["new"] for clash in clashes})
+        held = sorted({clash["stored"] for clash in clashes})
+        raise ToolError(
+            FORWARD_SEED_DIVERGED,
+            f"{lineage} {symbol} {timeframe}: this walk's new row(s) opened "
+            f"{', '.join(str(opened) for opened, _ in new)} overlap stored row(s) opened "
+            f"{', '.join(str(opened) for opened, _ in held)} of the same lineage-context. "
+            "The walk that wrote the store saw different doors, exits or data; nothing was written",
+        )
 
 
 def append_sealed_rows(
@@ -541,7 +638,8 @@ def walk_seed_span(
     ``boundary`` is the live stream's ``first_seen_candle`` — the seeder never crosses it,
     so the seeded span and the live span partition the calendar and no bar can settle in
     both. Rows are stamped with each bar's OWN close_time, which is what makes the ids
-    deterministic (idempotent re-seed) and the confirmation slices honest. A position
+    deterministic (idempotent re-seed, while the doors, exits and data are the same between
+    walks — :func:`seed_divergence`) and the confirmation slices honest. A position
     still open when the walk ends is DROPPED un-minted: the live stream owns the present,
     and a half-lived seeded position merged into it would be settled against bars its
     entry never saw.
