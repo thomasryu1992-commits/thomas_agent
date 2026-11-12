@@ -59,3 +59,16 @@ per-item decisions) would repeat those.
 11-13, and no trial could mint in that window until the slots were freed on 11-12. A ninth row on the last two days
 is a trial, not a fault; the proposal says how to count it. Claude had recommended the closes without checking this
 first.
+
+**The overlap was measured before anything was built on it.** The netting design does work only when strategies
+overlap on a symbol, so the first step was a count: the pool's forward book, times and directions only, every other
+field dropped at parse (`scripts/research/pool_overlap.py`). The cohort was left out, since it sits under a judgement
+read once on 2027-03-22. Of 329 closed virtual positions, 171 opened while another strategy was already in on that
+symbol, and 106 of those were the same direction: netting would stack more often than it offsets, so the risk budget
+matters before the fee saving does. Overlapped time mixes timeframes on four of five symbols.
+
+**Three definitions were fixed before the first count, and one claim was wrong.** The proposal had not said what a
+close time is, what "already open" means for entries stamped in one cycle, or what happens when one strategy's rows
+touch. They were written into the record before the run. The proposal had also said a strategy cannot hold two
+positions on one symbol; one seeded DOGE 4h strategy has a row spanning three of its own. The tool counts that once
+and reports it. The cause is not known and was left as a follow-up.
