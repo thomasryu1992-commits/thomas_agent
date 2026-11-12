@@ -85,6 +85,39 @@ def test_the_replay_takes_the_recorded_branches_without_reading_a_key(tmp_path):
     assert kp.load_keys() is None
 
 
+def test_the_cache_judges_expiry_at_the_runs_start_as_the_recorded_run_did(tmp_path, monkeypatch):
+    # Root's 2026-11-12 bundle: vol entries 13.9996 days old at the start expired ~35 s into the live run (wall clock)
+    # but were hits in the replay (clock = last response), so the Search Ad batches shifted and every one missed.
+    start = 1_000_000.0
+    transport = kr.Transport([{"url": "u", "body": "x", "at": "2026-11-12T07:20:00+09:00", "epoch": start + 600}],
+                             kp.ReplayMiss)
+    kp.configure(tmp_path, cache_dir=tmp_path / "cache", clock=None, epoch=start, has_vol=True,
+                 decision_mode="enforce", transport=transport)
+
+    class Started(Exception):
+        pass
+
+    def stop(args, keys):  # run() records the bundle right after it fixes the run's start
+        raise Started(kp.RUN_T0)
+
+    monkeypatch.setattr(kp, "replay_start", stop)
+    with pytest.raises(Started) as started:
+        kp.run([])
+    assert started.value.args[0] == start          # the recorded started_epoch, before any response
+
+    kp.RUN_T0 = start
+    kp.C_VOL.d["경계"] = [start - kp.TTL["vol"] * 86400 + 30, {"total": 10}]
+    transport("u")                                  # the replay's clock moves 600 s on, past the entry's expiry
+    assert kp._epoch() == start + 600
+    assert kp.C_VOL.get("경계") == {"total": 10}    # still judged at the start, as the live run now does
+    kp.RUN_T0 = None
+    assert kp.C_VOL.get("경계") is None             # outside a run: the moving clock
+
+
+def test_a_candidate_without_a_volume_scores_zero_instead_of_ending_the_run():
+    assert kp.score({"kw": "x", "intent": "사장님", "vol": None, "serp": None, "pos": 1}, True) == 0
+
+
 def test_arguments_drop_the_queue_reuse_flag():
     assert kr._args({"args": ["--max-age", "2", "--fast"]}) == ["--fast"]
     assert kr._args({"args": []}) == []
