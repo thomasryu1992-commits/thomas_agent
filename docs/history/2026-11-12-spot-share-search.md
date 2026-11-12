@@ -21,3 +21,15 @@ file that should exist but does not is UNEXPLAINED and stops the run.
 **The span was not chosen.** The universe has under four members until 2020-04, which makes the first weeks
 empty. Starting later would have been a choice made after looking at counts; using `basket_search.DEV` as the ten
 price attempts did is not.
+
+**The stop rule fired once, and it was right to.** The first counts left four member-decisions unexplained
+(FTTUSDT, December 2022). The spot pair had been halted on 2022-11-15 inside a month the archive serves, and
+resumed in 2023-09, so those days were neither "not served" nor outside the pair's first and last day. Nothing ran.
+The cause was read from dates only, added as a named cause (the month's file is on disk and holds no bar for the
+day), and recorded as added after the counts. It changes labels, not ranks: the second counts ranked the same
+members with the same input fingerprint.
+
+**Result.** S01's annual Sharpe is 0.455 with 12.25%/yr on total position; the sign of the year changes four
+times in five years. The overlap with M04 came out at 11.4%, under chance, so the worry that shaped the rule did
+not materialise, and it did not matter. Closed after one attempt.
+
