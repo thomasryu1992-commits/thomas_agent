@@ -41,3 +41,21 @@ hypothesis-first generation path has therefore been idle since 2026-09-28. Fixin
 a mint-time frequency screen and an idle-trial deadline) is a generator change outside the judgement fingerprint,
 and it matters more than what the proposals say.
 
+
+**Thomas's reply reframed the fix.** Asked to approve an idle-trial deadline under a cap of four, he said the cap
+itself is the wrong tool: carry as many strategies as possible and work out what many strategies bring. A second
+document (`MANY_STRATEGIES_V0.1.md`) therefore inventories every count limit in the lane and sorts them by what
+they actually limit. "How many" turned out to be three different questions. How many are made and observed: the
+cohort already has no cap, and the trial cap can go. How many may enter per context: one, and the live order plan is
+built from that same choice, so it cannot be lifted before a layer that nets signals on one symbol. How many live
+positions: set by the venue's one-way netting and the registered budget, and left alone.
+
+**The recorded cost of count goes first.** The pool once held 67 strategies over 20 contexts and none could be
+demoted; a full pool once silenced a signal that was on 81% of the time; the LIVE bar rises with pool occupancy.
+Lifting caps without the three things caps stood in for (family-level judgement, a risk unit, rules instead of
+per-item decisions) would repeat those.
+
+**Closing the idle trials touched the 11-14 reading.** The reading registers eight mints per fire over 10-24 to
+11-13, and no trial could mint in that window until the slots were freed on 11-12. A ninth row on the last two days
+is a trial, not a fault; the proposal says how to count it. Claude had recommended the closes without checking this
+first.
