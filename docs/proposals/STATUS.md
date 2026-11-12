@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **121**건: `DRAFT` 2 · `PARTIALLY DECIDED` 11 · `DECIDED` 33 · `IMPLEMENTED` 64 · `SUPERSEDED` 4 · `RECORD` 7
+제안서 **122**건: `DRAFT` 3 · `PARTIALLY DECIDED` 11 · `DECIDED` 33 · `IMPLEMENTED` 64 · `SUPERSEDED` 4 · `RECORD` 7
 
-## Thomas 결정 대기 (13)
+## Thomas 결정 대기 (14)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -24,6 +24,7 @@
 | [BLOG_DEPARTMENT_V0.1.md](BLOG_DEPARTMENT_V0.1.md) | `PARTIALLY DECIDED` | 2026-10-26 | 생산은 지금의 볼트 경로에서 시작하고, 런타임 블로그 레인(`blog_*` 10개 모듈)은 지웠다(#1319). v0.2(Thomas 2026-10-26): 통합할 수 있는 단계(키워드, 검증, 발행 계획, 분석, 피드백)는 시스템 안으로 옮기고, 원고 생성·발행·통계 수집만 외주로 둔다(§3). §7의 N1·S1·L2·L3·R1–R3은 권고대로 정했다(Thomas 2026-10-26). P0 관측(#1321)·P1 실행 보고(#1326)·P2 검증(#1328)은 배포됐고(2026-10-26), 전환 조건을 관찰 중이다. P3 분석(`blog_analyze`)은 2026-10-27에 배포됐다. P4는 재생 그림자(P4a)를 먼저 하기로 정했고(Thomas 2026-10-27), 2026-10-27에 배포됐다(재생 포트 재생성 #1337은 2026-11-01 머지). P5 피드백 그림자(`blog_feedback`)는 2026-11-03에 배포됐다. P4b 직접 조회 그림자(`blog_kw_direct`)는 미리 구현하기로 했고(Thomas 2026-11-03), opt-in 두 개(`MVP_BLOG_WEB_READ`·`MVP_BLOG_OWN_READ`)가 꺼진 채로 들어간다. 켜는 것은 P4a 조건을 채운 뒤 Thomas가 한다. P7은 네이버 슬롯 그림자(`blog_slot`)를 먼저 만들기로 했고, 티스토리는 다시 계획하지 않고 큐 규칙 검사로 같은 기록에 넣기로 했다(Thomas 2026-11-03). P6은 지시 그림자(`blog_instruction`)를 미리 만들어 두기로 했고(Thomas 2026-11-03), 크론은 아직 지시를 읽지 않는다. 주간 보고가 단계마다 전환 조건까지 온 정도를 싣기로 했다(Thomas 2026-11-03, "조건 진행표"). 전환은 조건을 채운 뒤에 한다. 통합 배정인데 단계가 없던 도구 12개를 다시 배정했다(Thomas 2026-11-05, §7 "도구 배정"). P6 전환 전에 정할 것 하나가 열렸다: 티스토리 1-C 발굴을 지시의 허용 통로로 둘지 닫을지(§7 O1, 2026-11-05). P8은 시작하지 않았다. |
 | [H6C_UNIT_AUTHORITY_V0.1.md](H6C_UNIT_AUTHORITY_V0.1.md) | `DRAFT` | 2026-11-04 | H6c(G1d, unit 권위 전환)의 결정 패킷 초안이다. **지금 묻지 않는다.** Claude 도어의 `holdings_status`에 `h6c_askable`이 서면 HQ1–HQ7을 묻는다(HQ7은 2026-11-11에 더했다)(`H6B_UNIT_SHADOW_V0.1.md` S5). 그때까지 코드, 정책, env, 스케줄은 바뀌지 않는다. 미리 써 두는 이유는 조건이 갖춰지는 날 바로 묻기 위해서다. 같은 날 Thomas가 해야 할 일(§2의 입금·출금)도 여기에 적는다. |
 | [CRYPTO_DESIGN_REVIEW_V0.1.md](CRYPTO_DESIGN_REVIEW_V0.1.md) | `PARTIALLY DECIDED` | 2026-11-11 | Thomas: 해결 방안을 권한 순서대로 진행한다("해결방안을 순서대로 진행하고 검증까지 진행해서 보고해"). 같은 날 결과: 방안 3(`POSITIONING_DIVERGENCE_V0.1`)은 ENTRY_FAIL, 방안 5(`VARIANCE_PREMIUM_V0.1`)는 PROXY_FAIL로 둘 다 닫았다(§4). 방안 1의 문서 정정은 이 문서와 함께 병합됐고, read door는 별도 PR(#1420)이며, 알림은 Thomas의 root `at` 작업으로 남아 있다. Q2는 2026-11-11에 답을 받았다: 새 후보의 진입 조건에 포지션 총액 대비 연 순수익 15%를 더한다("순서대로 전부", §5). 남은 질문은 둘이다: Q1은 2026-11-14 mint 판독 뒤에 묻고, Q3은 2단계 확인 규칙 쪽이 `SCREEN_STAGE2_V0.1`로 정해졌고(2026-11-11, 첫 선별 판정 전에 정한다) 현물 실행 경로를 언제 정하는지만 남았다. 이 문서가 바꾸는 코드, 판정 규칙, 일정은 없다. |
+| [FACTORY_GENERATOR_REDESIGN_V0.1.md](FACTORY_GENERATOR_REDESIGN_V0.1.md) | `DRAFT` | 2026-11-12 | 2026-11-04의 결정이 남긴 제안이다("factory 쪽에 무엇을 넣을지 … 따로 정한다", `MARKET_NEUTRAL_CROSS_SECTION_V0.1`). `STRATEGY_SYSTEM_REVIEW_V0.1` R5는 2026-11-14 판독 뒤에 쓰기로 했다. Thomas가 그 판독은 같은 값으로 돌 것이라고 말한 것을 Claude가 "기다릴 필요가 없다"로 읽고 앞당겨 썼다. factory는 바꾸지 않았고, 판독 결과는 나온 뒤에 이 문서에 덧붙인다. 기본값은 모두 "지금은 factory를 바꾸지 않는다" 또는 "11-14 뒤에 별도 PR로 낸다"다. §7의 F1 – F4에 답을 받은 뒤에 움직인다. |
 | [SPOT_SHARE_SEARCH_V0.1.md](SPOT_SHARE_SEARCH_V0.1.md) | `PARTIALLY DECIDED` | 2026-11-12 | Thomas 2026-11-12: 현물 비중을 한 번, M04와의 겹침 조건을 걸고 잰다("기본값대로", `SEARCH_CANDIDATE_SURVEY_V0.1` V1). **결과: 넘지 못했다.** S01(현물 비중이 높은 쪽을 산다)의 연 샤프는 0.455이고 포지션 총액 대비 연 12.25%다(기준 1.0과 15%). 예산 한 번을 써서 닫았고 forward 선별에 올릴 것은 없다. **남은 질문:** 탐색 전에 Claude가 고정한 세부인 §5의 Q1 – Q3(창과 구간, 겹침 한도, 같은 자산 확인)은 기본값으로 진행했고 Thomas의 답을 기다린다. |
 
 ## 결정됨 — 구현 남음 (33)
