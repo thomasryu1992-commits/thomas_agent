@@ -42,5 +42,9 @@ before any window share was computed. It is listed in Q5 as its own item.
 resolved to its named directory. The registered 36% and 37.5% decide; the pre-fix BTCUSDT 1h fires move the expectation
 by at most 0.25 points and are a note, not a second verdict.
 
-Open: Q5 (keep this reading and these actions), default yes. The read happens once on 11-14 under the registered
-criteria whether or not Q5 is answered.
+## How it closed
+
+Thomas answered Q5 the same day, before the read ("기본값대로"): yes to all four. Outside the range does not revert the
+tilt; the timeframe share decides; crossover rows are left out of the share, the way the tool has counted since 11-10;
+the F6 PR opens after the read whatever it says, and its merge still takes his word. The registered criteria did not
+move, and no code, tilt, template or schedule changed with the answer.
