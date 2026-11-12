@@ -10,6 +10,15 @@ HISTORICAL timestamps into the rows, so slice-based confirmation sees the true c
 spread and a re-run mints identical settlement ids that the append-side dup check skips —
 seeding is idempotent by the same mechanism that makes settlement retries safe.
 
+**Idempotent while the two runs see the same doors, exits and data.** A run after any of
+them changed can walk a different past: other entries, other ids, appended beside the first
+run's rows (2026-11-12: one lineage, four rows, after the liquidation guard's leverage
+changed between two runs). So a walk whose new row is open while a stored row of the same
+lineage-context is open is refused whole (``FORWARD_SEED_DIVERGED``): nothing is written for
+that context, the run names it, the other contexts still seed, and the run exits
+``EXIT_BLOCKED``. A dry run reports the same. What to do with a refused context is the
+operator's decision; this tool offers no override.
+
 **The seeded span and the live span partition the calendar.** The walk stops at the live
 stream's own ``first_seen_candle``, so no bar can settle in both streams, and running
 this AFTER the live cycle has started (the normal case) backfills exactly the history the
@@ -204,12 +213,32 @@ def seed_lineage(
         symbol=symbol, timeframe=timeframe, mint=mint, boundary=boundary)
     report["opens"] = int(seed_state.get("opens_count") or 0)
     report["settled"] = len(rows)
-    if apply:
-        forward_book._append_outcomes(rows, root=root)
-        live_settled = _live_settled_count(root, lineage, symbol, timeframe)
-        forward_book.mutate_book(root, now, lambda book: _merge_seed_state(
-            book, key, seed_state, live_settled=live_settled))
+    record_seed(rows, seed_state, lineage=lineage, symbol=symbol, timeframe=timeframe,
+                mint=mint, now=now, root=root, apply=apply)
     return report
+
+
+def record_seed(
+    rows: list[dict[str, Any]], seed_state: Mapping[str, Any], *, lineage: str, symbol: str,
+    timeframe: str, mint: str, now: str, root: Path, apply: bool,
+) -> None:
+    """Write one walk's rows and counters — after asking whether the walk agrees with the store.
+
+    The question is asked dry or not, and before either write: a walk that diverged
+    (``forward_book.assert_seed_agrees``) raises ``FORWARD_SEED_DIVERGED`` and leaves the
+    store AND the book entry as they were, since its opens counter describes a past the
+    store does not hold. The store is read through its verified reader, so a damaged one
+    refuses here too."""
+    forward_book.assert_seed_agrees(
+        rows, forward_book.read_forward_outcomes(root),
+        lineage=lineage, symbol=symbol, timeframe=timeframe, mint=mint)
+    if not apply:
+        return
+    key = forward_book.book_key(lineage, symbol, timeframe)
+    forward_book._append_outcomes(rows, root=root)
+    live_settled = _live_settled_count(root, lineage, symbol, timeframe)
+    forward_book.mutate_book(root, now, lambda book: _merge_seed_state(
+        book, key, seed_state, live_settled=live_settled))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -250,6 +279,7 @@ def main(argv: list[str] | None = None) -> int:
 
     apply = bool(args.apply and not args.list)
     total_rows = 0
+    diverged: list[str] = []
     print("%-16s %-10s %-4s %-11s %6s %6s %7s  %s" % (
         "strategy", "symbol", "tf", "mint", "bars", "opens", "settled", "note"))
     for entry in occupying:
@@ -275,9 +305,14 @@ def main(argv: list[str] | None = None) -> int:
                 r = seed_lineage(entry, spec, symbol, mint=mint, now=now, root=root,
                                  collector=collector, apply=apply)
             except (ToolError, MvpRuntimeError) as exc:
+                code = getattr(exc, "reason_code", type(exc).__name__)
                 print("%-16s %-10s %-4s  ERR %s" % (
-                    entry.get("strategy_id"), symbol, spec.timeframe,
-                    getattr(exc, "reason_code", type(exc).__name__)))
+                    entry.get("strategy_id"), symbol, spec.timeframe, code))
+                if code == forward_book.FORWARD_SEED_DIVERGED:
+                    # Unlike a fetch that failed, this is the store and the rules disagreeing:
+                    # the run says why, and does not end as if nothing had happened.
+                    print("    %s" % exc.reason)
+                    diverged.append("%s %s %s" % (entry.get("strategy_id"), symbol, spec.timeframe))
                 continue
             total_rows += r["settled"]
             print("%-16s %-10s %-4s %-11s %6d %6d %7d  %s" % (
@@ -287,6 +322,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nseeded {total_rows} settled row(s)")
     else:
         print(f"\nDRY RUN — {total_rows} settled row(s) would be written. Re-run with --apply.")
+    if diverged:
+        print(f"BLOCKED {forward_book.FORWARD_SEED_DIVERGED}: {len(diverged)} context(s) not seeded "
+              f"({'; '.join(diverged)}). Nothing was written for them.", file=sys.stderr)
+        return EXIT_BLOCKED
     return EXIT_OK
 
 
