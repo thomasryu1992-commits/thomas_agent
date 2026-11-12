@@ -458,3 +458,20 @@ def test_the_queue_and_the_trial_row_carry_the_hypothesis_form_when_there_is_one
     without = _run(snapshot, cohort, trials=[_queued(_proposal_spec())])
     row = next(c for c in without["candidates"] if factory.is_trial(c))
     assert "hypothesis" not in row["trial_source"]
+
+
+def test_a_cohort_fire_stores_a_trial_row_that_carries_the_form_beside_its_rotation_rows(tmp_path):
+    """The whole path with the new row shape: ledger acceptance -> queue -> factory child -> the
+    append-only store. A row the store refused would take nothing with it only if this passes
+    with the rotation's rows stored too."""
+    form = {"payer": "a", "persistence": "b", "size": "c", "falsifier": "d", "nearest_record": "e", "prior": 0.2}
+    spec = _proposal_spec(timeframe="1d")
+    proposals = [_proposal_row("2026-07-22T06:18:00Z", [{**_accepted(spec), "hypothesis": form}],
+                               timeframe="1d")]
+    status, record = _fire(tmp_path, "BTCUSDT,ETHUSDT 1d", proposals=proposals)
+    assert " trial=minted:proposed_trend_long" in status
+    stored = pool.read_candidates(tmp_path)
+    (trial,) = [r for r in stored if factory.is_trial(r)]
+    assert trial["trial_source"]["hypothesis"] == form
+    assert record["trial"]["minted"][0]["hypothesis"] == form
+    assert sum(1 for r in stored if not factory.is_trial(r)) == record["accepted_count"] > 0
