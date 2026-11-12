@@ -369,8 +369,9 @@ def seed_divergence(
 
     Only stored rows that opened at or after ``mint`` are compared. A row from before the
     walk's start was written by a walk that started earlier (the seed start moved to the
-    selecting row on 2026-09-23); the judge does not count it, and a walk that begins
-    without that position may honestly open across it. Stored rows are never compared with
+    selecting row on 2026-09-23) and is not the judge's evidence, so it is not this guard's
+    either. A walk that begins without a position the stored walk was holding can still
+    clash with that lineage's stored rows from after the start, and is then refused. Stored rows are never compared with
     each other: a context that already holds two pasts and whose walk mints nothing new has
     nothing to refuse.
 

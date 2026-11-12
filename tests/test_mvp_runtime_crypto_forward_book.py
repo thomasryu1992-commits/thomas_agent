@@ -880,6 +880,10 @@ def test_only_a_new_row_open_while_a_stored_row_of_its_own_context_is_open_is_a_
     both_pasts = stored + [dict(long_row, settlement_id="s0")]
     assert _clashes([dict(long_row, settlement_id="s0"), stored[0]], both_pasts) == []
 
+    # the same span under another id is two positions at once all the same (an id is seeded by
+    # the strategy, the entry price and the open time; a re-priced bar would do this)
+    assert _clashes([dict(stored[1], settlement_id="new")], stored) != []
+
     # a new row in a gap the stored rows leave passes — stated, not caught
     assert _clashes([_held("20 03", "21 03", sid="new")], stored) == []
 
@@ -894,6 +898,53 @@ def test_a_stored_row_from_before_the_walks_start_is_not_compared():
     assert _clashes([new], [straddler], mint="2026-08-23T15:59:59Z") != []    # opened AT the start counts
     assert _clashes([new], [straddler], mint="not a time") != []              # an unreadable start narrows nothing
     assert _clashes([new], [dict(straddler, opened_at_utc=None)]) == []       # a stored row that cannot place itself
+
+
+def test_seed_lineage_asks_about_its_own_context_before_it_writes(tmp_path, monkeypatch):
+    """The whole path the operator runs, with only the fetch replaced: the walk, the question
+    asked with this walk's lineage, symbol and timeframe, then the write."""
+    import types
+    import scripts.seed_forward_book as seeder
+    scope = ["BTCUSDT", "ETHUSDT"]
+    entry = _pool_entry(strategy_spec=_spec_dict(symbol_scope=scope, exit_rules={
+        "stop_model": "atr", "stop_atr": 1.5, "target_atr": 2.0, "max_holding_bars": 2}))
+    spec = StrategySpec.from_dict(entry["strategy_spec"])
+    shape = {"days": 10, "lift": 0.0}
+
+    def frame(_snapshot):
+        rows, candles = _seed_frame(shape["days"])
+        lift = shape["lift"]                       # another symbol trades at another price
+        return types.SimpleNamespace(
+            rows=[dict(r, close=r["close"] + lift, ma20=r["ma20"] + lift) for r in rows],
+            candles=[dict(c, **{k: c[k] + lift for k in ("open", "high", "low", "close")}) for c in candles])
+
+    monkeypatch.setattr(seeder.market_data, "collect_market_data", lambda *_a, **_k: ({}, {}))
+    monkeypatch.setattr(seeder, "attach_mining_legs", lambda *_a, **_k: None)
+    monkeypatch.setattr(seeder, "build_replay_frame", frame)
+
+    def seed(symbol, *, apply):
+        return seeder.seed_lineage(entry, spec, symbol, mint=_SEED_MINT, now="2026-09-02T12:00:00Z",
+                                   root=tmp_path, collector=None, apply=apply)
+
+    with monkeypatch.context() as patched:         # the first seed, under the door that refused 07-05
+        patched.setattr(fb, "stop_beyond_liquidation_refusal", lambda plan: (
+            {"reason_code": "STOP_BEYOND_LIQUIDATION"}
+            if plan.get("created_at_utc") == "2026-07-05T00:00:00Z" else None))
+        assert seed("BTCUSDT", apply=True)["settled"] == 3
+    stored = [r["settlement_id"] for r in fb.read_forward_outcomes(tmp_path)]
+    assert len(stored) == 3
+
+    shape["days"] = 14                             # the re-seed, after the door changed
+    for apply in (False, True):
+        with pytest.raises(ToolError) as exc:
+            seed("BTCUSDT", apply=apply)
+        assert exc.value.reason_code == fb.FORWARD_SEED_DIVERGED
+    assert [r["settlement_id"] for r in fb.read_forward_outcomes(tmp_path)] == stored
+
+    shape["lift"] = 100.0                          # the same lineage's other symbol is another context
+    assert seed("ETHUSDT", apply=True)["settled"] == 5
+    after = fb.read_forward_outcomes(tmp_path)
+    assert len(after) == 8 and {r["symbol"] for r in after[3:]} == {"ETHUSDT"}
 
 
 def test_the_live_append_is_not_gated_by_the_seeders_question(tmp_path, monkeypatch):

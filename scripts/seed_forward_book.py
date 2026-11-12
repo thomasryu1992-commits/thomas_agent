@@ -13,7 +13,8 @@ seeding is idempotent by the same mechanism that makes settlement retries safe.
 **Idempotent while the two runs see the same doors, exits and data.** A run after any of
 them changed can walk a different past: other entries, other ids, appended beside the first
 run's rows (2026-11-12: one lineage, four rows, after the liquidation guard's leverage
-changed between two runs). So a walk whose new row is open while a stored row of the same
+changed between two runs). A row's id is seeded by its strategy, entry price and open time,
+so an entry taken on another bar is a row the dup check has never seen. So a walk whose new row is open while a stored row of the same
 lineage-context is open is refused whole (``FORWARD_SEED_DIVERGED``): nothing is written for
 that context, the run names it, the other contexts still seed, and the run exits
 ``EXIT_BLOCKED``. A dry run reports the same. What to do with a refused context is the
@@ -121,7 +122,8 @@ def _merge_seed_state(
 
     **The seed span's opens are ASSIGNED to their own counter, never added to the live
     one.** The rows a re-seed writes are idempotent (deterministic settlement ids, dedup
-    on append), so a second ``--apply`` is a no-op on the evidence — but the old
+    on append) while both runs see the same doors, exits and data — :func:`record_seed`
+    refuses the run that does not — so a second ``--apply`` is a no-op on the evidence — but the old
     ``opens_count += seed_opens`` made the counter climb with every run. Measured
     2026-09-01: three applies left S004-GEN-706 at 29 opens against 12 real ones, every
     seeded lineage inflated by exactly its seed count per extra run. Assignment makes the
