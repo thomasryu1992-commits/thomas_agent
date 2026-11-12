@@ -76,7 +76,7 @@ and reports it.
 **Those rows are two seeder runs that walked different pasts.** The three inner rows came with the first seed on
 2026-08-30. The long one came alone on 2026-09-02, hours after #822 lowered the liquidation guard's assumed leverage
 from 20 to 5: its stop sits 5.72% from entry, refused at 20x and admitted at 5x. The second walk took that entry and
-held it, so the three later entries had no room; ids come from entry times, so only the new row was appended and both
+held it, so the three later entries had no room; a row's id is seeded by its strategy, entry price and open time, so only the new row was appended and both
 pasts stayed. The seeder is idempotent only while the doors, exits and data are the same between runs, and nothing
 reports when they are not. The forward judge counts every closed row after selection and does not look at overlap.
-One lineage, four rows; no fix was made here.
+One lineage, four rows; no fix was made here. The guard that refuses the next such walk is its own PR (#1459).
