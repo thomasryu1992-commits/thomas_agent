@@ -57,3 +57,11 @@ liquidation door refusing one entry in the first) through `record_seed`, dry and
 edges; the start-of-walk rule; the live append left alone; the same case
 through the real `seed_lineage` with only the fetch replaced; and `main` going on past a refusal to the other
 contexts and ending blocked. Twenty-two mutations of the rule and of the seeder's handling were each caught.
+
+**Decided after the merge (Thomas 2026-11-12, "기본값대로").** Both open questions took their defaults. The four
+existing rows stay as they are, on record only: the store is sealed and append-only, and what the judge counts is
+not changed, so the judge keeps counting all four: three rows more than today's rule's past and one more than the
+old rule's (27 against 24 or 26 in the 2026-11-12 snapshot; live closes move the total, not the difference). A context the guard refuses
+stays refused, with no override added: it gets no further seeded rows, its live rows accrue as before, and since the
+seeder is a hand-run tool that re-walks the pool's strategies (``--strategy-id`` narrows it), each run that includes
+that strategy names it again and ends ``EXIT_BLOCKED``, dry runs too, until the walk and the store agree. Deploying the guard is not part of this decision.
