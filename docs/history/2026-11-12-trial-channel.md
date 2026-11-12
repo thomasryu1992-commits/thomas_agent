@@ -49,3 +49,10 @@ fire on 2026-11-13.
 **Not verified.** No real model has answered the v2 prompt; a truncated answer degrades the fire to zero proposals.
 How many real proposals the pace screen refuses is unknown — the proposal ledger is not readable from here, and the
 read door shows a proposer fire only as "fired".
+
+## How it closed
+
+Thomas answered both the same day ("기본값대로"). T1 yes: merge before the read, after the window's last fire on
+2026-11-13 (about 09:00 UTC) — the one thing that did differ, because any session's deploy ships `origin/main`. The
+"after the read" wording in F6, M1 and Q5 (d) now carries the new timing; the read's criteria did not move. T2 no:
+an overdue trial is marked, and the close stays his.
