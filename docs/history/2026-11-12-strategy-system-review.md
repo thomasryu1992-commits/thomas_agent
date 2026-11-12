@@ -24,3 +24,23 @@ candidates that cleared the past.
 default that changed a rule would be a rule change by habit. The options that touch decided research-side rules say
 which rule they reopen; canary, limit entry, lane shrink and loosening before an epoch boundary are listed as not
 raised.
+
+**The diagnosis is not new, and the review now says so.** Checking the review's factory figures against their owner
+documents turned up two older records that reach the same conclusion: the 2026-07-30 research record ("the families
+mint recombinations of one price series") and the 2026-10-01 scorecard ("the filters score nine, what they filter
+scores two to three"). The prescriptions of those records were carried out (more information sources: gross near
+zero three times; a true cross-sectional book: the research track, two candidates with size). The review therefore
+claims only what it adds: the research track's score, the power of the whole pipeline, and options for what comes
+after those two prescriptions.
+
+**The forward panel is narrower than the option that was approved.** The review described a ledger of every
+registered definition, written daily, and said a missed day never comes back. Writing the proposal showed three
+errors. Nothing needs to run daily, because every definition is a function of archive files; a record visible daily
+is peeking. Strategies with an official read ahead, and their relatives (M04's two inputs, the trend book beside the
+momentum basket), cannot be computed early without seeing that read. And a judgement rule written once the record
+exists is post hoc, so the panel has no judgement at all: sixteen closed definitions, as registered, one read after
+twelve months, three readings fixed now.
+
+**The map is an index.** `TRADING_ALPHA_RESEARCH_RECORD.md` and each proposal already own their figures. The map
+lists what was measured, on what universe, with a one-phrase result and a pointer, so that a new hypothesis is
+checked against it before it is written.
