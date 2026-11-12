@@ -54,6 +54,30 @@ def test_once_told_the_month_is_quiet_and_the_next_month_asks_again(tmp_path):
     assert store.band_notice(_body(), now="2026-12-01T03:00:00Z", root=tmp_path)[0] == "2026-12"
 
 
+@pytest.mark.parametrize(("now", "annual"), [
+    ("2027-10-01T03:00:00Z", True),     # the first annual review (Thomas 2026-11-11)
+    ("2028-10-02T03:00:00Z", True),     # every October after it (2028-10-01 is a Sunday)
+    ("2026-11-02T00:30:00Z", False),
+    ("2027-09-01T03:00:00Z", False),
+    ("2027-11-01T03:00:00Z", False),
+])
+def test_octobers_band_notice_carries_the_annual_review_from_2027(tmp_path, now, annual):
+    _, text = store.band_notice(_body(), now=now, root=tmp_path)
+    assert ("연례 재검토" in text) is annual and "리밸런싱할 것이 없습니다" in text
+    if annual:
+        assert "Q7" in text and "Q3" in text and "원" not in text
+
+
+def test_october_2026_is_before_the_first_annual_review(tmp_path):
+    _, text = store.band_notice(_body(), now="2026-10-01T03:00:00Z", root=tmp_path)
+    assert "연례 재검토" not in text
+
+
+def test_an_incomplete_october_still_carries_the_annual_review(tmp_path):
+    _, text = store.band_notice(_body(complete=False), now="2027-10-01T03:00:00Z", root=tmp_path)
+    assert "판정할 수 없습니다" in text and "연례 재검토" in text
+
+
 def test_the_scheduler_marks_the_month_only_after_delivery(monkeypatch, tmp_path):
     monkeypatch.setattr(store, "refresh", lambda **_kw: {"status": "holdings snapshot: refreshed", "alert": None,
                                                         "band_alert": store.band_notice(_body(), now=MONDAY,
