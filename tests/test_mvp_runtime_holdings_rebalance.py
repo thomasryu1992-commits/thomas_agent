@@ -178,6 +178,60 @@ def test_coin_is_manual_and_the_engine_is_left_out():
     assert coin and all(o["manual"] for o in coin)
 
 
+def _coin_up():
+    # Coin 3.6 (target 2.5, band ±0.625: outside); bonds and gold 1pp over target, inside their bands.
+    krw = _on_target(coin=3_600_000.0, bonds=38_000_000.0, gold=14_000_000.0, cash=4_400_000.0)
+    assert sum(krw.values()) == pytest.approx(NAV)
+    positions = [Position("toss:domestic:KRBOND", al.BONDS, 3_800, 38_000_000.0, 1_000_000.0),
+                 Position("toss:domestic:KRGOLD", al.GOLD, 1_400, 14_000_000.0, 2_000_000.0),
+                 Position("binance:BTC", al.COIN, 0.03, 3_600_000.0, 0.0)]
+    return krw, positions
+
+
+def test_coin_alone_outside_moves_coin_against_cash_and_no_toss_class():
+    """Q2 execution B (Thomas 2026-11-11): a BTC move no longer makes the Toss side sell in-band bonds and gold."""
+    krw, positions = _coin_up()
+    out = rb.plan(class_krw=krw, positions=positions, complete=True)
+    assert out.status == "due" and out.scope == "coin_only"
+    assert [g for g, row in out.drift.items() if row["outside"]] == [al.COIN]
+    assert [(o["side"], o["instrument"], o["amount_krw"], o["manual"]) for o in out.orders] == [
+        ("SELL", "coin:manual", 1_100_000, True)]
+    assert out.after[al.COIN] == 0.0 and out.after[al.BONDS] == 1.0 and out.after[al.GOLD] == 1.0
+    assert out.after[al.CASH] == pytest.approx(-3.1 + 1.1) and out.est_tax_krw == 0
+    text = "\n".join(rb.render(out, as_of="t"))
+    assert "coin alone outside, coin against cash only" in text and "KRBOND" not in text
+
+
+def test_coin_alone_under_its_band_is_a_manual_buy_from_cash():
+    krw = _on_target(coin=0.0, cash=10_000_000.0)
+    out = rb.plan(class_krw=krw, positions=[], complete=True)
+    assert out.scope == "coin_only" and [(o["side"], o["amount_krw"]) for o in out.orders] == [("BUY", 2_500_000)]
+
+
+def test_coin_with_another_class_outside_still_returns_every_class():
+    krw, positions = _coin_up()
+    krw.update(gold=19_000_000.0, bonds=33_000_000.0)            # gold +6 is outside its ±3.25 too
+    out = rb.plan(class_krw=krw, positions=positions, complete=True,
+                  candidates={al.BONDS: ["toss:domestic:KRBOND"]})
+    assert out.scope == "all" and {o["asset_class"] for o in out.orders if o["side"] == "SELL"} >= {al.GOLD, al.COIN}
+
+
+def test_force_still_plans_every_class_when_coin_alone_is_outside():
+    krw, positions = _coin_up()
+    out = rb.plan(class_krw=krw, positions=positions, complete=True, force=True)
+    assert out.scope == "all" and {o["asset_class"] for o in out.orders if o["side"] == "SELL"} >= {al.BONDS, al.GOLD}
+
+
+def test_a_coin_gap_under_fifty_thousand_is_carried_not_placed():
+    # NAV 4M: coin 3.4% is outside its ±0.625 band, but 0.9% of 4M is 36,000 KRW, under RB4's minimum.
+    small = {c: 4_000_000.0 * al.TARGET_PCT[c] / 100 for c in rb.PLANNED}
+    small.update({al.COIN: 136_000.0, al.CASH: 264_000.0})
+    out = rb.plan(class_krw=small, positions=[], complete=True)
+    assert out.scope == "coin_only" and out.orders == []
+    assert [(o["side"], o["amount_krw"]) for o in out.carried] == [("SELL", 36_000)]
+    assert out.after[al.COIN] == pytest.approx(0.9) and out.after[al.CASH] == pytest.approx(-0.9)
+
+
 @pytest.mark.parametrize(("instrument", "asset_class", "expected"), [
     ("toss:domestic:A", al.DOMESTIC_EQUITY, rb.TAX_FREE),
     ("toss:domestic:A", al.GLOBAL_EQUITY, rb.TAXED_DIVIDEND),

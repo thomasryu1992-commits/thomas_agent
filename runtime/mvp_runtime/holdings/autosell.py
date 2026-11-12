@@ -19,8 +19,8 @@ code. It is the sell half of G6 and mirrors G6-buy (``autoinvest.py``) line for 
   - At most once per KST trading day, inside the regular session, it places the remaining quantity of each item
     with no open order: a limit sell at the highest bid at which the book covers the quantity, held for the day
     if that is more than 2% below the last price.
-  - Right before placing it reads the shares held again. Fewer than the scenario still sells holds the whole
-    scenario for the day (Thomas may have sold in the app).
+  - Right before placing it reads Toss's sellable quantity for each item (net of any pending sell). Fewer than the
+    scenario still sells holds the whole scenario for the day (Thomas may have sold, or placed a sell, in the app).
   - It never sells an instrument the pending buy scenario is buying.
   - Before each POST it writes an ``intent`` line to its own journal and after it the outcome. It stops at the
     first rejection or unknown outcome and never resends.
@@ -31,8 +31,10 @@ the scenario ``holdings_autosell.json`` and the append-only journal ``holdings_a
 journal is its own file because the buy path reads every row of the buy journal as a buy. A Telegram line carries
 counts and state only (H3).
 
-Unverified until the first real sell (the packet's §6): Toss's rejection codes for a sell, and whether the order
-book answer names its bid side ``bids``. An empty bid side holds the day.
+Read off Toss's spec 1.2.28 (2026-11-11): the order book names its bid side ``bids`` (required, highest first);
+an order is refused while the same symbol has a pending order the other way (``opposite-pending-order-exists``).
+Unverified until the first real sell (the packet's §6): which code a sell over the sellable quantity draws. An
+empty bid side holds the day.
 """
 
 from __future__ import annotations
@@ -356,7 +358,7 @@ _HOLD_TEXT = {
     "orders_off": "매도 경로가 꺼져 있습니다(MVP_TOSS_ORDERS)",
     "over_scenario_cap": "추정 금액이 승인한 상한을 넘습니다",
     "over_daily_cap": "오늘 자동 매도 한도(50만 원)를 넘습니다",
-    "holding_short": "보유 수량이 시나리오 수량보다 적습니다",
+    "holding_short": "판매 가능 수량이 시나리오 수량보다 적습니다",
     "buying_same_instrument": "매수 시나리오가 같은 종목을 사고 있습니다",
     "buy_scenario_unreadable": "매수 시나리오를 읽지 못했습니다",
     "price_unreadable": "현재가를 읽지 못한 종목이 있습니다",
@@ -494,8 +496,7 @@ def _checks(feed: Any, state_dir: Path, body: dict[str, Any], today: str, wanted
                   if i.get("open") or autoinvest._remaining(i) > 0}
         if any(i["instrument"] in buying for i in wanted):
             return _hold(state_dir, body, "buying_same_instrument")
-    held = feed.domestic_quantities()
-    if any(math.floor(held.get(symbol, 0.0)) < _remaining(item) for item, symbol in zip(wanted, symbols)):
+    if any(math.floor(feed.free_shares(symbol)) < _remaining(item) for item, symbol in zip(wanted, symbols)):
         return _hold(state_dir, body, "holding_short")
     last = feed.last_prices(symbols)
     if any(s not in last for s in symbols):

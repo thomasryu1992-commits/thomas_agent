@@ -4,7 +4,9 @@
 ``TOTAL_ASSET_ALLOCATION_V0.1.md`` already decided:
 - checked monthly;
 - band b = min(5pp, 0.25 x target), with stock as one 40% sleeve and no band on cash;
-- one class outside its band returns *every* class to target;
+- one class outside its band returns *every* class to target, except (Q2 execution B, Thomas 2026-11-11) when coin
+  is the only group outside: then coin alone goes back to target against cash, and the Toss classes stay. Coin is
+  held outside Toss and its lines are manual, so a BTC move no longer makes the Toss side sell in-band holdings;
 - executed cheapest tax first (§8.5): surplus cash, then tax-free sells, then overseas sells inside the year's
   2.5M KRW deduction, then taxable sells. Overseas gains and losses of the year are netted, and an overseas
   holding at a loss the plan does not sell is shown beside a taxed overseas gain (step 4's offset hint). A
@@ -84,6 +86,7 @@ def tax_kind(position: Position, overrides: Mapping[str, str] | None = None) -> 
 class Plan:
     status: str                                   # due / not_due / refused
     reason: str | None = None
+    scope: str = "all"                            # all, or coin_only (Q2 execution B)
     nav_krw: float = 0.0
     drift: dict[str, dict[str, Any]] = field(default_factory=dict)
     orders: list[dict[str, Any]] = field(default_factory=list)
@@ -128,6 +131,29 @@ def _sell_order(position: Position, amount: float, step: int, kind: str) -> dict
             "gain_krw": round(gain), "manual": position.asset_class in MANUAL}
 
 
+def _coin_only(result: Plan, class_krw: Mapping[str, float], nav: float) -> Plan:
+    """Q2 execution B (Thomas 2026-11-11): coin alone is outside its band. Coin goes back to target against cash,
+    a manual line (coin is held outside Toss), and no Toss class moves. Under RB4's 50,000 KRW the line is carried."""
+    result.scope = "coin_only"
+    gap = float(class_krw.get(allocation.COIN, 0.0)) - nav * allocation.TARGET_PCT[allocation.COIN] / 100.0
+    selling = gap > 0
+    line = {"side": "SELL" if selling else "BUY", "instrument": f"{allocation.COIN}:manual",
+            "asset_class": allocation.COIN, "step": STEP[TAX_FREE] if selling else 1,
+            "tax_kind": TAX_FREE if selling else None, "amount_krw": round(abs(gap)), "quantity": None,
+            "whole_shares": False, "gain_krw": 0, "manual": True, "est_tax_krw": 0}
+    if line["amount_krw"] > 0:
+        (result.orders if line["amount_krw"] >= MIN_ORDER_KRW else result.carried).append(line)
+    after = dict(class_krw)
+    if result.orders:
+        after[allocation.COIN] = after.get(allocation.COIN, 0.0) - gap
+        after[allocation.CASH] = after.get(allocation.CASH, 0.0) + gap
+    result.after = {c: round((after.get(c, 0.0) - nav * allocation.TARGET_PCT[c] / 100.0) / nav * 100.0, 2)
+                    for c in PLANNED}
+    result.notes.append("coin alone is outside its band: coin goes back to target against cash, and the Toss "
+                        "classes stay where they are (Q2 execution B, Thomas 2026-11-11). --force plans every class")
+    return result
+
+
 def plan(*, class_krw: Mapping[str, float], positions: Iterable[Position], complete: bool,
          candidates: Mapping[str, list[str]] | None = None, tax_overrides: Mapping[str, str] | None = None,
          overseas_gain_ytd_krw: float | None = None, force: bool = False) -> Plan:
@@ -144,6 +170,8 @@ def plan(*, class_krw: Mapping[str, float], positions: Iterable[Position], compl
                   overseas_gain_ytd_krw=overseas_gain_ytd_krw)
     if not due and not force:
         return result
+    if due and not force and [g for g, row in drift.items() if row["outside"]] == [allocation.COIN]:
+        return _coin_only(result, class_krw, nav)
     named = sum(1 for p in positions if tax_overrides and tax_overrides.get(p.instrument) in TAX_RATE)
     if named:
         result.notes.append(f"tax kind: {named} held instrument(s) taxed as Thomas named them (--tax-kind), "
@@ -350,7 +378,9 @@ def render(result: Plan, *, as_of: Any) -> list[str]:
     bands = ", ".join(f"{g} {row['drift_pp']:+.1f}pp{' OUTSIDE' if row['outside'] else ''} (±{row['band_pp']:g})"
                       for g, row in result.drift.items())
     lines += [f"NAV (excl. engine margin): {_won(result.nav_krw)} KRW", f"bands       : {bands}",
-              "verdict     : " + ("rebalance due (one class outside returns every class)" if result.status == "due"
+              "verdict     : " + ("rebalance due: coin alone outside, coin against cash only (Q2 B)"
+                                  if result.status == "due" and result.scope == "coin_only"
+                                  else "rebalance due (one class outside returns every class)" if result.status == "due"
                                   else "no class outside its band")]
     if result.status != "due" and not result.orders:
         return lines
