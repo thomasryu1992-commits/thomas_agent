@@ -5,6 +5,7 @@ No network: fake feeds and order adapters."""
 from __future__ import annotations
 
 import json
+import math
 
 import pytest
 
@@ -102,20 +103,33 @@ def _refresh(state, feed, now=KST_DAY):
                       candidates=CANDIDATES, us_bonds=[US10])
 
 
-def test_an_exchange_only_draft_is_told_without_an_amount_and_cannot_be_approved(tmp_path):
+def test_an_exchange_only_draft_tells_the_dollars_to_exchange_and_cannot_be_approved(tmp_path):
+    """Thomas 2026-11-11: the notice names the dollars to exchange (rounded up: $71.43 → $72), and still no KRW."""
     assert _refresh(tmp_path, _Feed(usd=0.0)) == "exchange_only"
     text = ap.notice(tmp_path)[1]
-    assert "달러 환전이 필요" in text and "원" not in text.replace("보유 자산", "") and "$" not in text
+    assert "달러 환전이 필요" in text and "약 $72" in text and "원" not in text.replace("보유 자산", "")
+    assert "100,000" not in text and "71.43" not in text
     assert any(line.startswith("exchange    : ~100,000 KRW") for line in ap.render(tmp_path))
     with pytest.raises(ToolError, match="no drafted"):
         ap.approve(tmp_path, now=KST_DAY, candidates=CANDIDATES)
 
 
-def test_a_draft_with_orders_and_an_exchange_tells_both_without_an_amount(tmp_path):
+def test_a_draft_with_orders_and_an_exchange_tells_both_with_only_the_dollars_to_exchange(tmp_path):
     assert _refresh(tmp_path, _Feed(usd=30.0)) == "drafted"
     text = ap.notice(tmp_path)[1]
-    assert "미국 금액 주문 1건" in text and "달러 환전이 필요" in text
-    assert "원" not in text.replace("보유 자산", "") and "$" not in text and "59" not in text
+    usd = ap.read(tmp_path)["exchange_usd"]
+    assert usd > 0 and "미국 금액 주문 1건" in text and f"달러 환전이 필요합니다: 약 ${math.ceil(usd)}." in text
+    assert "원" not in text.replace("보유 자산", "") and text.count("$") == 1 and "59" not in text
+
+
+@pytest.mark.parametrize(("usd", "shown"), [(71.43, "$72"), (72.0, "$72"), (1234.01, "$1,235"), (0.0, "")])
+def test_the_dollars_to_exchange_round_up_to_a_whole_dollar(usd, shown):
+    assert ap._exchange_usd({"exchange_usd": usd}) == shown
+
+
+def test_an_exchange_without_a_dollar_figure_still_points_to_the_terminal():
+    text = ap._notice_text({"exchange_krw": 100_000, "exchange_usd": 0.0, "items": []})
+    assert "금액은 Thomas 터미널" in text and "$" not in text
 
 
 def test_a_dollar_draft_is_approved_into_a_us_amount_item(tmp_path):
