@@ -664,4 +664,15 @@ def test_the_cli_path_tells_the_model_the_cost_on_its_own_frame(snapshot):
     proposer.propose_strategy_families(
         snapshot, provider=_Spy(), now="2026-11-13T00:00:00Z", existing_families=[])
     assert f"typically about {proposer.typical_atr_bps(snapshot):.0f} bps of price" in prompts[0]
+    assert "order of magnitude" in prompts[0], "the figure is one symbol's recent bars, and the prompt says so"
+
+
+def test_the_record_keeps_the_one_market_number_its_prompt_carried(snapshot):
+    record = proposer.propose_strategy_families(
+        snapshot, provider=proposer.MockProposerProvider(), now="2026-11-13T00:00:00Z",
+        existing_families=[])
+    assert record["prompt_atr_bps"] == proposer.typical_atr_bps(snapshot)
+    from runtime.read_only_kernel import integrity
+    body = {k: v for k, v in record.items() if k != "record_sha256"}
+    assert integrity.sha256_record(body) == record["record_sha256"], "added before the hash, not after"
 

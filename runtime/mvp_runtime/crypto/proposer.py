@@ -224,7 +224,9 @@ def _cost_block(venue: str, timeframe: str | None, atr_bps: float | None) -> str
     bars = f"these {timeframe} bars" if timeframe else "these bars"
     return (
         opening
-        + f"On {bars} one ATR is typically about {terms['atr_bps']:.0f} bps of price, so the cost in "
+        + f"On {bars} one ATR is typically about {terms['atr_bps']:.0f} bps of price (one symbol's "
+        "recent bars; the cohort re-score sees other symbols and a longer history, so read it as an "
+        "order of magnitude), so the cost in "
         f"R is {terms['round_trip_bps']:.1f} / (stop_atr x {terms['atr_bps']:.0f}): about {one:.2f}R at "
         f"stop_atr 1.0 and {one / 2:.2f}R at stop_atr 2.0. An entry whose round trip costs more than "
         f"{limit}R is refused, which on a typical bar is any stop_atr below "
@@ -930,6 +932,10 @@ def assemble_proposal_record(
         "symbol": snapshot.get("symbol"),
         "timeframe": snapshot.get("timeframe"),
         "candle_count": snapshot.get("candle_count"),
+        # What the prompt's cost paragraph was told about this frame (v3). The same function of
+        # the same snapshot the scheduler sent from, kept so a record can be read back with the
+        # one market number its prompt carried; None when the frame gave none.
+        "prompt_atr_bps": typical_atr_bps(snapshot),
         "focus": focus,
         "prompt_version": PROPOSER_PROMPT_VERSION,
         "proposed_count": len(verdicts),
