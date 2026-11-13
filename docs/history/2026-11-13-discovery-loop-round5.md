@@ -51,3 +51,24 @@ passes were not distinguishable from chance to begin with. The next change is to
 the question it starts from can be measured inside 2020-2024 without touching the confirm span: does a book that
 passes on earlier years earn in the later ones?
 
+## The transfer check (round 7, same day)
+
+**What it is for.** Three development passes had failed on the confirm span, and the sweep had shown the passes were
+not far from what random variables give. Two readings were left standing: 2026 was unlike the years before it, or
+ranking books by five years of Sharpe never said anything about the next year. The second can be measured without
+the confirm span, so it was: `strategy_ladder transfer` picks each book's side from the earlier years only (2020-21,
+2020-22, 2020-23) and reads that same book on the year after, for the 27 variables beside 300 random ones. The
+reading of each outcome was written down before the run.
+
+**What came out.** Across books, the earlier years' Sharpe and the next year's are unrelated: a rank correlation of
+-0.014 averaged over the three splits, where sets of 27 random books give 0.02 on average (p 0.62). By the table
+fixed in advance that is the "otherwise" row. Beside it, deciding nothing: the cells that had cleared the entry rule
+earned 16.3% the year after against 2.5% for random books as a whole, and that average is two groups — the twelve
+cells of the volatility cluster, all positive, and six others (momentum, beta, funding) that lost on average. Five
+variables changed the side they are long between splits.
+
+**What follows.** The ladder's rungs 2 and 3 judged a book by its Sharpe over the five years it was chosen on. The
+next change makes them walk forward — side and book from the earlier years, value from the year after, read beside
+random books of the same logic — and moves where candidates come from: from whatever ranks well on the map to
+things that have a reason before the data is looked at.
+
