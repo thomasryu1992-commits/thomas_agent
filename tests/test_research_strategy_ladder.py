@@ -928,3 +928,133 @@ def test_the_crash_run_reads_the_event_on_the_day_its_hold_ends_and_fills_flat_y
     assert run["rungs"]["2c_beside_placebos"]["null_books"] == 2 and run["reference_after_events"]["events"] == 1
     assert run["without_the_beta_leg"]["years_total_position_pct"]["2021"] > 0
 
+
+
+# --- round 11: the deep-negative-funding book ---------------------------------------------------------------------------
+
+from datetime import datetime, timezone  # noqa: E402
+
+DEEP_DAY = date(2021, 3, 7)                      # a Sunday decision
+
+
+def _deep_world(collapse: str | None = None):
+    """BTC moving two percent up and down by turns; eight aged coins DEEP0..7 that move (1 + i/10) times as much
+    (so that is their beta), of which DEEP0 and DEEP1 pay 0.1% a day to their longs and DEEP2 half of that; a coin
+    listed too recently, one with no funding on file and one that trades too little. ``collapse`` halves that coin
+    two days after :data:`DEEP_DAY` and ends its bars the day after."""
+    start, end = date(2020, 6, 1), date(2021, 6, 30)
+    days = [start + timedelta(days=k) for k in range((end - start).days + 1)]
+
+    def bars(scale, volume=5e7, first=start, name=None):
+        out, price = {}, 100.0
+        for k, day in enumerate(days):
+            if day < first:
+                continue
+            move = (0.02 if k % 2 else -0.02) * scale
+            if name is not None and name == collapse:
+                if day > DEEP_DAY + timedelta(days=3):
+                    break
+                if day == DEEP_DAY + timedelta(days=2):
+                    move = -0.5
+            out[day] = xsb.Bar(open=price, close=price * (1 + move), quote_volume=volume)
+            price *= 1 + move
+        return out
+
+    def settled(rate):
+        return [(int(datetime(d.year, d.month, d.day, 8, tzinfo=timezone.utc).timestamp() * 1000), rate) for d in days]
+
+    names = {"BTCUSDT": bars(1.0, 9e9), **{f"DEEP{i}USDT": bars(1 + i / 10, name=f"DEEP{i}USDT") for i in range(8)},
+             "YOUNGUSDT": bars(1.0, first=date(2021, 2, 1)), "NOFUNDUSDT": bars(1.0), "THINUSDT": bars(1.0, 1e6)}
+    rates = {"DEEP0USDT": -0.001, "DEEP1USDT": -0.001, "DEEP2USDT": -0.0005, "YOUNGUSDT": -0.001}
+    return xsb.Market(bars=names, funding={s: settled(rates.get(s, 0.0)) for s in names if s != "NOFUNDUSDT"})
+
+
+def test_the_deep_pool_is_aged_liquid_funded_coins_and_the_picks_are_the_ones_paid_most_to_hold():
+    pools = sl.DeepFunding(_deep_world())
+    pool, unfunded = pools.at(DEEP_DAY)
+    assert set(pool) == {f"DEEP{i}USDT" for i in range(8)}, "the hedge, the young, the thin and the unfunded are out"
+    assert unfunded == 1
+    assert pools.picks(DEEP_DAY) == ("DEEP0USDT", "DEEP1USDT"), "seven days at 0.1% is past the bar; at 0.05% it is not"
+    assert pool["DEEP3USDT"][1] == pytest.approx(1.3), "the beta the hedge is sized by"
+
+
+def test_the_deep_book_is_equal_longs_under_the_cap_with_the_hedge_against_their_beta():
+    market = _deep_world()
+    pools = sl.DeepFunding(market)
+    weights = sl.deep_book(pools)(market, (), DEEP_DAY, "x")
+    assert weights["DEEP0USDT"] == weights["DEEP1USDT"] == sl.DEEP_NAME_CAP, "two names do not fill the long side"
+    assert weights["BTCUSDT"] == pytest.approx(-sl.DEEP_NAME_CAP * (1.0 + 1.1))
+    assert set(sl.deep_book(pools, hedged=False)(market, (), DEEP_DAY, "x")) == {"DEEP0USDT", "DEEP1USDT"}
+    assert sl.deep_basket([], {}) == {}
+
+
+def test_a_deep_placebo_keeps_one_partner_for_the_spell_and_the_matched_one_is_as_beaten_down(monkeypatch):
+    pools = sl.DeepFunding(_deep_world())
+    later = DEEP_DAY + timedelta(days=7)
+    assert pools.spell_start("DEEP0USDT", later) == pools.spell_start("DEEP0USDT", DEEP_DAY) < DEEP_DAY
+    for seed in ("a", "b", "c"):
+        first = pools.partner("DEEP0USDT", DEEP_DAY, seed, matched=False)
+        assert first == pools.partner("DEEP0USDT", later, seed, matched=False), "drawn once for the spell"
+        assert first not in pools.picks(DEEP_DAY) and first in pools.at(DEEP_DAY)[0]
+    monkeypatch.setattr(sl, "DEEP_NEIGHBOURS", 1)
+    start = pools.spell_start("DEEP0USDT", DEEP_DAY)
+    pool = pools.at(start)[0]
+    nearest = min((s for s in pool if s not in pools.picks(start)), key=lambda s: abs(pool[s][2] - pool["DEEP0USDT"][2]))
+    assert pools.partner("DEEP0USDT", DEEP_DAY, "a", matched=True) == nearest == "DEEP2USDT"
+
+
+def test_a_deep_pick_that_stops_trading_takes_its_loss_into_the_book():
+    def held(market):
+        sim = sl.simulate_held(market, sl.bs.CADENCE, {}, start=date(2021, 3, 1), end=date(2021, 3, 31),
+                               weigher=sl.deep_book(sl.DeepFunding(market)), unit_of=sl.listing_unit)
+        return sum(row["gross"] for row in sim["daily"].values())
+    lost = held(_deep_world(collapse="DEEP0USDT")) - held(_deep_world())
+    assert lost < -0.08, "a fifth of the long side was in a coin that halved and then stopped"
+
+
+def test_the_deep_counts_carry_nothing_earned_and_stop_a_book_too_thin_in_the_later_years():
+    market = _deep_world()
+    span = (date(2020, 6, 1), date(2021, 6, 30))
+    counts = sl.deep_counts(market, span)
+    assert counts["returns_computed"] is False and counts["funding_known_share"] == pytest.approx(8 / 9, abs=5e-3)   # nine once the young coin has aged
+    assert counts["spells"] == 3 and counts["spell_weeks_median"] > 4, "the young coin becomes a pick once it has aged"
+    assert counts["by_year"]["2021"]["names_held_median"] == 2 and 0.4 < counts["by_year"]["2021"]["invested_share_mean"] < 0.6
+    assert counts["by_year"]["2021"]["picks_trailing_funding_mean"] == pytest.approx(-0.007)
+    assert set(counts["beside_the_pool"]) == {"trailing_move_median", "volatility_median"}
+    assert counts["stop"] == ["too many of the pool's coins have no funding on file",
+                              "the book holds a position at too few decisions in 2022, 2023, 2024"]
+    flat = json.dumps(counts)
+    assert "sharpe" not in flat and "pct" not in flat
+    assert sl.deep_run(market, span)["refused"] == counts["stop"], "a stopped book is not measured"
+
+
+def test_the_deep_run_splits_the_book_into_alts_and_hedge_and_its_reading_is_one_of_four(monkeypatch):
+    span = (date(2020, 6, 1), date(2021, 6, 30))
+    monkeypatch.setattr(sl, "DEEP_MIN_ACTIVE", 0)
+    monkeypatch.setattr(sl, "DEEP_MIN_FUNDING_KNOWN", 0.5)
+    monkeypatch.setattr(sl, "SPAN", span)
+    run = sl.deep_run(_deep_world(), span, placebos=3)
+    assert set(run["years_total_position_pct"]) == {"2020", "2021"}
+    legs = run["legs"]
+    assert legs["alts"]["funding_pct"] > 0, "the longs are paid"
+    assert legs["hedge"]["cost_pct"] > 0 and legs["alts"]["cost_pct"] > legs["hedge"]["cost_pct"]
+    whole = run["sum_pct"] + run["cost_pct"] - run["funding_pct"]
+    assert legs["alts"]["price_pct"] + legs["hedge"]["price_pct"] == pytest.approx(whole, abs=0.02)
+    assert legs["alts"]["funding_pct"] + legs["hedge"]["funding_pct"] == pytest.approx(run["funding_pct"], abs=0.02)
+    assert run["rungs"]["2c_beside_placebos"]["null_books"] == 3 == run["beside_matched_placebos"]["null_books"]
+    assert run["reading"] in ("closed", "not_apart_from_beaten_down_coins", "passes_on_carry", "passes_on_price")
+    assert run["passes"] is (run["reading"] in ("passes_on_carry", "passes_on_price"))
+    assert set(run["without_the_hedge"]) == {"annual_sharpe", "total_position_annual_pct", "years_total_position_pct"}
+
+
+def test_the_deep_commands_load_bars_and_funding_alone(monkeypatch, capsys):
+    asked = []
+
+    def hold(cache, span=None, *, attach=True, flow=False):
+        asked.append((span, attach, flow))
+        return None
+
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(sl.lab, "hold", hold)
+    assert sl.main(["deep-counts"]) == sl.EXIT_BLOCKED and sl.main(["deep"]) == sl.EXIT_BLOCKED
+    assert asked == [(None, False, False)] * 2

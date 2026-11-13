@@ -1279,6 +1279,229 @@ def crash_run(market: xsb.Market, hourly: Hourly, span: tuple[date, date] = SPAN
 
 # --- the round ---------------------------------------------------------------------------------------------------
 
+# --- L15: the deep-negative-funding book (round 11, hypothesis H-F1) -----------------------------------------------
+
+DEEP_FUNDING = -0.005                      # a coin whose last DEEP_WINDOW days of funding sum to this or less is held
+DEEP_WINDOW = 7
+DEEP_NAME_CAP = 0.20                       # of the long side: five names fill the book, fewer leave part of it idle
+DEEP_BETA_DAYS = 60
+DEEP_NEIGHBOURS = 10                       # the matched placebo draws among this many coins nearest in trailing return
+DEEP_PLACEBOS = 300
+DEEP_MIN_ACTIVE = 26                       # decisions with a position each of LATER_YEARS needs, or nothing is measured
+DEEP_MIN_FUNDING_KNOWN = 0.9               # of the pool's coin-decisions must have funding on file
+DEEP_CARRY_SHARE = 0.5                     # of a passing book's return before costs the alts' funding must be: else price carried it
+
+
+class DeepFunding:
+    """Per decision day, read from that day and earlier: the pool (coin perps listed :data:`xsb.MIN_AGE_DAYS` or
+    more, over the listing book's liquidity floor, with funding settled in the window and a beta), each with its
+    trailing funding, beta and trailing return; and how many otherwise eligible coins have no funding on file."""
+
+    def __init__(self, market: xsb.Market) -> None:
+        self.market = market
+        self._liquid = ListingPools(market).liquid
+        self._at: dict[date, tuple[dict[str, tuple[float, float, float | None]], int]] = {}
+        self._picks: dict[date, tuple[str, ...]] = {}
+        self._start: dict[tuple[str, date], date] = {}
+        self._others: dict[tuple[str, date, bool], tuple[str, ...]] = {}
+
+    def at(self, day: date) -> tuple[dict[str, tuple[float, float, float | None]], int]:
+        if day not in self._at:
+            pool: dict[str, tuple[float, float, float | None]] = {}
+            unfunded = 0
+            for symbol in sorted(self.market.bars):
+                first = self.market.first_day(symbol)
+                if (symbol == HEDGE or not symbol.endswith("USDT") or not xsb.is_coin(self.market, symbol)
+                        or first is None or first > day - timedelta(days=xsb.MIN_AGE_DAYS)
+                        or not self._liquid(symbol, day)):
+                    continue
+                if self.market.funding_day(symbol) is None:
+                    unfunded += 1
+                    continue
+                paid = xsb.trailing_funding(self.market, symbol, day, DEEP_WINDOW)
+                beta = bs._beta(self.market, symbol, day, DEEP_BETA_DAYS)
+                if paid is not None and beta is not None:
+                    pool[symbol] = (paid, beta, xsb.trailing_return(self.market, symbol, day, DEEP_WINDOW))
+            self._at[day] = (pool, unfunded)
+        return self._at[day]
+
+    def picks(self, day: date) -> tuple[str, ...]:
+        if day not in self._picks:
+            self._picks[day] = tuple(s for s, (paid, _, _) in self.at(day)[0].items() if paid <= DEEP_FUNDING)
+        return self._picks[day]
+
+    def spell_start(self, symbol: str, day: date) -> date:
+        """The first of the unbroken run of weekly decisions, ending at ``day``, at which ``symbol`` was a pick."""
+        key = (symbol, day)
+        if key not in self._start:
+            before = day - timedelta(days=7)
+            self._start[key] = self.spell_start(symbol, before) if symbol in self.picks(before) else day
+        return self._start[key]
+
+    def partner(self, symbol: str, day: date, seed: str, *, matched: bool) -> str | None:
+        """The coin a placebo holds in place of ``symbol``: drawn once, at the first decision of the spell, from the
+        pool's coins that are not picks that day, so a placebo position lasts as long as the real one. ``matched``
+        draws among the :data:`DEEP_NEIGHBOURS` nearest to ``symbol`` in trailing return: a coin as beaten down,
+        without the funding."""
+        start = self.spell_start(symbol, day)
+        key = (symbol, start, matched)
+        if key not in self._others:
+            pool = self.at(start)[0]
+            others = sorted(s for s, (paid, _, _) in pool.items() if paid > DEEP_FUNDING)
+            own = pool[symbol][2] if symbol in pool else None
+            if matched and own is not None:
+                near = sorted((s for s in others if pool[s][2] is not None), key=lambda s: (abs(pool[s][2] - own), s))
+                others = near[:DEEP_NEIGHBOURS] or others
+            self._others[key] = tuple(others)
+        others = self._others[key]
+        return random.Random(f"{seed}:{symbol}:{start.isoformat()}").choice(others) if others else None
+
+
+def deep_basket(names: Iterable[str], betas: Mapping[str, float], *, hedged: bool = True) -> dict[str, float]:
+    """Equal longs, none above :data:`DEEP_NAME_CAP`, and the hedge coin against their summed beta. Under five names
+    the rest of the long side is idle and earns nothing."""
+    names = sorted(set(names))
+    if not names:
+        return {}
+    weight = min(1 / len(names), DEEP_NAME_CAP)
+    out = dict.fromkeys(names, weight)
+    hedge = -sum(weight * betas[s] for s in names)
+    if hedged and hedge:
+        out[HEDGE] = hedge
+    return out
+
+
+def deep_book(pools: DeepFunding, placebo: str | None = None, *, matched: bool = False,
+              hedged: bool = True) -> Callable[..., dict[str, float]]:
+    """L15: long every pool coin whose trailing funding is deep negative. With ``placebo`` each of those coins is
+    replaced by its partner (held only while the partner itself is in the pool that day)."""
+    def weights(market: xsb.Market, members: Sequence[str], day: date, signal: str,
+                *, seed: str | None = None) -> dict[str, float]:
+        pool = pools.at(day)[0]
+        names = pools.picks(day)
+        if placebo is not None:
+            names = [p for s in names if (p := pools.partner(s, day, placebo, matched=matched)) is not None and p in pool]
+        return deep_basket(names, {s: pool[s][1] for s in names}, hedged=hedged)
+    return weights
+
+
+def _median(values: Sequence[float | None]) -> float | None:
+    kept = [v for v in values if v is not None]
+    return round(statistics.median(kept), 4) if kept else None
+
+
+def deep_counts(market: xsb.Market, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """What the deep-funding book would stand on, with nothing earned after a decision in it: decisions, names,
+    spells, the picks' trailing funding (the signal), and how beaten down and how volatile the picks are beside the
+    rest of the pool. The stop rules are judged here."""
+    pools = DeepFunding(market)
+    days = [d for d in sundays(span) if span[0] - timedelta(days=1) <= d <= span[1]]
+    years: dict[str, dict[str, Any]] = {str(y): {"decisions": 0, "active_decisions": 0, "names": [], "invested": [],
+                                                 "spells": 0, "pool": [], "unfunded_coin_decisions": 0, "paid": []}
+                                        for y in range(span[0].year, span[1].year + 1)}
+    pooled = unfunded_total = 0
+    lengths: list[int] = []
+    running: dict[str, int] = {}
+    traits: dict[str, list[float | None]] = {"picks_back": [], "pool_back": [], "picks_vol": [], "pool_vol": []}
+    for day in days:
+        row = years.get(str(day.year))
+        if row is None:
+            continue
+        pool, unfunded = pools.at(day)
+        picks = pools.picks(day)
+        row["decisions"] += 1
+        row["pool"].append(len(pool))
+        row["unfunded_coin_decisions"] += unfunded
+        row["invested"].append(min(1.0, len(picks) * DEEP_NAME_CAP))
+        pooled, unfunded_total = pooled + len(pool), unfunded_total + unfunded
+        for symbol in list(running):
+            if symbol not in picks:
+                lengths.append(running.pop(symbol))
+        for symbol in picks:
+            if symbol not in running:
+                row["spells"] += 1
+            running[symbol] = running.get(symbol, 0) + 1
+            row["paid"].append(pool[symbol][0])
+        if picks:
+            row["active_decisions"] += 1
+            row["names"].append(len(picks))
+        for symbol, (_, _, back) in pool.items():
+            side = "picks" if symbol in picks else "pool"
+            traits[f"{side}_back"].append(back)
+            traits[f"{side}_vol"].append(bs._vol(market, symbol, day, lab.LOOKBACK))
+    lengths.extend(running.values())
+    for row in years.values():
+        names, invested, pool_sizes, paid = row.pop("names"), row.pop("invested"), row.pop("pool"), row.pop("paid")
+        row["names_held_median"] = statistics.median(names) if names else 0
+        row["invested_share_mean"] = round(statistics.fmean(invested), 3) if invested else 0.0
+        row["pool_median"] = statistics.median(pool_sizes) if pool_sizes else 0
+        row["picks_trailing_funding_mean"] = round(statistics.fmean(paid), 5) if paid else None
+    known = pooled / (pooled + unfunded_total) if pooled + unfunded_total else None
+    thin = [str(y) for y in LATER_YEARS if years.get(str(y), {}).get("active_decisions", 0) < DEEP_MIN_ACTIVE]
+    stops = [text for wrong, text in (
+        (known is None or known < DEEP_MIN_FUNDING_KNOWN, "too many of the pool's coins have no funding on file"),
+        (bool(thin), "the book holds a position at too few decisions in " + ", ".join(thin)),
+    ) if wrong]
+    return {"decisions": len(days), "active_decisions": sum(r["active_decisions"] for r in years.values()),
+            "spells": len(lengths), "spell_weeks_median": statistics.median(lengths) if lengths else 0,
+            "funding_known_share": None if known is None else round(known, 3), "by_year": years,
+            "beside_the_pool": {"trailing_move_median": {"picks": _median(traits["picks_back"]), "pool": _median(traits["pool_back"])},
+                                "volatility_median": {"picks": _median(traits["picks_vol"]), "pool": _median(traits["pool_vol"])}},
+            "last_day_in_market": lab.last_day(market).isoformat() if market.bars else None,
+            "stop": stops, "returns_computed": False}
+
+
+def _before_costs(report: Mapping[str, Any]) -> float:
+    return report["sum_pct"] + report["cost_pct"] - report["funding_pct"]
+
+
+def deep_legs(report: Mapping[str, Any], bare: Mapping[str, Any]) -> dict[str, dict[str, float]]:
+    """The book split into its alts and its hedge. The held accounting adds price, funding and cost coin by coin, so
+    the hedge is exactly the book less the same alts held without it."""
+    return {"alts": {"price_pct": round(_before_costs(bare), 2), "funding_pct": bare["funding_pct"], "cost_pct": bare["cost_pct"]},
+            "hedge": {"price_pct": round(_before_costs(report) - _before_costs(bare), 2),
+                      "funding_pct": round(report["funding_pct"] - bare["funding_pct"], 2),
+                      "cost_pct": round(report["cost_pct"] - bare["cost_pct"], 2)}}
+
+
+def deep_run(market: xsb.Market, span: tuple[date, date] = SPAN, *, placebos: int = DEEP_PLACEBOS) -> dict[str, Any]:
+    """The deep-funding book net of stressed costs, beside the same book on placebo coins and on placebo coins as
+    beaten down, through rung 2's three conditions and rung 3. A year the book is flat in counts as zero. Refused
+    when the counts say stop."""
+    counts = deep_counts(market, span)
+    if counts["stop"]:
+        return {"refused": counts["stop"], "counts": counts}
+    pools = DeepFunding(market)
+    stressed = functools.partial(simulate_held, unit_of=listing_unit)
+
+    def whole(report: dict[str, Any]) -> dict[str, Any]:
+        years = {str(y): report["years_total_position_pct"].get(str(y), 0.0)
+                 for y in range(span[0].year, span[1].year + 1)}
+        return {**report, "years_total_position_pct": years, "stability": stability(years)}
+
+    report = whole(measure(market, deep_book(pools), span, simulate=stressed))
+    bare = whole(measure(market, deep_book(pools, hedged=False), span, simulate=stressed))
+    plain = [measure(market, deep_book(pools, placebo=f"plain:{k}"), span, simulate=stressed)["annual_sharpe"]
+             for k in range(placebos)]
+    alike = [measure(market, deep_book(pools, placebo=f"matched:{k}", matched=True), span, simulate=stressed)["annual_sharpe"]
+             for k in range(placebos)]
+    legs = deep_legs(report, bare)
+    rungs = {"2a_entry": report["clears_entry"], "2b_later_years": later_years(report["years_total_position_pct"]),
+             "2c_beside_placebos": beside_nulls(report["annual_sharpe"], plain), "3_stability": report["stability"]}
+    matched = beside_nulls(report["annual_sharpe"], alike)
+    ladder = bool(rungs["2a_entry"] and rungs["2b_later_years"]["passes"] and rungs["2c_beside_placebos"]["passes"]
+                  and rungs["3_stability"]["passes"])
+    earned = _before_costs(report) + report["funding_pct"]
+    carried = earned > 0 and legs["alts"]["funding_pct"] >= DEEP_CARRY_SHARE * earned
+    reading = ("closed" if not ladder else "not_apart_from_beaten_down_coins" if not matched["passes"]
+               else "passes_on_carry" if carried else "passes_on_price")
+    return {**report, "hypothesis": "H-F1", "logic": "L15", "counts": counts, "rungs": rungs,
+            "beside_matched_placebos": matched, "legs": legs,
+            "without_the_hedge": {k: bare[k] for k in ("annual_sharpe", "total_position_annual_pct", "years_total_position_pct")},
+            "at_engine_cost_annual_sharpe": measure(market, deep_book(pools), span, simulate=simulate_held)["annual_sharpe"],
+            "passes": ladder and matched["passes"], "reading": reading}
+
+
 def _spread(values: Sequence[float | None]) -> dict[str, Any]:
     kept = sorted(v for v in values if v is not None)
     return {"count": len(kept), "mean": round(statistics.fmean(kept), 3) if kept else None,
@@ -1354,7 +1577,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="strategy_ladder", description=__doc__.splitlines()[0])
     parser.add_argument("command", choices=("list", "run", "confirm-counts", "confirm", "sweep", "transfer",
                                             "listing-counts", "listing", "lower-counts", "lower",
-                                            "crash-symbols", "crash-events", "crash-counts", "crash"))
+                                            "crash-symbols", "crash-events", "crash-counts", "crash",
+                                            "deep-counts", "deep"))
     parser.add_argument("--only", default=None,
                         help="sweep, transfer: variable groups (comma list), or `null` for the random books")
     parser.add_argument("--cache", type=Path, default=None, help="default: $RESEARCH_CACHE")
@@ -1415,6 +1639,16 @@ def main(argv: list[str] | None = None) -> int:
                           "span": [d.isoformat() for d in SPAN], "command": args.command, **body},
                          indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or (args.command != "crash" and body["stop"]) else EXIT_OK
+    if args.command in ("deep-counts", "deep"):
+        market = lab.hold(cache, attach=False)
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        body = deep_counts(market) if args.command == "deep-counts" else deep_run(market)
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "command": args.command, **body},
+                         indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_BLOCKED if body.get("refused") or (args.command == "deep-counts" and body["stop"]) else EXIT_OK
     if args.command in ("lower-counts", "lower"):
         market = lab.hold(cache, attach=False)
         if market is None:
