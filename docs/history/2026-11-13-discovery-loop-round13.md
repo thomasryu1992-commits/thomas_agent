@@ -50,14 +50,27 @@ book's yearly volatility, and the floor, the later years, the null and stability
 no null book passes. The kin of the three variants still unread sit there too.
 
 **Where the method broke its own assumption.** The crash shape's bar came out at the floor. Placebo hours are
-kept clear of crashes, so their books are calm; the real event book was about three times as volatile. "The noise
-is the null's" does not hold for that shape, and the record says the number is a lower bound and nothing more.
+kept clear of crashes, so their books are calm: about 9% a year on total position, against about 15% for the
+real event book. "The noise is the null's" does not hold for that shape, and the record says the number is a
+lower bound and nothing more.
 
 **The rule as fixed, applied as fixed.** The rank shapes' bar is exactly five points above the floor and the
 reading table said "more than five", so the form uses the floor for them, with the pass rates at the floor
 written beside it. The prior line reads the curve either way.
 
-**What was added.** One line in the form: the size line is set against the floor and the nearest shape's bar, and
-the prior may not exceed the curve's pass rate at that size. Whether to run the three remaining variants was not
-decided here; it goes to Thomas as one question, with their kin's sizes and the curves.
+**What was added, and one registered action corrected.** One line in the form: the size line is set against the
+floor and the nearest shape's bar. The registration also said the prior may not exceed the curve's pass rate at
+the stated size, calling that rate an upper bound. It is not. The method pins each null book's realized
+five-year net return to the target, so the curve is the pass rate given a *realized* net return; a prior is about
+a book *expected* to be that size, whose realized return spreads around it. Used as a cap it would set every
+under-floor hypothesis to zero, which is only the floor's step again, and the five size lines written so far
+missed by factors of two to ten. The curve's rate is written beside the prior, not over it. The registered
+sentence stays on the page with the correction under it.
+
+**What was measured, said exactly.** With the mean pinned, what the run measures is the null books' volatility and
+its pattern across years, not five years of noise in the mean. A longer span would not lower these lines.
+
+Whether to run the three remaining variants was not decided here; it goes to Thomas as one question, with their
+kin's sizes. At the kin's sizes no null book passes, which is the arithmetic of the floor again; the variants'
+own sizes are not known.
 
