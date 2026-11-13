@@ -40,3 +40,34 @@ code: identical. The baseline's eleven members with the same span reproduce thei
 decimals.
 
 **Not done.** No strategy, no costs, no confirm read. The layers after this one are each registered separately.
+
+## The discovery loop, the same day
+
+Thomas, after the first map: do for the factory what the map did for the search — find the way of producing
+strategies anew on a cadence, with several selection methods; add variables periodically, refine and categorise
+scenarios periodically, and when no strategy comes out for a while, rework the logic so that logics accumulate.
+
+`docs/proposals/STRATEGY_DISCOVERY_LOOP_V0.1.md`, `scripts/research/strategy_ladder.py`.
+
+**The shape.** Four registries (variables, scenarios, strategy logics, a candidate ledger) and one ladder (map → book
+net of costs → stability by year → the confirm span → a short forward screen → the factory). Nothing is deleted from
+a registry; what stops being used is marked as resting, so it is not built twice. A stall — four weeks with no
+candidate past the stability rung — forces one rework in a fixed order, starting at the rung where candidates die.
+
+**Why chance accounting sits inside the loop.** Adding on a cadence makes the best cell look better whether or not
+anything is there. So random variables grow with the real ones, scenario axes are compared with placebo axes (the
+same spells in a shuffled order), reads are counted, and the confirm span has a budget: one read a month, five in all,
+each later read against a stricter bar. There is a stop in the other direction too: a confirm pass rate no better
+than chance means the loop is producing noise.
+
+**The first round.** Two logics were written and two candidates registered before either was measured. The rank-weight
+book on the low-volatility lead missed (0.353, below the old six-against-six basket): the map's rank signal did not
+become P&L, and the year-by-year returns moved against the market — the book had become a bet on the market falling.
+The scenario-switching book on funding passed the entry rule and the stability rung (1.272), with three quarters of
+its return in 2021 and one placebo scenario in twenty doing as well. A random slow characteristic built into the same
+book reached 1.12, which is why passing the entry rule is not evidence by itself.
+
+**A choice made after looking, and how it is bounded.** The funding candidate's variable and axis were picked from
+the map. Only its direction is learned without the traded year, and all five folds learned the same one. The confirm
+span was not read; whether to spend the first of five reads on it is asked.
+
