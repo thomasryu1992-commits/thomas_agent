@@ -508,7 +508,7 @@ def test_the_mock_proposals_carry_the_form_so_a_mock_run_still_accepts_one(snaps
         existing_families=[])
     reasons = [p.get("reject_reason") for p in record["proposals"]]
     assert "form" not in reasons and reasons.count(None) == 1, reasons
-    assert record["prompt_version"].endswith(".v2")
+    assert record["prompt_version"].endswith(".v3")
 
 
 def test_four_full_proposals_fit_the_token_allowance():
@@ -572,3 +572,96 @@ def test_refusals_are_read_from_the_factory_rows_as_the_stream_goes_by():
     assert list(proposer.noting_screen_refusals(rows, found)) == rows, "passed through unchanged"
     assert proposer.clean_refusals(found) == proposer.recent_screen_refusals(rows) == [
         {"family": "a_family", "reason": "no_trades"}, {"family": "b_family", "reason": "too_slow"}]
+
+
+# --- prompt v3: what a trade costs ---------------------------------------------------------
+
+
+def test_the_prompt_states_the_cost_the_cost_model_computes():
+    """Every figure in the cost paragraph is the cost model's own, turned into R by the frame's
+    typical ATR — nothing measured on a holdout, nothing typed in."""
+    from runtime.mvp_runtime.crypto import cost
+
+    model = cost.cost_model_for(market_data.BINANCE_FUTURES)
+    round_trip = cost.round_trip_cost_r("LONG", 1.0, 1.0, cost=model) * 10000.0
+    atr_bps = 80.0
+    prompt = proposer.build_proposal_prompt(existing_families=[], timeframe="1h", atr_bps=atr_bps)
+    assert f"about {round_trip:.1f} bps of notional" in prompt
+    assert f"about {round_trip / atr_bps:.2f}R at stop_atr 1.0" in prompt
+    assert f"more than {cost.MAX_ENTRY_COST_R}R is refused" in prompt
+    assert f"any stop_atr below {round_trip / (cost.MAX_ENTRY_COST_R * atr_bps):.2f}" in prompt
+    for word in ("holdout", "forward return", "CONTRADICTED", "CONFIRMED"):
+        assert word not in prompt
+
+
+@pytest.mark.parametrize("atr_bps", [20.0, 80.0, 300.0])
+def test_the_stop_the_prompt_names_is_where_the_entry_door_turns(atr_bps):
+    """The prompt tells the model a stop tighter than the edge is refused on a typical bar. The
+    door is asked directly: a plan just inside the edge is refused, one just outside is admitted."""
+    from runtime.mvp_runtime.crypto import trade_plan
+
+    edge = proposer.cost_terms(market_data.BINANCE_FUTURES, atr_bps)["stop_atr_edge"]
+    close = 100.0
+    atr = close * atr_bps / 10000.0
+
+    def refused(stop_atr):
+        return trade_plan.entry_cost_refusal(
+            {"direction": "LONG", "entry_price": close, "risk": stop_atr * atr}) is not None
+
+    assert refused(edge * 0.99) and not refused(edge * 1.01)
+
+
+def test_the_typical_atr_is_read_from_the_frames_own_bars(snapshot):
+    import statistics
+
+    shares = [r["atr"] / r["close"] * 10000.0 for r in features.build_feature_rows(dict(snapshot))
+              if isinstance(r.get("atr"), (int, float)) and isinstance(r.get("close"), (int, float))
+              and r["atr"] > 0 and r["close"] > 0]
+    assert shares, "the fixture frame has bars with an ATR"
+    assert proposer.typical_atr_bps(snapshot) == round(statistics.median(shares), 1)
+    # A frame with no bars, or not a frame at all, yields no number rather than a guess.
+    assert proposer.typical_atr_bps({**snapshot, "candles": []}) is None
+    assert proposer.typical_atr_bps({"candles": "not candles"}) is None
+
+
+@pytest.mark.parametrize("value", [None, True, "80", 0, 0.1, -5.0, 6000.0, float("nan"), float("inf")])
+def test_a_figure_outside_the_range_never_reaches_the_prompt(value):
+    assert proposer.clean_atr_bps(value) is None
+    prompt = proposer.build_proposal_prompt(existing_families=[], timeframe="1h", atr_bps=value)
+    assert "ATR is typically" not in prompt
+    # The rule itself needs no market number, so it is still stated.
+    assert "bps of notional" in prompt and "divided by the stop distance" in prompt
+
+
+def test_a_venue_whose_costs_are_not_measured_gets_no_cost_paragraph():
+    """Quoting Binance's rates in a prompt about another venue would be a number that is wrong in
+    a way the model cannot detect; the paragraph is left out and the prompt is still built."""
+    from runtime.mvp_runtime.crypto import cost
+    from runtime.mvp_runtime.errors import ToolError
+
+    unmeasured = []
+    for venue in market_data.VENUE_FEEDS:
+        try:
+            cost.cost_model_for(venue)
+        except ToolError:
+            unmeasured.append(venue)
+    assert unmeasured, "this test needs a venue with feeds and no measured cost model"
+    for venue in unmeasured:
+        assert proposer.cost_terms(venue, 80.0) is None
+        prompt = proposer.build_proposal_prompt(
+            existing_families=[], timeframe="1h", atr_bps=80.0, venue=venue)
+        assert "bps of notional" not in prompt and "Hard constraints" in prompt
+
+
+def test_the_cli_path_tells_the_model_the_cost_on_its_own_frame(snapshot):
+    prompts: list[str] = []
+
+    class _Spy(proposer.MockProposerProvider):
+        def generate(self, prompt, **kw):
+            prompts.append(prompt)
+            return super().generate(prompt, **kw)
+
+    proposer.propose_strategy_families(
+        snapshot, provider=_Spy(), now="2026-11-13T00:00:00Z", existing_families=[])
+    assert f"typically about {proposer.typical_atr_bps(snapshot):.0f} bps of price" in prompts[0]
+

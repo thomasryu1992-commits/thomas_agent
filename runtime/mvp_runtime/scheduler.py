@@ -1061,6 +1061,7 @@ def delegate_data_review(
 def delegate_proposal_generation(
     *, existing_families: Sequence[str], focus: str | None, repo_root: Path | None,
     timeframe: str | None = None, recent_refusals: Sequence[Mapping[str, Any]] = (),
+    atr_bps: float | None = None,
 ) -> dict[str, Any]:
     """Run the family proposer's model call in the pipeline worker and return its output.
 
@@ -1086,7 +1087,10 @@ def delegate_proposal_generation(
                              # Only when there is one, so a fire with nothing refused sends the
                              # frame it always sent.
                              **({"recent_refusals": [dict(r) for r in recent_refusals]}
-                                if recent_refusals else {})},
+                                if recent_refusals else {}),
+                             # One number from the frame, never the frame: its typical ATR
+                             # as a share of price (prompt v3's cost arithmetic).
+                             **({"atr_bps": atr_bps} if atr_bps is not None else {})},
          "reason": "scheduler:crypto_propose"},
         deadline_seconds=WORKER_DEADLINE_SECONDS,
     )
@@ -2052,6 +2056,7 @@ def _execute(
         generation = delegate_proposal_generation(
             existing_families=installed, focus=focus, repo_root=repo_root,
             timeframe=snapshot.get("timeframe"), recent_refusals=recent_refusals,
+            atr_bps=crypto_proposer.typical_atr_bps(snapshot),
         )
         record = crypto_proposer.assemble_proposal_record(
             snapshot, generation=generation, focus=focus, now=now,
