@@ -31,17 +31,24 @@ in Bitcoin, sells the fifth that fell least, and holds three days.
 **What came out.** H-C1 failed every condition and is closed. Over 2020-2024 the crash book's annual Sharpe after
 stressed costs is -0.204 against an entry rule of 1.0, and 19 of the 300 placebo-hour sets did as well or better
 (p 0.066 against 0.05). The book stood on 64 of the 74 events. Per event its price return was 0.28% of total
-position and its cost 0.54%: the rebound of the worst residuals against the best exists in the sum and is half of
-what it costs to trade. The form's size line said four to nine times that.
+position and its cost 0.54%. The form's size line was wrong by more than a factor of ten on the thing it named.
 
-**What the beta leg showed.** The book without its Bitcoin leg did worse (-0.376), so the registered worry, a book
-that only held the market's bounce, did not happen. Bitcoin's own 72 hours after the events averaged +1.72%, printed
-as a reference with no null beside it; a hypothesis drawn from that number would be one written after this data.
+**What the beta leg showed.** The registered sign of failure was "only the unhedged value is good". The opposite
+came out, the unhedged book did worse (-0.376), and the worry behind the sign came out in mirror form. Subtracting
+the two printed sums, the leg added about 27% over five years before its own cost, three quarters of the judged
+book's price return: the alt book was short the market by its 60-day betas, so the leg was long Bitcoin, about a
+quarter of a unit on average, through a bounce that averaged +1.72% over the 72 hours. What the hypothesis named,
+the worst residuals recovering against the best, is the alt spread alone: about 0.13-0.18% a side per event against
+an alt cost of 1.04%. Whether the leg's gain is hedge or bet depends on whether a pre-crash beta holds in a crash,
+which was not measured, so both numbers are recorded and neither is called the rebound. The +1.72% has no null
+beside it; a hypothesis drawn from it would be one written after this data.
 
 **What is not done with it.** No second threshold, no second holding period, no re-measurement at a lower cost. A
 calculation, not a measurement, says the engine's 8 bps would leave about 1.5% of total position a year, a tenth of
-the floor, so this is a book without size rather than a book killed by its cost assumption. p 0.066 is not counted
-as a lead: the registered line was 0.05, and the entry rule fails on its own.
+the floor, and the alt book without the leg would still lose, so this is a book without size rather than a book
+killed by its cost assumption. p 0.066 is not counted as a lead: the registered line was 0.05, the entry rule fails
+on its own, and placebo hours have no bounce for a Bitcoin leg to hold. Ten of 2020's seventeen events had no book;
+the output does not say which, and nothing was run to find out.
 
 **Where the loop stands.** The stall order has now been walked once through its first four steps (fix the failing
 rung, a new logic, a wider tier, another data period). The fifth is a new source, which is Thomas's decision; the
