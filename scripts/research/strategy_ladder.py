@@ -266,7 +266,8 @@ def is_decision(signal: str, day: date, every: int) -> bool:
 
 
 def simulate_held(market: xsb.Market, signal: str, monthly: Mapping[date, Sequence[str]], *, start: date, end: date,
-                  weigher: Callable[..., dict[str, float]], every: int = 1) -> dict[str, Any]:
+                  weigher: Callable[..., dict[str, float]], every: int = 1,
+                  unit_of: Callable[[str], float] | None = None) -> dict[str, Any]:
     """Daily net returns of a book whose quantities are fixed at each decision and held to the next.
 
     ``cross_section_basket.simulate`` adds each day's return at the decision's dollar weights, which is a book
@@ -275,7 +276,8 @@ def simulate_held(market: xsb.Market, signal: str, monthly: Mapping[date, Sequen
     move from that open, a short that doubles is twice as large the next day, the trade at a decision is the
     difference between the target and what the held position has become, and funding is paid on what the position
     is worth that day. Costs per unit traded are the engine's. The engine itself is not changed: registered screens
-    read through it. ``every`` holds each decision for that many weeks (L10: four)."""
+    read through it. ``every`` holds each decision for that many weeks (L10: four). ``unit_of`` gives a coin its own
+    cost per unit traded (L12); without it every coin pays the engine's, by the same arithmetic as before."""
     unit = (xsb.cost.DEFAULT_TAKER_FEE_BPS + xsb.cost.DEFAULT_SLIPPAGE_BPS) / 10_000
     held: dict[str, tuple[float, float]] = {}            # coin -> (weight at entry, entry open)
     daily: dict[date, dict[str, float]] = {}
@@ -287,7 +289,10 @@ def simulate_held(market: xsb.Market, signal: str, monthly: Mapping[date, Sequen
             now = {s: w * bar.open / entry for s, (w, entry) in held.items()
                    if (bar := (market.bars.get(s) or {}).get(day)) is not None}
             enter = {s: w for s, w in target.items() if (market.bars.get(s) or {}).get(day) is not None}
-            trade_cost = sum(abs(enter.get(s, 0.0) - now.get(s, 0.0)) for s in set(now) | set(enter)) * unit
+            if unit_of is None:
+                trade_cost = sum(abs(enter.get(s, 0.0) - now.get(s, 0.0)) for s in set(now) | set(enter)) * unit
+            else:
+                trade_cost = sum(abs(enter.get(s, 0.0) - now.get(s, 0.0)) * unit_of(s) for s in set(now) | set(enter))
             held = {s: (w, market.bars[s][day].open) for s, w in enter.items()}
         if not held and not trade_cost:
             continue
@@ -301,7 +306,7 @@ def simulate_held(market: xsb.Market, signal: str, monthly: Mapping[date, Sequen
                 continue
             if tomorrow is None:                      # the coin stops here: out at today's close
                 gross += w * (today.close - today.open) / entry
-                exit_cost += abs(w) * today.close / entry * unit
+                exit_cost += abs(w) * today.close / entry * (unit if unit_of is None else unit_of(symbol))
                 gone.append(symbol)
             else:
                 gross += w * (tomorrow.open - today.open) / entry
@@ -666,6 +671,190 @@ def transfer_reading(real: Mapping[str, Mapping[str, Any]], null: Mapping[str, M
     return out
 
 
+# --- rung 2's added conditions (round 8) -------------------------------------------------------------------------
+
+LATER_YEARS = tuple(after[0].year for _, after in TRANSFER_SPLITS)     # 2022, 2023, 2024: each read after the years before it
+LATER_MAX_NEGATIVE = 1
+NULL_ALPHA = 0.05                          # divided by the number of candidates a round registers
+
+
+def later_years(years_total_pct: Mapping[str, float]) -> dict[str, Any]:
+    """Rung 2(b): the book's return in each of :data:`LATER_YEARS`, every one of them decided on the years before it.
+    Their mean must reach the stability floor and at most :data:`LATER_MAX_NEGATIVE` may be negative. For a book
+    with nothing fitted this is its yearly returns again; the weight is on the p beside its null books."""
+    values = [years_total_pct.get(str(y)) for y in LATER_YEARS]
+    floor = bs.ENTRY_RETURN_TOTAL_PCT * STABILITY_SHARE
+    if any(v is None for v in values):
+        return {"years": dict(zip(map(str, LATER_YEARS), values)), "floor_pct": floor, "passes": False}
+    mean, negative = statistics.fmean(values), sum(1 for v in values if v < 0)
+    return {"years": dict(zip(map(str, LATER_YEARS), values)), "mean_pct": round(mean, 2), "negative": negative,
+            "floor_pct": floor, "passes": mean >= floor and negative <= LATER_MAX_NEGATIVE}
+
+
+def beside_nulls(value: float | None, nulls: Sequence[float | None], *, candidates: int = 1) -> dict[str, Any]:
+    """Rung 2(c): the share of null books at or above the book, against :data:`NULL_ALPHA` over the round's
+    candidates."""
+    kept = sorted(v for v in nulls if v is not None)
+    if value is None or not kept:
+        return {"null_books": len(kept), "p": None, "alpha": NULL_ALPHA / candidates, "passes": False}
+    p = (1 + sum(1 for v in kept if v >= value)) / (1 + len(kept))
+    return {"null_books": len(kept), "p": round(p, 4), "alpha": NULL_ALPHA / candidates,
+            "null": {"mean": round(statistics.fmean(kept), 3), "p95": kept[int(0.95 * (len(kept) - 1))], "max": kept[-1]},
+            "passes": p < NULL_ALPHA / candidates}
+
+
+# --- L12: the listing book (round 8, hypothesis H-L1) ------------------------------------------------------------
+
+LISTING_ARCHIVE_START = date(2020, 1, 31)  # a first bar on or before it is the archive beginning, not a listing
+LISTING_AGE = (7, 63)                      # days since the first bar at the decision: the second week through the ninth
+LISTING_VOLUME_DAYS = 7
+LISTING_VOLUME_FLOOR = 10_000_000.0        # median daily quote volume over those days, in dollars
+LISTING_SLIPPAGE_BPS = 21.0                # STRESSED_COIN_COST_V0.1: the median at a 50k leg on a stressed day
+LISTING_PLACEBOS = 300
+LISTING_MIN_ACTIVE_SHARE = 0.6             # of the span's decisions the book must hold something at, or it is not measured
+LISTING_MIN_FUNDING_KNOWN = 0.9            # of the eligible coin-decisions must have funding on file, or it is not measured
+LISTING_MIN_EVENTS = 150
+
+
+def listing_unit(symbol: str) -> float:
+    """Cost per unit traded: the engine's taker fee, and for every coin but the hedge the stressed slippage."""
+    slippage = xsb.cost.DEFAULT_SLIPPAGE_BPS if symbol == HEDGE else LISTING_SLIPPAGE_BPS
+    return (xsb.cost.DEFAULT_TAKER_FEE_BPS + slippage) / 10_000
+
+
+def _first_decision(first: date) -> date:
+    day = first + timedelta(days=LISTING_AGE[0])
+    while not xsb.is_rebalance_day(bs.CADENCE, day):
+        day += timedelta(days=1)
+    return day
+
+
+class ListingPools:
+    """Per decision day, read from that day and earlier: the coins in the listing window, the seasoned coins a
+    placebo may draw from, and the listing-window coins left out for having no funding on file."""
+
+    def __init__(self, market: xsb.Market) -> None:
+        self.market = market
+        self._at: dict[date, tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]] = {}
+
+    def liquid(self, symbol: str, day: date) -> bool:
+        bars = self.market.bars.get(symbol) or {}
+        volumes = [bar.quote_volume for k in range(LISTING_VOLUME_DAYS) if (bar := bars.get(day - timedelta(days=k))) is not None]
+        return (len(volumes) == LISTING_VOLUME_DAYS and min(volumes) > 0
+                and statistics.median(volumes) >= LISTING_VOLUME_FLOOR)
+
+    def at(self, day: date) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+        if day not in self._at:
+            new, seasoned, unfunded = [], [], []
+            for symbol in sorted(self.market.bars):
+                first = self.market.first_day(symbol)
+                if (symbol == HEDGE or not symbol.endswith("USDT") or not xsb.is_coin(self.market, symbol)
+                        or first is None or first > day or not self.liquid(symbol, day)):
+                    continue
+                age, known = (day - first).days, self.market.funding_day(symbol) is not None
+                if age >= LISTING_AGE[1]:
+                    if known:
+                        seasoned.append(symbol)
+                elif age >= LISTING_AGE[0] and first > LISTING_ARCHIVE_START:
+                    (new if known else unfunded).append(symbol)
+            self._at[day] = (tuple(new), tuple(seasoned), tuple(unfunded))
+        return self._at[day]
+
+    def partner(self, symbol: str, seed: str) -> str | None:
+        """The seasoned coin a placebo holds in place of ``symbol``: drawn once, from the coins seasoned and liquid at
+        the first decision the listing could be held at, so a placebo position lasts as long as a real one."""
+        first = self.market.first_day(symbol)
+        pool = self.at(_first_decision(first))[1] if first is not None else ()
+        return random.Random(f"{seed}:{symbol}").choice(pool) if pool else None
+
+
+def short_basket(names: Sequence[str]) -> dict[str, float]:
+    """Equal shorts, none above :data:`NAME_CAP`, with the same dollars long in the hedge; flat under
+    :data:`MIN_SIDE` names. No beta is estimated: a coin in its second week has no history to estimate one from."""
+    names = sorted(set(names))
+    if len(names) < MIN_SIDE:
+        return {}
+    weight = min(1 / len(names), NAME_CAP)
+    return {**dict.fromkeys(names, -weight), HEDGE: weight * len(names)}
+
+
+def listing_book(pools: ListingPools, placebo: str | None = None) -> Callable[..., dict[str, float]]:
+    """L12: short every coin in its listing window. With ``placebo`` each of those coins is replaced by its seasoned
+    partner (held only while the partner itself is liquid that day)."""
+    def weights(market: xsb.Market, members: Sequence[str], day: date, signal: str,
+                *, seed: str | None = None) -> dict[str, float]:
+        new, seasoned, _ = pools.at(day)
+        if placebo is None:
+            return short_basket(new)
+        if len(new) < MIN_SIDE:
+            return {}
+        usable = set(seasoned)
+        return short_basket([p for s in new if (p := pools.partner(s, placebo)) is not None and p in usable])
+    return weights
+
+
+def listing_counts(market: xsb.Market, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """What the listing book would stand on, with no return in it: decisions, names held, events and how many
+    eligible coin-decisions have no funding on file. The stop rules are judged here."""
+    pools = ListingPools(market)
+    days = [d for d in sundays(span) if span[0] - timedelta(days=1) <= d <= span[1]]
+    years: dict[str, dict[str, Any]] = {}
+    seen: set[str] = set()
+    held_total = unfunded_total = active = 0
+    for day in days:
+        new, seasoned, unfunded = pools.at(day)
+        row = years.setdefault(str(day.year), {"decisions": 0, "active_decisions": 0, "names": [], "events": 0,
+                                               "unfunded_coin_decisions": 0, "seasoned": []})
+        row["decisions"] += 1
+        row["events"] += len(set(new) - seen)
+        seen.update(new)
+        row["unfunded_coin_decisions"] += len(unfunded)
+        row["seasoned"].append(len(seasoned))
+        held_total, unfunded_total = held_total + len(new), unfunded_total + len(unfunded)
+        if len(new) >= MIN_SIDE:
+            row["active_decisions"] += 1
+            row["names"].append(len(new))
+            active += 1
+    for row in years.values():
+        names, seasoned = row.pop("names"), row.pop("seasoned")
+        row["names_held_median"] = statistics.median(names) if names else 0
+        row["seasoned_median"] = statistics.median(seasoned) if seasoned else 0
+    firsts = [first for s in market.bars if (first := market.first_day(s)) is not None]
+    known = held_total / (held_total + unfunded_total) if held_total + unfunded_total else None
+    share = active / len(days) if days else None
+    stops = [text for wrong, text in (
+        (not firsts or min(firsts) > LISTING_ARCHIVE_START, "the archive does not begin where the definition assumes"),
+        (known is None or known < LISTING_MIN_FUNDING_KNOWN, "too many listing-window coins have no funding on file"),
+        (share is None or share < LISTING_MIN_ACTIVE_SHARE, "the book is flat at too many decisions"),
+        (len(seen) < LISTING_MIN_EVENTS, "too few listings"),
+    ) if wrong]
+    return {"decisions": len(days), "active_share": None if share is None else round(share, 3), "events": len(seen),
+            "funding_known_share": None if known is None else round(known, 3),
+            "archive_first_day": min(firsts).isoformat() if firsts else None, "by_year": years,
+            "last_day_in_market": lab.last_day(market).isoformat() if firsts else None,
+            "stop": stops, "returns_computed": False}
+
+
+def listing_run(market: xsb.Market, span: tuple[date, date] = SPAN, *, placebos: int = LISTING_PLACEBOS) -> dict[str, Any]:
+    """The listing book net of its costs, beside the same book on placebo listings, through rung 2's three
+    conditions and rung 3. Refused when the counts say stop."""
+    counts = listing_counts(market, span)
+    if counts["stop"]:
+        return {"refused": counts["stop"], "counts": counts}
+    pools = ListingPools(market)
+    stressed = functools.partial(simulate_held, unit_of=listing_unit)
+    report = measure(market, listing_book(pools), span, simulate=stressed)
+    nulls = [measure(market, listing_book(pools, placebo=f"placebo:{k}"), span, simulate=stressed)["annual_sharpe"]
+             for k in range(placebos)]
+    rungs = {"2a_entry": report["clears_entry"], "2b_later_years": later_years(report["years_total_position_pct"]),
+             "2c_beside_placebos": beside_nulls(report["annual_sharpe"], nulls), "3_stability": report["stability"]}
+    return {**report, "hypothesis": "H-L1", "logic": "L12", "counts": counts,
+            "at_engine_cost_annual_sharpe": measure(market, listing_book(pools), span, simulate=simulate_held)["annual_sharpe"],
+            "rungs": rungs,
+            "passes": bool(rungs["2a_entry"] and rungs["2b_later_years"]["passes"]
+                           and rungs["2c_beside_placebos"]["passes"] and rungs["3_stability"]["passes"])}
+
+
 # --- the round ---------------------------------------------------------------------------------------------------
 
 def _spread(values: Sequence[float | None]) -> dict[str, Any]:
@@ -741,7 +930,8 @@ def run_round(market: xsb.Market, span: tuple[date, date] = SPAN, *, which: str 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="strategy_ladder", description=__doc__.splitlines()[0])
-    parser.add_argument("command", choices=("list", "run", "confirm-counts", "confirm", "sweep", "transfer"))
+    parser.add_argument("command", choices=("list", "run", "confirm-counts", "confirm", "sweep", "transfer",
+                                            "listing-counts", "listing"))
     parser.add_argument("--only", default=None,
                         help="sweep, transfer: variable groups (comma list), or `null` for the random books")
     parser.add_argument("--cache", type=Path, default=None, help="default: $RESEARCH_CACHE")
@@ -773,6 +963,16 @@ def main(argv: list[str] | None = None) -> int:
                          indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_OK
     bs.check_development_span(SPAN)
+    if args.command in ("listing-counts", "listing"):
+        market = lab.hold(cache, attach=False)
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        body = listing_counts(market) if args.command == "listing-counts" else listing_run(market)
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "command": args.command, **body},
+                         indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_BLOCKED if body.get("refused") or (args.command == "listing-counts" and body["stop"]) else EXIT_OK
     if args.command in ("sweep", "transfer"):
         wanted = set((args.only or "").split(",")) - {""}
         names = null_variables() if wanted == {"null"} else {n: v for n, v in lab.variables().items() if v[0] in wanted}
