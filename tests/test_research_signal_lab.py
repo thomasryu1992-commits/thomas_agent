@@ -200,7 +200,7 @@ def test_it_runs_in_the_sandbox_only(monkeypatch, capsys):
     listed = json.loads(capsys.readouterr().out)
     assert listed["span"] == ["2020-01-01", "2024-12-31"]
     assert listed["controls"] == lab.CONTROLS_WEEKLY + lab.CONTROLS_FIXED >= 2 * len(lab.variables()) - 4
-    assert {"price_volume", "funding", "positioning", "depth", "spot", "coin_character"} == set(listed["variables"].values())
+    assert {"price_volume", "funding", "positioning", "depth", "spot", "coin_character", "trade_flow"} == set(listed["variables"].values())
 
 
 def test_a_book_that_reads_bars_and_funding_alone_loads_nothing_else(monkeypatch, tmp_path):
@@ -302,4 +302,93 @@ def test_a_placebo_axis_leaves_the_unlabelled_decisions_unlabelled():
         assert [i for i, v in enumerate(fake) if v is None] == [i for i, v in enumerate(real) if v is None]
         assert sorted(v for v in fake if v) == sorted(v for v in real if v)
     assert any(lab.shuffled_spells(real, f"seed-{k}") != real for k in range(10))
+
+
+# --- round 4: the kline columns nobody read, and the axis check one variable at a time -------------------------------
+
+def _kline_zip(folder, name, rows):
+    import zipfile
+    folder.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(folder / name, "w") as z:
+        z.writestr("x.csv", "open_time,open,high,low,close,volume,close_time,quote_volume,count,tbv,tbqv,ignore\n"
+                   + "".join(",".join(map(str, r)) + "\n" for r in rows))
+
+
+def _ms(day):
+    return int((day - date(1970, 1, 1)).total_seconds() * 1000)
+
+
+def test_the_trade_flow_reader_keeps_the_taker_share_and_the_size_of_a_trade(tmp_path):
+    day = date(2021, 3, 1)
+    _kline_zip(tmp_path / "AUSDT", "AUSDT-1d-2021-03.zip", [
+        [_ms(day), 1, 2, 0.5, 1.5, 10, 0, 200.0, 40, 5, 120.0, 0],                        # 60% taker buys, 5 a trade
+        [_ms(day + timedelta(days=1)), 1, 2, 0.5, 1.5, 0, 0, 0.0, 0, 0, 0.0, 0],            # no volume: left out
+        [_ms(day + timedelta(days=2)), 1, 2, 0.5, 1.5, 10, 0, 100.0, 10, 5, 150.0, 0],      # taker above total: not a share
+    ])
+    assert lab.read_trade_flow(tmp_path / "AUSDT") == {day: (0.6, 5.0)}
+    assert lab.read_trade_flow(tmp_path / "MISSING") == {}
+
+
+def test_the_trade_flow_variables_average_the_month_and_compare_it_with_the_month_before():
+    day = date(2021, 4, 30)
+    flow = {day - timedelta(days=k): (0.55 if k < 30 else 0.45, 20.0 if k < 30 else 10.0) for k in range(60)}
+    market = xsb.Market()
+    market.trade_flow = {"AUSDT": flow, "THINUSDT": {day: (0.5, 1.0)}}
+    v = lab.variables()
+    assert v["taker_buy_share_30"][1](market, "AUSDT", day) == pytest.approx(0.55)
+    assert v["trade_size_30"][1](market, "AUSDT", day) == pytest.approx(20.0)
+    assert v["trade_size_growth_30"][1](market, "AUSDT", day) == pytest.approx(1.0), "twice the month before"
+    for name in ("taker_buy_share_30", "trade_size_30", "trade_size_growth_30"):
+        assert v[name][0] == "trade_flow" and v[name][1](market, "THINUSDT", day) is None
+        assert v[name][1](xsb.Market(), "AUSDT", day) is None, "no trade-flow attached: no value, not a zero"
+
+
+def test_trade_flow_is_attached_for_the_coins_the_tiers_hold_and_cut_at_the_spans_end(tiers, tmp_path, monkeypatch):
+    full = lab.cut_market(_market(SPAN[1]), SPAN)
+    held_symbols = {s for monthly in lab.tier_members(full, SPAN).values() for m in monthly.values() for s in m}
+    asked = []
+
+    def read(folder):
+        asked.append(folder.name)
+        return {SPAN[1]: (0.5, 2.0), SPAN[1] + timedelta(days=1): (0.9, 9.0)}
+
+    monkeypatch.setattr(lab, "read_trade_flow", read)
+    out = lab.attach_trade_flow(full, tmp_path, SPAN)
+    assert set(asked) == held_symbols == set(out.trade_flow)
+    assert all(list(days) == [SPAN[1]] for days in out.trade_flow.values()), "nothing after the span"
+    assert lab.last_day(lab.cut_market(out, SPAN)) == SPAN[1]
+
+
+def test_the_axis_check_by_variable_finds_the_one_an_axis_moves_and_counts_what_chance_gives(monkeypatch):
+    days = [date(2021, 1, 3) + timedelta(days=7 * k) for k in range(120)]
+    heat = (["hot"] * 10 + ["cool"] * 10) * 6
+    series = {("moved", "top30"): {d: (0.2 if h == "hot" else -0.2) + (0.01 if k % 2 else -0.01) for k, (d, h) in enumerate(zip(days, heat))},
+              ("still", "top30"): {d: 0.05 * (((k * 7919) % 13) - 6) / 6 for k, d in enumerate(days)}}
+    monkeypatch.setattr(lab, "PLACEBO_AXES", 60)
+    monkeypatch.setattr(lab, "ic_series", lambda market, names, span: (days, series))
+    monkeypatch.setattr(lab, "tier_members", lambda market, span: {"top30": {}})
+    monkeypatch.setattr(lab, "scenario_labels", lambda market, monthly, asked, span: {d: {"heat": h} for d, h in zip(days, heat)})
+    out = lab.axis_by_variable(xsb.Market(), {}, SPAN)
+    assert out["tests"] == 2 and out["expected_under_0.05_by_chance"] == 0.1
+    first = out["smallest_p"][0]
+    assert (first["variable"], first["axis"]) == ("moved", "heat") and first["p"] == pytest.approx(1 / 61, abs=1e-4)
+    assert first["state_means"] == {"cool": pytest.approx(-0.2, abs=0.01), "hot": pytest.approx(0.2, abs=0.01)}
+    assert [(t["variable"], t["axis"]) for t in out["survive_benjamini_hochberg"]] == [("moved", "heat")]
+    assert len(out["all_tests"]) == 2
+
+
+def test_a_run_may_map_one_group_alone_and_refuses_a_group_nobody_registered(monkeypatch, capsys):
+    monkeypatch.setattr(lab.xsb, "_in_sandbox", lambda: True)
+    assert lab.main(["run", "--only", "no_such_group"]) == lab.EXIT_USAGE
+    assert "no registered variable is in group" in capsys.readouterr().err
+    asked = {}
+
+    def hold(cache, span=None, *, attach=True, flow=False):
+        asked.update(attach=attach, flow=flow)
+        return None
+
+    monkeypatch.setattr(lab, "hold", hold)
+    assert lab.main(["run", "--only", "trade_flow"]) == lab.EXIT_BLOCKED
+    assert asked == {"attach": False, "flow": True}, "the trade-flow columns and nothing heavier"
+    assert lab.main(["run", "--only", "spot"]) == lab.EXIT_BLOCKED and asked == {"attach": True, "flow": False}
 
