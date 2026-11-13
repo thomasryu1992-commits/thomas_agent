@@ -33,3 +33,30 @@ the leg nobody argued for.
   does not cross it mechanically.
 - *The book is allowed to be mostly empty.* A fifth of the long side per name, idle capacity at zero: a tail
   condition that holds two coins is measured as the two-coin book it is.
+
+## The result (same day)
+
+**What came out.** H-F1 failed and is closed. Over 2020-2024 the book's annual Sharpe after stressed costs is 0.123
+against an entry rule of 1.0, 4.0% of total position a year, with 2023 and 2024 negative (-19.0%, -30.2%). It is
+the first of the four hypotheses to end above zero after costs, and that is not counted as a lead.
+
+**What the split showed.** The output carries each leg, so nothing had to be backed out. Funding received less
+costs is about 13% of total position a year; price net of the beta hedge takes about 9% of it back. The payers
+were about half right: the coins they paid to short rose less than their beta said. The form's funding line was
+too low by a factor of 2.5 to 5, and the note written after the counts, that it would be lower still, was wrong:
+it read the median one-week spell where the sum is set by the deep spells that last.
+
+**What the two placebos showed.** Against other pool coins held for the same spells, 9 of 300 did as well (p
+0.033). Against coins as beaten down, 20 of 300 did (p 0.070). The second null's mean is higher than the first's:
+holding beaten-down coins already buys part of the gap. The registered reading of that is that funding was not
+told apart from H-R1's closed family. The first p passing alone counts for nothing, as the later-years condition
+did for H-L1.
+
+**What is not done with it.** No second threshold, window, cap or hold rule; no re-measurement with another beta.
+Had it passed, the confirm span would not have been asked for: the idea is kin to C002 and C007 and came after
+their reads.
+
+**An order note.** The registration commit's own run lost one check (windows pytest) to the next push, which
+superseded it; the head with the same code passed all five, the last finishing while the measurement was already
+running.
+
