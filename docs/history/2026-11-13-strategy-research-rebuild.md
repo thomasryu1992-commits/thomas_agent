@@ -95,3 +95,30 @@ printed and no return was read. The cap protects the production host and was not
 what the candidate reads. The registered definition did not change, and the order (checks, counts, read) was walked
 again from the start.
 
+## The second round, the same day
+
+Thomas: finish the next round, then merge; and may a run that does not fit the server go to the Mac and send back
+only its result. (Yes — under the conditions the historical replay already set: public bars only, merged code, a
+small piece run on both machines first. Nothing needs it today.)
+
+**The ladder got its own accounting.** A book's quantities are fixed at the decision and held to the next: a short
+that doubles is twice as large the next day, the trade at a decision is the difference from what the position has
+become, funding is paid on what it is worth that day. The basket engine is not touched — registered screens read
+through it — and round one's figures stay as the engine gave them.
+
+**The low-volatility lead, built twice more.** With the new accounting alone the rank-weight book reads 0.519. With
+weights divided by each coin's volatility and the leftover Bitcoin sensitivity hedged it reads 0.840, and the losses
+in the rising years are gone (2021: −18.3% to −2.9%; 2023: −15.6% to +5.1%) — which supports reading the first book as
+a bet on the market falling. It still misses the entry rule, and one of twenty random-variable books built the same
+way did better, so 0.84 is not clearly apart from chance. It pays about 5.7% a year in funding; that is where the
+next logic looks.
+
+**Two variables and one axis added, with a warning attached.** Days since listing, the count of extreme days, and a
+universe-state axis (the share of wildly moving coins in the top thirty) came from what the confirm read showed of
+2025–2026, so a candidate using them cannot treat that span as independent evidence. On the development years the
+count of extreme days joins the volatility cluster above the random maximum; the axis does not separate anything —
+those years held few such coins.
+
+**Where candidates die so far:** three at the entry rule, one at the confirm span. By the loop's own order the next
+rework goes to the strategy logics.
+
