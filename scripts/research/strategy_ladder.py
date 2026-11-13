@@ -855,6 +855,133 @@ def listing_run(market: xsb.Market, span: tuple[date, date] = SPAN, *, placebos:
                            and rungs["2c_beside_placebos"]["passes"] and rungs["3_stability"]["passes"])}
 
 
+# --- L13: the lower-tier reversal book (round 9, hypothesis H-R1) -------------------------------------------------
+
+LOWER_TIER_FROM = 100                      # the tier begins after this many ranks of the month's trailing volume
+REVERSAL_LOOKBACK = 7                      # days of return the book ranks on
+REVERSAL_SKIP = 1                          # days between the last close ranked and the decision day's close
+LOWER_NULLS = 300
+LOWER_MIN_ACTIVE = 26                      # decisions with a book each of LATER_YEARS needs, or nothing is measured
+LOWER_MIN_FUNDING_KNOWN = 0.9              # of the tier's liquid coin-decisions must have funding on file
+LOWER_NULL_SEED = 2000                     # the weekly random variables of this null; the sweep's begin at 1000
+
+
+def skip_day_return(market: xsb.Market, symbol: str, day: date) -> float | None:
+    """The :data:`REVERSAL_LOOKBACK`-day return that ends :data:`REVERSAL_SKIP` day before ``day``. A book decided
+    on ``day`` trades at the next open, which is the same instant as ``day``'s close; ranking on that close would
+    let a last print at the bid or the ask pick the coin and then pay the book as it bounces back."""
+    bars = market.bars.get(symbol) or {}
+    last = bars.get(day - timedelta(days=REVERSAL_SKIP))
+    first = bars.get(day - timedelta(days=REVERSAL_SKIP + REVERSAL_LOOKBACK))
+    if last is None or first is None or first.close <= 0:
+        return None
+    return last.close / first.close - 1
+
+
+class LowerTier:
+    """Per decision day, read from that day and earlier: the coins ranked after the first :data:`LOWER_TIER_FROM`
+    by the month's trailing volume that pass the listing book's liquidity floor, split into those with funding on
+    file (held) and those without (left out and counted)."""
+
+    def __init__(self, market: xsb.Market, span: tuple[date, date] = SPAN) -> None:
+        self.market = market
+        self._liquid = ListingPools(market).liquid
+        ranked = xsb.universes(market, top_n=len(market.bars),
+                               start=date(span[0].year, span[0].month, 1) - timedelta(days=1), end=span[1])
+        self.monthly = {date(m.year, m.month, 1): tuple(members[LOWER_TIER_FROM:]) for m, members in ranked.items()}
+        self._at: dict[date, tuple[tuple[str, ...], tuple[str, ...]]] = {}
+
+    def at(self, day: date) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        if day not in self._at:
+            held, unfunded = [], []
+            for symbol in self.monthly.get(date(day.year, day.month, 1), ()):
+                if symbol == HEDGE or not symbol.endswith("USDT") or not self._liquid(symbol, day):
+                    continue
+                (held if self.market.funding_day(symbol) is not None else unfunded).append(symbol)
+            self._at[day] = (tuple(held), tuple(unfunded))
+        return self._at[day]
+
+
+def lower_book(tier: LowerTier, read: lab.Variable, way: int) -> Callable[..., dict[str, float]]:
+    """L1's rank weights on ``read`` over the tier's held coins at the decision; ``way`` below zero is long the low
+    values. The members the simulation passes (the top thirty) are not read."""
+    inner = book(read, lambda _day: way)
+
+    def weights(market: xsb.Market, members: Sequence[str], day: date, signal: str,
+                *, seed: str | None = None) -> dict[str, float]:
+        return inner(market, tier.at(day)[0], day, signal, seed=seed)
+    return weights
+
+
+def lower_counts(market: xsb.Market, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """What the lower-tier book would stand on, with no return in it: decisions, how many have enough ranked coins
+    for a book, and how many liquid coin-decisions lack funding. The stop rules are judged here."""
+    tier = LowerTier(market, span)
+    days = [d for d in sundays(span) if span[0] - timedelta(days=1) <= d <= span[1]]
+    years: dict[str, dict[str, Any]] = {str(y): {"decisions": 0, "active_decisions": 0, "names": [],
+                                                 "unfunded_coin_decisions": 0}
+                                        for y in range(span[0].year, span[1].year + 1)}
+    held_total = unfunded_total = 0
+    first_active: date | None = None
+    for day in days:
+        row = years.get(str(day.year))
+        if row is None:
+            continue
+        held, unfunded = tier.at(day)
+        ranked = sum(1 for s in held if skip_day_return(market, s, day) is not None)
+        row["decisions"] += 1
+        row["unfunded_coin_decisions"] += len(unfunded)
+        held_total, unfunded_total = held_total + len(held), unfunded_total + len(unfunded)
+        if ranked >= lab.MIN_NAMES:
+            row["active_decisions"] += 1
+            row["names"].append(ranked)
+            first_active = first_active or day
+    for row in years.values():
+        names = row.pop("names")
+        row["names_ranked_median"] = statistics.median(names) if names else 0
+    known = held_total / (held_total + unfunded_total) if held_total + unfunded_total else None
+    thin = [str(y) for y in LATER_YEARS if years.get(str(y), {}).get("active_decisions", 0) < LOWER_MIN_ACTIVE]
+    stops = [text for wrong, text in (
+        (known is None or known < LOWER_MIN_FUNDING_KNOWN, "too many of the tier's coins have no funding on file"),
+        (bool(thin), "the tier holds a book at too few decisions in " + ", ".join(thin)),
+    ) if wrong]
+    return {"decisions": len(days), "active_decisions": sum(r["active_decisions"] for r in years.values()),
+            "first_active_decision": first_active.isoformat() if first_active else None,
+            "funding_known_share": None if known is None else round(known, 3), "by_year": years,
+            "last_day_in_market": lab.last_day(market).isoformat() if market.bars else None,
+            "stop": stops, "returns_computed": False}
+
+
+def lower_run(market: xsb.Market, span: tuple[date, date] = SPAN, *, nulls: int = LOWER_NULLS) -> dict[str, Any]:
+    """The lower-tier reversal book net of stressed costs, beside the same book on weekly random variables, through
+    rung 2's three conditions and rung 3. A year of the span the book is flat in counts as zero, never as absent.
+    Refused when the counts say stop."""
+    counts = lower_counts(market, span)
+    if counts["stop"]:
+        return {"refused": counts["stop"], "counts": counts}
+    tier = LowerTier(market, span)
+    stressed = functools.partial(simulate_held, unit_of=listing_unit)
+
+    def whole(report: dict[str, Any]) -> dict[str, Any]:
+        years = {str(y): report["years_total_position_pct"].get(str(y), 0.0)
+                 for y in range(span[0].year, span[1].year + 1)}
+        return {**report, "years_total_position_pct": years, "stability": stability(years)}
+
+    report = whole(measure(market, lower_book(tier, skip_day_return, -1), span, simulate=stressed))
+    null_sharpes = [measure(market, lower_book(tier, lab._control("week", LOWER_NULL_SEED + k), -1), span,
+                            simulate=stressed)["annual_sharpe"] for k in range(nulls)]
+    engine = whole(measure(market, lower_book(tier, skip_day_return, -1), span, simulate=simulate_held))
+    rungs = {"2a_entry": report["clears_entry"], "2b_later_years": later_years(report["years_total_position_pct"]),
+             "2c_beside_nulls": beside_nulls(report["annual_sharpe"], null_sharpes), "3_stability": report["stability"]}
+    passes = bool(rungs["2a_entry"] and rungs["2b_later_years"]["passes"] and rungs["2c_beside_nulls"]["passes"]
+                  and rungs["3_stability"]["passes"])
+    lead = not passes and bool(engine["clears_entry"]) and rungs["2c_beside_nulls"]["passes"]
+    return {**report, "hypothesis": "H-R1", "logic": "L13", "counts": counts, "rungs": rungs, "passes": passes,
+            "at_engine_cost": {k: engine[k] for k in ("annual_sharpe", "total_position_annual_pct", "clears_entry",
+                                                      "cost_pct", "years_total_position_pct")},
+            "reading": "passes" if passes else "cost_dependent_lead" if lead else "closed"}
+
+
 # --- the round ---------------------------------------------------------------------------------------------------
 
 def _spread(values: Sequence[float | None]) -> dict[str, Any]:
@@ -931,7 +1058,7 @@ def run_round(market: xsb.Market, span: tuple[date, date] = SPAN, *, which: str 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="strategy_ladder", description=__doc__.splitlines()[0])
     parser.add_argument("command", choices=("list", "run", "confirm-counts", "confirm", "sweep", "transfer",
-                                            "listing-counts", "listing"))
+                                            "listing-counts", "listing", "lower-counts", "lower"))
     parser.add_argument("--only", default=None,
                         help="sweep, transfer: variable groups (comma list), or `null` for the random books")
     parser.add_argument("--cache", type=Path, default=None, help="default: $RESEARCH_CACHE")
@@ -973,6 +1100,16 @@ def main(argv: list[str] | None = None) -> int:
                           "span": [d.isoformat() for d in SPAN], "command": args.command, **body},
                          indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or (args.command == "listing-counts" and body["stop"]) else EXIT_OK
+    if args.command in ("lower-counts", "lower"):
+        market = lab.hold(cache, attach=False)
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        body = lower_counts(market) if args.command == "lower-counts" else lower_run(market)
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "command": args.command, **body},
+                         indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_BLOCKED if body.get("refused") or (args.command == "lower-counts" and body["stop"]) else EXIT_OK
     if args.command in ("sweep", "transfer"):
         wanted = set((args.only or "").split(",")) - {""}
         names = null_variables() if wanted == {"null"} else {n: v for n, v in lab.variables().items() if v[0] in wanted}

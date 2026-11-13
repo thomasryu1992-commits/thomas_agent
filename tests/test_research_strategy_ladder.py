@@ -724,3 +724,83 @@ def test_the_listing_commands_load_bars_and_funding_alone(monkeypatch, capsys):
     assert sl.main(["listing-counts"]) == sl.EXIT_BLOCKED and sl.main(["listing"]) == sl.EXIT_BLOCKED
     assert asked == [(None, False, False)] * 2
 
+
+# --- round 9: the lower-tier reversal book ------------------------------------------------------------------------------
+
+def _lower_market(moves=None):
+    """BTC, three coins that out-trade everything, and ten smaller ones (LOW9 has no funding, LOWTHIN trades too
+    little). ``moves`` gives a coin a daily drift, so the past week ranks the tier."""
+    start, end = date(2020, 1, 1), date(2021, 6, 30)
+    moves = moves or {}
+    def bars(volume, drift=0.0):
+        out, price = {}, 100.0
+        for k in range((end - start).days + 1):
+            nxt = price * (1 + drift)
+            out[start + timedelta(days=k)] = xsb.Bar(open=price, close=nxt, quote_volume=volume)
+            price = nxt
+        return out
+    names = {"BTCUSDT": bars(9e9), **{f"BIG{i}USDT": bars(5e9 - i) for i in range(3)},
+             **{f"LOW{i}USDT": bars(5e7 - i, moves.get(f"LOW{i}USDT", 0.0)) for i in range(10)},
+             "LOWTHINUSDT": bars(1e6)}
+    return xsb.Market(bars=names, funding={s: [(0, 0.0)] for s in names if s != "LOW9USDT"})
+
+
+def test_the_reversal_rank_never_reads_the_close_the_book_trades_beside():
+    market = _lower_market({"LOW0USDT": 0.01})
+    day = date(2021, 3, 7)
+    before = sl.skip_day_return(market, "LOW0USDT", day)
+    assert before == pytest.approx(1.01 ** 7 - 1)
+    bars = market.bars["LOW0USDT"]
+    bars[day] = xsb.Bar(open=bars[day].open, close=bars[day].close * 3, quote_volume=bars[day].quote_volume)
+    assert sl.skip_day_return(market, "LOW0USDT", day) == before, "the decision day's close is not ranked"
+    assert sl.skip_day_return(market, "LOW0USDT", date(2020, 1, 5)) is None, "no return without the whole window"
+
+
+def test_the_lower_tier_is_the_liquid_funded_coins_after_the_first_ranks(monkeypatch):
+    monkeypatch.setattr(sl, "LOWER_TIER_FROM", 4)                     # BTC and the three big coins are the top
+    market = _lower_market()
+    held, unfunded = sl.LowerTier(market, (date(2021, 1, 1), date(2021, 6, 30))).at(date(2021, 3, 7))
+    assert set(held) == {f"LOW{i}USDT" for i in range(9)}, "the top ranks, the thin coin and the unfunded one are out"
+    assert unfunded == ("LOW9USDT",)
+
+
+def test_the_lower_book_is_long_the_weeks_losers_and_short_its_winners(monkeypatch):
+    monkeypatch.setattr(sl, "LOWER_TIER_FROM", 4)
+    moves = {f"LOW{i}USDT": (i - 4) / 1000 for i in range(9)}        # LOW0 fell most, LOW8 rose most
+    market = _lower_market(moves)
+    tier = sl.LowerTier(market, (date(2021, 1, 1), date(2021, 6, 30)))
+    weights = sl.lower_book(tier, sl.skip_day_return, -1)(market, ("BTCUSDT",), date(2021, 3, 7), "x")
+    assert {s for s, w in weights.items() if w > 0} == {f"LOW{i}USDT" for i in range(4)}, "the four that fell most"
+    assert {s for s, w in weights.items() if w < 0} == {f"LOW{i}USDT" for i in range(5, 9)}, "the four that rose most"
+    assert sum(w for w in weights.values() if w > 0) == pytest.approx(1) == pytest.approx(-sum(w for w in weights.values() if w < 0))
+    assert "BTCUSDT" not in weights and "LOW9USDT" not in weights, "the passed members are not read; no funding, no position"
+
+
+def test_the_lower_counts_carry_no_return_and_stop_a_tier_too_thin_in_the_later_years(monkeypatch):
+    monkeypatch.setattr(sl, "LOWER_TIER_FROM", 4)
+    market = _lower_market()
+    span = (date(2020, 1, 1), date(2021, 6, 30))
+    counts = sl.lower_counts(market, span)
+    assert counts["returns_computed"] is False and counts["funding_known_share"] == pytest.approx(0.9)
+    assert counts["by_year"]["2021"]["names_ranked_median"] == 9 and counts["by_year"]["2021"]["active_decisions"] == 26
+    assert counts["first_active_decision"] > "2020-03-31", "ninety days listed before a month counts a coin"
+    assert counts["stop"] == ["the tier holds a book at too few decisions in 2022, 2023, 2024"]
+    flat = json.dumps(counts)
+    assert "sharpe" not in flat and "pct" not in flat
+    assert sl.lower_run(market, span)["refused"] == counts["stop"], "a stopped book is not measured"
+
+
+def test_a_year_the_lower_book_is_flat_in_counts_as_zero_and_the_reading_is_one_of_three(monkeypatch):
+    monkeypatch.setattr(sl, "LOWER_TIER_FROM", 4)
+    monkeypatch.setattr(sl, "LOWER_MIN_ACTIVE", 0)
+    monkeypatch.setattr(sl, "SPAN", (date(2020, 1, 1), date(2021, 6, 30)))
+    moves = {f"LOW{i}USDT": (i - 4) / 1000 for i in range(9)}
+    market = _lower_market(moves)
+    span = (date(2021, 1, 1), date(2021, 6, 30))
+    run = sl.lower_run(market, (date(2020, 1, 1), date(2021, 6, 30)), nulls=3)
+    assert set(run["years_total_position_pct"]) == {"2020", "2021"}
+    assert run["years_total_position_pct"]["2021"] < 0, "long the coins that keep falling, at stressed costs"
+    assert run["rungs"]["2c_beside_nulls"]["null_books"] == 3 and run["reading"] == "closed" and not run["passes"]
+    only_late = sl.lower_run(market, span, nulls=1)
+    assert set(only_late["years_total_position_pct"]) == {"2021"}
+
