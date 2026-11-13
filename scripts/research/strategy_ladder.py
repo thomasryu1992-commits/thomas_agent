@@ -1502,6 +1502,166 @@ def deep_run(market: xsb.Market, span: tuple[date, date] = SPAN, *, placebos: in
             "passes": ladder and matched["passes"], "reading": reading}
 
 
+# --- L16: the alt-against-Bitcoin rotation book (round 12, hypothesis H-D1) ----------------------------------------
+
+ROTATION_WINDOW = 28                       # days of the spread's own return that set the side
+ROTATION_BETA_DAYS = 60
+ROTATION_SHIFT_MARGIN = 8                  # decisions a placebo's shift keeps away from zero, at both ends
+ROTATION_MIN_FLIPS = 6                     # over the span: under it the book is a standing bet no shift can be told from
+ROTATION_MIN_ACTIVE = 26                   # decisions with a side each of LATER_YEARS needs, or nothing is measured
+
+
+class Rotation:
+    """The side of the alt basket against the hedge coin at each decision, from the spread's own trailing return.
+
+    The signal is read on what could have been held through the window: the top thirty of the month the window
+    *begins* in, with the betas of the day it begins. This month's top thirty would not do. A coin enters it on a
+    volume surge, which follows a run-up, so its trailing return is high by selection and the sign would lean to
+    "alts up" after every refresh."""
+
+    def __init__(self, market: xsb.Market, span: tuple[date, date] = SPAN) -> None:
+        self.market = market
+        self.monthly = monthly_members(market, span)
+        self.days = [d for d in sundays(span) if span[0] - timedelta(days=1) <= d <= span[1]]
+        self._signal: dict[date, float | None] = {}
+        self._active: list[tuple[date, int]] | None = None
+        self._index: dict[date, int] = {}
+
+    def signal(self, day: date) -> float | None:
+        if day not in self._signal:
+            start = day - timedelta(days=ROTATION_WINDOW)
+            rows = [(moved, beta) for s in self.monthly.get(date(start.year, start.month, 1), ()) if s != HEDGE
+                    if (moved := xsb.trailing_return(self.market, s, day, ROTATION_WINDOW)) is not None
+                    and (beta := bs._beta(self.market, s, start, ROTATION_BETA_DAYS)) is not None]
+            ref = xsb.trailing_return(self.market, HEDGE, day, ROTATION_WINDOW)
+            self._signal[day] = (None if ref is None or len(rows) < lab.MIN_NAMES else
+                                 statistics.fmean(m for m, _ in rows) - statistics.fmean(b for _, b in rows) * ref)
+        return self._signal[day]
+
+    def basket(self, members: Sequence[str], day: date) -> dict[str, float]:
+        """The coins the book trades at ``day`` (this month's members but the hedge), each with its beta."""
+        return {s: beta for s in members
+                if s != HEDGE and (beta := bs._beta(self.market, s, day, ROTATION_BETA_DAYS)) is not None}
+
+    def active(self) -> list[tuple[date, int]]:
+        """The decisions with a side, in order: a signal that is not zero and enough coins to trade."""
+        if self._active is None:
+            rows = []
+            for day in self.days:
+                value = self.signal(day)
+                members = self.monthly.get(date(day.year, day.month, 1), ())
+                if value and len(self.basket(members, day)) >= lab.MIN_NAMES:
+                    rows.append((day, 1 if value > 0 else -1))
+            self._active = rows
+            self._index = {day: i for i, (day, _) in enumerate(rows)}
+        return self._active
+
+    def way(self, day: date, shift: int = 0) -> int:
+        """+1 long the alts, -1 short them, 0 flat. With ``shift`` the side is the one the real book took that many
+        active decisions later, wrapping round: the same runs in the same order, moved off the returns they led."""
+        rows = self.active()
+        at = self._index.get(day)
+        return 0 if at is None else rows[(at + shift) % len(rows)][1]
+
+    def shifts(self) -> range:
+        return range(ROTATION_SHIFT_MARGIN, len(self.active()) - ROTATION_SHIFT_MARGIN + 1)
+
+
+def rotation_book(rot: Rotation, shift: int = 0, *, hedge: str | None = "beta") -> Callable[..., dict[str, float]]:
+    """L16: the month's top thirty but the hedge coin in equal weights on the signal's side, and the hedge coin
+    against them: by their summed beta (``"beta"``, the judged book), by the same dollars (``"dollar"``), or not at
+    all (None, the alts alone for the leg split)."""
+    def weights(market: xsb.Market, members: Sequence[str], day: date, signal: str,
+                *, seed: str | None = None) -> dict[str, float]:
+        way, betas = rot.way(day, shift), rot.basket(members, day)
+        if not way or len(betas) < lab.MIN_NAMES:
+            return {}
+        weight = way / len(betas)
+        out = dict.fromkeys(sorted(betas), weight)
+        if hedge == "beta":
+            out[HEDGE] = -weight * sum(betas.values())
+        elif hedge == "dollar":
+            out[HEDGE] = -float(way)
+        return out
+    return weights
+
+
+def rotation_counts(market: xsb.Market, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """What the rotation book would stand on, with no return of the book and no side in it: decisions with a side,
+    how often the side turns and how long it lasts. The stop rules are judged here."""
+    rot = Rotation(market, span)
+    years: dict[str, dict[str, Any]] = {str(y): {"decisions": 0, "active_decisions": 0, "flips": 0, "names": []}
+                                        for y in range(span[0].year, span[1].year + 1)}
+    for day in rot.days:
+        if str(day.year) in years:
+            years[str(day.year)]["decisions"] += 1
+    runs: list[int] = []
+    previous = None
+    for day, way in rot.active():
+        row = years.get(str(day.year))
+        if row is None:
+            continue
+        row["active_decisions"] += 1
+        row["names"].append(len(rot.basket(rot.monthly.get(date(day.year, day.month, 1), ()), day)))
+        if way != previous:
+            if previous is not None:
+                row["flips"] += 1
+            runs.append(0)
+        runs[-1] += 1
+        previous = way
+    for row in years.values():
+        names = row.pop("names")
+        row["names_traded_median"] = statistics.median(names) if names else 0
+    flips = sum(row["flips"] for row in years.values())
+    thin = [str(y) for y in LATER_YEARS if years.get(str(y), {}).get("active_decisions", 0) < ROTATION_MIN_ACTIVE]
+    stops = [text for wrong, text in (
+        (bool(thin), "the book has a side at too few decisions in " + ", ".join(thin)),
+        (flips < ROTATION_MIN_FLIPS, "the side turns too rarely to be told from a standing bet"),
+    ) if wrong]
+    return {"decisions": len(rot.days), "active_decisions": len(rot.active()), "flips": flips, "runs": len(runs),
+            "run_weeks_median": statistics.median(runs) if runs else 0, "placebo_shifts": len(rot.shifts()),
+            "by_year": years, "last_day_in_market": lab.last_day(market).isoformat() if market.bars else None,
+            "stop": stops, "returns_computed": False}
+
+
+def rotation_run(market: xsb.Market, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """The rotation book net of stressed costs, beside the same sides shifted in time, through rung 2's three
+    conditions and rung 3. A year the book is flat in counts as zero. Refused when the counts say stop."""
+    counts = rotation_counts(market, span)
+    if counts["stop"]:
+        return {"refused": counts["stop"], "counts": counts}
+    rot = Rotation(market, span)
+    stressed = functools.partial(simulate_held, unit_of=listing_unit)
+
+    def whole(report: dict[str, Any]) -> dict[str, Any]:
+        years = {str(y): report["years_total_position_pct"].get(str(y), 0.0)
+                 for y in range(span[0].year, span[1].year + 1)}
+        return {**report, "years_total_position_pct": years, "stability": stability(years)}
+
+    report = whole(measure(market, rotation_book(rot), span, simulate=stressed))
+    bare = whole(measure(market, rotation_book(rot, hedge=None), span, simulate=stressed))
+    dollar = whole(measure(market, rotation_book(rot, hedge="dollar"), span, simulate=stressed))
+    engine = whole(measure(market, rotation_book(rot), span, simulate=simulate_held))
+    nulls = [measure(market, rotation_book(rot, shift), span, simulate=stressed)["annual_sharpe"] for shift in rot.shifts()]
+    rungs = {"2a_entry": report["clears_entry"], "2b_later_years": later_years(report["years_total_position_pct"]),
+             "2c_beside_shifted_sides": beside_nulls(report["annual_sharpe"], nulls), "3_stability": report["stability"]}
+    passes = bool(rungs["2a_entry"] and rungs["2b_later_years"]["passes"] and rungs["2c_beside_shifted_sides"]["passes"]
+                  and rungs["3_stability"]["passes"])
+    lead = not passes and bool(engine["clears_entry"]) and rungs["2c_beside_shifted_sides"]["passes"]
+    years = report["years_total_position_pct"]
+    total, best = sum(years.values()), max(years.values())
+    side = ("annual_sharpe", "total_position_annual_pct", "years_total_position_pct")
+    return {**report, "hypothesis": "H-D1", "logic": "L16", "counts": counts, "rungs": rungs, "passes": passes,
+            "legs": deep_legs(report, bare),
+            "legs_by_year_total_position_pct": {
+                "alts": bare["years_total_position_pct"],
+                "hedge": {y: round(years[y] - bare["years_total_position_pct"][y], 2) for y in years}},
+            "largest_year_share": round(best / total, 3) if total > 0 and best > 0 else None,
+            "dollar_hedged": {k: dollar[k] for k in side},
+            "at_engine_cost": {k: engine[k] for k in (*side, "clears_entry", "cost_pct")},
+            "reading": "passes" if passes else "cost_dependent_lead" if lead else "closed"}
+
+
 def _spread(values: Sequence[float | None]) -> dict[str, Any]:
     kept = sorted(v for v in values if v is not None)
     return {"count": len(kept), "mean": round(statistics.fmean(kept), 3) if kept else None,
@@ -1578,7 +1738,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("command", choices=("list", "run", "confirm-counts", "confirm", "sweep", "transfer",
                                             "listing-counts", "listing", "lower-counts", "lower",
                                             "crash-symbols", "crash-events", "crash-counts", "crash",
-                                            "deep-counts", "deep"))
+                                            "deep-counts", "deep", "rotation-counts", "rotation"))
     parser.add_argument("--only", default=None,
                         help="sweep, transfer: variable groups (comma list), or `null` for the random books")
     parser.add_argument("--cache", type=Path, default=None, help="default: $RESEARCH_CACHE")
@@ -1639,6 +1799,16 @@ def main(argv: list[str] | None = None) -> int:
                           "span": [d.isoformat() for d in SPAN], "command": args.command, **body},
                          indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or (args.command != "crash" and body["stop"]) else EXIT_OK
+    if args.command in ("rotation-counts", "rotation"):
+        market = lab.hold(cache, attach=False)
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        body = rotation_counts(market) if args.command == "rotation-counts" else rotation_run(market)
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "command": args.command, **body},
+                         indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_BLOCKED if body.get("refused") or (args.command == "rotation-counts" and body["stop"]) else EXIT_OK
     if args.command in ("deep-counts", "deep"):
         market = lab.hold(cache, attach=False)
         if market is None:

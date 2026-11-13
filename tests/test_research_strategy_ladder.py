@@ -1058,3 +1058,107 @@ def test_the_deep_commands_load_bars_and_funding_alone(monkeypatch, capsys):
     monkeypatch.setattr(sl.lab, "hold", hold)
     assert sl.main(["deep-counts"]) == sl.EXIT_BLOCKED and sl.main(["deep"]) == sl.EXIT_BLOCKED
     assert asked == [(None, False, False)] * 2
+
+
+# --- round 12: the alt-against-Bitcoin rotation book --------------------------------------------------------------------
+
+ROT_SPAN = (date(2020, 6, 1), date(2021, 6, 30))
+
+
+def _rotation_world(surge: float = 0.0):
+    """BTC moving two percent up and down by turns, and ten coins that move (1 + i/10) times as much plus a drift
+    that turns every eight weeks: up against BTC, then down. SURGEUSDT is listed in mid-November 2020, so the first
+    month it has the age to be a member of is 2021-03; ``surge`` is its daily drift over the two months before."""
+    start, end = ROT_SPAN
+    days = [start + timedelta(days=k) for k in range((end - start).days + 1)]
+
+    def bars(scale, volume, drift=None, first=start):
+        out, price = {}, 100.0
+        for k, day in enumerate(days):
+            if day < first:
+                continue
+            move = (0.02 if k % 2 else -0.02) * scale + (drift(k, day) if drift else 0.0)
+            out[day] = xsb.Bar(open=price, close=price * (1 + move), quote_volume=volume)
+            price *= 1 + move
+        return out
+
+    turn = lambda k, day: 0.004 if (k // 56) % 2 == 0 else -0.004          # noqa: E731
+    names = {"BTCUSDT": bars(1.0, 9e9), **{f"ALT{i}USDT": bars(1 + i / 10, 5e8 - i, turn) for i in range(10)},
+             "SURGEUSDT": bars(1.0, 9e8, lambda k, day: surge if date(2021, 1, 1) <= day < date(2021, 3, 1) else 0.0,
+                               first=date(2020, 11, 15))}
+    return xsb.Market(bars=names, funding={s: [(0, 0.0)] for s in names})
+
+
+def test_the_rotation_signal_reads_the_members_fixed_before_its_window_not_the_months_new_entrants():
+    day = date(2021, 3, 7)                                            # the window begins 2021-02-07
+    calm, surged = sl.Rotation(_rotation_world(), ROT_SPAN), sl.Rotation(_rotation_world(surge=0.05), ROT_SPAN)
+    assert "SURGEUSDT" in calm.monthly[date(2021, 3, 1)] and "SURGEUSDT" not in calm.monthly[date(2021, 2, 1)]
+    assert surged.signal(day) == pytest.approx(calm.signal(day)), "a coin that entered on its run-up is not in the signal"
+    assert "SURGEUSDT" in calm.basket(calm.monthly[date(2021, 3, 1)], day), "it is traded once it is a member"
+    assert calm.signal(date(2020, 6, 7)) is None, "no side without a window of members"
+
+
+def test_the_rotation_book_is_the_basket_on_the_signals_side_with_the_hedge_against_its_beta():
+    market = _rotation_world()
+    rot = sl.Rotation(market, ROT_SPAN)
+    sides = dict(rot.active())
+    up, down = next(d for d, w in sides.items() if w > 0), next(d for d, w in sides.items() if w < 0)
+    for day, way in ((up, 1), (down, -1)):
+        members = rot.monthly[date(day.year, day.month, 1)]
+        weights = sl.rotation_book(rot)(market, members, day, "x")
+        alts = {s: w for s, w in weights.items() if s != "BTCUSDT"}
+        assert sum(alts.values()) == pytest.approx(way) and len(set(alts.values())) == 1, "equal weights, one side"
+        betas = rot.basket(members, day)
+        assert weights["BTCUSDT"] == pytest.approx(-way * sum(betas.values()) / len(betas))
+        assert sl.rotation_book(rot, hedge="dollar")(market, members, day, "x")["BTCUSDT"] == -way
+        assert "BTCUSDT" not in sl.rotation_book(rot, hedge=None)(market, members, day, "x")
+    assert sl.rotation_book(rot)(market, (), date(2020, 6, 7), "x") == {}
+
+
+def test_a_shifted_rotation_takes_the_real_books_sides_later_and_keeps_its_runs():
+    rot = sl.Rotation(_rotation_world(), ROT_SPAN)
+    rows = rot.active()
+    days, sides = [d for d, _ in rows], [w for _, w in rows]
+    assert [rot.way(d, 3) for d in days] == sides[3:] + sides[:3]
+    assert rot.way(date(2020, 6, 7), 3) == 0, "flat where the real book is flat"
+    assert list(rot.shifts()) == list(range(sl.ROTATION_SHIFT_MARGIN, len(rows) - sl.ROTATION_SHIFT_MARGIN + 1))
+
+
+def test_the_rotation_counts_carry_no_return_and_no_side_and_stop_a_standing_bet():
+    counts = sl.rotation_counts(_rotation_world(), ROT_SPAN)
+    assert counts["returns_computed"] is False and counts["flips"] == counts["runs"] - 1 >= 2
+    assert counts["placebo_shifts"] == counts["active_decisions"] - 2 * sl.ROTATION_SHIFT_MARGIN + 1
+    assert counts["by_year"]["2021"]["names_traded_median"] >= 10
+    assert counts["stop"] == ["the book has a side at too few decisions in 2022, 2023, 2024",
+                              "the side turns too rarely to be told from a standing bet"]
+    flat = json.dumps(counts)
+    assert "sharpe" not in flat and "pct" not in flat and "long" not in flat and "short" not in flat
+    assert sl.rotation_run(_rotation_world(), ROT_SPAN)["refused"] == counts["stop"], "a stopped book is not measured"
+
+
+def test_the_rotation_run_prints_each_leg_by_year_and_its_reading_is_one_of_three(monkeypatch):
+    monkeypatch.setattr(sl, "ROTATION_MIN_ACTIVE", 0)
+    monkeypatch.setattr(sl, "ROTATION_MIN_FLIPS", 0)
+    monkeypatch.setattr(sl, "SPAN", ROT_SPAN)
+    run = sl.rotation_run(_rotation_world(), ROT_SPAN)
+    assert set(run["years_total_position_pct"]) == {"2020", "2021"}
+    by_year = run["legs_by_year_total_position_pct"]
+    for year, value in run["years_total_position_pct"].items():
+        assert by_year["alts"][year] + by_year["hedge"][year] == pytest.approx(value, abs=0.02)
+    assert run["rungs"]["2c_beside_shifted_sides"]["null_books"] == run["counts"]["placebo_shifts"]
+    assert run["reading"] in ("passes", "cost_dependent_lead", "closed")
+    assert set(run["dollar_hedged"]) == {"annual_sharpe", "total_position_annual_pct", "years_total_position_pct"}
+    assert run["at_engine_cost"]["cost_pct"] < run["cost_pct"], "the judged book pays the stressed cost"
+
+
+def test_the_rotation_commands_load_bars_and_funding_alone(monkeypatch, capsys):
+    asked = []
+
+    def hold(cache, span=None, *, attach=True, flow=False):
+        asked.append((span, attach, flow))
+        return None
+
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(sl.lab, "hold", hold)
+    assert sl.main(["rotation-counts"]) == sl.EXIT_BLOCKED and sl.main(["rotation"]) == sl.EXIT_BLOCKED
+    assert asked == [(None, False, False)] * 2
