@@ -24,6 +24,7 @@ turns being left out.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import random
@@ -65,6 +66,22 @@ CANDIDATES: dict[str, dict[str, str]] = {
              "from": "C001 lost with the market rising: weights by risk, the leftover market exposure hedged in Bitcoin"},
 }
 HEDGE = bs.REFERENCE                       # the coin a risk-matched book's leftover market exposure is hedged in
+# A position that would pay more than this a week in funding, at its last seven days' rate, is not held (L9). The
+# lead's own size on the map is about 65 bps a week between the top and bottom thirds, so about half of that a side:
+# a position paying it away has nothing left.
+FUNDING_FLOOR = 0.0030
+MIN_SIDE = 4                               # coins a side needs after the funding filter, or the book is flat
+HOLD_ANCHOR = date(2020, 1, 5)             # a Sunday; multi-week holding counts decisions from here
+CANDIDATES.update({
+    # Round 3, registered 2026-11-13 before any was measured: the low-volatility lead through the two logics the
+    # second round's deaths pointed at, and through both together.
+    "C005": {"round": "3", "logic": "L9", "variable": "idio_vol_30", "long": "low", "tier": "top30", "accounting": "held",
+             "from": "C004 paid about 5.7% a year in funding: the same book without the positions that pay it"},
+    "C006": {"round": "3", "logic": "L8", "variable": "idio_vol_30", "long": "low", "tier": "top30", "accounting": "held4",
+             "from": "the map's 28-day cells hold for this variable: the same book decided every fourth week"},
+    "C007": {"round": "3", "logic": "L9", "variable": "idio_vol_30", "long": "low", "tier": "top30", "accounting": "held4",
+             "from": "both changes together"},
+})
 
 Direction = Callable[[date], int]          # +1 long the high end, -1 long the low end, 0 flat
 
@@ -77,11 +94,15 @@ CONFIRM_ALPHA = 0.10                       # the k-th read is held to alpha / k
 CONFIRM_READS: tuple[dict[str, Any], ...] = (
     {"read": 1, "candidate": "C002", "signs": {"cool": 1, "hot": -1}, "registered": "2026-11-13",
      "asked": "D5, Thomas 2026-11-13"},
+    # C007 holds one direction, so there is nothing to freeze but the candidate itself (its logic, its accounting
+    # and their fixed values are in CANDIDATES and the constants above).
+    {"read": 2, "candidate": "C007", "registered": "2026-11-13", "asked": "D6, Thomas 2026-11-13"},
 )
 # read number -> the run that spent it. Filled in the commit that records the result; ``confirm`` refuses a read
 # that is already here.
 CONFIRM_DONE: dict[int, str] = {
     1: "20261113T042318Z-1057691 at a7ccd64b: C002 CONFIRM_FAIL, annual Sharpe -0.942 against 1.0",
+    2: "20261113T052257Z-1129790 at c117234c: C007 CONFIRM_FAIL, annual Sharpe 0.08 against 1.245",
 }
 # The variable groups that read the series ``signal_lab.hold`` attaches (positioning, depth, spot bars).
 ATTACHED_GROUPS = frozenset({"positioning", "depth", "spot"})
@@ -136,16 +157,29 @@ def book(read: lab.Variable, direction: Direction) -> Callable[..., dict[str, fl
 # --- L8: the risk-matched book -------------------------------------------------------------------------------------
 
 def risk_weights(values: Mapping[str, float], vols: Mapping[str, float], betas: Mapping[str, float],
-                 *, long_high: bool) -> dict[str, float]:
+                 *, long_high: bool, funding: Mapping[str, float | None] | None = None) -> dict[str, float]:
     """L1's sides with each coin's score divided by its volatility, so a wild coin carries no more risk than a quiet
     one; then the book's leftover sensitivity to Bitcoin is offset with a Bitcoin position. Coins without a
-    volatility or a beta are not held."""
+    volatility or a beta are not held.
+
+    ``funding`` (L9) is each coin's funding over the last seven days. A coin is left out of the side it ranks on when
+    holding it there would pay more than :data:`FUNDING_FLOOR` a week at that rate — a long in a coin with high
+    positive funding, a short in one with deeply negative funding. Ranks are taken before the filter, so leaving a
+    coin out does not move another across the middle; a side left with under :data:`MIN_SIDE` coins makes the book
+    flat."""
     usable = {s: v for s, v in values.items() if vols.get(s) and betas.get(s) is not None}
     if len(usable) < lab.MIN_NAMES:
         return {}
     order = sorted(usable, key=lambda s: (usable[s], s))
     middle = (len(order) + 1) / 2
     scores = {s: (position - middle) * (1 if long_high else -1) / vols[s] for position, s in enumerate(order, start=1)}
+    if funding is not None:
+        def pays(symbol: str, score: float) -> bool:
+            rate = funding.get(symbol)
+            return rate is not None and (rate if score > 0 else -rate) > FUNDING_FLOOR
+        scores = {s: v for s, v in scores.items() if v == 0 or not pays(s, v)}
+        if min(sum(1 for v in scores.values() if v > 0), sum(1 for v in scores.values() if v < 0)) < MIN_SIDE:
+            return {}
     longs = _capped({s: v for s, v in scores.items() if v > 0})
     shorts = _capped({s: -v for s, v in scores.items() if v < 0})
     weights = {**longs, **{s: -w for s, w in shorts.items()}}
@@ -154,8 +188,9 @@ def risk_weights(values: Mapping[str, float], vols: Mapping[str, float], betas: 
     return weights
 
 
-def risk_book(read: lab.Variable, direction: Direction) -> Callable[..., dict[str, float]]:
-    """A weigher for L8: the 30-day volatility and the 30-day beta to Bitcoin are read at the decision."""
+def risk_book(read: lab.Variable, direction: Direction, *, funding_aware: bool = False) -> Callable[..., dict[str, float]]:
+    """A weigher for L8, and with ``funding_aware`` for L9: the 30-day volatility, the 30-day beta to Bitcoin and
+    (L9) the last seven days' funding are read at the decision."""
     def weights(market: xsb.Market, members: Sequence[str], day: date, signal: str,
                 *, seed: str | None = None) -> dict[str, float]:
         way = direction(day)
@@ -164,17 +199,24 @@ def risk_book(read: lab.Variable, direction: Direction) -> Callable[..., dict[st
         values = {s: v for s in members if (v := read(market, s, day)) is not None}
         vols = {s: bs.FEATURES["vol"](market, s, day, lab.LOOKBACK) for s in values}
         betas = {s: (1.0 if s == HEDGE else bs.FEATURES["beta"](market, s, day, lab.LOOKBACK)) for s in values}
-        return risk_weights(values, vols, betas, long_high=way > 0)
+        funding = {s: xsb.trailing_funding(market, s, day, 7) for s in values} if funding_aware else None
+        return risk_weights(values, vols, betas, long_high=way > 0, funding=funding)
     return weights
 
 
-BOOKS = {"L1": book, "L2": book, "L8": risk_book}
+BOOKS = {"L1": book, "L2": book, "L8": risk_book, "L9": functools.partial(risk_book, funding_aware=True)}
 
 
 # --- the ladder's own accounting ---------------------------------------------------------------------------------
 
+def is_decision(signal: str, day: date, every: int) -> bool:
+    """A weekly decision day, and with ``every`` above one only each ``every``-th of them, counted from
+    :data:`HOLD_ANCHOR` so the calendar does not depend on where a run starts."""
+    return xsb.is_rebalance_day(signal, day) and ((day - HOLD_ANCHOR).days // 7) % every == 0
+
+
 def simulate_held(market: xsb.Market, signal: str, monthly: Mapping[date, Sequence[str]], *, start: date, end: date,
-                  weigher: Callable[..., dict[str, float]]) -> dict[str, Any]:
+                  weigher: Callable[..., dict[str, float]], every: int = 1) -> dict[str, Any]:
     """Daily net returns of a book whose quantities are fixed at each decision and held to the next.
 
     ``cross_section_basket.simulate`` adds each day's return at the decision's dollar weights, which is a book
@@ -183,14 +225,14 @@ def simulate_held(market: xsb.Market, signal: str, monthly: Mapping[date, Sequen
     move from that open, a short that doubles is twice as large the next day, the trade at a decision is the
     difference between the target and what the held position has become, and funding is paid on what the position
     is worth that day. Costs per unit traded are the engine's. The engine itself is not changed: registered screens
-    read through it."""
+    read through it. ``every`` holds each decision for that many weeks (L10: four)."""
     unit = (xsb.cost.DEFAULT_TAKER_FEE_BPS + xsb.cost.DEFAULT_SLIPPAGE_BPS) / 10_000
     held: dict[str, tuple[float, float]] = {}            # coin -> (weight at entry, entry open)
     daily: dict[date, dict[str, float]] = {}
     for day in xsb.held_days(start, end):
         decision = day - timedelta(days=1)
         trade_cost = 0.0
-        if xsb.is_rebalance_day(signal, decision):
+        if is_decision(signal, decision, every):
             target = weigher(market, monthly.get(date(decision.year, decision.month, 1), ()), decision, signal, seed=None)
             now = {s: w * bar.open / entry for s, (w, entry) in held.items()
                    if (bar := (market.bars.get(s) or {}).get(day)) is not None}
@@ -222,7 +264,8 @@ def simulate_held(market: xsb.Market, signal: str, monthly: Mapping[date, Sequen
     return {"daily": daily}
 
 
-ACCOUNTING = {"engine": xsb.simulate, "held": simulate_held}
+ACCOUNTING = {"engine": xsb.simulate, "held": simulate_held, "held4": functools.partial(simulate_held, every=4)}
+HOLD_WEEKS = {"engine": 1, "held": 1, "held4": 4}       # how many weeks each accounting holds a decision
 
 
 # --- the two rungs after the map ---------------------------------------------------------------------------------
@@ -310,16 +353,7 @@ def switching(ics: Mapping[date, float], labels: Mapping[date, str | None], year
     return direction, signs
 
 
-def shuffled_spells(labels: Sequence[str | None], seed: str) -> list[str | None]:
-    """The same spells in another order: a placebo scenario with the real one's persistence and shares."""
-    runs: list[list[str | None]] = []
-    for label in labels:
-        if runs and runs[-1][0] == label:
-            runs[-1].append(label)
-        else:
-            runs.append([label])
-    random.Random(seed).shuffle(runs)
-    return [label for run in runs for label in run]
+shuffled_spells = lab.shuffled_spells       # one placebo construction for the map's axes and L2's scenarios
 
 
 # --- rung 4 ------------------------------------------------------------------------------------------------------
@@ -343,6 +377,9 @@ def _confirm_frame(market: xsb.Market, entry: Mapping[str, Any]):
     """The candidate's variable and its direction by day over the confirm span. Labels are read on the whole history
     up to the span's end, so a decision in 2025 is compared with the weeks before it."""
     candidate = CANDIDATES[entry["candidate"]]
+    if candidate["logic"] != "L2":             # one direction: nothing is read from a scenario
+        way = 1 if candidate["long"] == "high" else -1
+        return lab.variables()[candidate["variable"]][1], (lambda _day: way), {}
     whole = (SPAN[0], CONFIRM[1])
     days = sundays(whole)
     labels = {day: row.get(candidate["axis"])
@@ -356,33 +393,66 @@ def _confirm_frame(market: xsb.Market, entry: Mapping[str, Any]):
 
 
 def confirm_counts(market: xsb.Market, entry: Mapping[str, Any]) -> dict[str, Any]:
-    """What the read will stand on, with no return in it: the decisions in the span, how many carry each label, and
-    how many coins the variable ranks at each."""
-    read, _, labels = _confirm_frame(market, entry)
+    """What the read will stand on, with no return in it: the decisions in the span, how many carry each label (L2),
+    how many coins the variable ranks, and how many the book would hold on each side."""
+    candidate = CANDIDATES[entry["candidate"]]
+    read, direction, labels = _confirm_frame(market, entry)
     monthly = monthly_members(market, CONFIRM)
-    days = [d for d in sundays(CONFIRM) if CONFIRM[0] - timedelta(days=1) <= d <= CONFIRM[1]]
-    ranked = [sum(1 for s in monthly.get(date(d.year, d.month, 1), ()) if read(market, s, d) is not None) for d in days]
-    by_label: dict[str, int] = {}
+    every = HOLD_WEEKS[candidate.get("accounting", "engine")]
+    days = [d for d in sundays(CONFIRM) if CONFIRM[0] - timedelta(days=1) <= d <= CONFIRM[1]
+            and is_decision(bs.CADENCE, d, every)]
+    build = BOOKS[candidate["logic"]](read, direction)
+    ranked, longs, shorts = [], [], []
     for d in days:
-        by_label[str(labels.get(d))] = by_label.get(str(labels.get(d)), 0) + 1
-    return {"decisions": len(days), "by_label": dict(sorted(by_label.items())),
-            "coins_ranked": {"min": min(ranked), "median": statistics.median(ranked), "max": max(ranked),
-                             "decisions_under_the_floor": sum(1 for n in ranked if n < lab.MIN_NAMES)},
-            "last_day_in_market": lab.last_day(market).isoformat()}
+        members = monthly.get(date(d.year, d.month, 1), ())
+        ranked.append(sum(1 for s in members if read(market, s, d) is not None))
+        weights = {s: w for s, w in build(market, members, d, bs.CADENCE).items() if s != HEDGE or s in members}
+        longs.append(sum(1 for w in weights.values() if w > 0))
+        shorts.append(sum(1 for w in weights.values() if w < 0))
+    out: dict[str, Any] = {
+        "decisions": len(days), "hold_weeks": every,
+        "coins_ranked": {"min": min(ranked), "median": statistics.median(ranked), "max": max(ranked),
+                         "decisions_under_the_floor": sum(1 for n in ranked if n < lab.MIN_NAMES)},
+        "coins_held": {"long_min": min(longs), "long_median": statistics.median(longs), "short_min": min(shorts),
+                       "short_median": statistics.median(shorts),
+                       "flat_decisions": sum(1 for a, b in zip(longs, shorts) if a == 0 and b == 0)},
+        "last_day_in_market": lab.last_day(market).isoformat()}
+    if labels:
+        by_label: dict[str, int] = {}
+        for d in days:
+            by_label[str(labels.get(d))] = by_label.get(str(labels.get(d)), 0) + 1
+        out["by_label"] = dict(sorted(by_label.items()))
+    return out
 
 
-def confirm(market: xsb.Market, entry: Mapping[str, Any], *, simulate: Callable[..., Any] = xsb.simulate) -> dict[str, Any]:
-    """The one read: the candidate as registered over the confirm span, net of the engine's costs, against the bar of
-    its read number. Two never-switching books are shown beside it and decide nothing."""
+def confirm(market: xsb.Market, entry: Mapping[str, Any], *, simulate: Callable[..., Any] | None = None) -> dict[str, Any]:
+    """The one read: the candidate as registered over the confirm span, net of costs, against the bar of its read
+    number. Beside it, deciding nothing: for a switching book the two never-switching ones, for a one-direction book
+    the same logic built on random variables."""
+    candidate = CANDIDATES[entry["candidate"]]
+    simulate = simulate or ACCOUNTING[candidate.get("accounting", "engine")]
+    build = BOOKS[candidate["logic"]]
     read, direction, _ = _confirm_frame(market, entry)
-    report = measure(market, book(read, direction), CONFIRM, simulate=simulate)
+    report = measure(market, build(read, direction), CONFIRM, simulate=simulate)
     bar = confirm_bar(entry["read"])
     sharpe = report["annual_sharpe"]
-    beside = {name: measure(market, book(read, lambda _day, way=way: way), CONFIRM, simulate=simulate)["annual_sharpe"]
-              for name, way in (("always_long_high", 1), ("always_long_low", -1))}
-    return {"read": entry["read"], "of": CONFIRM_BUDGET, "candidate": entry["candidate"], "signs": dict(entry["signs"]),
-            "bar_annual_sharpe": bar, "verdict": "CONFIRM_PASS" if sharpe is not None and sharpe >= bar else "CONFIRM_FAIL",
-            **report, "never_switching_books": beside}
+    out = {"read": entry["read"], "of": CONFIRM_BUDGET, "candidate": entry["candidate"],
+           "bar_annual_sharpe": bar, "verdict": "CONFIRM_PASS" if sharpe is not None and sharpe >= bar else "CONFIRM_FAIL",
+           **report}
+    if candidate["logic"] == "L2":
+        out["signs"] = dict(entry["signs"])
+        out["never_switching_books"] = {
+            name: measure(market, build(read, lambda _day, way=way: way), CONFIRM, simulate=simulate)["annual_sharpe"]
+            for name, way in (("always_long_high", 1), ("always_long_low", -1))}
+    else:
+        names = list(lab.controls())
+        picked = names[:RANDOM_BOOKS] + names[lab.CONTROLS_WEEKLY:lab.CONTROLS_WEEKLY + RANDOM_BOOKS]
+        sharpes = [measure(market, build(lab.controls()[name][1], lambda _day: 1), CONFIRM, simulate=simulate)["annual_sharpe"]
+                   for name in picked]
+        out["random_books_same_logic"] = {
+            **_spread(sharpes),
+            "at_or_above_this_book": sum(1 for v in sharpes if v is not None and sharpe is not None and v >= sharpe)}
+    return out
 
 
 # --- the round ---------------------------------------------------------------------------------------------------

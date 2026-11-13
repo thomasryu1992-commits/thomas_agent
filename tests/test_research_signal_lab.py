@@ -200,7 +200,7 @@ def test_it_runs_in_the_sandbox_only(monkeypatch, capsys):
     listed = json.loads(capsys.readouterr().out)
     assert listed["span"] == ["2020-01-01", "2024-12-31"]
     assert listed["controls"] == lab.CONTROLS_WEEKLY + lab.CONTROLS_FIXED >= 2 * len(lab.variables()) - 4
-    assert {"price_volume", "funding", "positioning", "depth", "spot", "coin_character"} == set(listed["variables"].values())
+    assert {"price_volume", "funding", "positioning", "depth", "spot", "coin_character", "trade_flow"} == set(listed["variables"].values())
 
 
 def test_a_book_that_reads_bars_and_funding_alone_loads_nothing_else(monkeypatch, tmp_path):
@@ -246,4 +246,193 @@ def test_the_universe_axis_splits_weeks_by_the_share_of_wild_coins(tiers):
     seen = {row.get("universe") for row in labels.values()}
     assert seen <= {"wild", "calm", None} and "calm" in seen, "the fixture's coins never move fifty percent in a day"
     assert lab.scenario_keys({"universe": "wild"}) == ["all", "universe=wild"]
+
+
+# --- the monthly checks: is an axis worth having, and what on disk is not read ---------------------------------------
+
+def test_an_axis_that_moves_a_variable_separates_and_a_shuffled_copy_of_it_does_not():
+    days = [date(2021, 1, 3) + timedelta(days=7 * k) for k in range(120)]
+    real = (["hot"] * 10 + ["cool"] * 10) * 6
+    series = {("x", "top30"): {d: (0.2 if label == "hot" else -0.2) + (0.01 if k % 2 else -0.01)
+                               for k, (d, label) in enumerate(zip(days, real))},
+              ("flat", "top30"): {d: (0.05 if k % 2 else -0.05) for k, d in enumerate(days)}}
+    actual = lab.separation(series, dict(zip(days, real)))
+    fakes = [lab.separation(series, dict(zip(days, lab.shuffled_spells(real, f"s{k}")))) for k in range(50)]
+    assert actual == pytest.approx((0.04 / 0.0401 + 0.0) / 2, rel=1e-3)
+    assert all(f <= actual + 1e-12 for f in fakes) and sum(1 for f in fakes if f < actual * 0.9) > 25
+    assert lab.separation(series, {d: None for d in days}) is None
+    assert lab.separation(series, dict(zip(days, ["hot"] * 119 + ["cool"]))) is None, "a state too thin to compare"
+    shuffled = lab.shuffled_spells(real, "s1")
+    assert sorted(shuffled) == sorted(real) and lab.shuffled_spells(real, "s1") == shuffled
+
+
+def test_the_axis_check_reads_every_axis_beside_its_placebos(tiers, monkeypatch):
+    monkeypatch.setattr(lab, "PLACEBO_AXES", 8)
+    out = lab.axis_check(lab.cut_market(_market(SPAN[1]), SPAN), NAMES, SPAN)
+    assert set(out["axes"]) == {"trend", "vol", "dispersion", "heat", "universe"}
+    for axis, body in out["axes"].items():
+        assert set(body) == {"states", "separation", "placebo_mean", "placebo_p95", "placebos_at_or_above", "placebos"}
+        assert body["placebos"] <= 8 and sum(body["states"].values()) == out["decisions"], axis
+
+
+def test_the_inventory_names_what_is_on_disk_and_the_kline_columns_no_loader_keeps(tmp_path, capsys, monkeypatch):
+    import zipfile
+    folder = tmp_path / "archive" / lab.xsb.KLINES_KIND / "BTCUSDT"
+    folder.mkdir(parents=True)
+    with zipfile.ZipFile(folder / "BTCUSDT-1d-2021-01.zip", "w") as z:
+        z.writestr("x.csv", "1609459200000,1,2,0.5,1.5,10,1609545599999,15,7,4,6,0\n")
+    (tmp_path / "archive" / lab.xsb.FUNDING_KIND / "BTCUSDT").mkdir(parents=True)
+    (tmp_path / "archive-spot" / lab.xsb.KLINES_KIND / "BTCUSDT").mkdir(parents=True)
+    out = lab.inventory(tmp_path)
+    assert out["kinds"] == {f"archive/{lab.xsb.FUNDING_KIND}": 1, f"archive/{lab.xsb.KLINES_KIND}": 1,
+                            f"archive-spot/{lab.xsb.KLINES_KIND}": 1}
+    assert out["kline_columns_in_file"] == len(lab.KLINE_COLUMNS) == 12
+    assert out["kline_columns_not_read"] == ["volume", "count", "taker_buy_volume", "taker_buy_quote_volume"]
+    bar = lab.xsb.read_klines(folder)[date(2021, 1, 1)]
+    assert (bar.open, bar.high, bar.low, bar.close, bar.quote_volume) == (1.0, 2.0, 0.5, 1.5, 15.0), "the five it keeps"
+    monkeypatch.setattr(lab.xsb, "_in_sandbox", lambda: False)
+    assert lab.main(["inventory", "--cache", str(tmp_path)]) == lab.EXIT_OK and "kline_columns_not_read" in capsys.readouterr().out
+    assert lab.main(["axes", "--cache", str(tmp_path)]) == lab.EXIT_USAGE
+
+
+def test_a_placebo_axis_leaves_the_unlabelled_decisions_unlabelled():
+    real = [None] * 6 + ["hot"] * 5 + ["cool"] * 4 + [None] + ["hot"] * 3 + ["cool"] * 7
+    for k in range(10):
+        fake = lab.shuffled_spells(real, f"seed-{k}")
+        assert [i for i, v in enumerate(fake) if v is None] == [i for i, v in enumerate(real) if v is None]
+        assert sorted(v for v in fake if v) == sorted(v for v in real if v)
+    assert any(lab.shuffled_spells(real, f"seed-{k}") != real for k in range(10))
+
+
+# --- round 4: the kline columns nobody read, and the axis check one variable at a time -------------------------------
+
+def _kline_zip(folder, name, rows):
+    import zipfile
+    folder.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(folder / name, "w") as z:
+        z.writestr("x.csv", "open_time,open,high,low,close,volume,close_time,quote_volume,count,tbv,tbqv,ignore\n"
+                   + "".join(",".join(map(str, r)) + "\n" for r in rows))
+
+
+def _ms(day):
+    return int((day - date(1970, 1, 1)).total_seconds() * 1000)
+
+
+def test_the_trade_flow_reader_keeps_the_taker_share_and_the_size_of_a_trade(tmp_path):
+    day = date(2021, 3, 1)
+    _kline_zip(tmp_path / "AUSDT", "AUSDT-1d-2021-03.zip", [
+        [_ms(day), 1, 2, 0.5, 1.5, 10, 0, 200.0, 40, 5, 120.0, 0],                        # 60% taker buys, 5 a trade
+        [_ms(day + timedelta(days=1)), 1, 2, 0.5, 1.5, 0, 0, 0.0, 0, 0, 0.0, 0],            # no volume: left out
+        [_ms(day + timedelta(days=2)), 1, 2, 0.5, 1.5, 10, 0, 100.0, 10, 5, 150.0, 0],      # taker above total: not a share
+    ])
+    assert lab.read_trade_flow(tmp_path / "AUSDT") == {day: (0.6, 5.0)}
+    assert lab.read_trade_flow(tmp_path / "MISSING") == {}
+
+
+def test_the_trade_flow_variables_average_the_month_and_compare_it_with_the_month_before():
+    day = date(2021, 4, 30)
+    flow = {day - timedelta(days=k): (0.55 if k < 30 else 0.45, 20.0 if k < 30 else 10.0) for k in range(60)}
+    market = xsb.Market()
+    market.trade_flow = {"AUSDT": flow, "THINUSDT": {day: (0.5, 1.0)}}
+    v = lab.variables()
+    assert v["taker_buy_share_30"][1](market, "AUSDT", day) == pytest.approx(0.55)
+    assert v["trade_size_30"][1](market, "AUSDT", day) == pytest.approx(20.0)
+    assert v["trade_size_growth_30"][1](market, "AUSDT", day) == pytest.approx(1.0), "twice the month before"
+    for name in ("taker_buy_share_30", "trade_size_30", "trade_size_growth_30"):
+        assert v[name][0] == "trade_flow" and v[name][1](market, "THINUSDT", day) is None
+        assert v[name][1](xsb.Market(), "AUSDT", day) is None, "no trade-flow attached: no value, not a zero"
+
+
+def test_trade_flow_is_attached_for_the_coins_the_tiers_hold_and_cut_at_the_spans_end(tiers, tmp_path, monkeypatch):
+    full = lab.cut_market(_market(SPAN[1]), SPAN)
+    held_symbols = {s for monthly in lab.tier_members(full, SPAN).values() for m in monthly.values() for s in m}
+    asked = []
+
+    def read(folder):
+        asked.append(folder.name)
+        return {SPAN[1]: (0.5, 2.0), SPAN[1] + timedelta(days=1): (0.9, 9.0)}
+
+    monkeypatch.setattr(lab, "read_trade_flow", read)
+    out = lab.attach_trade_flow(full, tmp_path, SPAN)
+    assert set(asked) == held_symbols == set(out.trade_flow)
+    assert all(list(days) == [SPAN[1]] for days in out.trade_flow.values()), "nothing after the span"
+    assert lab.last_day(lab.cut_market(out, SPAN)) == SPAN[1]
+
+
+def test_the_axis_check_by_variable_finds_the_one_an_axis_moves_and_counts_what_chance_gives(monkeypatch):
+    days = [date(2021, 1, 3) + timedelta(days=7 * k) for k in range(120)]
+    heat = (["hot"] * 10 + ["cool"] * 10) * 6
+    series = {("moved", "top30"): {d: (0.2 if h == "hot" else -0.2) + (0.01 if k % 2 else -0.01) for k, (d, h) in enumerate(zip(days, heat))},
+              ("still", "top30"): {d: 0.05 * (((k * 7919) % 13) - 6) / 6 for k, d in enumerate(days)}}
+    monkeypatch.setattr(lab, "PLACEBO_AXES_BY_VARIABLE", 60)
+    monkeypatch.setattr(lab, "ic_series", lambda market, names, span: (days, series))
+    monkeypatch.setattr(lab, "tier_members", lambda market, span: {"top30": {}})
+    monkeypatch.setattr(lab, "scenario_labels", lambda market, monthly, asked, span: {d: {"heat": h} for d, h in zip(days, heat)})
+    out = lab.axis_by_variable(xsb.Market(), {}, SPAN)
+    assert out["tests"] == 2 and out["expected_under_0.05_by_chance"] == 0.1
+    first = out["smallest_p"][0]
+    assert (first["variable"], first["axis"]) == ("moved", "heat") and first["p"] == pytest.approx(1 / 61, abs=1e-4)
+    assert first["state_means"] == {"cool": pytest.approx(-0.2, abs=0.01), "hot": pytest.approx(0.2, abs=0.01)}
+    assert [(t["variable"], t["axis"]) for t in out["survive_benjamini_hochberg"]] == [("moved", "heat")]
+    assert len(out["all_tests"]) == 2
+
+
+def test_a_run_may_map_one_group_alone_and_refuses_a_group_nobody_registered(monkeypatch, capsys):
+    monkeypatch.setattr(lab.xsb, "_in_sandbox", lambda: True)
+    assert lab.main(["run", "--only", "no_such_group"]) == lab.EXIT_USAGE
+    assert "no registered variable is in group" in capsys.readouterr().err
+    asked = {}
+
+    def hold(cache, span=None, *, attach=True, flow=False):
+        asked.update(attach=attach, flow=flow)
+        return None
+
+    monkeypatch.setattr(lab, "hold", hold)
+    assert lab.main(["run", "--only", "trade_flow"]) == lab.EXIT_BLOCKED
+    assert asked == {"attach": False, "flow": True}, "the trade-flow columns and nothing heavier"
+    assert lab.main(["run", "--only", "spot"]) == lab.EXIT_BLOCKED and asked == {"attach": True, "flow": False}
+
+
+def test_the_by_variable_check_has_enough_placebos_for_a_real_effect_to_pass_the_correction():
+    """The smallest p a test can show is one over the placebos plus one. It has to be under what Benjamini–Hochberg
+    asks of the best of a few hundred tests, or nothing could ever pass (the first run, 2026-11-13: 200 placebos)."""
+    tests, q = 27 * 2 * 5, 0.10
+    assert 1 / (lab.PLACEBO_AXES_BY_VARIABLE + 1) < q / tests
+    assert not 1 / (200 + 1) < q / tests
+
+
+# --- D7: the universe's character by month ----------------------------------------------------------------------------
+
+def test_the_universe_character_is_read_by_month_from_the_past_and_computes_no_return(tiers):
+    span = (date(2020, 1, 1), date(2021, 6, 30))
+    full = lab.cut_market(_market(span[1]), span)
+    out = lab.universe_character(full, span)
+    assert out["returns_computed"] is False and set(out["years"]) == {"2020", "2021"}
+    month = out["months"]["2021-03"]
+    assert set(month) == {"funding_abs_median_bps_week", "funding_abs_p90_bps_week", "wild_share",
+                          "listing_age_median_days", "members", "overlap_with_previous_month"}
+    assert month["members"] == 10 and 0.7 <= month["overlap_with_previous_month"] <= 1.0, "ten of fourteen coins, by volume"
+    assert month["wild_share"] == 0.0 and month["funding_abs_p90_bps_week"] >= month["funding_abs_median_bps_week"] > 0
+    assert 600 < month["listing_age_median_days"] < 680, "listed 2019-06-01"
+    # Later bars, whatever they hold, change no earlier month.
+    twisted = lab.universe_character(lab.cut_market(_market(date(2021, 12, 31), twist_after=span[1]), span), span)
+    assert twisted == out
+    flat = json.dumps(out)
+    assert all(word not in flat for word in ("sharpe", "pnl", "net")), "character only"
+
+
+def test_the_universe_command_stops_before_the_reserved_days(monkeypatch, capsys):
+    asked = {}
+
+    def hold(cache, span=None, *, attach=True, flow=False):
+        asked.update(span=span, attach=attach)
+        return None
+
+    monkeypatch.setattr(lab.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(lab, "hold", hold)
+    assert lab.main(["universe"]) == lab.EXIT_BLOCKED
+    assert asked == {"span": (lab.SPAN[0], date(2026, 9, 30)), "attach": False}
+    assert lab.CHARACTER_END < lab.bs.RESERVED_FROM
+    monkeypatch.setattr(lab.xsb, "_in_sandbox", lambda: False)
+    assert lab.main(["universe"]) == lab.EXIT_USAGE
 
