@@ -81,6 +81,14 @@ CANDIDATES.update({
              "from": "the map's 28-day cells hold for this variable: the same book decided every fourth week"},
     "C007": {"round": "3", "logic": "L9", "variable": "idio_vol_30", "long": "low", "tier": "top30", "accounting": "held4",
              "from": "both changes together"},
+    # Round 5, registered 2026-11-13 before any was measured: the map's new lead, and the tail-out universe for it
+    # and for the low-volatility lead.
+    "C008": {"round": "5", "logic": "L9", "variable": "taker_buy_share_30", "long": "high", "tier": "top30",
+             "accounting": "held4", "from": "the fourth round's lead: coins bought aggressively go on to lead"},
+    "C009": {"round": "5", "logic": "L9T", "variable": "taker_buy_share_30", "long": "high", "tier": "top30",
+             "accounting": "held4", "from": "the same book without the tail of its universe"},
+    "C010": {"round": "5", "logic": "L9T", "variable": "idio_vol_30", "long": "low", "tier": "top30",
+             "accounting": "held4", "from": "C007, which lost 2026, without the tail of its universe"},
 })
 
 Direction = Callable[[date], int]          # +1 long the high end, -1 long the low end, 0 flat
@@ -205,6 +213,44 @@ def risk_book(read: lab.Variable, direction: Direction, *, funding_aware: bool =
 
 
 BOOKS = {"L1": book, "L2": book, "L8": risk_book, "L9": functools.partial(risk_book, funding_aware=True)}
+
+
+# --- L11: the universe without its tail ----------------------------------------------------------------------------
+
+TAIL_FUNDING_SHARE = 0.90                  # a coin whose |7-day funding| is above this share of the tier's is tail
+
+
+def without_tail(market: xsb.Market, members: Sequence[str], day: date) -> list[str]:
+    """The members that are not tail at ``day``: a coin is tail when it moved :data:`signal_lab.WILD_MOVE` or more in
+    a day within the lookback, or when its last seven days' funding is larger in size than
+    :data:`TAIL_FUNDING_SHARE` of the members'. The 2026 top thirty holds a handful of such coins and the
+    development years' almost none (the universe's character, 2026-11-13); both confirm reads were lost there."""
+    funding = {s: xsb.trailing_funding(market, s, day, 7) for s in members}
+    sizes = [abs(v) for v in funding.values() if v is not None]
+    bar = lab._percentile(sizes, TAIL_FUNDING_SHARE) if len(sizes) >= lab.MIN_NAMES else None
+    kept = []
+    for symbol in members:
+        moves = lab._daily_moves(market, symbol, day, lab.LOOKBACK)
+        wild = moves is not None and max(moves) >= lab.WILD_MOVE
+        hot = bar is not None and funding[symbol] is not None and abs(funding[symbol]) > bar
+        if not wild and not hot:
+            kept.append(symbol)
+    return kept
+
+
+def tail_out(build: Callable[..., Callable[..., dict[str, float]]]) -> Callable[..., Callable[..., dict[str, float]]]:
+    """A logic's book built on the members left after :func:`without_tail`."""
+    def builder(read: lab.Variable, direction: Direction) -> Callable[..., dict[str, float]]:
+        inner = build(read, direction)
+
+        def weights(market: xsb.Market, members: Sequence[str], day: date, signal: str,
+                    *, seed: str | None = None) -> dict[str, float]:
+            return inner(market, without_tail(market, members, day), day, signal, seed=seed)
+        return weights
+    return builder
+
+
+BOOKS["L9T"] = tail_out(BOOKS["L9"])
 
 
 # --- the ladder's own accounting ---------------------------------------------------------------------------------
@@ -550,7 +596,7 @@ def main(argv: list[str] | None = None) -> int:
         bs.check_search_span(CONFIRM)
         # Only what the candidate reads is loaded: its variable's group says whether the attached series are needed.
         group = lab.variables()[CANDIDATES[entry["candidate"]]["variable"]][0]
-        market = lab.hold(cache, (SPAN[0], CONFIRM[1]), attach=group in ATTACHED_GROUPS)
+        market = lab.hold(cache, (SPAN[0], CONFIRM[1]), attach=group in ATTACHED_GROUPS, flow=group == "trade_flow")
         if market is None:
             print("BLOCKED: contract types or the spot symbol list is missing from the cache", file=sys.stderr)
             return EXIT_BLOCKED
@@ -561,7 +607,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_OK
     bs.check_development_span(SPAN)
     groups = {lab.variables()[c["variable"]][0] for c in CANDIDATES.values() if c["round"] == (args.round or latest_round())}
-    market = lab.hold(cache, attach=bool(groups & ATTACHED_GROUPS))
+    market = lab.hold(cache, attach=bool(groups & ATTACHED_GROUPS), flow="trade_flow" in groups)
     if market is None:
         print("BLOCKED: contract types or the spot symbol list is missing from the cache", file=sys.stderr)
         return EXIT_BLOCKED

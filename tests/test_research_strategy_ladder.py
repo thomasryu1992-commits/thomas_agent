@@ -130,7 +130,7 @@ def test_measure_reports_the_entry_rule_and_the_years_on_total_position(monkeypa
 def test_the_rounds_candidates_name_registered_variables_and_it_runs_in_the_sandbox_only(monkeypatch, capsys):
     for name, candidate in sl.CANDIDATES.items():
         assert candidate["variable"] in sl.lab.variables() and candidate["logic"] in sl.BOOKS, name
-        assert candidate["accounting"] in sl.ACCOUNTING and candidate["round"] in ("1", "2", "3"), name
+        assert candidate["accounting"] in sl.ACCOUNTING and candidate["round"] in ("1", "2", "3", "5"), name
         assert candidate["tier"] == "top30"
     monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: False)
     assert sl.main(["run"]) == sl.EXIT_USAGE
@@ -189,7 +189,7 @@ def test_the_confirm_read_uses_the_registered_directions_and_decides_by_the_bar(
 def test_the_confirm_read_loads_only_what_its_candidate_reads(monkeypatch, capsys):
     asked = {}
 
-    def hold(cache, span, *, attach=True):
+    def hold(cache, span, *, attach=True, flow=False):
         asked.update(span=span, attach=attach)
         return None
 
@@ -288,14 +288,15 @@ def test_the_risk_matched_book_gives_a_wild_coin_less_weight_and_carries_no_mark
 
 
 def test_a_round_is_measured_by_its_own_accounting_and_only_its_own_candidates(monkeypatch):
-    assert sl.latest_round() == "3"
+    assert sl.latest_round() == "5"
     assert {n for n, c in sl.CANDIDATES.items() if c["round"] == "2"} == {"C003", "C004"}
     assert all(c["accounting"] == "held" for c in sl.CANDIDATES.values() if c["round"] == "2")
     seen = []
     monkeypatch.setattr(sl, "run_l1", lambda market, candidate, span=None: seen.append(candidate["logic"]) or {})
     monkeypatch.setattr(sl, "run_l2", lambda market, candidate, span=None: seen.append("L2") or {})
     assert set(sl.run_round(xsb.Market(), which="2")) == {"C003", "C004"} and seen == ["L1", "L8"]
-    assert set(sl.run_round(xsb.Market())) == {"C005", "C006", "C007"}, "the latest round by default"
+    assert set(sl.run_round(xsb.Market(), which="3")) == {"C005", "C006", "C007"}
+    assert set(sl.run_round(xsb.Market())) == {"C008", "C009", "C010"}, "the latest round by default"
     assert set(sl.run_round(xsb.Market(), which="1")) == {"C001", "C002"}
 
 
@@ -393,4 +394,47 @@ def test_two_confirm_reads_are_spent_and_three_are_left(monkeypatch, capsys):
     assert sl.confirm_bar(len(sl.CONFIRM_DONE) + 1) == 1.388, "the bar the next read is held to"
     monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
     assert sl.main(["confirm"]) == sl.EXIT_USAGE and "no registered confirm read is open" in capsys.readouterr().err
+
+
+# --- round 5: the universe without its tail ---------------------------------------------------------------------------
+
+def _tail_market():
+    """Twenty quiet coins; WILDUSDT doubles once inside the month; three coins carry large funding."""
+    day = date(2021, 6, 6)
+    members = [f"Q{i:02d}USDT" for i in range(20)] + ["WILDUSDT"]
+    bars, funding = {}, {}
+    for i, s in enumerate(members):
+        price, out = 100.0, {}
+        for k in range(45, -2, -1):
+            d = day - timedelta(days=k)
+            move = 1.0 if (s == "WILDUSDT" and k == 10) else 0.002 * ((i + k) % 3 - 1)
+            opened, price = price, price * (1 + move)
+            out[d] = xsb.Bar(open=opened, close=price, quote_volume=10.0)
+        bars[s] = out
+        rate = {0: 0.004, 1: -0.004, 2: 0.003}.get(i, 0.0001) if s != "WILDUSDT" else 0.0001
+        funding[s] = [(int((day - timedelta(days=k) - date(1970, 1, 1)).total_seconds() * 1000) + 3600000, rate / 7) for k in range(7)]
+    return xsb.Market(bars=bars, funding=funding), members, day
+
+
+def test_the_tail_is_the_wild_coin_and_the_coins_with_the_largest_funding_whatever_its_sign():
+    market, members, day = _tail_market()
+    kept = sl.without_tail(market, members, day)
+    assert "WILDUSDT" not in kept, "doubled in a day inside the month"
+    assert "Q00USDT" not in kept and "Q01USDT" not in kept, "the largest funding, positive and negative alike"
+    assert set(members) - set(kept) <= {"WILDUSDT", "Q00USDT", "Q01USDT", "Q02USDT"} and len(kept) >= 17
+    assert "Q10USDT" in kept and sl.without_tail(market, [], day) == []
+    few = members[:sl.lab.MIN_NAMES - 2]
+    assert set(sl.without_tail(market, few + ["WILDUSDT"], day)) == set(few), "too few to rank funding: only the wild rule"
+
+
+def test_a_tail_out_book_never_holds_a_tail_coin(monkeypatch):
+    market, members, day = _tail_market()
+    read = lambda m, s, d: float(sum(map(ord, s)) % 17)             # noqa: E731
+    weights = sl.BOOKS["L9T"](read, lambda _d: 1)(market, members, day, "x")
+    plain = sl.BOOKS["L9"](read, lambda _d: 1)(market, members, day, "x")
+    tail = set(members) - set(sl.without_tail(market, members, day))
+    assert tail and not (tail & set(weights)), "none of the tail is held"
+    assert set(weights) - {sl.HEDGE} <= set(plain) | set(members), "built from the same members, minus the tail"
+    assert {c["logic"] for n, c in sl.CANDIDATES.items() if n in ("C009", "C010")} == {"L9T"}
+    assert sl.CANDIDATES["C008"]["logic"] == "L9" and sl.lab.variables()["taker_buy_share_30"][0] == "trade_flow"
 
