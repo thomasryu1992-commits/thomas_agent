@@ -1,0 +1,296 @@
+"""Strategy ladder: turn a cell of the signal lab's map into a book, and ask whether it survives costs and time.
+
+``docs/proposals/STRATEGY_DISCOVERY_LOOP_V0.1.md`` (Thomas 2026-11-13). The map (``signal_lab``) says where a variable
+ranks returns before costs. This module holds the logics that build a strategy from such a cell, and the two rungs
+after the map: the book net of the engine's costs on the development years, and its stability when the years take
+turns being left out.
+
+- **L1, the rank-weight book.** Every ranked coin is held, long or short by which side of the middle rank it is on
+  and in proportion to its distance from it, each side summing to one, no coin above :data:`NAME_CAP` of its side.
+  The six-against-six basket staked a side on a handful of coins; a variable that is right about ranks and wrong
+  about the few largest moves loses there.
+- **L2, the scenario-switching book.** L1's weights, with the direction read from the scenario at the decision. The
+  direction of each scenario is the sign of the variable's rank correlation in the *other* years: a year's positions
+  never use that year's returns.
+- **What a logic fixes is fixed here**, before a candidate is measured: the tier, the weights, the cap, the engine's
+  costs and funding. A changed value is a new logic.
+- **Chance.** L1 is read beside random variables built into the same book. L2 is read beside placebo scenarios: the
+  same spells in a shuffled order, switched by the same rule.
+- **Development years only.** Everything runs on :data:`SPAN` through the lab's cut market; nothing reads 2025.
+
+``run`` is sandbox-only and prints one report for every registered candidate.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import random
+import statistics
+import sys
+from datetime import date, timedelta
+from pathlib import Path
+from typing import Any, Callable, Mapping, Sequence
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from runtime.mvp_runtime import timeutil  # noqa: E402
+from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE  # noqa: E402
+from scripts.research import basket_search as bs  # noqa: E402
+from scripts.research import cross_section_basket as xsb  # noqa: E402
+from scripts.research import signal_lab as lab  # noqa: E402
+
+SPEC = "STRATEGY_DISCOVERY_LOOP_V0.1"
+SPAN = lab.SPAN
+NAME_CAP = 0.10                            # the most of one side a single coin may be
+RANDOM_BOOKS = 10                          # of each kind of random variable, built into L1 for comparison
+PLACEBO_SCENARIOS = 20                     # shuffled-spell scenario sequences L2 is read beside
+STABILITY_SHARE = 0.5                      # of the entry return the year-by-year mean must reach
+MAX_NEGATIVE_YEARS = 2
+
+# The candidates of this round, fixed before any of them was measured (the proposal's ledger).
+CANDIDATES: dict[str, dict[str, str]] = {
+    "C001": {"logic": "L1", "variable": "idio_vol_30", "long": "low", "tier": "top30",
+             "from": "the map's one lead: low-volatility coins lead the next week"},
+    "C002": {"logic": "L2", "variable": "funding_30", "axis": "heat", "tier": "top30",
+             "from": "the map's sign flip: high funding lags when funding is hot and leads when it is cool"},
+}
+
+Direction = Callable[[date], int]          # +1 long the high end, -1 long the low end, 0 flat
+
+
+# --- L1 ----------------------------------------------------------------------------------------------------------
+
+def _capped(scores: Mapping[str, float]) -> dict[str, float]:
+    """Shares of one side in proportion to ``scores``, none above :data:`NAME_CAP`; equal shares when the side is
+    too small for the cap to be met."""
+    if not scores:
+        return {}
+    if len(scores) * NAME_CAP < 1:
+        return dict.fromkeys(scores, 1 / len(scores))
+    fixed: dict[str, float] = {}
+    free = dict(scores)
+    while True:
+        room = 1 - NAME_CAP * len(fixed)
+        total = sum(free.values())
+        over = [s for s, v in free.items() if v / total * room > NAME_CAP + 1e-12]
+        if not over:
+            return {**dict.fromkeys(fixed, NAME_CAP), **{s: v / total * room for s, v in free.items()}}
+        for s in over:
+            fixed[s] = free.pop(s)
+
+
+def rank_weights(values: Mapping[str, float], *, long_high: bool) -> dict[str, float]:
+    """Weights over every ranked coin: long one side of the middle rank and short the other, in proportion to the
+    distance from it, each side summing to one. Empty under :data:`signal_lab.MIN_NAMES` coins."""
+    if len(values) < lab.MIN_NAMES:
+        return {}
+    order = sorted(values, key=lambda s: (values[s], s))
+    middle = (len(order) + 1) / 2
+    scores = {s: (position - middle) * (1 if long_high else -1) for position, s in enumerate(order, start=1)}
+    longs = _capped({s: v for s, v in scores.items() if v > 0})
+    shorts = _capped({s: -v for s, v in scores.items() if v < 0})
+    return {**longs, **{s: -w for s, w in shorts.items()}}
+
+
+def book(read: lab.Variable, direction: Direction) -> Callable[..., dict[str, float]]:
+    """A ``cross_section_basket.simulate`` weigher: L1's weights on ``read``, in the direction of the day."""
+    def weights(market: xsb.Market, members: Sequence[str], day: date, signal: str,
+                *, seed: str | None = None) -> dict[str, float]:
+        way = direction(day)
+        if way == 0:
+            return {}
+        values = {s: v for s in members if (v := read(market, s, day)) is not None}
+        return rank_weights(values, long_high=way > 0)
+    return weights
+
+
+# --- the two rungs after the map ---------------------------------------------------------------------------------
+
+def monthly_members(market: xsb.Market, span: tuple[date, date] = SPAN) -> dict[date, list[str]]:
+    return lab.tier_members(market, span)["top30"]
+
+
+def stability(years_total_pct: Mapping[str, float]) -> dict[str, Any]:
+    """Rung 3 from the yearly returns on total position: their mean against half the entry return, and how many
+    are negative."""
+    values = list(years_total_pct.values())
+    mean = statistics.fmean(values) if values else None
+    negative = sum(1 for v in values if v < 0)
+    floor = bs.ENTRY_RETURN_TOTAL_PCT * STABILITY_SHARE
+    return {"mean_year_total_position_pct": round(mean, 2) if mean is not None else None, "negative_years": negative,
+            "floor_pct": floor, "passes": mean is not None and mean >= floor and negative <= MAX_NEGATIVE_YEARS}
+
+
+def measure(market: xsb.Market, weigher: Callable[..., dict[str, float]], span: tuple[date, date] = SPAN,
+            *, simulate: Callable[..., Any] = xsb.simulate) -> dict[str, Any]:
+    """One book over the span, net of the engine's costs and funding: rung 2 (the entry rule) and rung 3."""
+    start, end = span
+    sim = simulate(market, bs.CADENCE, monthly_members(market, span), start=start, end=end, weigher=weigher)
+    sharpe, values = bs.annual_sharpe(sim["daily"], start, end)
+    report: dict[str, Any] = {"annual_sharpe": sharpe, "sum_pct": round(sum(values) * 100, 2), "months": len(values)}
+    report["total_position_annual_pct"] = bs.total_position_annual_pct(report["sum_pct"], report["months"])
+    report["clears_entry"] = bs.clears_entry(report)
+    years = sorted({d.year for d in sim["daily"]})
+    report["years_total_position_pct"] = {
+        str(y): round(sum(r["net"] for d, r in sim["daily"].items() if d.year == y) * 100 / bs.POSITION_TOTAL, 2)
+        for y in years}
+    report["cost_pct"] = round(sum(r.get("cost", 0.0) for r in sim["daily"].values()) * 100, 2)
+    report["funding_pct"] = round(sum(r.get("funding", 0.0) for r in sim["daily"].values()) * 100, 2)
+    report["stability"] = stability(report["years_total_position_pct"])
+    return report
+
+
+# --- L2 ----------------------------------------------------------------------------------------------------------
+
+def sundays(span: tuple[date, date]) -> list[date]:
+    return [d for d in xsb.held_days(span[0] - timedelta(days=1), span[1]) if xsb.is_rebalance_day(bs.CADENCE, d)]
+
+
+def decision_ics(market: xsb.Market, read: lab.Variable, monthly: Mapping[date, Sequence[str]],
+                 span: tuple[date, date] = SPAN) -> dict[date, float]:
+    """The variable's rank correlation with the week that follows, per decision that has one."""
+    out = {}
+    for day in lab.decisions(span, lab.HORIZONS[0]):
+        pairs = []
+        for symbol in monthly.get(date(day.year, day.month, 1), ()):
+            value, forward = read(market, symbol, day), lab.forward_return(market, symbol, day, lab.HORIZONS[0])
+            if value is not None and forward is not None:
+                pairs.append((value, forward))
+        if len(pairs) >= lab.MIN_NAMES and (ic := lab.rank_correlation(pairs)) is not None:
+            out[day] = ic
+    return out
+
+
+def learned_signs(ics: Mapping[date, float], labels: Mapping[date, str | None], *,
+                  without_year: int | None) -> dict[str, int]:
+    """Each scenario's direction: the sign of the mean rank correlation over its decisions, read without the year
+    being traded (a decision whose week runs into that year is left out too). Under
+    :data:`signal_lab.MIN_DECISIONS` decisions a scenario gets no direction and the book is flat in it."""
+    by_label: dict[str, list[float]] = {}
+    for day, ic in ics.items():
+        label = labels.get(day)
+        ends = day + timedelta(days=1 + lab.HORIZONS[0])
+        if label is None or (without_year is not None and without_year in (day.year, ends.year)):
+            continue
+        by_label.setdefault(label, []).append(ic)
+    return {label: (0 if len(values) < lab.MIN_DECISIONS else (1 if statistics.fmean(values) > 0 else -1))
+            for label, values in sorted(by_label.items())}
+
+
+def switching(ics: Mapping[date, float], labels: Mapping[date, str | None], years: Sequence[int],
+              *, held_out: bool) -> tuple[Direction, dict[str, dict[str, int]]]:
+    """The direction of each day, and the signs it came from. ``held_out`` learns a year's signs from the others;
+    otherwise one set of signs is learned from every year (in-sample, shown for comparison only)."""
+    signs = {str(y): learned_signs(ics, labels, without_year=y if held_out else None) for y in years}
+
+    def direction(day: date) -> int:
+        label = labels.get(day)
+        return 0 if label is None else signs.get(str(day.year), {}).get(label, 0)
+    return direction, signs
+
+
+def shuffled_spells(labels: Sequence[str | None], seed: str) -> list[str | None]:
+    """The same spells in another order: a placebo scenario with the real one's persistence and shares."""
+    runs: list[list[str | None]] = []
+    for label in labels:
+        if runs and runs[-1][0] == label:
+            runs[-1].append(label)
+        else:
+            runs.append([label])
+    random.Random(seed).shuffle(runs)
+    return [label for run in runs for label in run]
+
+
+# --- the round ---------------------------------------------------------------------------------------------------
+
+def _spread(values: Sequence[float | None]) -> dict[str, Any]:
+    kept = sorted(v for v in values if v is not None)
+    return {"count": len(kept), "mean": round(statistics.fmean(kept), 3) if kept else None,
+            "max": kept[-1] if kept else None}
+
+
+def run_l1(market: xsb.Market, candidate: Mapping[str, str], span: tuple[date, date] = SPAN,
+           *, simulate: Callable[..., Any] = xsb.simulate) -> dict[str, Any]:
+    read = lab.variables()[candidate["variable"]][1]
+    way = 1 if candidate["long"] == "high" else -1
+    report = measure(market, book(read, lambda _day: way), span, simulate=simulate)
+    names = list(lab.controls())
+    picked = names[:RANDOM_BOOKS] + names[lab.CONTROLS_WEEKLY:lab.CONTROLS_WEEKLY + RANDOM_BOOKS]
+    sharpes = {name: measure(market, book(lab.controls()[name][1], lambda _day: 1), span, simulate=simulate)["annual_sharpe"]
+               for name in picked}
+    report["random_books"] = {
+        "redrawn_weekly": _spread([v for k, v in sharpes.items() if "week" in k]),
+        "fixed_per_coin": _spread([v for k, v in sharpes.items() if "fixed" in k]),
+        "at_or_above_this_book": sum(1 for v in sharpes.values() if v is not None and report["annual_sharpe"] is not None
+                                     and v >= report["annual_sharpe"]),
+    }
+    return report
+
+
+def run_l2(market: xsb.Market, candidate: Mapping[str, str], span: tuple[date, date] = SPAN,
+           *, simulate: Callable[..., Any] = xsb.simulate) -> dict[str, Any]:
+    read = lab.variables()[candidate["variable"]][1]
+    monthly = monthly_members(market, span)
+    days = sundays(span)
+    axis = candidate["axis"]
+    labels = {day: row.get(axis) for day, row in lab.scenario_labels(market, monthly, days, span).items()}
+    ics = decision_ics(market, read, monthly, span)
+    years = sorted({d.year for d in days})
+    learned, signs_all = switching(ics, labels, years, held_out=False)
+    held, signs_held = switching(ics, labels, years, held_out=True)
+    in_sample = measure(market, book(read, learned), span, simulate=simulate)
+    held_out = measure(market, book(read, held), span, simulate=simulate)
+    placebo = []
+    for k in range(PLACEBO_SCENARIOS):
+        fake = dict(zip(days, shuffled_spells([labels[d] for d in days], f"{SPEC}|placebo|{axis}|{k}")))
+        direction, _ = switching(ics, fake, years, held_out=True)
+        placebo.append(measure(market, book(read, direction), span, simulate=simulate)["annual_sharpe"])
+    return {"in_sample": in_sample, "held_out": held_out,
+            "signs_in_sample": signs_all[str(years[0])], "signs_held_out": signs_held,
+            "decisions_with_a_label": sum(1 for d in days if labels[d] is not None), "decisions": len(days),
+            "placebo_scenarios": {**_spread(placebo),
+                                  "at_or_above_held_out": sum(1 for v in placebo if v is not None
+                                                              and held_out["annual_sharpe"] is not None
+                                                              and v >= held_out["annual_sharpe"])}}
+
+
+def run_round(market: xsb.Market, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    out = {}
+    for name, candidate in CANDIDATES.items():
+        body = run_l1(market, candidate, span) if candidate["logic"] == "L1" else run_l2(market, candidate, span)
+        out[name] = {"candidate": dict(candidate), **body}
+    return out
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="strategy_ladder", description=__doc__.splitlines()[0])
+    parser.add_argument("command", choices=("list", "run"))
+    parser.add_argument("--cache", type=Path, default=None, help="default: $RESEARCH_CACHE")
+    args = parser.parse_args(argv)
+    if args.command == "list":
+        print(json.dumps({"spec": SPEC, "span": [d.isoformat() for d in SPAN], "name_cap": NAME_CAP,
+                          "candidates": CANDIDATES}, indent=1, ensure_ascii=False))
+        return EXIT_OK
+    if not xsb._in_sandbox():
+        print("refused: runs in the research sandbox only (scripts/research/sandbox_run.sh)", file=sys.stderr)
+        return EXIT_USAGE
+    bs.check_development_span(SPAN)
+    cache = args.cache or Path(os.environ.get("RESEARCH_CACHE", str(Path.home() / "research" / "cache")))
+    market = lab.hold(cache)
+    if market is None:
+        print("BLOCKED: contract types or the spot symbol list is missing from the cache", file=sys.stderr)
+        return EXIT_BLOCKED
+    print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                      "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
+                      "net_of_costs": True, "judgement": None, "entry_rule": {
+                          "annual_sharpe": bs.ENTRY_SHARPE, "total_position_annual_pct": bs.ENTRY_RETURN_TOTAL_PCT},
+                      "candidates": run_round(market)}, indent=1, sort_keys=True, ensure_ascii=False))
+    return EXIT_OK
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
