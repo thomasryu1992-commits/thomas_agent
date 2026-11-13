@@ -56,3 +56,8 @@ Thomas answered both the same day ("기본값대로"). T1 yes: merge before the 
 2026-11-13 (about 09:00 UTC) — the one thing that did differ, because any session's deploy ships `origin/main`. The
 "after the read" wording in F6, M1 and Q5 (d) now carries the new timing; the read's criteria did not move. T2 no:
 an overdue trial is marked, and the close stays his.
+
+On 2026-11-13 Thomas asked "아직?" and then said "지급 병합" (merge now) after being told the wait was for the
+window's last fire (08:09 – 08:50 UTC that day) and that a deploy before it would carry this code inside the window.
+The timed merge was stopped and the merge was enabled at about 02:00 UTC. The read's criteria did not move; a short
+window is already covered by the read's own rule 6, and no rule was added.
