@@ -88,6 +88,7 @@ SCRIPTS: dict[str, str] = {
     "scripts/research/quarterly_carry.py": READ,  # sandbox-only quarterly-carry measurement over cached archive files, prints a report
     "scripts/research/positioning_divergence.py": READ,  # sandbox-only positioning-divergence measurement over archive metrics and cached 1h bars, prints a report
     "scripts/research/premium_convergence.py": READ,  # sandbox-only premium-convergence measurement over cached 1h bars, prints a report
+    "scripts/research/pool_netting.py": READ,  # sandbox-only: reads the pool forward record in the lake (cost model and the 1% risk fraction as constants), prints a report
     "scripts/research/pre_window_replay.py": READ,  # sandbox-only replay of cohort members and twins, prints a report               # paired L/F replay, prints a report
     "scripts/paired_family_window_check.py": READ,
     "scripts/pooled_mint_check.py": READ,
