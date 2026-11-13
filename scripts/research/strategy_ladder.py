@@ -501,6 +501,66 @@ def confirm(market: xsb.Market, entry: Mapping[str, Any], *, simulate: Callable[
     return out
 
 
+# --- the book sweep: which variables make a book at all? ------------------------------------------------------------
+
+SWEEP_LOGIC, SWEEP_ACCOUNTING = "L9T", "held4"       # the logic and accounting of the best book so far (C010)
+SWEEP_NULLS = 300                          # random-variable books: enough for a p under what the correction asks of 27
+
+
+def null_variables(count: int = SWEEP_NULLS) -> dict[str, tuple[str, lab.Variable]]:
+    """Random variables for the sweep's null, half redrawn weekly and half fixed per coin, on seeds of their own
+    (not the map's controls)."""
+    half = count // 2
+    out = {f"null_week_{k:03d}": ("null", lab._control("week", 1000 + k)) for k in range(half)}
+    out.update({f"null_fixed_{k:03d}": ("null", lab._control("fixed", 1000 + k)) for k in range(count - half)})
+    return out
+
+
+def sweep(market: xsb.Market, names: Mapping[str, tuple[str, lab.Variable]], span: tuple[date, date] = SPAN,
+          *, simulate: Callable[..., Any] | None = None) -> dict[str, Any]:
+    """Every variable in ``names`` built into the same book. The side it is long is the sign of its own mean rank
+    correlation with the following week on the span — the same rule for a real variable and for a random one, so a
+    random book gets the same benefit of picking its better-looking side."""
+    simulate = simulate or ACCOUNTING[SWEEP_ACCOUNTING]
+    monthly = monthly_members(market, span)
+    out: dict[str, Any] = {}
+    for name, (group, read) in names.items():
+        ics = decision_ics(market, read, monthly, span)
+        if len(ics) < lab.MIN_DECISIONS:
+            out[name] = {"group": group, "skipped": "ranked at too few decisions"}
+            continue
+        mean = statistics.fmean(ics.values())
+        way = 1 if mean > 0 else -1
+        report = measure(market, BOOKS[SWEEP_LOGIC](read, lambda _day, way=way: way), span, simulate=simulate)
+        out[name] = {"group": group, "long": "high" if way > 0 else "low", "mean_rank_correlation": round(mean, 4),
+                     "decisions_ranked": len(ics), "annual_sharpe": report["annual_sharpe"],
+                     "total_position_annual_pct": report["total_position_annual_pct"],
+                     "clears_entry": report["clears_entry"], "negative_years": report["stability"]["negative_years"],
+                     "funding_pct": report["funding_pct"]}
+    return out
+
+
+def sweep_reading(real: Mapping[str, Mapping[str, Any]], null: Mapping[str, Mapping[str, Any]], *, q: float = 0.10) -> dict[str, Any]:
+    """Each real book beside the null books: its p is the share of null books at or above it. The books that count
+    are the ones that survive Benjamini–Hochberg at ``q``; the number under 0.05 is shown beside what chance gives."""
+    nulls = sorted(v["annual_sharpe"] for v in null.values() if v.get("annual_sharpe") is not None)
+    rows = []
+    for name, body in real.items():
+        sharpe = body.get("annual_sharpe")
+        if sharpe is None or not nulls:
+            continue
+        p = (1 + sum(1 for v in nulls if v >= sharpe)) / (1 + len(nulls))
+        rows.append({"variable": name, **{k: body[k] for k in ("group", "long", "annual_sharpe", "total_position_annual_pct",
+                                                               "clears_entry", "negative_years")}, "p": round(p, 4)})
+    rows.sort(key=lambda r: (r["p"], -r["annual_sharpe"], r["variable"]))
+    cutoff = max((i for i, r in enumerate(rows, start=1) if r["p"] <= q * i / len(rows)), default=0)
+    return {"books": len(rows), "null_books": len(nulls),
+            "null": {"mean": round(statistics.fmean(nulls), 3), "p95": nulls[int(0.95 * (len(nulls) - 1))], "max": nulls[-1],
+                     "share_clearing_sharpe_1": round(sum(1 for v in nulls if v >= bs.ENTRY_SHARPE) / len(nulls), 4)} if nulls else None,
+            "p_under_0.05": sum(1 for r in rows if r["p"] < 0.05), "expected_under_0.05_by_chance": round(0.05 * len(rows), 2),
+            "q": q, "survive_benjamini_hochberg": rows[:cutoff], "all": rows}
+
+
 # --- the round ---------------------------------------------------------------------------------------------------
 
 def _spread(values: Sequence[float | None]) -> dict[str, Any]:
@@ -576,7 +636,8 @@ def run_round(market: xsb.Market, span: tuple[date, date] = SPAN, *, which: str 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="strategy_ladder", description=__doc__.splitlines()[0])
-    parser.add_argument("command", choices=("list", "run", "confirm-counts", "confirm"))
+    parser.add_argument("command", choices=("list", "run", "confirm-counts", "confirm", "sweep"))
+    parser.add_argument("--only", default=None, help="sweep: variable groups (comma list), or `null` for the random books")
     parser.add_argument("--cache", type=Path, default=None, help="default: $RESEARCH_CACHE")
     parser.add_argument("--round", default=None, help="default: the latest registered round")
     args = parser.parse_args(argv)
@@ -606,6 +667,21 @@ def main(argv: list[str] | None = None) -> int:
                          indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_OK
     bs.check_development_span(SPAN)
+    if args.command == "sweep":
+        wanted = set((args.only or "").split(",")) - {""}
+        names = null_variables() if wanted == {"null"} else {n: v for n, v in lab.variables().items() if v[0] in wanted}
+        if not names:
+            print("refused: --only names no registered variable group (or `null`)", file=sys.stderr)
+            return EXIT_USAGE
+        market = lab.hold(cache, attach=bool(wanted & ATTACHED_GROUPS), flow="trade_flow" in wanted)
+        if market is None:
+            print("BLOCKED: contract types or the spot symbol list is missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
+                          "logic": SWEEP_LOGIC, "accounting": SWEEP_ACCOUNTING, "only": sorted(wanted),
+                          "books": sweep(market, names)}, indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_OK
     groups = {lab.variables()[c["variable"]][0] for c in CANDIDATES.values() if c["round"] == (args.round or latest_round())}
     market = lab.hold(cache, attach=bool(groups & ATTACHED_GROUPS), flow="trade_flow" in groups)
     if market is None:

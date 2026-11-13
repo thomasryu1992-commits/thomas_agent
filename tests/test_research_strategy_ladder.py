@@ -438,3 +438,63 @@ def test_a_tail_out_book_never_holds_a_tail_coin(monkeypatch):
     assert {c["logic"] for n, c in sl.CANDIDATES.items() if n in ("C009", "C010")} == {"L9T"}
     assert sl.CANDIDATES["C008"]["logic"] == "L9" and sl.lab.variables()["taker_buy_share_30"][0] == "trade_flow"
 
+
+# --- round 6: the book sweep ------------------------------------------------------------------------------------------
+
+def test_the_sweeps_null_variables_are_their_own_and_enough_for_the_correction():
+    nulls = sl.null_variables()
+    assert len(nulls) == sl.SWEEP_NULLS == 300 and not set(nulls) & set(sl.lab.controls())
+    market, day = xsb.Market(), date(2021, 1, 3)
+    assert nulls["null_week_000"][1](market, "AUSDT", day) != sl.lab.controls()["control_week_00"][1](market, "AUSDT", day)
+    assert nulls["null_fixed_000"][1](market, "AUSDT", day) == nulls["null_fixed_000"][1](market, "AUSDT", day + timedelta(days=7))
+    assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / len(sl.lab.variables()), "a real effect can pass Benjamini–Hochberg over every variable"
+
+
+def test_a_swept_book_is_long_the_side_its_own_rank_correlation_points_to(monkeypatch):
+    asked = {}
+    monkeypatch.setattr(sl, "monthly_members", lambda market, span=None: {})
+    monkeypatch.setattr(sl, "decision_ics", lambda market, read, monthly, span: read(None, None, None))
+
+    def measure(market, weigher, span, *, simulate):
+        return {"annual_sharpe": 0.5, "total_position_annual_pct": 5.0, "clears_entry": False, "funding_pct": 0.0,
+                "stability": {"negative_years": 1}}
+
+    monkeypatch.setattr(sl, "measure", measure)
+    seen = []
+    monkeypatch.setitem(sl.BOOKS, sl.SWEEP_LOGIC, lambda read, direction: seen.append(direction(date(2021, 1, 3))) or (lambda *a, **k: {}))
+    days = [date(2020, 1, 5) + timedelta(days=7 * k) for k in range(40)]
+    names = {"up": ("g", lambda m, s, d: {x: 0.1 for x in days}), "down": ("g", lambda m, s, d: {x: -0.1 for x in days}),
+             "thin": ("g", lambda m, s, d: {x: 0.1 for x in days[:5]})}
+    out = sl.sweep(xsb.Market(), names)
+    assert seen == [1, -1] and out["up"]["long"] == "high" and out["down"]["long"] == "low"
+    assert out["thin"] == {"group": "g", "skipped": "ranked at too few decisions"}
+
+
+def test_the_sweep_reads_each_book_beside_the_null_books_and_corrects_for_how_many_there_are():
+    null = {f"n{i}": {"annual_sharpe": -1.0 + 2.0 * i / 299} for i in range(300)}          # -1 .. +1, evenly
+    real = {name: {"group": "g", "long": "low", "annual_sharpe": sharpe, "total_position_annual_pct": 10.0,
+                   "clears_entry": bool(sharpe and sharpe >= 1.0), "negative_years": 0}
+            for name, sharpe in (("strong", 1.5), ("edge", 0.95), ("plain", 0.0), ("skipped", None))}
+    out = sl.sweep_reading(real, null)
+    assert out["books"] == 3 and out["null_books"] == 300 and out["expected_under_0.05_by_chance"] == 0.15
+    by = {r["variable"]: r for r in out["all"]}
+    assert by["strong"]["p"] == pytest.approx(1 / 301, abs=1e-4) and 0.02 < by["edge"]["p"] < 0.04 and by["plain"]["p"] > 0.4
+    assert [r["variable"] for r in out["survive_benjamini_hochberg"]] == ["strong", "edge"]
+    assert out["p_under_0.05"] == 2 and out["null"]["max"] == 1.0 and out["null"]["share_clearing_sharpe_1"] == pytest.approx(1 / 300, abs=1e-4)
+
+
+def test_the_sweep_command_takes_groups_or_the_null_and_loads_what_they_read(monkeypatch, capsys):
+    asked = []
+
+    def hold(cache, span=None, *, attach=True, flow=False):
+        asked.append((attach, flow))
+        return None
+
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(sl.lab, "hold", hold)
+    assert sl.main(["sweep"]) == sl.EXIT_USAGE and sl.main(["sweep", "--only", "nothing"]) == sl.EXIT_USAGE
+    capsys.readouterr()
+    for only in ("null", "price_volume,funding,coin_character", "trade_flow", "positioning,depth,spot"):
+        assert sl.main(["sweep", "--only", only]) == sl.EXIT_BLOCKED
+    assert asked == [(False, False), (False, False), (False, True), (True, False)]
+
