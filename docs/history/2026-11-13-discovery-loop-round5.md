@@ -62,7 +62,8 @@ reading of each outcome was written down before the run.
 
 **What came out.** Across books, the earlier years' Sharpe and the next year's are unrelated: a rank correlation of
 -0.014 averaged over the three splits, where sets of 27 random books give 0.02 on average (p 0.62). By the table
-fixed in advance that is the "otherwise" row. Beside it, deciding nothing: the cells that had cleared the entry rule
+fixed in advance that is the "otherwise" row. It is a carry that was not seen, not one shown absent: with 19 to 27
+correlated books a split, only a rank correlation above about 0.22 could have passed. Beside it, deciding nothing: the cells that had cleared the entry rule
 earned 16.3% the year after against 2.5% for random books as a whole, and that average is two groups — the twelve
 cells of the volatility cluster, all positive, and six others (momentum, beta, funding) that lost on average. Five
 variables changed the side they are long between splits.
