@@ -136,3 +136,50 @@ def test_the_rounds_candidates_name_registered_variables_and_it_runs_in_the_sand
     capsys.readouterr()
     assert sl.main(["list"]) == sl.EXIT_OK
     assert set(json.loads(capsys.readouterr().out)["candidates"]) == set(sl.CANDIDATES)
+
+
+# --- rung 4: the confirm span on a budget ----------------------------------------------------------------------------
+
+def test_a_later_confirm_read_is_held_to_a_stricter_bar():
+    bars = [sl.confirm_bar(k) for k in range(1, sl.CONFIRM_BUDGET + 1)]
+    assert bars[0] == sl.bs.ENTRY_SHARPE == 1.0, "the first read is the entry rule's own number"
+    assert bars == sorted(bars) and bars[1] > 1.2 and bars[-1] > bars[1]
+    assert sl.CONFIRM == (date(2025, 1, 1), date(2026, 9, 30)) and sl.CONFIRM[1] < sl.bs.RESERVED_FROM
+
+
+def test_a_read_is_registered_before_it_is_spent_and_cannot_be_spent_twice(monkeypatch, capsys):
+    first = sl.next_confirm_read()
+    assert first is not None and first["candidate"] in sl.CANDIDATES and set(first["signs"]) == {"cool", "hot"}
+    numbers = [r["read"] for r in sl.CONFIRM_READS]
+    assert numbers == list(range(1, len(numbers) + 1)) and len(numbers) <= sl.CONFIRM_BUDGET
+    monkeypatch.setattr(sl, "CONFIRM_DONE", {r["read"]: "a run" for r in sl.CONFIRM_READS})
+    assert sl.next_confirm_read() is None
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    assert sl.main(["confirm"]) == sl.EXIT_USAGE and "no registered confirm read is open" in capsys.readouterr().err
+    monkeypatch.setattr(sl, "CONFIRM_DONE", {k: "a run" for k in range(1, sl.CONFIRM_BUDGET + 1)})
+    monkeypatch.setattr(sl, "CONFIRM_READS", (*sl.CONFIRM_READS, {"read": 9, "candidate": "C002", "signs": {}}))
+    assert sl.next_confirm_read() is None, "the budget is used even when another read is written down"
+
+
+def test_the_confirm_read_uses_the_registered_directions_and_decides_by_the_bar(monkeypatch):
+    days = sl.sundays((sl.SPAN[0], sl.CONFIRM[1]))
+    hot_day, cool_day, blank_day = date(2025, 3, 2), date(2025, 3, 9), date(2025, 3, 16)
+    labels = {d: {} for d in days} | {hot_day: {"heat": "hot"}, cool_day: {"heat": "cool"}}
+    monkeypatch.setattr(sl.lab, "scenario_labels", lambda market, monthly, asked, span: {d: labels[d] for d in asked})
+    monkeypatch.setattr(sl, "monthly_members", lambda market, span=None: {})
+    entry = sl.CONFIRM_READS[0]
+    _, direction, _ = sl._confirm_frame(xsb.Market(), entry)
+    assert (direction(hot_day), direction(cool_day), direction(blank_day)) == (-1, 1, 0)
+
+    def simulate(nets):
+        def run(market, cadence, monthly, *, start, end, weigher):
+            assert (start, end) == sl.CONFIRM
+            return {"daily": {date(2025 + m // 12, m % 12 + 1, 15): {"net": nets[m % len(nets)]} for m in range(21)}}
+        return run
+
+    passed = sl.confirm(xsb.Market(), entry, simulate=simulate([0.05, 0.03, 0.04]))
+    failed = sl.confirm(xsb.Market(), entry, simulate=simulate([0.05, -0.06, 0.01]))
+    assert passed["verdict"] == "CONFIRM_PASS" and passed["annual_sharpe"] >= passed["bar_annual_sharpe"] == 1.0
+    assert failed["verdict"] == "CONFIRM_FAIL" and failed["read"] == 1 and failed["of"] == sl.CONFIRM_BUDGET
+    assert set(passed["never_switching_books"]) == {"always_long_high", "always_long_low"}
+

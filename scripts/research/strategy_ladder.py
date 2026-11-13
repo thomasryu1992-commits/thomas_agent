@@ -61,6 +61,20 @@ CANDIDATES: dict[str, dict[str, str]] = {
 
 Direction = Callable[[date], int]          # +1 long the high end, -1 long the low end, 0 flat
 
+# --- rung 4: the confirm span, on a budget (D4) -------------------------------------------------------------------
+CONFIRM = bs.CONFIRM                       # 2025-01-01 .. 2026-09-30; the days after it stay reserved
+CONFIRM_BUDGET = 5                         # reads in all; at most one a month
+CONFIRM_ALPHA = 0.10                       # the k-th read is held to alpha / k
+# The reads, in order. A candidate is written here BEFORE its read, with everything the read fixes, and is never
+# removed. C002's directions are the ones every leave-one-year-out fold learned on the development years.
+CONFIRM_READS: tuple[dict[str, Any], ...] = (
+    {"read": 1, "candidate": "C002", "signs": {"cool": 1, "hot": -1}, "registered": "2026-11-13",
+     "asked": "D5, Thomas 2026-11-13"},
+)
+# read number -> the run that spent it. Filled in the commit that records the result; ``confirm`` refuses a read
+# that is already here.
+CONFIRM_DONE: dict[int, str] = {}
+
 
 # --- L1 ----------------------------------------------------------------------------------------------------------
 
@@ -205,6 +219,69 @@ def shuffled_spells(labels: Sequence[str | None], seed: str) -> list[str | None]
     return [label for run in runs for label in run]
 
 
+# --- rung 4 ------------------------------------------------------------------------------------------------------
+
+def confirm_bar(read: int, span: tuple[date, date] = CONFIRM) -> float:
+    """The annual Sharpe the ``read``-th confirm read must reach: the one-sided normal bound at alpha / read over the
+    span's length, and never under the entry rule's 1.0 (which is what the first read is held to)."""
+    years = ((span[1] - span[0]).days + 1) / 365.25
+    return round(max(bs.ENTRY_SHARPE, statistics.NormalDist().inv_cdf(1 - CONFIRM_ALPHA / read) / years ** 0.5), 3)
+
+
+def next_confirm_read() -> dict[str, Any] | None:
+    """The registered read that has not been spent, or None when there is none or the budget is used."""
+    open_reads = [r for r in CONFIRM_READS if r["read"] not in CONFIRM_DONE]
+    if not open_reads or len(CONFIRM_DONE) >= CONFIRM_BUDGET:
+        return None
+    return open_reads[0]
+
+
+def _confirm_frame(market: xsb.Market, entry: Mapping[str, Any]):
+    """The candidate's variable and its direction by day over the confirm span. Labels are read on the whole history
+    up to the span's end, so a decision in 2025 is compared with the weeks before it."""
+    candidate = CANDIDATES[entry["candidate"]]
+    whole = (SPAN[0], CONFIRM[1])
+    days = sundays(whole)
+    labels = {day: row.get(candidate["axis"])
+              for day, row in lab.scenario_labels(market, monthly_members(market, whole), days, whole).items()}
+    signs = dict(entry["signs"])
+
+    def direction(day: date) -> int:
+        label = labels.get(day)
+        return 0 if label is None else signs.get(label, 0)
+    return lab.variables()[candidate["variable"]][1], direction, labels
+
+
+def confirm_counts(market: xsb.Market, entry: Mapping[str, Any]) -> dict[str, Any]:
+    """What the read will stand on, with no return in it: the decisions in the span, how many carry each label, and
+    how many coins the variable ranks at each."""
+    read, _, labels = _confirm_frame(market, entry)
+    monthly = monthly_members(market, CONFIRM)
+    days = [d for d in sundays(CONFIRM) if CONFIRM[0] - timedelta(days=1) <= d <= CONFIRM[1]]
+    ranked = [sum(1 for s in monthly.get(date(d.year, d.month, 1), ()) if read(market, s, d) is not None) for d in days]
+    by_label: dict[str, int] = {}
+    for d in days:
+        by_label[str(labels.get(d))] = by_label.get(str(labels.get(d)), 0) + 1
+    return {"decisions": len(days), "by_label": dict(sorted(by_label.items())),
+            "coins_ranked": {"min": min(ranked), "median": statistics.median(ranked), "max": max(ranked),
+                             "decisions_under_the_floor": sum(1 for n in ranked if n < lab.MIN_NAMES)},
+            "last_day_in_market": lab.last_day(market).isoformat()}
+
+
+def confirm(market: xsb.Market, entry: Mapping[str, Any], *, simulate: Callable[..., Any] = xsb.simulate) -> dict[str, Any]:
+    """The one read: the candidate as registered over the confirm span, net of the engine's costs, against the bar of
+    its read number. Two never-switching books are shown beside it and decide nothing."""
+    read, direction, _ = _confirm_frame(market, entry)
+    report = measure(market, book(read, direction), CONFIRM, simulate=simulate)
+    bar = confirm_bar(entry["read"])
+    sharpe = report["annual_sharpe"]
+    beside = {name: measure(market, book(read, lambda _day, way=way: way), CONFIRM, simulate=simulate)["annual_sharpe"]
+              for name, way in (("always_long_high", 1), ("always_long_low", -1))}
+    return {"read": entry["read"], "of": CONFIRM_BUDGET, "candidate": entry["candidate"], "signs": dict(entry["signs"]),
+            "bar_annual_sharpe": bar, "verdict": "CONFIRM_PASS" if sharpe is not None and sharpe >= bar else "CONFIRM_FAIL",
+            **report, "never_switching_books": beside}
+
+
 # --- the round ---------------------------------------------------------------------------------------------------
 
 def _spread(values: Sequence[float | None]) -> dict[str, Any]:
@@ -268,7 +345,7 @@ def run_round(market: xsb.Market, span: tuple[date, date] = SPAN) -> dict[str, A
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="strategy_ladder", description=__doc__.splitlines()[0])
-    parser.add_argument("command", choices=("list", "run"))
+    parser.add_argument("command", choices=("list", "run", "confirm-counts", "confirm"))
     parser.add_argument("--cache", type=Path, default=None, help="default: $RESEARCH_CACHE")
     args = parser.parse_args(argv)
     if args.command == "list":
@@ -278,8 +355,23 @@ def main(argv: list[str] | None = None) -> int:
     if not xsb._in_sandbox():
         print("refused: runs in the research sandbox only (scripts/research/sandbox_run.sh)", file=sys.stderr)
         return EXIT_USAGE
-    bs.check_development_span(SPAN)
     cache = args.cache or Path(os.environ.get("RESEARCH_CACHE", str(Path.home() / "research" / "cache")))
+    if args.command in ("confirm-counts", "confirm"):
+        entry = next_confirm_read()
+        if entry is None:
+            print("refused: no registered confirm read is open (spent, or the budget is used)", file=sys.stderr)
+            return EXIT_USAGE
+        bs.check_search_span(CONFIRM)
+        market = lab.hold(cache, (SPAN[0], CONFIRM[1]))
+        if market is None:
+            print("BLOCKED: contract types or the spot symbol list is missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        body = confirm_counts(market, entry) if args.command == "confirm-counts" else confirm(market, entry)
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in CONFIRM], "command": args.command, **body},
+                         indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_OK
+    bs.check_development_span(SPAN)
     market = lab.hold(cache)
     if market is None:
         print("BLOCKED: contract types or the spot symbol list is missing from the cache", file=sys.stderr)
