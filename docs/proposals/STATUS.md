@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **127**건: `DRAFT` 4 · `PARTIALLY DECIDED` 11 · `DECIDED` 35 · `IMPLEMENTED` 66 · `SUPERSEDED` 4 · `RECORD` 7
+제안서 **127**건: `DRAFT` 3 · `PARTIALLY DECIDED` 11 · `DECIDED` 36 · `IMPLEMENTED` 66 · `SUPERSEDED` 4 · `RECORD` 7
 
-## Thomas 결정 대기 (15)
+## Thomas 결정 대기 (14)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -26,9 +26,8 @@
 | [SAME_SYMBOL_NETTING_AND_RISK_BUDGET_V0.1.md](SAME_SYMBOL_NETTING_AND_RISK_BUDGET_V0.1.md) | `DRAFT` | 2026-11-12 | Thomas 2026-11-12: 설계 문서를 지금 쓴다("기본값대로", `MANY_STRATEGIES_V0.1` M2, 설계만). 이 문서는 설계의 뼈대와 아직 풀지 못한 문제를 적는다. 0단계의 측정은 따로 제안해 돌렸고(N1, `POOL_OVERLAP_MEASUREMENT_V0.1`) 결과를 §10에 적었다. 그 밖에는 아무것도 짓지 않았다. 다음 단계(페이퍼 합산 장부)는 따로 제안하고 따로 승인받는다. 그 제안서는 11-14의 판독과 F6 PR 뒤에 쓰기로 했다가(Thomas 2026-11-12, "기본값대로") 2026-11-13에 판독을 기다리지 않고 썼다: `NETTING_STAGE1_DERIVED_BOOK_V0.1`(DRAFT). |
 | [SPOT_SHARE_SEARCH_V0.1.md](SPOT_SHARE_SEARCH_V0.1.md) | `PARTIALLY DECIDED` | 2026-11-12 | Thomas 2026-11-12: 현물 비중을 한 번, M04와의 겹침 조건을 걸고 잰다("기본값대로", `SEARCH_CANDIDATE_SURVEY_V0.1` V1). **결과: 넘지 못했다.** S01(현물 비중이 높은 쪽을 산다)의 연 샤프는 0.455이고 포지션 총액 대비 연 12.25%다(기준 1.0과 15%). 예산 한 번을 써서 닫았고 forward 선별에 올릴 것은 없다. **남은 질문:** 탐색 전에 Claude가 고정한 세부인 §5의 Q1 – Q3(창과 구간, 겹침 한도, 같은 자산 확인)은 기본값으로 진행했고 Thomas의 답을 기다린다. |
 | [CRYPTO_DESIGN_REVIEW_V0.1.md](CRYPTO_DESIGN_REVIEW_V0.1.md) | `PARTIALLY DECIDED` | 2026-11-13 | Thomas: 해결 방안을 권한 순서대로 진행한다("해결방안을 순서대로 진행하고 검증까지 진행해서 보고해"). 같은 날 결과: 방안 3(`POSITIONING_DIVERGENCE_V0.1`)은 ENTRY_FAIL, 방안 5(`VARIANCE_PREMIUM_V0.1`)는 PROXY_FAIL로 둘 다 닫았다(§4). 방안 1의 문서 정정은 이 문서와 함께 병합됐고, read door는 별도 PR(#1420)이며, 알림은 Thomas의 root `at` 작업으로 남아 있다. Q2는 2026-11-11에 답을 받았다: 새 후보의 진입 조건에 포지션 총액 대비 연 순수익 15%를 더한다("순서대로 전부", §5). **Q1은 답이 있다(Thomas 2026-11-12, 2026-11-13에 기록): factory를 2027-03-22까지 그대로 두지 않는다. 좋은 방향이 있으면 고친다(§5 Q1).** 남은 질문은 하나다: Q3은 2단계 확인 규칙 쪽이 `SCREEN_STAGE2_V0.1`로 정해졌고(2026-11-11, 첫 선별 판정 전에 정한다) 현물 실행 경로를 언제 정하는지만 남았다. 이 문서가 바꾸는 코드, 판정 규칙, 일정은 없다. |
-| [NETTING_STAGE1_DERIVED_BOOK_V0.1.md](NETTING_STAGE1_DERIVED_BOOK_V0.1.md) | `DRAFT` | 2026-11-13 | Thomas 2026-11-13: 미뤄 둔 일을 판독을 기다리지 않고 지금 한다("안한것들 전부 다 진행해보고 검증 내일 읽기 기다리지 말고 전부 다 지금부터 실행"). `SAME_SYMBOL_NETTING_AND_RISK_BUDGET_V0.1` §7의 1단계를 제안한다. 지은 것도 돌린 것도 없다. S1 – S4의 답을 기다린다. |
 
-## 결정됨 — 구현 남음 (35)
+## 결정됨 — 구현 남음 (36)
 
 결정은 끝났고 결정된 것이 아직 다 지어지지 않았다. 결정이 만든 구현 대기열이다.
 
@@ -69,6 +68,7 @@
 | [SEARCH_CANDIDATE_SURVEY_V0.1.md](SEARCH_CANDIDATE_SURVEY_V0.1.md) | `DECIDED` | 2026-11-12 | Thomas 2026-11-12: V1 – V3을 기본값대로 정했다("기본값대로"). 현물 비중(S1)을 한 번, M04와의 겹침 조건을 걸고 잰다(→ `SPOT_SHARE_SEARCH_V0.1`). 평균 체결 크기(S2)는 올리지 않는다. 다른 거래소·온체인 자료 조사는 지금 열지 않고 선별의 첫 판정(2027-04 초) 뒤에 다시 묻는다. 같은 날 뒤에 Thomas가 조사에 한해 열었다(`DATA_SOURCE_SURVEY_V0.1`). 이 조사는 아무것도 재지 않았다. **정정:** S1의 자료에 대해 "새로 받을 것이 없다"고 적은 것은 틀렸다(5개 종목의 현물 파일이 디스크에 없었다. §3 S1). |
 | [SPREAD_OBSERVATION_V0.1.md](SPREAD_OBSERVATION_V0.1.md) | `DECIDED` | 2026-11-12 | Thomas 2026-11-12: P1 – P5를 기본값대로 정했다("기본값대로"). 스프레드 관측을 시작한다. 전 종목의 최우선 호가를 15분마다 적고(팩토리 창 제외), `claude` 계정의 cron과 고정된 작업 폴더에서 돌리며, 운영의 env 관문 목록에는 넣지 않는다. 상위 20단계 호가는 받지 않는다. 멈춤은 달마다 하는 보충이 한 줄로 보인다. 수집 도구는 `scripts/research/spread_sample.py`다(#1453). 2026-11-12 04:15 UTC에 cron을 등록했고 수집이 돌고 있다(§8). 남은 질문은 P6 하나다(멈춤을 알리는 감시를 root의 점검에 더할지). 판정 규칙, 엔진의 비용 상수, 등록된 선별은 바뀌지 않는다. |
 | [STRATEGY_SYSTEM_REVIEW_V0.1.md](STRATEGY_SYSTEM_REVIEW_V0.1.md) | `DECIDED` | 2026-11-12 | Thomas 2026-11-12: 신호를 더 찾는 것이 아니라 "어떻게 하면 좋은 전략 시스템을 만들지"를 조사한다. 범위는 (1) 이미 정한 연구 쪽 규칙도 선택지로 올린다("응"), (2) 연구 쪽 후보 경로와 factory 둘 다 본다, (3) 자본은 한 다리 1천 – 1만 달러로 가정한다("기본값"). 같은 날 R1 – R5를 기본값대로 정했다("기본값대로"): 가설 양식과 배움의 지도(A·F)는 `HYPOTHESIS_FORM_AND_RESEARCH_MAP_V0.1`로, 등록 가설의 forward 기록과 묶음(B·C)은 `FORWARD_PANEL_V0.1`로 따로 제안한다. 코인별 비용표(D)는 스프레드가 석 달 쌓인 뒤, 생성기 재설계(E)는 2026-11-14 판독 뒤에 다시 묻는다. 이 문서는 채점과 선택지이고, 코드, 판정 규칙, 일정은 바꾸지 않는다. **B는 제안서를 쓰면서 좁혔다(§4 B의 정정).** |
+| [NETTING_STAGE1_DERIVED_BOOK_V0.1.md](NETTING_STAGE1_DERIVED_BOOK_V0.1.md) | `DECIDED` | 2026-11-13 | Thomas 2026-11-13: S1 – S4를 기본값대로 정했다("기본값대로"). 1단계를 연구 쪽 계산으로 하고, 읽는 필드에 `entry_price`와 `risk`를 더하고, 베팅을 같은 종목·같은 방향으로 묶고, 나누기 규칙 둘을 나란히 계산한다. 계산 스크립트와 한 번의 실행은 별도 PR이다. 그 전에: 미뤄 둔 일을 판독을 기다리지 않고 지금 한다("안한것들 전부 다 진행해보고 검증 내일 읽기 기다리지 말고 전부 다 지금부터 실행"). `SAME_SYMBOL_NETTING_AND_RISK_BUDGET_V0.1` §7의 1단계다. |
 
 ## 구현됨 (66)
 
