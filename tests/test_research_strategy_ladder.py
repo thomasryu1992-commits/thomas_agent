@@ -1162,3 +1162,102 @@ def test_the_rotation_commands_load_bars_and_funding_alone(monkeypatch, capsys):
     monkeypatch.setattr(sl.lab, "hold", hold)
     assert sl.main(["rotation-counts"]) == sl.EXIT_BLOCKED and sl.main(["rotation"]) == sl.EXIT_BLOCKED
     assert asked == [(None, False, False)] * 2
+
+
+# --- round 13: the ladder's bar ------------------------------------------------------------------------------------------
+
+BAR_SPAN = (date(2020, 1, 1), date(2024, 12, 31))
+
+
+def _noise_books(count=24, *, held=lambda day: True):
+    """Daily series of pure noise around a small cost, one row on each day ``held`` allows."""
+    import random as _random
+    out = []
+    for k in range(count):
+        rng, daily, day = _random.Random(k), {}, BAR_SPAN[0]
+        while day <= BAR_SPAN[1]:
+            if held(day):
+                daily[day] = {"net": rng.gauss(0, 0.01) - 0.0002, "cost": 0.0002, "funding": 0.0}
+            day += timedelta(days=1)
+        out.append(daily)
+    return out
+
+
+def test_a_daily_series_is_read_exactly_as_measure_reads_it_with_flat_years_at_zero(monkeypatch):
+    span = (date(2020, 6, 1), date(2021, 6, 30))
+    market = _deep_world()
+    monkeypatch.setattr(sl, "SPAN", span)
+    weigher = sl.deep_book(sl.DeepFunding(market))
+    measured = sl.measure(market, weigher, span, simulate=sl.simulate_held)
+    daily = sl.simulate_held(market, sl.bs.CADENCE, sl.monthly_members(market, span), start=span[0], end=span[1],
+                             weigher=weigher)["daily"]
+    read = sl.read_daily(daily, span)
+    for key in ("annual_sharpe", "sum_pct", "months", "total_position_annual_pct", "clears_entry"):
+        assert read[key] == measured[key], key
+    for year, value in measured["years_total_position_pct"].items():
+        assert read["years_total_position_pct"][year] == value
+    assert sl.read_daily({}, BAR_SPAN)["years_total_position_pct"] == dict.fromkeys(map(str, range(2020, 2025)), 0.0)
+
+
+def test_a_squeezed_book_reads_as_its_daily_series_does_with_the_same_amount_on_every_held_day():
+    quarter = lambda day: day.month <= 3                               # noqa: E731
+    for daily in (_noise_books(1)[0], _noise_books(1, held=quarter)[0]):
+        book = sl.squeeze(daily, BAR_SPAN)
+        for add in (0.0, 0.0004):
+            lifted = {day: {**row, "net": row["net"] + add} for day, row in daily.items()}
+            assert sl.read_squeezed(book, add) == sl.read_daily(lifted, BAR_SPAN)
+    assert sum(sl.squeeze(_noise_books(1, held=quarter)[0], BAR_SPAN)["held"]) == 5 * 90 + 2, "only days with a row"
+
+
+def test_a_book_is_moved_to_a_net_return_on_its_own_days_and_a_book_that_never_holds_cannot_be():
+    quarter = lambda day: day.month <= 3                               # noqa: E731
+    book = sl.squeeze(_noise_books(1, held=quarter)[0], BAR_SPAN)
+    for target in (0.0, 15.0, 40.0):
+        assert sl.read_squeezed(book, sl.moved_to(book, target))["total_position_annual_pct"] == pytest.approx(target, abs=0.01)
+    assert sl.moved_to(sl.squeeze({}, BAR_SPAN), 15.0) is None
+
+
+def test_the_bar_is_the_net_return_at_which_half_and_four_fifths_of_a_shapes_null_books_pass():
+    books = [sl.squeeze(daily, BAR_SPAN) for daily in _noise_books()]
+    curve = sl.bar_curve(books, grid=(0, 10, 15, 20, 30, 40, 60, 80))
+    rows = curve["curve"]
+    assert curve["books"] == 24 and rows[0]["all"] == 0.0 and rows[-1]["all"] == 1.0
+    assert all(a["all"] <= b["all"] for a, b in zip(rows, rows[1:])), "a larger return never passes fewer books"
+    assert [row["floor"] for row in rows] == [0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0], "the floor is 15 for every book"
+    assert all(row["2a"] <= min(row["sharpe"], row["floor"]) for row in rows), "the entry rule is both of its parts"
+    half, most = curve["bar_net_pct"]["0.5"], curve["bar_net_pct"]["0.8"]
+    assert curve["floor_pct"] <= half <= most, "noise only raises what the floor asks"
+    null = curve["null"]
+    assert null["before_cost_total_position_annual_pct_mean"] == pytest.approx(
+        null["net_total_position_annual_pct_mean"] + null["cost_total_position_annual_pct_mean"], abs=0.02)
+    short = [sl.squeeze(daily, BAR_SPAN) for daily in _noise_books(12)]
+    assert sl.bar_curve(short, grid=(80,))["curve"][0]["2c"] == 0.0, "eleven nulls cannot give p under 0.05"
+    assert sl._crossing([{"net_pct": 0, "all": 0.2}, {"net_pct": 10, "all": 0.7}], 0.5) == 10, "a grid point, not a line"
+    assert sl._crossing([{"net_pct": 0, "all": 0.2}, {"net_pct": 10, "all": 0.4}], 0.5) is None, "not reached on the grid"
+
+
+def test_each_bar_shape_is_built_as_its_rounds_null_was_and_the_command_loads_what_it_needs(monkeypatch, capsys):
+    span = (date(2020, 6, 1), date(2021, 6, 30))
+    monkeypatch.setattr(sl, "SPAN", span)
+    market = _deep_world()
+    weekly, fixed = (sl.bar_books(market, shape, span, books=2) for shape in ("rank_week", "rank_fixed"))
+    assert len(weekly) == len(fixed) == 2 and weekly[0] != weekly[1]
+    assert fixed[0]["cost"] < weekly[0]["cost"], "a variable fixed per coin turns the book over less"
+    deep = sl.bar_books(market, "deep", span, books=2)
+    assert len(deep) == 2 and all(sum(book["held"]) for book in deep)
+    rotation = sl.bar_books(_rotation_world(), "rotation", ROT_SPAN)
+    assert len(rotation) == len(sl.Rotation(_rotation_world(), ROT_SPAN).shifts())
+    with pytest.raises(ValueError):
+        sl.bar_books(market, "crash", span)
+    with pytest.raises(ValueError):
+        sl.bar_books(market, "other", span)
+    asked = []
+
+    def hold(cache, span=None, *, attach=True, flow=False):
+        asked.append((span, attach, flow))
+        return None
+
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(sl.lab, "hold", hold)
+    assert sl.main(["bar"]) == sl.EXIT_USAGE and sl.main(["bar", "--shape", "deep"]) == sl.EXIT_BLOCKED
+    assert asked == [(None, False, False)]

@@ -1662,6 +1662,157 @@ def rotation_run(market: xsb.Market, span: tuple[date, date] = SPAN) -> dict[str
             "reading": "passes" if passes else "cost_dependent_lead" if lead else "closed"}
 
 
+# --- the ladder's bar (round 13, a tool round) --------------------------------------------------------------------
+
+BAR_SHAPES = ("rank_week", "rank_fixed", "deep", "rotation", "crash")
+BAR_BOOKS = 300                            # null books a shape is read on (the rotation shape has as many as it has shifts)
+BAR_SEED = 3000                            # the rank shapes' random variables; the sweep's begin at 1000, round 9's at 2000
+BAR_GRID = tuple(k * 2.5 for k in range(49))   # the net return a null book is moved to, % of total position a year: 0 .. 120
+BAR_LEVELS = (0.5, 0.8)                    # the pass rates the bar is read at
+
+
+def read_daily(daily: Mapping[date, Mapping[str, float]], span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """:func:`measure`'s reading of a daily series that is already simulated, with every year of the span present
+    (a flat year is zero, as the hypothesis rounds count it). A test holds the two to the same numbers."""
+    start, end = span
+    sharpe, values = bs.annual_sharpe(daily, start, end)
+    report: dict[str, Any] = {"annual_sharpe": sharpe, "sum_pct": round(sum(values) * 100, 2), "months": len(values)}
+    report["total_position_annual_pct"] = bs.total_position_annual_pct(report["sum_pct"], report["months"])
+    report["clears_entry"] = bs.clears_entry(report)
+    by_year = dict.fromkeys(range(start.year, end.year + 1), 0.0)
+    for day, row in daily.items():
+        if day.year in by_year:
+            by_year[day.year] += row["net"]
+    report["years_total_position_pct"] = {str(y): round(v * 100 / bs.POSITION_TOTAL, 2) for y, v in by_year.items()}
+    report["stability"] = stability(report["years_total_position_pct"])
+    return report
+
+
+def squeeze(daily: Mapping[date, Mapping[str, float]], span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """All of a daily series the ladder reads, and all a steady edge needs: net and the number of days with a row,
+    by complete month and by year, and the cost. Three hundred full series do not fit beside the market; these do."""
+    start, end = span
+    months = bs._complete_months(start, end)
+    net, held = dict.fromkeys(months, 0.0), dict.fromkeys(months, 0)
+    year_net, year_held = dict.fromkeys(range(start.year, end.year + 1), 0.0), dict.fromkeys(range(start.year, end.year + 1), 0)
+    cost = 0.0
+    for day, row in daily.items():
+        key = day.strftime("%Y-%m")
+        if key in net:
+            net[key] += row["net"]
+            held[key] += 1
+            cost += row.get("cost", 0.0)
+        if day.year in year_net and start <= day <= end:
+            year_net[day.year] += row["net"]
+            year_held[day.year] += 1
+    return {"net": [net[m] for m in months], "held": [held[m] for m in months],
+            "year_net": year_net, "year_held": year_held, "cost": cost}
+
+
+def read_squeezed(book: Mapping[str, Any], add: float = 0.0) -> dict[str, Any]:
+    """:func:`read_daily` of the series ``book`` was squeezed from, with ``add`` put on every day it has a row. A book
+    earns nothing while flat, so a year it is mostly out of gets less of what is added."""
+    values = [n + add * h for n, h in zip(book["net"], book["held"])]
+    spread = statistics.stdev(values) if len(values) > 1 else 0.0
+    sharpe = round(statistics.fmean(values) / spread * math.sqrt(12), 3) if spread else None
+    report: dict[str, Any] = {"annual_sharpe": sharpe, "sum_pct": round(sum(values) * 100, 2), "months": len(values)}
+    report["total_position_annual_pct"] = bs.total_position_annual_pct(report["sum_pct"], report["months"])
+    report["clears_entry"] = bs.clears_entry(report)
+    report["years_total_position_pct"] = {str(y): round((book["year_net"][y] + add * book["year_held"][y]) * 100 / bs.POSITION_TOTAL, 2)
+                                          for y in book["year_net"]}
+    report["stability"] = stability(report["years_total_position_pct"])
+    return report
+
+
+def moved_to(book: Mapping[str, Any], net_pct: float) -> float | None:
+    """What to add on each of the book's days so that its net return is ``net_pct`` of total position a year; None
+    for a book that never holds anything."""
+    days = sum(book["held"])
+    if not days:
+        return None
+    return (net_pct / 100 * bs.POSITION_TOTAL * len(book["net"]) / 12 - sum(book["net"])) / days
+
+
+def _crossing(rows: Sequence[Mapping[str, Any]], level: float) -> float | None:
+    """The first net return on the grid at which the share passing every condition reaches ``level``; None when it
+    is not reached. Not interpolated: the floor is a step, and a line across it would put the bar under the floor."""
+    return next((row["net_pct"] for row in rows if row["all"] is not None and row["all"] >= level), None)
+
+
+def bar_curve(books: Sequence[Mapping[str, Any]], grid: Sequence[float] = BAR_GRID) -> dict[str, Any]:
+    """How large a steady net return a shape's null books need before they pass the ladder. Each null book is moved
+    to the net return and read through rung 2's three conditions and rung 3; its null for 2(c) is the other books,
+    unmoved. No real edge is this steady: what passes here is a floor under what a real book would need."""
+    base = [read_squeezed(book) for book in books]
+    sharpes = [b["annual_sharpe"] for b in base]
+    years = len(books[0]["net"]) / 12 if books else 0
+    rows = []
+    for target in grid:
+        seen = {"sharpe": 0, "floor": 0, "2a": 0, "2b": 0, "2c": 0, "3": 0, "all": 0}
+        moved = 0
+        for i, book in enumerate(books):
+            add = moved_to(book, target)
+            if add is None:
+                continue
+            moved += 1
+            report = read_squeezed(book, add)
+            sharpe, yearly = report["annual_sharpe"], report["total_position_annual_pct"]
+            passed = {"sharpe": sharpe is not None and sharpe >= bs.ENTRY_SHARPE,
+                      "floor": yearly is not None and yearly >= bs.ENTRY_RETURN_TOTAL_PCT,
+                      "2a": report["clears_entry"],
+                      "2b": later_years(report["years_total_position_pct"])["passes"],
+                      "2c": beside_nulls(sharpe, sharpes[:i] + sharpes[i + 1:])["passes"],
+                      "3": report["stability"]["passes"]}
+            passed["all"] = passed["2a"] and passed["2b"] and passed["2c"] and passed["3"]
+            for key, ok in passed.items():
+                seen[key] += bool(ok)
+        rows.append({"net_pct": target, **{k: round(v / moved, 3) if moved else None for k, v in seen.items()}})
+    kept = [v for v in sharpes if v is not None]
+    nets = [b["total_position_annual_pct"] for b in base if b["total_position_annual_pct"] is not None]
+    costs = [book["cost"] * 100 / bs.POSITION_TOTAL / years for book in books] if years else []
+    net, cost = (statistics.fmean(nets) if nets else None), (statistics.fmean(costs) if costs else None)
+    return {"books": len(books),
+            "null": {"net_total_position_annual_pct_mean": None if net is None else round(net, 2),
+                     "cost_total_position_annual_pct_mean": None if cost is None else round(cost, 2),
+                     "before_cost_total_position_annual_pct_mean": None if net is None or cost is None else round(net + cost, 2),
+                     "annual_sharpe_mean": round(statistics.fmean(kept), 3) if kept else None,
+                     "annual_sharpe_sd": round(statistics.stdev(kept), 3) if len(kept) > 1 else None},
+            "floor_pct": bs.ENTRY_RETURN_TOTAL_PCT,
+            "bar_net_pct": {str(level): _crossing(rows, level) for level in BAR_LEVELS},
+            "curve": rows}
+
+
+def bar_books(market: xsb.Market, shape: str, span: tuple[date, date] = SPAN, *, books: int = BAR_BOOKS,
+              hourly: "Hourly | None" = None) -> list[dict[str, Any]]:
+    """A shape's null books, each built the way the round that used the shape built its null and squeezed at once.
+
+    ``rank_week`` / ``rank_fixed``: L1 on the top thirty with a random variable redrawn weekly / fixed per coin, the
+    engine's cost (the ladder's own candidates). ``deep``: round 11's plain placebo. ``rotation``: round 12's shifted
+    sides, every shift. ``crash``: round 10's placebo hours."""
+    start, end = span
+    stressed = functools.partial(simulate_held, unit_of=listing_unit)
+
+    def held(simulate: Callable[..., Any], weigher: Callable[..., dict[str, float]], monthly: Mapping[date, Sequence[str]]) -> dict[str, Any]:
+        return squeeze(simulate(market, bs.CADENCE, monthly, start=start, end=end, weigher=weigher)["daily"], span)
+
+    if shape in ("rank_week", "rank_fixed"):
+        monthly, kind = monthly_members(market, span), shape.split("_")[1]
+        return [held(simulate_held, book(lab._control(kind, BAR_SEED + k), lambda _day: 1), monthly) for k in range(books)]
+    if shape == "deep":
+        monthly, pools = monthly_members(market, span), DeepFunding(market)
+        return [held(stressed, deep_book(pools, placebo=f"bar:{k}"), monthly) for k in range(books)]
+    if shape == "rotation":
+        monthly, rot = monthly_members(market, span), Rotation(market, span)
+        return [held(stressed, rotation_book(rot, shift), monthly) for shift in rot.shifts()]
+    if shape == "crash":
+        if hourly is None:
+            raise ValueError("the crash shape needs the hourly opens")
+        monthly, events = top_hundred(market, span), crash_events(hourly, span)
+        return [squeeze(crash_daily(market, hourly, monthly, placebo_times(events, span, hourly, f"bar:{k}")), span)
+                for k in range(books)]
+    raise ValueError(f"unknown shape {shape!r}")
+
+
 def _spread(values: Sequence[float | None]) -> dict[str, Any]:
     kept = sorted(v for v in values if v is not None)
     return {"count": len(kept), "mean": round(statistics.fmean(kept), 3) if kept else None,
@@ -1738,7 +1889,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("command", choices=("list", "run", "confirm-counts", "confirm", "sweep", "transfer",
                                             "listing-counts", "listing", "lower-counts", "lower",
                                             "crash-symbols", "crash-events", "crash-counts", "crash",
-                                            "deep-counts", "deep", "rotation-counts", "rotation"))
+                                            "deep-counts", "deep", "rotation-counts", "rotation", "bar"))
+    parser.add_argument("--shape", choices=BAR_SHAPES, default=None, help="bar: the book shape whose null books are read")
     parser.add_argument("--only", default=None,
                         help="sweep, transfer: variable groups (comma list), or `null` for the random books")
     parser.add_argument("--cache", type=Path, default=None, help="default: $RESEARCH_CACHE")
@@ -1799,6 +1951,23 @@ def main(argv: list[str] | None = None) -> int:
                           "span": [d.isoformat() for d in SPAN], "command": args.command, **body},
                          indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or (args.command != "crash" and body["stop"]) else EXIT_OK
+    if args.command == "bar":
+        if args.shape is None:
+            print("usage: bar needs --shape", file=sys.stderr)
+            return EXIT_USAGE
+        market = lab.hold(cache, attach=False)
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        hourly = None
+        if args.shape == "crash":
+            names = sorted({HEDGE, *(s for members in top_hundred(market).values() for s in members)})
+            hourly = load_hourly(cache / "archive", names)
+        body = bar_curve(bar_books(market, args.shape, hourly=hourly))
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "command": args.command, "shape": args.shape, **body},
+                         indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_OK
     if args.command in ("rotation-counts", "rotation"):
         market = lab.hold(cache, attach=False)
         if market is None:

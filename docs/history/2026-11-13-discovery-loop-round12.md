@@ -38,7 +38,7 @@ costs is 0.220 against an entry rule of 1.0, 6.6% of total position a year, with
 not decide it.
 
 **What the hedge showed.** With the same dollars of Bitcoin instead of the basket's beta the book is 0.079. The
-two differ only in the size of the Bitcoin leg, so a third of a Sharpe point hangs on how the hedge is sized.
+two differ only in the size of the Bitcoin leg, so 0.14 of a Sharpe point hangs on how the hedge is sized.
 The leg table is not read as "the hedge made the money": this book is the two legs against each other by design,
 and its return is their sum.
 
