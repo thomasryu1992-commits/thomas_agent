@@ -130,7 +130,7 @@ def test_measure_reports_the_entry_rule_and_the_years_on_total_position(monkeypa
 def test_the_rounds_candidates_name_registered_variables_and_it_runs_in_the_sandbox_only(monkeypatch, capsys):
     for name, candidate in sl.CANDIDATES.items():
         assert candidate["variable"] in sl.lab.variables() and candidate["logic"] in sl.BOOKS, name
-        assert candidate["accounting"] in sl.ACCOUNTING and candidate["round"] in ("1", "2"), name
+        assert candidate["accounting"] in sl.ACCOUNTING and candidate["round"] in ("1", "2", "3"), name
         assert candidate["tier"] == "top30"
     monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: False)
     assert sl.main(["run"]) == sl.EXIT_USAGE
@@ -284,12 +284,57 @@ def test_the_risk_matched_book_gives_a_wild_coin_less_weight_and_carries_no_mark
 
 
 def test_a_round_is_measured_by_its_own_accounting_and_only_its_own_candidates(monkeypatch):
-    assert sl.latest_round() == "2"
+    assert sl.latest_round() == "3"
     assert {n for n, c in sl.CANDIDATES.items() if c["round"] == "2"} == {"C003", "C004"}
     assert all(c["accounting"] == "held" for c in sl.CANDIDATES.values() if c["round"] == "2")
     seen = []
     monkeypatch.setattr(sl, "run_l1", lambda market, candidate, span=None: seen.append(candidate["logic"]) or {})
     monkeypatch.setattr(sl, "run_l2", lambda market, candidate, span=None: seen.append("L2") or {})
-    assert set(sl.run_round(xsb.Market())) == {"C003", "C004"} and seen == ["L1", "L8"]
+    assert set(sl.run_round(xsb.Market(), which="2")) == {"C003", "C004"} and seen == ["L1", "L8"]
+    assert set(sl.run_round(xsb.Market())) == {"C005", "C006", "C007"}, "the latest round by default"
     assert set(sl.run_round(xsb.Market(), which="1")) == {"C001", "C002"}
+
+
+# --- round 3: funding-aware weights and a four-week hold -------------------------------------------------------------
+
+def test_a_position_that_would_pay_funding_away_is_not_held():
+    values = {f"C{i:02d}": float(i) for i in range(1, 41)}
+    vols = dict.fromkeys(values, 0.05)
+    betas = dict.fromkeys(values, 1.0)
+    week = sl.FUNDING_FLOOR
+    funding = {**dict.fromkeys(values, 0.0), "C40": week * 2, "C39": week * 0.9, "C01": -week * 2, "C02": -week * 0.9,
+               "C38": -week * 5, "C03": week * 5, "C37": None}
+    plain = sl.risk_weights(values, vols, betas, long_high=True)
+    aware = sl.risk_weights(values, vols, betas, long_high=True, funding=funding)
+    assert "C40" in plain and "C40" not in aware, "a long that pays twice the floor"
+    assert "C01" in plain and "C01" not in aware, "a short that pays twice the floor"
+    assert {"C39", "C02", "C38", "C03", "C37"} <= set(aware), "under the floor, paid to hold, or unknown: kept"
+    book_only = {k: v for k, v in aware.items() if k != sl.HEDGE}
+    assert sum(v for v in book_only.values() if v > 0) == pytest.approx(1.0)
+    assert sum(v for v in book_only.values() if v < 0) == pytest.approx(-1.0)
+    assert aware["C21"] > 0 > aware["C20"], "ranks are taken before the filter: nobody crosses the middle"
+    every_long_pays = {**dict.fromkeys(values, 0.0), **{f"C{i:02d}": week * 3 for i in range(24, 41)}}
+    assert sl.risk_weights(values, vols, betas, long_high=True, funding=every_long_pays) == {}, "a side too thin: flat"
+
+
+def test_a_four_week_hold_decides_on_every_fourth_sunday_from_a_fixed_anchor():
+    sundays = [d for d in sl.sundays((date(2020, 1, 1), date(2020, 12, 31)))]
+    picked = [d for d in sundays if sl.is_decision(sl.bs.CADENCE, d, 4)]
+    assert sl.HOLD_ANCHOR in picked and all((b - a).days == 28 for a, b in zip(picked, picked[1:]))
+    assert [d for d in sundays if sl.is_decision(sl.bs.CADENCE, d, 1)] == sundays
+    assert not sl.is_decision(sl.bs.CADENCE, sl.HOLD_ANCHOR + timedelta(days=1), 1), "not a decision day at all"
+    market, sunday = _two_coin_market([0.0] * 10)
+    calls = []
+
+    def weigher(m, members, day, signal, seed=None):
+        calls.append(day)
+        return {"UPUSDT": -1.0, "FLATUSDT": 1.0}
+
+    monthly = {date(2021, 1, 1): ["UPUSDT", "FLATUSDT"]}
+    span = dict(start=sunday + timedelta(days=1), end=sunday + timedelta(days=10))
+    sl.simulate_held(market, sl.bs.CADENCE, monthly, weigher=weigher, every=1, **span)
+    weekly_calls = list(calls)
+    calls.clear()
+    sl.ACCOUNTING["held4"](market, sl.bs.CADENCE, monthly, weigher=weigher, **span)
+    assert len(weekly_calls) == 2 and len(calls) == sum(1 for d in weekly_calls if sl.is_decision(sl.bs.CADENCE, d, 4))
 

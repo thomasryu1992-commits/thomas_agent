@@ -355,6 +355,105 @@ def grid(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tu
     return {"cells": cells, "variables": summary, "dropped": dropped}
 
 
+# --- is a scenario axis worth having? (the monthly check) --------------------------------------------------------
+
+PLACEBO_AXES = 200                         # shuffled-spell copies each axis is compared with
+
+
+def ic_series(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tuple[date, date] = SPAN
+              ) -> tuple[list[date], dict[tuple[str, str], dict[date, float]]]:
+    """The weekly decisions and, per variable and tier, its rank correlation with the following week at each."""
+    tiers = tier_members(market, span)
+    days = decisions(span, HORIZONS[0])
+    out: dict[tuple[str, str], dict[date, float]] = {}
+    for tier, monthly in tiers.items():
+        for day in days:
+            returns = {s: r for s in monthly.get(date(day.year, day.month, 1), ())
+                       if (r := forward_return(market, s, day, HORIZONS[0])) is not None}
+            for name, (_, read) in names.items():
+                pairs = [(v, returns[s]) for s in returns if (v := read(market, s, day)) is not None]
+                if len(pairs) >= MIN_NAMES and (ic := rank_correlation(pairs)) is not None:
+                    out.setdefault((name, tier), {})[day] = ic
+    return days, out
+
+
+def separation(series: Mapping[tuple[str, str], Mapping[date, float]], labels: Mapping[date, str | None]) -> float | None:
+    """How far apart an axis's states put the variables: per variable and tier, the share of the weekly values'
+    variance that lies between the states' means; then the mean over those with :data:`MIN_DECISIONS` in two states
+    or more."""
+    shares = []
+    for values in series.values():
+        groups: dict[str, list[float]] = {}
+        for day, ic in values.items():
+            if labels.get(day) is not None:
+                groups.setdefault(labels[day], []).append(ic)
+        groups = {k: v for k, v in groups.items() if len(v) >= MIN_DECISIONS}
+        if len(groups) < 2:
+            continue
+        everything = [ic for v in groups.values() for ic in v]
+        mean, total = statistics.fmean(everything), statistics.pvariance(everything) * len(everything)
+        if total > 0:
+            shares.append(sum(len(v) * (statistics.fmean(v) - mean) ** 2 for v in groups.values()) / total)
+    return statistics.fmean(shares) if shares else None
+
+
+def shuffled_spells(labels: Sequence[str | None], seed: str) -> list[str | None]:
+    """The same spells in another order: a placebo axis with the real one's persistence and shares."""
+    import random
+    runs: list[list[str | None]] = []
+    for label in labels:
+        if runs and runs[-1][0] == label:
+            runs[-1].append(label)
+        else:
+            runs.append([label])
+    random.Random(seed).shuffle(runs)
+    return [label for run in runs for label in run]
+
+
+def axis_check(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """Each axis's separation beside what :data:`PLACEBO_AXES` shuffled copies of it reach. An axis no better than
+    its placebos is a candidate to rest; this decides nothing by itself."""
+    days, series = ic_series(market, names, span)
+    labels = scenario_labels(market, tier_members(market, span)["top30"], days, span)
+    out = {}
+    for axis in ("trend", "vol", "dispersion", "heat", "universe"):
+        real = [labels[d].get(axis) for d in days]
+        actual = separation(series, dict(zip(days, real)))
+        fake = [separation(series, dict(zip(days, shuffled_spells(real, f"{SPEC}|axis|{axis}|{k}"))))
+                for k in range(PLACEBO_AXES)]
+        fake = sorted(v for v in fake if v is not None)
+        out[axis] = {"states": dict(sorted({str(k): real.count(k) for k in set(real)}.items())),
+                     "separation": round(actual, 5) if actual is not None else None,
+                     "placebo_mean": round(statistics.fmean(fake), 5) if fake else None,
+                     "placebo_p95": round(fake[int(0.95 * (len(fake) - 1))], 5) if fake else None,
+                     "placebos_at_or_above": sum(1 for v in fake if actual is not None and v >= actual),
+                     "placebos": len(fake)}
+    return {"axes": out, "variables": len({name for name, _ in series}), "decisions": len(days)}
+
+
+# --- what is on disk and not read (the monthly check) ------------------------------------------------------------
+
+# The columns of the files this lab's loaders read, and which of them a loader keeps. Binance's daily kline file has
+# twelve fixed columns; ``cross_section_basket.read_klines`` keeps five of them.
+KLINE_COLUMNS = ("open_time", "open", "high", "low", "close", "volume", "close_time", "quote_volume", "count",
+                 "taker_buy_volume", "taker_buy_quote_volume", "ignore")
+KLINE_COLUMNS_READ = ("open_time", "open", "high", "low", "close", "quote_volume")
+
+
+def inventory(cache: Path) -> dict[str, Any]:
+    """What the cache holds beside what the registered variables read: file kinds with their symbol counts, and the
+    kline columns no loader keeps. Reads names and one header row; no value."""
+    kinds = {}
+    for folder in sorted(p for p in cache.iterdir() if p.is_dir()) if cache.exists() else []:
+        for kind in sorted(p for p in folder.iterdir() if p.is_dir()):
+            kinds[f"{folder.name}/{kind.name}"] = sum(1 for p in kind.iterdir() if p.is_dir())
+    sample = next(iter(sorted((cache / "archive" / xsb.KLINES_KIND).glob("*/*.zip"))), None) if cache.exists() else None
+    width = len(xsb._rows(sample)[-1]) if sample is not None else None
+    return {"kinds": kinds, "kline_columns_in_file": width,
+            "kline_columns_not_read": [c for c in KLINE_COLUMNS if c not in KLINE_COLUMNS_READ and c not in ("close_time", "ignore")],
+            "registered_variable_groups": sorted({group for group, _ in variables().values()})}
+
+
 # --- reading the grid against chance -----------------------------------------------------------------------------
 
 def _shown(cells: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
@@ -460,7 +559,7 @@ def hold(cache: Path, span: tuple[date, date] = SPAN, *, attach: bool = True) ->
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="signal_lab", description=__doc__.splitlines()[0])
-    parser.add_argument("command", choices=("list", "run"))
+    parser.add_argument("command", choices=("list", "run", "axes", "inventory"))
     parser.add_argument("--cache", type=Path, default=None, help="default: $RESEARCH_CACHE")
     args = parser.parse_args(argv)
     if args.command == "list":
@@ -469,15 +568,23 @@ def main(argv: list[str] | None = None) -> int:
                           "variables": {name: group for name, (group, _) in variables().items()},
                           "controls": len(controls())}, indent=1))
         return EXIT_OK
+    cache = args.cache or Path(os.environ.get("RESEARCH_CACHE", str(Path.home() / "research" / "cache")))
+    if args.command == "inventory":
+        print(json.dumps({"spec": SPEC, **inventory(cache)}, indent=1, sort_keys=True))
+        return EXIT_OK
     if not xsb._in_sandbox():
         print("refused: runs in the research sandbox only (scripts/research/sandbox_run.sh)", file=sys.stderr)
         return EXIT_USAGE
     bs.check_development_span(SPAN)
-    cache = args.cache or Path(os.environ.get("RESEARCH_CACHE", str(Path.home() / "research" / "cache")))
     market = hold(cache)
     if market is None:
         print("BLOCKED: contract types or the spot symbol list is missing from the cache", file=sys.stderr)
         return EXIT_BLOCKED
+    if args.command == "axes":
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "last_day_read": last_day(market).isoformat(),
+                          "judgement": None, **axis_check(market, variables())}, indent=1, sort_keys=True))
+        return EXIT_OK
     real, random = grid(market, variables()), grid(market, controls())
     against = chance(random["cells"])
     print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,

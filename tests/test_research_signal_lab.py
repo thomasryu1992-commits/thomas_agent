@@ -247,3 +247,50 @@ def test_the_universe_axis_splits_weeks_by_the_share_of_wild_coins(tiers):
     assert seen <= {"wild", "calm", None} and "calm" in seen, "the fixture's coins never move fifty percent in a day"
     assert lab.scenario_keys({"universe": "wild"}) == ["all", "universe=wild"]
 
+
+# --- the monthly checks: is an axis worth having, and what on disk is not read ---------------------------------------
+
+def test_an_axis_that_moves_a_variable_separates_and_a_shuffled_copy_of_it_does_not():
+    days = [date(2021, 1, 3) + timedelta(days=7 * k) for k in range(120)]
+    real = (["hot"] * 10 + ["cool"] * 10) * 6
+    series = {("x", "top30"): {d: (0.2 if label == "hot" else -0.2) + (0.01 if k % 2 else -0.01)
+                               for k, (d, label) in enumerate(zip(days, real))},
+              ("flat", "top30"): {d: (0.05 if k % 2 else -0.05) for k, d in enumerate(days)}}
+    actual = lab.separation(series, dict(zip(days, real)))
+    fakes = [lab.separation(series, dict(zip(days, lab.shuffled_spells(real, f"s{k}")))) for k in range(50)]
+    assert actual == pytest.approx((0.04 / 0.0401 + 0.0) / 2, rel=1e-3)
+    assert all(f <= actual + 1e-12 for f in fakes) and sum(1 for f in fakes if f < actual * 0.9) > 25
+    assert lab.separation(series, {d: None for d in days}) is None
+    assert lab.separation(series, dict(zip(days, ["hot"] * 119 + ["cool"]))) is None, "a state too thin to compare"
+    shuffled = lab.shuffled_spells(real, "s1")
+    assert sorted(shuffled) == sorted(real) and lab.shuffled_spells(real, "s1") == shuffled
+
+
+def test_the_axis_check_reads_every_axis_beside_its_placebos(tiers, monkeypatch):
+    monkeypatch.setattr(lab, "PLACEBO_AXES", 8)
+    out = lab.axis_check(lab.cut_market(_market(SPAN[1]), SPAN), NAMES, SPAN)
+    assert set(out["axes"]) == {"trend", "vol", "dispersion", "heat", "universe"}
+    for axis, body in out["axes"].items():
+        assert set(body) == {"states", "separation", "placebo_mean", "placebo_p95", "placebos_at_or_above", "placebos"}
+        assert body["placebos"] <= 8 and sum(body["states"].values()) == out["decisions"], axis
+
+
+def test_the_inventory_names_what_is_on_disk_and_the_kline_columns_no_loader_keeps(tmp_path, capsys, monkeypatch):
+    import zipfile
+    folder = tmp_path / "archive" / lab.xsb.KLINES_KIND / "BTCUSDT"
+    folder.mkdir(parents=True)
+    with zipfile.ZipFile(folder / "BTCUSDT-1d-2021-01.zip", "w") as z:
+        z.writestr("x.csv", "1609459200000,1,2,0.5,1.5,10,1609545599999,15,7,4,6,0\n")
+    (tmp_path / "archive" / lab.xsb.FUNDING_KIND / "BTCUSDT").mkdir(parents=True)
+    (tmp_path / "archive-spot" / lab.xsb.KLINES_KIND / "BTCUSDT").mkdir(parents=True)
+    out = lab.inventory(tmp_path)
+    assert out["kinds"] == {f"archive/{lab.xsb.FUNDING_KIND}": 1, f"archive/{lab.xsb.KLINES_KIND}": 1,
+                            f"archive-spot/{lab.xsb.KLINES_KIND}": 1}
+    assert out["kline_columns_in_file"] == len(lab.KLINE_COLUMNS) == 12
+    assert out["kline_columns_not_read"] == ["volume", "count", "taker_buy_volume", "taker_buy_quote_volume"]
+    bar = lab.xsb.read_klines(folder)[date(2021, 1, 1)]
+    assert (bar.open, bar.high, bar.low, bar.close, bar.quote_volume) == (1.0, 2.0, 0.5, 1.5, 15.0), "the five it keeps"
+    monkeypatch.setattr(lab.xsb, "_in_sandbox", lambda: False)
+    assert lab.main(["inventory", "--cache", str(tmp_path)]) == lab.EXIT_OK and "kline_columns_not_read" in capsys.readouterr().out
+    assert lab.main(["axes", "--cache", str(tmp_path)]) == lab.EXIT_USAGE
+
