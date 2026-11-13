@@ -1,0 +1,202 @@
+"""The signal lab (STRATEGY_RESEARCH_REBUILD_V0.1, Thomas 2026-11-13): nothing after the span is read, a return is the
+one a book would hold, scenarios look backwards only, a thin cell shows no number, and the rule that turns a cell into
+a lead. Synthetic markets only."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from datetime import date, timedelta
+
+import pytest
+
+from scripts.research import cross_section_basket as xsb
+from scripts.research import signal_lab as lab
+
+SPAN = (date(2020, 1, 1), date(2021, 6, 30))
+SYMBOLS = ["BTCUSDT"] + [f"C{i:02d}USDT" for i in range(13)]
+
+
+def _unit(*parts) -> float:
+    return int(hashlib.sha256("|".join(map(str, parts)).encode()).hexdigest()[:12], 16) / 16 ** 12
+
+
+def _market(last: date, *, twist_after: date | None = None) -> xsb.Market:
+    """Fourteen coins from 2019-06-01 to ``last`` on seeded random walks. ``twist_after`` rewrites every bar after
+    that day with different numbers, to show that nothing earlier depends on them."""
+    bars: dict[str, dict[date, xsb.Bar]] = {}
+    for rank, symbol in enumerate(SYMBOLS):
+        price, day, out = 100.0 + rank, date(2019, 6, 1), {}
+        while day <= last:
+            twist = "x" if twist_after is not None and day > twist_after else ""
+            step = (_unit(symbol, day, twist) - 0.5) * 0.08
+            opened, price = price, price * (1 + step)
+            out[day] = xsb.Bar(open=opened, close=price, quote_volume=(1000.0 - 10 * rank) * (1 + _unit("v", symbol, day, twist)),
+                               high=max(opened, price) * 1.01, low=min(opened, price) * 0.99)
+            day += timedelta(days=1)
+        bars[symbol] = out
+    funding = {s: [(int((d - date(1970, 1, 1)).total_seconds() * 1000) + 8 * 3600 * 1000, (_unit("f", s, d) - 0.4) * 1e-4)
+                   for d in sorted(days)] for s, days in bars.items()}
+    return xsb.Market(bars=bars, funding=funding)
+
+
+NAMES = {"momentum_30": lab.variables()["momentum_30"], "vol_30": lab.variables()["vol_30"],
+         "funding_7": lab.variables()["funding_7"], **{k: v for k, v in list(lab.controls().items())[:2]}}
+
+
+@pytest.fixture(scope="module")
+def tiers(monkeypatch_module):
+    monkeypatch_module.setattr(lab, "TIERS", {"top30": (0, 10), "rank31_100": (10, 14)})
+
+
+@pytest.fixture(scope="module")
+def monkeypatch_module():
+    patch = pytest.MonkeyPatch()
+    yield patch
+    patch.undo()
+
+
+def test_the_map_reads_nothing_after_the_spans_last_day(tiers):
+    """The span ends 2021-06-30. A market that runs on to 2021-12 gives, once cut, exactly the map of a market that
+    stops there — and of one whose later bars are different numbers altogether."""
+    stops = lab.grid(lab.cut_market(_market(SPAN[1]), SPAN), NAMES, SPAN)
+    runs_on = lab.grid(lab.cut_market(_market(date(2021, 12, 31)), SPAN), NAMES, SPAN)
+    twisted = lab.grid(lab.cut_market(_market(date(2021, 12, 31), twist_after=SPAN[1]), SPAN), NAMES, SPAN)
+    assert stops == runs_on == twisted
+    assert any(not c["too_few"] for c in stops["cells"]), "the fixture is long enough to show cells"
+    with pytest.raises(ValueError, match="cut it first"):
+        lab.grid(_market(date(2021, 12, 31)), NAMES, SPAN)
+
+
+def test_no_decision_reaches_past_the_span_and_a_long_horizon_does_not_overlap():
+    weekly, monthly = lab.decisions(SPAN, 7), lab.decisions(SPAN, 28)
+    assert all(d.weekday() == xsb.SUNDAY for d in weekly)
+    assert max(weekly) + timedelta(days=8) <= SPAN[1] < max(weekly) + timedelta(days=15)
+    assert max(monthly) + timedelta(days=29) <= SPAN[1]
+    assert all((b - a).days == 28 for a, b in zip(monthly, monthly[1:]))
+    # The registered span itself: the last return ends on or before 2024-12-31.
+    assert max(lab.decisions(lab.SPAN, 7)) + timedelta(days=8) <= date(2024, 12, 31) == lab.SPAN[1]
+
+
+def test_a_return_is_from_the_next_open_and_only_between_traded_days():
+    day = date(2020, 3, 1)
+    bars = {day + timedelta(days=k): xsb.Bar(open=100.0 + k, close=200.0 + k, quote_volume=5.0) for k in range(10)}
+    market = xsb.Market(bars={"AUSDT": dict(bars)})
+    assert lab.forward_return(market, "AUSDT", day, 7) == pytest.approx(108.0 / 101.0 - 1)   # opens of day+1 and day+8
+    for frozen in (0, 1, 8):                 # the decision day, the entry day, the exit day
+        stale = dict(bars)
+        stale[day + timedelta(days=frozen)] = xsb.Bar(open=100.0, close=100.0, quote_volume=0.0)
+        assert lab.forward_return(xsb.Market(bars={"AUSDT": stale}), "AUSDT", day, 7) is None
+    assert lab.forward_return(market, "AUSDT", day, 28) is None, "no bar at the far end"
+
+
+def test_a_scenario_label_is_read_from_that_day_and_earlier(tiers):
+    full = lab.cut_market(_market(SPAN[1]), SPAN)
+    members = lab.tier_members(full, SPAN)["top30"]
+    days = lab.decisions(SPAN, 7)
+    labels = lab.scenario_labels(full, members, days, SPAN)
+    middle = days[len(days) // 2]
+    early = (SPAN[0], middle)
+    cut = lab.cut_market(_market(SPAN[1]), early)
+    assert lab.scenario_labels(cut, lab.tier_members(cut, early)["top30"], [middle], early)[middle] == labels[middle]
+    seen = {key for row in labels.values() for key in lab.scenario_keys(row)}
+    assert "all" in seen and any(k.startswith("vol=") for k in seen) and any(k.startswith("heat=") for k in seen)
+    assert lab.scenario_keys({}) == ["all"], "a decision too early for any label still counts in the whole"
+    assert lab.scenario_keys({"trend": "bull", "vol": "high"}) == ["all", "trend=bull", "vol=high", "trend=bull|vol=high"]
+
+
+def test_rank_correlation_and_the_tercile_spread():
+    rising = [(float(i), float(i) * 2) for i in range(9)]
+    assert lab.rank_correlation(rising) == pytest.approx(1.0)
+    assert lab.rank_correlation([(a, -b) for a, b in rising]) == pytest.approx(-1.0)
+    assert lab.rank_correlation([(1.0, 5.0)] * 9) is None, "no spread on a side is not a correlation of zero"
+    assert lab.rank_correlation([(1.0, 1.0), (1.0, 2.0), (2.0, 3.0), (2.0, 4.0)]) == pytest.approx(0.8944, abs=1e-4)
+    assert lab.tercile_spread(rising) == pytest.approx((12 + 14 + 16) / 3 - (0 + 2 + 4) / 3)
+
+
+def test_a_thin_cell_shows_no_number_and_one_long_stretch_is_one_sample():
+    assert lab.spells([0, 1, 2, 5, 6, 9]) == 3 and lab.spells([]) == 0
+    steady = [(i, 0.1 + 0.01 * (i % 3), 0.002) for i in range(40)]
+    assert lab.cell(steady, scenario="all")["too_few"] is False, "the whole span is not asked for spells"
+    assert lab.cell(steady, scenario="trend=bull") == {"decisions": 40, "spells": 1, "too_few": True}
+    broken = [(i * 3, 0.1 + 0.01 * (i % 3), 0.002) for i in range(40)]
+    shown = lab.cell(broken, scenario="trend=bull")
+    assert shown["too_few"] is False and shown["spells"] == 40 and shown["t"] > 2 and shown["positive_share"] == 1.0
+    assert shown["tercile_spread_bps"] == 20.0
+    assert lab.cell(broken[:lab.MIN_DECISIONS - 1], scenario="all")["too_few"] is True
+
+
+def test_the_random_variables_are_fixed_by_their_names():
+    market, day = xsb.Market(), date(2021, 1, 3)
+    weekly, fixed = lab.controls()["control_week_00"][1], lab.controls()["control_fixed_00"][1]
+    assert 0 <= weekly(market, "AUSDT", day) < 1
+    assert weekly(market, "AUSDT", day) == weekly(market, "AUSDT", day) != weekly(market, "AUSDT", day + timedelta(days=7))
+    assert fixed(market, "AUSDT", day) == fixed(market, "AUSDT", day + timedelta(days=7)) != fixed(market, "BUSDT", day)
+    assert len(lab.controls()) == lab.CONTROLS_WEEKLY + lab.CONTROLS_FIXED
+    assert not set(lab.controls()) & set(lab.variables())
+
+
+def _cell(variable, scenario, t, *, ic=None, tier="top30", horizon=7):
+    return {"variable": variable, "group": "g", "tier": tier, "horizon_days": horizon, "scenario": scenario,
+            "decisions": 60, "spells": 9, "too_few": False, "t": t,
+            "mean_rank_correlation": (0.05 if t > 0 else -0.05) if ic is None else ic, "positive_share": 0.6,
+            "tercile_spread_bps": 10.0}
+
+
+def test_a_lead_must_beat_every_random_variable_keep_its_rank_and_agree_with_its_own_whole():
+    against = {"7": {"largest_abs_t": 3.0, "share_abs_t_over_2": 0.05}, "28": {"largest_abs_t": None, "share_abs_t_over_2": None}}
+    cells = [
+        _cell("steady", "all", 2.5), _cell("steady", "trend=bull", 3.4),                    # a lead
+        _cell("steady", "trend=bear", -3.6),                                                # against its own whole
+        _cell("flipping", "all", 2.1), _cell("flipping", "vol=high", 4.0),                  # does not keep its rank
+        _cell("ordinary", "all", 1.0), _cell("ordinary", "heat=hot", 2.9),                  # inside chance
+        _cell("orphan", "vol=low", 5.0),                                                    # no whole to agree with
+        _cell("slow", "all", 3.1, horizon=28),                                              # no bar at that horizon
+        *[_cell(f"extra{i}", s, 3.2 + i / 10) for i in range(4) for s in ("all", "heat=cool")],
+    ]
+    real = {"cells": cells, "variables": {
+        **{f"{name}|top30": {"rank_persistence": 0.9} for name in ("steady", "ordinary", "orphan", "slow", *(f"extra{i}" for i in range(4)))},
+        "flipping|top30": {"rank_persistence": 0.1}}}
+    out = lab.candidates(real, against)
+    met = {(c["variable"], c["scenario"]) for c in out["leads"]}
+    assert out["met_the_rule"] == 1 + 8 and len(out["leads"]) == lab.CANDIDATE_CAP == 3
+    assert met == {("extra3", "all"), ("extra3", "heat=cool"), ("extra2", "all")}, "largest first, then by name"
+    every = lab.candidates({**real, "cells": cells[:9]}, against)
+    assert [(c["variable"], c["scenario"]) for c in every["leads"]] == [("steady", "trend=bull")]
+    assert lab.excess(cells[:9], against)["7"] == {"cells": 8, "abs_t_over_2": 7, "expected_from_random": 0.4}
+
+
+def test_chance_is_what_the_random_variables_reached():
+    cells = [_cell(f"control_week_{i:02d}", "all", t) for i, t in enumerate((0.3, -1.1, 2.4, -3.2, 0.9))]
+    cells.append({**_cell("control_week_09", "vol=high", 9.0), "too_few": True})
+    out = lab.chance(cells)
+    assert out["7"] == {"cells": 5, "largest_abs_t": 3.2, "p95_abs_t": 2.4, "share_abs_t_over_2": 0.4}
+    assert out["28"]["largest_abs_t"] is None
+
+
+def test_the_baseline_pool_is_the_plain_mean_of_every_registered_definition():
+    span = (date(2020, 1, 1), date(2020, 12, 31))
+    calls = []
+
+    def simulate(market, cadence, monthly, *, start, end, weigher):
+        calls.append(weigher)
+        scale = len(calls)
+        return {"daily": {date(2020, m, 15): {"net": 0.01 * scale * (1 if m % 2 else -0.5)} for m in range(1, 13)}}
+
+    out = lab.pool(xsb.Market(bars={"BTCUSDT": {date(2019, 12, 31): xsb.Bar(open=1.0, close=1.0, quote_volume=1.0)}}),
+                   span, simulate=simulate)
+    count = len(lab.fp.members())
+    assert len(calls) == count == len(out["members"]) == 16
+    mean_scale = sum(range(1, count + 1)) / count
+    assert out["pool"]["sum_pct"] == pytest.approx(round(0.01 * mean_scale * (6 - 3) * 100, 2))
+    assert out["pool"]["months"] == 12 and isinstance(out["pool"]["clears_entry"], bool)
+
+
+def test_it_runs_in_the_sandbox_only(monkeypatch, capsys):
+    monkeypatch.setattr(lab.xsb, "_in_sandbox", lambda: False)
+    assert lab.main(["run"]) == lab.EXIT_USAGE
+    capsys.readouterr()
+    assert lab.main(["list"]) == lab.EXIT_OK
+    listed = json.loads(capsys.readouterr().out)
+    assert listed["span"] == ["2020-01-01", "2024-12-31"] and listed["controls"] == 40
+    assert {"price_volume", "funding", "positioning", "depth", "spot"} == set(listed["variables"].values())
