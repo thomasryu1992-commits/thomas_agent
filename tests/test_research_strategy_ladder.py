@@ -602,3 +602,125 @@ def test_the_transfer_command_takes_groups_or_the_null_like_the_sweep(monkeypatc
     assert sl.main(["transfer", "--only", "null"]) == sl.EXIT_BLOCKED and sl.main(["transfer", "--only", "trade_flow"]) == sl.EXIT_BLOCKED
     assert asked == [(None, False, False), (None, False, True)], "the development market, as the sweep loads it"
 
+
+# --- round 8: rung 2's added conditions and the listing book ----------------------------------------------------------
+
+def test_the_later_years_are_the_three_each_read_after_the_years_before_it():
+    assert sl.LATER_YEARS == (2022, 2023, 2024)
+    good = sl.later_years({"2020": -50.0, "2021": -50.0, "2022": 20.0, "2023": -1.0, "2024": 10.0})
+    assert good["passes"] and good["mean_pct"] == pytest.approx(9.67, abs=0.01) and good["negative"] == 1
+    assert not sl.later_years({"2022": 30.0, "2023": -1.0, "2024": -1.0})["passes"], "two losing years"
+    assert not sl.later_years({"2022": 7.0, "2023": 7.0, "2024": 7.0})["passes"], "under the floor of 7.5"
+    assert not sl.later_years({"2022": 30.0, "2023": 30.0})["passes"], "a missing year is not a pass"
+
+
+def test_a_book_passes_beside_its_null_books_only_under_the_rounds_alpha():
+    nulls = [x / 100 for x in range(300)] + [None]                    # 0.00 .. 2.99
+    top = sl.beside_nulls(3.5, nulls)
+    assert top["p"] == pytest.approx(1 / 301, abs=1e-4) and top["passes"] and top["null_books"] == 300
+    edge = sl.beside_nulls(2.90, nulls)
+    assert edge["p"] == pytest.approx(11 / 301, abs=1e-4) and edge["passes"]
+    assert not sl.beside_nulls(2.90, nulls, candidates=4)["passes"], "0.05 over four candidates"
+    assert not sl.beside_nulls(None, nulls)["passes"] and not sl.beside_nulls(1.0, [])["passes"]
+
+
+def _listing_market():
+    """BTC and six seasoned coins from 2020-01-01; six coins listed 2021-03-01, of which NEW6 has no funding and THIN
+    trades too little; a dated future that must never count."""
+    start, end = date(2020, 1, 1), date(2021, 6, 30)
+    def bars(first, volume=5e7):
+        return {first + timedelta(days=k): xsb.Bar(open=100.0, close=100.0, quote_volume=volume)
+                for k in range((end - first).days + 1)}
+    listed = date(2021, 3, 1)
+    names = {"BTCUSDT": bars(start), **{f"OLD{i}USDT": bars(start) for i in range(1, 7)},
+             **{f"NEW{i}USDT": bars(listed) for i in range(1, 7)}, "THINUSDT": bars(listed, volume=1e6),
+             "BTCUSDT_210625": bars(listed)}
+    funding = {s: [(0, 0.0)] for s in names if s not in ("NEW6USDT",)}
+    return xsb.Market(bars=names, funding=funding), listed
+
+
+def test_the_listing_window_is_the_second_week_through_the_ninth_and_needs_volume_and_funding():
+    market, listed = _listing_market()
+    pools = sl.ListingPools(market)
+    early, inside, late = listed + timedelta(days=6), listed + timedelta(days=7), listed + timedelta(days=63)
+    assert pools.at(early)[0] == () and pools.at(late)[0] == ()
+    new, seasoned, unfunded = pools.at(inside)
+    assert new == tuple(f"NEW{i}USDT" for i in range(1, 6)) and unfunded == ("NEW6USDT",)
+    assert seasoned == tuple(f"OLD{i}USDT" for i in range(1, 7)), "no hedge, no thin coin, no dated future"
+    assert set(pools.at(late)[1]) >= {"NEW1USDT", "OLD1USDT"}, "after the window a listing is a seasoned coin"
+    assert pools.at(date(2020, 3, 1))[0] == (), "the coins the archive begins with are not listings"
+
+
+def test_the_listing_book_is_equal_shorts_under_the_cap_with_the_same_dollars_in_the_hedge():
+    assert sl.short_basket(["A", "B", "C"]) == {}
+    four = sl.short_basket(["A", "B", "C", "D"])
+    assert four == {"A": -0.1, "B": -0.1, "C": -0.1, "D": -0.1, sl.HEDGE: pytest.approx(0.4)}, "the cap leaves it under one"
+    twenty = sl.short_basket([f"C{i}" for i in range(20)])
+    assert twenty["C0"] == pytest.approx(-0.05) and twenty[sl.HEDGE] == pytest.approx(1.0)
+    market, listed = _listing_market()
+    pools = sl.ListingPools(market)
+    day = listed + timedelta(days=13)                                 # a Sunday inside the window
+    assert day.weekday() == 6
+    real = sl.listing_book(pools)(market, (), day, "x")
+    assert set(real) == {f"NEW{i}USDT" for i in range(1, 6)} | {sl.HEDGE}
+
+
+def test_a_placebo_holds_a_seasoned_partner_for_as_long_as_the_listing_is_held():
+    market, listed = _listing_market()
+    pools = sl.ListingPools(market)
+    first, later = listed + timedelta(days=13), listed + timedelta(days=48)
+    partner = pools.partner("NEW1USDT", "placebo:0")
+    assert partner in {f"OLD{i}USDT" for i in range(1, 7)} and partner == pools.partner("NEW1USDT", "placebo:0")
+    assert {pools.partner("NEW1USDT", f"placebo:{k}") for k in range(40)} == {f"OLD{i}USDT" for i in range(1, 7)}
+    book = sl.listing_book(pools, placebo="placebo:3")
+    a, b = book(market, (), first, "x"), book(market, (), later, "x")
+    assert a == b, "the same partners through the window: a placebo trades no more than the real book"
+    assert not set(a) & {f"NEW{i}USDT" for i in range(1, 7)}
+    assert book(market, (), listed + timedelta(days=69), "x") == {}, "no listing held, no placebo held"
+
+
+def test_listing_costs_are_stressed_on_every_coin_but_the_hedge_and_the_default_cost_is_unchanged():
+    assert sl.listing_unit("NEW1USDT") == pytest.approx(26 / 1e4) and sl.listing_unit(sl.HEDGE) == pytest.approx(8 / 1e4)
+    market, sunday = _two_coin_market([0.0])
+    weigher = lambda m, members, day, signal, seed=None: {"UPUSDT": -1.0, "FLATUSDT": 1.0} if day == sunday else {}  # noqa: E731
+    span = dict(start=sunday + timedelta(days=1), end=sunday + timedelta(days=3))
+    monthly = {date(2021, 1, 1): ["UPUSDT", "FLATUSDT"]}
+    plain = sl.simulate_held(market, sl.bs.CADENCE, monthly, weigher=weigher, **span)["daily"]
+    priced = sl.simulate_held(market, sl.bs.CADENCE, monthly, weigher=weigher, unit_of=lambda s: 0.01 if s == "UPUSDT" else 0.0,
+                              **span)["daily"]
+    monday = sunday + timedelta(days=1)
+    assert plain[monday]["cost"] == pytest.approx(2 * 8 / 1e4) and priced[monday]["cost"] == pytest.approx(0.01)
+
+
+def test_the_listing_counts_carry_no_return_and_stop_a_thin_or_unfunded_book(monkeypatch):
+    market, listed = _listing_market()
+    span = (date(2021, 1, 1), date(2021, 6, 30))
+    counts = sl.listing_counts(market, span)
+    assert counts["returns_computed"] is False and counts["events"] == 5 and counts["archive_first_day"] == "2020-01-01"
+    assert counts["by_year"]["2021"]["active_decisions"] == 8 and counts["by_year"]["2021"]["names_held_median"] == 5
+    assert counts["funding_known_share"] == pytest.approx(5 / 6, abs=1e-3)
+    assert set(counts["stop"]) == {"too many listing-window coins have no funding on file",
+                                   "the book is flat at too many decisions", "too few listings"}
+    flat = json.dumps(counts)
+    assert all(word not in flat for word in ("sharpe", "pct", "net")), "counts only"
+    assert sl.listing_run(market, span)["refused"] == counts["stop"], "a stopped book is not measured"
+    monkeypatch.setattr(sl, "LISTING_MIN_FUNDING_KNOWN", 0.8)
+    monkeypatch.setattr(sl, "LISTING_MIN_ACTIVE_SHARE", 0.2)
+    monkeypatch.setattr(sl, "LISTING_MIN_EVENTS", 5)
+    out = sl.listing_run(market, span, placebos=3)
+    assert out["hypothesis"] == "H-L1" and out["passes"] is False and out["rungs"]["2c_beside_placebos"]["null_books"] <= 3
+    assert out["cost_pct"] > 0 and out["sum_pct"] < 0, "flat prices: the book only pays its costs"
+
+
+def test_the_listing_commands_load_bars_and_funding_alone(monkeypatch, capsys):
+    asked = []
+
+    def hold(cache, span=None, *, attach=True, flow=False):
+        asked.append((span, attach, flow))
+        return None
+
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(sl.lab, "hold", hold)
+    assert sl.main(["listing-counts"]) == sl.EXIT_BLOCKED and sl.main(["listing"]) == sl.EXIT_BLOCKED
+    assert asked == [(None, False, False)] * 2
+
