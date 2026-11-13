@@ -294,3 +294,12 @@ def test_the_inventory_names_what_is_on_disk_and_the_kline_columns_no_loader_kee
     assert lab.main(["inventory", "--cache", str(tmp_path)]) == lab.EXIT_OK and "kline_columns_not_read" in capsys.readouterr().out
     assert lab.main(["axes", "--cache", str(tmp_path)]) == lab.EXIT_USAGE
 
+
+def test_a_placebo_axis_leaves_the_unlabelled_decisions_unlabelled():
+    real = [None] * 6 + ["hot"] * 5 + ["cool"] * 4 + [None] + ["hot"] * 3 + ["cool"] * 7
+    for k in range(10):
+        fake = lab.shuffled_spells(real, f"seed-{k}")
+        assert [i for i, v in enumerate(fake) if v is None] == [i for i, v in enumerate(real) if v is None]
+        assert sorted(v for v in fake if v) == sorted(v for v in real if v)
+    assert any(lab.shuffled_spells(real, f"seed-{k}") != real for k in range(10))
+

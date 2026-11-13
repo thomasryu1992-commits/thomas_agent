@@ -348,16 +348,7 @@ def switching(ics: Mapping[date, float], labels: Mapping[date, str | None], year
     return direction, signs
 
 
-def shuffled_spells(labels: Sequence[str | None], seed: str) -> list[str | None]:
-    """The same spells in another order: a placebo scenario with the real one's persistence and shares."""
-    runs: list[list[str | None]] = []
-    for label in labels:
-        if runs and runs[-1][0] == label:
-            runs[-1].append(label)
-        else:
-            runs.append([label])
-    random.Random(seed).shuffle(runs)
-    return [label for run in runs for label in run]
+shuffled_spells = lab.shuffled_spells       # one placebo construction for the map's axes and L2's scenarios
 
 
 # --- rung 4 ------------------------------------------------------------------------------------------------------

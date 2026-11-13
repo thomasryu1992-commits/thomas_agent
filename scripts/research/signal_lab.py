@@ -398,16 +398,23 @@ def separation(series: Mapping[tuple[str, str], Mapping[date, float]], labels: M
 
 
 def shuffled_spells(labels: Sequence[str | None], seed: str) -> list[str | None]:
-    """The same spells in another order: a placebo axis with the real one's persistence and shares."""
+    """The same spells in another order: a placebo axis with the real one's persistence and shares.
+
+    A decision with no label keeps none. The unlabelled decisions are the first months, before an axis has a
+    history to compare with; a placebo that moved that block would label weeks the real axis cannot, and would be
+    credited with the difference between those months and the rest (the first axis check, 2026-11-13)."""
     import random
-    runs: list[list[str | None]] = []
+    runs: list[list[str]] = []
     for label in labels:
+        if label is None:
+            continue
         if runs and runs[-1][0] == label:
             runs[-1].append(label)
         else:
             runs.append([label])
     random.Random(seed).shuffle(runs)
-    return [label for run in runs for label in run]
+    moved = iter([label for run in runs for label in run])
+    return [None if label is None else next(moved) for label in labels]
 
 
 def axis_check(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tuple[date, date] = SPAN) -> dict[str, Any]:
