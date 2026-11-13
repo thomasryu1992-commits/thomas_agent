@@ -458,6 +458,17 @@ def _apply_job(
             "{family, reason} objects of the proposer's shapes when given",
         )
 
+    # The frame's typical ATR as a share of price (prompt v3), the one market number that crosses.
+    # Optional; when sent it must be a finite number inside the proposer's range, and a caller
+    # sending anything else is refused rather than answered with a prompt that says less.
+    atr_bps = inputs.get("atr_bps")
+    if atr_bps is not None and crypto_proposer.clean_atr_bps(atr_bps) is None:
+        low, high = crypto_proposer.ATR_SHARE_WIRE_RANGE
+        raise ControlBlocked(
+            "PROPOSAL_INPUTS_REQUIRED",
+            f"'atr_bps' must be a finite number from {low} to {high} when given",
+        )
+
     provider = (
         resolved.get("validator_provider") or crypto_proposer.MockProposerProvider()
     )
@@ -465,7 +476,7 @@ def _apply_job(
     # caller's, and this worker never sees one.
     generation = crypto_proposer.generate_proposals(
         provider=provider, existing_families=families, focus=focus, timeframe=timeframe,
-        recent_refusals=refusals,
+        recent_refusals=refusals, atr_bps=atr_bps,
     )
     return {"ok": True, "job": job, "generation": generation}
 
