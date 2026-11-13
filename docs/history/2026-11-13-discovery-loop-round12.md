@@ -29,3 +29,25 @@ exhaustion is what gets reported.
   guess about the return was wrong.
 - *Each leg is printed by year.* Rounds 10 and 11 each had a result whose reading changed once the hedge leg was
   separated.
+
+## The result (same day)
+
+**What came out.** H-D1 failed every condition and is closed. Over 2020-2024 its annual Sharpe after stressed
+costs is 0.220 against an entry rule of 1.0, 6.6% of total position a year, with 2022 and 2024 negative; 31 of the
+225 shifted books did as well or better (p 0.142). At the engine's cost it is 0.318, so the cost assumption did
+not decide it.
+
+**What the hedge showed.** With the same dollars of Bitcoin instead of the basket's beta the book is 0.079. The
+two differ only in the size of the Bitcoin leg, so a third of a Sharpe point hangs on how the hedge is sized.
+The leg table is not read as "the hedge made the money": this book is the two legs against each other by design,
+and its return is their sum.
+
+**What the data on disk still leaves, kind by kind.** The registration promised to say so if payers had run out.
+The table in section 26.3 sets each data kind beside the payer it could name and the records that read it. No new
+hypothesis with a structural payer is left; three unread variants remain (the positive funding tail, a per-coin
+open-interest flush, the per-coin spot-perp gap), each kin to a record whose result is known, so a pass on any
+of them could not count the confirm span as independent evidence.
+
+**What follows.** The next round is a tool round: how much a book must earn before costs to pass this ladder
+once five years of noise are in. The three variants go up, or not, by their size lines against that number.
+
