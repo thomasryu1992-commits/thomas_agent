@@ -42,6 +42,7 @@ earned about 7% of total position a year while it stood, costs took about 19%, a
 
 **What the round leaves.** The tier below the first hundred is not thin: a book stands from August 2021 and almost
 every week from 2022. The tool that builds it stays for later hypotheses. The size line written in the ladder's
-units said beforehand that the verdict would fail on cost, and it did; what it could not say was that nothing
-would be left without the cost either. The next step in the loop's own order is hourly data.
+units said beforehand that the verdict would fail on cost, and it did; what it could not say was that at 3 bps the
+book would still not clear the entry rule, nor stand apart from random books. The price return itself was positive
+(about 4% of total position a year after funding, while the book stood). The next step in the loop's own order is hourly data.
 
