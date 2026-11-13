@@ -105,6 +105,9 @@ CONFIRM_READS: tuple[dict[str, Any], ...] = (
     # C007 holds one direction, so there is nothing to freeze but the candidate itself (its logic, its accounting
     # and their fixed values are in CANDIDATES and the constants above).
     {"read": 2, "candidate": "C007", "registered": "2026-11-13", "asked": "D6, Thomas 2026-11-13"},
+    # C010 is C007 without its universe's tail. C007's result on this span is known (0.08; 2025 +15.3%, 2026 -11.9%),
+    # so this read is a diagnosis of the cause as much as a test of the book.
+    {"read": 3, "candidate": "C010", "registered": "2026-11-13", "asked": "D8, Thomas 2026-11-13"},
 )
 # read number -> the run that spent it. Filled in the commit that records the result; ``confirm`` refuses a read
 # that is already here.

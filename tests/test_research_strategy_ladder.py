@@ -389,9 +389,11 @@ def test_the_counts_before_a_read_say_how_many_coins_each_side_would_hold_and_ca
 def test_two_confirm_reads_are_spent_and_three_are_left(monkeypatch, capsys):
     """Reads 1 and 2 were spent on 2026-11-13 (C002, C007: both CONFIRM_FAIL). Nothing is open until a third is
     registered."""
-    assert set(sl.CONFIRM_DONE) == {1, 2} and "C007" in sl.CONFIRM_DONE[2] and "CONFIRM_FAIL" in sl.CONFIRM_DONE[2]
+    assert {1, 2} <= set(sl.CONFIRM_DONE) and "C007" in sl.CONFIRM_DONE[2] and "CONFIRM_FAIL" in sl.CONFIRM_DONE[2]
+    assert sl.confirm_bar(3) == 1.388, "the bar the third read is held to"
+    monkeypatch.setattr(sl, "CONFIRM_READS", sl.CONFIRM_READS[:2])
+    monkeypatch.setattr(sl, "CONFIRM_DONE", {k: v for k, v in sl.CONFIRM_DONE.items() if k <= 2})
     assert sl.CONFIRM_BUDGET - len(sl.CONFIRM_DONE) == 3 and sl.next_confirm_read() is None
-    assert sl.confirm_bar(len(sl.CONFIRM_DONE) + 1) == 1.388, "the bar the next read is held to"
     monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
     assert sl.main(["confirm"]) == sl.EXIT_USAGE and "no registered confirm read is open" in capsys.readouterr().err
 
@@ -497,4 +499,17 @@ def test_the_sweep_command_takes_groups_or_the_null_and_loads_what_they_read(mon
     for only in ("null", "price_volume,funding,coin_character", "trade_flow", "positioning,depth,spot"):
         assert sl.main(["sweep", "--only", only]) == sl.EXIT_BLOCKED
     assert asked == [(False, False), (False, False), (False, True), (True, False)]
+
+
+# --- confirm read 3: the tail-out book ---------------------------------------------------------------------------------
+
+def test_the_third_read_is_c010_which_differs_from_the_second_reads_book_only_by_the_tail():
+    third = next(r for r in sl.CONFIRM_READS if r["read"] == 3)
+    second = next(r for r in sl.CONFIRM_READS if r["read"] == 2)
+    a, b = sl.CANDIDATES[third["candidate"]], sl.CANDIDATES[second["candidate"]]
+    assert third["candidate"] == "C010" and (a["logic"], b["logic"]) == ("L9T", "L9")
+    assert {k: a[k] for k in ("variable", "long", "tier", "accounting")} == {k: b[k] for k in ("variable", "long", "tier", "accounting")}
+    assert sl.BOOKS["L9T"] is not sl.BOOKS["L9"] and sl.confirm_bar(3) == 1.388
+    read, direction, labels = sl._confirm_frame(xsb.Market(), third)
+    assert direction(date(2026, 6, 7)) == -1 and labels == {}
 
