@@ -364,7 +364,7 @@ def test_the_axis_check_by_variable_finds_the_one_an_axis_moves_and_counts_what_
     heat = (["hot"] * 10 + ["cool"] * 10) * 6
     series = {("moved", "top30"): {d: (0.2 if h == "hot" else -0.2) + (0.01 if k % 2 else -0.01) for k, (d, h) in enumerate(zip(days, heat))},
               ("still", "top30"): {d: 0.05 * (((k * 7919) % 13) - 6) / 6 for k, d in enumerate(days)}}
-    monkeypatch.setattr(lab, "PLACEBO_AXES", 60)
+    monkeypatch.setattr(lab, "PLACEBO_AXES_BY_VARIABLE", 60)
     monkeypatch.setattr(lab, "ic_series", lambda market, names, span: (days, series))
     monkeypatch.setattr(lab, "tier_members", lambda market, span: {"top30": {}})
     monkeypatch.setattr(lab, "scenario_labels", lambda market, monthly, asked, span: {d: {"heat": h} for d, h in zip(days, heat)})
@@ -391,4 +391,48 @@ def test_a_run_may_map_one_group_alone_and_refuses_a_group_nobody_registered(mon
     assert lab.main(["run", "--only", "trade_flow"]) == lab.EXIT_BLOCKED
     assert asked == {"attach": False, "flow": True}, "the trade-flow columns and nothing heavier"
     assert lab.main(["run", "--only", "spot"]) == lab.EXIT_BLOCKED and asked == {"attach": True, "flow": False}
+
+
+def test_the_by_variable_check_has_enough_placebos_for_a_real_effect_to_pass_the_correction():
+    """The smallest p a test can show is one over the placebos plus one. It has to be under what Benjamini–Hochberg
+    asks of the best of a few hundred tests, or nothing could ever pass (the first run, 2026-11-13: 200 placebos)."""
+    tests, q = 27 * 2 * 5, 0.10
+    assert 1 / (lab.PLACEBO_AXES_BY_VARIABLE + 1) < q / tests
+    assert not 1 / (200 + 1) < q / tests
+
+
+# --- D7: the universe's character by month ----------------------------------------------------------------------------
+
+def test_the_universe_character_is_read_by_month_from_the_past_and_computes_no_return(tiers):
+    span = (date(2020, 1, 1), date(2021, 6, 30))
+    full = lab.cut_market(_market(span[1]), span)
+    out = lab.universe_character(full, span)
+    assert out["returns_computed"] is False and set(out["years"]) == {"2020", "2021"}
+    month = out["months"]["2021-03"]
+    assert set(month) == {"funding_abs_median_bps_week", "funding_abs_p90_bps_week", "wild_share",
+                          "listing_age_median_days", "members", "overlap_with_previous_month"}
+    assert month["members"] == 10 and 0.7 <= month["overlap_with_previous_month"] <= 1.0, "ten of fourteen coins, by volume"
+    assert month["wild_share"] == 0.0 and month["funding_abs_p90_bps_week"] >= month["funding_abs_median_bps_week"] > 0
+    assert 600 < month["listing_age_median_days"] < 680, "listed 2019-06-01"
+    # Later bars, whatever they hold, change no earlier month.
+    twisted = lab.universe_character(lab.cut_market(_market(date(2021, 12, 31), twist_after=span[1]), span), span)
+    assert twisted == out
+    flat = json.dumps(out)
+    assert all(word not in flat for word in ("sharpe", "pnl", "net")), "character only"
+
+
+def test_the_universe_command_stops_before_the_reserved_days(monkeypatch, capsys):
+    asked = {}
+
+    def hold(cache, span=None, *, attach=True, flow=False):
+        asked.update(span=span, attach=attach)
+        return None
+
+    monkeypatch.setattr(lab.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(lab, "hold", hold)
+    assert lab.main(["universe"]) == lab.EXIT_BLOCKED
+    assert asked == {"span": (lab.SPAN[0], date(2026, 9, 30)), "attach": False}
+    assert lab.CHARACTER_END < lab.bs.RESERVED_FROM
+    monkeypatch.setattr(lab.xsb, "_in_sandbox", lambda: False)
+    assert lab.main(["universe"]) == lab.EXIT_USAGE
 

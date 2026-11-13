@@ -414,6 +414,10 @@ def grid(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tu
 # --- is a scenario axis worth having? (the monthly check) --------------------------------------------------------
 
 PLACEBO_AXES = 200                         # shuffled-spell copies each axis is compared with
+# One variable at a time there are a few hundred tests, and the smallest p a test can show is one over the number
+# of placebos plus one. With 200 that floor (0.005) sits above anything Benjamini-Hochberg could pass at q 0.10
+# over 230 tests (0.0004) — the first run could not have passed anything. 5,000 puts the floor at 0.0002.
+PLACEBO_AXES_BY_VARIABLE = 5000
 
 
 def ic_series(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tuple[date, date] = SPAN
@@ -505,29 +509,83 @@ def axis_by_variable(market: xsb.Market, names: Mapping[str, tuple[str, Variable
     tests = []
     for axis in ("trend", "vol", "dispersion", "heat", "universe"):
         real = [labels[d].get(axis) for d in days]
-        fakes = [dict(zip(days, shuffled_spells(real, f"{SPEC}|axis|{axis}|{k}"))) for k in range(PLACEBO_AXES)]
         actual_labels = dict(zip(days, real))
-        for key, values in sorted(series.items()):
-            actual = separation({key: values}, actual_labels)
-            if actual is None:
+        actual = {key: separation({key: values}, actual_labels) for key, values in series.items()}
+        actual = {key: value for key, value in actual.items() if value is not None}
+        above, counted = dict.fromkeys(actual, 0), dict.fromkeys(actual, 0)
+        for k in range(PLACEBO_AXES_BY_VARIABLE):                # one placebo at a time: none is kept
+            fake = dict(zip(days, shuffled_spells(real, f"{SPEC}|axis|{axis}|{k}")))
+            for key, value in actual.items():
+                placebo = separation({key: series[key]}, fake)
+                if placebo is not None:
+                    counted[key] += 1
+                    above[key] += placebo >= value
+        for key in sorted(actual):
+            if counted[key] < PLACEBO_AXES_BY_VARIABLE // 2:
                 continue
-            placebo = [v for v in (separation({key: values}, fake) for fake in fakes) if v is not None]
-            if len(placebo) < PLACEBO_AXES // 2:
-                continue
-            p = (1 + sum(1 for v in placebo if v >= actual)) / (1 + len(placebo))
-            states = {}
-            for day, ic in values.items():
+            states: dict[str, list[float]] = {}
+            for day, ic in series[key].items():
                 if actual_labels.get(day) is not None:
                     states.setdefault(actual_labels[day], []).append(ic)
-            tests.append({"variable": key[0], "tier": key[1], "axis": axis, "separation": round(actual, 5), "p": round(p, 4),
+            tests.append({"variable": key[0], "tier": key[1], "axis": axis, "separation": round(actual[key], 5),
+                          "p": round((1 + above[key]) / (1 + counted[key]), 5),
                           "state_means": {k: round(statistics.fmean(v), 4) for k, v in sorted(states.items())
                                           if len(v) >= MIN_DECISIONS}})
     ordered = sorted(tests, key=lambda t: (t["p"], t["variable"], t["tier"], t["axis"]))
     cutoff = max((i for i, t in enumerate(ordered, start=1) if t["p"] <= q * i / len(ordered)), default=0)
     return {"tests": len(tests), "p_under_0.05": sum(1 for t in tests if t["p"] < 0.05),
             "expected_under_0.05_by_chance": round(0.05 * len(tests), 1), "q": q,
-            "survive_benjamini_hochberg": ordered[:cutoff], "smallest_p": ordered[:10],
+            "placebos_per_test": PLACEBO_AXES_BY_VARIABLE, "survive_benjamini_hochberg": ordered[:cutoff], "smallest_p": ordered[:10],
             "all_tests": [[t["variable"], t["tier"], t["axis"], t["p"]] for t in ordered]}
+
+
+# --- what kind of universe is it, month by month (D7) ------------------------------------------------------------
+
+CHARACTER_END = bs.CONFIRM[1]              # 2026-09-30: the days after it stay reserved
+
+
+def _percentile(values: Sequence[float], share: float) -> float:
+    ordered = sorted(values)
+    return ordered[min(len(ordered) - 1, max(0, math.ceil(share * len(ordered)) - 1))]
+
+
+def universe_character(market: xsb.Market, span: tuple[date, date]) -> dict[str, Any]:
+    """The top tier's character by month: how large funding is, how many coins move wildly, how old the coins are
+    and how fast the membership turns over. Every value is read at the month's weekly decisions from that day and
+    earlier and averaged over them. **No return of any book or candidate is computed.**"""
+    monthly = tier_members(market, span)["top30"]
+    weekly = [d for d in xsb.held_days(span[0], span[1]) if xsb.is_rebalance_day(bs.CADENCE, d)]
+    rows: dict[str, dict[str, list[float]]] = {}
+    for day in weekly:
+        members = monthly.get(date(day.year, day.month, 1), ())
+        funding = [abs(v) * 10_000 for v in (xsb.trailing_funding(market, s, day, 7) for s in members) if v is not None]
+        moves = [m for m in (_daily_moves(market, s, day, LOOKBACK) for s in members) if m is not None]
+        ages = [(day - first).days for first in (market.first_day(s) for s in members) if first is not None and first <= day]
+        row = rows.setdefault(day.strftime("%Y-%m"), {})
+        if len(funding) >= MIN_NAMES:
+            row.setdefault("funding_abs_median_bps_week", []).append(statistics.median(funding))
+            row.setdefault("funding_abs_p90_bps_week", []).append(_percentile(funding, 0.90))
+        if len(moves) >= MIN_NAMES:
+            row.setdefault("wild_share", []).append(sum(1 for m in moves if max(m) >= WILD_MOVE) / len(moves))
+        if len(ages) >= MIN_NAMES:
+            row.setdefault("listing_age_median_days", []).append(statistics.median(ages))
+    months = {}
+    previous: set[str] | None = None
+    for start in sorted(monthly):
+        key, members = start.strftime("%Y-%m"), set(monthly[start])
+        body = {name: round(statistics.fmean(values), 3) for name, values in sorted(rows.get(key, {}).items())}
+        body["members"] = len(members)
+        if previous and members:
+            body["overlap_with_previous_month"] = round(len(members & previous) / len(members), 3)
+        if span[0] <= start <= span[1] and body.get("members"):
+            months[key] = body
+        previous = members or previous
+    years: dict[str, dict[str, float]] = {}
+    for year in sorted({k[:4] for k in months}):
+        picked = [v for k, v in months.items() if k.startswith(year)]
+        names = sorted({n for v in picked for n in v if n != "members"})
+        years[year] = {n: round(statistics.fmean(v[n] for v in picked if n in v), 3) for n in names}
+    return {"months": months, "years": years, "returns_computed": False}
 
 
 # --- what is on disk and not read (the monthly check) ------------------------------------------------------------
@@ -660,7 +718,7 @@ def hold(cache: Path, span: tuple[date, date] = SPAN, *, attach: bool = True, fl
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="signal_lab", description=__doc__.splitlines()[0])
-    parser.add_argument("command", choices=("list", "run", "axes", "axes-by-variable", "inventory"))
+    parser.add_argument("command", choices=("list", "run", "axes", "axes-by-variable", "inventory", "universe"))
     parser.add_argument("--only", default=None, help="run: a variable group to map alone, with the random variables")
     parser.add_argument("--cache", type=Path, default=None, help="default: $RESEARCH_CACHE")
     args = parser.parse_args(argv)
@@ -677,6 +735,17 @@ def main(argv: list[str] | None = None) -> int:
     if not xsb._in_sandbox():
         print("refused: runs in the research sandbox only (scripts/research/sandbox_run.sh)", file=sys.stderr)
         return EXIT_USAGE
+    if args.command == "universe":
+        span = (SPAN[0], CHARACTER_END)
+        bs.check_search_span(span)
+        market = hold(cache, span, attach=False)
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in span], "last_day_read": last_day(market).isoformat(),
+                          "judgement": None, **universe_character(market, span)}, indent=1, sort_keys=True))
+        return EXIT_OK
     bs.check_development_span(SPAN)
     chosen = {n: v for n, v in variables().items() if args.only is None or v[0] == args.only}
     if not chosen:
