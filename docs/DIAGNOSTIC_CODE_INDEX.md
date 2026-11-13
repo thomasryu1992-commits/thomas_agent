@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **662** distinct codes across **1361** raise sites
+- **662** distinct codes across **1362** raise sites
 - **22** exception classes carry them
 - **65** codes are raised from more than one module (see below)
 - **179** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -1103,6 +1103,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `PROMOTION_REASON_MISSING` | `AuditError` | `runtime/mvp_runtime/audit.py` | `build_promotion_audit` | `not (isinstance(reason, str) and reason.strip())` |
 | `PROMOTION_SUBJECT_INVALID` | `AuditError` | `runtime/mvp_runtime/audit.py` | `build_promotion_audit` | `not (isinstance(candidate_id, str) and candidate_id and isinstance(validated_id, str) and valid…` |
 | `PROMOTION_TIER_INVALID` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | `promotion_content_sha256` | `live_tier not in pool_store.LIVE_TIERS` |
+| `PROPOSAL_INPUTS_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/pipeline_worker.py` | `_apply_job` | `atr_bps is not None and crypto_proposer.clean_atr_bps(atr_bps) is None` |
 | `PROPOSAL_INPUTS_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/pipeline_worker.py` | `_apply_job` | `focus is not None and (not isinstance(focus, str))` |
 | `PROPOSAL_INPUTS_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/pipeline_worker.py` | `_apply_job` | `not isinstance(families, list) or not all((isinstance(f, str) for f in families)) or len(famili…` |
 | `PROPOSAL_INPUTS_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/pipeline_worker.py` | `_apply_job` | `not isinstance(inputs, dict)` |

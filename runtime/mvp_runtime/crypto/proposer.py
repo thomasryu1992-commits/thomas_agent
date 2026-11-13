@@ -49,15 +49,19 @@ recorded. Nothing downstream depends on a proposal existing.
 from __future__ import annotations
 
 import json
+import math
 import re
+import statistics
 from typing import Any, Iterable, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
 from ..budgets import TRIAGE_TIMEOUT_SECONDS
-from ..errors import ProviderError, ToolBlocked
+from ..errors import MvpRuntimeError, ProviderError, ToolBlocked
 from ..worker import Provider
+from . import cost as costs
 from . import factory, market_data, template_space
+from .features import build_feature_rows
 from .forward_confirmation import min_forward_trades
 from .robustness import score_robustness
 from .strategy import ALLOWED_TIMEFRAMES, SpecParseError, StrategySpec
@@ -66,7 +70,7 @@ PROPOSER_WORKER_ID = "mvp.crypto.strategy_proposer.llm"
 PROPOSER_WORKER_VERSION = "0.1.0"
 # v2 (2026-11-12): the prompt states what the trial screen refuses and names what was already
 # refused or retired, and a proposal must carry the hypothesis form (below).
-PROPOSER_PROMPT_VERSION = "mvp_crypto_strategy_proposer.v2"
+PROPOSER_PROMPT_VERSION = "mvp_crypto_strategy_proposer.v3"
 PROPOSAL_RECORD_TYPE = "crypto_strategy_family_proposal.v0"
 
 # A family proposal is a few short JSON objects, not an essay — but it is bigger than a
@@ -114,6 +118,124 @@ REFUSAL_REASON_SHAPE = re.compile(r"^[a-z][a-z_]{0,39}$")
 
 # M4b — the ledger record kind the CLI and the scheduler both append a proposal under.
 PROPOSAL_LEDGER_KIND = "crypto_strategy_proposal"
+
+# What a trade costs, told to the model (prompt v3). One number crosses to the worker beside the
+# family names: the frame's typical ATR as a share of price, in basis points. With it the prompt
+# can turn the cost model's fixed bps into R at a given ``stop_atr`` — the unit the model's own
+# knob is in. These are the only values the worker's door lets into a prompt: a bar whose ATR
+# is under half a basis point or over half the price is not a market this prompt describes, so
+# such a value is dropped by the caller and refused by the door, never clipped into range.
+ATR_SHARE_WIRE_RANGE = (0.5, 5000.0)
+
+
+def clean_atr_bps(value: Any) -> float | None:
+    """``value`` as the typical-ATR figure a prompt may carry, or None. Pure."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    low, high = ATR_SHARE_WIRE_RANGE
+    if not math.isfinite(number) or not (low <= number <= high):
+        return None
+    return number
+
+
+def typical_atr_bps(snapshot: Mapping[str, Any]) -> float | None:
+    """The median of ATR over close across the frame's bars, in basis points of price.
+
+    Read from the same feature rows the proposal's backtest replays, so "one ATR" in the prompt
+    is the ATR the entry door will divide by. Market data only: no outcome, no holdout figure.
+    None when the frame has no bar with both numbers, or cannot be built at all — the prompt
+    then states the cost rule without the timeframe's arithmetic, the same degraded direction
+    as an unreadable refusal list."""
+    try:
+        rows = build_feature_rows(dict(snapshot))
+    except (MvpRuntimeError, ValueError, TypeError, KeyError, ZeroDivisionError):
+        return None
+    shares = [
+        float(row["atr"]) / float(row["close"]) * 10000.0
+        for row in rows
+        if isinstance(row.get("atr"), (int, float)) and isinstance(row.get("close"), (int, float))
+        and not isinstance(row.get("atr"), bool) and not isinstance(row.get("close"), bool)
+        and row["atr"] > 0 and row["close"] > 0
+    ]
+    if not shares:
+        return None
+    return clean_atr_bps(round(statistics.median(shares), 1))
+
+
+def cost_terms(venue: str, atr_bps: float | None = None) -> dict[str, float] | None:
+    """The numbers the prompt's cost paragraph is built from, every one computed by the cost
+    model itself. Pure.
+
+    ``round_trip_bps`` is `cost.round_trip_cost_r` at a stop distance of the whole price — the
+    friction as a share of notional, which is the form that does not depend on the stop. Given
+    ``atr_bps`` it is divided out into R: ``stop_atr_edge`` is the stop distance, in ATRs, at
+    which a typical bar's round trip costs exactly `cost.MAX_ENTRY_COST_R`, so a tighter stop is
+    refused by the backtest and by both entry doors. None for a venue whose costs are not
+    declared: the prompt says nothing about cost rather than quoting another venue's rates."""
+    try:
+        model = costs.cost_model_for(venue)
+    except MvpRuntimeError:
+        return None
+    round_trip_bps = max(
+        costs.round_trip_cost_r(direction, 1.0, 1.0, cost=model) for direction in ("LONG", "SHORT")
+    ) * 10000.0
+    if not math.isfinite(round_trip_bps) or round_trip_bps <= 0:
+        return None
+    terms = {
+        "round_trip_bps": round_trip_bps,
+        "entry_cost_limit_r": float(costs.MAX_ENTRY_COST_R),
+        "funding_bps": float(model.funding_bps_per_interval),
+        "funding_per_day": float(model.funding_intervals_per_day),
+    }
+    atr = clean_atr_bps(atr_bps)
+    if atr is not None:
+        terms.update({
+            "atr_bps": atr,
+            "cost_r_at_one_atr": round_trip_bps / atr,
+            "stop_atr_edge": round_trip_bps / (costs.MAX_ENTRY_COST_R * atr),
+            "carry_r_per_day_at_one_atr":
+                model.funding_bps_per_interval * model.funding_intervals_per_day / atr,
+        })
+    return terms
+
+
+def _cost_block(venue: str, timeframe: str | None, atr_bps: float | None) -> str:
+    terms = cost_terms(venue, atr_bps)
+    if terms is None:
+        return ""
+    limit = terms["entry_cost_limit_r"]
+    opening = (
+        "\nWhat a trade costs (the cost model the backtest and the entry doors use): a round trip "
+        f"is about {terms['round_trip_bps']:.1f} bps of notional — taker in, taker plus slippage out. "
+    )
+    funding = (
+        f"Funding is charged on notional at each settlement a position is held through "
+        f"({terms['funding_per_day']:.0f} a day): a long pays a positive rate and a short earns it"
+    )
+    if "atr_bps" not in terms:
+        return (
+            opening
+            + "In R that is the bps divided by the stop distance in bps of price (stop_atr x ATR), "
+            f"and an entry whose round trip costs more than {limit}R is refused. "
+            + funding + ". The edge you claim in \"size\" must clear these.\n"
+        )
+    one = terms["cost_r_at_one_atr"]
+    bars = f"these {timeframe} bars" if timeframe else "these bars"
+    return (
+        opening
+        + f"On {bars} one ATR is typically about {terms['atr_bps']:.0f} bps of price (one symbol's "
+        "recent bars; the cohort re-score sees other symbols and a longer history, so read it as an "
+        "order of magnitude), so the cost in "
+        f"R is {terms['round_trip_bps']:.1f} / (stop_atr x {terms['atr_bps']:.0f}): about {one:.2f}R at "
+        f"stop_atr 1.0 and {one / 2:.2f}R at stop_atr 2.0. An entry whose round trip costs more than "
+        f"{limit}R is refused, which on a typical bar is any stop_atr below "
+        f"{terms['stop_atr_edge']:.2f} — such a rule trades only on its most volatile bars, if at all. "
+        + funding
+        + f" (at the venue's base rate of {terms['funding_bps']:.1f} bp, about "
+        f"{terms['carry_r_per_day_at_one_atr']:.3f}R a day at stop_atr 1.0). "
+        "The edge you claim in \"size\" must clear these.\n"
+    )
 
 # M4b — the unreviewed-backlog cap. Scheduling the proposer reverses the 2026-07-24
 # "manual CLI only — proposals accumulate faster than anyone reviews" decision, so a
@@ -461,6 +583,7 @@ def build_proposal_prompt(
     venue: str = market_data.BINANCE_FUTURES,
     timeframe: str | None = None,
     recent_refusals: Sequence[Mapping[str, Any]] = (),
+    atr_bps: float | None = None,
 ) -> str:
     """The proposal prompt: the real vocabulary, the real families, the real bounds — and, since
     v2, what the trial screen will do with the answer.
@@ -473,6 +596,13 @@ def build_proposal_prompt(
     those things. All of it is generator-side knowledge — code constants and the screens' own
     structural refusals (``recent_refusals``, cleaned by :func:`clean_refusals`); nothing from a
     holdout or a forward record is passed, so the search cannot fit what the judge reads.
+
+    Since v3 it also says what a trade costs (:func:`cost_terms`): the round trip in bps from the
+    cost model, and — given ``atr_bps``, the frame's typical ATR as a share of price — the same
+    cost in R at a stop distance, and the stop below which the entry door refuses every typical
+    bar. Before v3 the model chose ``stop_atr`` without knowing that the cost in R is fixed bps
+    over that stop. Computed from code and the frame's own bars; the measured per-timeframe
+    costs and gross figures in the records are holdout results and are not passed.
 
     ``timeframe`` is the frame the proposals will be scored on. Given, it is the ONLY timeframe
     the prompt allows: `evaluate_proposal` refuses a spec whose timeframe is not the frame's
@@ -527,6 +657,7 @@ def build_proposal_prompt(
         f"\nFamilies already searched and retired (a proposal naming one is refused):\n{retired}\n"
         f"{refused_block}"
         f"{pace_block}"
+        f"{_cost_block(venue, timeframe, atr_bps)}"
         "\nHard constraints — a proposal violating any of these is discarded:\n"
         f"{timeframe_rule}"
         "- direction is \"long\" or \"short\"\n"
@@ -709,6 +840,7 @@ def propose_strategy_families(
     generation = generate_proposals(
         provider=provider, existing_families=existing_families, focus=focus,
         count=count, venue=venue, timeframe=snapshot.get("timeframe"),
+        atr_bps=typical_atr_bps(snapshot),
     )
     return assemble_proposal_record(snapshot, generation=generation, focus=focus, now=now)
 
@@ -722,6 +854,7 @@ def generate_proposals(
     venue: str = market_data.BINANCE_FUTURES,
     timeframe: str | None = None,
     recent_refusals: Sequence[Mapping[str, Any]] = (),
+    atr_bps: float | None = None,
 ) -> dict[str, Any]:
     """The model half: ask for families, parse what came back. **Touches no snapshot.**
 
@@ -737,7 +870,7 @@ def generate_proposals(
     """
     prompt = build_proposal_prompt(
         existing_families=existing_families, focus=focus, count=count, venue=venue,
-        timeframe=timeframe, recent_refusals=recent_refusals,
+        timeframe=timeframe, recent_refusals=recent_refusals, atr_bps=atr_bps,
     )
 
     degraded: str | None = None
@@ -799,6 +932,10 @@ def assemble_proposal_record(
         "symbol": snapshot.get("symbol"),
         "timeframe": snapshot.get("timeframe"),
         "candle_count": snapshot.get("candle_count"),
+        # What the prompt's cost paragraph was told about this frame (v3). The same function of
+        # the same snapshot the scheduler sent from, kept so a record can be read back with the
+        # one market number its prompt carried; None when the frame gave none.
+        "prompt_atr_bps": typical_atr_bps(snapshot),
         "focus": focus,
         "prompt_version": PROPOSER_PROMPT_VERSION,
         "proposed_count": len(verdicts),

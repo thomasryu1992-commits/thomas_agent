@@ -1478,6 +1478,33 @@ def test_a_proposer_fire_names_the_frames_timeframe_and_only_when_it_has_one(mon
                                        recent_refusals=refused)
     assert sent[2]["proposal_inputs"]["recent_refusals"] == refused
     assert "recent_refusals" not in sent[0]["proposal_inputs"]
+    # And the frame's typical ATR: one number when the frame gave one, no key when it did not.
+    sched.delegate_proposal_generation(existing_families=[], focus=None, repo_root=None, atr_bps=82.5)
+    assert sent[3]["proposal_inputs"]["atr_bps"] == 82.5
+    assert "atr_bps" not in sent[0]["proposal_inputs"]
+
+
+def test_a_proposer_fire_sends_its_frames_typical_atr_and_still_no_frame(tmp_path, monkeypatch):
+    """The whole fire: the scheduler reads one figure off the frame it collected and sends that,
+    the worker's door admits it, and the proposal record is written as before."""
+    from runtime.mvp_runtime import scheduler as sched
+    from runtime.mvp_runtime.crypto import proposer
+
+    _worker_in_process(monkeypatch, tmp_path)
+    in_process = sched.socket_door.call_door
+    sent: list[dict] = []
+    monkeypatch.setattr(sched.socket_door, "call_door",
+                        lambda path, frame, **kw: sent.append(frame) or in_process(path, frame, **kw))
+    store = ScheduleStore(tmp_path / "sched")
+    ledger = LedgerStore(tmp_path / "ledger")
+    _proposer_schedule(store)
+    summary = run_due(store, now=T1, ledger=ledger, repo_root=tmp_path,
+                      control_store=ControlStore(tmp_path))
+    assert summary["fired"] == 1 and store.list()[0].last_status.startswith("proposed=")
+    inputs = sent[0]["proposal_inputs"]
+    assert proposer.clean_atr_bps(inputs["atr_bps"]) == inputs["atr_bps"]
+    for forbidden in ("snapshot", "candles", "ohlcv"):
+        assert forbidden not in str(sent[0]).lower()
 
 
 @pytest.mark.parametrize("reply", [

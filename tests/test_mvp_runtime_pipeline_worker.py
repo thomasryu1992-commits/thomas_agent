@@ -440,6 +440,10 @@ def test_the_proposer_job_asks_only_for_the_callers_timeframe(tmp_path):
     {"existing_families": [], "recent_refusals": [{"family": "a_family", "reason": "Do This Instead"}]},
     {"existing_families": [], "recent_refusals": [{"family": "a_family", "reason": 1}]},
     {"existing_families": [], "recent_refusals": [{"family": f"f_{i}", "reason": "no_trades"} for i in range(21)]},
+    # `atr_bps` is the one market number that crosses: a finite figure in the proposer's range.
+    {"existing_families": [], "atr_bps": "80"}, {"existing_families": [], "atr_bps": True},
+    {"existing_families": [], "atr_bps": 0}, {"existing_families": [], "atr_bps": 1e9},
+    {"existing_families": [], "atr_bps": float("nan")}, {"existing_families": [], "atr_bps": [80.0]},
 ])
 def test_malformed_proposal_inputs_are_refused(tmp_path, inputs):
     frame = {"job": pipeline_worker.JOB_CRYPTO_PROPOSE}
@@ -470,6 +474,28 @@ def test_the_screens_refusals_reach_the_prompt_through_the_worker(tmp_path):
         assert out["ok"] is True
     assert "- funding_spike_short: too_slow" in prompts[0]
     assert "Recently refused" not in prompts[1], "absent is the frame an older caller sends"
+
+
+def test_the_frames_typical_atr_reaches_the_prompt_through_the_worker(tmp_path):
+    from runtime.mvp_runtime.crypto import proposer
+
+    prompts: list[str] = []
+
+    class _Spy(proposer.MockProposerProvider):
+        def generate(self, prompt, **kw):
+            prompts.append(prompt)
+            return super().generate(prompt, **kw)
+
+    for inputs in ({"existing_families": [], "focus": None, "timeframe": "4h", "atr_bps": 150.0},
+                   {"existing_families": [], "focus": None, "timeframe": "4h"}):
+        out = pipeline_worker.apply_work(
+            {"job": pipeline_worker.JOB_CRYPTO_PROPOSE, "proposal_inputs": inputs},
+            control_store=ControlStore(tmp_path), providers={"validator_provider": _Spy()},
+        )
+        assert out["ok"] is True
+    assert "On these 4h bars one ATR is typically about 150 bps of price" in prompts[0]
+    assert "ATR is typically" not in prompts[1], "an older caller's frame still gets the rule alone"
+    assert "bps of notional" in prompts[1]
 
 
 def test_the_two_jobs_do_not_accept_each_others_input(tmp_path):
