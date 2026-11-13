@@ -39,5 +39,13 @@ the net change failed three tests. After the run, turnover and netted volume und
 different method through the tool's own loader and matched to four decimals; the peak of 15 open positions and of 9
 symbol-direction groups equals what the overlap measurement counted on 2026-11-12.
 
+**A reading corrected after the run.** The first write-up said the equal split "pays" 236 resize orders. In a net
+book only the symbol's net change is an order: what a newcomer takes is what the others give up at the same
+instant, so nothing reaches the market. Volume sent to market is turnover minus netted volume, and the equal split
+sends the least (27,575 against 31,692 for the share fixed at entry and 40,328 for 1R each). What the equal split
+really costs is attribution and re-sizing every strategy's protective orders, which this computation does not
+measure. The definitions and the figures did not change; the tool now prints the market volume as its own field.
+
 **Not done.** No judgement, no P&L, no runtime change. Protective orders, reconciliation and the order of partial
-offsets (the design's open problems) are untouched. Which split the design adopts is asked there, not decided here.
+offsets (the design's open problems) are untouched. Which split the design adopts is not decided: it turns on how
+protective orders sit on a net position, the design's first open problem.

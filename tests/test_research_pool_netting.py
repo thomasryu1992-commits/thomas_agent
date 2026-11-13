@@ -85,6 +85,16 @@ def test_under_the_share_fixed_at_entry_nothing_is_resized_and_the_bet_can_pass_
     assert (slices["p90"], slices["median"], slices["p10"]) == (500.0, 250.0, pytest.approx(166.67))
 
 
+def test_a_newcomer_under_the_equal_split_is_paid_for_inside_the_book_and_no_order_reaches_the_market():
+    """A 0–12 and B 2–8, one bet. Under the equal split B's entry takes 25 that A gives up at the same instant, and
+    B's exit hands it back: the market sees only A's own entry and exit. Fixed at entry, B's 25 is bought and sold."""
+    pair = [_row("A", "BTCUSDT", "LONG", 0, 12), _row("B", "BTCUSDT", "LONG", 2, 8)]
+    assert _all(pair, "v1")["market_turnover_in_1r_money"] == 100.0
+    assert _all(pair, "v1")["resize_orders"]["count"] == 2
+    assert _all(pair, "v2")["market_turnover_in_1r_money"] == 150.0
+    assert _all(pair, "v0")["market_turnover_in_1r_money"] == 200.0
+
+
 def test_strategies_entering_at_the_same_instant_count_each_other():
     together = [_row("A", "BTCUSDT", "LONG", 0, 6), _row("B", "BTCUSDT", "LONG", 0, 6)]
     assert _all(together, "v2")["largest_bet_r"] == 1.0

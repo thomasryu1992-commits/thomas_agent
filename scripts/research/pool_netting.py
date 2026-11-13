@@ -11,7 +11,8 @@ figure is recomputed from the per-strategy forward record each time, so there is
   this stage does not read.
 - **Three ways to weigh a position** (S4 — both splits are computed and neither is chosen):
   ``v0`` every strategy 1R, as today; ``v1`` the k strategies of a bet hold 1/k each at all times, so the bet is
-  always 1R and the others are resized whenever one comes or goes; ``v2`` a strategy takes 1/k when it enters
+  always 1R and the others are resized whenever one comes or goes (inside the book: what a newcomer takes the
+  others give up at the same instant, so only the net reaches the market); ``v2`` a strategy takes 1/k when it enters
   (k counts itself, those already in and those entering at the same instant) and keeps it until it closes.
 - **Netted volume** is counted only where opposite-signed changes share a timestamp: at each instant, the sum of
   the strategies' absolute changes minus the absolute net change. Opposite positions that merely overlap in time
@@ -244,6 +245,8 @@ def _summary(walks: list[dict[str, Any]]) -> dict[str, Any]:
         "turnover_in_1r_money": round(turnover, 4),
         "netted_turnover_in_1r_money": round(netted, 4),
         "netted_share_of_turnover": round(netted / turnover, 4) if turnover > 0 else None,
+        # What reaches the market: in a net book only a symbol's net change at an instant is an order.
+        "market_turnover_in_1r_money": round(turnover - netted, 4),
         "fill_cost_saved_r": round(netted * _fill_cost_fraction(), 4),
         "resize_orders": {"count": len(resizes), "turnover_in_1r_money": round(sum(resizes), 4)},
         "order_sizes_usdt": {
