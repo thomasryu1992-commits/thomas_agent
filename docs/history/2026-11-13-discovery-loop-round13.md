@@ -37,3 +37,27 @@ of them pass.
 - *Books are squeezed to monthly and yearly sums at once.* Three hundred daily series do not fit beside the market
   in the sandbox. `read_daily` repeats what `measure` computes after a simulation, and tests hold `measure`,
   `read_daily` and the squeezed reading to the same numbers.
+
+## The result (same day)
+
+**What came out.** Moved to a steady net return, half of a shape's null books pass all four conditions at 20% of
+total position a year for the rank books on the top thirty (13% and 6% of them pass at the 15% floor itself), at
+25% for the funding-tail shape and at 30% for the rotation shape. In every shape the share passing everything
+tracks the share clearing Sharpe 1.0: with a steady return the ladder in effect asks for a net return above the
+book's yearly volatility, and the floor, the later years, the null and stability are met before that.
+
+**Set beside the five hypotheses.** Their net returns were -10.4% to +6.6%. On its shape's curve each sits where
+no null book passes. The kin of the three variants still unread sit there too.
+
+**Where the method broke its own assumption.** The crash shape's bar came out at the floor. Placebo hours are
+kept clear of crashes, so their books are calm; the real event book was about three times as volatile. "The noise
+is the null's" does not hold for that shape, and the record says the number is a lower bound and nothing more.
+
+**The rule as fixed, applied as fixed.** The rank shapes' bar is exactly five points above the floor and the
+reading table said "more than five", so the form uses the floor for them, with the pass rates at the floor
+written beside it. The prior line reads the curve either way.
+
+**What was added.** One line in the form: the size line is set against the floor and the nearest shape's bar, and
+the prior may not exceed the curve's pass rate at that size. Whether to run the three remaining variants was not
+decided here; it goes to Thomas as one question, with their kin's sizes and the curves.
+
