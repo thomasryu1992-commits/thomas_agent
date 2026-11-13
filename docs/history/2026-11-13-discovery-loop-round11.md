@@ -40,11 +40,14 @@ the leg nobody argued for.
 against an entry rule of 1.0, 4.0% of total position a year, with 2023 and 2024 negative (-19.0%, -30.2%). It is
 the first of the four hypotheses to end above zero after costs, and that is not counted as a lead.
 
-**What the split showed.** The output carries each leg, so nothing had to be backed out. Funding received less
-costs is about 13% of total position a year; price net of the beta hedge takes about 9% of it back. The payers
-were about half right: the coins they paid to short rose less than their beta said. The form's funding line was
-too low by a factor of 2.5 to 5, and the note written after the counts, that it would be lower still, was wrong:
-it read the median one-week spell where the sum is set by the deep spells that last.
+**What the split showed.** The output carries each leg, so nothing had to be backed out. The alts' funding less
+the alts' cost is about 10.6% of total position a year, under the floor on its own; the Bitcoin short's ordinary
+funding adds about 2.5%, which is not the payer the form named. Price net of the hedge takes about 9% back. If
+the 60-day beta is right, the payers were about half right: the coins they paid to short rose less than their
+beta said. Whether that beta holds for a crowded short was not measured. By year, the two negative years (2023,
+2024) are years the alts-only book gained and the hedge lost more. The form's funding line was too low by a
+factor of 2 to 4, and the note written after the counts, that it would be lower still, was wrong: it read the
+median one-week spell where the sum is set by the deep spells that last.
 
 **What the two placebos showed.** Against other pool coins held for the same spells, 9 of 300 did as well (p
 0.033). Against coins as beaten down, 20 of 300 did (p 0.070). The second null's mean is higher than the first's:
