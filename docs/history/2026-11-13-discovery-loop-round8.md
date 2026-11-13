@@ -30,3 +30,23 @@ prior for passing every condition is 10%.
 The held accounting treats a coin with no funding as paying none, and holding only coins that have it would select
 on later success. So the monthly funding files of the 158 remaining perps listed through 2024 are fetched first,
 and a counts-only pass with fixed stop rules runs before any return is computed.
+
+## The result (same day)
+
+**What came out.** H-L1 failed and is closed. Over 2020-2024 the listing book's annual Sharpe after stressed costs
+is -0.005 against an entry rule of 1.0, and 31% of the 300 placebo-listing books did as well or better (p 0.309).
+Four of the five years are positive; 2021 lost 83% of total position and erased them. Funding, the weakness the
+form named, went the other way: the short side received it. What the book lacks is any separation from shorting
+seasoned coins in the same weeks. The later-years condition was met and counts for nothing alone, as registered.
+
+**What is not done with it.** Dropping 2021, or swapping the dollar hedge for a beta hedge, and measuring again
+would be a definition fixed after the result on the same data. Neither is done. The prior was 10% and the form's
+size line (about 10% a year) was wrong; both go on the research map beside the result.
+
+**An order slip, recorded.** The first funding fetch died at symbol 55 of 158 on a TLS timeout, and the command
+chain ran the counts-only pass anyway because the fetch was joined to it with `;`. That pass stopped on the funding
+rule (0.742 against 0.9) and computed no return; its output is kept as `listing1-counts-partial.json`. The fetch
+was resumed to completion and the counts pass run again (0.997, no stop) before the one measurement. No threshold
+or definition moved between the two. The same trap is in this host's notes already: a failed step does not stop
+the shell, so every step that depends on the one before it is chained with `&&`.
+
