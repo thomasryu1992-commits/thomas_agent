@@ -143,7 +143,8 @@ def _cell(variable, scenario, t, *, ic=None, tier="top30", horizon=7):
             "tercile_spread_bps": 10.0}
 
 
-def test_a_lead_must_beat_every_random_variable_keep_its_rank_and_agree_with_its_own_whole():
+def test_a_lead_must_beat_every_random_variable_keep_its_rank_and_agree_with_its_own_whole(monkeypatch):
+    monkeypatch.setattr(lab, "RESTING_AXES", frozenset())          # the rule itself, with every axis in use
     against = {"7": {"largest_abs_t": 3.0, "share_abs_t_over_2": 0.05}, "28": {"largest_abs_t": None, "share_abs_t_over_2": None}}
     cells = [
         _cell("steady", "all", 2.5), _cell("steady", "trend=bull", 3.4),                    # a lead
@@ -435,4 +436,15 @@ def test_the_universe_command_stops_before_the_reserved_days(monkeypatch, capsys
     assert lab.CHARACTER_END < lab.bs.RESERVED_FROM
     monkeypatch.setattr(lab.xsb, "_in_sandbox", lambda: False)
     assert lab.main(["universe"]) == lab.EXIT_USAGE
+
+
+def test_a_cell_on_a_resting_axis_is_shown_and_is_not_a_lead():
+    """The five axes rest since 2026-11-13: two checks, none beat its placebos. Their cells stay on the map."""
+    assert lab.RESTING_AXES == {"trend", "vol", "dispersion", "heat", "universe"}
+    against = {"7": {"largest_abs_t": 3.0, "share_abs_t_over_2": 0.05}, "28": {"largest_abs_t": None, "share_abs_t_over_2": None}}
+    cells = [_cell("steady", "all", 3.5), _cell("steady", "trend=bull", 4.4), _cell("steady", "trend=bull|vol=low", 5.0)]
+    real = {"cells": cells, "variables": {"steady|top30": {"rank_persistence": 0.9}}}
+    out = lab.candidates(real, against)
+    assert [(c["variable"], c["scenario"]) for c in out["leads"]] == [("steady", "all")] and out["met_the_rule"] == 1
+    assert out["resting_axes"] == sorted(lab.RESTING_AXES)
 

@@ -130,7 +130,7 @@ def test_measure_reports_the_entry_rule_and_the_years_on_total_position(monkeypa
 def test_the_rounds_candidates_name_registered_variables_and_it_runs_in_the_sandbox_only(monkeypatch, capsys):
     for name, candidate in sl.CANDIDATES.items():
         assert candidate["variable"] in sl.lab.variables() and candidate["logic"] in sl.BOOKS, name
-        assert candidate["accounting"] in sl.ACCOUNTING and candidate["round"] in ("1", "2", "3"), name
+        assert candidate["accounting"] in sl.ACCOUNTING and candidate["round"] in ("1", "2", "3", "5"), name
         assert candidate["tier"] == "top30"
     monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: False)
     assert sl.main(["run"]) == sl.EXIT_USAGE
@@ -189,7 +189,7 @@ def test_the_confirm_read_uses_the_registered_directions_and_decides_by_the_bar(
 def test_the_confirm_read_loads_only_what_its_candidate_reads(monkeypatch, capsys):
     asked = {}
 
-    def hold(cache, span, *, attach=True):
+    def hold(cache, span, *, attach=True, flow=False):
         asked.update(span=span, attach=attach)
         return None
 
@@ -288,14 +288,15 @@ def test_the_risk_matched_book_gives_a_wild_coin_less_weight_and_carries_no_mark
 
 
 def test_a_round_is_measured_by_its_own_accounting_and_only_its_own_candidates(monkeypatch):
-    assert sl.latest_round() == "3"
+    assert sl.latest_round() == "5"
     assert {n for n, c in sl.CANDIDATES.items() if c["round"] == "2"} == {"C003", "C004"}
     assert all(c["accounting"] == "held" for c in sl.CANDIDATES.values() if c["round"] == "2")
     seen = []
     monkeypatch.setattr(sl, "run_l1", lambda market, candidate, span=None: seen.append(candidate["logic"]) or {})
     monkeypatch.setattr(sl, "run_l2", lambda market, candidate, span=None: seen.append("L2") or {})
     assert set(sl.run_round(xsb.Market(), which="2")) == {"C003", "C004"} and seen == ["L1", "L8"]
-    assert set(sl.run_round(xsb.Market())) == {"C005", "C006", "C007"}, "the latest round by default"
+    assert set(sl.run_round(xsb.Market(), which="3")) == {"C005", "C006", "C007"}
+    assert set(sl.run_round(xsb.Market())) == {"C008", "C009", "C010"}, "the latest round by default"
     assert set(sl.run_round(xsb.Market(), which="1")) == {"C001", "C002"}
 
 
@@ -388,9 +389,216 @@ def test_the_counts_before_a_read_say_how_many_coins_each_side_would_hold_and_ca
 def test_two_confirm_reads_are_spent_and_three_are_left(monkeypatch, capsys):
     """Reads 1 and 2 were spent on 2026-11-13 (C002, C007: both CONFIRM_FAIL). Nothing is open until a third is
     registered."""
-    assert set(sl.CONFIRM_DONE) == {1, 2} and "C007" in sl.CONFIRM_DONE[2] and "CONFIRM_FAIL" in sl.CONFIRM_DONE[2]
+    assert {1, 2} <= set(sl.CONFIRM_DONE) and "C007" in sl.CONFIRM_DONE[2] and "CONFIRM_FAIL" in sl.CONFIRM_DONE[2]
+    assert sl.confirm_bar(3) == 1.388, "the bar the third read is held to"
+    monkeypatch.setattr(sl, "CONFIRM_READS", sl.CONFIRM_READS[:2])
+    monkeypatch.setattr(sl, "CONFIRM_DONE", {k: v for k, v in sl.CONFIRM_DONE.items() if k <= 2})
     assert sl.CONFIRM_BUDGET - len(sl.CONFIRM_DONE) == 3 and sl.next_confirm_read() is None
-    assert sl.confirm_bar(len(sl.CONFIRM_DONE) + 1) == 1.388, "the bar the next read is held to"
     monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
     assert sl.main(["confirm"]) == sl.EXIT_USAGE and "no registered confirm read is open" in capsys.readouterr().err
+
+
+# --- round 5: the universe without its tail ---------------------------------------------------------------------------
+
+def _tail_market():
+    """Twenty quiet coins; WILDUSDT doubles once inside the month; three coins carry large funding."""
+    day = date(2021, 6, 6)
+    members = [f"Q{i:02d}USDT" for i in range(20)] + ["WILDUSDT"]
+    bars, funding = {}, {}
+    for i, s in enumerate(members):
+        price, out = 100.0, {}
+        for k in range(45, -2, -1):
+            d = day - timedelta(days=k)
+            move = 1.0 if (s == "WILDUSDT" and k == 10) else 0.002 * ((i + k) % 3 - 1)
+            opened, price = price, price * (1 + move)
+            out[d] = xsb.Bar(open=opened, close=price, quote_volume=10.0)
+        bars[s] = out
+        rate = {0: 0.004, 1: -0.004, 2: 0.003}.get(i, 0.0001) if s != "WILDUSDT" else 0.0001
+        funding[s] = [(int((day - timedelta(days=k) - date(1970, 1, 1)).total_seconds() * 1000) + 3600000, rate / 7) for k in range(7)]
+    return xsb.Market(bars=bars, funding=funding), members, day
+
+
+def test_the_tail_is_the_wild_coin_and_the_coins_with_the_largest_funding_whatever_its_sign():
+    market, members, day = _tail_market()
+    kept = sl.without_tail(market, members, day)
+    assert "WILDUSDT" not in kept, "doubled in a day inside the month"
+    assert "Q00USDT" not in kept and "Q01USDT" not in kept, "the largest funding, positive and negative alike"
+    assert set(members) - set(kept) <= {"WILDUSDT", "Q00USDT", "Q01USDT", "Q02USDT"} and len(kept) >= 17
+    assert "Q10USDT" in kept and sl.without_tail(market, [], day) == []
+    few = members[:sl.lab.MIN_NAMES - 2]
+    assert set(sl.without_tail(market, few + ["WILDUSDT"], day)) == set(few), "too few to rank funding: only the wild rule"
+
+
+def test_a_tail_out_book_never_holds_a_tail_coin(monkeypatch):
+    market, members, day = _tail_market()
+    read = lambda m, s, d: float(sum(map(ord, s)) % 17)             # noqa: E731
+    weights = sl.BOOKS["L9T"](read, lambda _d: 1)(market, members, day, "x")
+    plain = sl.BOOKS["L9"](read, lambda _d: 1)(market, members, day, "x")
+    tail = set(members) - set(sl.without_tail(market, members, day))
+    assert tail and not (tail & set(weights)), "none of the tail is held"
+    assert set(weights) - {sl.HEDGE} <= set(plain) | set(members), "built from the same members, minus the tail"
+    assert {c["logic"] for n, c in sl.CANDIDATES.items() if n in ("C009", "C010")} == {"L9T"}
+    assert sl.CANDIDATES["C008"]["logic"] == "L9" and sl.lab.variables()["taker_buy_share_30"][0] == "trade_flow"
+
+
+# --- round 6: the book sweep ------------------------------------------------------------------------------------------
+
+def test_the_sweeps_null_variables_are_their_own_and_enough_for_the_correction():
+    nulls = sl.null_variables()
+    assert len(nulls) == sl.SWEEP_NULLS == 300 and not set(nulls) & set(sl.lab.controls())
+    market, day = xsb.Market(), date(2021, 1, 3)
+    assert nulls["null_week_000"][1](market, "AUSDT", day) != sl.lab.controls()["control_week_00"][1](market, "AUSDT", day)
+    assert nulls["null_fixed_000"][1](market, "AUSDT", day) == nulls["null_fixed_000"][1](market, "AUSDT", day + timedelta(days=7))
+    assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / len(sl.lab.variables()), "a real effect can pass Benjamini–Hochberg over every variable"
+
+
+def test_a_swept_book_is_long_the_side_its_own_rank_correlation_points_to(monkeypatch):
+    asked = {}
+    monkeypatch.setattr(sl, "monthly_members", lambda market, span=None: {})
+    monkeypatch.setattr(sl, "decision_ics", lambda market, read, monthly, span: read(None, None, None))
+
+    def measure(market, weigher, span, *, simulate):
+        return {"annual_sharpe": 0.5, "total_position_annual_pct": 5.0, "clears_entry": False, "funding_pct": 0.0,
+                "stability": {"negative_years": 1}}
+
+    monkeypatch.setattr(sl, "measure", measure)
+    seen = []
+    monkeypatch.setitem(sl.BOOKS, sl.SWEEP_LOGIC, lambda read, direction: seen.append(direction(date(2021, 1, 3))) or (lambda *a, **k: {}))
+    days = [date(2020, 1, 5) + timedelta(days=7 * k) for k in range(40)]
+    names = {"up": ("g", lambda m, s, d: {x: 0.1 for x in days}), "down": ("g", lambda m, s, d: {x: -0.1 for x in days}),
+             "thin": ("g", lambda m, s, d: {x: 0.1 for x in days[:5]})}
+    out = sl.sweep(xsb.Market(), names)
+    assert seen == [1, -1] and out["up"]["long"] == "high" and out["down"]["long"] == "low"
+    assert out["thin"] == {"group": "g", "skipped": "ranked at too few decisions"}
+
+
+def test_the_sweep_reads_each_book_beside_the_null_books_and_corrects_for_how_many_there_are():
+    null = {f"n{i}": {"annual_sharpe": -1.0 + 2.0 * i / 299} for i in range(300)}          # -1 .. +1, evenly
+    real = {name: {"group": "g", "long": "low", "annual_sharpe": sharpe, "total_position_annual_pct": 10.0,
+                   "clears_entry": bool(sharpe and sharpe >= 1.0), "negative_years": 0}
+            for name, sharpe in (("strong", 1.5), ("edge", 0.95), ("plain", 0.0), ("skipped", None))}
+    out = sl.sweep_reading(real, null)
+    assert out["books"] == 3 and out["null_books"] == 300 and out["expected_under_0.05_by_chance"] == 0.15
+    by = {r["variable"]: r for r in out["all"]}
+    assert by["strong"]["p"] == pytest.approx(1 / 301, abs=1e-4) and 0.02 < by["edge"]["p"] < 0.04 and by["plain"]["p"] > 0.4
+    assert [r["variable"] for r in out["survive_benjamini_hochberg"]] == ["strong", "edge"]
+    assert out["p_under_0.05"] == 2 and out["null"]["max"] == 1.0 and out["null"]["share_clearing_sharpe_1"] == pytest.approx(1 / 300, abs=1e-4)
+
+
+def test_the_sweep_command_takes_groups_or_the_null_and_loads_what_they_read(monkeypatch, capsys):
+    asked = []
+
+    def hold(cache, span=None, *, attach=True, flow=False):
+        asked.append((attach, flow))
+        return None
+
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(sl.lab, "hold", hold)
+    assert sl.main(["sweep"]) == sl.EXIT_USAGE and sl.main(["sweep", "--only", "nothing"]) == sl.EXIT_USAGE
+    capsys.readouterr()
+    for only in ("null", "price_volume,funding,coin_character", "trade_flow", "positioning,depth,spot"):
+        assert sl.main(["sweep", "--only", only]) == sl.EXIT_BLOCKED
+    assert asked == [(False, False), (False, False), (False, True), (True, False)]
+
+
+# --- confirm read 3: the tail-out book ---------------------------------------------------------------------------------
+
+def test_the_third_read_is_c010_which_differs_from_the_second_reads_book_only_by_the_tail():
+    third = next(r for r in sl.CONFIRM_READS if r["read"] == 3)
+    second = next(r for r in sl.CONFIRM_READS if r["read"] == 2)
+    a, b = sl.CANDIDATES[third["candidate"]], sl.CANDIDATES[second["candidate"]]
+    assert third["candidate"] == "C010" and (a["logic"], b["logic"]) == ("L9T", "L9")
+    assert {k: a[k] for k in ("variable", "long", "tier", "accounting")} == {k: b[k] for k in ("variable", "long", "tier", "accounting")}
+    assert sl.BOOKS["L9T"] is not sl.BOOKS["L9"] and sl.confirm_bar(3) == 1.388
+    read, direction, labels = sl._confirm_frame(xsb.Market(), third)
+    assert direction(date(2026, 6, 7)) == -1 and labels == {}
+
+
+def test_three_confirm_reads_are_spent_and_two_are_left(monkeypatch, capsys):
+    """Read 3 was spent on 2026-11-13 (C010: CONFIRM_FAIL, 2026 still negative). Nothing is open."""
+    assert set(sl.CONFIRM_DONE) == {1, 2, 3} and "C010" in sl.CONFIRM_DONE[3] and "CONFIRM_FAIL" in sl.CONFIRM_DONE[3]
+    assert sl.CONFIRM_BUDGET - len(sl.CONFIRM_DONE) == 2 and sl.next_confirm_read() is None
+    assert sl.confirm_bar(len(sl.CONFIRM_DONE) + 1) == 1.483, "the bar the next read is held to"
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    assert sl.main(["confirm"]) == sl.EXIT_USAGE and "no registered confirm read is open" in capsys.readouterr().err
+
+
+# --- round 7: the transfer check inside the development years ----------------------------------------------------------
+
+def test_the_transfer_splits_stay_inside_development_and_the_read_year_follows_the_years_before_it():
+    assert len(sl.TRANSFER_SPLITS) == 3
+    for before, after in sl.TRANSFER_SPLITS:
+        assert before[0] == sl.SPAN[0] and after[0] == before[1] + timedelta(days=1) and after[1] <= sl.SPAN[1]
+        assert (after[0].month, after[0].day, after[1].month, after[1].day) == (1, 1, 12, 31) and after[0].year == after[1].year
+    assert sl.TRANSFER_SPLITS[-1][1][1] == sl.bs.DEV[1] < sl.CONFIRM[0], "no day of the confirm span"
+
+
+def test_a_transferred_book_takes_its_side_from_the_earlier_years_only_and_is_the_same_book_in_the_year_after(monkeypatch):
+    before, after = sl.TRANSFER_SPLITS[0]
+    days = [date(2020, 1, 5) + timedelta(days=7 * k) for k in range(40)]
+    monkeypatch.setattr(sl, "monthly_members", lambda market, span=None: {"span": span})
+    # The variable looks one way on the earlier years and the other way in the year after.
+    monkeypatch.setattr(sl, "decision_ics", lambda market, read, monthly, span: read(span))
+    measured, built = [], []
+
+    def measure(market, weigher, span, *, simulate):
+        measured.append((weigher, span))
+        return {"annual_sharpe": 1.2 if span == before else -0.4, "total_position_annual_pct": 20.0 if span == before else -6.0,
+                "clears_entry": span == before}
+
+    def build(read, direction):
+        built.append(direction(date(2022, 6, 5)))
+        return ("book", len(built))
+
+    monkeypatch.setattr(sl, "measure", measure)
+    monkeypatch.setitem(sl.BOOKS, sl.SWEEP_LOGIC, build)
+    names = {"turns": ("g", lambda span: {d: (0.1 if span == before else -0.2) for d in days}),
+             "thin": ("g", lambda span: {d: 0.1 for d in days[:5]})}
+    out = sl.transfer(xsb.Market(), names, splits=[(before, after)])
+    assert built == [1], "one book per split, long the side the earlier years point to"
+    assert [span for _, span in measured] == [before, after] and measured[0][0] == measured[1][0]
+    row = out["turns"]["splits"][0]
+    assert row == {"long": "high", "train_rank_correlation": 0.1, "test_rank_correlation": -0.2, "train_sharpe": 1.2,
+                   "train_clears_entry": True, "test_sharpe": -0.4, "test_total_position_pct": -6.0}
+    assert out["thin"]["splits"] == [None]
+
+
+def _transfer_books(pairs, *, cleared=lambda before: before >= 1.0):
+    return {f"b{i}": {"group": "g", "splits": [{"long": "low", "train_rank_correlation": -0.1, "test_rank_correlation": -0.1 if keep else 0.1,
+                                                "train_sharpe": a, "train_clears_entry": cleared(a), "test_sharpe": b,
+                                                "test_total_position_pct": 10.0 * b}]}
+            for i, (a, b, keep) in enumerate(pairs)}
+
+
+def test_the_transfer_reading_sets_the_real_carry_beside_null_sets_of_the_same_size():
+    rng = sl.random.Random("fixture")
+    real = _transfer_books([(x / 10, x / 10 + 0.01 * (x % 3), True) for x in range(-5, 15)])       # the order carries over
+    null = _transfer_books([(rng.uniform(-1, 2), rng.uniform(-1, 2), rng.random() < 0.5) for _ in range(300)])
+    out = sl.transfer_reading(real, null, draws=400)
+    assert out["books"] == 20 and out["null_books"] == 300 and out["splits"] == 1 and out["null_sets"] == 400
+    assert out["carry"] > 0.95 and out["p"] == pytest.approx(1 / 401, abs=1e-4) and abs(out["null_carry"]["mean"]) < 0.1
+    assert out["carry_by_split"] == [out["carry"]]
+    cleared = out["real"]["cleared_entry_before"]
+    assert cleared["cells"] == 5 and cleared["test_year_positive_share"] == 1.0 and cleared["test_sharpe_mean"] > 1.0
+    assert out["real"]["all"]["cells"] == 20 and out["real"]["all"]["rank_correlation_keeps_its_sign_share"] == 1.0
+    assert 0.3 < out["null"]["all"]["rank_correlation_keeps_its_sign_share"] < 0.7
+    assert [r["variable"] for r in out["real_cells_that_cleared_entry_before"]] == ["b19", "b18", "b17", "b16", "b15"]
+    # No carry: the same reading on books whose next year is unrelated to the years before.
+    flat = sl.transfer_reading(dict(list(null.items())[:20]), null, draws=400)
+    assert flat["p"] > 0.05
+
+
+def test_the_transfer_command_takes_groups_or_the_null_like_the_sweep(monkeypatch, capsys):
+    asked = []
+
+    def hold(cache, span=None, *, attach=True, flow=False):
+        asked.append((span, attach, flow))
+        return None
+
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(sl.lab, "hold", hold)
+    assert sl.main(["transfer"]) == sl.EXIT_USAGE
+    capsys.readouterr()
+    assert sl.main(["transfer", "--only", "null"]) == sl.EXIT_BLOCKED and sl.main(["transfer", "--only", "trade_flow"]) == sl.EXIT_BLOCKED
+    assert asked == [(None, False, False), (None, False, True)], "the development market, as the sweep loads it"
 

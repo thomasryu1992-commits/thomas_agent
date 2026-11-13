@@ -68,6 +68,9 @@ WILD_MOVE = 0.50                           # a coin whose largest daily move in 
 AGE_CAP_DAYS = 1000                        # listing age is read up to here; older coins are alike
 CANDIDATE_CAP = 3
 MIN_PERSISTENCE = 0.5                      # week-to-week rank correlation a lead needs: one-day reversal died on cost
+# Axes at rest (STRATEGY_DISCOVERY_LOOP_V0.1 section 18): two checks in a row, none beat its placebos. Their cells
+# are still mapped and shown; a cell on a resting axis is not a lead.
+RESTING_AXES = frozenset({"trend", "vol", "dispersion", "heat", "universe"})
 REFERENCE = bs.REFERENCE
 
 Variable = Callable[[xsb.Market, str, date], "float | None"]
@@ -635,6 +638,8 @@ def candidates(real: Mapping[str, Any], against: Mapping[str, Any]) -> dict[str,
     whole = {(c["variable"], c["tier"], c["horizon_days"]): c for c in _shown(real["cells"]) if c["scenario"] == "all"}
     found = []
     for c in _shown(real["cells"]):
+        if any(part.split("=")[0] in RESTING_AXES for part in c["scenario"].split("|") if "=" in part):
+            continue
         bar = against[str(c["horizon_days"])]["largest_abs_t"]
         steady = real["variables"].get(f"{c['variable']}|{c['tier']}", {}).get("rank_persistence")
         base = whole.get((c["variable"], c["tier"], c["horizon_days"]))
@@ -645,7 +650,8 @@ def candidates(real: Mapping[str, Any], against: Mapping[str, Any]) -> dict[str,
         found.append(c)
     found.sort(key=lambda c: (-abs(c["t"]), c["variable"], c["tier"], c["scenario"]))
     return {"rule": "abs(t) above the random variables' largest at that horizon; rank persistence at least "
-                    f"{MIN_PERSISTENCE}; same sign as the variable's all-weeks cell in its tier",
+                    f"{MIN_PERSISTENCE}; same sign as the variable's all-weeks cell in its tier; not on a resting axis",
+            "resting_axes": sorted(RESTING_AXES),
             "cap": CANDIDATE_CAP, "met_the_rule": len(found), "leads": found[:CANDIDATE_CAP]}
 
 

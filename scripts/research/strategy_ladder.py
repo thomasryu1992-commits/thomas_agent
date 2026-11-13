@@ -81,6 +81,14 @@ CANDIDATES.update({
              "from": "the map's 28-day cells hold for this variable: the same book decided every fourth week"},
     "C007": {"round": "3", "logic": "L9", "variable": "idio_vol_30", "long": "low", "tier": "top30", "accounting": "held4",
              "from": "both changes together"},
+    # Round 5, registered 2026-11-13 before any was measured: the map's new lead, and the tail-out universe for it
+    # and for the low-volatility lead.
+    "C008": {"round": "5", "logic": "L9", "variable": "taker_buy_share_30", "long": "high", "tier": "top30",
+             "accounting": "held4", "from": "the fourth round's lead: coins bought aggressively go on to lead"},
+    "C009": {"round": "5", "logic": "L9T", "variable": "taker_buy_share_30", "long": "high", "tier": "top30",
+             "accounting": "held4", "from": "the same book without the tail of its universe"},
+    "C010": {"round": "5", "logic": "L9T", "variable": "idio_vol_30", "long": "low", "tier": "top30",
+             "accounting": "held4", "from": "C007, which lost 2026, without the tail of its universe"},
 })
 
 Direction = Callable[[date], int]          # +1 long the high end, -1 long the low end, 0 flat
@@ -97,12 +105,16 @@ CONFIRM_READS: tuple[dict[str, Any], ...] = (
     # C007 holds one direction, so there is nothing to freeze but the candidate itself (its logic, its accounting
     # and their fixed values are in CANDIDATES and the constants above).
     {"read": 2, "candidate": "C007", "registered": "2026-11-13", "asked": "D6, Thomas 2026-11-13"},
+    # C010 is C007 without its universe's tail. C007's result on this span is known (0.08; 2025 +15.3%, 2026 -11.9%),
+    # so this read is a diagnosis of the cause as much as a test of the book.
+    {"read": 3, "candidate": "C010", "registered": "2026-11-13", "asked": "D8, Thomas 2026-11-13"},
 )
 # read number -> the run that spent it. Filled in the commit that records the result; ``confirm`` refuses a read
 # that is already here.
 CONFIRM_DONE: dict[int, str] = {
     1: "20261113T042318Z-1057691 at a7ccd64b: C002 CONFIRM_FAIL, annual Sharpe -0.942 against 1.0",
     2: "20261113T052257Z-1129790 at c117234c: C007 CONFIRM_FAIL, annual Sharpe 0.08 against 1.245",
+    3: "20261113T063506Z-1216563 at 339c2b91: C010 CONFIRM_FAIL, annual Sharpe 0.138 against 1.388",
 }
 # The variable groups that read the series ``signal_lab.hold`` attaches (positioning, depth, spot bars).
 ATTACHED_GROUPS = frozenset({"positioning", "depth", "spot"})
@@ -205,6 +217,44 @@ def risk_book(read: lab.Variable, direction: Direction, *, funding_aware: bool =
 
 
 BOOKS = {"L1": book, "L2": book, "L8": risk_book, "L9": functools.partial(risk_book, funding_aware=True)}
+
+
+# --- L11: the universe without its tail ----------------------------------------------------------------------------
+
+TAIL_FUNDING_SHARE = 0.90                  # a coin whose |7-day funding| is above this share of the tier's is tail
+
+
+def without_tail(market: xsb.Market, members: Sequence[str], day: date) -> list[str]:
+    """The members that are not tail at ``day``: a coin is tail when it moved :data:`signal_lab.WILD_MOVE` or more in
+    a day within the lookback, or when its last seven days' funding is larger in size than
+    :data:`TAIL_FUNDING_SHARE` of the members'. The 2026 top thirty holds a handful of such coins and the
+    development years' almost none (the universe's character, 2026-11-13); both confirm reads were lost there."""
+    funding = {s: xsb.trailing_funding(market, s, day, 7) for s in members}
+    sizes = [abs(v) for v in funding.values() if v is not None]
+    bar = lab._percentile(sizes, TAIL_FUNDING_SHARE) if len(sizes) >= lab.MIN_NAMES else None
+    kept = []
+    for symbol in members:
+        moves = lab._daily_moves(market, symbol, day, lab.LOOKBACK)
+        wild = moves is not None and max(moves) >= lab.WILD_MOVE
+        hot = bar is not None and funding[symbol] is not None and abs(funding[symbol]) > bar
+        if not wild and not hot:
+            kept.append(symbol)
+    return kept
+
+
+def tail_out(build: Callable[..., Callable[..., dict[str, float]]]) -> Callable[..., Callable[..., dict[str, float]]]:
+    """A logic's book built on the members left after :func:`without_tail`."""
+    def builder(read: lab.Variable, direction: Direction) -> Callable[..., dict[str, float]]:
+        inner = build(read, direction)
+
+        def weights(market: xsb.Market, members: Sequence[str], day: date, signal: str,
+                    *, seed: str | None = None) -> dict[str, float]:
+            return inner(market, without_tail(market, members, day), day, signal, seed=seed)
+        return weights
+    return builder
+
+
+BOOKS["L9T"] = tail_out(BOOKS["L9"])
 
 
 # --- the ladder's own accounting ---------------------------------------------------------------------------------
@@ -455,6 +505,167 @@ def confirm(market: xsb.Market, entry: Mapping[str, Any], *, simulate: Callable[
     return out
 
 
+# --- the book sweep: which variables make a book at all? ------------------------------------------------------------
+
+SWEEP_LOGIC, SWEEP_ACCOUNTING = "L9T", "held4"       # the logic and accounting of the best book so far (C010)
+SWEEP_NULLS = 300                          # random-variable books: enough for a p under what the correction asks of 27
+
+
+def null_variables(count: int = SWEEP_NULLS) -> dict[str, tuple[str, lab.Variable]]:
+    """Random variables for the sweep's null, half redrawn weekly and half fixed per coin, on seeds of their own
+    (not the map's controls)."""
+    half = count // 2
+    out = {f"null_week_{k:03d}": ("null", lab._control("week", 1000 + k)) for k in range(half)}
+    out.update({f"null_fixed_{k:03d}": ("null", lab._control("fixed", 1000 + k)) for k in range(count - half)})
+    return out
+
+
+def sweep(market: xsb.Market, names: Mapping[str, tuple[str, lab.Variable]], span: tuple[date, date] = SPAN,
+          *, simulate: Callable[..., Any] | None = None) -> dict[str, Any]:
+    """Every variable in ``names`` built into the same book. The side it is long is the sign of its own mean rank
+    correlation with the following week on the span — the same rule for a real variable and for a random one, so a
+    random book gets the same benefit of picking its better-looking side."""
+    simulate = simulate or ACCOUNTING[SWEEP_ACCOUNTING]
+    monthly = monthly_members(market, span)
+    out: dict[str, Any] = {}
+    for name, (group, read) in names.items():
+        ics = decision_ics(market, read, monthly, span)
+        if len(ics) < lab.MIN_DECISIONS:
+            out[name] = {"group": group, "skipped": "ranked at too few decisions"}
+            continue
+        mean = statistics.fmean(ics.values())
+        way = 1 if mean > 0 else -1
+        report = measure(market, BOOKS[SWEEP_LOGIC](read, lambda _day, way=way: way), span, simulate=simulate)
+        out[name] = {"group": group, "long": "high" if way > 0 else "low", "mean_rank_correlation": round(mean, 4),
+                     "decisions_ranked": len(ics), "annual_sharpe": report["annual_sharpe"],
+                     "total_position_annual_pct": report["total_position_annual_pct"],
+                     "clears_entry": report["clears_entry"], "negative_years": report["stability"]["negative_years"],
+                     "funding_pct": report["funding_pct"]}
+    return out
+
+
+def sweep_reading(real: Mapping[str, Mapping[str, Any]], null: Mapping[str, Mapping[str, Any]], *, q: float = 0.10) -> dict[str, Any]:
+    """Each real book beside the null books: its p is the share of null books at or above it. The books that count
+    are the ones that survive Benjamini–Hochberg at ``q``; the number under 0.05 is shown beside what chance gives."""
+    nulls = sorted(v["annual_sharpe"] for v in null.values() if v.get("annual_sharpe") is not None)
+    rows = []
+    for name, body in real.items():
+        sharpe = body.get("annual_sharpe")
+        if sharpe is None or not nulls:
+            continue
+        p = (1 + sum(1 for v in nulls if v >= sharpe)) / (1 + len(nulls))
+        rows.append({"variable": name, **{k: body[k] for k in ("group", "long", "annual_sharpe", "total_position_annual_pct",
+                                                               "clears_entry", "negative_years")}, "p": round(p, 4)})
+    rows.sort(key=lambda r: (r["p"], -r["annual_sharpe"], r["variable"]))
+    cutoff = max((i for i, r in enumerate(rows, start=1) if r["p"] <= q * i / len(rows)), default=0)
+    return {"books": len(rows), "null_books": len(nulls),
+            "null": {"mean": round(statistics.fmean(nulls), 3), "p95": nulls[int(0.95 * (len(nulls) - 1))], "max": nulls[-1],
+                     "share_clearing_sharpe_1": round(sum(1 for v in nulls if v >= bs.ENTRY_SHARPE) / len(nulls), 4)} if nulls else None,
+            "p_under_0.05": sum(1 for r in rows if r["p"] < 0.05), "expected_under_0.05_by_chance": round(0.05 * len(rows), 2),
+            "q": q, "survive_benjamini_hochberg": rows[:cutoff], "all": rows}
+
+
+# --- the transfer check: does a book that looks good on earlier years earn in the next one? ---------------------
+
+# (the years a book's side is chosen and its Sharpe is ranked on, the year it is then read on). All inside development.
+TRANSFER_SPLITS: tuple[tuple[tuple[date, date], tuple[date, date]], ...] = (
+    ((date(2020, 1, 1), date(2021, 12, 31)), (date(2022, 1, 1), date(2022, 12, 31))),
+    ((date(2020, 1, 1), date(2022, 12, 31)), (date(2023, 1, 1), date(2023, 12, 31))),
+    ((date(2020, 1, 1), date(2023, 12, 31)), (date(2024, 1, 1), date(2024, 12, 31))),
+)
+TRANSFER_DRAWS = 2000                      # sets of null books the size of the real set, for the carry statistic's p
+TRANSFER_MIN_BOOKS = 8                     # books with both values a split needs before its carry is computed
+TRANSFER_ALPHA = 0.05
+
+
+def transfer(market: xsb.Market, names: Mapping[str, tuple[str, lab.Variable]],
+             splits: Sequence[tuple[tuple[date, date], tuple[date, date]]] = TRANSFER_SPLITS,
+             *, simulate: Callable[..., Any] | None = None) -> dict[str, Any]:
+    """Every variable built into the sweep's book once per split: its side is the sign of its mean rank correlation
+    on the earlier years **only**, and that one book is measured on the earlier years and on the year after."""
+    simulate = simulate or ACCOUNTING[SWEEP_ACCOUNTING]
+    members = {span: monthly_members(market, span) for pair in splits for span in pair}
+    out: dict[str, Any] = {}
+    for name, (group, read) in names.items():
+        rows: list[dict[str, Any] | None] = []
+        for before, after in splits:
+            ics = decision_ics(market, read, members[before], before)
+            if len(ics) < lab.MIN_DECISIONS:
+                rows.append(None)
+                continue
+            mean = statistics.fmean(ics.values())
+            way = 1 if mean > 0 else -1
+            weigher = BOOKS[SWEEP_LOGIC](read, lambda _day, way=way: way)
+            early, late = measure(market, weigher, before, simulate=simulate), measure(market, weigher, after, simulate=simulate)
+            later = decision_ics(market, read, members[after], after)
+            rows.append({"long": "high" if way > 0 else "low", "train_rank_correlation": round(mean, 4),
+                         "test_rank_correlation": round(statistics.fmean(later.values()), 4) if later else None,
+                         "train_sharpe": early["annual_sharpe"], "train_clears_entry": early["clears_entry"],
+                         "test_sharpe": late["annual_sharpe"], "test_total_position_pct": late["total_position_annual_pct"]})
+        out[name] = {"group": group, "splits": rows}
+    return out
+
+
+def _carry(books: Sequence[Mapping[str, Any]], count: int) -> float | None:
+    """Across books, the rank correlation between the earlier years' Sharpe and the next year's; the mean over the
+    splits that have enough books."""
+    values = []
+    for k in range(count):
+        pairs = [(row["train_sharpe"], row["test_sharpe"]) for row in (b["splits"][k] for b in books)
+                 if row and row["train_sharpe"] is not None and row["test_sharpe"] is not None]
+        if len(pairs) >= TRANSFER_MIN_BOOKS and (value := lab.rank_correlation(pairs)) is not None:
+            values.append(value)
+    return statistics.fmean(values) if values else None
+
+
+def _cells(books: Mapping[str, Mapping[str, Any]], *, passed: bool | None = None) -> dict[str, Any]:
+    """The (book, split) cells, all of them or the ones whose earlier years did or did not clear the entry rule:
+    how many, and what the year after gave."""
+    rows = [row for b in books.values() for row in b["splits"]
+            if row and row["test_total_position_pct"] is not None and (passed is None or row["train_clears_entry"] is passed)]
+    sharpes = [row["test_sharpe"] for row in rows if row["test_sharpe"] is not None]
+    agree = [row for row in rows if row["test_rank_correlation"] is not None]
+    return {"cells": len(rows),
+            "test_total_position_pct_mean": round(statistics.fmean(r["test_total_position_pct"] for r in rows), 2) if rows else None,
+            "test_sharpe_mean": round(statistics.fmean(sharpes), 3) if sharpes else None,
+            "test_year_positive_share": round(sum(1 for r in rows if r["test_total_position_pct"] > 0) / len(rows), 3) if rows else None,
+            "rank_correlation_keeps_its_sign_share": round(sum(
+                1 for r in agree if (r["train_rank_correlation"] > 0) == (r["test_rank_correlation"] > 0)) / len(agree), 3) if agree else None}
+
+
+def transfer_reading(real: Mapping[str, Mapping[str, Any]], null: Mapping[str, Mapping[str, Any]],
+                     *, draws: int = TRANSFER_DRAWS, seed: str = "transfer") -> dict[str, Any]:
+    """The real books' carry beside sets of null books of the same size (its p is the share of sets at or above it),
+    and what the year after gave the books that had cleared the entry rule, beside the null books that had and the
+    null books as a whole. The verdict is fixed in the proposal, not here."""
+    count = max((len(b["splits"]) for b in real.values()), default=0)
+    used = [b for b in real.values() if any(b["splits"])]
+    value = _carry(used, count)
+    pool, sets = list(null.values()), []
+    if value is not None and len(pool) >= len(used):
+        for i in range(draws):
+            drawn = _carry(random.Random(f"{seed}:{i}").sample(pool, len(used)), count)
+            if drawn is not None:
+                sets.append(drawn)
+    ordered = sorted(sets)
+    out: dict[str, Any] = {
+        "books": len(used), "null_books": len(pool), "splits": count,
+        "carry": None if value is None else round(value, 4),
+        "carry_by_split": [None if (v := _carry([{"splits": [b["splits"][k]]} for b in used], 1)) is None else round(v, 4)
+                           for k in range(count)],
+        "null_sets": len(sets),
+        "null_carry": {"mean": round(statistics.fmean(ordered), 4), "p95": round(ordered[int(0.95 * (len(ordered) - 1))], 4),
+                       "max": round(ordered[-1], 4)} if ordered else None,
+        "p": round((1 + sum(1 for v in sets if v >= value)) / (1 + len(sets)), 4) if sets else None,
+        "real": {"all": _cells(real), "cleared_entry_before": _cells(real, passed=True), "did_not": _cells(real, passed=False)},
+        "null": {"all": _cells(null), "cleared_entry_before": _cells(null, passed=True), "did_not": _cells(null, passed=False)},
+        "real_cells_that_cleared_entry_before": sorted(
+            ({"variable": name, "split": k + 1, **{f: row[f] for f in ("long", "train_sharpe", "test_sharpe", "test_total_position_pct")}}
+             for name, b in real.items() for k, row in enumerate(b["splits"]) if row and row["train_clears_entry"]),
+            key=lambda r: (r["split"], -r["train_sharpe"]))}
+    return out
+
+
 # --- the round ---------------------------------------------------------------------------------------------------
 
 def _spread(values: Sequence[float | None]) -> dict[str, Any]:
@@ -530,7 +741,9 @@ def run_round(market: xsb.Market, span: tuple[date, date] = SPAN, *, which: str 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="strategy_ladder", description=__doc__.splitlines()[0])
-    parser.add_argument("command", choices=("list", "run", "confirm-counts", "confirm"))
+    parser.add_argument("command", choices=("list", "run", "confirm-counts", "confirm", "sweep", "transfer"))
+    parser.add_argument("--only", default=None,
+                        help="sweep, transfer: variable groups (comma list), or `null` for the random books")
     parser.add_argument("--cache", type=Path, default=None, help="default: $RESEARCH_CACHE")
     parser.add_argument("--round", default=None, help="default: the latest registered round")
     args = parser.parse_args(argv)
@@ -550,7 +763,7 @@ def main(argv: list[str] | None = None) -> int:
         bs.check_search_span(CONFIRM)
         # Only what the candidate reads is loaded: its variable's group says whether the attached series are needed.
         group = lab.variables()[CANDIDATES[entry["candidate"]]["variable"]][0]
-        market = lab.hold(cache, (SPAN[0], CONFIRM[1]), attach=group in ATTACHED_GROUPS)
+        market = lab.hold(cache, (SPAN[0], CONFIRM[1]), attach=group in ATTACHED_GROUPS, flow=group == "trade_flow")
         if market is None:
             print("BLOCKED: contract types or the spot symbol list is missing from the cache", file=sys.stderr)
             return EXIT_BLOCKED
@@ -560,8 +773,26 @@ def main(argv: list[str] | None = None) -> int:
                          indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_OK
     bs.check_development_span(SPAN)
+    if args.command in ("sweep", "transfer"):
+        wanted = set((args.only or "").split(",")) - {""}
+        names = null_variables() if wanted == {"null"} else {n: v for n, v in lab.variables().items() if v[0] in wanted}
+        if not names:
+            print("refused: --only names no registered variable group (or `null`)", file=sys.stderr)
+            return EXIT_USAGE
+        market = lab.hold(cache, attach=bool(wanted & ATTACHED_GROUPS), flow="trade_flow" in wanted)
+        if market is None:
+            print("BLOCKED: contract types or the spot symbol list is missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        body = ({"books": sweep(market, names)} if args.command == "sweep" else
+                {"splits": [[[d.isoformat() for d in span] for span in pair] for pair in TRANSFER_SPLITS],
+                 "books": transfer(market, names)})
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
+                          "logic": SWEEP_LOGIC, "accounting": SWEEP_ACCOUNTING, "only": sorted(wanted), "command": args.command,
+                          **body}, indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_OK
     groups = {lab.variables()[c["variable"]][0] for c in CANDIDATES.values() if c["round"] == (args.round or latest_round())}
-    market = lab.hold(cache, attach=bool(groups & ATTACHED_GROUPS))
+    market = lab.hold(cache, attach=bool(groups & ATTACHED_GROUPS), flow="trade_flow" in groups)
     if market is None:
         print("BLOCKED: contract types or the spot symbol list is missing from the cache", file=sys.stderr)
         return EXIT_BLOCKED
