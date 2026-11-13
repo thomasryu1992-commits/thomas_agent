@@ -1060,7 +1060,7 @@ def delegate_data_review(
 
 def delegate_proposal_generation(
     *, existing_families: Sequence[str], focus: str | None, repo_root: Path | None,
-    timeframe: str | None = None,
+    timeframe: str | None = None, recent_refusals: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Run the family proposer's model call in the pipeline worker and return its output.
 
@@ -1082,7 +1082,11 @@ def delegate_proposal_generation(
         pipeline_worker.socket_path(repo_root),
         {"job": pipeline_worker.JOB_CRYPTO_PROPOSE,
          "proposal_inputs": {"existing_families": list(existing_families), "focus": focus,
-                             **({"timeframe": timeframe} if timeframe is not None else {})},
+                             **({"timeframe": timeframe} if timeframe is not None else {}),
+                             # Only when there is one, so a fire with nothing refused sends the
+                             # frame it always sent.
+                             **({"recent_refusals": [dict(r) for r in recent_refusals]}
+                                if recent_refusals else {})},
          "reason": "scheduler:crypto_propose"},
         deadline_seconds=WORKER_DEADLINE_SECONDS,
     )
@@ -1885,8 +1889,8 @@ def _execute(
             from .crypto import forward_trial
             from .crypto import proposer as crypto_proposer
 
-            # Thomas's closes free slots. Unreadable reads as none closed: fewer free slots, the
-            # safe direction for a cap.
+            # Thomas's closes. They gate nothing since the cap on open trials went (2026-11-12);
+            # the fire's trial block reports how many are open, and unreadable reads as none closed.
             try:
                 closed_trials = forward_trial.closed_trial_ids(repo_root)
             except MvpRuntimeError:
@@ -1961,18 +1965,28 @@ def _execute(
         # parsed 30 days of every record kind under the records lock — measured 1,107 ms
         # against 164 ms filtered, with a concurrent risk-lane append waiting the difference.
         backlog_note = ""
+        # One pass, used twice: the backlog count, and what the trial screens refused in the same
+        # window — which the prompt is now told (prompt v2), so the model stops re-proposing a
+        # family a screen already turned down. An unreadable ledger leaves that list empty, the
+        # same degraded direction as the count: the fire proceeds, the prompt just says less.
+        refused_seen: list[dict[str, Any]] = []
         try:
             backlog = crypto_proposer.count_unreviewed_backlog(
-                ledger.iter_records_with_archive(
-                    appended_since=window_start,
-                    kinds=[crypto_proposer.PROPOSAL_LEDGER_KIND,
-                           crypto_proposer.FACTORY_LEDGER_KIND],
-                ) if ledger is not None else [],
+                crypto_proposer.noting_screen_refusals(
+                    ledger.iter_records_with_archive(
+                        appended_since=window_start,
+                        kinds=[crypto_proposer.PROPOSAL_LEDGER_KIND,
+                               crypto_proposer.FACTORY_LEDGER_KIND],
+                    ) if ledger is not None else [],
+                    refused_seen,
+                ),
                 installed, now=now,
             )
         except MvpRuntimeError as exc:
             backlog = 0
             backlog_note = f" backlog_unreadable={exc.reason_code}"
+            refused_seen = []
+        recent_refusals = crypto_proposer.clean_refusals(refused_seen)
         if backlog >= crypto_proposer.MAX_UNREVIEWED_BACKLOG:
             return f"skipped_backlog_full:{backlog}"
 
@@ -2037,7 +2051,7 @@ def _execute(
         # (`evaluate_proposal` refuses any other since D-0).
         generation = delegate_proposal_generation(
             existing_families=installed, focus=focus, repo_root=repo_root,
-            timeframe=snapshot.get("timeframe"),
+            timeframe=snapshot.get("timeframe"), recent_refusals=recent_refusals,
         )
         record = crypto_proposer.assemble_proposal_record(
             snapshot, generation=generation, focus=focus, now=now,
@@ -2484,7 +2498,7 @@ def _factory_status_line(result: Mapping[str, Any]) -> str:
     # `tilted=` is the part of `topup=` drawn from `factory.MINT_TILT_FAMILIES` (2026-10-25): the
     # tilt's check had to infer it from slot order because nothing outside the result carried it.
     # `trial=` only on a fire that was asked to screen (a cohort fire): minted:<family>,
-    # refused:<n>, empty, or skipped:cap / skipped:not_cohort.
+    # refused:<n>, empty, or skipped:not_cohort.
     from .crypto.factory import trial_status
 
     trial = trial_status(result.get("trial"))

@@ -49,6 +49,7 @@ recorded. Nothing downstream depends on a proposal existing.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Iterable, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
@@ -57,12 +58,15 @@ from ..budgets import TRIAGE_TIMEOUT_SECONDS
 from ..errors import ProviderError, ToolBlocked
 from ..worker import Provider
 from . import factory, market_data, template_space
+from .forward_confirmation import min_forward_trades
 from .robustness import score_robustness
 from .strategy import ALLOWED_TIMEFRAMES, SpecParseError, StrategySpec
 
 PROPOSER_WORKER_ID = "mvp.crypto.strategy_proposer.llm"
 PROPOSER_WORKER_VERSION = "0.1.0"
-PROPOSER_PROMPT_VERSION = "mvp_crypto_strategy_proposer.v1"
+# v2 (2026-11-12): the prompt states what the trial screen refuses and names what was already
+# refused or retired, and a proposal must carry the hypothesis form (below).
+PROPOSER_PROMPT_VERSION = "mvp_crypto_strategy_proposer.v2"
 PROPOSAL_RECORD_TYPE = "crypto_strategy_family_proposal.v0"
 
 # A family proposal is a few short JSON objects, not an essay — but it is bigger than a
@@ -77,6 +81,36 @@ UNKNOWN_FEATURE_BLOCK = "BLOCK_UNKNOWN_FEATURE"
 # Proposals are capped per run: an unbounded list is a way to spend the whole allowance
 # on quantity and none of it on thought.
 MAX_PROPOSALS_PER_RUN = 4
+
+# The hypothesis form a proposal must carry (HYPOTHESIS_FORM_AND_RESEARCH_MAP_V0.1 §2, adopted
+# 2026-11-12; required of model proposals by FACTORY_GENERATOR_REDESIGN_V0.1 G5). Until v2 a
+# proposal said why in one sentence, so every proposal was a recombination of feature names with a
+# caption. The form asks what the caption cannot answer: who is on the other side, why it lasts,
+# how large it is, and what would show it wrong.
+#
+# **Presence, not truth.** The check is that each field is there — five non-empty sentences and a
+# probability in [0, 1]. Nothing here can tell a good answer from a fluent one; the judge of the
+# rule is still the backtest, the holdout and the forward walk, exactly as before.
+HYPOTHESIS_TEXT_FIELDS = ("payer", "persistence", "size", "falsifier", "nearest_record")
+HYPOTHESIS_PRIOR_FIELD = "prior"
+# Stored length per field. An answer is cut to this, never refused for length: the allowance
+# (`PROPOSAL_TOKEN_ALLOWANCE`) is what bounds the model, and four proposals at this length are
+# well inside it (`test_four_full_proposals_fit_the_token_allowance`).
+HYPOTHESIS_FIELD_CHARS = 200
+
+# What the prompt is told about earlier screens: the families a trial screen refused, with the
+# screen's own reason token. Structural and trade-count reasons only — `_screen_trials` refuses
+# on parsing, the validator, a known family, a column the frame cannot supply, the train-only
+# lattice, no trade, and pace. None is a function of a holdout or forward return, so telling the
+# model does not let the generator fit what the judge has yet to read. Closed trials' reasons
+# (which do name holdout and forward results) are deliberately NOT passed.
+#
+# A family name is model-written text coming back into a prompt, so it is held to the shape a
+# family name has and the list to a size; anything else is dropped here and refused at the
+# worker's door (`pipeline_worker`).
+REFUSALS_IN_PROMPT = 20
+REFUSAL_FAMILY_SHAPE = re.compile(r"^[a-z][a-z0-9_+]{0,63}$")
+REFUSAL_REASON_SHAPE = re.compile(r"^[a-z][a-z_]{0,39}$")
 
 # M4b — the ledger record kind the CLI and the scheduler both append a proposal under.
 PROPOSAL_LEDGER_KIND = "crypto_strategy_proposal"
@@ -105,6 +139,72 @@ def _scored_on_another_timeframe(record: Mapping[str, Any], proposal: Mapping[st
 # The factory's record kind, read here for one field: the `trial` block a cohort fire writes when
 # it screens proposals (`factory._screen_trials`).
 FACTORY_LEDGER_KIND = "crypto_factory"
+
+
+def clean_refusals(items: Any) -> list[dict[str, str]]:
+    """``[{family, reason}]`` held to :data:`REFUSAL_FAMILY_SHAPE` / :data:`REFUSAL_REASON_SHAPE`,
+    deduplicated by family (the latest reason wins) and cut to the newest
+    :data:`REFUSALS_IN_PROMPT`. Never raises: an entry that does not fit is dropped."""
+    kept: dict[str, str] = {}
+    for item in items if isinstance(items, (list, tuple)) else ():
+        if not isinstance(item, Mapping):
+            continue
+        family, reason = item.get("family"), item.get("reason")
+        if (isinstance(family, str) and REFUSAL_FAMILY_SHAPE.match(family)
+                and isinstance(reason, str) and REFUSAL_REASON_SHAPE.match(reason)):
+            kept.pop(family, None)
+            kept[family] = reason
+    return [{"family": f, "reason": r} for f, r in list(kept.items())[-REFUSALS_IN_PROMPT:]]
+
+
+def noting_screen_refusals(
+    record_rows: Iterable[Mapping[str, Any]], found: list[dict[str, Any]],
+) -> Iterable[Mapping[str, Any]]:
+    """``record_rows`` passed through unchanged, with every proposal a factory trial screen
+    refused noted into ``found`` (``{family, reason}``, oldest first) as its row goes by.
+
+    A pass-through rather than a second read: the ledger stream is read under the records lock
+    and one row at a time, and the backlog count already walks it once. A malformed row is
+    yielded and notes nothing."""
+    for row in record_rows:
+        if isinstance(row, Mapping) and row.get("kind") == FACTORY_LEDGER_KIND:
+            record = row.get("record")
+            trial = record.get("trial") if isinstance(record, Mapping) else None
+            for entry in (trial.get("refused") or []) if isinstance(trial, Mapping) else []:
+                if isinstance(entry, Mapping):
+                    found.append({"family": entry.get("family"), "reason": entry.get("reason")})
+        yield row
+
+
+def recent_screen_refusals(record_rows: Iterable[Mapping[str, Any]]) -> list[dict[str, str]]:
+    """The proposals the factory's trial screens refused, from the ledger rows given (the caller
+    windows them), oldest first, cleaned by :func:`clean_refusals`."""
+    found: list[dict[str, Any]] = []
+    for _ in noting_screen_refusals(record_rows, found):
+        pass
+    return clean_refusals(found)
+
+
+def hypothesis_form(proposal: Mapping[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
+    """The proposal's hypothesis form and the fields it lacks. ``(form, [])`` when complete —
+    text fields stripped and cut to :data:`HYPOTHESIS_FIELD_CHARS`, the prior a float —
+    otherwise ``(None, missing)``. Presence only (see :data:`HYPOTHESIS_TEXT_FIELDS`)."""
+    raw = proposal.get("hypothesis")
+    raw = raw if isinstance(raw, Mapping) else {}
+    form: dict[str, Any] = {}
+    missing: list[str] = []
+    for field in HYPOTHESIS_TEXT_FIELDS:
+        value = raw.get(field)
+        if isinstance(value, str) and value.strip():
+            form[field] = value.strip()[:HYPOTHESIS_FIELD_CHARS]
+        else:
+            missing.append(field)
+    prior = raw.get(HYPOTHESIS_PRIOR_FIELD)
+    if isinstance(prior, (int, float)) and not isinstance(prior, bool) and 0.0 <= float(prior) <= 1.0:
+        form[HYPOTHESIS_PRIOR_FIELD] = float(prior)
+    else:
+        missing.append(HYPOTHESIS_PRIOR_FIELD)
+    return (None, missing) if missing else (form, [])
 
 
 def _screened_proposal_hashes(record: Mapping[str, Any]) -> set[str]:
@@ -191,6 +291,11 @@ def pending_trial_proposals(
             # The proposer's one-sentence why, carried so a trial row can say it without a join
             # through `proposal_id` (CRYPTO_SYSTEM_IMPROVEMENT_GAP §7, first when D3 lifted).
             "rationale": str(proposal.get("rationale") or ""),
+            # The hypothesis form, when the acceptance carries one. An acceptance recorded before
+            # prompt v2 has none and is still queued: it was accepted by the rule of its day, and
+            # the trial screen judges the rule, not the caption.
+            **({"hypothesis": dict(proposal["hypothesis"])}
+               if isinstance(proposal.get("hypothesis"), Mapping) else {}),
             "spec": dict(spec),
         })
     return queue
@@ -262,6 +367,14 @@ class MockProposerProvider:
                 "family": "liquidation_flush_reversal",
                 "rationale": "A forced-liquidation cascade overshoots; price mean-reverts "
                              "once the flush exhausts.",
+                "hypothesis": {
+                    "payer": "Leveraged longs closed by the venue at any price.",
+                    "persistence": "Forced sellers cannot wait, and absorbing them needs capital at the worst moment.",
+                    "size": "Unknown at this capital; a few percent a year after costs if it exists at all.",
+                    "falsifier": "No rebound within a day of the flush, across the cohort.",
+                    "nearest_record": "The installed liquidation families; this one waits for exhaustion, not the spike.",
+                    "prior": 0.1,
+                },
                 "direction": "long",
                 "timeframe": "1h",
                 "entry_rules": {"operator": "AND", "conditions": [
@@ -275,6 +388,14 @@ class MockProposerProvider:
                 "family": "invented_oscillator_cross",
                 "rationale": "Deliberately references an indicator this runtime does not "
                              "compute, so the mock path demonstrates that rejection.",
+                "hypothesis": {
+                    "payer": "Nobody: the indicator does not exist.",
+                    "persistence": "It cannot persist.",
+                    "size": "Zero.",
+                    "falsifier": "The validator refusing the feature name.",
+                    "nearest_record": "None.",
+                    "prior": 0.0,
+                },
                 "direction": "long",
                 "timeframe": "1h",
                 "entry_rules": {"operator": "AND", "conditions": [
@@ -339,8 +460,19 @@ def build_proposal_prompt(
     count: int = MAX_PROPOSALS_PER_RUN,
     venue: str = market_data.BINANCE_FUTURES,
     timeframe: str | None = None,
+    recent_refusals: Sequence[Mapping[str, Any]] = (),
 ) -> str:
-    """The proposal prompt: the real vocabulary, the real families, the real bounds.
+    """The proposal prompt: the real vocabulary, the real families, the real bounds — and, since
+    v2, what the trial screen will do with the answer.
+
+    Until v2 the model was handed feature names, family names and a focus, and nothing about
+    what happens next. It could not know that a rule too slow to reach the forward judge's trade
+    floor is never walked (`factory.TRIAL_FREQUENCY_HORIZON_DAYS`), that a retired family is
+    refused by name, or that the family it is about to propose was refused last week. Three of
+    the four trials open from 2026-09-28 to 2026-11-12 never traded once. So the prompt now says
+    those things. All of it is generator-side knowledge — code constants and the screens' own
+    structural refusals (``recent_refusals``, cleaned by :func:`clean_refusals`); nothing from a
+    holdout or a forward record is passed, so the search cannot fit what the judge reads.
 
     ``timeframe`` is the frame the proposals will be scored on. Given, it is the ONLY timeframe
     the prompt allows: `evaluate_proposal` refuses a spec whose timeframe is not the frame's
@@ -360,6 +492,22 @@ def build_proposal_prompt(
     """
     features = ", ".join(sorted(known_features(venue)))
     families = ", ".join(sorted(existing_families))
+    retired = ", ".join(sorted(template_space.RETIRED_FAMILIES))
+    refusals = clean_refusals(list(recent_refusals))
+    refused_block = (
+        "\nRecently refused by the trial screen (family: reason) — do not re-propose these, and "
+        "read the reasons:\n" + "\n".join(f"- {r['family']}: {r['reason']}" for r in refusals) + "\n"
+        if refusals else ""
+    )
+    pace_block = (
+        f"\nWhat happens to an accepted proposal: it is re-scored across the whole symbol cohort on "
+        f"{timeframe} bars at full history. It is REFUSED there if it makes no trade, or if its "
+        f"backtest pace would give fewer than {min_forward_trades(timeframe)} trades in "
+        f"{factory.TRIAL_FREQUENCY_HORIZON_DAYS} days across the cohort (too_slow) — a rule that "
+        "rarely fires can never be judged. Prefer conditions that fire regularly over a rare "
+        "coincidence of many thresholds.\n"
+        if timeframe else ""
+    )
     focus_line = (
         f"\nFocus this proposal on: {focus}. Prefer features related to that focus.\n"
         if focus else "\n"
@@ -376,6 +524,9 @@ def build_proposal_prompt(
         f"{focus_line}"
         f"\nAvailable features (use ONLY these names, exactly):\n{features}\n"
         f"\nFamilies that already exist (propose something genuinely different):\n{families}\n"
+        f"\nFamilies already searched and retired (a proposal naming one is refused):\n{retired}\n"
+        f"{refused_block}"
+        f"{pace_block}"
         "\nHard constraints — a proposal violating any of these is discarded:\n"
         f"{timeframe_rule}"
         "- direction is \"long\" or \"short\"\n"
@@ -385,6 +536,16 @@ def build_proposal_prompt(
         "- each condition is {\"feature\": <name>, \"comparison\": <op>, \"value\": <number>} "
         "or {\"feature\": <name>, \"comparison\": <op>, \"value_from\": <another feature name>}\n"
         "- comparison is one of >, >=, <, <=, ==, !=\n"
+        "- every proposal carries a \"hypothesis\" object with ALL six fields, written BEFORE you "
+        "choose the rules, one short sentence each (under 160 characters): "
+        "\"payer\" (who is on the other side and why they pay), "
+        "\"persistence\" (why others have not already taken it), "
+        "\"size\" (what you expect to remain after costs at 1,000-10,000 USD a position), "
+        "\"falsifier\" (what observation would make you drop it), "
+        "\"nearest_record\" (the closest existing or refused family and how this differs — a "
+        "changed sign or window is not a new hypothesis), "
+        "\"prior\" (a number from 0 to 1: your probability that it survives). "
+        "A proposal missing any field is discarded\n"
         # The hosted providers parse every answer as the shared analysis JSON and reject
         # anything missing summary/key_findings/facts, so the proposals ride INSIDE that
         # envelope as an extra key (the R7 precedent triage uses for its verdict). Asking
@@ -393,7 +554,9 @@ def build_proposal_prompt(
         "\nReply with ONLY a JSON object of this shape:\n"
         '{"summary": "<one line>", "key_findings": [], "facts": [], '
         '"proposals": [{"family": "<snake_case_name>", "rationale": "<one sentence: what '
-        'market behaviour this exploits>", "direction": "long", '
+        'market behaviour this exploits>", "hypothesis": {"payer": "...", "persistence": "...", '
+        '"size": "...", "falsifier": "...", "nearest_record": "...", "prior": 0.1}, '
+        '"direction": "long", '
         f'"timeframe": "{example_timeframe}", '
         '"entry_rules": {"operator": "AND", "conditions": [...]}, '
         '"exit_rules": {"stop_model": "atr", "stop_atr": 1.2, "target_atr": 3.0, '
@@ -485,6 +648,16 @@ def evaluate_proposal(
         verdict["scored_timeframe"] = scored_timeframe
         return verdict
 
+    # The hypothesis form (see `HYPOTHESIS_TEXT_FIELDS`): presence only. Checked before the
+    # validator and the backtest because it is cheaper than either, and a rule without a stated
+    # hypothesis is the recombination this channel exists not to be.
+    form, missing = hypothesis_form(proposal)
+    if form is None:
+        verdict["reject_reason"] = "form"
+        verdict["missing_fields"] = missing
+        return verdict
+    verdict["hypothesis"] = form
+
     validation = factory.validate_strategy(spec)
     if not validation.get("approved_for_backtest"):
         block_reasons = list(validation.get("block_reasons") or [])
@@ -548,6 +721,7 @@ def generate_proposals(
     count: int = MAX_PROPOSALS_PER_RUN,
     venue: str = market_data.BINANCE_FUTURES,
     timeframe: str | None = None,
+    recent_refusals: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """The model half: ask for families, parse what came back. **Touches no snapshot.**
 
@@ -563,7 +737,7 @@ def generate_proposals(
     """
     prompt = build_proposal_prompt(
         existing_families=existing_families, focus=focus, count=count, venue=venue,
-        timeframe=timeframe,
+        timeframe=timeframe, recent_refusals=recent_refusals,
     )
 
     degraded: str | None = None

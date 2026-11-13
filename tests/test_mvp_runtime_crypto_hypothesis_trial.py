@@ -181,7 +181,7 @@ def test_one_fire_screens_a_bounded_number_of_proposals():
     assert len(result["trial"]["refused"]) == factory.MAX_TRIAL_SCREENS_PER_FIRE
 
 
-@pytest.mark.parametrize("case", ["empty", "not_cohort", "cap"])
+@pytest.mark.parametrize("case", ["empty", "not_cohort"])
 def test_the_fire_level_skips_refuse_no_proposal(case):
     """A skip is about the FIRE; recording it as a refusal would drop a proposal from the queue
     (and the backlog) that nobody scored."""
@@ -190,15 +190,10 @@ def test_the_fire_level_skips_refuse_no_proposal(case):
     trials = [_queued(_proposal_spec())]
     if case == "empty":
         trials = []
-    elif case == "not_cohort":
-        cohort = None
     else:
-        existing = [{"candidate_id": f"cand_open_{i}", "derivation_type": "hypothesis_trial",
-                     "trial_source": {"strategy_rule_hash": f"h{i}"}}
-                    for i in range(factory.MAX_OPEN_TRIALS)]
+        cohort = None
     result = _run(snapshot, cohort, trials=trials, existing=existing)
-    assert result["trial"]["status"] == {"empty": "empty", "not_cohort": "skipped:not_cohort",
-                                         "cap": "skipped:cap"}[case]
+    assert result["trial"]["status"] == {"empty": "empty", "not_cohort": "skipped:not_cohort"}[case]
     assert result["trial"]["refused"] == [] and result["trial"]["minted"] == []
     assert not any(factory.is_trial(c) for c in result["candidates"])
 
@@ -385,3 +380,98 @@ def test_the_queue_and_the_trial_row_carry_the_proposers_rationale():
     result = _run(snapshot, cohort, trials=[{**_queued(trial_spec), "rationale": "why it should work"}])
     row = next(c for c in result["candidates"] if factory.is_trial(c))
     assert row["trial_source"]["rationale"] == "why it should work"
+
+
+# --- no cap; the pace screen instead (Thomas 2026-11-12, MANY_STRATEGIES M1 / F6 rule 1) ------
+
+def test_any_number_of_open_trials_does_not_stop_the_next_mint():
+    """Four open trials shut the track from 2026-09-28 to 2026-11-12. The count is reported now,
+    and gates nothing."""
+    snapshot, cohort = _cohort()
+    existing = [{"candidate_id": f"cand_open_{i}", "derivation_type": "hypothesis_trial",
+                 "trial_source": {"strategy_rule_hash": f"h{i}"}} for i in range(25)]
+    result = _run(snapshot, cohort, trials=[_queued(_proposal_spec())], existing=existing)
+    assert result["trial"]["status"] == "minted" and result["trial"]["open_before"] == 25
+    assert sum(1 for c in result["candidates"] if factory.is_trial(c)) == 1, "still one a fire"
+
+
+def test_the_pace_is_the_all_legs_backtest_rate_over_the_horizon():
+    # 60 pooled trades over 2,000 daily bars of one leg: 0.03 a day, 5.4 in 180 days.
+    assert factory.expected_forward_trades({"closed_count": 60, "bars_replayed": 2000}, "1d") == pytest.approx(5.4)
+    # The same pace on 4h bars is six times the bars a day.
+    assert factory.expected_forward_trades({"closed_count": 60, "bars_replayed": 2000}, "4h") == pytest.approx(32.4)
+    for evidence, timeframe in (({}, "1d"), ({"closed_count": 0, "bars_replayed": 10}, "1d"),
+                                ({"closed_count": 5, "bars_replayed": 0}, "1d"),
+                                ({"closed_count": True, "bars_replayed": 10}, "1d"),
+                                ({"closed_count": 5, "bars_replayed": 10}, "3h")):
+        assert factory.expected_forward_trades(evidence, timeframe) is None
+
+
+def test_a_proposal_too_slow_to_reach_the_judges_floor_is_refused_and_the_next_one_mints(monkeypatch):
+    """The screen that replaced the cap: a rule that trades, but not often enough for the forward
+    judge to answer inside the horizon, is refused at the mint with the numbers that say so."""
+    snapshot, cohort = _cohort()
+    slow = _proposal_spec(family="proposed_slow_long")
+    fast = _proposal_spec(family="proposed_fast_long", conditions=[
+        {"feature": "close", "comparison": ">", "value_from": "ma50"}])
+    real = factory.expected_forward_trades
+    seen: list[int] = []
+
+    def paced(evidence, timeframe, **kw):
+        # The first proposal to reach the pace screen is the queue's head.
+        seen.append(1)
+        return 0.5 if len(seen) == 1 else real(evidence, timeframe, **kw)
+
+    monkeypatch.setattr(factory, "expected_forward_trades", paced)
+    result = _run(snapshot, cohort, trials=[_queued(slow, proposal_id="p1"), _queued(fast, proposal_id="p2")])
+    (refused,) = result["trial"]["refused"]
+    assert refused["reason"] == "too_slow" and refused["proposal_id"] == "p1"
+    assert refused["expected_trades"] == 0.5 and refused["horizon_days"] == factory.TRIAL_FREQUENCY_HORIZON_DAYS
+    assert refused["trade_floor"] == factory.min_forward_trades("1d")
+    assert [m["proposal_id"] for m in result["trial"]["minted"]] == ["p2"]
+
+
+def test_a_pace_that_cannot_be_read_is_refused_by_name(monkeypatch):
+    snapshot, cohort = _cohort()
+    monkeypatch.setattr(factory, "expected_forward_trades", lambda *a, **kw: None)
+    result = _run(snapshot, cohort, trials=[_queued(_proposal_spec())])
+    assert [r["reason"] for r in result["trial"]["refused"]] == ["pace_unreadable"]
+    assert result["trial"]["minted"] == []
+
+
+def test_the_queue_and_the_trial_row_carry_the_hypothesis_form_when_there_is_one():
+    form = {"payer": "a", "persistence": "b", "size": "c", "falsifier": "d", "nearest_record": "e", "prior": 0.1}
+    spec = _proposal_spec(family="proposed_h_long", timeframe="1h")
+    queue = proposer.pending_trial_proposals(
+        [_proposal_row("2026-09-20T06:18:00Z", [{**_accepted(spec), "hypothesis": form}])],
+        timeframe="1h", now=QNOW)
+    assert queue[0]["hypothesis"] == form
+    # An acceptance from before the form was required is still queued, and says nothing.
+    old = proposer.pending_trial_proposals([_proposal_row("2026-09-20T06:18:00Z", [_accepted(spec)])],
+                                           timeframe="1h", now=QNOW)
+    assert len(old) == 1 and "hypothesis" not in old[0]
+
+    snapshot, cohort = _cohort()
+    with_form = _run(snapshot, cohort, trials=[{**_queued(_proposal_spec()), "hypothesis": form}])
+    row = next(c for c in with_form["candidates"] if factory.is_trial(c))
+    assert row["trial_source"]["hypothesis"] == form
+    without = _run(snapshot, cohort, trials=[_queued(_proposal_spec())])
+    row = next(c for c in without["candidates"] if factory.is_trial(c))
+    assert "hypothesis" not in row["trial_source"]
+
+
+def test_a_cohort_fire_stores_a_trial_row_that_carries_the_form_beside_its_rotation_rows(tmp_path):
+    """The whole path with the new row shape: ledger acceptance -> queue -> factory child -> the
+    append-only store. A row the store refused would take nothing with it only if this passes
+    with the rotation's rows stored too."""
+    form = {"payer": "a", "persistence": "b", "size": "c", "falsifier": "d", "nearest_record": "e", "prior": 0.2}
+    spec = _proposal_spec(timeframe="1d")
+    proposals = [_proposal_row("2026-07-22T06:18:00Z", [{**_accepted(spec), "hypothesis": form}],
+                               timeframe="1d")]
+    status, record = _fire(tmp_path, "BTCUSDT,ETHUSDT 1d", proposals=proposals)
+    assert " trial=minted:proposed_trend_long" in status
+    stored = pool.read_candidates(tmp_path)
+    (trial,) = [r for r in stored if factory.is_trial(r)]
+    assert trial["trial_source"]["hypothesis"] == form
+    assert record["trial"]["minted"][0]["hypothesis"] == form
+    assert sum(1 for r in stored if not factory.is_trial(r)) == record["accepted_count"] > 0

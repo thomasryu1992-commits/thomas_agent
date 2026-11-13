@@ -65,6 +65,7 @@ from runtime.read_only_kernel import integrity
 from . import market_data
 from .candidate_ranking import evidence_invalid
 from .candidate_identity import candidate_id, derive_candidate_id
+from .forward_confirmation import min_forward_trades
 from .robustness import MIN_HOLDOUT_TRADES
 from .strategy import SpecParseError, StrategySpec
 # The replay backtest lives in `backtest.py` (moved whole, refactor plan PR-08). The names its callers
@@ -1117,9 +1118,18 @@ TRIAL_PROVENANCE = "mvp_hypothesis_trial"
 # — the trial's hash differs, because widening `symbol_scope` to the cohort is inside the rule
 # fingerprint — so this is what "has this proposal been screened" is keyed on.
 TRIAL_SOURCE_FIELD = "trial_source"
-# Concurrent trials (Thomas 2026-09-24, HYPOTHESIS_TRIAL_V0.1 Q6: 4, as §I2 proposed). Open means
-# minted; closing one is the operator's later `close`, so until that lands the cap is a total.
-MAX_OPEN_TRIALS = 4
+# No cap on concurrent trials (Thomas 2026-11-12, MANY_STRATEGIES_V0.1 M1, reopening
+# HYPOTHESIS_TRIAL_V0.1 Q6's 4). A count stood in for "a trial that can reach a verdict": four
+# slots were held from 2026-09-28 to 2026-11-12 by trials of which three never traded, and nothing
+# new could open. What bounds the track now is asked of each proposal instead — the pace screen
+# below — and one fire still screens three and mints one (`MAX_TRIAL_SCREENS_PER_FIRE`).
+#
+# The pace screen: a trial is judged by the forward judge, which answers nothing below its trade
+# floor (`forward_confirmation.min_forward_trades`). A proposal whose own backtest pace would not
+# reach that floor inside this horizon is refused at the mint rather than walked for half a year
+# to an INSUFFICIENT. The pace is the pooled backtest's — trades per bar of one leg, every leg
+# counted — which is how the judge counts a trial's forward rows.
+TRIAL_FREQUENCY_HORIZON_DAYS = 180
 # Proposals one fire may screen before it stops. A refusal costs a lattice and a pooled replay, and
 # the queue holds every accepted proposal in the backlog window — bounded so a queue of
 # zero-trade proposals cannot turn one fire into nine replays.
@@ -1148,11 +1158,28 @@ def trial_source_hashes(records: Sequence[Mapping[str, Any]]) -> frozenset[str]:
 
 
 def open_trial_count(records: Sequence[Mapping[str, Any]], closed_ids: frozenset[str] | set[str] = frozenset()) -> int:
-    """Trials holding a slot under :data:`MAX_OPEN_TRIALS`: minted and not closed by Thomas.
+    """Trials still being walked: minted and not closed. Reported on the fire's trial block; it
+    gates nothing since the cap went (2026-11-12).
 
-    A closed trial frees its slot but its proposal stays screened — :func:`trial_source_hashes`
-    still names it, so closing never re-queues the proposal it came from."""
+    A closed trial's proposal stays screened — :func:`trial_source_hashes` still names it, so
+    closing never re-queues the proposal it came from."""
     return len({candidate_id(r) for r in records if is_trial(r)} - set(closed_ids))
+
+
+def expected_forward_trades(
+    evidence: Mapping[str, Any], timeframe: str | None, *, days: float = TRIAL_FREQUENCY_HORIZON_DAYS,
+) -> float | None:
+    """Trades a rule would make in ``days`` at its backtest pace, every leg counted; None when the
+    evidence or the timeframe cannot say.
+
+    ``closed_count`` is pooled over the legs and ``bars_replayed`` is one leg's, so their ratio is
+    already the all-legs pace per bar of calendar time — the unit the forward judge's floor is in."""
+    minutes = market_data.TIMEFRAMES.get(str(timeframe or ""))
+    closed, bars = evidence.get("closed_count"), evidence.get("bars_replayed")
+    for value in (closed, bars, minutes):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            return None
+    return float(closed) / float(bars) * (float(days) * 1440.0 / float(minutes))
 
 
 def trial_spec_dict(
@@ -1190,8 +1217,8 @@ def _screen_trials(
     Returns the fire's trial block: ``status``, what was ``minted`` (0 or 1 rows, under
     ``rows``), what was ``refused`` and why. Refusals are per proposal and permanent — the caller
     records them, and a refused proposal is not screened again (a refusal is a review). The skips
-    (``not_cohort``, ``cap``, an empty queue) are about the FIRE and say nothing about any
-    proposal, so they refuse nothing.
+    (``not_cohort``, an empty queue) are about the FIRE and say nothing about any proposal, so
+    they refuse nothing. ``open_trials`` is reported, not a gate: there is no cap on open trials.
 
     Iterating rather than taking the head: one zero-trade proposal at the front of the queue
     would otherwise hold it shut forever."""
@@ -1201,8 +1228,6 @@ def _screen_trials(
         return {**block, "status": "empty"}
     if len(legs) < 2:
         return {**block, "status": "skipped:not_cohort"}
-    if open_trials >= MAX_OPEN_TRIALS:
-        return {**block, "status": "skipped:cap"}
 
     scope = sorted({str(leg.get("symbol") or "") for leg in legs} - {""})
     evidence_sha = integrity.sha256_record({"candles": [leg.get("candles") or [] for leg in legs]})
@@ -1218,6 +1243,10 @@ def _screen_trials(
             "proposed_at": proposal.get("proposed_at"),
             "rationale": proposal.get("rationale"),
         }
+        # The proposer's hypothesis form, when the proposal carries one (required of proposals
+        # since prompt v2; an acceptance from before it has none and its row says nothing).
+        if isinstance(proposal.get("hypothesis"), Mapping):
+            source["hypothesis"] = dict(proposal["hypothesis"])
 
         def _refuse(reason: str, **detail: Any) -> None:
             block["refused"].append({**source, "reason": reason, **detail})
@@ -1269,6 +1298,18 @@ def _screen_trials(
             continue
         if not evidence["closed_count"]:
             _refuse("no_trades")
+            continue
+        # The pace screen (see `TRIAL_FREQUENCY_HORIZON_DAYS`). A pace that cannot be read is
+        # refused by its own name: the screen exists so that no trial is walked without a reason
+        # to expect a verdict, and "could not tell" is not one.
+        pace = expected_forward_trades(evidence, spec.timeframe)
+        floor = min_forward_trades(spec.timeframe)
+        if pace is None:
+            _refuse("pace_unreadable")
+            continue
+        if pace < floor:
+            _refuse("too_slow", expected_trades=round(pace, 2), trade_floor=floor,
+                    horizon_days=TRIAL_FREQUENCY_HORIZON_DAYS)
             continue
         if ablation is not None:
             evidence["ablation"] = ablation

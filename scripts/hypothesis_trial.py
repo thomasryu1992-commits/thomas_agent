@@ -4,9 +4,10 @@
 Two subcommands:
 
 - ``list`` prints every trial beside its coin-flip twin: forward trades, mean net R, the judge's
-  status, its own backtest holdout, and whether it is open or closed. Reads only.
+  status, its own backtest holdout, and whether it is open or closed; then any open trial
+  that never entered and is past its idle deadline. Reads only.
 - ``close <candidate_id> --graduate|--retire --reason TEXT`` is Thomas's decision on one trial.
-  It frees the trial's slot under ``factory.MAX_OPEN_TRIALS``, stops its walk and its twin's, and
+  It stops the trial's walk and its twin's (there is no cap on open trials to free), and
   seals the forward record as it stood. Dry unless ``--apply``. ``--graduate`` is refused unless the
   trial's own holdout is CONFIRMED (Q5): graduating RECORDS the intent — installing the family is
   still a code change in ``factory.TEMPLATES``, by PR. Closing never re-queues the proposal.
@@ -42,7 +43,7 @@ def _mean(value) -> str:
 
 
 def _list(root: Path) -> int:
-    lines = forward_trial.trial_report(root)
+    lines = forward_trial.trial_report(root, now=timeutil.utc_now_iso())
     if not lines:
         print("no hypothesis trial minted yet")
         return EXIT_OK
@@ -58,7 +59,11 @@ def _list(root: Path) -> int:
             line.get("priceable_count", 0), _mean(line.get("mean_net_r")), line.get("status"),
             twin.get("priceable_count", 0), _mean(twin.get("mean_net_r")), twin.get("status")))
     open_count = sum(1 for line in lines if line.get("close") is None)
-    print(f"\n{open_count} open of {forward_trial.MAX_OPEN_TRIALS} slots; {len(lines) - open_count} closed")
+    print(f"\n{open_count} open; {len(lines) - open_count} closed")
+    overdue = [line for line in lines if line.get("idle_overdue")]
+    for line in overdue:
+        print(f"  idle past its deadline, never entered: {line['candidate_id']} "
+              f"({line.get('age_days')} days old, deadline {line['idle_deadline_days']})")
     return EXIT_OK
 
 

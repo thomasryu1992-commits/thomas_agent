@@ -55,6 +55,7 @@ from . import (
     forward_book,
     forward_cohort,
     forward_confirmation,
+    forward_trial,
     generator,
     guards,
     independence,
@@ -431,11 +432,19 @@ TUNABLES: tuple[Tunable, ...] = (
             "crypto/template_space.py", MEASURED,
             "0 of 22 mints at 8 conditions produced a judgeable holdout; the band yields nothing",
             "a mint at 8 conditions reaching `MIN_HOLDOUT_TRADES` — needs a longer replay window"),
-    Tunable("MAX_OPEN_TRIALS", factory.MAX_OPEN_TRIALS, "crypto/factory.py", OPERATOR,
-            "Thomas 2026-09-24, HYPOTHESIS_TRIAL_V0.1 Q6 as recommended: 4 concurrent trials, "
-            "the §I2 figure",
-            "the trial track's forward record showing a trial beats its null — then the "
-            "question becomes install, not how many to hold"),
+    Tunable("TRIAL_FREQUENCY_HORIZON_DAYS", factory.TRIAL_FREQUENCY_HORIZON_DAYS,
+            "crypto/factory.py", OPERATOR,
+            "Thomas 2026-11-12 (FACTORY_GENERATOR_REDESIGN_V0.1 F6 rule 1): a proposal whose "
+            "backtest pace cannot reach the forward trade floor in 180 days is not walked; it "
+            "replaced the cap of 4 open trials (MANY_STRATEGIES_V0.1 M1)",
+            "trials refused as too_slow that a longer wait would have judged — or walked trials "
+            "still INSUFFICIENT at the horizon, which says it is too long"),
+    Tunable("TRIAL_IDLE_MIN_DAYS", forward_trial.TRIAL_IDLE_MIN_DAYS, "crypto/forward_trial.py",
+            OPERATOR,
+            "the shortest wait before an open trial that never entered is marked overdue "
+            "(F6 rule 2, the figure the proposal named); the mark is a display, the close is Thomas's",
+            "Thomas deciding the deadline may close a trial on its own — then this is a real gate "
+            "and wants its own measurement"),
     Tunable("ABLATION_MAX_CONDITIONS", factory.ABLATION_MAX_CONDITIONS, "crypto/factory.py",
             OPERATOR,
             "Thomas 2026-08-12, FACTORY_ABLATION_V0.1 §3-1 as proposed: hypotheses of up to "

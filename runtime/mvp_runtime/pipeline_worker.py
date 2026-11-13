@@ -438,6 +438,26 @@ def _apply_job(
         raise ControlBlocked("PROPOSAL_INPUTS_REQUIRED",
                              f"'timeframe' must be one of {sorted(ALLOWED_TIMEFRAMES)} when given")
 
+    # What earlier trial screens refused (prompt v2). Family names are model-written text on
+    # their way back into a prompt, so this door checks the shape itself rather than trusting the
+    # caller's cleaning: a list of at most `REFUSALS_IN_PROMPT` objects, each exactly a family
+    # and a reason of the shapes the proposer names. Anything else is refused, never trimmed —
+    # a caller sending something this door does not expect is the thing to hear about.
+    refusals = inputs.get("recent_refusals", [])
+    if (not isinstance(refusals, list)
+            or len(refusals) > crypto_proposer.REFUSALS_IN_PROMPT
+            or not all(
+                isinstance(r, dict) and set(r) == {"family", "reason"}
+                and isinstance(r["family"], str) and isinstance(r["reason"], str)
+                and crypto_proposer.REFUSAL_FAMILY_SHAPE.match(r["family"])
+                and crypto_proposer.REFUSAL_REASON_SHAPE.match(r["reason"])
+                for r in refusals)):
+        raise ControlBlocked(
+            "PROPOSAL_INPUTS_REQUIRED",
+            f"'recent_refusals' must be a list of at most {crypto_proposer.REFUSALS_IN_PROMPT} "
+            "{family, reason} objects of the proposer's shapes when given",
+        )
+
     provider = (
         resolved.get("validator_provider") or crypto_proposer.MockProposerProvider()
     )
@@ -445,6 +465,7 @@ def _apply_job(
     # caller's, and this worker never sees one.
     generation = crypto_proposer.generate_proposals(
         provider=provider, existing_families=families, focus=focus, timeframe=timeframe,
+        recent_refusals=refusals,
     )
     return {"ok": True, "job": job, "generation": generation}
 
