@@ -114,6 +114,7 @@ CONFIRM_READS: tuple[dict[str, Any], ...] = (
 CONFIRM_DONE: dict[int, str] = {
     1: "20261113T042318Z-1057691 at a7ccd64b: C002 CONFIRM_FAIL, annual Sharpe -0.942 against 1.0",
     2: "20261113T052257Z-1129790 at c117234c: C007 CONFIRM_FAIL, annual Sharpe 0.08 against 1.245",
+    3: "20261113T063506Z-1216563 at 339c2b91: C010 CONFIRM_FAIL, annual Sharpe 0.138 against 1.388",
 }
 # The variable groups that read the series ``signal_lab.hold`` attaches (positioning, depth, spot bars).
 ATTACHED_GROUPS = frozenset({"positioning", "depth", "spot"})
