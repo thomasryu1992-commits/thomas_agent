@@ -38,3 +38,25 @@ tier, where the positioning files cover only the top coins.
 
 **Not done.** The confirm span was not read. Whether to spend the second of five reads on C007 before the month the
 budget set has passed is asked.
+
+## The second confirm read, the same day
+
+Thomas chose to spend the second of five reads on C007 at once rather than a month later (the pacing was his own
+default; the bar for a second read, 1.245, was kept). The definition was pushed, the five checks passed on that
+commit, a counts-only run showed 22 four-week decisions with thirty coins ranked at each and neither side ever
+empty, and it was read once.
+
+**It failed: 0.08 against 1.245.** Nine of twenty random-variable books built with the same logic did as well, so on
+2025–2026 the volatility ranking added nothing to this book. Before costs and funding the book made about 31% in 21
+months; funding took 19.7% of it — filtered at the decision and held four weeks, a position whose funding changed in
+between stayed. On the development years the same book's funding had been −1.7% in five years.
+
+**Two reads, two fails, one cause in common.** Both candidates passed 2020–2024 and both lost 2025–2026 to funding,
+which went from 1.7–5.9% over five years to 19.7–39.6% over 21 months. Together with the coins that move several
+hundred percent in a day, this says the two spans' universes are different, and that is a reason development
+passes do not carry over. Measuring how different — the character of the universe by month, no candidate's return —
+would make the three reads left less independent, so it is asked rather than done.
+
+**Also said that day.** Thomas: until a meaningful result comes out, the weekly and monthly steps keep running, by
+hand if needed. The cadence in the proposal is a floor, not a wait.
+

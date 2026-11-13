@@ -371,6 +371,7 @@ def test_the_second_read_is_c007_as_built_and_is_held_to_the_second_bar(monkeypa
 
 def test_the_counts_before_a_read_say_how_many_coins_each_side_would_hold_and_carry_no_return(monkeypatch):
     entry = next(r for r in sl.CONFIRM_READS if r["read"] == 2)
+    monkeypatch.setattr(sl, "CONFIRM_DONE", {1: "spent"})
     members = [f"C{i:02d}USDT" for i in range(1, 25)]
     bars = {s: {date(2024, 10, 1) + timedelta(days=k): xsb.Bar(open=100.0, close=100.0 * (1 + 0.001 * ((k * (i + 3)) % 7 - 3)), quote_volume=5.0)
                 for k in range(760)} for i, s in enumerate(members + [sl.HEDGE])}
@@ -382,4 +383,14 @@ def test_the_counts_before_a_read_say_how_many_coins_each_side_would_hold_and_ca
     assert "by_label" not in out
     flat = json.dumps(out)
     assert all(word not in flat for word in ("sharpe", "net", "pct", "return")), "counts only"
+
+
+def test_two_confirm_reads_are_spent_and_three_are_left(monkeypatch, capsys):
+    """Reads 1 and 2 were spent on 2026-11-13 (C002, C007: both CONFIRM_FAIL). Nothing is open until a third is
+    registered."""
+    assert set(sl.CONFIRM_DONE) == {1, 2} and "C007" in sl.CONFIRM_DONE[2] and "CONFIRM_FAIL" in sl.CONFIRM_DONE[2]
+    assert sl.CONFIRM_BUDGET - len(sl.CONFIRM_DONE) == 3 and sl.next_confirm_read() is None
+    assert sl.confirm_bar(len(sl.CONFIRM_DONE) + 1) == 1.388, "the bar the next read is held to"
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    assert sl.main(["confirm"]) == sl.EXIT_USAGE and "no registered confirm read is open" in capsys.readouterr().err
 
