@@ -71,3 +71,27 @@ book reached 1.12, which is why passing the entry rule is not evidence by itself
 the map. Only its direction is learned without the traded year, and all five folds learned the same one. The confirm
 span was not read; whether to spend the first of five reads on it is asked.
 
+## The first confirm read, the same day
+
+Thomas said yes to spending the first of five reads of 2025-01..2026-09 on the funding candidate. The read's
+definition was pushed first, the five checks passed on that commit, a counts-only run showed the data was whole
+(91 decisions, thirty coins ranked at each), and then it was read once.
+
+**It failed**: an annual Sharpe of −0.942 against a bar of 1.0. The candidate is closed and the tool refuses the read
+again. What passed on the development years — with three quarters of its return in 2021, one placebo scenario in
+twenty matching it, and a random slow characteristic reaching 1.12 in the same book — did not exist out of sample.
+The old process would have sent it to a four-month forward screen; the ladder answered the same day.
+
+**What the read showed about the tool.** A separate recount matched the engine's funding to the decimal and
+disagreed on price by 86 points. The cause is the engine's accounting: within a week it adds daily returns at fixed
+dollar weights, as if the book were re-set every day at no cost. With coins that move several hundred percent in a
+day on the short side — the 2025–2026 top thirty holds such coins; the development years' top thirty mostly did not
+— a daily re-set short loses again on every up day. The verdict is a fail under either accounting. The assumption is
+in every number this engine produced on 2025–2026, M04's confirm among them; that span is not re-read for M04 under
+its own registration, so how much M04 leans on it is unknown and left to Thomas.
+
+**A stop before the read.** The first counts run died on the sandbox's memory cap while loading; nothing was
+printed and no return was read. The cap protects the production host and was not raised: the loader now takes only
+what the candidate reads. The registered definition did not change, and the order (checks, counts, read) was walked
+again from the start.
+

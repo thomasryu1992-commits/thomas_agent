@@ -148,6 +148,7 @@ def test_a_later_confirm_read_is_held_to_a_stricter_bar():
 
 
 def test_a_read_is_registered_before_it_is_spent_and_cannot_be_spent_twice(monkeypatch, capsys):
+    monkeypatch.setattr(sl, "CONFIRM_DONE", {})
     first = sl.next_confirm_read()
     assert first is not None and first["candidate"] in sl.CANDIDATES and set(first["signs"]) == {"cool", "hot"}
     numbers = [r["read"] for r in sl.CONFIRM_READS]
@@ -193,9 +194,20 @@ def test_the_confirm_read_loads_only_what_its_candidate_reads(monkeypatch, capsy
 
     monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
     monkeypatch.setattr(sl.lab, "hold", hold)
+    monkeypatch.setattr(sl, "CONFIRM_DONE", {})
     assert sl.main(["confirm-counts"]) == sl.EXIT_BLOCKED
     capsys.readouterr()
     assert asked == {"span": (sl.SPAN[0], sl.CONFIRM[1]), "attach": False}, "funding needs no attached series"
     assert sl.lab.variables()["spot_share_30"][0] in sl.ATTACHED_GROUPS
     assert sl.lab.variables()["funding_30"][0] not in sl.ATTACHED_GROUPS
+
+
+def test_the_first_confirm_read_is_spent_and_the_tool_refuses_it(monkeypatch, capsys):
+    """Read 1 was spent on 2026-11-13 (C002, CONFIRM_FAIL). The tool, as committed, has no open read."""
+    assert 1 in sl.CONFIRM_DONE and "C002" in sl.CONFIRM_DONE[1]
+    assert sl.next_confirm_read() is None
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    for command in ("confirm", "confirm-counts"):
+        assert sl.main([command]) == sl.EXIT_USAGE
+    assert "no registered confirm read is open" in capsys.readouterr().err
 

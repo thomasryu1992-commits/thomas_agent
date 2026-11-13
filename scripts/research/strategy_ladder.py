@@ -73,7 +73,9 @@ CONFIRM_READS: tuple[dict[str, Any], ...] = (
 )
 # read number -> the run that spent it. Filled in the commit that records the result; ``confirm`` refuses a read
 # that is already here.
-CONFIRM_DONE: dict[int, str] = {}
+CONFIRM_DONE: dict[int, str] = {
+    1: "20261113T042318Z-1057691 at a7ccd64b: C002 CONFIRM_FAIL, annual Sharpe -0.942 against 1.0",
+}
 # The variable groups that read the series ``signal_lab.hold`` attaches (positioning, depth, spot bars).
 ATTACHED_GROUPS = frozenset({"positioning", "depth", "spot"})
 
