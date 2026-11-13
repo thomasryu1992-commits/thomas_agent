@@ -74,6 +74,8 @@ CONFIRM_READS: tuple[dict[str, Any], ...] = (
 # read number -> the run that spent it. Filled in the commit that records the result; ``confirm`` refuses a read
 # that is already here.
 CONFIRM_DONE: dict[int, str] = {}
+# The variable groups that read the series ``signal_lab.hold`` attaches (positioning, depth, spot bars).
+ATTACHED_GROUPS = frozenset({"positioning", "depth", "spot"})
 
 
 # --- L1 ----------------------------------------------------------------------------------------------------------
@@ -362,7 +364,9 @@ def main(argv: list[str] | None = None) -> int:
             print("refused: no registered confirm read is open (spent, or the budget is used)", file=sys.stderr)
             return EXIT_USAGE
         bs.check_search_span(CONFIRM)
-        market = lab.hold(cache, (SPAN[0], CONFIRM[1]))
+        # Only what the candidate reads is loaded: its variable's group says whether the attached series are needed.
+        group = lab.variables()[CANDIDATES[entry["candidate"]]["variable"]][0]
+        market = lab.hold(cache, (SPAN[0], CONFIRM[1]), attach=group in ATTACHED_GROUPS)
         if market is None:
             print("BLOCKED: contract types or the spot symbol list is missing from the cache", file=sys.stderr)
             return EXIT_BLOCKED

@@ -200,3 +200,23 @@ def test_it_runs_in_the_sandbox_only(monkeypatch, capsys):
     listed = json.loads(capsys.readouterr().out)
     assert listed["span"] == ["2020-01-01", "2024-12-31"] and listed["controls"] == 40
     assert {"price_volume", "funding", "positioning", "depth", "spot"} == set(listed["variables"].values())
+
+
+def test_a_book_that_reads_bars_and_funding_alone_loads_nothing_else(monkeypatch, tmp_path):
+    """The attached series are most of the memory. A span that runs to 2026 is loaded without them when the
+    variable does not read them, and is still cut at the span's last day."""
+    span = (date(2020, 1, 1), date(2021, 6, 30))
+    monkeypatch.setattr(lab.xsb, "read_contract_types", lambda archive: ({"BTCUSDT": "PERPETUAL"}, None))
+    monkeypatch.setattr(lab.xsb, "load_market", lambda archive, funding=True: _market(date(2021, 12, 31)))
+
+    def never(*args, **kwargs):
+        raise AssertionError("an attached series was loaded")
+
+    for module, name in ((lab.ds, "load_daily"), (lab.ms, "load_daily"), (lab.sp, "attach"), (lab.sp, "months_on_disk")):
+        monkeypatch.setattr(module, name, never)
+    held = lab.hold(tmp_path, span, attach=False)
+    assert lab.last_day(held) == span[1] and held.contract_types == {"BTCUSDT": "PERPETUAL"}
+    assert not hasattr(held, "spot") and not hasattr(held, "metrics")
+    monkeypatch.setattr(lab.xsb, "read_contract_types", lambda archive: None)
+    assert lab.hold(tmp_path, span, attach=False) is None
+

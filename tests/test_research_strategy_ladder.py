@@ -183,3 +183,19 @@ def test_the_confirm_read_uses_the_registered_directions_and_decides_by_the_bar(
     assert failed["verdict"] == "CONFIRM_FAIL" and failed["read"] == 1 and failed["of"] == sl.CONFIRM_BUDGET
     assert set(passed["never_switching_books"]) == {"always_long_high", "always_long_low"}
 
+
+def test_the_confirm_read_loads_only_what_its_candidate_reads(monkeypatch, capsys):
+    asked = {}
+
+    def hold(cache, span, *, attach=True):
+        asked.update(span=span, attach=attach)
+        return None
+
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(sl.lab, "hold", hold)
+    assert sl.main(["confirm-counts"]) == sl.EXIT_BLOCKED
+    capsys.readouterr()
+    assert asked == {"span": (sl.SPAN[0], sl.CONFIRM[1]), "attach": False}, "funding needs no attached series"
+    assert sl.lab.variables()["spot_share_30"][0] in sl.ATTACHED_GROUPS
+    assert sl.lab.variables()["funding_30"][0] not in sl.ATTACHED_GROUPS
+

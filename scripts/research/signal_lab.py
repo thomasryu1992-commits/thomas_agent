@@ -396,10 +396,20 @@ def pool(market: xsb.Market, span: tuple[date, date] = SPAN, *, simulate: Callab
 
 # --- the host side -----------------------------------------------------------------------------------------------
 
-def hold(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | None:
-    """The market cut at the span's last day with positioning, depth and spot attached, or None when a piece is missing."""
+def hold(cache: Path, span: tuple[date, date] = SPAN, *, attach: bool = True) -> xsb.Market | None:
+    """The market cut at the span's last day with positioning, depth and spot attached, or None when a piece is missing.
+
+    ``attach=False`` loads the perp bars and funding alone, for a book whose variable and scenario read nothing
+    else: the attached series are most of the memory, and a span that runs to 2026 does not fit the sandbox with
+    them."""
     archive = cache / "archive"
     snapshot = xsb.read_contract_types(archive)
+    if not attach:
+        if snapshot is None:
+            return None
+        market = xsb.load_market(archive, funding=True)
+        market.contract_types = snapshot[0]
+        return cut_market(market, span)
     try:
         listing = set(json.loads((cache / sp.SPOT_DIR / ba.SYMBOLS_FILENAME).read_text(encoding="utf-8")))
     except (OSError, ValueError):
