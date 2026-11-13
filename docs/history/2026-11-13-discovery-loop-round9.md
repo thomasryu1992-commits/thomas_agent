@@ -32,3 +32,16 @@ The candidate is the plainest thing with a payer: weekly reversal, long what fel
   unit is about 27% of total position a year. What the round can learn is in the p beside 300 weekly random books
   and in the 3 bps value. If those two say there is something and the stressed cost says it cannot be taken, one
   later read is allowed, once, with a cost table fixed from the spread record before any return is computed.
+
+## The result (same day)
+
+**What came out.** H-R1 failed every condition and is closed. At the judged cost the annual Sharpe is -0.674, and
+28% of the weekly random books did as well or better; at 3 bps of slippage it is -0.081, so this is not the
+cost-dependent case and the one re-read the registration allowed is not taken. Before costs and funding the book
+earned about 7% of total position a year while it stood, costs took about 19%, and it paid funding on top.
+
+**What the round leaves.** The tier below the first hundred is not thin: a book stands from August 2021 and almost
+every week from 2022. The tool that builds it stays for later hypotheses. The size line written in the ladder's
+units said beforehand that the verdict would fail on cost, and it did; what it could not say was that nothing
+would be left without the cost either. The next step in the loop's own order is hourly data.
+
