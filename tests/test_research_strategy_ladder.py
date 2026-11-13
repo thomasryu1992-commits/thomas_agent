@@ -129,7 +129,8 @@ def test_measure_reports_the_entry_rule_and_the_years_on_total_position(monkeypa
 
 def test_the_rounds_candidates_name_registered_variables_and_it_runs_in_the_sandbox_only(monkeypatch, capsys):
     for name, candidate in sl.CANDIDATES.items():
-        assert candidate["variable"] in sl.lab.variables() and candidate["logic"] in ("L1", "L2"), name
+        assert candidate["variable"] in sl.lab.variables() and candidate["logic"] in sl.BOOKS, name
+        assert candidate["accounting"] in sl.ACCOUNTING and candidate["round"] in ("1", "2"), name
         assert candidate["tier"] == "top30"
     monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: False)
     assert sl.main(["run"]) == sl.EXIT_USAGE
@@ -210,4 +211,85 @@ def test_the_first_confirm_read_is_spent_and_the_tool_refuses_it(monkeypatch, ca
     for command in ("confirm", "confirm-counts"):
         assert sl.main([command]) == sl.EXIT_USAGE
     assert "no registered confirm read is open" in capsys.readouterr().err
+
+
+# --- round 2: the ladder's own accounting and the risk-matched book --------------------------------------------------
+
+def _two_coin_market(up_moves):
+    """UP opens at 100 and moves by ``up_moves`` open to open; FLAT stays at 100. Decision on Sunday 2021-01-03."""
+    start = date(2021, 1, 3)
+    up, flat, price = {}, {}, 100.0
+    for k in range(12):
+        day = start + timedelta(days=k)
+        nxt = price * (1 + (up_moves[k - 1] if 1 <= k <= len(up_moves) else 0.0))
+        up[day] = xsb.Bar(open=price, close=nxt, quote_volume=1.0)
+        flat[day] = xsb.Bar(open=100.0, close=100.0, quote_volume=1.0)
+        price = nxt
+    return xsb.Market(bars={"UPUSDT": up, "FLATUSDT": flat}), start
+
+
+def test_a_held_short_loses_what_the_coin_did_and_a_daily_reset_short_loses_more():
+    """Short a coin that doubles on Monday and halves back on Tuesday. Held for the week it is flat. Re-set to the
+    same dollar weight every day (the basket engine's sum) it loses 100% and wins back 50%."""
+    market, sunday = _two_coin_market([1.0, -0.5])
+    weigher = lambda m, members, day, signal, seed=None: {"UPUSDT": -1.0, "FLATUSDT": 1.0} if day == sunday else {}  # noqa: E731
+    monthly = {date(2021, 1, 1): ["UPUSDT", "FLATUSDT"]}
+    span = dict(start=sunday + timedelta(days=1), end=sunday + timedelta(days=7))
+    held = sl.simulate_held(market, sl.bs.CADENCE, monthly, weigher=weigher, **span)["daily"]
+    reset = xsb.simulate(market, sl.bs.CADENCE, monthly, weigher=weigher, **span)["daily"]
+    assert sum(r["gross"] for r in held.values()) == pytest.approx(0.0, abs=1e-12)
+    assert sum(r["gross"] for r in reset.values()) == pytest.approx(-0.5)
+    monday = sunday + timedelta(days=1)
+    assert held[monday]["gross"] == pytest.approx(-1.0) and held[monday + timedelta(days=1)]["gross"] == pytest.approx(1.0)
+    assert held[monday]["cost"] == pytest.approx(2 * (xsb.cost.DEFAULT_TAKER_FEE_BPS + xsb.cost.DEFAULT_SLIPPAGE_BPS) / 1e4)
+
+
+def test_at_the_next_decision_the_trade_is_what_the_held_position_has_become():
+    """The short has doubled in value by the next Sunday's entry; staying at the same target costs a trade of one."""
+    market, sunday = _two_coin_market([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    weigher = lambda m, members, day, signal, seed=None: {"UPUSDT": -1.0, "FLATUSDT": 1.0}  # noqa: E731
+    monthly = {date(2021, 1, 1): ["UPUSDT", "FLATUSDT"]}
+    daily = sl.simulate_held(market, sl.bs.CADENCE, monthly, start=sunday + timedelta(days=1),
+                             end=sunday + timedelta(days=9), weigher=weigher)["daily"]
+    unit = (xsb.cost.DEFAULT_TAKER_FEE_BPS + xsb.cost.DEFAULT_SLIPPAGE_BPS) / 1e4
+    second_entry = sunday + timedelta(days=8)
+    assert daily[second_entry]["cost"] == pytest.approx(1.0 * unit), "from -2 back to -1; the flat leg does not trade"
+
+
+def test_held_funding_is_paid_on_what_the_position_is_worth_that_day():
+    market, sunday = _two_coin_market([1.0, 0.0])
+    tuesday = sunday + timedelta(days=2)
+    stamp = int((tuesday - date(1970, 1, 1)).total_seconds() * 1000) + 3600 * 1000
+    market.funding = {"UPUSDT": [(stamp, 0.001)]}
+    weigher = lambda m, members, day, signal, seed=None: {"UPUSDT": -1.0, "FLATUSDT": 1.0} if day == sunday else {}  # noqa: E731
+    daily = sl.simulate_held(market, sl.bs.CADENCE, {date(2021, 1, 1): ["UPUSDT", "FLATUSDT"]},
+                             start=sunday + timedelta(days=1), end=sunday + timedelta(days=4), weigher=weigher)["daily"]
+    assert daily[tuesday]["funding"] == pytest.approx(2.0 * 0.001), "a short twice its size earns twice the rate"
+
+
+def test_the_risk_matched_book_gives_a_wild_coin_less_weight_and_carries_no_market_exposure():
+    values = {f"C{i:02d}": float(i) for i in range(1, 41)}          # twenty a side, so the cap leaves room to differ
+    vols = {s: (0.20 if s == "C40" else 0.05) for s in values}
+    betas = {s: 1.0 + i / 80 for i, s in enumerate(sorted(values))}
+    weights = sl.risk_weights(values, vols, betas, long_high=True)
+    plain = sl.rank_weights(values, long_high=True)
+    assert 0 < weights["C40"] < plain["C40"], "four times the volatility, a smaller share of its side"
+    assert weights["C40"] < weights["C39"]
+    book_only = {s: w for s, w in weights.items() if s != sl.HEDGE}
+    assert sum(w for w in book_only.values() if w > 0) == pytest.approx(1.0)
+    assert sum(w * betas[s] for s, w in book_only.items()) + weights[sl.HEDGE] == pytest.approx(0.0, abs=1e-12)
+    thin = {s: v for s, v in list(values.items())[:sl.lab.MIN_NAMES - 1]}
+    assert sl.risk_weights(thin, vols, betas, long_high=True) == {}
+    assert sl.risk_weights(values, {**vols, "C01": None}, betas, long_high=True).get("C01") is None
+
+
+def test_a_round_is_measured_by_its_own_accounting_and_only_its_own_candidates(monkeypatch):
+    assert sl.latest_round() == "2"
+    assert {n for n, c in sl.CANDIDATES.items() if c["round"] == "2"} == {"C003", "C004"}
+    assert all(c["accounting"] == "held" for c in sl.CANDIDATES.values() if c["round"] == "2")
+    seen = []
+    monkeypatch.setattr(sl, "run_l1", lambda market, candidate, span=None: seen.append(candidate["logic"]) or {})
+    monkeypatch.setattr(sl, "run_l2", lambda market, candidate, span=None: seen.append("L2") or {})
+    assert set(sl.run_round(xsb.Market())) == {"C003", "C004"} and seen == ["L1", "L8"]
+    assert set(sl.run_round(xsb.Market(), which="1")) == {"C001", "C002"}
 

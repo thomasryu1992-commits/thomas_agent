@@ -53,11 +53,18 @@ MAX_NEGATIVE_YEARS = 2
 
 # The candidates of this round, fixed before any of them was measured (the proposal's ledger).
 CANDIDATES: dict[str, dict[str, str]] = {
-    "C001": {"logic": "L1", "variable": "idio_vol_30", "long": "low", "tier": "top30",
+    "C001": {"round": "1", "logic": "L1", "variable": "idio_vol_30", "long": "low", "tier": "top30", "accounting": "engine",
              "from": "the map's one lead: low-volatility coins lead the next week"},
-    "C002": {"logic": "L2", "variable": "funding_30", "axis": "heat", "tier": "top30",
+    "C002": {"round": "1", "logic": "L2", "variable": "funding_30", "axis": "heat", "tier": "top30", "accounting": "engine",
              "from": "the map's sign flip: high funding lags when funding is hot and leads when it is cool"},
+    # Round 2, registered 2026-11-13 before either was measured: the same lead under the ladder's own accounting,
+    # and under the risk-matched logic that C001's miss asked for.
+    "C003": {"round": "2", "logic": "L1", "variable": "idio_vol_30", "long": "low", "tier": "top30", "accounting": "held",
+             "from": "C001's lead again, with quantities held for the week instead of re-set daily"},
+    "C004": {"round": "2", "logic": "L8", "variable": "idio_vol_30", "long": "low", "tier": "top30", "accounting": "held",
+             "from": "C001 lost with the market rising: weights by risk, the leftover market exposure hedged in Bitcoin"},
 }
+HEDGE = bs.REFERENCE                       # the coin a risk-matched book's leftover market exposure is hedged in
 
 Direction = Callable[[date], int]          # +1 long the high end, -1 long the low end, 0 flat
 
@@ -124,6 +131,98 @@ def book(read: lab.Variable, direction: Direction) -> Callable[..., dict[str, fl
         values = {s: v for s in members if (v := read(market, s, day)) is not None}
         return rank_weights(values, long_high=way > 0)
     return weights
+
+
+# --- L8: the risk-matched book -------------------------------------------------------------------------------------
+
+def risk_weights(values: Mapping[str, float], vols: Mapping[str, float], betas: Mapping[str, float],
+                 *, long_high: bool) -> dict[str, float]:
+    """L1's sides with each coin's score divided by its volatility, so a wild coin carries no more risk than a quiet
+    one; then the book's leftover sensitivity to Bitcoin is offset with a Bitcoin position. Coins without a
+    volatility or a beta are not held."""
+    usable = {s: v for s, v in values.items() if vols.get(s) and betas.get(s) is not None}
+    if len(usable) < lab.MIN_NAMES:
+        return {}
+    order = sorted(usable, key=lambda s: (usable[s], s))
+    middle = (len(order) + 1) / 2
+    scores = {s: (position - middle) * (1 if long_high else -1) / vols[s] for position, s in enumerate(order, start=1)}
+    longs = _capped({s: v for s, v in scores.items() if v > 0})
+    shorts = _capped({s: -v for s, v in scores.items() if v < 0})
+    weights = {**longs, **{s: -w for s, w in shorts.items()}}
+    exposure = sum(w * betas[s] for s, w in weights.items())
+    weights[HEDGE] = weights.get(HEDGE, 0.0) - exposure
+    return weights
+
+
+def risk_book(read: lab.Variable, direction: Direction) -> Callable[..., dict[str, float]]:
+    """A weigher for L8: the 30-day volatility and the 30-day beta to Bitcoin are read at the decision."""
+    def weights(market: xsb.Market, members: Sequence[str], day: date, signal: str,
+                *, seed: str | None = None) -> dict[str, float]:
+        way = direction(day)
+        if way == 0:
+            return {}
+        values = {s: v for s in members if (v := read(market, s, day)) is not None}
+        vols = {s: bs.FEATURES["vol"](market, s, day, lab.LOOKBACK) for s in values}
+        betas = {s: (1.0 if s == HEDGE else bs.FEATURES["beta"](market, s, day, lab.LOOKBACK)) for s in values}
+        return risk_weights(values, vols, betas, long_high=way > 0)
+    return weights
+
+
+BOOKS = {"L1": book, "L2": book, "L8": risk_book}
+
+
+# --- the ladder's own accounting ---------------------------------------------------------------------------------
+
+def simulate_held(market: xsb.Market, signal: str, monthly: Mapping[date, Sequence[str]], *, start: date, end: date,
+                  weigher: Callable[..., dict[str, float]]) -> dict[str, Any]:
+    """Daily net returns of a book whose quantities are fixed at each decision and held to the next.
+
+    ``cross_section_basket.simulate`` adds each day's return at the decision's dollar weights, which is a book
+    re-set to those weights every day at no cost. On coins that move several hundred percent in a day the two
+    differ by tens of points (the first confirm read, 2026-11-13). Here a coin bought at the entry open earns its own
+    move from that open, a short that doubles is twice as large the next day, the trade at a decision is the
+    difference between the target and what the held position has become, and funding is paid on what the position
+    is worth that day. Costs per unit traded are the engine's. The engine itself is not changed: registered screens
+    read through it."""
+    unit = (xsb.cost.DEFAULT_TAKER_FEE_BPS + xsb.cost.DEFAULT_SLIPPAGE_BPS) / 10_000
+    held: dict[str, tuple[float, float]] = {}            # coin -> (weight at entry, entry open)
+    daily: dict[date, dict[str, float]] = {}
+    for day in xsb.held_days(start, end):
+        decision = day - timedelta(days=1)
+        trade_cost = 0.0
+        if xsb.is_rebalance_day(signal, decision):
+            target = weigher(market, monthly.get(date(decision.year, decision.month, 1), ()), decision, signal, seed=None)
+            now = {s: w * bar.open / entry for s, (w, entry) in held.items()
+                   if (bar := (market.bars.get(s) or {}).get(day)) is not None}
+            enter = {s: w for s, w in target.items() if (market.bars.get(s) or {}).get(day) is not None}
+            trade_cost = sum(abs(enter.get(s, 0.0) - now.get(s, 0.0)) for s in set(now) | set(enter)) * unit
+            held = {s: (w, market.bars[s][day].open) for s, w in enter.items()}
+        if not held and not trade_cost:
+            continue
+        gross = funding = exit_cost = 0.0
+        gone: list[str] = []
+        for symbol, (w, entry) in held.items():
+            bars = market.bars[symbol]
+            today, tomorrow = bars.get(day), bars.get(day + timedelta(days=1))
+            if today is None:
+                gone.append(symbol)
+                continue
+            if tomorrow is None:                      # the coin stops here: out at today's close
+                gross += w * (today.close - today.open) / entry
+                exit_cost += abs(w) * today.close / entry * unit
+                gone.append(symbol)
+            else:
+                gross += w * (tomorrow.open - today.open) / entry
+            rate, _known = xsb.funding_on(market, symbol, day)
+            funding += -w * today.open / entry * rate
+        for symbol in gone:
+            held.pop(symbol)
+        daily[day] = {"gross": gross, "cost": trade_cost + exit_cost, "funding": funding,
+                      "net": gross - trade_cost - exit_cost + funding}
+    return {"daily": daily}
+
+
+ACCOUNTING = {"engine": xsb.simulate, "held": simulate_held}
 
 
 # --- the two rungs after the map ---------------------------------------------------------------------------------
@@ -295,13 +394,16 @@ def _spread(values: Sequence[float | None]) -> dict[str, Any]:
 
 
 def run_l1(market: xsb.Market, candidate: Mapping[str, str], span: tuple[date, date] = SPAN,
-           *, simulate: Callable[..., Any] = xsb.simulate) -> dict[str, Any]:
+           *, simulate: Callable[..., Any] | None = None) -> dict[str, Any]:
+    """A one-direction book (L1 or L8) and the same book built on random variables."""
+    simulate = simulate or ACCOUNTING[candidate.get("accounting", "engine")]
+    build = BOOKS[candidate["logic"]]
     read = lab.variables()[candidate["variable"]][1]
     way = 1 if candidate["long"] == "high" else -1
-    report = measure(market, book(read, lambda _day: way), span, simulate=simulate)
+    report = measure(market, build(read, lambda _day: way), span, simulate=simulate)
     names = list(lab.controls())
     picked = names[:RANDOM_BOOKS] + names[lab.CONTROLS_WEEKLY:lab.CONTROLS_WEEKLY + RANDOM_BOOKS]
-    sharpes = {name: measure(market, book(lab.controls()[name][1], lambda _day: 1), span, simulate=simulate)["annual_sharpe"]
+    sharpes = {name: measure(market, build(lab.controls()[name][1], lambda _day: 1), span, simulate=simulate)["annual_sharpe"]
                for name in picked}
     report["random_books"] = {
         "redrawn_weekly": _spread([v for k, v in sharpes.items() if "week" in k]),
@@ -313,7 +415,8 @@ def run_l1(market: xsb.Market, candidate: Mapping[str, str], span: tuple[date, d
 
 
 def run_l2(market: xsb.Market, candidate: Mapping[str, str], span: tuple[date, date] = SPAN,
-           *, simulate: Callable[..., Any] = xsb.simulate) -> dict[str, Any]:
+           *, simulate: Callable[..., Any] | None = None) -> dict[str, Any]:
+    simulate = simulate or ACCOUNTING[candidate.get("accounting", "engine")]
     read = lab.variables()[candidate["variable"]][1]
     monthly = monthly_members(market, span)
     days = sundays(span)
@@ -339,10 +442,18 @@ def run_l2(market: xsb.Market, candidate: Mapping[str, str], span: tuple[date, d
                                                               and v >= held_out["annual_sharpe"])}}
 
 
-def run_round(market: xsb.Market, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+def latest_round() -> str:
+    return max(candidate["round"] for candidate in CANDIDATES.values())
+
+
+def run_round(market: xsb.Market, span: tuple[date, date] = SPAN, *, which: str | None = None) -> dict[str, Any]:
+    """Every candidate of one round (the latest by default): a round is measured once, when it is registered."""
+    which = which or latest_round()
     out = {}
     for name, candidate in CANDIDATES.items():
-        body = run_l1(market, candidate, span) if candidate["logic"] == "L1" else run_l2(market, candidate, span)
+        if candidate["round"] != which:
+            continue
+        body = run_l2(market, candidate, span) if candidate["logic"] == "L2" else run_l1(market, candidate, span)
         out[name] = {"candidate": dict(candidate), **body}
     return out
 
@@ -351,6 +462,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="strategy_ladder", description=__doc__.splitlines()[0])
     parser.add_argument("command", choices=("list", "run", "confirm-counts", "confirm"))
     parser.add_argument("--cache", type=Path, default=None, help="default: $RESEARCH_CACHE")
+    parser.add_argument("--round", default=None, help="default: the latest registered round")
     args = parser.parse_args(argv)
     if args.command == "list":
         print(json.dumps({"spec": SPEC, "span": [d.isoformat() for d in SPAN], "name_cap": NAME_CAP,
@@ -378,7 +490,8 @@ def main(argv: list[str] | None = None) -> int:
                          indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_OK
     bs.check_development_span(SPAN)
-    market = lab.hold(cache)
+    groups = {lab.variables()[c["variable"]][0] for c in CANDIDATES.values() if c["round"] == (args.round or latest_round())}
+    market = lab.hold(cache, attach=bool(groups & ATTACHED_GROUPS))
     if market is None:
         print("BLOCKED: contract types or the spot symbol list is missing from the cache", file=sys.stderr)
         return EXIT_BLOCKED
@@ -386,7 +499,8 @@ def main(argv: list[str] | None = None) -> int:
                       "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
                       "net_of_costs": True, "judgement": None, "entry_rule": {
                           "annual_sharpe": bs.ENTRY_SHARPE, "total_position_annual_pct": bs.ENTRY_RETURN_TOTAL_PCT},
-                      "candidates": run_round(market)}, indent=1, sort_keys=True, ensure_ascii=False))
+                      "round": args.round or latest_round(),
+                      "candidates": run_round(market, which=args.round)}, indent=1, sort_keys=True, ensure_ascii=False))
     return EXIT_OK
 
 

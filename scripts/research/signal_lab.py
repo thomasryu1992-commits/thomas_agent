@@ -12,7 +12,8 @@ works. This tool measures the layer underneath, before any strategy exists.
   counted only for a coin that traded on the decision day and on both of those days. Before costs.
 - **Scenarios are read at the decision, from the past only:** the market trend (the regime label of
   ``regime_strategies``), Bitcoin's volatility, the dispersion of the coins' returns and the level of funding, each
-  against its own trailing median; and trend crossed with volatility.
+  against its own trailing median; the share of wildly moving coins in the top tier, likewise; and trend crossed
+  with volatility.
 - **Chance is measured, not assumed.** Random variables go through the same grid — some redrawn every week, some
   fixed per coin like a slow characteristic. A real cell is read against what those produce.
 - **The span is development only** (:data:`SPAN`). The market is cut at its last day and a decision whose return
@@ -60,8 +61,11 @@ MIN_DECISIONS = 20                         # decisions a cell needs before it sh
 MIN_SPELLS = 4                             # separate stretches a scenario cell needs: one long bull run is one sample
 REFERENCE_DECISIONS = 52                   # trailing decisions a scenario's own median is taken over
 REFERENCE_MIN = 26
-CONTROLS_WEEKLY = 20                       # random variables redrawn at every decision
-CONTROLS_FIXED = 20                        # random variables fixed per coin, like a slow characteristic
+CONTROLS_WEEKLY = 22                       # random variables redrawn at every decision
+CONTROLS_FIXED = 22                        # random variables fixed per coin, like a slow characteristic
+EXTREME_MOVE = 0.30                        # a daily close-to-close move this large is an extreme day
+WILD_MOVE = 0.50                           # a coin whose largest daily move in the lookback reached this is wild
+AGE_CAP_DAYS = 1000                        # listing age is read up to here; older coins are alike
 CANDIDATE_CAP = 3
 MIN_PERSISTENCE = 0.5                      # week-to-week rank correlation a lead needs: one-day reversal died on cost
 REFERENCE = bs.REFERENCE
@@ -80,6 +84,27 @@ def _control(kind: str, k: int) -> Variable:
     return value
 
 
+def _daily_moves(market: xsb.Market, symbol: str, day: date, lookback: int) -> list[float] | None:
+    """The absolute close-to-close moves of the ``lookback`` days ending at ``day``; None under the usual share."""
+    bars = market.bars.get(symbol) or {}
+    moves = []
+    for k in range(lookback):
+        now, before = bars.get(day - timedelta(days=k)), bars.get(day - timedelta(days=k + 1))
+        if now is not None and before is not None and before.close > 0:
+            moves.append(abs(now.close / before.close - 1))
+    return moves if len(moves) >= math.ceil(lookback * bs.MIN_SHARE) else None
+
+
+def _listing_age(market: xsb.Market, symbol: str, day: date) -> float | None:
+    first = market.first_day(symbol)
+    return None if first is None or first > day else float(min((day - first).days, AGE_CAP_DAYS))
+
+
+def _extreme_days(market: xsb.Market, symbol: str, day: date) -> float | None:
+    moves = _daily_moves(market, symbol, day, LOOKBACK)
+    return None if moves is None else float(sum(1 for m in moves if m >= EXTREME_MOVE))
+
+
 def variables() -> dict[str, tuple[str, Variable]]:
     """``{name: (group, function)}`` — every variable the data on disk supports, each at a stated lookback."""
     out: dict[str, tuple[str, Variable]] = {}
@@ -95,6 +120,10 @@ def variables() -> dict[str, tuple[str, Variable]]:
         out[f"{name}_{LOOKBACK}"] = ("depth", _with_lookback(feature))
     for name, feature in sp.FEATURES.items():
         out[f"{name}_{LOOKBACK}"] = ("spot", _with_lookback(feature))
+    # Added 2026-11-13 (STRATEGY_DISCOVERY_LOOP_V0.1 section 13): what kind of coin it is. The 2025-2026 top thirty
+    # holds coins that move several hundred percent in a day; the development years' mostly did not.
+    out["listing_age"] = ("coin_character", _listing_age)
+    out[f"extreme_days_{LOOKBACK}"] = ("coin_character", _extreme_days)
     return out
 
 
@@ -175,9 +204,14 @@ def scenario_labels(market: xsb.Market, monthly: Mapping[date, Sequence[str]], d
         values = [v for v in (xsb.trailing_funding(market, s, day, 7) for s in members(day)) if v is not None]
         return statistics.median(values) if len(values) >= MIN_NAMES else None
 
+    def wild_share(day: date) -> float | None:
+        moves = [m for m in (_daily_moves(market, s, day, LOOKBACK) for s in members(day)) if m is not None]
+        return sum(1 for m in moves if max(m) >= WILD_MOVE) / len(moves) if len(moves) >= MIN_NAMES else None
+
     # Each axis is compared with its own values at the earlier weekly decisions, never with a later one.
     weekly = [d for d in xsb.held_days(span[0], span[1]) if xsb.is_rebalance_day(bs.CADENCE, d)]
-    axes = {"vol": (btc_vol, "high", "low"), "dispersion": (dispersion, "wide", "narrow"), "heat": (heat, "hot", "cool")}
+    axes = {"vol": (btc_vol, "high", "low"), "dispersion": (dispersion, "wide", "narrow"), "heat": (heat, "hot", "cool"),
+            "universe": (wild_share, "wild", "calm")}
     series = {axis: {d: read(d) for d in weekly} for axis, (read, _, _) in axes.items()}
     out: dict[date, dict[str, str]] = {}
     for day in days:
@@ -194,7 +228,8 @@ def scenario_labels(market: xsb.Market, monthly: Mapping[date, Sequence[str]], d
 
 
 def scenario_keys(labels: Mapping[str, str]) -> list[str]:
-    keys = ["all"] + [f"{axis}={labels[axis]}" for axis in ("trend", "vol", "dispersion", "heat") if axis in labels]
+    keys = ["all"] + [f"{axis}={labels[axis]}" for axis in ("trend", "vol", "dispersion", "heat", "universe")
+                      if axis in labels]
     if "trend" in labels and "vol" in labels:
         keys.append(f"trend={labels['trend']}|vol={labels['vol']}")
     return keys

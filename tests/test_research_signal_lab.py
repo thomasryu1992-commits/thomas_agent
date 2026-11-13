@@ -198,8 +198,9 @@ def test_it_runs_in_the_sandbox_only(monkeypatch, capsys):
     capsys.readouterr()
     assert lab.main(["list"]) == lab.EXIT_OK
     listed = json.loads(capsys.readouterr().out)
-    assert listed["span"] == ["2020-01-01", "2024-12-31"] and listed["controls"] == 40
-    assert {"price_volume", "funding", "positioning", "depth", "spot"} == set(listed["variables"].values())
+    assert listed["span"] == ["2020-01-01", "2024-12-31"]
+    assert listed["controls"] == lab.CONTROLS_WEEKLY + lab.CONTROLS_FIXED >= 2 * len(lab.variables()) - 4
+    assert {"price_volume", "funding", "positioning", "depth", "spot", "coin_character"} == set(listed["variables"].values())
 
 
 def test_a_book_that_reads_bars_and_funding_alone_loads_nothing_else(monkeypatch, tmp_path):
@@ -219,4 +220,30 @@ def test_a_book_that_reads_bars_and_funding_alone_loads_nothing_else(monkeypatch
     assert not hasattr(held, "spot") and not hasattr(held, "metrics")
     monkeypatch.setattr(lab.xsb, "read_contract_types", lambda archive: None)
     assert lab.hold(tmp_path, span, attach=False) is None
+
+
+def test_the_coin_character_variables_read_age_and_extreme_days():
+    start = date(2021, 1, 1)
+    bars, price = {}, 100.0
+    for k in range(60):
+        move = 0.4 if k in (50, 55) else 0.01
+        opened, price = price, price * (1 + move)
+        bars[start + timedelta(days=k)] = xsb.Bar(open=opened, close=price, quote_volume=10.0)
+    market = xsb.Market(bars={"NEWUSDT": bars})
+    day = start + timedelta(days=59)
+    age, extreme = lab.variables()["listing_age"][1], lab.variables()["extreme_days_30"][1]
+    assert age(market, "NEWUSDT", day) == 59.0 and age(market, "NEWUSDT", start - timedelta(days=1)) is None
+    assert extreme(market, "NEWUSDT", day) == 2.0
+    assert extreme(market, "NEWUSDT", start + timedelta(days=5)) is None, "too little history to count"
+    old = xsb.Market(bars={"OLDUSDT": {date(2015, 1, 1): xsb.Bar(open=1.0, close=1.0, quote_volume=1.0)}})
+    assert age(old, "OLDUSDT", day) == float(lab.AGE_CAP_DAYS)
+
+
+def test_the_universe_axis_splits_weeks_by_the_share_of_wild_coins(tiers):
+    full = lab.cut_market(_market(SPAN[1]), SPAN)
+    members = lab.tier_members(full, SPAN)["top30"]
+    labels = lab.scenario_labels(full, members, lab.decisions(SPAN, 7), SPAN)
+    seen = {row.get("universe") for row in labels.values()}
+    assert seen <= {"wild", "calm", None} and "calm" in seen, "the fixture's coins never move fifty percent in a day"
+    assert lab.scenario_keys({"universe": "wild"}) == ["all", "universe=wild"]
 
