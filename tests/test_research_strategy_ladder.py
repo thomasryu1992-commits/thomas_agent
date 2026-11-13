@@ -522,3 +522,83 @@ def test_three_confirm_reads_are_spent_and_two_are_left(monkeypatch, capsys):
     monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
     assert sl.main(["confirm"]) == sl.EXIT_USAGE and "no registered confirm read is open" in capsys.readouterr().err
 
+
+# --- round 7: the transfer check inside the development years ----------------------------------------------------------
+
+def test_the_transfer_splits_stay_inside_development_and_the_read_year_follows_the_years_before_it():
+    assert len(sl.TRANSFER_SPLITS) == 3
+    for before, after in sl.TRANSFER_SPLITS:
+        assert before[0] == sl.SPAN[0] and after[0] == before[1] + timedelta(days=1) and after[1] <= sl.SPAN[1]
+        assert (after[0].month, after[0].day, after[1].month, after[1].day) == (1, 1, 12, 31) and after[0].year == after[1].year
+    assert sl.TRANSFER_SPLITS[-1][1][1] == sl.bs.DEV[1] < sl.CONFIRM[0], "no day of the confirm span"
+
+
+def test_a_transferred_book_takes_its_side_from_the_earlier_years_only_and_is_the_same_book_in_the_year_after(monkeypatch):
+    before, after = sl.TRANSFER_SPLITS[0]
+    days = [date(2020, 1, 5) + timedelta(days=7 * k) for k in range(40)]
+    monkeypatch.setattr(sl, "monthly_members", lambda market, span=None: {"span": span})
+    # The variable looks one way on the earlier years and the other way in the year after.
+    monkeypatch.setattr(sl, "decision_ics", lambda market, read, monthly, span: read(span))
+    measured, built = [], []
+
+    def measure(market, weigher, span, *, simulate):
+        measured.append((weigher, span))
+        return {"annual_sharpe": 1.2 if span == before else -0.4, "total_position_annual_pct": 20.0 if span == before else -6.0,
+                "clears_entry": span == before}
+
+    def build(read, direction):
+        built.append(direction(date(2022, 6, 5)))
+        return ("book", len(built))
+
+    monkeypatch.setattr(sl, "measure", measure)
+    monkeypatch.setitem(sl.BOOKS, sl.SWEEP_LOGIC, build)
+    names = {"turns": ("g", lambda span: {d: (0.1 if span == before else -0.2) for d in days}),
+             "thin": ("g", lambda span: {d: 0.1 for d in days[:5]})}
+    out = sl.transfer(xsb.Market(), names, splits=[(before, after)])
+    assert built == [1], "one book per split, long the side the earlier years point to"
+    assert [span for _, span in measured] == [before, after] and measured[0][0] == measured[1][0]
+    row = out["turns"]["splits"][0]
+    assert row == {"long": "high", "train_rank_correlation": 0.1, "test_rank_correlation": -0.2, "train_sharpe": 1.2,
+                   "train_clears_entry": True, "test_sharpe": -0.4, "test_total_position_pct": -6.0}
+    assert out["thin"]["splits"] == [None]
+
+
+def _transfer_books(pairs, *, cleared=lambda before: before >= 1.0):
+    return {f"b{i}": {"group": "g", "splits": [{"long": "low", "train_rank_correlation": -0.1, "test_rank_correlation": -0.1 if keep else 0.1,
+                                                "train_sharpe": a, "train_clears_entry": cleared(a), "test_sharpe": b,
+                                                "test_total_position_pct": 10.0 * b}]}
+            for i, (a, b, keep) in enumerate(pairs)}
+
+
+def test_the_transfer_reading_sets_the_real_carry_beside_null_sets_of_the_same_size():
+    rng = sl.random.Random("fixture")
+    real = _transfer_books([(x / 10, x / 10 + 0.01 * (x % 3), True) for x in range(-5, 15)])       # the order carries over
+    null = _transfer_books([(rng.uniform(-1, 2), rng.uniform(-1, 2), rng.random() < 0.5) for _ in range(300)])
+    out = sl.transfer_reading(real, null, draws=400)
+    assert out["books"] == 20 and out["null_books"] == 300 and out["splits"] == 1 and out["null_sets"] == 400
+    assert out["carry"] > 0.95 and out["p"] == pytest.approx(1 / 401, abs=1e-4) and abs(out["null_carry"]["mean"]) < 0.1
+    assert out["carry_by_split"] == [out["carry"]]
+    cleared = out["real"]["cleared_entry_before"]
+    assert cleared["cells"] == 5 and cleared["test_year_positive_share"] == 1.0 and cleared["test_sharpe_mean"] > 1.0
+    assert out["real"]["all"]["cells"] == 20 and out["real"]["all"]["rank_correlation_keeps_its_sign_share"] == 1.0
+    assert 0.3 < out["null"]["all"]["rank_correlation_keeps_its_sign_share"] < 0.7
+    assert [r["variable"] for r in out["real_cells_that_cleared_entry_before"]] == ["b19", "b18", "b17", "b16", "b15"]
+    # No carry: the same reading on books whose next year is unrelated to the years before.
+    flat = sl.transfer_reading(dict(list(null.items())[:20]), null, draws=400)
+    assert flat["p"] > 0.05
+
+
+def test_the_transfer_command_takes_groups_or_the_null_like_the_sweep(monkeypatch, capsys):
+    asked = []
+
+    def hold(cache, span=None, *, attach=True, flow=False):
+        asked.append((span, attach, flow))
+        return None
+
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(sl.lab, "hold", hold)
+    assert sl.main(["transfer"]) == sl.EXIT_USAGE
+    capsys.readouterr()
+    assert sl.main(["transfer", "--only", "null"]) == sl.EXIT_BLOCKED and sl.main(["transfer", "--only", "trade_flow"]) == sl.EXIT_BLOCKED
+    assert asked == [(None, False, False), (None, False, True)], "the development market, as the sweep loads it"
+
