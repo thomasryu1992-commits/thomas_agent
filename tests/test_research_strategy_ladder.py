@@ -804,3 +804,127 @@ def test_a_year_the_lower_book_is_flat_in_counts_as_zero_and_the_reading_is_one_
     only_late = sl.lower_run(market, span, nulls=1)
     assert set(only_late["years_total_position_pct"]) == {"2021"}
 
+
+# --- round 10: hourly bars and the crash-rebound event book -------------------------------------------------------------
+
+import zipfile  # noqa: E402
+
+H0 = sl.hour_of(date(2021, 3, 10))               # the hour the test crash is seen at
+
+
+def _crash_world(coins=25, *, crash=True):
+    """Daily bars that give coin i a beta of 1 + i/100 to BTC, and hourly opens around 2021-03-10 00:00: BTC falls
+    6% in the four hours before it; coin i falls (i + 1)% over the day before it."""
+    start, end = date(2020, 6, 1), date(2021, 6, 30)
+    days = [start + timedelta(days=k) for k in range((end - start).days + 1)]
+    def daily(beta):
+        out, price = {}, 100.0
+        for k, d in enumerate(days):
+            nxt = price * (1 + beta * (0.01 if k % 2 else -0.01))
+            out[d] = xsb.Bar(open=price, close=nxt, quote_volume=1e9 if beta == 1.0 else 5e7)
+            price = nxt
+        return out
+    names = {"BTCUSDT": daily(1.0), **{f"C{i:02d}USDT": daily(1 + (i + 1) / 100) for i in range(coins)}}
+    market = xsb.Market(bars=names, funding={s: [(0, 0.0)] for s in names})
+    hourly = sl.Hourly()
+    span = range(sl.hour_of(date(2021, 1, 1)), sl.hour_of(date(2021, 6, 1)))
+    hourly.put("BTCUSDT", {h: (94.0 if crash and h >= H0 else 100.0) for h in span})
+    for i in range(coins):
+        hourly.put(f"C{i:02d}USDT", {h: (100.0 - (i + 1) if h >= H0 else 100.0) for h in span})
+    return market, hourly
+
+
+def test_hourly_opens_are_read_from_the_monthly_zips_as_flat_arrays_and_cut_at_the_span(tmp_path):
+    folder = tmp_path / "klines-1h" / "BTCUSDT"
+    folder.mkdir(parents=True)
+    first = sl.hour_of(date(2024, 12, 31)) + 22
+    rows = ["open_time,open,high,low,close,volume"] + [f"{(first + k) * sl.HOUR_MS},{100 + k},0,0,0,0" for k in (0, 1, 3)]
+    with zipfile.ZipFile(folder / "BTCUSDT-1h-2024-12.zip", "w") as z:
+        z.writestr("BTCUSDT-1h-2024-12.csv", "\n".join(rows))
+    hourly = sl.load_hourly(tmp_path, ["BTCUSDT", "NONEUSDT"], (date(2020, 1, 1), date(2024, 12, 31)))
+    assert hourly.open("BTCUSDT", first) == 100 and hourly.open("BTCUSDT", first + 1) == 101
+    assert hourly.open("BTCUSDT", first + 3) is None, "an hour after the span's last day is never read"
+    assert hourly.open("BTCUSDT", first - 1) is None and hourly.open("NONEUSDT", first) is None
+    gap = sl.Hourly()
+    gap.put("X", {10: 1.0, 13: 4.0})
+    assert gap.open("X", 11) is None and gap.last_open("X", 10, 12) is None and gap.last_open("X", 10, 14) == (13, 4.0)
+
+
+def test_an_event_is_the_first_hour_the_reference_coin_is_down_enough_and_holds_never_overlap():
+    _, hourly = _crash_world()
+    span = (date(2021, 1, 1), date(2021, 5, 31))
+    assert sl.crash_events(hourly, span) == [H0], "hours one to three after it show the same fall and are the same event"
+    again = dict.fromkeys(range(H0 + 80, H0 + 200), 80.0)
+    hourly.put("BTCUSDT", {**{h: (94.0 if h >= H0 else 100.0) for h in range(H0 - 500, H0 + 80)}, **again})
+    assert sl.crash_events(hourly, span) == [H0, H0 + 80]
+    assert sl.crash_events(hourly, (date(2021, 1, 1), date(2021, 3, 12))) == [], "a hold that would pass the span's end"
+    assert sl.crash_events(_crash_world(crash=False)[1], span) == []
+
+
+def test_the_crash_book_buys_the_worst_residuals_sells_the_best_and_cancels_its_beta():
+    market, hourly = _crash_world()
+    members = ["BTCUSDT"] + [f"C{i:02d}USDT" for i in range(25)]
+    weights, hedge = sl.crash_book(market, hourly, members, H0)
+    longs, shorts = {s for s, w in weights.items() if w > 0}, {s for s, w in weights.items() if w < 0}
+    assert longs == {f"C{i:02d}USDT" for i in range(20, 25)}, "the five that fell most beyond their beta"
+    assert shorts == {f"C{i:02d}USDT" for i in range(5)} and "BTCUSDT" not in weights
+    assert sum(w for w in weights.values() if w > 0) == pytest.approx(1) == pytest.approx(-sum(w for w in weights.values() if w < 0))
+    assert hedge == pytest.approx(-0.2, abs=1e-6), "the longs' betas average 0.20 above the shorts'"
+    hourly.put("C12USDT", {h: (100.0 if h < H0 else 87.0 if h == H0 else 1.0) for h in range(H0 - 100, H0 + 100)})
+    assert sl.crash_book(market, hourly, members, H0) == (weights, hedge), "what a coin does after the hour does not rank it"
+    assert sl.crash_book(market, hourly, members[:15], H0) is None, "too few ranked coins, no book"
+
+
+def test_a_coin_that_stops_trading_inside_the_hold_leaves_at_its_last_open_and_is_not_dropped():
+    market, hourly = _crash_world()
+    funding = sl._FundingIndex(market)
+    hourly.put("C00USDT", {h: (100.0 if h <= H0 + 1 else 50.0) for h in range(H0 - 100, H0 + 10)})   # ends nine hours in
+    one = sl.crash_event(hourly, funding, {"C00USDT": 1.0}, 0.0, H0)
+    assert one["gross"] == pytest.approx(-0.5), "the loss to its last bar is the book's"
+    assert one["cost"] == pytest.approx(2 * 26 / 1e4) and one["net"] == pytest.approx(-0.5 - 0.0052)
+    market.funding["C01USDT"] = [((H0 + 1) * sl.HOUR_MS, 0.5), ((H0 + 9) * sl.HOUR_MS, 0.01), ((H0 + 74) * sl.HOUR_MS, 0.5)]
+    paid = sl.crash_event(hourly, sl._FundingIndex(market), {"C01USDT": -1.0}, 0.0, H0)
+    assert paid["funding"] == pytest.approx(0.01), "a short receives what settles after the entry and by the exit"
+    hedged = sl.crash_event(hourly, funding, {"C02USDT": 1.0}, -0.5, H0)
+    assert hedged["cost"] == pytest.approx(2 * 26 / 1e4 + 0.5 * 2 * 8 / 1e4), "the reference leg pays its own cost"
+
+
+def test_placebo_hours_match_the_events_year_by_year_and_keep_clear_of_them():
+    _, hourly = _crash_world()
+    span = (date(2021, 1, 1), date(2021, 5, 31))
+    events = [H0, H0 + 400]
+    drawn = sl.placebo_times(events, span, hourly, "seed:1")
+    assert len(drawn) == 2 and drawn == sl.placebo_times(events, span, hourly, "seed:1") != sl.placebo_times(events, span, hourly, "seed:2")
+    clear = sl.CRASH_SPACING_HOURS + sl.CRASH_RANK_HOURS
+    assert all(abs(t - e) >= clear for t in drawn for e in events) and abs(drawn[0] - drawn[1]) >= clear
+
+
+def test_the_crash_counts_carry_no_return_and_stop_on_too_few_events():
+    market, hourly = _crash_world()
+    span = (date(2021, 1, 1), date(2021, 5, 31))
+    alone = sl.crash_counts(None, hourly, span)
+    assert alone["events"] == 1 and alone["reference_only"] and alone["event_hours"] == ["2021-03-10T00:00Z"]
+    full = sl.crash_counts(market, hourly, span)
+    assert full["events_with_a_book"] == 1 and full["hourly_share"] == 1.0 and full["by_year"]["2021"]["positions_median"] == 10
+    assert full["returns_computed"] is False and "too few events over the span" in full["stop"]
+    flat = json.dumps(full)
+    assert "sharpe" not in flat and "pct" not in flat
+    assert sl.crash_run(market, hourly, span)["refused"] == full["stop"], "a stopped book is not measured"
+
+
+def test_the_crash_run_reads_the_event_on_the_day_its_hold_ends_and_fills_flat_years_with_zero(monkeypatch):
+    monkeypatch.setattr(sl, "CRASH_MIN_EVENTS", 1)
+    monkeypatch.setattr(sl, "CRASH_MIN_EVENTS_LATER_YEAR", 0)
+    market, hourly = _crash_world()
+    for i in range(20, 25):                                             # the worst-hit five recover half their fall
+        hourly.put(f"C{i:02d}USDT", {h: (100.0 if h < H0 else 100.0 - (i + 1) if h <= H0 + 1 else 100.0 - (i + 1) / 2)
+                                     for h in range(sl.hour_of(date(2021, 1, 1)), sl.hour_of(date(2021, 6, 1)))})
+    span = (date(2020, 6, 1), date(2021, 5, 31))
+    monthly = sl.top_hundred(market, span)
+    daily = sl.crash_daily(market, hourly, monthly, [H0])
+    assert list(daily) == [date(2021, 3, 13)] and daily[date(2021, 3, 13)]["net"] > 0.1
+    run = sl.crash_run(market, hourly, span, placebos=2)
+    assert set(run["years_total_position_pct"]) == {"2020", "2021"} and run["years_total_position_pct"]["2020"] == 0.0
+    assert run["rungs"]["2c_beside_placebos"]["null_books"] == 2 and run["reference_after_events"]["events"] == 1
+    assert run["without_the_beta_leg"]["years_total_position_pct"]["2021"] > 0
+

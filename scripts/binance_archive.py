@@ -231,7 +231,8 @@ MARKETS = {"um": LISTING_PREFIX, "spot": SPOT_LISTING_PREFIX}
 KLINES = "klines"
 KLINES_INTERVAL = "1d"
 SYMBOLS_FILENAME = "symbols.json"
-MONTHLY_KINDS = ("klines-1d", FUNDING)
+KLINES_KINDS = {"klines-1d": "1d", "klines-1h": "1h"}      # monthly kline kinds and their bucket interval
+MONTHLY_KINDS = (*KLINES_KINDS, FUNDING)
 # A USDT-margined perpetual: quarterly contracts carry `_YYMMDD`, and USDC/BUSD pairs are another quote.
 _PERP_SYMBOL = re.compile(r"\A[A-Z0-9]{2,20}USDT\Z")
 _S3_NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
@@ -306,8 +307,8 @@ def contract_types(*, opener: Opener = http_get) -> dict[str, str]:
 
 def monthly_folder(kind: str, symbol: str, market: str = "um") -> str:
     """The bucket folder holding one symbol's monthly files of ``kind`` (see :data:`MONTHLY_KINDS`)."""
-    if kind == "klines-1d":
-        return f"{MARKETS[market]}{KLINES}/{symbol}/{KLINES_INTERVAL}/"
+    if kind in KLINES_KINDS:
+        return f"{MARKETS[market]}{KLINES}/{symbol}/{KLINES_KINDS[kind]}/"
     if kind == FUNDING and market == "um":
         return f"{LISTING_PREFIX}{FUNDING}/{symbol}/"
     raise ValueError(f"unknown monthly kind {kind!r}")

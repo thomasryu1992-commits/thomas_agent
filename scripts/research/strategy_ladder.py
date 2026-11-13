@@ -24,15 +24,18 @@ turns being left out.
 from __future__ import annotations
 
 import argparse
+import bisect
 import functools
 import json
+import math
 import os
 import random
 import statistics
 import sys
-from datetime import date, timedelta
+from array import array
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -982,6 +985,298 @@ def lower_run(market: xsb.Market, span: tuple[date, date] = SPAN, *, nulls: int 
             "reading": "passes" if passes else "cost_dependent_lead" if lead else "closed"}
 
 
+# --- L14: the crash-rebound event book (round 10, hypothesis H-C1) -----------------------------------------------
+
+HOURLY_KIND = "klines-1h"
+HOUR_MS = 3_600_000
+CRASH_WINDOW_HOURS = 4                     # the reference coin's move over these hours makes an event
+CRASH_THRESHOLD = -0.05
+CRASH_RANK_HOURS = 24                      # coins are ranked on what they did over these hours, net of beta
+CRASH_HOLD_HOURS = 72
+CRASH_SPACING_HOURS = CRASH_HOLD_HOURS + 1  # the next event is looked for only after the hold: holds never overlap
+CRASH_BETA_DAYS = 60
+CRASH_SIDE_SHARE = 0.2
+CRASH_MIN_RANKED = 20
+CRASH_PLACEBOS = 300
+CRASH_MIN_EVENTS = 30                      # over the span, or nothing is measured
+CRASH_MIN_EVENTS_LATER_YEAR = 3            # in each of LATER_YEARS, or nothing is measured
+CRASH_MIN_HOURLY_SHARE = 0.9               # of the universe's coin-events must have hourly bars on file
+
+
+def hour_of(day: date) -> int:
+    return int(datetime(day.year, day.month, day.day, tzinfo=timezone.utc).timestamp()) // 3600
+
+
+def day_of(hour: int) -> date:
+    return datetime.fromtimestamp(hour * 3600, tz=timezone.utc).date()
+
+
+class Hourly:
+    """Hourly opens per symbol as flat arrays of floats (a missing hour is NaN): four hundred coins over five years
+    as bar objects do not fit the sandbox. An hour is numbered from the epoch; the open of hour ``h`` is the price
+    at that instant."""
+
+    def __init__(self) -> None:
+        self.first: dict[str, int] = {}
+        self.opens: dict[str, array] = {}
+
+    def put(self, symbol: str, prices: Mapping[int, float]) -> None:
+        if prices:
+            first, last = min(prices), max(prices)
+            self.first[symbol] = first
+            self.opens[symbol] = array("d", (prices.get(h, math.nan) for h in range(first, last + 1)))
+
+    def open(self, symbol: str, hour: int) -> float | None:
+        series = self.opens.get(symbol)
+        if series is None:
+            return None
+        k = hour - self.first[symbol]
+        if k < 0 or k >= len(series) or math.isnan(series[k]):
+            return None
+        return series[k]
+
+    def last_open(self, symbol: str, after: int, upto: int) -> tuple[int, float] | None:
+        """The latest hour in (after, upto] the coin has a bar at, and its open."""
+        for hour in range(upto, after, -1):
+            price = self.open(symbol, hour)
+            if price is not None:
+                return hour, price
+        return None
+
+
+def read_hourly(folder: Path, *, before: int | None = None) -> dict[int, float]:
+    """``{hour: open}`` from one symbol's monthly 1h zips; nothing at or after hour ``before``."""
+    out: dict[int, float] = {}
+    for path in sorted(folder.glob("*.zip")) if folder.exists() else []:
+        for row in xsb._rows(path):
+            try:
+                stamp, price = float(row[0]), float(row[1])
+            except (ValueError, IndexError):
+                continue          # the header row
+            if stamp > 1e14:      # microseconds
+                stamp /= 1000
+            hour = int(stamp // HOUR_MS)
+            if price > 0 and (before is None or hour < before):
+                out[hour] = price
+    return out
+
+
+def load_hourly(archive: Path, symbols: Iterable[str], span: tuple[date, date] = SPAN) -> Hourly:
+    """The symbols' hourly opens, cut at the span's last day: an hour after it is never read."""
+    hourly, before = Hourly(), hour_of(span[1] + timedelta(days=1))
+    for symbol in sorted(set(symbols)):
+        hourly.put(symbol, read_hourly(archive / HOURLY_KIND / symbol, before=before))
+    return hourly
+
+
+def top_hundred(market: xsb.Market, span: tuple[date, date] = SPAN) -> dict[date, tuple[str, ...]]:
+    tiers = lab.tier_members(market, span)
+    return {m: tuple(tiers["top30"][m]) + tuple(tiers["rank31_100"].get(m, ())) for m in tiers["top30"]}
+
+
+def crash_events(hourly: Hourly, span: tuple[date, date] = SPAN) -> list[int]:
+    """Hours at which the reference coin stands :data:`CRASH_THRESHOLD` or more below where it stood
+    :data:`CRASH_WINDOW_HOURS` earlier — the first such hour, then none until the hold after it is over, and none
+    whose hold would run past the span."""
+    out: list[int] = []
+    hour = hour_of(span[0]) + max(CRASH_WINDOW_HOURS, CRASH_RANK_HOURS)
+    last = hour_of(span[1] + timedelta(days=1)) - 1 - (1 + CRASH_HOLD_HOURS)
+    while hour <= last:
+        now, then = hourly.open(HEDGE, hour), hourly.open(HEDGE, hour - CRASH_WINDOW_HOURS)
+        if now is not None and then is not None and now / then - 1 <= CRASH_THRESHOLD:
+            out.append(hour)
+            hour += CRASH_SPACING_HOURS
+        else:
+            hour += 1
+    return out
+
+
+def placebo_times(events: Sequence[int], span: tuple[date, date], hourly: Hourly, seed: str) -> list[int]:
+    """As many hours in each year as that year has events, drawn where the reference coin has bars, spaced like
+    events among themselves, and clear of every real event's ranking window and hold."""
+    rng = random.Random(seed)
+    out: list[int] = []
+    clear = CRASH_SPACING_HOURS + CRASH_RANK_HOURS
+    for year in range(span[0].year, span[1].year + 1):
+        wanted = sum(1 for e in events if day_of(e).year == year)
+        lo = max(hour_of(date(year, 1, 1)), hour_of(span[0])) + CRASH_RANK_HOURS
+        hi = min(hour_of(date(year + 1, 1, 1)), hour_of(span[1] + timedelta(days=1))) - 1 - (1 + CRASH_HOLD_HOURS)
+        drawn: list[int] = []
+        for _ in range(20_000):
+            if len(drawn) == wanted or hi < lo:
+                break
+            hour = rng.randint(lo, hi)
+            if (hourly.open(HEDGE, hour) is None or hourly.open(HEDGE, hour - CRASH_RANK_HOURS) is None
+                    or any(abs(hour - e) < clear for e in events)
+                    or any(abs(hour - other) < clear for other in out + drawn)):
+                continue
+            drawn.append(hour)
+        out += drawn
+    return sorted(out)
+
+
+def crash_book(market: xsb.Market, hourly: Hourly, members: Sequence[str],
+               hour: int) -> tuple[dict[str, float], float] | None:
+    """The book decided at ``hour``: every member with hourly bars, funding and a beta is ranked on its move over the
+    :data:`CRASH_RANK_HOURS` to ``hour`` less its beta times the reference coin's; the lowest fifth is bought and the
+    highest sold, equal sizes, each side one. With it, the reference-coin leg that cancels the book's net beta.
+    Nothing after ``hour`` is read except that the coin has a bar at the entry hour."""
+    now, then = hourly.open(HEDGE, hour), hourly.open(HEDGE, hour - CRASH_RANK_HOURS)
+    if now is None or then is None:
+        return None
+    move, day = now / then - 1, day_of(hour) - timedelta(days=1)
+    residual: dict[str, float] = {}
+    betas: dict[str, float] = {}
+    for symbol in members:
+        if symbol == HEDGE or market.funding_day(symbol) is None or hourly.open(symbol, hour + 1) is None:
+            continue
+        here, before = hourly.open(symbol, hour), hourly.open(symbol, hour - CRASH_RANK_HOURS)
+        beta = bs._beta(market, symbol, day, CRASH_BETA_DAYS) if here is not None and before is not None else None
+        if beta is None:
+            continue
+        residual[symbol], betas[symbol] = here / before - 1 - beta * move, beta
+    if len(residual) < CRASH_MIN_RANKED:
+        return None
+    order = sorted(residual, key=lambda s: (residual[s], s))
+    side = max(MIN_SIDE, int(len(order) * CRASH_SIDE_SHARE))
+    weights = {**{s: 1 / side for s in order[:side]}, **{s: -1 / side for s in order[-side:]}}
+    return weights, -sum(w * betas[s] for s, w in weights.items())
+
+
+class _FundingIndex:
+    """Settlement times and running sums per symbol, so a hold's funding is two lookups."""
+
+    def __init__(self, market: xsb.Market) -> None:
+        self.market = market
+        self._rows: dict[str, tuple[list[int], list[float]]] = {}
+
+    def between(self, symbol: str, after_ms: int, upto_ms: int) -> float:
+        if symbol not in self._rows:
+            rows = self.market.funding.get(symbol) or []
+            total, sums = 0.0, [0.0]
+            for _, rate in rows:
+                total += rate
+                sums.append(total)
+            self._rows[symbol] = ([ms for ms, _ in rows], sums)
+        times, sums = self._rows[symbol]
+        return sums[bisect.bisect_right(times, upto_ms)] - sums[bisect.bisect_right(times, after_ms)]
+
+
+def crash_event(hourly: Hourly, funding: _FundingIndex, weights: Mapping[str, float], hedge: float, hour: int,
+                *, unit_of: Callable[[str], float] = None) -> dict[str, float] | None:
+    """One event's result per unit of one side: in at the open of the hour after ``hour`` — an hour after the print
+    that ranked the coins — and out :data:`CRASH_HOLD_HOURS` later. A coin whose bars stop inside the hold leaves at
+    its last open and its loss is counted; it is never dropped. Cost is paid on the way in and on the way out."""
+    unit_of = unit_of or listing_unit
+    enter, leave = hour + 1, hour + 1 + CRASH_HOLD_HOURS
+    legs = dict(weights)
+    if hedge:
+        legs[HEDGE] = legs.get(HEDGE, 0.0) + hedge
+    gross = cost = paid = 0.0
+    for symbol, weight in legs.items():
+        entry = hourly.open(symbol, enter)
+        if entry is None:
+            if symbol == HEDGE:
+                return None
+            continue
+        out = hourly.last_open(symbol, enter, leave) or (enter, entry)
+        gross += weight * (out[1] / entry - 1)
+        cost += abs(weight) * unit_of(symbol) * 2
+        paid += -weight * funding.between(symbol, enter * HOUR_MS, out[0] * HOUR_MS)
+    return {"gross": gross, "cost": cost, "funding": paid, "net": gross - cost + paid}
+
+
+def crash_daily(market: xsb.Market, hourly: Hourly, monthly: Mapping[date, Sequence[str]], times: Sequence[int],
+                *, hedged: bool = True) -> dict[date, dict[str, float]]:
+    """Each event's result on the day its hold ends."""
+    funding, daily = _FundingIndex(market), {}
+    for hour in times:
+        day = day_of(hour)
+        built = crash_book(market, hourly, monthly.get(date(day.year, day.month, 1), ()), hour)
+        result = crash_event(hourly, funding, built[0], built[1] if hedged else 0.0, hour) if built else None
+        if result is None:
+            continue
+        row = daily.setdefault(day_of(hour + 1 + CRASH_HOLD_HOURS), {"gross": 0.0, "cost": 0.0, "funding": 0.0, "net": 0.0})
+        for key, value in result.items():
+            row[key] += value
+    return daily
+
+
+def crash_counts(market: xsb.Market | None, hourly: Hourly, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """What the crash book would stand on, with no return of the book in it. With ``market`` None only the events
+    are counted (the reference coin's bars are enough for that); with it, also how much of the universe has hourly
+    bars at each event and how many events a book stands at. The stop rules are judged here."""
+    events = crash_events(hourly, span)
+    years = {str(y): {"events": 0} for y in range(span[0].year, span[1].year + 1)}
+    for hour in events:
+        years[str(day_of(hour).year)]["events"] += 1
+    standing, share = events, None
+    if market is not None:
+        monthly = top_hundred(market, span)
+        asked = found = 0
+        standing = []
+        for row in years.values():
+            row.update({"events_with_a_book": 0, "ranked": []})
+        for hour in events:
+            day = day_of(hour)
+            members = [s for s in monthly.get(date(day.year, day.month, 1), ()) if s != HEDGE]
+            asked, found = asked + len(members), found + sum(1 for s in members if hourly.open(s, hour) is not None)
+            built = crash_book(market, hourly, members, hour)
+            if built is not None:
+                standing.append(hour)
+                years[str(day.year)]["events_with_a_book"] += 1
+                years[str(day.year)]["ranked"].append(len(built[0]))
+        for row in years.values():
+            ranked = row.pop("ranked")
+            row["positions_median"] = statistics.median(ranked) if ranked else 0
+        share = found / asked if asked else None
+    per_year = {str(y): sum(1 for h in standing if day_of(h).year == y) for y in LATER_YEARS}
+    thin = [y for y, n in per_year.items() if n < CRASH_MIN_EVENTS_LATER_YEAR]
+    stops = [text for wrong, text in (
+        (len(standing) < CRASH_MIN_EVENTS, "too few events over the span"),
+        (bool(thin), "too few events in " + ", ".join(thin)),
+        (market is not None and (share is None or share < CRASH_MIN_HOURLY_SHARE),
+         "too many of the universe's coins have no hourly bars at the events"),
+    ) if wrong]
+    return {"events": len(events), "events_with_a_book": len(standing) if market is not None else None,
+            "by_year": years, "hourly_share": None if share is None else round(share, 3),
+            "event_hours": [datetime.fromtimestamp(h * 3600, tz=timezone.utc).strftime("%Y-%m-%dT%H:00Z") for h in events],
+            "reference_only": market is None, "stop": stops, "returns_computed": False}
+
+
+def crash_run(market: xsb.Market, hourly: Hourly, span: tuple[date, date] = SPAN,
+              *, placebos: int = CRASH_PLACEBOS) -> dict[str, Any]:
+    """The crash book net of stressed costs and funding, with its beta leg, beside the same book at placebo hours,
+    through rung 2's three conditions and rung 3. A month or a year with no event counts as zero. Refused when the
+    counts say stop."""
+    counts = crash_counts(market, hourly, span)
+    if counts["stop"]:
+        return {"refused": counts["stop"], "counts": counts}
+    monthly, events = top_hundred(market, span), crash_events(hourly, span)
+
+    def read(times: Sequence[int], *, hedged: bool = True) -> dict[str, Any]:
+        daily = crash_daily(market, hourly, monthly, times, hedged=hedged)
+        report = measure(market, None, span, simulate=lambda *_a, **_k: {"daily": daily})
+        years = {str(y): report["years_total_position_pct"].get(str(y), 0.0)
+                 for y in range(span[0].year, span[1].year + 1)}
+        return {**report, "years_total_position_pct": years, "stability": stability(years)}
+
+    report, bare = read(events), read(events, hedged=False)
+    nulls = [read(placebo_times(events, span, hourly, f"crash-placebo:{k}"))["annual_sharpe"] for k in range(placebos)]
+    after = [out[1] / entry - 1 for h in events
+             if (entry := hourly.open(HEDGE, h + 1)) is not None
+             and (out := hourly.last_open(HEDGE, h + 1, h + 1 + CRASH_HOLD_HOURS)) is not None]
+    rungs = {"2a_entry": report["clears_entry"], "2b_later_years": later_years(report["years_total_position_pct"]),
+             "2c_beside_placebos": beside_nulls(report["annual_sharpe"], nulls), "3_stability": report["stability"]}
+    return {**report, "hypothesis": "H-C1", "logic": "L14", "counts": counts, "rungs": rungs,
+            "passes": bool(rungs["2a_entry"] and rungs["2b_later_years"]["passes"]
+                           and rungs["2c_beside_placebos"]["passes"] and rungs["3_stability"]["passes"]),
+            "without_the_beta_leg": {k: bare[k] for k in ("annual_sharpe", "total_position_annual_pct",
+                                                          "years_total_position_pct")},
+            "reference_after_events": {"events": len(after), "mean_pct": round(statistics.fmean(after) * 100, 2) if after else None,
+                                       "positive": sum(1 for v in after if v > 0)}}
+
+
 # --- the round ---------------------------------------------------------------------------------------------------
 
 def _spread(values: Sequence[float | None]) -> dict[str, Any]:
@@ -1058,7 +1353,8 @@ def run_round(market: xsb.Market, span: tuple[date, date] = SPAN, *, which: str 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="strategy_ladder", description=__doc__.splitlines()[0])
     parser.add_argument("command", choices=("list", "run", "confirm-counts", "confirm", "sweep", "transfer",
-                                            "listing-counts", "listing", "lower-counts", "lower"))
+                                            "listing-counts", "listing", "lower-counts", "lower",
+                                            "crash-symbols", "crash-events", "crash-counts", "crash"))
     parser.add_argument("--only", default=None,
                         help="sweep, transfer: variable groups (comma list), or `null` for the random books")
     parser.add_argument("--cache", type=Path, default=None, help="default: $RESEARCH_CACHE")
@@ -1100,6 +1396,25 @@ def main(argv: list[str] | None = None) -> int:
                           "span": [d.isoformat() for d in SPAN], "command": args.command, **body},
                          indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or (args.command == "listing-counts" and body["stop"]) else EXIT_OK
+    if args.command.startswith("crash"):
+        archive = cache / "archive"
+        if args.command == "crash-events":                       # the reference coin's bars alone decide the events
+            body = crash_counts(None, load_hourly(archive, [HEDGE]))
+        else:
+            market = lab.hold(cache, attach=False)
+            if market is None:
+                print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+                return EXIT_BLOCKED
+            names = sorted({HEDGE, *(s for members in top_hundred(market).values() for s in members)})
+            if args.command == "crash-symbols":
+                print(",".join(names))
+                return EXIT_OK
+            hourly = load_hourly(archive, names)
+            body = crash_counts(market, hourly) if args.command == "crash-counts" else crash_run(market, hourly)
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "command": args.command, **body},
+                         indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_BLOCKED if body.get("refused") or (args.command != "crash" and body["stop"]) else EXIT_OK
     if args.command in ("lower-counts", "lower"):
         market = lab.hold(cache, attach=False)
         if market is None:
