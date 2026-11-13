@@ -94,6 +94,9 @@ CONFIRM_ALPHA = 0.10                       # the k-th read is held to alpha / k
 CONFIRM_READS: tuple[dict[str, Any], ...] = (
     {"read": 1, "candidate": "C002", "signs": {"cool": 1, "hot": -1}, "registered": "2026-11-13",
      "asked": "D5, Thomas 2026-11-13"},
+    # C007 holds one direction, so there is nothing to freeze but the candidate itself (its logic, its accounting
+    # and their fixed values are in CANDIDATES and the constants above).
+    {"read": 2, "candidate": "C007", "registered": "2026-11-13", "asked": "D6, Thomas 2026-11-13"},
 )
 # read number -> the run that spent it. Filled in the commit that records the result; ``confirm`` refuses a read
 # that is already here.
@@ -261,6 +264,7 @@ def simulate_held(market: xsb.Market, signal: str, monthly: Mapping[date, Sequen
 
 
 ACCOUNTING = {"engine": xsb.simulate, "held": simulate_held, "held4": functools.partial(simulate_held, every=4)}
+HOLD_WEEKS = {"engine": 1, "held": 1, "held4": 4}       # how many weeks each accounting holds a decision
 
 
 # --- the two rungs after the map ---------------------------------------------------------------------------------
@@ -372,6 +376,9 @@ def _confirm_frame(market: xsb.Market, entry: Mapping[str, Any]):
     """The candidate's variable and its direction by day over the confirm span. Labels are read on the whole history
     up to the span's end, so a decision in 2025 is compared with the weeks before it."""
     candidate = CANDIDATES[entry["candidate"]]
+    if candidate["logic"] != "L2":             # one direction: nothing is read from a scenario
+        way = 1 if candidate["long"] == "high" else -1
+        return lab.variables()[candidate["variable"]][1], (lambda _day: way), {}
     whole = (SPAN[0], CONFIRM[1])
     days = sundays(whole)
     labels = {day: row.get(candidate["axis"])
@@ -385,33 +392,66 @@ def _confirm_frame(market: xsb.Market, entry: Mapping[str, Any]):
 
 
 def confirm_counts(market: xsb.Market, entry: Mapping[str, Any]) -> dict[str, Any]:
-    """What the read will stand on, with no return in it: the decisions in the span, how many carry each label, and
-    how many coins the variable ranks at each."""
-    read, _, labels = _confirm_frame(market, entry)
+    """What the read will stand on, with no return in it: the decisions in the span, how many carry each label (L2),
+    how many coins the variable ranks, and how many the book would hold on each side."""
+    candidate = CANDIDATES[entry["candidate"]]
+    read, direction, labels = _confirm_frame(market, entry)
     monthly = monthly_members(market, CONFIRM)
-    days = [d for d in sundays(CONFIRM) if CONFIRM[0] - timedelta(days=1) <= d <= CONFIRM[1]]
-    ranked = [sum(1 for s in monthly.get(date(d.year, d.month, 1), ()) if read(market, s, d) is not None) for d in days]
-    by_label: dict[str, int] = {}
+    every = HOLD_WEEKS[candidate.get("accounting", "engine")]
+    days = [d for d in sundays(CONFIRM) if CONFIRM[0] - timedelta(days=1) <= d <= CONFIRM[1]
+            and is_decision(bs.CADENCE, d, every)]
+    build = BOOKS[candidate["logic"]](read, direction)
+    ranked, longs, shorts = [], [], []
     for d in days:
-        by_label[str(labels.get(d))] = by_label.get(str(labels.get(d)), 0) + 1
-    return {"decisions": len(days), "by_label": dict(sorted(by_label.items())),
-            "coins_ranked": {"min": min(ranked), "median": statistics.median(ranked), "max": max(ranked),
-                             "decisions_under_the_floor": sum(1 for n in ranked if n < lab.MIN_NAMES)},
-            "last_day_in_market": lab.last_day(market).isoformat()}
+        members = monthly.get(date(d.year, d.month, 1), ())
+        ranked.append(sum(1 for s in members if read(market, s, d) is not None))
+        weights = {s: w for s, w in build(market, members, d, bs.CADENCE).items() if s != HEDGE or s in members}
+        longs.append(sum(1 for w in weights.values() if w > 0))
+        shorts.append(sum(1 for w in weights.values() if w < 0))
+    out: dict[str, Any] = {
+        "decisions": len(days), "hold_weeks": every,
+        "coins_ranked": {"min": min(ranked), "median": statistics.median(ranked), "max": max(ranked),
+                         "decisions_under_the_floor": sum(1 for n in ranked if n < lab.MIN_NAMES)},
+        "coins_held": {"long_min": min(longs), "long_median": statistics.median(longs), "short_min": min(shorts),
+                       "short_median": statistics.median(shorts),
+                       "flat_decisions": sum(1 for a, b in zip(longs, shorts) if a == 0 and b == 0)},
+        "last_day_in_market": lab.last_day(market).isoformat()}
+    if labels:
+        by_label: dict[str, int] = {}
+        for d in days:
+            by_label[str(labels.get(d))] = by_label.get(str(labels.get(d)), 0) + 1
+        out["by_label"] = dict(sorted(by_label.items()))
+    return out
 
 
-def confirm(market: xsb.Market, entry: Mapping[str, Any], *, simulate: Callable[..., Any] = xsb.simulate) -> dict[str, Any]:
-    """The one read: the candidate as registered over the confirm span, net of the engine's costs, against the bar of
-    its read number. Two never-switching books are shown beside it and decide nothing."""
+def confirm(market: xsb.Market, entry: Mapping[str, Any], *, simulate: Callable[..., Any] | None = None) -> dict[str, Any]:
+    """The one read: the candidate as registered over the confirm span, net of costs, against the bar of its read
+    number. Beside it, deciding nothing: for a switching book the two never-switching ones, for a one-direction book
+    the same logic built on random variables."""
+    candidate = CANDIDATES[entry["candidate"]]
+    simulate = simulate or ACCOUNTING[candidate.get("accounting", "engine")]
+    build = BOOKS[candidate["logic"]]
     read, direction, _ = _confirm_frame(market, entry)
-    report = measure(market, book(read, direction), CONFIRM, simulate=simulate)
+    report = measure(market, build(read, direction), CONFIRM, simulate=simulate)
     bar = confirm_bar(entry["read"])
     sharpe = report["annual_sharpe"]
-    beside = {name: measure(market, book(read, lambda _day, way=way: way), CONFIRM, simulate=simulate)["annual_sharpe"]
-              for name, way in (("always_long_high", 1), ("always_long_low", -1))}
-    return {"read": entry["read"], "of": CONFIRM_BUDGET, "candidate": entry["candidate"], "signs": dict(entry["signs"]),
-            "bar_annual_sharpe": bar, "verdict": "CONFIRM_PASS" if sharpe is not None and sharpe >= bar else "CONFIRM_FAIL",
-            **report, "never_switching_books": beside}
+    out = {"read": entry["read"], "of": CONFIRM_BUDGET, "candidate": entry["candidate"],
+           "bar_annual_sharpe": bar, "verdict": "CONFIRM_PASS" if sharpe is not None and sharpe >= bar else "CONFIRM_FAIL",
+           **report}
+    if candidate["logic"] == "L2":
+        out["signs"] = dict(entry["signs"])
+        out["never_switching_books"] = {
+            name: measure(market, build(read, lambda _day, way=way: way), CONFIRM, simulate=simulate)["annual_sharpe"]
+            for name, way in (("always_long_high", 1), ("always_long_low", -1))}
+    else:
+        names = list(lab.controls())
+        picked = names[:RANDOM_BOOKS] + names[lab.CONTROLS_WEEKLY:lab.CONTROLS_WEEKLY + RANDOM_BOOKS]
+        sharpes = [measure(market, build(lab.controls()[name][1], lambda _day: 1), CONFIRM, simulate=simulate)["annual_sharpe"]
+                   for name in picked]
+        out["random_books_same_logic"] = {
+            **_spread(sharpes),
+            "at_or_above_this_book": sum(1 for v in sharpes if v is not None and sharpe is not None and v >= sharpe)}
+    return out
 
 
 # --- the round ---------------------------------------------------------------------------------------------------

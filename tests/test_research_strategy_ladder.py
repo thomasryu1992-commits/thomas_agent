@@ -196,6 +196,7 @@ def test_the_confirm_read_loads_only_what_its_candidate_reads(monkeypatch, capsy
     monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
     monkeypatch.setattr(sl.lab, "hold", hold)
     monkeypatch.setattr(sl, "CONFIRM_DONE", {})
+    monkeypatch.setattr(sl, "CONFIRM_READS", sl.CONFIRM_READS[:1])
     assert sl.main(["confirm-counts"]) == sl.EXIT_BLOCKED
     capsys.readouterr()
     assert asked == {"span": (sl.SPAN[0], sl.CONFIRM[1]), "attach": False}, "funding needs no attached series"
@@ -204,8 +205,11 @@ def test_the_confirm_read_loads_only_what_its_candidate_reads(monkeypatch, capsy
 
 
 def test_the_first_confirm_read_is_spent_and_the_tool_refuses_it(monkeypatch, capsys):
-    """Read 1 was spent on 2026-11-13 (C002, CONFIRM_FAIL). The tool, as committed, has no open read."""
+    """Read 1 was spent on 2026-11-13 (C002, CONFIRM_FAIL). With that read alone on the list nothing is open."""
     assert 1 in sl.CONFIRM_DONE and "C002" in sl.CONFIRM_DONE[1]
+    open_read = sl.next_confirm_read()
+    assert open_read is None or open_read["read"] not in sl.CONFIRM_DONE
+    monkeypatch.setattr(sl, "CONFIRM_READS", sl.CONFIRM_READS[:1])
     assert sl.next_confirm_read() is None
     monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
     for command in ("confirm", "confirm-counts"):
@@ -337,4 +341,45 @@ def test_a_four_week_hold_decides_on_every_fourth_sunday_from_a_fixed_anchor():
     calls.clear()
     sl.ACCOUNTING["held4"](market, sl.bs.CADENCE, monthly, weigher=weigher, **span)
     assert len(weekly_calls) == 2 and len(calls) == sum(1 for d in weekly_calls if sl.is_decision(sl.bs.CADENCE, d, 4))
+
+
+# --- confirm read 2: a one-direction candidate -----------------------------------------------------------------------
+
+def test_the_second_read_is_c007_as_built_and_is_held_to_the_second_bar(monkeypatch):
+    entry = next(r for r in sl.CONFIRM_READS if r["read"] == 2)
+    candidate = sl.CANDIDATES[entry["candidate"]]
+    assert entry["candidate"] == "C007" and (candidate["logic"], candidate["accounting"]) == ("L9", "held4")
+    assert sl.confirm_bar(2) == 1.245 and sl.HOLD_WEEKS["held4"] == 4
+    read, direction, labels = sl._confirm_frame(xsb.Market(), entry)
+    assert direction(date(2025, 6, 1)) == -1 and labels == {}, "long the low end on every day, no scenario read"
+    used = {}
+
+    def simulate(nets):
+        def run(market, cadence, monthly, *, start, end, weigher):
+            used["span"] = (start, end)
+            return {"daily": {date(2025 + m // 12, m % 12 + 1, 15): {"net": nets[m % len(nets)]} for m in range(21)}}
+        return run
+
+    monkeypatch.setattr(sl, "monthly_members", lambda market, span=None: {})
+    strong = sl.confirm(xsb.Market(), entry, simulate=simulate([0.05, 0.03, 0.04]))
+    between = sl.confirm(xsb.Market(), entry, simulate=simulate([0.07, -0.03, 0.0]))
+    assert used["span"] == sl.CONFIRM and strong["verdict"] == "CONFIRM_PASS" and strong["bar_annual_sharpe"] == 1.245
+    assert 1.0 <= between["annual_sharpe"] < 1.245 and between["verdict"] == "CONFIRM_FAIL", "over the first bar, under the second"
+    assert set(strong["random_books_same_logic"]) == {"count", "mean", "max", "at_or_above_this_book"}
+    assert "never_switching_books" not in strong and "signs" not in strong
+
+
+def test_the_counts_before_a_read_say_how_many_coins_each_side_would_hold_and_carry_no_return(monkeypatch):
+    entry = next(r for r in sl.CONFIRM_READS if r["read"] == 2)
+    members = [f"C{i:02d}USDT" for i in range(1, 25)]
+    bars = {s: {date(2024, 10, 1) + timedelta(days=k): xsb.Bar(open=100.0, close=100.0 * (1 + 0.001 * ((k * (i + 3)) % 7 - 3)), quote_volume=5.0)
+                for k in range(760)} for i, s in enumerate(members + [sl.HEDGE])}
+    market = xsb.Market(bars=bars)
+    monkeypatch.setattr(sl, "monthly_members", lambda market, span=None: {date(y, m, 1): members for y in (2024, 2025, 2026) for m in range(1, 13)})
+    out = sl.confirm_counts(market, entry)
+    assert out["hold_weeks"] == 4 and 20 <= out["decisions"] <= 24, "every fourth Sunday over twenty-one months"
+    assert out["coins_ranked"]["decisions_under_the_floor"] == 0 and out["coins_held"]["long_min"] >= sl.MIN_SIDE
+    assert "by_label" not in out
+    flat = json.dumps(out)
+    assert all(word not in flat for word in ("sharpe", "net", "pct", "return")), "counts only"
 
