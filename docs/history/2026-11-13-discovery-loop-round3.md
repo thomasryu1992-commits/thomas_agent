@@ -60,3 +60,32 @@ would make the three reads left less independent, so it is asked rather than don
 **Also said that day.** Thomas: until a meaningful result comes out, the weekly and monthly steps keep running, by
 hand if needed. The cadence in the proposal is a floor, not a wait.
 
+## The fourth round and the universe's character, the same day
+
+Run straight after the third, on Thomas's word that the cadence is not a wait.
+
+**Three variables from columns nobody read.** The daily kline files carry a trade count and a taker-buy quote volume
+that the bar loader drops. From them: taker-buy share, average trade size and its change, for every coin — the
+positioning files had covered only the top ones. Taker-buy share became a lead (coins bought aggressively go on to
+lead; same sign in both tiers and both horizons); it is the earlier taker-ratio idea seen with whole data, not a new
+one. Average trade size clears the random maximum in ranks with almost no difference in means. Its change, which
+was set aside as a basket candidate on 2026-11-12 and is mapped here on Thomas's later instruction to keep adding
+variables, shows nothing.
+
+**The axis check, one variable at a time — and a second design flaw found on first use.** With 200 placebos the
+smallest p a test can show is 0.005; Benjamini–Hochberg over 230 tests asks 0.0004 of the best one. The first run
+could not have passed anything, and its three smallest p values all sat on that floor. With 5,000 placebos nothing
+passes either: twelve tests under 0.05 where chance gives 11.5, and the closest — funding against the level of
+funding, 0.0006 — is the pair whose book failed out of sample. On these five years, five axes and 27 variables,
+splitting by scenario has no support. That is a statement about this span's power as much as about scenarios: an
+axis has 12 to 41 spells in it.
+
+**What kind of universe 2025–2026 was.** Asked of Thomas first, because knowing it makes the three confirm reads
+left less independent; he said yes. Four characters of the top thirty by month, no return of anything: 2025 sits
+inside the development years' range; 2026 leaves it on three — the 90th percentile of funding (170 bps a week
+against a previous high of 123), the share of coins that moved over 50% in a day (12.6% against 5.6%) and
+month-to-month membership overlap. The median of funding is the lowest of the seven years while its tail is the
+highest: a quiet majority and an extreme handful. Both failed candidates had held up in 2025 and lost in 2026. So
+the reason development passes did not carry over may be a tail the development years never had, not a signal that
+died — which a book with the tail taken out of its universe can test, forward.
+
