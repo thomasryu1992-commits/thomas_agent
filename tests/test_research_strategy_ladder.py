@@ -1608,3 +1608,225 @@ def test_the_flush_commands_load_bars_and_funding_over_their_span_then_the_closi
     assert asked == [(sl.FLUSH_SPAN, False, False)] * 2
     assert read == [["BTCUSDT", *FLUSH_COINS], ["BTCUSDT"]], "the members' closing open interest, and the hedge coin's hours alone"
     assert json.loads(capsys.readouterr().out)["returns_computed"] is False
+
+
+# --- round 16: the funding tail held with its own spot -----------------------------------------------------------------
+
+PAIR_START = date(2021, 1, 4)                    # the Monday after a Sunday decision
+
+
+def _pair_market(spot_closes, perp_closes, *, rate=0.0, perp_highs=None, perp_days=None, first=(100.0, 100.0)):
+    """One coin, PUSDT, from :data:`PAIR_START`: each day opens at the close before (``first`` on the first day)."""
+    def bars(closes, start, highs=None):
+        out, price = {}, start
+        for k, close in enumerate(closes):
+            high = None if highs is None else highs[k]
+            out[PAIR_START + timedelta(days=k)] = xsb.Bar(open=price, close=close, quote_volume=1e8, high=high)
+            price = close
+        return out
+
+    perp = bars(perp_closes[:perp_days], first[1], perp_highs or [max(c, 0.0) for c in perp_closes])
+    days = [PAIR_START + timedelta(days=k) for k in range(len(spot_closes))]
+    settled = [(int(datetime(d.year, d.month, d.day, 8, tzinfo=timezone.utc).timestamp() * 1000), rate) for d in days]
+    market = xsb.Market(bars={"PUSDT": perp}, funding={"PUSDT": settled})
+    market.spot, market.spot_of = {"PUSDT": bars(spot_closes, first[0])}, {"PUSDT": ("PUSDT", 1.0)}
+    return market
+
+
+def _pairs(market, days, **more):
+    always = lambda market, members, day, signal, seed=None: {"PUSDT": 1.0}  # noqa: E731
+    sim = sl.simulate_pairs(market, sl.bs.CADENCE, {}, start=PAIR_START, end=PAIR_START + timedelta(days=days - 1),
+                            weigher=always, **more)
+    return sim["daily"]
+
+
+def test_a_pair_earns_nothing_from_the_coins_move_while_the_premium_holds_and_the_short_is_paid_the_funding():
+    spot = [110.0, 90.0, 130.0, 130.0, 60.0, 61.0]
+    daily = _pairs(_pair_market(spot, [c * 1.001 for c in spot], rate=0.001, first=(100.0, 100.1)), 5)
+    assert all(row["gross"] == pytest.approx(0.0, abs=1e-12) for row in daily.values()), "the two legs cancel"
+    first, second = daily[PAIR_START], daily[PAIR_START + timedelta(days=1)]
+    assert first["cost"] == pytest.approx(sl.pair_unit(spot=True) + sl.pair_unit(spot=False)), "both legs are bought"
+    assert sl.pair_unit(spot=True) == pytest.approx(0.0031) and sl.pair_unit(spot=False) == pytest.approx(0.0026)
+    assert first["funding"] == pytest.approx(0.001), "a positive rate is paid to the short"
+    assert second["funding"] == pytest.approx(0.001 * 1.1), "on what the short is worth that day"
+    assert second["cost"] == 0.0 and second["net"] == pytest.approx(second["funding"])
+    engine = _pairs(_pair_market(spot, [c * 1.001 for c in spot], first=(100.0, 100.1)), 5, stressed=False)
+    assert engine[PAIR_START]["cost"] == pytest.approx((10 + 3 + 5 + 3) / 10_000), "the engine's slippage on both legs"
+
+
+def test_a_premium_that_narrows_pays_the_pair_and_one_that_widens_costs_it():
+    flat = [100.0] * 5
+    narrowing = _pairs(_pair_market(flat, [100.5, 100.0, 100.0, 100.0, 100.0], first=(100.0, 101.0)), 4)
+    assert sum(row["gross"] for row in narrowing.values()) == pytest.approx(1 / 101), "the short gains what the premium gave up"
+    widening = _pairs(_pair_market(flat, [101.0, 102.0, 102.0, 102.0, 102.0]), 4)
+    assert sum(row["gross"] for row in widening.values()) == pytest.approx(-0.02)
+
+
+def test_at_the_weekly_decision_a_pair_is_marked_again_and_the_trade_is_what_each_leg_has_become():
+    closes = [100.0] * 5 + [130.0] * 4
+    daily = _pairs(_pair_market(closes, closes), 8)
+    again = daily[PAIR_START + timedelta(days=7)]
+    assert again["cost"] == pytest.approx(0.3 * (sl.pair_unit(spot=True) + sl.pair_unit(spot=False))), \
+        "each leg grew to 1.3 and the target is 1"
+
+
+def test_a_short_whose_perp_doubles_loses_its_margin_and_the_spot_is_sold_that_day():
+    spot = [150.0, 180.0, 180.0, 180.0]
+    log = {}
+    daily = _pairs(_pair_market(spot, spot, rate=0.001, perp_highs=[150.0, 200.0, 180.0, 180.0]), 4, log=log)
+    hit = daily[PAIR_START + timedelta(days=1)]
+    assert hit["gross"] == pytest.approx(0.3 - 0.5), "the spot's day, less the half of the margin that was left"
+    assert hit["funding"] == 0.0 and hit["cost"] == pytest.approx(1.8 * sl.pair_unit(spot=True)), "only the spot is sold"
+    assert sum(row["gross"] for row in daily.values()) == pytest.approx(0.8 - 1.0), "the spot's gain against the whole margin"
+    assert PAIR_START + timedelta(days=2) not in daily, "nothing is held after it"
+    assert [(r["day"], r["symbol"]) for r in log["liquidations"]] == [("2021-01-05", "PUSDT")]
+    calm = _pairs(_pair_market(spot, spot, perp_highs=[150.0, 194.0, 180.0, 180.0]), 4)
+    assert PAIR_START + timedelta(days=2) in calm, "a high under 1.95 times the entry leaves the pair alone"
+
+
+def test_a_pair_whose_closes_come_apart_is_closed_and_a_gain_printed_that_day_is_not_counted():
+    log = {}
+    spliced = _pairs(_pair_market([100.0, 300.0, 300.0], [100.0, 100.0, 100.0], rate=0.001), 3, log=log)
+    day = PAIR_START + timedelta(days=1)
+    assert spliced[day]["gross"] == 0.0 and spliced[day]["funding"] == 0.0, "another asset under the name cannot pay the book"
+    assert spliced[day]["cost"] == pytest.approx(3.0 * sl.pair_unit(spot=True) + 1.0 * sl.pair_unit(spot=False))
+    assert PAIR_START + timedelta(days=2) not in spliced
+    row, = log["out_of_band"]
+    assert (row["day"], row["printed"], row["counted"]) == ("2021-01-05", pytest.approx(2.0), 0.0)
+    lost = _pairs(_pair_market([100.0, 30.0, 30.0], [100.0, 100.0, 100.0]), 3)
+    assert lost[day]["gross"] == pytest.approx(-0.7), "a loss printed that day is counted"
+    inside = _pairs(_pair_market([100.0, 100.0, 100.0], [100.0, 109.0, 109.0]), 3)
+    assert PAIR_START + timedelta(days=2) in inside, "inside the band the pair stays"
+
+
+def test_a_pair_one_of_whose_legs_stops_trading_is_closed_at_that_days_close():
+    log = {}
+    closes = [100.0, 120.0, 120.0, 120.0]
+    daily = _pairs(_pair_market(closes, [100.0, 121.0, 121.0, 121.0], perp_days=2), 4, log=log)
+    last = PAIR_START + timedelta(days=1)
+    assert daily[last]["gross"] == pytest.approx(0.20 - 0.21) and PAIR_START + timedelta(days=2) not in daily
+    assert daily[last]["cost"] == pytest.approx(1.2 * sl.pair_unit(spot=True) + 1.21 * sl.pair_unit(spot=False))
+    assert log["leg_ended"] == [{"day": "2021-01-05", "symbol": "PUSDT", "leg": "perp"}]
+
+
+def test_the_tail_is_the_top_tenth_strictly_over_the_median_and_a_tie_at_its_edge_is_left_out_whole():
+    ten = {f"C{i}": i / 1000 for i in range(10)}
+    assert sl.tail_of(ten) == (("C9",), False), "one in ten"
+    assert sl.tail_of({**ten, "C10": 0.010}) == (("C10", "C9"), False), "rounded up"
+    assert sl.tail_of({**ten, "C8": 0.009}) == ((), True), "the edge of the tenth sits in a tie: neither is taken"
+    assert sl.tail_of({**ten, "C10": 0.009, "C8": 0.009}) == ((), True), "two places, three tied coins: none of them"
+    assert sl.tail_of(dict.fromkeys(ten, 0.0003)) == ((), True), "a pool at one rate has no tail"
+    assert sl.tail_of({f"C{i}": -i / 1000 for i in range(10)}) == ((), False), "the least negative is not paid: no pick"
+    assert sl.tail_of({}) == ((), False)
+    default = {"A": 0.0100, "B": 0.0021, "C": 0.0021, "D": 0.0021, "E": 0.0001}
+    assert sl.paid_over_the_middle(default) == {"A"}, "a coin at the rate most of the pool pays is not over the middle"
+    assert sl.paid_over_the_middle({"A": -0.001, "B": -0.002, "C": -0.003}) == set(), "over the median and still paying away"
+
+
+def _basis_world():
+    """:func:`_deep_world`'s eight coins, each with a spot that closes where its perp does. DEEP1 charges its longs
+    0.4% a day until the end of January 2021, 0.1% a day to the end of March, nothing after; DEEP0 0.3% a day
+    throughout; the other six pay small rates, all different."""
+    market = _deep_world()
+    days = sorted(market.bars["BTCUSDT"])
+
+    def settled(rate_on):
+        return [(int(datetime(d.year, d.month, d.day, 8, tzinfo=timezone.utc).timestamp() * 1000), rate_on(d)) for d in days]
+
+    small = {"DEEP2USDT": 0.0008, "DEEP3USDT": 0.0006, "DEEP4USDT": 0.0001, "DEEP5USDT": 0.0002,
+             "DEEP6USDT": 0.0003, "DEEP7USDT": 0.0004}
+    market.funding["DEEP0USDT"] = settled(lambda d: 0.003)
+    market.funding["DEEP1USDT"] = settled(lambda d: 0.004 if d <= date(2021, 1, 31) else 0.001 if d <= date(2021, 3, 31) else 0.0)
+    for name, rate in small.items():
+        market.funding[name] = settled(lambda d, rate=rate: rate)
+    coins = [f"DEEP{i}USDT" for i in range(8)]
+    market.spot = {s: {d: xsb.Bar(open=b.open, close=b.close, quote_volume=1e7) for d, b in market.bars[s].items()} for s in coins}
+    market.spot_of = {s: (s, 1.0) for s in coins}
+    return market
+
+
+BASIS_SPAN = (date(2020, 6, 1), date(2021, 6, 30))
+
+
+def test_a_coin_enters_the_pair_book_in_the_tail_and_stays_while_its_funding_is_over_the_pools_median():
+    tail = sl.BasisTail(_basis_world(), BASIS_SPAN)
+    early, middle, late = date(2021, 1, 17), DEEP_DAY, date(2021, 5, 2)
+    assert set(tail.pool(middle)) == {f"DEEP{i}USDT" for i in range(8)}, "L15's pool, with a spot beside the perp"
+    assert tail.tail(early) == ("DEEP1USDT",) and tail.held(early) == ("DEEP1USDT",), "DEEP0 is second: never in the tenth yet"
+    assert tail.tail(middle) == ("DEEP0USDT",) and tail.held(middle) == ("DEEP0USDT", "DEEP1USDT"), \
+        "DEEP1 left the tenth and is still over the median"
+    assert tail.held(late) == ("DEEP0USDT",), "under the median it leaves"
+    assert tail.spell_start("DEEP1USDT", middle) == tail.spell_start("DEEP1USDT", early) < early
+    partner = tail.partner("DEEP0USDT", middle, "plain:0")
+    start = tail.spell_start("DEEP0USDT", middle)
+    assert partner in tail.pool(start) and partner not in tail.held(start), "a pool coin the book did not hold"
+    assert tail.partner("DEEP0USDT", middle + timedelta(days=7), "plain:0") == partner, "one partner for the spell"
+    weights = sl.basis_book(tail)(tail.market, (), middle, "x")
+    assert weights == {"DEEP0USDT": sl.DEEP_NAME_CAP, "DEEP1USDT": sl.DEEP_NAME_CAP}, "pairs under the cap, no hedge leg"
+    other = sl.basis_book(tail, placebo="plain:0")(tail.market, (), middle, "x")
+    assert other and not set(other) & {"DEEP0USDT"} and all(w == sl.DEEP_NAME_CAP for w in other.values())
+
+
+def test_the_pair_counts_carry_nothing_earned_and_no_tally_against_a_funding_level(monkeypatch):
+    unfunded = sl.basis_counts(_basis_world(), BASIS_SPAN)
+    assert unfunded["stop"][0] == "too many of the pool's coins have no funding on file", "one eligible coin in nine has none"
+    monkeypatch.setattr(sl, "DEEP_MIN_FUNDING_KNOWN", 0.5)
+    counts = sl.basis_counts(_basis_world(), BASIS_SPAN)
+    assert counts["stop"] == ["the book holds a pair at too few decisions in 2022, 2023, 2024"]
+    assert sl.basis_run(_basis_world(), BASIS_SPAN)["refused"] == counts["stop"], "a stopped book is not measured"
+    flat = json.dumps(counts)
+    assert counts["returns_computed"] is False and "sharpe" not in flat and "pct" not in flat
+    year = counts["by_year"]["2021"]
+    assert year["names_held_median"] in (1, 1.5, 2) and year["tail_share_of_pool_mean"] == pytest.approx(1 / 8, abs=1e-3)
+    assert year["decisions_with_a_tie_at_the_tenth"] == 0 and year["pool_share_at_the_median_value_mean"] == 0.0
+    assert year["entered_trailing_funding_mean"] == pytest.approx(0.021, abs=1e-5), "DEEP0 entered in 2021, at 0.3% a day"
+    assert counts["held_share_of_pool_mean"] < sl.BASIS_NOT_A_TAIL and counts["not_a_tail"] is False
+    assert counts["pool_beside_l15s_pool"] == pytest.approx(0.975, abs=1e-3), "a coin with no spot pair, once aged, is L15's only"
+    monkeypatch.setattr(sl, "BASIS_NOT_A_TAIL", 0.1)
+    assert sl.basis_counts(_basis_world(), BASIS_SPAN)["not_a_tail"] is True, "a book holding this much of the pool is labelled"
+
+
+def test_the_pair_run_is_read_through_the_ladder_beside_other_coins_pairs_and_its_reading_is_one_of_three(monkeypatch):
+    monkeypatch.setattr(sl, "BASIS_MIN_ACTIVE", 0)
+    monkeypatch.setattr(sl, "DEEP_MIN_FUNDING_KNOWN", 0.5)
+    monkeypatch.setattr(sl, "SPAN", BASIS_SPAN)
+    run = sl.basis_run(_basis_world(), BASIS_SPAN, placebos=3)
+    assert (run["hypothesis"], run["logic"]) == ("H-B1", "L20")
+    assert run["legs"]["price_pct"] == pytest.approx(0.0, abs=0.01), "each spot closes on its perp: nothing from price"
+    assert run["legs"]["funding_pct"] > 0 and run["funding_under_cost"] is False and run["price_loss_over_funding"] is False
+    assert run["sum_pct"] == pytest.approx(run["legs"]["funding_pct"] - run["legs"]["cost_pct"], abs=0.02)
+    assert set(run["rungs"]) == {"2a_entry", "2b_later_years", "2c_beside_placebos", "3_stability"}
+    assert run["reading"] in ("closed", "passes_on_carry", "passes_on_price") and run["passes"] is (run["reading"] != "closed")
+    assert run["liquidations"]["count"] == 0 and run["out_of_band"]["count"] == 0 and run["legs_ended"] == {"perp": 0, "spot": 0}
+    assert run["placebo_net_total_position_annual_pct_mean"] < run["total_position_annual_pct"], \
+        "the other coins' pairs are paid the small rates"
+    assert run["at_engine_cost"]["total_position_annual_pct"] > run["total_position_annual_pct"]
+    assert set(run["years_total_position_pct"]) == {"2020", "2021"}
+
+
+def test_the_basis_commands_hang_the_spot_bars_and_nothing_after_the_development_span_reaches_the_book(monkeypatch, capsys, tmp_path):
+    late = date(2025, 1, 2)
+    assert sl.SPAN[1] < date(2025, 1, 1)
+
+    def archive(path, funding=True):
+        bar = xsb.Bar(open=1.0, close=1.0, quote_volume=1.0)
+        stamp = int(datetime(late.year, late.month, late.day, 8, tzinfo=timezone.utc).timestamp() * 1000)
+        return xsb.Market(bars={"AUSDT": {date(2024, 12, 30): bar, late: bar}}, funding={"AUSDT": [(stamp, 0.01)]} if funding else {})
+
+    folder = tmp_path / sl.lab.sp.SPOT_DIR
+    folder.mkdir()
+    (folder / sl.lab.ba.SYMBOLS_FILENAME).write_text(json.dumps(["AUSDT"]), encoding="utf-8")
+    seen = []
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(sl.xsb, "read_contract_types", lambda path: ({}, "snapshot"))
+    monkeypatch.setattr(sl.xsb, "load_market", archive)
+    monkeypatch.setattr(sl, "basis_counts", lambda market: seen.append(market) or {"stop": []})
+    monkeypatch.setattr(sl, "basis_run", lambda market: seen.append(market) or {})
+    assert sl.main(["basis-counts", "--cache", str(tmp_path)]) == sl.EXIT_OK
+    assert sl.main(["basis", "--cache", str(tmp_path)]) == sl.EXIT_OK
+    assert len(seen) == 2
+    for market in seen:
+        assert set(market.bars["AUSDT"]) == {date(2024, 12, 30)} and set(market.spot["AUSDT"]) == {date(2024, 12, 30)}
+        assert not (market.funding_day("AUSDT") or {}), "the 2025 settlement is cut too"
+        assert market.spot_of["AUSDT"] == ("AUSDT", 1.0)
+    capsys.readouterr()

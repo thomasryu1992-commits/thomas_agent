@@ -1639,6 +1639,341 @@ def with_spot(cache: Path, market: xsb.Market, span: tuple[date, date] = SPAN) -
     return lab.sp.attach(market, xsb.load_market(cache / lab.sp.SPOT_DIR, funding=False), listing, span[1])
 
 
+# --- L20: the funding tail held with its own spot (round 16, hypothesis H-B1) --------------------------------------------
+
+BASIS_TAIL = 10                            # the pool's top one in this many by trailing funding is the tail
+BASIS_NOT_A_TAIL = 0.25                    # held share of the pool, on average, at or over this: the result is labelled so
+BASIS_PLACEBOS = 300
+BASIS_MIN_ACTIVE = DEEP_MIN_ACTIVE
+BASIS_SPOT_FEE_BPS = lab.sp.fb.fb.SPOT_FEE_BPS       # FUNDING_BASIS_V0.1's spot taker fee
+BASIS_LIQUIDATION = lab.sp.fb.fb.LIQUIDATION_RATIO   # FUNDING_BASIS_V0.1: a 1x short is liquidated near twice its entry
+BASIS_NAMES = ("H-B1", "L20")
+
+
+def paid_over_the_middle(pool: Mapping[str, float]) -> set[str]:
+    """The pool's coins whose trailing funding is strictly above the pool's median and above zero. Strictly: much of
+    a pool can sit at one default rate, and a coin at the median is the typical coin, not one that is paid more."""
+    if not pool:
+        return set()
+    middle = statistics.median(pool.values())
+    return {s for s, value in pool.items() if value > middle and value > 0}
+
+
+def tail_of(pool: Mapping[str, float]) -> tuple[tuple[str, ...], bool]:
+    """The tail of a pool's trailing funding, and whether a tie at the tenth's edge was left out. The tail is the
+    top one in :data:`BASIS_TAIL` (rounded up), each strictly above the pool's median and above zero. Coins tied
+    with the best value outside the tenth are left out whole: name order never decides a pick."""
+    if not pool:
+        return (), False
+    ranked = sorted(pool.items(), key=lambda item: (-item[1], item[0]))
+    count = math.ceil(len(ranked) / BASIS_TAIL)
+    edge = ranked[count][1] if count < len(ranked) else None
+    top = [s for s, value in ranked[:count] if edge is None or value > edge]
+    return tuple(sorted(set(top) & paid_over_the_middle(pool))), len(top) < count
+
+
+class BasisTail:
+    """The funding tail, held as pairs, decision by decision over a span. Pool: L15's pool among the coins L18's
+    pool admits (a spot pair whose close sat beside the perp's on enough of the window's days), read on L15's
+    trailing funding. A coin enters when it is in :func:`tail_of` the pool and stays while its funding is strictly
+    above the pool's median and above zero. What is held depends on what was held the week before, so the held sets
+    are built once, in order, from the span's first decision."""
+
+    def __init__(self, market: xsb.Market, span: tuple[date, date] = SPAN) -> None:
+        self.market = market
+        self._funding, self._paired = DeepFunding(market), GapPools(market)
+        self.days = [d for d in sundays(span) if span[0] - timedelta(days=1) <= d <= span[1]]
+        self._pool: dict[date, dict[str, float]] = {}
+        self._held: dict[date, tuple[str, ...]] = {}
+        self._tail: dict[date, tuple[str, ...]] = {}
+        self._start: dict[tuple[str, date], date] = {}
+        self.tied: set[date] = set()                   # decisions at which a tie at the tenth's edge was left out
+        before: tuple[str, ...] = ()
+        last: date | None = None
+        for day in self.days:
+            pool = self.pool(day)
+            tail, tied = tail_of(pool)
+            if tied:
+                self.tied.add(day)
+            held = tuple(sorted((set(before) & paid_over_the_middle(pool)) | set(tail)))
+            for symbol in held:
+                self._start[(symbol, day)] = self._start[(symbol, last)] if last is not None and symbol in before else day
+            self._tail[day], self._held[day] = tail, held
+            before, last = held, day
+
+    def pool(self, day: date) -> dict[str, float]:
+        if day not in self._pool:
+            paired = self._paired.at(day)[0]
+            self._pool[day] = {s: row[0] for s, row in self._funding.at(day)[0].items() if s in paired}
+        return self._pool[day]
+
+    def unfunded(self, day: date) -> int:
+        return self._funding.at(day)[1]
+
+    def l15_pool(self, day: date) -> int:
+        return len(self._funding.at(day)[0])
+
+    def tail(self, day: date) -> tuple[str, ...]:
+        return self._tail.get(day, ())
+
+    def held(self, day: date) -> tuple[str, ...]:
+        return self._held.get(day, ())
+
+    def spell_start(self, symbol: str, day: date) -> date:
+        return self._start[(symbol, day)]
+
+    def partner(self, symbol: str, day: date, seed: str) -> str | None:
+        """The coin a placebo holds in place of ``symbol``: drawn once, at the spell's first decision, from the pool
+        coins the book did not hold that day, so a placebo pair lasts as long as the real one."""
+        start = self.spell_start(symbol, day)
+        mine = set(self.held(start))
+        others = sorted(s for s in self.pool(start) if s not in mine)
+        return random.Random(f"{seed}:{symbol}:{start.isoformat()}").choice(others) if others else None
+
+
+def pair_basket(names: Iterable[str]) -> dict[str, float]:
+    """Equal pairs, none above :data:`DEEP_NAME_CAP` of a side. A weight ``w`` is ``w`` of the coin's spot bought and
+    ``w`` of its perp sold; under five names the rest of the book is idle."""
+    names = sorted(set(names))
+    return dict.fromkeys(names, min(1 / len(names), DEEP_NAME_CAP)) if names else {}
+
+
+def basis_book(tail: BasisTail, placebo: str | None = None) -> Callable[..., dict[str, float]]:
+    """L20: a pair on every coin the tail holds. With ``placebo`` each of those coins is replaced by its partner
+    (held only while the partner itself is in the pool that day)."""
+    def weights(market: xsb.Market, members: Sequence[str], day: date, signal: str,
+                *, seed: str | None = None) -> dict[str, float]:
+        names: Iterable[str] = tail.held(day)
+        if placebo is not None:
+            pool = tail.pool(day)
+            names = [p for s in names if (p := tail.partner(s, day, placebo)) is not None and p in pool]
+        return pair_basket(names)
+    return weights
+
+
+def pair_unit(*, spot: bool, stressed: bool = True) -> float:
+    """Cost per unit traded on one leg of a pair: the leg's taker fee and the stressed slippage (``stressed`` False:
+    the engine's). The stressed value was measured on perps; no spot value is on file."""
+    fee = BASIS_SPOT_FEE_BPS if spot else xsb.cost.DEFAULT_TAKER_FEE_BPS
+    slippage = LISTING_SLIPPAGE_BPS if stressed else xsb.cost.DEFAULT_SLIPPAGE_BPS
+    return (fee + slippage) / 10_000
+
+
+def simulate_pairs(market: xsb.Market, signal: str, monthly: Mapping[date, Sequence[str]], *, start: date, end: date,
+                   weigher: Callable[..., dict[str, float]], stressed: bool = True,
+                   log: dict[str, list[dict[str, Any]]] | None = None) -> dict[str, Any]:
+    """Daily net returns of a book of pairs: the held accounting (:func:`simulate_held`) on two legs a coin.
+
+    A weight ``w`` holds ``w`` of the coin's spot and is short ``w`` of its perp, both from the entry day's open. The
+    quantities are fixed until the next weekly decision, where both legs are marked again and the trade is the
+    difference between the target and what each leg has become (this re-mark stands where FUNDING_BASIS_V0.1 reset a
+    pair at 1.5 times its entry). Funding is received on what the short is worth that day. A pair ends, with cost on
+    what is sold, in three ways, each written to ``log``:
+
+    - **liquidated**: the perp's high (its last price; no mark series is read) reaches :data:`BASIS_LIQUIDATION`
+      times the open it was last marked at. The margin left is lost, the spot is sold at that day's close, and the
+      day pays no funding (FUNDING_BASIS_V0.1's rule).
+    - **out of band**: the two closes are further apart than the spot-share search's price band, so the pair may be
+      two assets under one name. Both legs close at that day's close. A gain printed that day is not counted, a loss
+      is, and the day pays no funding: a spliced series cannot carry a result.
+    - **a leg ends**: the spot or the perp has no bar the next day. Both legs close at that day's close."""
+    units = {"perp": pair_unit(spot=False, stressed=stressed), "spot": pair_unit(spot=True, stressed=stressed)}
+    links = getattr(market, "spot_of", None) or {}
+    spots = getattr(market, "spot", None) or {}
+
+    def legs(symbol: str, day: date) -> tuple[xsb.Bar, xsb.Bar, float] | None:
+        link = links.get(symbol)
+        if link is None:
+            return None
+        perp, spot = (market.bars.get(symbol) or {}).get(day), (spots.get(link[0]) or {}).get(day)
+        return None if perp is None or spot is None else (perp, spot, link[1])
+
+    def note(kind: str, **row: Any) -> None:
+        if log is not None:
+            log.setdefault(kind, []).append(row)
+
+    held: dict[str, tuple[float, float, float]] = {}     # coin -> (weight, perp open at the last mark, spot open at it)
+    daily: dict[date, dict[str, float]] = {}
+    for day in xsb.held_days(start, end):
+        decision = day - timedelta(days=1)
+        trade_cost = 0.0
+        if is_decision(signal, decision, 1):
+            target = weigher(market, monthly.get(date(decision.year, decision.month, 1), ()), decision, signal, seed=None)
+            opens = {s: both for s in set(held) | set(target) if (both := legs(s, day)) is not None}
+            now = {s: (w * opens[s][0].open / perp_entry, w * opens[s][1].open / spot_entry)
+                   for s, (w, perp_entry, spot_entry) in held.items() if s in opens}
+            enter = {s: w for s, w in target.items() if s in opens}
+            for symbol in set(now) | set(enter):
+                short, long = now.get(symbol, (0.0, 0.0))
+                want = enter.get(symbol, 0.0)
+                trade_cost += abs(want - short) * units["perp"] + abs(want - long) * units["spot"]
+            held = {s: (w, opens[s][0].open, opens[s][1].open) for s, w in enter.items()}
+        if not held and not trade_cost:
+            continue
+        gross = funding = exit_cost = 0.0
+        gone: list[str] = []
+        for symbol, (w, perp_entry, spot_entry) in held.items():
+            today, tomorrow = legs(symbol, day), legs(symbol, day + timedelta(days=1))
+            if today is None:
+                gone.append(symbol)
+                continue
+            perp, spot, multiple = today
+            spot_day = w * (spot.close - spot.open) / spot_entry
+            perp_day = -w * (perp.close - perp.open) / perp_entry
+            both_sold = w * (perp.close / perp_entry * units["perp"] + spot.close / spot_entry * units["spot"])
+            if perp.high is not None and perp.high >= BASIS_LIQUIDATION * perp_entry:
+                margin_left = w * max(0.0, 2 - perp.open / perp_entry)
+                sold = w * spot.close / spot_entry * units["spot"]
+                gross += spot_day - margin_left
+                exit_cost += sold
+                gone.append(symbol)
+                note("liquidations", day=day.isoformat(), symbol=symbol, weight=round(w, 4),
+                     net=round(spot_day - margin_left - sold, 6))
+            elif spot.close <= 0 or abs(perp.close / (spot.close * multiple) - 1) > lab.sp.PRICE_BAND:
+                printed = spot_day + perp_day
+                gross += min(0.0, printed)
+                exit_cost += both_sold
+                gone.append(symbol)
+                note("out_of_band", day=day.isoformat(), symbol=symbol, weight=round(w, 4), perp_close=perp.close,
+                     spot_close=spot.close * multiple, printed=round(printed, 6), counted=round(min(0.0, printed), 6))
+            else:
+                if tomorrow is None:                  # a leg stops here: out at today's close
+                    gross += spot_day + perp_day
+                    exit_cost += both_sold
+                    gone.append(symbol)
+                    after = day + timedelta(days=1)
+                    if day < end:                     # the span's own last day ends every pair: not a leg ending
+                        note("leg_ended", day=day.isoformat(), symbol=symbol,
+                             leg="perp" if (market.bars.get(symbol) or {}).get(after) is None else "spot")
+                else:
+                    gross += w * ((tomorrow[1].open - spot.open) / spot_entry - (tomorrow[0].open - perp.open) / perp_entry)
+                rate, _known = xsb.funding_on(market, symbol, day)
+                funding += w * perp.open / perp_entry * rate
+        for symbol in gone:
+            held.pop(symbol)
+        daily[day] = {"gross": gross, "cost": trade_cost + exit_cost, "funding": funding,
+                      "net": gross - trade_cost - exit_cost + funding}
+    return {"daily": daily}
+
+
+def basis_counts(market: xsb.Market, span: tuple[date, date] = SPAN, *, tail: BasisTail | None = None) -> dict[str, Any]:
+    """What the pair book would stand on, with nothing earned after a decision in it: decisions, names, spells, how
+    much of the pool is held, the trailing funding (the signal) of what is held and of what enters, and how often
+    the tenth's edge or the median sits in a tie. No tally against any funding level: that is H-F2's count. The
+    stop rules are judged here, and so is the label for a book that holds too much of the pool to be a tail."""
+    tail = tail or BasisTail(market, span)
+    years: dict[str, dict[str, Any]] = {str(y): {"decisions": 0, "active_decisions": 0, "names": [], "invested": [],
+                                                 "pool": [], "held_share": [], "tail_share": [], "spells": 0,
+                                                 "held_funding": [], "entered_funding": [], "at_median": [],
+                                                 "decisions_with_a_tie_at_the_tenth": 0, "unfunded_coin_decisions": 0}
+                                        for y in range(span[0].year, span[1].year + 1)}
+    pooled = unfunded_total = l15_pooled = 0
+    lengths: list[int] = []
+    running: dict[str, int] = {}
+    shares: list[float] = []
+    for day in tail.days:
+        row = years.get(str(day.year))
+        if row is None:
+            continue
+        pool, held = tail.pool(day), tail.held(day)
+        row["decisions"] += 1
+        row["pool"].append(len(pool))
+        row["unfunded_coin_decisions"] += tail.unfunded(day)
+        row["invested"].append(min(1.0, len(held) * DEEP_NAME_CAP))
+        row["decisions_with_a_tie_at_the_tenth"] += day in tail.tied
+        pooled, unfunded_total, l15_pooled = pooled + len(pool), unfunded_total + tail.unfunded(day), l15_pooled + tail.l15_pool(day)
+        if pool:
+            middle = statistics.median(pool.values())
+            row["held_share"].append(len(held) / len(pool))
+            row["tail_share"].append(len(tail.tail(day)) / len(pool))
+            row["at_median"].append(sum(1 for v in pool.values() if v == middle) / len(pool))
+            shares.append(len(held) / len(pool))
+        for symbol in list(running):
+            if symbol not in held:
+                lengths.append(running.pop(symbol))
+        for symbol in held:
+            if symbol not in running:
+                row["spells"] += 1
+                row["entered_funding"].append(pool[symbol])
+            running[symbol] = running.get(symbol, 0) + 1
+            row["held_funding"].append(pool[symbol])
+        if held:
+            row["active_decisions"] += 1
+            row["names"].append(len(held))
+    lengths.extend(running.values())
+
+    def mean(values: Sequence[float], digits: int) -> float | None:
+        return round(statistics.fmean(values), digits) if values else None
+
+    for row in years.values():
+        names, pool_sizes = row.pop("names"), row.pop("pool")
+        row["names_held_median"] = statistics.median(names) if names else 0
+        row["invested_share_mean"] = mean(row.pop("invested"), 3) or 0.0
+        row["pool_median"] = statistics.median(pool_sizes) if pool_sizes else 0
+        row["held_share_of_pool_mean"] = mean(row.pop("held_share"), 3)
+        row["tail_share_of_pool_mean"] = mean(row.pop("tail_share"), 3)
+        row["pool_share_at_the_median_value_mean"] = mean(row.pop("at_median"), 3)
+        row["held_trailing_funding_mean"] = mean(row.pop("held_funding"), 5)
+        row["entered_trailing_funding_mean"] = mean(row.pop("entered_funding"), 5)
+    known = pooled / (pooled + unfunded_total) if pooled + unfunded_total else None
+    thin = [str(y) for y in LATER_YEARS if years.get(str(y), {}).get("active_decisions", 0) < BASIS_MIN_ACTIVE]
+    stops = [text for wrong, text in (
+        (known is None or known < DEEP_MIN_FUNDING_KNOWN, "too many of the pool's coins have no funding on file"),
+        (bool(thin), "the book holds a pair at too few decisions in " + ", ".join(thin)),
+    ) if wrong]
+    held_share = mean(shares, 3)
+    return {"decisions": len(tail.days), "active_decisions": sum(r["active_decisions"] for r in years.values()),
+            "spells": len(lengths), "spell_weeks_median": statistics.median(lengths) if lengths else 0,
+            "spell_weeks_mean": mean(lengths, 2), "funding_known_share": None if known is None else round(known, 3),
+            "pool_beside_l15s_pool": round(pooled / l15_pooled, 3) if l15_pooled else None,
+            "held_share_of_pool_mean": held_share, "not_a_tail_at": BASIS_NOT_A_TAIL,
+            "not_a_tail": held_share is not None and held_share >= BASIS_NOT_A_TAIL, "by_year": years,
+            "last_day_in_market": lab.last_day(market).isoformat() if market.bars else None,
+            "stop": stops, "returns_computed": False}
+
+
+def basis_run(market: xsb.Market, span: tuple[date, date] = SPAN, *, placebos: int = BASIS_PLACEBOS) -> dict[str, Any]:
+    """The pair book net of stressed costs on both legs, beside the same book on other pool coins, through rung 2's
+    three conditions and rung 3. A year the book is flat in counts as zero. Refused when the counts say stop."""
+    tail = BasisTail(market, span)
+    counts = basis_counts(market, span, tail=tail)
+    if counts["stop"]:
+        return {"refused": counts["stop"], "counts": counts}
+    log: dict[str, list[dict[str, Any]]] = {"liquidations": [], "out_of_band": [], "leg_ended": []}
+    report = measure(market, basis_book(tail), span, simulate=functools.partial(simulate_pairs, log=log))
+    years = {str(y): report["years_total_position_pct"].get(str(y), 0.0) for y in range(span[0].year, span[1].year + 1)}
+    report = {**report, "years_total_position_pct": years, "stability": stability(years)}
+    side = ("annual_sharpe", "total_position_annual_pct")
+    rows = [tuple(r[k] for k in side) for r in
+            (measure(market, basis_book(tail, placebo=f"plain:{k}"), span, simulate=simulate_pairs) for k in range(placebos))]
+    nets = [row[1] for row in rows if row[1] is not None]
+    rungs = {"2a_entry": report["clears_entry"], "2b_later_years": later_years(years),
+             "2c_beside_placebos": beside_nulls(report["annual_sharpe"], [row[0] for row in rows]),
+             "3_stability": report["stability"]}
+    ladder = bool(rungs["2a_entry"] and rungs["2b_later_years"]["passes"] and rungs["2c_beside_placebos"]["passes"]
+                  and rungs["3_stability"]["passes"])
+    price = round(_before_costs(report), 2)
+    earned = price + report["funding_pct"]
+    carried = earned > 0 and report["funding_pct"] >= DEEP_CARRY_SHARE * earned
+    engine = measure(market, basis_book(tail), span, simulate=functools.partial(simulate_pairs, stressed=False))
+    return {**report, "hypothesis": BASIS_NAMES[0], "logic": BASIS_NAMES[1], "counts": counts, "rungs": rungs,
+            "legs": {"price_pct": price, "funding_pct": report["funding_pct"], "cost_pct": report["cost_pct"]},
+            "funding_under_cost": report["funding_pct"] < report["cost_pct"],
+            "price_loss_over_funding": price < 0 and -price > report["funding_pct"],
+            "liquidations": {"count": len(log["liquidations"]),
+                             "net_pct": round(sum(r["net"] for r in log["liquidations"]) * 100, 2),
+                             "events": log["liquidations"]},
+            "out_of_band": {"count": len(log["out_of_band"]),
+                            "printed_gain_not_counted_pct": round(sum(r["printed"] - r["counted"] for r in log["out_of_band"]) * 100, 2),
+                            "counted_pct": round(sum(r["counted"] for r in log["out_of_band"]) * 100, 2),
+                            "days": log["out_of_band"]},
+            "legs_ended": {leg: sum(1 for r in log["leg_ended"] if r["leg"] == leg) for leg in ("perp", "spot")},
+            "placebo_net_total_position_annual_pct_mean": round(statistics.fmean(nets), 2) if nets else None,
+            "at_engine_cost": {k: engine[k] for k in side},
+            "not_a_tail": counts["not_a_tail"], "passes": ladder,
+            "reading": "closed" if not ladder else "passes_on_carry" if carried else "passes_on_price"}
+
+
 # --- L19: the open-interest flush book (round 15, hypothesis H-O1) -------------------------------------------------------
 
 FLUSH_SPAN = lab.ms.DEV_LONG               # the positioning files begin in 2022 for all but a few coins
@@ -2255,7 +2590,8 @@ def main(argv: list[str] | None = None) -> int:
                                             "listing-counts", "listing", "lower-counts", "lower",
                                             "crash-symbols", "crash-events", "crash-counts", "crash",
                                             "deep-counts", "deep", "rotation-counts", "rotation", "bar",
-                                            "hot-counts", "hot", "gap-counts", "gap", "flush-counts", "flush"))
+                                            "hot-counts", "hot", "gap-counts", "gap", "flush-counts", "flush",
+                                            "basis-counts", "basis"))
     parser.add_argument("--shape", choices=BAR_SHAPES, default=None, help="bar: the book shape whose null books are read")
     parser.add_argument("--only", default=None,
                         help="sweep, transfer: variable groups (comma list), or `null` for the random books")
@@ -2357,14 +2693,15 @@ def main(argv: list[str] | None = None) -> int:
                           "span": [d.isoformat() for d in FLUSH_SPAN], "command": args.command, **body},
                          indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or (args.command == "flush-counts" and body["stop"]) else EXIT_OK
-    if args.command in ("hot-counts", "hot", "gap-counts", "gap"):
+    if args.command in ("hot-counts", "hot", "gap-counts", "gap", "basis-counts", "basis"):
         market = lab.hold(cache, attach=False)
-        if market is not None and args.command.startswith("gap"):
+        if market is not None and args.command.startswith(("gap", "basis")):
             market = with_spot(cache, market)
         if market is None:
             print("BLOCKED: contract types or the spot listing are missing from the cache", file=sys.stderr)
             return EXIT_BLOCKED
-        body = {"hot-counts": hot_counts, "hot": hot_run, "gap-counts": gap_counts, "gap": gap_run}[args.command](market)
+        body = {"hot-counts": hot_counts, "hot": hot_run, "gap-counts": gap_counts, "gap": gap_run,
+                "basis-counts": basis_counts, "basis": basis_run}[args.command](market)
         print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
                           "span": [d.isoformat() for d in SPAN], "command": args.command, **body},
                          indent=1, sort_keys=True, ensure_ascii=False))
