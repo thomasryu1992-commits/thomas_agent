@@ -1029,7 +1029,10 @@ def confirm(rows: Mapping[str, Mapping[str, Any]]) -> dict[str, str]:
 # --- open interest from the metrics files --------------------------------------------------------------------
 
 def read_oi(root: Path, symbols: Sequence[str]) -> dict[str, dict[date, float]]:
-    """The day's open interest = ``sum_open_interest`` on the day file's last row (23:55 UTC)."""
+    """The day's open interest = ``sum_open_interest`` on the day file's row with the latest stamp (23:55 UTC).
+
+    Some day files are not in time order, so the file's last row can be a mid-day reading. Of rows sharing the
+    latest stamp the later one in the file is read, which is the last row whenever the file is in order."""
     out: dict[str, dict[date, float]] = {}
     for symbol in symbols:
         folder = root / METRICS_DIR / symbol
@@ -1038,7 +1041,7 @@ def read_oi(root: Path, symbols: Sequence[str]) -> dict[str, dict[date, float]]:
             try:
                 with zipfile.ZipFile(path) as z:
                     rows = list(csv.reader(io.StringIO(z.read(z.namelist()[0]).decode("utf-8"))))
-                last = [row for row in rows[1:] if len(row) > 2][-1]
+                last = sorted((row for row in rows[1:] if len(row) > 2), key=lambda row: row[0])[-1]   # stable
                 days[date.fromisoformat(path.stem[-10:])] = float(last[2])
             except (OSError, ValueError, IndexError, zipfile.BadZipFile):
                 continue

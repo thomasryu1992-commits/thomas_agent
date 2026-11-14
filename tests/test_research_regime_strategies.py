@@ -295,16 +295,27 @@ def test_the_stages_run_in_the_sandbox_and_stage_two_refuses_without_a_record(tm
     assert rs.main(["stage1", "--archive", str(tmp_path)]) == rs.EXIT_BLOCKED      # no contract snapshot
 
 
-def test_open_interest_is_the_day_files_last_row(tmp_path):
-    folder = tmp_path / rs.METRICS_DIR / "AUSDT"
-    folder.mkdir(parents=True)
-    text = ("create_time,symbol,sum_open_interest,x\n2022-06-01 00:00:00,AUSDT,10,1\n"
-            "2022-06-01 23:55:00,AUSDT,12.5,1\n")
+def _metrics_day(root, symbol, day, lines):
+    folder = root / rs.METRICS_DIR / symbol
+    folder.mkdir(parents=True, exist_ok=True)
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as z:
-        z.writestr("AUSDT-metrics-2022-06-01.csv", text)
-    (folder / "AUSDT-metrics-2022-06-01.zip").write_bytes(buffer.getvalue())
-    assert rs.read_oi(tmp_path, ["AUSDT", "BUSDT"]) == {"AUSDT": {date(2022, 6, 1): 12.5}}
+        z.writestr(f"{symbol}-metrics-{day}.csv", "create_time,symbol,sum_open_interest,x\n" + "".join(
+            f"{stamp},{symbol},{value},1\n" for stamp, value in lines))
+    (folder / f"{symbol}-metrics-{day}.zip").write_bytes(buffer.getvalue())
+
+
+def test_open_interest_is_the_days_latest_reading_whatever_order_the_file_is_in(tmp_path):
+    """Some archive day files are not in time order (2026-11-14): the last row is then a mid-day reading."""
+    close = ("2022-06-01 23:55:00", 12.5)
+    _metrics_day(tmp_path, "AUSDT", "2022-06-01", [("2022-06-01 00:00:00", 10), close])              # in order
+    _metrics_day(tmp_path, "AUSDT", "2022-06-02", [("2022-06-02 23:55:00", 14), ("2022-06-02 00:05:00", 11),
+                                                   ("2022-06-02 12:00:00", 13)])                     # not in order
+    # two rows at the latest stamp: the later one in the file, i.e. the last row of a file that is in order
+    _metrics_day(tmp_path, "AUSDT", "2022-06-03", [("2022-06-03 12:00:00", 13), ("2022-06-03 23:55:00", 15),
+                                                   ("2022-06-03 23:55:00", 16)])
+    assert rs.read_oi(tmp_path, ["AUSDT", "BUSDT"]) == {"AUSDT": {
+        date(2022, 6, 1): 12.5, date(2022, 6, 2): 14.0, date(2022, 6, 3): 16.0}}
 
 
 def test_every_strategy_of_the_record_is_registered_once_in_its_regime():
