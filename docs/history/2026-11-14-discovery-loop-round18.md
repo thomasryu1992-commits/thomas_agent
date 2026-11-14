@@ -20,3 +20,16 @@ were empty (two or three coins a decision).
 - *The top-30 cells are not new evidence.* They were seen in the first map and have since been refilled for M04.
 - *A run killed by the memory cap is not a measurement.* The derived positioning values more than doubled; the
   cap stays, and the fallback is to load only what the group reads and run once more.
+
+**Results (same day).**
+
+- *The first run was killed at the memory cap and is not a measurement.* It died while loading, with no cell
+  computed: a positioning-only map still loaded the depth and spot series. `signal_lab.hold_positioning` now loads
+  what the group reads; the cap stays. One run followed, after the fix's checks.
+- *No lead.* The largest |t| among the positioning cells is 3.52; the random variables reached 4.30 (7 days) and
+  4.75 (28 days). The cells on ranks 31-100 hold values for the first time, 88 of them.
+- *Open-interest growth ranks the same way on both tiers and is under the line on both*; the book built on it an
+  hour earlier lost before costs. The registration already said no lead in its cells would become a book.
+- *The one-page report is in the document*: nothing alive past rung 3, reorganisation steps 1 to 4 done, step 5 (a
+  new source) answered no on 2026-11-12 and not asked again. What the cycle has left on the data in hand is the
+  monthly pair: more shapes of registered variables beside random books, and one new scenario axis.
