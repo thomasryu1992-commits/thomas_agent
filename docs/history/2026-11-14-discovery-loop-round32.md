@@ -33,3 +33,9 @@ hedge.
 - *The name-ordered leg flips sign from year to year* at the same order of magnitude as the variable's leg.
 - *The form's door is where this stops for now.* No check has shown who pays, and what the variable measures is
   not known. The form's rule says such an idea goes on the ladder only by asking Thomas.
+
+**Added (20:20Z).** Two corrections by addition: whether the book would still top the 600 null books without its
+name-ordered leg is not measured and will not be (that book would be a variant); and "2024's pass was not the
+variable's" is an inference, since the leg table is the five-year book's and the later-years figure came from a
+separate one-year run. Then the one question the form's rule prescribes, recorded as D10 with the rule's default
+(not on the ladder) and what a yes would buy.
