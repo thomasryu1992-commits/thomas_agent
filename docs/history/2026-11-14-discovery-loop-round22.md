@@ -22,3 +22,12 @@ and a calendar label in `scenario_labels`, `CANDIDATE_AXES`, `AXIS_ORDER`, `axis
 - *Each label was pinned against lookahead by a case built for it.* A twist that makes the reference coin fall
   after the day cannot show a drawdown reading the future; one that makes it soar from a high does, and the first
   version of the test missed that mutation.
+
+**Results (same day).**
+
+- *None of the five beats its placebos.* Their p values are 0.94, 0.42, 0.13, 0.55 and 0.48 against levels from
+  0.025 down to 0.0083. Only the correlation axis separates clearly more than its placebos' mean, and it is far
+  from its line. None is moved onto the map and none is checked again under another definition.
+- *Eleven axes have now been checked and none separates the variables' weekly rank correlations more than
+  shuffled copies of itself.* One entry of the list is left, leverage, which needs the positioning files.
+- *Both re-checks were unchanged*: round five's 102 values and, for the label-reading book, round one's 99.
