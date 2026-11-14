@@ -32,5 +32,12 @@ by pushing hand-written proposals through the screen on past data. Once the rewo
   typo is `EXIT_USAGE`, as `claude_read.py` does.
 - *READ, with no host-root guard.* It writes nothing. The roster holds that no READ script calls the guard.
 
+- *The shapes were checked against the writers, not against the fixtures.* The first version held the prompt
+  version to 24 characters; the real one is 31 and would have printed as `(other)`, which is safe and useless. A
+  test now calls the proposer's own record writer with the mock provider and asserts that no name is lost, and
+  another feeds every reason the screen can write through the same hold.
+- *It holds the ledger's append lock while it reads*, like every reader of a window of time. Run it away from the
+  factory's fires.
+
 **What it does not say.** A count of refusals by reason is not a judgement of the channel, and nothing here reads
 a return. The numbers will be small for a while: one cohort fire a day screens at most three proposals.

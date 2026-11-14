@@ -8,7 +8,8 @@ those reasons side by side:
 - **the proposer** (``crypto/proposer.py`` ``evaluate_proposal``): a proposal is rejected as ``parse``,
   ``timeframe``, ``form`` or ``validator`` before it is ever an acceptance;
 - **the trial screen** (``crypto/factory.py`` ``_screen_trials``, on a cohort fire): an acceptance is
-  refused as ``known_family``, ``duplicate_rule_hash``, ``unsuppliable_feature``, a lattice refusal,
+  refused as ``parse``, ``known_family``, ``validator``, ``duplicate_rule_hash``, ``unsuppliable_feature``,
+  a lattice refusal (``ablation_winner_duplicate_rule_hash``, ``ablation_winner_failed_validation``),
   ``scoring_error``, ``no_trades``, ``pace_unreadable`` or ``too_slow``, or it is minted as a trial.
 
 This reads both record kinds from the ledger and prints, for a window of time: how many proposals each
@@ -20,7 +21,8 @@ built from a closed set of keys: counts, reason names, family names, days and st
 shape or counted under one fixed label. Nothing else leaves the row it was read from.
 
 Reads only, so it needs no host-root guard and writes nothing. It reads the ledger under the ledger's
-own lock, so run it where the runtime's state is mounted::
+own append lock and holds it for the whole read, so run it where the runtime's state is mounted, as the
+service's user, and away from the factory's fires (08:00-09:00 UTC)::
 
     docker exec thomas-scheduler python -m scripts.trial_refusals
     docker exec thomas-scheduler python -m scripts.trial_refusals --since 2026-11-13
@@ -58,7 +60,7 @@ OTHER = "(other)"                           # a name that does not fit its shape
 NOT_ASKED = "(not asked)"                   # a factory fire with no trial block: a single-symbol fire screens nothing
 STATUS_SHAPE = re.compile(r"^[a-z][a-z_:]{0,39}$")
 TIMEFRAME_SHAPE = re.compile(r"^[0-9]{1,2}[mhdw]$")
-VERSION_SHAPE = re.compile(r"^[A-Za-z0-9_.-]{1,24}$")
+VERSION_SHAPE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")    # "mvp_crypto_strategy_proposer.v3" is 31 characters
 DAY_SHAPE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 ISO_SHAPE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 

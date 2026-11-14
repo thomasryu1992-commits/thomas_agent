@@ -143,6 +143,30 @@ def test_the_reasons_it_counts_are_the_ones_the_screen_writes():
         "skipped:not_cohort": 1}
 
 
+def test_a_record_the_proposer_itself_writes_is_counted_with_no_name_lost():
+    """The record's writer is called, so the time, the timeframe, the prompt version and the rejection reasons are
+    the ones the runtime stores. A name that missed its shape would print as ``(other)`` and hide what this is for."""
+    from runtime.mvp_runtime.crypto import proposer
+
+    rows = []
+    for timeframe, created in (("4h", "2026-11-13T06:18:00Z"), ("1h", "2026-11-13T14:46:00Z")):
+        record = proposer.propose_strategy_families(
+            {"symbol": "BTCUSDT", "timeframe": timeframe, "candles": []}, provider=proposer.MockProposerProvider(),
+            now=created, existing_families=[])
+        rows.append({"kind": PROPOSAL_LEDGER_KIND, "trace_id": "t", "record": record})
+    out = tool.tally(rows, since=SINCE)
+    block = out["proposer"]
+    assert out["undated_rows"] == 0 and block["fires"] == 2 and block["proposed"] == 4
+    assert block["by_prompt_version"] == {proposer.PROPOSER_PROMPT_VERSION: 2} and block["by_timeframe"] == {"4h": 1, "1h": 1}
+    assert tool.OTHER not in json.dumps(out), "every name the proposer wrote fits the shape it is held to"
+    assert block["rejected_by_reason"].get("timeframe") == 2, "the mock's 1h rules scored on a 4h frame"
+    assert block["rejected_by_reason"].get("validator") == 1, "the invented indicator, on the 1h frame"
+    assert block["accepted"] + block["rejected"] == 4
+    for reason in ("ablation_winner_duplicate_rule_hash", "ablation_winner_failed_validation", "unsuppliable_feature",
+                   "duplicate_rule_hash", "pace_unreadable", "known_family", "scoring_error", "no_trades", "too_slow"):
+        assert tool._reason({"reason": reason}, "reason") == reason, "a reason the screen writes is printed by its name"
+
+
 def test_it_reads_a_real_ledger_archives_included_and_only_its_two_kinds(tmp_path, capsys):
     ledger = LedgerStore.default(tmp_path)
     for row in ROWS[:8]:
