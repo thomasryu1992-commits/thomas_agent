@@ -62,8 +62,8 @@ MIN_DECISIONS = 20                         # decisions a cell needs before it sh
 MIN_SPELLS = 4                             # separate stretches a scenario cell needs: one long bull run is one sample
 REFERENCE_DECISIONS = 52                   # trailing decisions a scenario's own median is taken over
 REFERENCE_MIN = 26
-CONTROLS_WEEKLY = 44                       # random variables redrawn at every decision (25, 28, 32, 42 as the registry grew)
-CONTROLS_FIXED = 44                        # random variables fixed per coin, like a slow characteristic
+CONTROLS_WEEKLY = 47                       # random variables redrawn at every decision (25, 28, 32, 42, 44 as the registry grew)
+CONTROLS_FIXED = 47                        # random variables fixed per coin, like a slow characteristic
 EXTREME_MOVE = 0.30                        # a daily close-to-close move this large is an extreme day
 WILD_MOVE = 0.50                           # a coin whose largest daily move in the lookback reached this is wild
 AGE_CAP_DAYS = 1000                        # listing age is read up to here; older coins are alike
@@ -135,6 +135,7 @@ CHANGE_OF = {"ls_change": "ls_level", "top_change": "top_level", "taker_change":
              "taker_buy_share_change": "taker_buy_share"}
 
 
+LATE_LEVELS = ("spread", "premium")        # levels registered after the shape rounds; each gets its change and position
 HISTORY_POINTS = 6                         # a level's own history: its value at each of the six lookbacks before
 HISTORY_MIN = 4                            # of those points must be there, or the coin has no position that day
 
@@ -278,6 +279,11 @@ def variables() -> dict[str, tuple[str, Variable]]:
     # inputs alone (0.13 and 0.72 on the top tier, under the 0.8 that would have made it that kin read again).
     out[f"spread_{LOOKBACK}"] = ("price_volume", _spread)
     out[f"premium_{LOOKBACK}"] = ("premium", _premium)
+    # Added 2026-11-14 (section 41): the two new levels' shapes. No strike written in sections 33 or 37 covers them.
+    for base in LATE_LEVELS:
+        group, level = out[f"{base}_{LOOKBACK}"]
+        out[f"{base}_change_{LOOKBACK}"] = (group, _change(level))
+        out[f"{base}_position_{LOOKBACK}"] = (group, _position(level))
     return out
 
 

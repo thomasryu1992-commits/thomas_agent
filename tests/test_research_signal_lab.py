@@ -611,8 +611,8 @@ def test_leverage_is_open_interest_in_quote_terms_over_volume_and_has_no_label_w
 
 def test_the_registry_stays_inside_what_its_controls_and_the_sweeps_null_can_correct_for():
     from scripts.research import strategy_ladder as sl
-    assert len(lab.variables()) == 45
-    assert len(lab.controls()) == 88 >= 2 * len(lab.variables()) - 4, "the random variables grow with the real ones"
+    assert len(lab.variables()) == 49
+    assert len(lab.controls()) == 94 >= 2 * len(lab.variables()) - 4, "the random variables grow with the real ones"
     assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / len(lab.variables()), "the sweep's null can correct for every variable"
     assert not 1 / (sl.SWEEP_NULLS_ROUND_6 + 1) < 0.10 / len(lab.variables()), "300 null books could not: thirty was their most"
     assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / 50 and not 1 / (sl.SWEEP_NULLS + 1) < 0.10 / 51, "500 reach fifty variables"
@@ -719,7 +719,7 @@ def test_the_by_variable_check_has_enough_placebos_for_a_real_effect_to_pass_the
     """The smallest p a test can show is one over the placebos plus one. It has to be under what Benjamini–Hochberg
     asks of the best of a few hundred tests, or nothing could ever pass (the first run, 2026-11-13: 200 placebos)."""
     tests, q = len(lab.variables()) * len(lab.TIERS) * len(lab.AXES), 0.10
-    assert tests == 45 * 2 * 6
+    assert tests == 49 * 2 * 6
     assert 1 / (lab.PLACEBO_AXES_BY_VARIABLE + 1) < q / tests
     assert lab.PLACEBO_AXES_BY_VARIABLE == 6000 and 1 / (6000 + 1) < q / (50 * 2 * 6), "enough for fifty variables"
     assert not 1 / (5000 + 1) < q / tests, "the earlier 5000 no longer were"
@@ -990,3 +990,28 @@ def test_a_run_of_the_premium_group_loads_the_premium_cut_at_the_span_and_nothin
     monkeypatch.setattr(lab.xsb, "_in_sandbox", lambda: True)
     assert lab.main(["run", "--only", "premium", "--cache", str(tmp_path)]) == lab.EXIT_BLOCKED and called == [tmp_path]
     assert "BLOCKED" in capsys.readouterr().err
+
+
+
+def test_the_two_late_levels_get_a_change_and_a_position_and_no_shape_gets_one():
+    registry = lab.variables()
+    assert {n: registry[n][0] for n in ("spread_change_30", "spread_position_30", "premium_change_30", "premium_position_30")} == {
+        "spread_change_30": "price_volume", "spread_position_30": "price_volume",
+        "premium_change_30": "premium", "premium_position_30": "premium"}
+    assert not [n for n in registry if n.count("change") + n.count("position") + n.count("growth") > 1], "no shape of a shape"
+    assert not [n for n in registry if n.startswith(("spread_", "premium_")) and not n.endswith("_30")], "thirty-day levels only"
+    last = date(2021, 12, 31)
+    days = [last - timedelta(days=k) for k in range(300)]
+    market = xsb.Market(bars={})
+    market.premium = {"AUSDT": {d: 0.001 * ((last - d).days // 30) for d in days}}      # one step down every thirty days
+    level = lambda d: lab._premium(market, "AUSDT", d)                                    # noqa: E731
+    assert registry["premium_change_30"][1](market, "AUSDT", last) == pytest.approx(level(last) - level(last - timedelta(days=30)))
+    assert registry["premium_change_30"][1](market, "AUSDT", last) == pytest.approx(-0.001)
+    past = [level(last - timedelta(days=30 * k)) for k in range(1, 7)]
+    mean, spread = sum(past) / 6, (sum((v - sum(past) / 6) ** 2 for v in past) / 6) ** 0.5
+    assert registry["premium_position_30"][1](market, "AUSDT", last) == pytest.approx((level(last) - mean) / spread)
+    market.premium["AUSDT"][last + timedelta(days=1)] = 9.0
+    assert registry["premium_change_30"][1](market, "AUSDT", last) == pytest.approx(-0.001), "the day after is not read"
+    flat = xsb.Market(bars={"BUSDT": {d: _flat_bar(100.0, 0.02, 0.02) for d in days}})   # a spread of zero every month
+    assert registry["spread_change_30"][1](flat, "BUSDT", last) == 0.0
+    assert registry["spread_position_30"][1](flat, "BUSDT", last) is None, "no spread in its own history: no position"
