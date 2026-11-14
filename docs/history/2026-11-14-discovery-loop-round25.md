@@ -22,3 +22,15 @@ the `*_fine` labels in `scenario_labels`, `finer_gate`, the finer axes in `axis_
 - *A pass would not yet mean the cut added anything.* The placebo is the same spells in another order, which is the
   tool §5 names for finer cuts. It asks whether the finer axis separates, not whether it separates more than its
   parent. The registration says a passing axis meets a within-parent placebo before it is mapped.
+
+**Result (2026-11-14 16:03Z).** None of the six passes: 97, 139, 163, 45, 70 and 53 of 400 placebos at or above.
+All six met the gate, so every one was checked. Merging cells has its answer too: no axis is awake, so there is no
+cell to merge.
+
+- *Two things in the registration were wrong.* It said the run would read the variables round 22 read. It read 20,
+  not 17: round 23 had added three that are read from bars and funding. So the promised comparison with round 22's
+  output could not hold. The substitute was run after the result, for equality only: the code before this change, on
+  the same command, gives the same twelve rows for the older axes.
+- *The "what is left" table had been read by rows only.* Going through §3 to §5 item by item, with the list under
+  §3.1's table and the cache's kinds, three items have no record: a spread estimated from highs and lows, the
+  dispersion of funding across coins, and the premium index as a map variable. They are the next round.
