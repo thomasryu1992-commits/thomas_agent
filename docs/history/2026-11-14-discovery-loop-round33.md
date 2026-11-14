@@ -47,3 +47,11 @@ survives the correction; 37 are under 0.05 where chance gives 32.1. The nearest 
 30-day funding across the funding-level axis (p 0.00069 against a first threshold of 0.00016), and the book built
 on that combination lost the confirm span. The breadth axis, seen by variable for the first time, has nothing
 near its threshold.
+
+**Added (21:45Z).** One sentence corrected: "no test is missing" was about thin tests only; the family has 642 of a
+possible 660 because the three depth variables are not ranked on ranks 31–100 (68 symbols of depth data). Then every
+earlier reading made on the 330-symbol funding set is given a line: the per-variable tests were re-read in this
+round; the first five axes' average check is not re-judged (the record says a resting axis returns only under a
+new registered definition); the sweep, the transfer check and every candidate book read the top tier only. One
+thing is owed and registered before it is opened: the map's funding cells on ranks 31–100, which later map outputs
+hold on the full funding set and nobody read.
