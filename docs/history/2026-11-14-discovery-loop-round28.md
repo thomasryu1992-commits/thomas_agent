@@ -15,3 +15,8 @@ readings are owed.
   Neither is run in this round; the tests hold the sizes. The earlier books and axes are the same ones, by seed.
 - *No shapes for these.* They are levels, but shapes are made of 30-day levels only. A test names the full set of
   spread and premium variables, so a shape of another window cannot slip in.
+
+**Result (2026-11-14 17:38Z).** No lead among the three: the largest |t| is 2.61 against a line of 4.96. The 7- and
+14-day readings do not carry their ranks from week to week (persistence about 0 and 0.35), so the lead rule would
+have dropped them anyway. The spread is finished, and so is the variable side of round 26's table: 25 variables
+added since round 18, no lead.
