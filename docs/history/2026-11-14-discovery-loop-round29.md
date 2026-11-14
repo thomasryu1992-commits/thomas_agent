@@ -10,3 +10,8 @@ two registered screens that read the premium do not read a cross-sectional windo
 mapped the spread's other lookbacks applies here as well.
 
 **Not obvious.** The same three windows as the spread, bare levels with no shapes; a test names the whole set.
+
+**Result (2026-11-14 18:03Z).** No lead among the three: the largest |t| is 3.13 (seven days, the top tier, weeks
+of high funding) against a line of 4.30. The premium is finished. 28 variables have been added since round 18 with
+no lead. The refusal-tally tool the table listed as "not built" was built the same day on Thomas's word, as its own
+PR from main (#1475).
