@@ -2172,3 +2172,134 @@ def test_the_value_printed_as_m04_was_measured_is_what_m04s_own_protocol_gives_o
         assert printed[key] == theirs[key], key
     assert printed["total_position_annual_pct"] == sl.bs.total_position_annual_pct(theirs["sum_pct"], theirs["months"])
     assert ours["sum_pct"] != 0 and theirs["weeks"] > 40
+
+
+# --- round 34: the month's reversal on the next tier (H-R2) -----------------------------------------------------------
+
+MID_TEST_SPAN = (date(2022, 1, 1), date(2022, 12, 31))
+MID_DAY = date(2022, 6, 5)                       # a Sunday decision
+
+
+def _mid_world(*, funded: bool = True):
+    """Thirty large flat coins and sixteen smaller ones from mid-2021. Each smaller coin swings on its own 60-day
+    cycle, offset from the others, so its 30-day return keeps changing sign and rank; a coin that fell over the
+    last month rises over the next."""
+    start, end = date(2021, 6, 1), date(2022, 12, 31)
+    days = [start + timedelta(days=k) for k in range((end - start).days + 1)]
+    mids = [f"MID{i:02d}USDT" for i in range(16)]
+
+    def swing(i):
+        out, price = {}, 100.0
+        for k, day in enumerate(days):
+            up = ((k + 4 * i) // 30) % 2 == 0
+            move = (0.004 if up else -0.004) * (1 + i / 40)
+            out[day] = xsb.Bar(open=price, close=price * (1 + move), quote_volume=1e7 - i * 1e4)
+            price *= 1 + move
+        return out
+
+    names = {f"BIG{i:02d}USDT": {d: xsb.Bar(open=100.0, close=100.0, quote_volume=1e9 - i) for d in days} for i in range(30)}
+    names.update({s: swing(i) for i, s in enumerate(mids)})
+    row = [(int((start - date(1970, 1, 1)).total_seconds() * 1000) + 3600 * 1000, 0.0)]     # on file, and nothing paid
+    funding = {s: list(row) for s in names if funded or not s.startswith("MID0")}
+    return xsb.Market(bars=names, funding=funding), mids
+
+
+def test_the_mid_book_stands_on_the_maps_own_tier_and_variable_and_buys_what_fell():
+    market, mids = _mid_world()
+    tier = sl.MidTier(market, MID_TEST_SPAN)
+    assert set(tier.members(MID_DAY)) == set(mids) == set(sl.lab.tier_members(market, MID_TEST_SPAN)["rank31_100"][date(2022, 6, 1)])
+    mapped = sl.lab.variables()["momentum_30"][1]
+    assert (sl.MID_TIER, sl.MID_VARIABLE) == ("rank31_100", "momentum_30")
+    assert all(tier.read(market, s, MID_DAY) == mapped(market, s, MID_DAY) == sl.xsb.trailing_return(market, s, MID_DAY, 30)
+               for s in mids), "the mapped variable itself: thirty days to the decision day's close, no day skipped"
+    assert tier.ranked(MID_DAY) == frozenset(mids), "nothing is filtered: the coins the cell was read on"
+    weights = tier.book()(market, (), MID_DAY, "x")
+    month = {s: sl.xsb.trailing_return(market, s, MID_DAY, 30) for s in mids}
+    longs, shorts = [s for s, w in weights.items() if w > 0], [s for s, w in weights.items() if w < 0]
+    assert max(month[s] for s in longs) < min(month[s] for s in shorts), "long what fell over the month, short what rose"
+    assert sum(w for w in weights.values() if w > 0) == pytest.approx(1.0) and sum(weights.values()) == pytest.approx(0.0)
+    assert not set(weights) & {f"BIG{i:02d}USDT" for i in range(30)}, "no coin of the month's top thirty"
+    assert weights == sl.book(tier.read, lambda _d: -1)(market, list(mids), MID_DAY, "x"), "L1's rank weights, nothing else"
+
+
+def test_a_mid_null_book_ranks_the_same_coins_and_changes_as_slowly_as_a_months_return():
+    market, mids = _mid_world()
+    tier = sl.MidTier(market, MID_TEST_SPAN)
+    null = tier.null("mid:0")
+    weights = null(market, (), MID_DAY, "x")
+    assert set(weights) <= tier.ranked(MID_DAY) and sum(weights.values()) == pytest.approx(0.0)
+    assert sl.MidTier(_mid_world()[0], MID_TEST_SPAN).null("mid:0")(market, (), MID_DAY, "x") == weights, "a seed is a book"
+    assert tier.null("mid:1")(market, (), MID_DAY, "x") != weights, "another seed is another book"
+    later = sl.MidTier(market, MID_TEST_SPAN).null("mid:0")
+    later(market, (), MID_DAY + timedelta(days=70), "x")
+    assert later(market, (), MID_DAY, "x") == weights, "a value does not depend on which day was asked first"
+    weekly = tier._weigher(lambda m, s, d: sl.lab._control("week", 7)(m, s, d))
+    slow = [tier.turnover(tier.null(f"mid:{k}")) for k in range(5)]
+    assert max(slow) < 0.7 * tier.turnover(weekly), "noise summed over thirty days trades far less than noise redrawn weekly"
+
+
+def test_the_mid_counts_carry_nothing_earned_and_stop_on_missing_funding_or_a_thin_year(monkeypatch):
+    market, mids = _mid_world()
+
+    def never(*args, **kwargs):
+        raise AssertionError("the counts read no return")
+    for name in ("measure", "simulate_held"):
+        monkeypatch.setattr(sl, name, never)
+    monkeypatch.setattr(sl, "LATER_YEARS", (2022,))
+    counts = sl.mid_counts(market, MID_TEST_SPAN)
+    year = counts["by_year"]["2022"]
+    assert counts["stop"] == [] and (counts["tier"], counts["variable"]) == ("rank31_100", "momentum_30")
+    assert year["members_median"] == 16 == year["ranked_median"] and year["active_decisions"] == year["decisions"] >= 50
+    assert counts["funding_known_share"] == 1.0 and counts["returns_computed"] is False
+    turnover = counts["turnover"]
+    assert turnover["null_books"] == sl.MID_TURNOVER_NULLS and 0 < turnover["book"] < 2 and turnover["ratio"] == pytest.approx(
+        turnover["book"] / turnover["null_books_mean"], abs=2e-3)
+    assert turnover["alike"] == (0.8 <= turnover["ratio"] <= 1.25)
+    assert counts["cost_from_turnover_total_position_annual_pct"] == pytest.approx(turnover["book"] * 2 * 0.0026 * 52 / 2 * 100, abs=0.01)
+    flat = json.dumps(counts)
+    assert "sharpe" not in flat and "sum_pct" not in flat
+    unfunded = sl.mid_counts(_mid_world(funded=False)[0], MID_TEST_SPAN)
+    assert unfunded["funding_known_share"] == pytest.approx(6 / 16) and unfunded["stop"] == ["too many of the ranked coins have no funding on file"]
+    monkeypatch.setattr(sl, "MID_MIN_ACTIVE", 60)
+    assert sl.mid_counts(market, MID_TEST_SPAN)["stop"] == ["the book stands at too few decisions in 2022"]
+
+
+def test_the_mid_run_is_judged_held_at_stressed_cost_beside_slow_null_books(monkeypatch, capsys):
+    monkeypatch.setattr(sl, "LATER_YEARS", (2022,))
+    market, mids = _mid_world()
+    run = sl.mid_run(market, MID_TEST_SPAN, nulls=4)
+    assert (run["hypothesis"], run["logic"]) == ("H-R2", "L22") and "refused" not in run
+    assert run["legs"]["price_pct"] > 0, "in this world a coin that fell over the month rises over the next"
+    assert set(run["rungs"]) == {"2a_entry", "2b_later_years", "2c_beside_null_books", "3_stability"}
+    assert run["rungs"]["2c_beside_null_books"]["null_books"] == 4
+    tier = sl.MidTier(market, MID_TEST_SPAN)
+    at_engine = sl.measure(market, tier.book(), MID_TEST_SPAN, simulate=sl.simulate_held)
+    assert run["cost_pct"] == pytest.approx(at_engine["cost_pct"] * 26 / 8, abs=0.05) and at_engine["cost_pct"] > 0, \
+        "judged at 5 + 21 bps on every coin"
+    assert run["held_at_engine_cost"]["annual_sharpe"] == at_engine["annual_sharpe"]
+    assert set(run["years_total_position_pct"]) == {"2022"}
+    assert sl.mid_run(_mid_world(funded=False)[0], MID_TEST_SPAN)["refused"] == ["too many of the ranked coins have no funding on file"]
+    # The reading table: a ladder pass beside null books that trade alike, one beside null books that do not, a book
+    # that only clears at the engine's cost, and everything else.
+    alike = {"alike": True}
+    counts = sl.mid_counts(market, MID_TEST_SPAN)
+    monkeypatch.setattr(sl, "later_years", lambda years: {"passes": True})
+    monkeypatch.setattr(sl, "stability", lambda years: {"passes": True})
+    monkeypatch.setattr(sl, "beside_nulls", lambda value, nulls, **more: {"passes": True})
+    monkeypatch.setattr(sl.bs, "clears_entry", lambda report: True)
+    monkeypatch.setattr(sl, "mid_counts", lambda market, span, tier=None: {**counts, "turnover": {**counts["turnover"], **alike}})
+    assert sl.mid_run(market, MID_TEST_SPAN, nulls=1)["reading"] == "passes"
+    alike["alike"] = False
+    assert sl.mid_run(market, MID_TEST_SPAN, nulls=1)["reading"] == "passes_beside_null_books_that_trade_differently"
+    stressed_fails = iter([False, True] * 10)
+    monkeypatch.setattr(sl.bs, "clears_entry", lambda report: next(stressed_fails))
+    assert sl.mid_run(market, MID_TEST_SPAN, nulls=0)["reading"] == "cost_dependent_lead", "clears only at the engine's cost"
+    stressed_fails = iter([False, True] * 10)
+    monkeypatch.setattr(sl, "beside_nulls", lambda value, nulls, **more: {"passes": False})
+    assert sl.mid_run(market, MID_TEST_SPAN, nulls=0)["reading"] == "closed", "clearing at the engine's cost is no lead without the p"
+    monkeypatch.setattr(sl, "beside_nulls", lambda value, nulls, **more: {"passes": True})
+    monkeypatch.setattr(sl.bs, "clears_entry", lambda report: False)
+    assert sl.mid_run(market, MID_TEST_SPAN, nulls=1)["reading"] == "closed"
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(sl.lab, "hold", lambda cache, span=None, *, attach=True, flow=False: None)
+    assert sl.main(["mid-counts"]) == sl.EXIT_BLOCKED and sl.main(["mid"]) == sl.EXIT_BLOCKED

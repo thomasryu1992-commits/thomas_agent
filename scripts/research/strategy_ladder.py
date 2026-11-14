@@ -2384,6 +2384,168 @@ def wide_run(market: xsb.Market, span: tuple[date, date] = WIDE_SPAN, *, nulls: 
             "reading": "closed" if not ladder else "passes" if alike else "passes_beside_null_books_that_trade_differently"}
 
 
+# --- L22: the month's reversal on the next tier (round 34, hypothesis H-R2) ----------------------------------------------
+
+MID_TIER = "rank31_100"                    # the map's own tier: the cell that met the lead rule is read on these coins
+MID_VARIABLE = "momentum_30"               # the mapped variable itself: the 30-day return to the decision day's close
+MID_NULLS = 300
+MID_MIN_ACTIVE = 26                        # decisions with a book each of LATER_YEARS needs, or nothing is measured
+MID_MIN_FUNDING_KNOWN = 0.9                # of the ranked coin-decisions must have funding on file
+MID_TURNOVER_NULLS = 20
+MID_TURNOVER_BAND = (0.8, 1.25)            # book turnover / null turnover inside it: the p is about what is picked
+MID_NAMES = ("H-R2", "L22")
+
+
+class MidTier:
+    """The map's rank 31-100 members and its 30-day momentum, as mapped: no filter is added, so the book stands on
+    the coins the cell was read on. Long what fell, short what rose, by L1's rank weights."""
+
+    def __init__(self, market: xsb.Market, span: tuple[date, date] = SPAN) -> None:
+        self.market, self.span = market, span
+        self.monthly = {m: tuple(v) for m, v in lab.tier_members(market, span)[MID_TIER].items()}
+        self.days = [d for d in sundays(span) if span[0] - timedelta(days=1) <= d <= span[1]]
+        self.read = lab.variables()[MID_VARIABLE][1]
+        self._ranked: dict[date, frozenset[str]] = {}
+        self._noise: tuple[str, dict[str, list[float]]] = ("", {})
+
+    def members(self, day: date) -> tuple[str, ...]:
+        return self.monthly.get(date(day.year, day.month, 1), ())
+
+    def ranked(self, day: date) -> frozenset[str]:
+        if day not in self._ranked:
+            self._ranked[day] = frozenset(s for s in self.members(day) if self.read(self.market, s, day) is not None)
+        return self._ranked[day]
+
+    def _weigher(self, read: lab.Variable) -> Callable[..., dict[str, float]]:
+        inner = book(read, lambda _day: -1)
+
+        def weights(market: xsb.Market, members: Sequence[str], day: date, signal: str,
+                    *, seed: str | None = None) -> dict[str, float]:
+            return inner(market, self.members(day), day, signal, seed=seed)
+        return weights
+
+    def book(self) -> Callable[..., dict[str, float]]:
+        return self._weigher(self.read)
+
+    def null(self, seed: str) -> Callable[..., dict[str, float]]:
+        """The same book on a variable with nothing in it: each coin's daily noise summed over the variable's own
+        30 days, so its ranks last from week to week as a trailing return's do (round 17's construction; a variable
+        redrawn every week would trade several times as much and lose to the book on costs alone). It has a value
+        exactly where the real variable has one."""
+        def noise(market: xsb.Market, symbol: str, day: date) -> float | None:
+            if symbol not in self.ranked(day):
+                return None
+            if self._noise[0] != seed:
+                self._noise = (seed, {})
+            sums = self._noise[1].get(symbol)
+            if sums is None:
+                rng = random.Random(f"{seed}:{symbol}")
+                total, sums = 0.0, [0.0]
+                for _ in range((self.span[1] - self.span[0]).days + 2 + lab.LOOKBACK):
+                    total += rng.gauss(0.0, 1.0)
+                    sums.append(total)
+                self._noise[1][symbol] = sums
+            at = (day - self.span[0]).days + 1 + lab.LOOKBACK
+            return sums[at] - sums[at - lab.LOOKBACK] if lab.LOOKBACK <= at < len(sums) else None
+        return self._weigher(noise)
+
+    def turnover(self, weigher: Callable[..., dict[str, float]]) -> float | None:
+        """Mean over consecutive decisions of half the summed change in weights: 0 holds, 2 replaces both sides."""
+        moves, before = [], None
+        for day in self.days:
+            now = weigher(self.market, (), day, bs.CADENCE)
+            if before and now:
+                moves.append(sum(abs(now.get(s, 0.0) - before.get(s, 0.0)) for s in set(now) | set(before)) / 2)
+            before = now
+        return round(statistics.fmean(moves), 4) if moves else None
+
+
+def mid_counts(market: xsb.Market, span: tuple[date, date] = SPAN, *, tier: MidTier | None = None) -> dict[str, Any]:
+    """What the book would stand on, with nothing earned after a decision in it: members, how many the variable
+    ranks, how many of those have funding on file, the side size, and how much the book trades beside null books.
+    The stop rules are judged here."""
+    tier = tier or MidTier(market, span)
+    years: dict[str, dict[str, Any]] = {str(y): {"decisions": 0, "active_decisions": 0, "members": [], "ranked": [],
+                                                 "side": []} for y in range(span[0].year, span[1].year + 1)}
+    weigher = tier.book()
+    held = unfunded = 0
+    for day in tier.days:
+        row = years.get(str(day.year))
+        if row is None:
+            continue
+        ranked = tier.ranked(day)
+        weights = weigher(market, (), day, bs.CADENCE)
+        row["decisions"] += 1
+        row["members"].append(len(tier.members(day)))
+        row["ranked"].append(len(ranked))
+        held += len(ranked)
+        unfunded += sum(1 for s in ranked if market.funding_day(s) is None)
+        if weights:
+            row["active_decisions"] += 1
+            row["side"].append(sum(1 for w in weights.values() if w > 0))
+    for row in years.values():
+        for key in ("members", "ranked", "side"):
+            values = row.pop(key)
+            row[f"{key}_median"] = statistics.median(values) if values else 0
+    known = 1 - unfunded / held if held else None
+    thin = [str(y) for y in LATER_YEARS if years.get(str(y), {}).get("active_decisions", 0) < MID_MIN_ACTIVE]
+    own = tier.turnover(weigher)
+    others = [t for t in (tier.turnover(tier.null(f"turnover:{k}")) for k in range(MID_TURNOVER_NULLS)) if t is not None]
+    beside = round(statistics.fmean(others), 4) if others else None
+    ratio = round(own / beside, 3) if own is not None and beside else None
+    unit = (xsb.cost.DEFAULT_TAKER_FEE_BPS + LISTING_SLIPPAGE_BPS) / 10_000
+    stops = [text for wrong, text in (
+        (known is None or known < MID_MIN_FUNDING_KNOWN, "too many of the ranked coins have no funding on file"),
+        (bool(thin), "the book stands at too few decisions in " + ", ".join(thin)),
+    ) if wrong]
+    return {"decisions": len(tier.days), "tier": MID_TIER, "variable": MID_VARIABLE, "by_year": years,
+            "funding_known_share": None if known is None else round(known, 4),
+            "turnover": {"book": own, "null_books_mean": beside, "null_books": len(others), "ratio": ratio,
+                         "band": list(MID_TURNOVER_BAND),
+                         "alike": ratio is not None and MID_TURNOVER_BAND[0] <= ratio <= MID_TURNOVER_BAND[1]},
+            # two sides traded, 52 decisions a year, on a position of POSITION_TOTAL: weights only, no price in it
+            "cost_from_turnover_total_position_annual_pct":
+                None if own is None else round(own * 2 * unit * 52 / bs.POSITION_TOTAL * 100, 2),
+            "last_day_in_market": lab.last_day(market).isoformat() if market.bars else None,
+            "stop": stops, "returns_computed": False}
+
+
+def mid_run(market: xsb.Market, span: tuple[date, date] = SPAN, *, nulls: int = MID_NULLS) -> dict[str, Any]:
+    """The month's reversal on the next tier, held and net of stressed costs, beside the same book on variables with
+    nothing in them, through rung 2's three conditions and rung 3. Refused when the counts say stop. The value at
+    the engine's cost is printed beside it and is read only by the reading table."""
+    tier = MidTier(market, span)
+    counts = mid_counts(market, span, tier=tier)
+    if counts["stop"]:
+        return {"refused": counts["stop"], "counts": counts}
+    stressed = functools.partial(simulate_held, unit_of=listing_unit)
+
+    def whole(report: dict[str, Any]) -> dict[str, Any]:
+        years = {str(y): report["years_total_position_pct"].get(str(y), 0.0) for y in range(span[0].year, span[1].year + 1)}
+        return {**report, "years_total_position_pct": years, "stability": stability(years)}
+
+    report = whole(measure(market, tier.book(), span, simulate=stressed))
+    side = ("annual_sharpe", "total_position_annual_pct")
+    rows = [tuple(r[k] for k in side) for r in
+            (measure(market, tier.null(f"mid:{k}"), span, simulate=stressed) for k in range(nulls))]
+    nets = [row[1] for row in rows if row[1] is not None]
+    rungs = {"2a_entry": report["clears_entry"], "2b_later_years": later_years(report["years_total_position_pct"]),
+             "2c_beside_null_books": beside_nulls(report["annual_sharpe"], [row[0] for row in rows]),
+             "3_stability": report["stability"]}
+    ladder = bool(rungs["2a_entry"] and rungs["2b_later_years"]["passes"] and rungs["2c_beside_null_books"]["passes"]
+                  and rungs["3_stability"]["passes"])
+    engine = whole(measure(market, tier.book(), span, simulate=simulate_held))
+    alike = counts["turnover"]["alike"]
+    lead = not ladder and bool(engine["clears_entry"]) and rungs["2c_beside_null_books"]["passes"]
+    return {**report, "hypothesis": MID_NAMES[0], "logic": MID_NAMES[1], "counts": counts, "rungs": rungs,
+            "legs": {"price_pct": round(_before_costs(report), 2), "funding_pct": report["funding_pct"], "cost_pct": report["cost_pct"]},
+            "null_net_total_position_annual_pct_mean": round(statistics.fmean(nets), 2) if nets else None,
+            "held_at_engine_cost": {k: engine[k] for k in (*side, "clears_entry", "cost_pct", "years_total_position_pct")},
+            "passes": ladder,
+            "reading": ("passes" if alike else "passes_beside_null_books_that_trade_differently") if ladder
+                       else "cost_dependent_lead" if lead else "closed"}
+
+
 # --- L19: the open-interest flush book (round 15, hypothesis H-O1) -------------------------------------------------------
 
 FLUSH_SPAN = lab.ms.DEV_LONG               # the positioning files begin in 2022 for all but a few coins
@@ -3001,7 +3163,7 @@ def main(argv: list[str] | None = None) -> int:
                                             "crash-symbols", "crash-events", "crash-counts", "crash",
                                             "deep-counts", "deep", "rotation-counts", "rotation", "bar",
                                             "hot-counts", "hot", "gap-counts", "gap", "flush-counts", "flush",
-                                            "basis-counts", "basis", "wide-counts", "wide"))
+                                            "basis-counts", "basis", "wide-counts", "wide", "mid-counts", "mid"))
     parser.add_argument("--shape", choices=BAR_SHAPES, default=None, help="bar: the book shape whose null books are read")
     parser.add_argument("--only", default=None,
                         help="sweep, transfer: variable groups (comma list), or `null` for the random books")
@@ -3090,6 +3252,16 @@ def main(argv: list[str] | None = None) -> int:
                           "span": [d.isoformat() for d in SPAN], "command": args.command, **body},
                          indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or (args.command == "rotation-counts" and body["stop"]) else EXIT_OK
+    if args.command in ("mid-counts", "mid"):
+        market = lab.hold(cache, attach=False)
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        body = (mid_counts if args.command == "mid-counts" else mid_run)(market)
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
+                          "command": args.command, **body}, indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_BLOCKED if body.get("refused") or (args.command == "mid-counts" and body["stop"]) else EXIT_OK
     if args.command in ("wide-counts", "wide"):
         market = lab.hold(cache, WIDE_SPAN, attach=False)
         if market is not None:

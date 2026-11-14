@@ -1,0 +1,29 @@
+# 2026-11-14 — discovery loop round 34: H-R2, the month's reversal on ranks 31–100
+
+**Shipped (registration and tools; nothing run in this commit):** `scripts/research/strategy_ladder.py` (`MidTier`,
+`mid_counts`, `mid_run`; commands `mid-counts`, `mid`), `docs/proposals/STRATEGY_DISCOVERY_LOOP_V0.1.md` §48.5 and
+§49.
+
+**Why.** The map prints how many cells meet its lead rule and lists three. One cell that has met the rule since the
+first map, 30-day momentum on ranks 31–100, sat thirteenth and was never put through the hypothesis form. This
+round does that, once.
+
+**Choices that are not obvious.**
+
+- *The book stands on the cell.* The map's own tier object with no added filter, the mapped variable with no day
+  skipped, a weekly hold because the qualifying cell is the seven-day one. Each line of the definition says whether
+  it is the cell's or not.
+- *The form says the size is negative before costs.* The cell's rank correlation is negative while its top-minus-
+  bottom mean runs the other way (+21 bp a week), as the first map already found for the volatility variables on
+  this tier. The form's lines 1 and 2 are behavioural and are read "filled but weak", as H-D1's were. The prior is
+  1%.
+- *The null is round 17's, not round 9's.* H-R1's null redrew its variable every week, which matched a 7-day
+  return. A 30-day return keeps its ranks; weekly-redrawn null books would lose on costs alone and the p would
+  reward trading less. The null here is each coin's daily noise summed over 30 days, and counts check the
+  book-to-null turnover ratio on inputs only.
+- *Counts fill the cost before the measurement.* They print the book's weekly turnover and the cost it implies,
+  from weights alone.
+- *No four-week book.* The 28-day cell was seen and did not meet the rule; that variant is ruled out beforehand.
+
+Also in this commit, by addition to §48: twelve cells meet the lead rule, not eleven (extreme days on the top
+tier, tied to its sweep row), and §3.3's "rebuild every lead under each new logic" is superseded by §22.2.
