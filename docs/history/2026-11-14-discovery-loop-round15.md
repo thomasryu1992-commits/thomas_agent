@@ -37,14 +37,17 @@
 - *H-O1 failed every rung and is closed.* Annual Sharpe -0.676 net over three years, -9.9% of total position a
   year, p 0.581 against the same book on other members that day. The rebound (+8% over three years on the long
   side) was a fifth of the alts' costs (42%).
-- *The matched null says something about fallers, not about this book.* Against members that fell as much with
-  their open interest unchanged the book's p is 0.033, and those placebo books netted -13.3% a year against
-  -7.5% for random members. Buying a coin the day after it fell loses more than buying any coin; a coin that
-  fell with its open interest draining lost less than other fallers, and still more than a random member. With
-  the entry rule and the plain null missed this counts as nothing, and a long-short book built on that gap would
-  be a hypothesis written after this result. It is not put up.
-- *With this the three variants round 12's table left are done, and none passed.* Seven measured hypotheses
-  netted between -10.4% and +6.6% of total position a year against a floor of 15%. Nothing with a structural
-  payer is left on the data on disk; the next step of the reform order is a new source, which is Thomas's.
+- *The matched null's p is under 0.05 and counts as nothing.* Against members that fell as much with their open
+  interest unchanged the book's p is 0.033: it sits above books built by drawing, for each event, one of the three
+  members nearest in that day's move. Those placebo books netted -13.3% a year and the plain ones -7.5%. That gap
+  is an observation, not a registered reading, and no test was run on it. No book is built from it: buying the
+  drained coins against the other fallers, or selling fallers, would both be hypotheses written after this result.
+- *With this the three variants round 12's table left are done: one could not be measured and two failed.* Seven
+  measured hypotheses netted between -10.4% and +6.6% of total position a year against a floor of 15%.
+- *The record does not say the data on disk is exhausted.* Three things were set aside in writing during these
+  rounds: the funding-basis book widened to a per-coin tail, a lower positive-funding threshold, and positioning
+  files beyond the top thirty. The second is ruled out by the round's own rule and the third has no hypothesis to
+  read it. The first is Thomas's to decide (`FUNDING_BASIS_V0.1` says so) and is an existing read, so it is the one
+  question asked. A new source is not asked for: that would re-ask D1 to D3.
 - *`regime_strategies.read_oi` has the same last-row reading.* Not fixed here; reported as a follow-up.
 
