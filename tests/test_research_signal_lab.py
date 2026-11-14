@@ -270,7 +270,7 @@ def test_an_axis_that_moves_a_variable_separates_and_a_shuffled_copy_of_it_does_
 def test_the_axis_check_reads_every_axis_beside_its_placebos(tiers, monkeypatch):
     monkeypatch.setattr(lab, "PLACEBO_AXES", 8)
     out = lab.axis_check(lab.cut_market(_market(SPAN[1]), SPAN), NAMES, SPAN)
-    assert set(out["axes"]) == {"trend", "vol", "dispersion", "heat", "universe"}
+    assert set(out["axes"]) == {"trend", "vol", "dispersion", "heat", "universe", "breadth"}
     for axis, body in out["axes"].items():
         assert set(body) == {"states", "separation", "placebo_mean", "placebo_p95", "placebos_at_or_above", "placebos"}
         assert body["placebos"] <= 8 and sum(body["states"].values()) == out["decisions"], axis
@@ -442,6 +442,40 @@ def test_a_positioning_change_is_the_level_now_less_the_level_a_lookback_earlier
     assert "divergence_change_30" not in names and "oi_growth_change_30" not in names
 
 
+def test_breadth_is_the_share_of_the_top_tier_up_over_the_week_split_at_its_own_earlier_median():
+    start = date(2021, 1, 4)                                      # a Monday; decisions are the Sundays
+    days = [start + timedelta(days=k) for k in range(60 * 7)]
+    coins = [f"C{i:02d}USDT" for i in range(10)]
+
+    def world(later=1.0):
+        """Each week ``3 + (week % 5)`` of the ten coins rise and the rest fall; ``later`` scales moves after week 50."""
+        bars = {s: {} for s in coins + ["BTCUSDT"]}
+        price = dict.fromkeys(bars, 100.0)
+        for k, day in enumerate(days):
+            week = k // 7
+            for i, s in enumerate(coins):
+                move = (0.01 if i < 3 + week % 5 else -0.01) * (later if week > 50 else 1.0)
+                bars[s][day] = xsb.Bar(open=price[s], close=price[s] * (1 + move), quote_volume=1e8)
+                price[s] *= 1 + move
+            bars["BTCUSDT"][day] = xsb.Bar(open=100.0, close=100.0, quote_volume=1e9)
+        return xsb.Market(bars=bars, funding={s: [] for s in bars})
+
+    span = (start, days[-1])
+    monthly = {date(d.year, d.month, 1): coins for d in days}
+    sundays = [d for d in days if d.weekday() == 6]
+    labels = lab.scenario_labels(world(), monthly, sundays, span)
+    late = [d for d in sundays if (d - start).days // 7 >= 40][:10]
+    seen = {((d - start).days // 7) % 5: labels[d].get("breadth") for d in late}
+    assert seen == {0: "thin", 1: "thin", 2: "thin", 3: "broad", 4: "broad"}, \
+        "three, four or five of ten up is at or under the earlier weeks' median of five; six or seven is over it"
+    assert "breadth" not in labels[sundays[2]], "no history to compare with yet"
+    assert lab.scenario_keys({"breadth": "broad"}) == ["all", "breadth=broad"]
+    twisted = lab.scenario_labels(world(later=-1.0), monthly, sundays, span)
+    early = [d for d in sundays if (d - start).days // 7 <= 50]
+    assert all(twisted[d].get("breadth") == labels[d].get("breadth") for d in early), "later weeks change no earlier label"
+    assert any(twisted[d].get("breadth") != labels[d].get("breadth") for d in sundays if d not in early), "the twist is seen later"
+
+
 def test_the_registry_stays_inside_what_its_controls_and_the_sweeps_null_can_correct_for():
     from scripts.research import strategy_ladder as sl
     assert len(lab.variables()) == 30
@@ -496,7 +530,9 @@ def test_the_universe_command_stops_before_the_reserved_days(monkeypatch, capsys
 
 def test_a_cell_on_a_resting_axis_is_shown_and_is_not_a_lead():
     """The five axes rest since 2026-11-13: two checks, none beat its placebos. Their cells stay on the map."""
-    assert lab.RESTING_AXES == {"trend", "vol", "dispersion", "heat", "universe"}
+    assert lab.RESTING_AXES == {"trend", "vol", "dispersion", "heat", "universe", "breadth"}, \
+        "the first five rest on their checks; breadth is born at rest until it has had one"
+    assert set(lab.AXES) == lab.RESTING_AXES
     against = {"7": {"largest_abs_t": 3.0, "share_abs_t_over_2": 0.05}, "28": {"largest_abs_t": None, "share_abs_t_over_2": None}}
     cells = [_cell("steady", "all", 3.5), _cell("steady", "trend=bull", 4.4), _cell("steady", "trend=bull|vol=low", 5.0)]
     real = {"cells": cells, "variables": {"steady|top30": {"rank_persistence": 0.9}}}

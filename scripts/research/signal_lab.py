@@ -70,7 +70,10 @@ CANDIDATE_CAP = 3
 MIN_PERSISTENCE = 0.5                      # week-to-week rank correlation a lead needs: one-day reversal died on cost
 # Axes at rest (STRATEGY_DISCOVERY_LOOP_V0.1 section 18): two checks in a row, none beat its placebos. Their cells
 # are still mapped and shown; a cell on a resting axis is not a lead.
-RESTING_AXES = frozenset({"trend", "vol", "dispersion", "heat", "universe"})
+# "breadth" (section 34, 2026-11-14) is born at rest: a new axis has to beat its own placebo axes before any of its
+# cells may be a lead.
+RESTING_AXES = frozenset({"trend", "vol", "dispersion", "heat", "universe", "breadth"})
+AXES = ("trend", "vol", "dispersion", "heat", "universe", "breadth")       # the order cells and checks list them in
 REFERENCE = bs.REFERENCE
 
 Variable = Callable[[xsb.Market, str, date], "float | None"]
@@ -285,10 +288,15 @@ def scenario_labels(market: xsb.Market, monthly: Mapping[date, Sequence[str]], d
         moves = [m for m in (_daily_moves(market, s, day, LOOKBACK) for s in members(day)) if m is not None]
         return sum(1 for m in moves if max(m) >= WILD_MOVE) / len(moves) if len(moves) >= MIN_NAMES else None
 
+    def breadth(day: date) -> float | None:
+        """The share of the top tier's coins that are up over the last seven days."""
+        values = [v for v in (xsb.trailing_return(market, s, day, 7) for s in members(day)) if v is not None]
+        return sum(1 for v in values if v > 0) / len(values) if len(values) >= MIN_NAMES else None
+
     # Each axis is compared with its own values at the earlier weekly decisions, never with a later one.
     weekly = [d for d in xsb.held_days(span[0], span[1]) if xsb.is_rebalance_day(bs.CADENCE, d)]
     axes = {"vol": (btc_vol, "high", "low"), "dispersion": (dispersion, "wide", "narrow"), "heat": (heat, "hot", "cool"),
-            "universe": (wild_share, "wild", "calm")}
+            "universe": (wild_share, "wild", "calm"), "breadth": (breadth, "broad", "thin")}
     series = {axis: {d: read(d) for d in weekly} for axis, (read, _, _) in axes.items()}
     out: dict[date, dict[str, str]] = {}
     for day in days:
@@ -305,8 +313,7 @@ def scenario_labels(market: xsb.Market, monthly: Mapping[date, Sequence[str]], d
 
 
 def scenario_keys(labels: Mapping[str, str]) -> list[str]:
-    keys = ["all"] + [f"{axis}={labels[axis]}" for axis in ("trend", "vol", "dispersion", "heat", "universe")
-                      if axis in labels]
+    keys = ["all"] + [f"{axis}={labels[axis]}" for axis in AXES if axis in labels]
     if "trend" in labels and "vol" in labels:
         keys.append(f"trend={labels['trend']}|vol={labels['vol']}")
     return keys
@@ -504,7 +511,7 @@ def axis_check(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], sp
     days, series = ic_series(market, names, span)
     labels = scenario_labels(market, tier_members(market, span)["top30"], days, span)
     out = {}
-    for axis in ("trend", "vol", "dispersion", "heat", "universe"):
+    for axis in AXES:
         real = [labels[d].get(axis) for d in days]
         actual = separation(series, dict(zip(days, real)))
         fake = [separation(series, dict(zip(days, shuffled_spells(real, f"{SPEC}|axis|{axis}|{k}"))))
@@ -528,7 +535,7 @@ def axis_by_variable(market: xsb.Market, names: Mapping[str, tuple[str, Variable
     days, series = ic_series(market, names, span)
     labels = scenario_labels(market, tier_members(market, span)["top30"], days, span)
     tests = []
-    for axis in ("trend", "vol", "dispersion", "heat", "universe"):
+    for axis in AXES:
         real = [labels[d].get(axis) for d in days]
         actual_labels = dict(zip(days, real))
         actual = {key: separation({key: values}, actual_labels) for key, values in series.items()}
