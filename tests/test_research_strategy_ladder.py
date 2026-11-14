@@ -448,7 +448,7 @@ def test_the_sweeps_null_variables_are_their_own_and_enough_for_the_correction()
     assert len(nulls) == sl.SWEEP_NULLS == 600 and not set(nulls) & set(sl.lab.controls())
     earlier = sl.null_variables(sl.SWEEP_NULLS_ROUND_6)
     market, day = xsb.Market(), date(2021, 1, 3)
-    assert len(earlier) == 300 and set(earlier) <= set(nulls), "round 6's null books are among the 500, by name"
+    assert len(earlier) == 300 and set(earlier) <= set(nulls), "round 6's null books are among the 600, by name"
     assert all(earlier[name][1](market, "AUSDT", day) == nulls[name][1](market, "AUSDT", day) for name in earlier), \
         "and each is the same random variable"
     market, day = xsb.Market(), date(2021, 1, 3)
@@ -501,9 +501,46 @@ def test_the_sweep_command_takes_groups_or_the_null_and_loads_what_they_read(mon
     monkeypatch.setattr(sl.lab, "hold", hold)
     assert sl.main(["sweep"]) == sl.EXIT_USAGE and sl.main(["sweep", "--only", "nothing"]) == sl.EXIT_USAGE
     capsys.readouterr()
-    for only in ("null", "price_volume,funding,coin_character", "trade_flow", "positioning,depth,spot"):
+    for only in ("null", "price_volume,funding,coin_character", "trade_flow"):
         assert sl.main(["sweep", "--only", only]) == sl.EXIT_BLOCKED
-    assert asked == [(False, False), (False, False), (False, True), (True, False)]
+    assert asked == [(False, False), (False, False), (False, True)]
+    # A group whose series are attached is swept alone, through its own door (section 44): round 6's combined load
+    # no longer fits, and a premium sweep through the plain door would rank nothing and still exit 0.
+    doors = []
+    for name in ("hold_positioning", "hold_spot", "hold_premium"):
+        monkeypatch.setattr(sl.lab, name, lambda cache, name=name: doors.append(name))
+    for only in ("positioning", "spot", "premium"):
+        assert sl.main(["sweep", "--only", only]) == sl.EXIT_BLOCKED
+    assert doors == ["hold_positioning", "hold_spot", "hold_premium"] and len(asked) == 3, "the plain door was not used"
+    capsys.readouterr()
+    for only in ("positioning,depth,spot", "depth", "premium,funding", "positioning,spot"):
+        assert sl.main(["sweep", "--only", only]) == sl.EXIT_USAGE, only
+        assert "no loader for" in capsys.readouterr().err
+    assert len(asked) == 3 and len(doors) == 3, "a refused set loads nothing"
+
+
+def test_the_family_reading_puts_every_book_beside_one_null_and_refuses_a_rerun_that_moved():
+    def book(sharpe, *, ranked=200, long="low"):
+        return {"group": "g", "long": long, "annual_sharpe": sharpe, "total_position_annual_pct": 10.0,
+                "clears_entry": sharpe >= 1.0, "negative_years": 0, "decisions_ranked": ranked, "funding_pct": 1.0}
+
+    null = {f"n{i}": {"annual_sharpe": -1.0 + 2.0 * i / 599} for i in range(600)}          # -1 .. +1, evenly
+    earlier = {"old_strong": book(1.5), "old_plain": book(0.0), "old_only": book(0.2)}
+    later = {"old_strong": book(1.5), "old_plain": book(0.0), "new_edge": book(0.99, ranked=90), "new_plain": book(0.1),
+             "new_thin": {"group": "g", "skipped": "ranked at too few decisions"}}
+    out = sl.sweep_family(earlier, later, null)
+    assert out["books"] == 5 and out["null_books"] == 600 and out["new_books"] == 2 and out["skipped"] == ["new_thin"]
+    by = {r["variable"]: r for r in out["all"]}
+    assert by["old_strong"]["p"] == pytest.approx(1 / 601, abs=1e-4), "an old book is read beside the same 600 as a new one"
+    assert by["old_strong"]["p"] <= 0.10 / 55, "and one in 601 is small enough to pass the correction over 55 books"
+    assert by["new_edge"]["new"] is True and by["old_only"]["new"] is False and by["new_edge"]["decisions_ranked"] == 90
+    assert [r["variable"] for r in out["survive_benjamini_hochberg"]] == ["old_strong", "new_edge"]
+    assert out["new_survivors"] == ["new_edge"] and out["new_p_under_0.05"] == 1
+    moved = sl.sweep_family(earlier, {**later, "old_plain": book(0.01)}, null)
+    assert moved == {"refused": "a re-run book differs from its record", "differ": ["old_plain"]}, "nothing is read"
+    assert sl.sweep_matches(earlier, {"old_strong": book(1.5, long="high")}) == ["old_strong"]
+    assert sl.sweep_matches(earlier, {"old_strong": book(1.5, ranked=199)}) == ["old_strong"]
+    assert sl.sweep_matches(earlier, later) == [] and sl.sweep_matches({}, later) == []
 
 
 # --- confirm read 3: the tail-out book ---------------------------------------------------------------------------------

@@ -578,6 +578,48 @@ def sweep_reading(real: Mapping[str, Mapping[str, Any]], null: Mapping[str, Mapp
             "q": q, "survive_benjamini_hochberg": rows[:cutoff], "all": rows}
 
 
+# The sweep, one group at a time (section 44). Round 6 loaded positioning, depth and spot together; with both tiers'
+# positioning files on disk that load no longer fits the sandbox, and the premium has a door of its own.
+SWEEP_BARS_GROUPS = frozenset({"price_volume", "funding", "coin_character", "trade_flow"})
+SWEEP_ALONE = {"positioning": "hold_positioning", "spot": "hold_spot", "premium": "hold_premium"}
+SWEEP_ROW_KEYS = ("long", "annual_sharpe", "total_position_annual_pct", "decisions_ranked")
+
+
+def sweep_market(cache: Path, wanted: set[str]) -> xsb.Market | None:
+    """The market a sweep of ``wanted`` reads and nothing else. Raises ``ValueError`` for a set with no loader: a
+    group whose series are not attached would come back "ranked at too few decisions" and look like a result."""
+    if wanted <= SWEEP_BARS_GROUPS | {"null"}:
+        return lab.hold(cache, attach=False, flow="trade_flow" in wanted)
+    if len(wanted) == 1 and next(iter(wanted)) in SWEEP_ALONE:
+        return getattr(lab, SWEEP_ALONE[next(iter(wanted))])(cache)
+    raise ValueError(f"no loader for {sorted(wanted)}: {sorted(SWEEP_ALONE)} are swept alone, depth has no loader of its own")
+
+
+def sweep_matches(earlier: Mapping[str, Mapping[str, Any]], later: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    """The books both runs built whose numbers differ, by name. Empty when the later run reproduces the earlier."""
+    return sorted(name for name in set(earlier) & set(later)
+                  if any(earlier[name].get(k) != later[name].get(k) for k in SWEEP_ROW_KEYS))
+
+
+def sweep_family(earlier: Mapping[str, Mapping[str, Any]], later: Mapping[str, Mapping[str, Any]],
+                 null: Mapping[str, Mapping[str, Any]], *, q: float = 0.10) -> dict[str, Any]:
+    """Every book ever swept beside ONE null set. ``earlier`` are the books of the first sweep as recorded, ``later``
+    the books of the re-run groups (old and new variables); a book in both must agree, or nothing is read. Each
+    row says whether its variable is new, and how many decisions ranked it."""
+    differ = sweep_matches(earlier, later)
+    if differ:
+        return {"refused": "a re-run book differs from its record", "differ": differ}
+    books = {**earlier, **later}
+    reading = sweep_reading(books, null, q=q)
+    for row in reading["all"]:
+        row["new"] = row["variable"] not in earlier
+        row["decisions_ranked"] = books[row["variable"]].get("decisions_ranked")
+    skipped = sorted(name for name, body in books.items() if body.get("skipped"))
+    return {**reading, "new_books": sum(1 for r in reading["all"] if r["new"]), "skipped": skipped,
+            "new_p_under_0.05": sum(1 for r in reading["all"] if r["new"] and r["p"] < 0.05),
+            "new_survivors": [r["variable"] for r in reading["survive_benjamini_hochberg"] if r["new"]]}
+
+
 # --- the transfer check: does a book that looks good on earlier years earn in the next one? ---------------------
 
 # (the years a book's side is chosen and its Sharpe is ranked on, the year it is then read on). All inside development.
@@ -2973,9 +3015,13 @@ def main(argv: list[str] | None = None) -> int:
         if not names:
             print("refused: --only names no registered variable group (or `null`)", file=sys.stderr)
             return EXIT_USAGE
-        market = lab.hold(cache, attach=bool(wanted & ATTACHED_GROUPS), flow="trade_flow" in wanted)
+        try:
+            market = sweep_market(cache, wanted)
+        except ValueError as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return EXIT_USAGE
         if market is None:
-            print("BLOCKED: contract types or the spot symbol list is missing from the cache", file=sys.stderr)
+            print("BLOCKED: contract types, the spot symbol list or the attached values are missing from the cache", file=sys.stderr)
             return EXIT_BLOCKED
         body = ({"books": sweep(market, names)} if args.command == "sweep" else
                 {"splits": [[[d.isoformat() for d in span] for span in pair] for pair in TRANSFER_SPLITS],
