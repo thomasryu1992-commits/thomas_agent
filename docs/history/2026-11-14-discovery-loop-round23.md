@@ -24,3 +24,15 @@ really is before any code is run.
 - *The tool rounds get rows in the research map*, so a later session does not read these cells again.
 - *This closes §3.1's list.* The registration says no shape is raised again under another history length or
   window, whatever the result.
+
+**Results (same day).**
+
+- *No lead among the nine.* The line is 4.30 (7 days) and 4.96 (28 days) with 84 random variables. The largest
+  new cell is beta-adjusted momentum on ranks 31-100, whole span, 7 days: -4.18. It is under the line and it is
+  not new: the first map wrote plain momentum on that tier at -4.46.
+- *Trade size against its own history is negative on both tiers and both horizons* (-2.1 to -3.4) and 28 of its
+  64 cells are over 2. No cell of it crosses the line; its largest is on a resting axis.
+- *More cells over 2 than the random variables' rate gives* (67 of 484 against about 40), nearly all from three
+  variables. The lead rule asks whether any one cell beats the random variables' largest, and none does.
+- *§3.1's list of shapes is finished.* Sixteen variables were added over rounds 19, 21 and 23 and none is a lead.
+  One item is left on the lists: the leverage axis.
