@@ -23,3 +23,12 @@ as a map variable.
   fourteenth, so it takes the 400-placebo path: with 200 the smallest p it could show is above its level.
 - *Nothing compared is not a pass.* If a candidate has no decision with eight coins ranked beside a kin, the check
   says so and maps nothing.
+
+**Result, first half (2026-11-14 16:36Z).** The funding-dispersion axis is not woken (353 of 400 placebos at or
+above). Both candidate variables stand under the threshold beside their kin on the top tier: the spread estimate at
+0.13 (its nearest is volatility), the premium at 0.72 (30-day funding). As registered, both join the registry
+(45 variables, 88 random variables) and are mapped once.
+
+- *The prior on the spread was wrong.* It was expected to order coins as the daily range does; the rank correlation
+  with the range is 0.05. The reason is not known. The overlap output now also prints the share of values at zero,
+  since an estimate floored at zero may tie many coins; the rule's numbers must not move.

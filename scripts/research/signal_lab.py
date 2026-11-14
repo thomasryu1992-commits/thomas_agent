@@ -62,8 +62,8 @@ MIN_DECISIONS = 20                         # decisions a cell needs before it sh
 MIN_SPELLS = 4                             # separate stretches a scenario cell needs: one long bull run is one sample
 REFERENCE_DECISIONS = 52                   # trailing decisions a scenario's own median is taken over
 REFERENCE_MIN = 26
-CONTROLS_WEEKLY = 42                       # random variables redrawn at every decision (25, 28, 32 as the registry grew)
-CONTROLS_FIXED = 42                        # random variables fixed per coin, like a slow characteristic
+CONTROLS_WEEKLY = 44                       # random variables redrawn at every decision (25, 28, 32, 42 as the registry grew)
+CONTROLS_FIXED = 44                        # random variables fixed per coin, like a slow characteristic
 EXTREME_MOVE = 0.30                        # a daily close-to-close move this large is an extreme day
 WILD_MOVE = 0.50                           # a coin whose largest daily move in the lookback reached this is wild
 AGE_CAP_DAYS = 1000                        # listing age is read up to here; older coins are alike
@@ -274,6 +274,10 @@ def variables() -> dict[str, tuple[str, Variable]]:
         group, level = out[f"{base}_{LOOKBACK}"]
         out[f"{name}_{LOOKBACK}"] = (group, _position(level))
     out[f"residual_momentum_{LOOKBACK}"] = ("price_volume", _residual_momentum)
+    # Added 2026-11-14 (section 40): two readings with a file and no record. Each was first ranked beside its kin on
+    # inputs alone (0.13 and 0.72 on the top tier, under the 0.8 that would have made it that kin read again).
+    out[f"spread_{LOOKBACK}"] = ("price_volume", _spread)
+    out[f"premium_{LOOKBACK}"] = ("premium", _premium)
     return out
 
 
@@ -371,15 +375,16 @@ def overlap(market: xsb.Market, name: str, span: tuple[date, date] = SPAN) -> di
     out: dict[str, Any] = {}
     for tier, monthly in tiers.items():
         rows: dict[str, list[float]] = {k: [] for k in kin}
-        ranked = 0
+        ranked = values = zeros = 0
         for day in decisions(span, HORIZONS[0]):
             own = {s: v for s in monthly.get(date(day.year, day.month, 1), ()) if (v := read(market, s, day)) is not None}
             ranked += len(own) >= MIN_NAMES
+            values, zeros = values + len(own), zeros + sum(1 for v in own.values() if v == 0)
             for k in kin:
                 pairs = [(own[s], v) for s in own if (v := registered[k][1](market, s, day)) is not None]
                 if len(pairs) >= MIN_NAMES and (rho := rank_correlation(pairs)) is not None:
                     rows[k].append(rho)
-        out[tier] = {"decisions_ranked": ranked,
+        out[tier] = {"decisions_ranked": ranked, "share_at_zero": round(zeros / values, 4) if values else None,
                      "kin": {k: {"decisions": len(v), "median_rank_correlation": round(statistics.median(v), 4) if v else None}
                              for k, v in rows.items()}}
     top = {k: abs(v["median_rank_correlation"]) for k, v in out["top30"]["kin"].items()
@@ -1096,6 +1101,8 @@ def main(argv: list[str] | None = None) -> int:
         market = hold_positioning(cache)
     elif groups == {"spot"}:
         market = hold_spot(cache)
+    elif groups == {"premium"}:
+        market = hold_premium(cache)
     else:
         market = hold(cache, attach=bool(groups & {"positioning", "depth", "spot"}), flow="trade_flow" in groups)
     if market is None:

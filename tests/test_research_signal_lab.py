@@ -202,7 +202,8 @@ def test_it_runs_in_the_sandbox_only(monkeypatch, capsys):
     listed = json.loads(capsys.readouterr().out)
     assert listed["span"] == ["2020-01-01", "2024-12-31"]
     assert listed["controls"] == lab.CONTROLS_WEEKLY + lab.CONTROLS_FIXED >= 2 * len(lab.variables()) - 4
-    assert {"price_volume", "funding", "positioning", "depth", "spot", "coin_character", "trade_flow"} == set(listed["variables"].values())
+    assert {"price_volume", "funding", "positioning", "depth", "spot", "coin_character", "trade_flow",
+            "premium"} == set(listed["variables"].values())
 
 
 def test_a_book_that_reads_bars_and_funding_alone_loads_nothing_else(monkeypatch, tmp_path):
@@ -610,8 +611,8 @@ def test_leverage_is_open_interest_in_quote_terms_over_volume_and_has_no_label_w
 
 def test_the_registry_stays_inside_what_its_controls_and_the_sweeps_null_can_correct_for():
     from scripts.research import strategy_ladder as sl
-    assert len(lab.variables()) == 43
-    assert len(lab.controls()) == 84 >= 2 * len(lab.variables()) - 4, "the random variables grow with the real ones"
+    assert len(lab.variables()) == 45
+    assert len(lab.controls()) == 88 >= 2 * len(lab.variables()) - 4, "the random variables grow with the real ones"
     assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / len(lab.variables()), "the sweep's null can correct for every variable"
     assert not 1 / (sl.SWEEP_NULLS_ROUND_6 + 1) < 0.10 / len(lab.variables()), "300 null books could not: thirty was their most"
     assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / 50 and not 1 / (sl.SWEEP_NULLS + 1) < 0.10 / 51, "500 reach fifty variables"
@@ -718,7 +719,7 @@ def test_the_by_variable_check_has_enough_placebos_for_a_real_effect_to_pass_the
     """The smallest p a test can show is one over the placebos plus one. It has to be under what Benjamini–Hochberg
     asks of the best of a few hundred tests, or nothing could ever pass (the first run, 2026-11-13: 200 placebos)."""
     tests, q = len(lab.variables()) * len(lab.TIERS) * len(lab.AXES), 0.10
-    assert tests == 43 * 2 * 6
+    assert tests == 45 * 2 * 6
     assert 1 / (lab.PLACEBO_AXES_BY_VARIABLE + 1) < q / tests
     assert lab.PLACEBO_AXES_BY_VARIABLE == 6000 and 1 / (6000 + 1) < q / (50 * 2 * 6), "enough for fifty variables"
     assert not 1 / (5000 + 1) < q / tests, "the earlier 5000 no longer were"
@@ -928,7 +929,10 @@ def test_a_candidate_that_orders_coins_as_its_kin_does_is_not_mapped_and_no_retu
     assert other["tiers"]["top30"]["decisions_ranked"] == other["tiers"]["top30"]["kin"]["vol_30"]["decisions"] > 20
     blind = lab.overlap(market, "blind", SPAN)
     assert blind["compared"] is False and blind["mapped"] is False, "nothing compared is not a pass"
-    assert set(lab.variables()) & {"spread_30", "premium_30"} == set(), "a candidate is not in the registry"
+    assert other["tiers"]["top30"]["share_at_zero"] == 0.0 and blind["tiers"]["top30"]["share_at_zero"] is None
+    registry = lab.variables()
+    assert registry["spread_30"][0] == "price_volume" and registry["premium_30"][0] == "premium", \
+        "both stood under the threshold on the real inputs (section 40) and joined the registry"
     monkeypatch.setattr(lab.xsb, "_in_sandbox", lambda: True)
     assert lab.main(["overlap", "--candidate", "nothing"]) == lab.EXIT_USAGE
 
@@ -964,3 +968,25 @@ def test_the_funding_spread_axis_reads_how_far_apart_the_weeks_funding_stands():
     early = [d for d in sundays if (d - start).days // 7 <= 60]
     assert all(shrunk[d] == labels[d] for d in early), "later weeks change no earlier label"
     assert any(shrunk[d].get("funding_spread") != labels[d].get("funding_spread") for d in sundays if d not in early)
+
+
+
+def test_a_run_of_the_premium_group_loads_the_premium_cut_at_the_span_and_nothing_else(monkeypatch, tmp_path, capsys):
+    span = (date(2020, 1, 1), date(2021, 6, 30))
+    monkeypatch.setattr(lab.xsb, "read_contract_types", lambda archive: ({"BTCUSDT": "PERPETUAL"}, None))
+    monkeypatch.setattr(lab.xsb, "load_market", lambda archive, funding=True: _market(date(2021, 12, 31)))
+    assert lab.hold_premium(tmp_path, span) is None, "no premium file: blocked, not an empty map"
+    folder = tmp_path / "binance" / "derivative" / "premium"
+    folder.mkdir(parents=True)
+    stamp = lambda d: int((d - date(1970, 1, 1)).total_seconds() * 1000)                         # noqa: E731
+    days = [date(2021, 6, 1) + timedelta(days=k) for k in range(60)]
+    (folder / "C01USDT.1d.jsonl").write_text("".join(json.dumps([stamp(d), 0, 0, 0, 0.001]) + "\n" for d in days))
+    held = lab.hold_premium(tmp_path, span)
+    assert set(held.premium) == {"C01USDT"} and max(held.premium["C01USDT"]) == span[1] == lab.last_day(held)
+    assert lab._premium(held, "C01USDT", span[1]) == pytest.approx(0.001) and not hasattr(held, "metrics")
+    called = []
+    monkeypatch.setattr(lab, "hold_premium", lambda cache: called.append(cache))
+    monkeypatch.setattr(lab, "hold", lambda *a, **k: pytest.fail("the premium group loads through its own door"))
+    monkeypatch.setattr(lab.xsb, "_in_sandbox", lambda: True)
+    assert lab.main(["run", "--only", "premium", "--cache", str(tmp_path)]) == lab.EXIT_BLOCKED and called == [tmp_path]
+    assert "BLOCKED" in capsys.readouterr().err
