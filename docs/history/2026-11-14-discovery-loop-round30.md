@@ -24,3 +24,15 @@ the sweep was never run on the additions. Nothing written strikes it.
 - *p is rounded to four places*, as round 6's reading did; the function is not changed.
 
 Also by addition to §43: the refusal-tally tool (#1475) was merged on 2026-11-14 (`3143dfea`).
+
+**Result (2026-11-14 19:20Z).** Every gate passed (24 re-run books and 300 null books match their records; all 28 new
+books were built). One new book survives the correction over 55: the 30-day change of the high-low spread estimate,
+long the low side — annual Sharpe 1.667, no losing year, and none of the 600 null books at or above it (their best
+is 1.557).
+
+- *It is a lead, as registered, not a candidate.* It passes with the smallest p the null can show. The book's logic
+  is the one that cleared the development span three times and lost on the confirm span three times. The map did
+  not flag the variable. What the variable measures is not known: half of the level's values are zero.
+- *What comes next follows from the rules already written*: rank the variable beside the registered ones on inputs
+  alone, fill the hypothesis form (saying it is written after the result), and only then a candidate. A confirm
+  read is Thomas's decision.
