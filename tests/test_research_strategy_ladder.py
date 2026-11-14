@@ -1830,3 +1830,156 @@ def test_the_basis_commands_hang_the_spot_bars_and_nothing_after_the_development
         assert not (market.funding_day("AUSDT") or {}), "the 2025 settlement is cut too"
         assert market.spot_of["AUSDT"] == ("AUSDT", 1.0)
     capsys.readouterr()
+
+
+# --- round 17: M04's score on the next tier --------------------------------------------------------------------------
+
+WIDE_TEST_SPAN = (date(2022, 1, 1), date(2022, 12, 31))
+WIDE_DAY = date(2022, 3, 6)                      # a Sunday decision
+MIDS = [f"MID{i:02d}USDT" for i in range(12)]
+
+
+def _wide_world(hole: bool = False):
+    """Thirty large coins and twelve smaller ones from mid-2021. MID00 has the slowest open-interest growth and the
+    lowest long share and rises fastest; each next one grows faster, is more crowded and does worse. MID11 has no
+    positioning in February 2022 and the archive is known not to serve those days. ``hole`` also removes two of
+    MID10's days that the archive was never asked for."""
+    start, end = date(2021, 6, 1), date(2022, 12, 31)
+    days = [start + timedelta(days=k) for k in range((end - start).days + 1)]
+
+    def bars(move, volume):
+        out, price = {}, 100.0
+        for day in days:
+            out[day] = xsb.Bar(open=price, close=price * (1 + move), quote_volume=volume)
+            price *= 1 + move
+        return out
+
+    names = {f"BIG{i:02d}USDT": bars(0.0, 1e9 - i) for i in range(30)}
+    names.update({s: bars((5.5 - i) * 0.0004, 1e7 - i * 1e4) for i, s in enumerate(MIDS)})
+    market = xsb.Market(bars=names, funding={s: [] for s in names})
+    market.metrics = {s: {day: {"oi": 1000.0 * (1 + 0.001 * (i + 1)) ** k, "ls": 0.40 + 0.02 * i, "top": None, "taker": None}
+                          for k, day in enumerate(days)} for i, s in enumerate(MIDS)}
+    february = [date(2022, 2, 1) + timedelta(days=k) for k in range(28)]
+    for day in february:
+        market.metrics["MID11USDT"].pop(day)
+    market.metrics_unserved = {"MID11USDT": set(february)}
+    if hole:
+        for day in (date(2022, 6, 1), date(2022, 6, 2)):
+            market.metrics["MID10USDT"].pop(day)
+    return market
+
+
+def test_the_wide_book_is_m04s_own_score_and_basket_rule_on_the_coins_outside_the_months_top_thirty():
+    ms = sl.lab.ms
+    market = _wide_world()
+    tier = sl.WideTier(market, WIDE_TEST_SPAN)
+    members = tier.members(WIDE_DAY)
+    assert set(members) == set(MIDS), "ranks 31 on: none of the month's top thirty"
+    assert tier.candidate is ms.CANDIDATES["M04"] and tier.candidate.as_dict()["features"] == [["oi_growth", 1.0], ["ls_level", 1.0]]
+    weights = tier.book()(market, ("BIG00USDT", "BIG01USDT"), WIDE_DAY, "x")
+    assert weights == sl.bs.weigher(ms.CANDIDATES["M04"], ms.FEATURES)(market, members, WIDE_DAY, "x"), \
+        "M04's weigher on these members, whatever members the caller hands in"
+    assert weights == {"MID00USDT": 0.5, "MID01USDT": 0.5, "MID10USDT": -0.5, "MID09USDT": -0.5}, \
+        "the least crowded fifth bought, the most crowded sold; MID11 has no score in the window"
+    assert "MID11USDT" not in tier.ranked(WIDE_DAY) and len(tier.ranked(WIDE_DAY)) == 11
+    assert tier.why_unranked("MID11USDT", WIDE_DAY) == sl.UNSERVED
+    assert list(ms.CANDIDATES) == ["M01", "M02", "M03", "M04"] and ms.FINAL == "M04" and ms.BUDGET == 5, \
+        "M04's own protocol is as it was: nothing is added to its attempts"
+
+
+def test_a_wide_null_book_has_the_books_shape_ranks_the_same_coins_and_changes_as_slowly_as_a_trailing_score():
+    market = _wide_world()
+    tier = sl.WideTier(market, WIDE_TEST_SPAN)
+    null = tier.null("wide:0")
+    weights = null(market, (), WIDE_DAY, "x")
+    assert sorted(weights.values()) == [-0.5, -0.5, 0.5, 0.5] and set(weights) <= tier.ranked(WIDE_DAY)
+    assert sl.WideTier(_wide_world(), WIDE_TEST_SPAN).null("wide:0")(market, (), WIDE_DAY, "x") == weights, "a seed is a book"
+    picks = {k: tuple(sorted(tier.null(f"wide:{k}")(market, (), WIDE_DAY, "x").items())) for k in range(6)}
+    assert len(set(picks.values())) > 1, "another seed is another book"
+    held = {s for k in range(30) for s in tier.null(f"wide:{k}")(market, (), WIDE_DAY, "x")}
+    assert held == tier.ranked(WIDE_DAY), "thirty null books between them hold every ranked coin and never the unranked one"
+    cand = sl.bs.Candidate(why="redrawn", features=tier.candidate.features, long_low=True)
+    inner = sl.bs.weigher(cand, sl.lab.ms.FEATURES)
+
+    def redrawn(seed):
+        return lambda market, members, day, signal, seed_=seed: inner(market, tier.members(day), day, signal, seed=seed_)
+
+    slow = [tier.turnover(tier.null(f"wide:{k}")) for k in range(5)]
+    fast = [tier.turnover(redrawn(f"r{k}")) for k in range(5)]
+    assert sum(slow) < 0.6 * sum(fast), "a score redrawn every week trades far more than one averaged over thirty days"
+    assert tier.turnover(tier.book()) < min(slow), "this world's real score never changes its order"
+
+
+def test_the_wide_counts_name_why_a_member_is_unranked_carry_nothing_earned_and_stop_on_an_unexplained_gap(monkeypatch):
+    counts = sl.wide_counts(_wide_world(), WIDE_TEST_SPAN)
+    year = counts["by_year"]["2022"]
+    assert counts["stop"] == [] and (counts["tier"], counts["score"]) == ("rank31_100", "M04")
+    assert year["members_median"] == 12 and year["side_median"] == 2 and year["active_decisions"] == year["decisions"]
+    assert set(year["unranked"]) == {sl.UNSERVED} and year["ranked_share"] > 0.9
+    turnover = counts["turnover"]
+    assert turnover["null_books"] == sl.WIDE_TURNOVER_NULLS and turnover["book"] < turnover["null_books_mean"]
+    assert turnover["alike"] is False, "this book never trades: its p would say so, not that it picks better"
+    flat = json.dumps(counts)
+    assert counts["returns_computed"] is False and "sharpe" not in flat and "pct" not in flat
+    holed = sl.wide_counts(_wide_world(hole=True), WIDE_TEST_SPAN)
+    assert "MID10USDT" in sl.WideTier(_wide_world(hole=True), WIDE_TEST_SPAN).ranked(date(2022, 6, 5)), \
+        "the score tolerates two missing days: the coin is still ranked"
+    assert holed["by_year"]["2022"]["days_read_without_a_file_or_a_cause"] > 0 and year["days_read_without_a_file_or_a_cause"] == 0
+    assert holed["stop"][0].endswith("have no file and no named cause: fetch or build is incomplete"), \
+        "a hole in a ranked member's window stops the book too"
+    assert sl.wide_run(_wide_world(hole=True), WIDE_TEST_SPAN)["refused"] == holed["stop"], "a stopped book is not measured"
+    monkeypatch.setattr(sl, "WIDE_MIN_ACTIVE", 60)
+    monkeypatch.setattr(sl, "WIDE_MIN_RANKED", 0.99)
+    assert sl.wide_counts(_wide_world(), WIDE_TEST_SPAN)["stop"] == [
+        "the score ranks too few of the tier's coins in 2022", "the book stands at too few decisions in 2022"]
+
+
+def test_the_wide_run_is_judged_held_at_stressed_cost_and_prints_m04s_own_accounting_beside_it(monkeypatch):
+    monkeypatch.setattr(sl, "SPAN", WIDE_TEST_SPAN)
+    run = sl.wide_run(_wide_world(), WIDE_TEST_SPAN, nulls=3)
+    assert (run["hypothesis"], run["logic"]) == ("H-M1", "L21")
+    assert run["sum_pct"] > 0 and run["legs"]["price_pct"] > 0 and run["funding_carried_it"] is False, \
+        "the uncrowded coins rise and the crowded ones fall"
+    assert set(run["rungs"]) == {"2a_entry", "2b_later_years", "2c_beside_null_books", "3_stability"}
+    assert run["rungs"]["2c_beside_null_books"]["null_books"] == 3 and run["null_net_total_position_annual_pct_mean"] < run["total_position_annual_pct"]
+    assert run["passes"] is False and run["reading"] == "closed", "one year of three: the later years are not there"
+    theirs = run["as_m04_was_measured"]
+    assert set(theirs) == {"annual_sharpe", "total_position_annual_pct", "years_total_position_pct", "cost_pct", "funding_pct"}
+    assert theirs["cost_pct"] < run["cost_pct"], "the engine's cost is under the stressed one"
+    tier = sl.WideTier(_wide_world(), WIDE_TEST_SPAN)
+    at_engine = sl.measure(tier.market, tier.book(), WIDE_TEST_SPAN, simulate=sl.simulate_held)["cost_pct"]
+    assert run["cost_pct"] == pytest.approx(at_engine * 26 / 8, abs=0.02) and at_engine > 0, "judged at 5 + 21 bps on every coin"
+    assert set(run["held_at_engine_cost"]) == {"annual_sharpe", "total_position_annual_pct"}
+    assert set(run["years_total_position_pct"]) == {"2022"}
+    monkeypatch.setattr(sl, "later_years", lambda years: {"passes": True})
+    monkeypatch.setattr(sl, "stability", lambda years: {"passes": True})
+    monkeypatch.setattr(sl, "beside_nulls", lambda value, nulls, **more: {"passes": True})
+    monkeypatch.setattr(sl.bs, "clears_entry", lambda report: True)
+    assert sl.wide_run(_wide_world(), WIDE_TEST_SPAN, nulls=1)["reading"] == "passes_beside_null_books_that_trade_differently", \
+        "a pass whose null books trade more than the book is labelled"
+
+
+def test_the_wide_commands_hang_the_positioning_values_and_nothing_after_their_span_reaches_the_book(monkeypatch, capsys, tmp_path):
+    assert sl.WIDE_SPAN == (date(2022, 1, 1), date(2024, 12, 31))
+    late = date(2025, 1, 2)
+    bar = xsb.Bar(open=1.0, close=1.0, quote_volume=1.0)
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(sl.xsb, "read_contract_types", lambda path: ({}, "snapshot"))
+    monkeypatch.setattr(sl.xsb, "load_market", lambda path, funding=True: xsb.Market(bars={"AUSDT": {date(2024, 12, 30): bar, late: bar}}))
+    seen = []
+    monkeypatch.setattr(sl, "wide_counts", lambda market: seen.append(market) or {"stop": []})
+    monkeypatch.setattr(sl, "wide_run", lambda market: seen.append(market) or {})
+    assert sl.main(["wide-counts", "--cache", str(tmp_path)]) == sl.EXIT_BLOCKED and seen == [], "no derived values: blocked"
+    folder = tmp_path / "derived" / "metrics-daily"
+    folder.mkdir(parents=True)
+    (folder / "AUSDT.jsonl").write_text('["2024-12-30", 5.0, 0.5, null, null]\n["2025-01-02", 6.0, 0.6, null, null]\n', encoding="utf-8")
+    (tmp_path / "archive-metrics").mkdir()
+    (tmp_path / "archive-metrics" / sl.lab.ba.MISSING_FILENAME).write_text(json.dumps(
+        {"AUSDT": ["AUSDT-metrics-2024-12-29.zip", "AUSDT-metrics-2025-01-03.zip", "not-a-day.zip"]}), encoding="utf-8")
+    assert sl.main(["wide-counts", "--cache", str(tmp_path)]) == sl.EXIT_OK and sl.main(["wide", "--cache", str(tmp_path)]) == sl.EXIT_OK
+    assert len(seen) == 2
+    for market in seen:
+        assert set(market.bars["AUSDT"]) == {date(2024, 12, 30)}
+        assert market.metrics["AUSDT"] == {date(2024, 12, 30): {"oi": 5.0, "ls": 0.5, "top": None, "taker": None}}
+        assert market.metrics_unserved == {"AUSDT": {date(2024, 12, 29)}}
+    assert '"span": [\n  "2022-01-01",\n  "2024-12-31"\n ]' in capsys.readouterr().out
