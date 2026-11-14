@@ -1974,6 +1974,234 @@ def basis_run(market: xsb.Market, span: tuple[date, date] = SPAN, *, placebos: i
             "reading": "closed" if not ladder else "passes_on_carry" if carried else "passes_on_price"}
 
 
+# --- L21: M04's score on the next tier (round 17, hypothesis H-M1) --------------------------------------------------------
+
+WIDE_SPAN = lab.ms.DEV_LONG                # the span M04 was developed on; positioning barely exists before it
+WIDE_TIER = "rank31_100"                   # the month's ranks 31 to 100 by trailing volume: no coin of that month's top 30
+WIDE_SCORE = "M04"                         # the registered candidate whose score and basket rule are imported, not copied
+WIDE_NULLS = 300
+WIDE_MIN_ACTIVE = 26                       # decisions with a book each year of the span needs, or nothing is measured
+WIDE_MIN_RANKED = 2 / 3                    # of a year's member coin-decisions must be ranked (the features' own MIN_SHARE)
+WIDE_TURNOVER_NULLS = 20                   # null books whose turnover the counts print beside the book's
+WIDE_TURNOVER_BAND = (0.8, 1.25)           # book turnover / null turnover inside it: the p is about what is picked
+WIDE_NAMES = ("H-M1", "L21")
+UNSERVED, VALUELESS, UNEXPLAINED = ("the archive serves no file for a day the score reads",
+                                    "a file is on disk without the value", "unexplained")
+
+
+def with_positioning(cache: Path, market: xsb.Market, span: tuple[date, date] = WIDE_SPAN) -> xsb.Market | None:
+    """``market`` with the derived daily positioning values hung on it, and the days the archive answered 404 for,
+    both cut at the span's end; None when no derived value is on disk (``metrics_basket_search build`` writes them)."""
+    daily = lab.ms.load_daily(cache)
+    if not daily:
+        return None
+    market.metrics = {s: {d: v for d, v in days.items() if d <= span[1]} for s, days in daily.items()}
+    try:
+        names = json.loads((cache / "archive-metrics" / lab.ba.MISSING_FILENAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        names = {}
+    unserved: dict[str, set[date]] = {}
+    for symbol, files in names.items():
+        for name in files:
+            try:
+                day = date.fromisoformat(str(name)[-14:-4])
+            except ValueError:
+                continue
+            if day <= span[1]:
+                unserved.setdefault(symbol, set()).add(day)
+    market.metrics_unserved = unserved
+    return market
+
+
+class WideTier:
+    """M04's book on the coins of the next tier. The score, its features and the basket rule are the registered
+    candidate's own objects (``metrics_basket_search.CANDIDATES[WIDE_SCORE]`` through ``basket_search.weigher``);
+    only the members differ: each month's :data:`WIDE_TIER`, none of which is in that month's top 30."""
+
+    def __init__(self, market: xsb.Market, span: tuple[date, date] = WIDE_SPAN) -> None:
+        self.market, self.span = market, span
+        self.candidate = lab.ms.CANDIDATES[WIDE_SCORE]
+        self.monthly = {m: tuple(v) for m, v in lab.tier_members(market, span)[WIDE_TIER].items()}
+        self.days = [d for d in sundays(span) if span[0] - timedelta(days=1) <= d <= span[1]]
+        self._inner = bs.weigher(self.candidate, lab.ms.FEATURES)
+        self._ranked: dict[date, frozenset[str]] = {}
+        self._noise: tuple[str, dict[str, list[float]]] = ("", {})
+
+    def members(self, day: date) -> tuple[str, ...]:
+        return self.monthly.get(date(day.year, day.month, 1), ())
+
+    def ranked(self, day: date) -> frozenset[str]:
+        """The members the score can rank at ``day``'s close: the ones with every feature."""
+        if day not in self._ranked:
+            self._ranked[day] = frozenset(bs.scores(self.market, self.members(day), day, self.candidate, lab.ms.FEATURES))
+        return self._ranked[day]
+
+    def book(self) -> Callable[..., dict[str, float]]:
+        def weights(market: xsb.Market, members: Sequence[str], day: date, signal: str,
+                    *, seed: str | None = None) -> dict[str, float]:
+            return self._inner(market, self.members(day), day, signal)
+        return weights
+
+    def _noise_of(self, seed: str, symbol: str) -> list[float]:
+        """Running sums of one coin's daily noise over the span and the lookback before it: a stream per seed and
+        coin, so a value does not depend on which days were asked first."""
+        if self._noise[0] != seed:
+            self._noise = (seed, {})
+        sums = self._noise[1].get(symbol)
+        if sums is None:
+            rng = random.Random(f"{seed}:{symbol}")
+            total, sums = 0.0, [0.0]
+            for _ in range((self.span[1] - self.span[0]).days + 1 + self.candidate.lookback):
+                total += rng.gauss(0.0, 1.0)
+                sums.append(total)
+            self._noise[1][symbol] = sums
+        return sums
+
+    def null(self, seed: str) -> Callable[..., dict[str, float]]:
+        """The same basket rule on a score with nothing in it: each coin's noise averaged over the score's own
+        lookback, so it changes from week to week about as slowly as a trailing feature does (a score redrawn
+        every week would trade several times as much and lose to the book on costs alone). It ranks exactly the
+        coins the real score ranks."""
+        lookback = self.candidate.lookback
+
+        def feature(market: xsb.Market, symbol: str, day: date, _lookback: int) -> float | None:
+            if symbol not in self.ranked(day):
+                return None
+            sums = self._noise_of(seed, symbol)
+            at = (day - self.span[0]).days + 1 + lookback
+            return (sums[at] - sums[at - lookback]) / lookback if lookback <= at < len(sums) else None
+
+        inner = bs.weigher(bs.Candidate(why="null", features=(("noise", 1.0),), lookback=lookback, long_low=True),
+                           {"noise": feature})
+
+        def weights(market: xsb.Market, members: Sequence[str], day: date, signal: str,
+                    *, seed: str | None = None) -> dict[str, float]:
+            return inner(market, self.members(day), day, signal)
+        return weights
+
+    def why_unranked(self, symbol: str, day: date) -> str:
+        """The named cause a member has no score at ``day``: of the days the score reads, one the archive does not
+        serve, or one whose file carries no value. Anything else is unexplained (a file not fetched or not built)."""
+        absent, unexplained = self.gaps(symbol, day)
+        return UNEXPLAINED if unexplained else UNSERVED if absent else VALUELESS
+
+    def gaps(self, symbol: str, day: date) -> tuple[int, int]:
+        """Of the days the score reads at ``day`` (the lookback and the day it grows from): how many have no file's
+        value on disk, and how many of those the archive was never recorded as not serving."""
+        days = (getattr(self.market, "metrics", None) or {}).get(symbol) or {}
+        unserved = (getattr(self.market, "metrics_unserved", None) or {}).get(symbol) or set()
+        absent = [d for d in (day - timedelta(days=k) for k in range(self.candidate.lookback + 1)) if d not in days]
+        return len(absent), sum(1 for d in absent if d not in unserved)
+
+    def turnover(self, weigher: Callable[..., dict[str, float]]) -> float | None:
+        """Mean over consecutive decisions of half the summed change in weights: 0 holds, 2 replaces both sides."""
+        moves, before = [], None
+        for day in self.days:
+            now = weigher(self.market, (), day, bs.CADENCE)
+            if before and now:
+                moves.append(sum(abs(now.get(s, 0.0) - before.get(s, 0.0)) for s in set(now) | set(before)) / 2)
+            before = now
+        return round(statistics.fmean(moves), 4) if moves else None
+
+
+def wide_counts(market: xsb.Market, span: tuple[date, date] = WIDE_SPAN, *, tier: WideTier | None = None) -> dict[str, Any]:
+    """What the book would stand on, with nothing earned after a decision in it: members, how many the score ranks
+    and why the others are not ranked, the side size, and how much the book trades beside its null books. Every
+    member's window is checked, ranked or not: a score tolerates missing days, so a hole left by an incomplete
+    fetch would otherwise thin the windows unseen. The stop rules are judged here."""
+    tier = tier or WideTier(market, span)
+    years: dict[str, dict[str, Any]] = {str(y): {"decisions": 0, "active_decisions": 0, "members": [], "ranked": [],
+                                                 "side": [], "member_coin_decisions": 0, "ranked_coin_decisions": 0,
+                                                 "unranked": {}, "days_read_without_a_file_or_a_cause": 0}
+                                        for y in range(span[0].year, span[1].year + 1)}
+    book = tier.book()
+    for day in tier.days:
+        row = years.get(str(day.year))
+        if row is None:
+            continue
+        members, ranked = tier.members(day), tier.ranked(day)
+        weights = book(market, (), day, bs.CADENCE)
+        row["decisions"] += 1
+        row["members"].append(len(members))
+        row["ranked"].append(len(ranked))
+        row["member_coin_decisions"] += len(members)
+        row["ranked_coin_decisions"] += len(ranked)
+        if weights:
+            row["active_decisions"] += 1
+            row["side"].append(sum(1 for w in weights.values() if w > 0))
+        for symbol in members:
+            holes = tier.gaps(symbol, day)[1]
+            row["days_read_without_a_file_or_a_cause"] += holes
+            if symbol not in ranked:
+                cause = UNEXPLAINED if holes else tier.why_unranked(symbol, day)
+                row["unranked"][cause] = row["unranked"].get(cause, 0) + 1
+    thin, sparse, unexplained = [], [], 0
+    for year, row in years.items():
+        members, ranked, side = row.pop("members"), row.pop("ranked"), row.pop("side")
+        row["members_median"] = statistics.median(members) if members else 0
+        row["ranked_median"] = statistics.median(ranked) if ranked else 0
+        row["side_median"] = statistics.median(side) if side else 0
+        share = row["ranked_coin_decisions"] / row["member_coin_decisions"] if row["member_coin_decisions"] else None
+        row["ranked_share"] = None if share is None else round(share, 3)
+        unexplained += row["days_read_without_a_file_or_a_cause"]
+        if row["active_decisions"] < WIDE_MIN_ACTIVE:
+            thin.append(year)
+        if share is None or share < WIDE_MIN_RANKED:
+            sparse.append(year)
+    own = tier.turnover(book)
+    others = [t for t in (tier.turnover(tier.null(f"turnover:{k}")) for k in range(WIDE_TURNOVER_NULLS)) if t is not None]
+    beside = round(statistics.fmean(others), 4) if others else None
+    ratio = round(own / beside, 3) if own is not None and beside else None
+    stops = [text for wrong, text in (
+        (unexplained > 0, f"{unexplained} day(s) a member's score reads have no file and no named cause: fetch or build is incomplete"),
+        (bool(sparse), "the score ranks too few of the tier's coins in " + ", ".join(sparse)),
+        (bool(thin), "the book stands at too few decisions in " + ", ".join(thin)),
+    ) if wrong]
+    return {"decisions": len(tier.days), "tier": WIDE_TIER, "score": WIDE_SCORE, "by_year": years,
+            "turnover": {"book": own, "null_books_mean": beside, "null_books": len(others), "ratio": ratio,
+                         "band": list(WIDE_TURNOVER_BAND),
+                         "alike": ratio is not None and WIDE_TURNOVER_BAND[0] <= ratio <= WIDE_TURNOVER_BAND[1]},
+            "last_day_in_market": lab.last_day(market).isoformat() if market.bars else None,
+            "stop": stops, "returns_computed": False}
+
+
+def wide_run(market: xsb.Market, span: tuple[date, date] = WIDE_SPAN, *, nulls: int = WIDE_NULLS) -> dict[str, Any]:
+    """M04's book on the next tier, held and net of stressed costs, beside the same basket rule on scores with
+    nothing in them, through rung 2's three conditions and rung 3. Refused when the counts say stop. The value under
+    the accounting and cost M04 itself was measured with is printed beside it and judged by nothing."""
+    tier = WideTier(market, span)
+    counts = wide_counts(market, span, tier=tier)
+    if counts["stop"]:
+        return {"refused": counts["stop"], "counts": counts}
+    stressed = functools.partial(simulate_held, unit_of=listing_unit)
+
+    def whole(report: dict[str, Any]) -> dict[str, Any]:
+        years = {str(y): report["years_total_position_pct"].get(str(y), 0.0) for y in range(span[0].year, span[1].year + 1)}
+        return {**report, "years_total_position_pct": years, "stability": stability(years)}
+
+    report = whole(measure(market, tier.book(), span, simulate=stressed))
+    side = ("annual_sharpe", "total_position_annual_pct")
+    rows = [tuple(r[k] for k in side) for r in
+            (measure(market, tier.null(f"wide:{k}"), span, simulate=stressed) for k in range(nulls))]
+    nets = [row[1] for row in rows if row[1] is not None]
+    rungs = {"2a_entry": report["clears_entry"], "2b_later_years": later_years(report["years_total_position_pct"]),
+             "2c_beside_null_books": beside_nulls(report["annual_sharpe"], [row[0] for row in rows]),
+             "3_stability": report["stability"]}
+    ladder = bool(rungs["2a_entry"] and rungs["2b_later_years"]["passes"] and rungs["2c_beside_null_books"]["passes"]
+                  and rungs["3_stability"]["passes"])
+    price = round(_before_costs(report), 2)
+    engine = whole(measure(market, tier.book(), span))
+    alike = counts["turnover"]["alike"]
+    return {**report, "hypothesis": WIDE_NAMES[0], "logic": WIDE_NAMES[1], "counts": counts, "rungs": rungs,
+            "legs": {"price_pct": price, "funding_pct": report["funding_pct"], "cost_pct": report["cost_pct"]},
+            "funding_carried_it": price <= 0 < report["funding_pct"],
+            "null_net_total_position_annual_pct_mean": round(statistics.fmean(nets), 2) if nets else None,
+            "as_m04_was_measured": {k: engine[k] for k in (*side, "years_total_position_pct", "cost_pct", "funding_pct")},
+            "held_at_engine_cost": {k: v for k, v in measure(market, tier.book(), span, simulate=simulate_held).items() if k in side},
+            "passes": ladder,
+            "reading": "closed" if not ladder else "passes" if alike else "passes_beside_null_books_that_trade_differently"}
+
+
 # --- L19: the open-interest flush book (round 15, hypothesis H-O1) -------------------------------------------------------
 
 FLUSH_SPAN = lab.ms.DEV_LONG               # the positioning files begin in 2022 for all but a few coins
@@ -2591,7 +2819,7 @@ def main(argv: list[str] | None = None) -> int:
                                             "crash-symbols", "crash-events", "crash-counts", "crash",
                                             "deep-counts", "deep", "rotation-counts", "rotation", "bar",
                                             "hot-counts", "hot", "gap-counts", "gap", "flush-counts", "flush",
-                                            "basis-counts", "basis"))
+                                            "basis-counts", "basis", "wide-counts", "wide"))
     parser.add_argument("--shape", choices=BAR_SHAPES, default=None, help="bar: the book shape whose null books are read")
     parser.add_argument("--only", default=None,
                         help="sweep, transfer: variable groups (comma list), or `null` for the random books")
@@ -2680,6 +2908,18 @@ def main(argv: list[str] | None = None) -> int:
                           "span": [d.isoformat() for d in SPAN], "command": args.command, **body},
                          indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or (args.command == "rotation-counts" and body["stop"]) else EXIT_OK
+    if args.command in ("wide-counts", "wide"):
+        market = lab.hold(cache, WIDE_SPAN, attach=False)
+        if market is not None:
+            market = with_positioning(cache, market, WIDE_SPAN)
+        if market is None:
+            print("BLOCKED: contract types or the derived positioning values are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        body = (wide_counts if args.command == "wide-counts" else wide_run)(market)
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in WIDE_SPAN], "command": args.command, **body},
+                         indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_BLOCKED if body.get("refused") or (args.command == "wide-counts" and body["stop"]) else EXIT_OK
     if args.command in ("flush-counts", "flush"):
         market = lab.hold(cache, FLUSH_SPAN, attach=False)
         if market is None:
