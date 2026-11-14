@@ -264,3 +264,12 @@ def test_the_spot_archive_is_listed_and_fetched_from_its_own_prefix_and_holds_no
     assert "prefix=data%2Fspot%2Fmonthly%2Fklines%2F" in seen[0]
     assert ba.main(["fetch-monthly", "--market", "spot", "--kind", "fundingRate", "--symbols", "BTCUSDT",
                     "--start", "2018-01-01", "--end", "2018-02-01", "--dest", "/nonexistent"]) == 2
+
+
+def test_hourly_klines_are_a_monthly_kind_from_the_same_bucket_under_their_own_folder(tmp_path):
+    assert ba.monthly_folder("klines-1h", "BTCUSDT") == "data/futures/um/monthly/klines/BTCUSDT/1h/"
+    assert ba.monthly_folder("klines-1d", "BTCUSDT") == "data/futures/um/monthly/klines/BTCUSDT/1d/", "daily is unchanged"
+    assert ba.monthly_local(tmp_path, "klines-1h", "BTCUSDT", "x.zip") == tmp_path / "klines-1h" / "BTCUSDT" / "x.zip"
+    with pytest.raises(ValueError):
+        ba.monthly_folder("klines-5m", "BTCUSDT")
+

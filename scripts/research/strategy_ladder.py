@@ -24,15 +24,21 @@ turns being left out.
 from __future__ import annotations
 
 import argparse
+import bisect
+import csv
 import functools
+import io
 import json
+import math
 import os
 import random
 import statistics
 import sys
-from datetime import date, timedelta
+import zipfile
+from array import array
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -341,10 +347,11 @@ def stability(years_total_pct: Mapping[str, float]) -> dict[str, Any]:
 
 
 def measure(market: xsb.Market, weigher: Callable[..., dict[str, float]], span: tuple[date, date] = SPAN,
-            *, simulate: Callable[..., Any] = xsb.simulate) -> dict[str, Any]:
-    """One book over the span, net of the engine's costs and funding: rung 2 (the entry rule) and rung 3."""
+            *, simulate: Callable[..., Any] = xsb.simulate, cadence: str = bs.CADENCE) -> dict[str, Any]:
+    """One book over the span, net of the engine's costs and funding: rung 2 (the entry rule) and rung 3.
+    ``cadence`` names the engine signal whose decision days are used (weekly unless a book says otherwise)."""
     start, end = span
-    sim = simulate(market, bs.CADENCE, monthly_members(market, span), start=start, end=end, weigher=weigher)
+    sim = simulate(market, cadence, monthly_members(market, span), start=start, end=end, weigher=weigher)
     sharpe, values = bs.annual_sharpe(sim["daily"], start, end)
     report: dict[str, Any] = {"annual_sharpe": sharpe, "sum_pct": round(sum(values) * 100, 2), "months": len(values)}
     report["total_position_annual_pct"] = bs.total_position_annual_pct(report["sum_pct"], report["months"])
@@ -855,7 +862,1321 @@ def listing_run(market: xsb.Market, span: tuple[date, date] = SPAN, *, placebos:
                            and rungs["2c_beside_placebos"]["passes"] and rungs["3_stability"]["passes"])}
 
 
+# --- L13: the lower-tier reversal book (round 9, hypothesis H-R1) -------------------------------------------------
+
+LOWER_TIER_FROM = 100                      # the tier begins after this many ranks of the month's trailing volume
+REVERSAL_LOOKBACK = 7                      # days of return the book ranks on
+REVERSAL_SKIP = 1                          # days between the last close ranked and the decision day's close
+LOWER_NULLS = 300
+LOWER_MIN_ACTIVE = 26                      # decisions with a book each of LATER_YEARS needs, or nothing is measured
+LOWER_MIN_FUNDING_KNOWN = 0.9              # of the tier's liquid coin-decisions must have funding on file
+LOWER_NULL_SEED = 2000                     # the weekly random variables of this null; the sweep's begin at 1000
+
+
+def skip_day_return(market: xsb.Market, symbol: str, day: date) -> float | None:
+    """The :data:`REVERSAL_LOOKBACK`-day return that ends :data:`REVERSAL_SKIP` day before ``day``. A book decided
+    on ``day`` trades at the next open, which is the same instant as ``day``'s close; ranking on that close would
+    let a last print at the bid or the ask pick the coin and then pay the book as it bounces back."""
+    bars = market.bars.get(symbol) or {}
+    last = bars.get(day - timedelta(days=REVERSAL_SKIP))
+    first = bars.get(day - timedelta(days=REVERSAL_SKIP + REVERSAL_LOOKBACK))
+    if last is None or first is None or first.close <= 0:
+        return None
+    return last.close / first.close - 1
+
+
+class LowerTier:
+    """Per decision day, read from that day and earlier: the coins ranked after the first :data:`LOWER_TIER_FROM`
+    by the month's trailing volume that pass the listing book's liquidity floor, split into those with funding on
+    file (held) and those without (left out and counted)."""
+
+    def __init__(self, market: xsb.Market, span: tuple[date, date] = SPAN) -> None:
+        self.market = market
+        self._liquid = ListingPools(market).liquid
+        ranked = xsb.universes(market, top_n=len(market.bars),
+                               start=date(span[0].year, span[0].month, 1) - timedelta(days=1), end=span[1])
+        self.monthly = {date(m.year, m.month, 1): tuple(members[LOWER_TIER_FROM:]) for m, members in ranked.items()}
+        self._at: dict[date, tuple[tuple[str, ...], tuple[str, ...]]] = {}
+
+    def at(self, day: date) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        if day not in self._at:
+            held, unfunded = [], []
+            for symbol in self.monthly.get(date(day.year, day.month, 1), ()):
+                if symbol == HEDGE or not symbol.endswith("USDT") or not self._liquid(symbol, day):
+                    continue
+                (held if self.market.funding_day(symbol) is not None else unfunded).append(symbol)
+            self._at[day] = (tuple(held), tuple(unfunded))
+        return self._at[day]
+
+
+def lower_book(tier: LowerTier, read: lab.Variable, way: int) -> Callable[..., dict[str, float]]:
+    """L1's rank weights on ``read`` over the tier's held coins at the decision; ``way`` below zero is long the low
+    values. The members the simulation passes (the top thirty) are not read."""
+    inner = book(read, lambda _day: way)
+
+    def weights(market: xsb.Market, members: Sequence[str], day: date, signal: str,
+                *, seed: str | None = None) -> dict[str, float]:
+        return inner(market, tier.at(day)[0], day, signal, seed=seed)
+    return weights
+
+
+def lower_counts(market: xsb.Market, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """What the lower-tier book would stand on, with no return in it: decisions, how many have enough ranked coins
+    for a book, and how many liquid coin-decisions lack funding. The stop rules are judged here."""
+    tier = LowerTier(market, span)
+    days = [d for d in sundays(span) if span[0] - timedelta(days=1) <= d <= span[1]]
+    years: dict[str, dict[str, Any]] = {str(y): {"decisions": 0, "active_decisions": 0, "names": [],
+                                                 "unfunded_coin_decisions": 0}
+                                        for y in range(span[0].year, span[1].year + 1)}
+    held_total = unfunded_total = 0
+    first_active: date | None = None
+    for day in days:
+        row = years.get(str(day.year))
+        if row is None:
+            continue
+        held, unfunded = tier.at(day)
+        ranked = sum(1 for s in held if skip_day_return(market, s, day) is not None)
+        row["decisions"] += 1
+        row["unfunded_coin_decisions"] += len(unfunded)
+        held_total, unfunded_total = held_total + len(held), unfunded_total + len(unfunded)
+        if ranked >= lab.MIN_NAMES:
+            row["active_decisions"] += 1
+            row["names"].append(ranked)
+            first_active = first_active or day
+    for row in years.values():
+        names = row.pop("names")
+        row["names_ranked_median"] = statistics.median(names) if names else 0
+    known = held_total / (held_total + unfunded_total) if held_total + unfunded_total else None
+    thin = [str(y) for y in LATER_YEARS if years.get(str(y), {}).get("active_decisions", 0) < LOWER_MIN_ACTIVE]
+    stops = [text for wrong, text in (
+        (known is None or known < LOWER_MIN_FUNDING_KNOWN, "too many of the tier's coins have no funding on file"),
+        (bool(thin), "the tier holds a book at too few decisions in " + ", ".join(thin)),
+    ) if wrong]
+    return {"decisions": len(days), "active_decisions": sum(r["active_decisions"] for r in years.values()),
+            "first_active_decision": first_active.isoformat() if first_active else None,
+            "funding_known_share": None if known is None else round(known, 3), "by_year": years,
+            "last_day_in_market": lab.last_day(market).isoformat() if market.bars else None,
+            "stop": stops, "returns_computed": False}
+
+
+def lower_run(market: xsb.Market, span: tuple[date, date] = SPAN, *, nulls: int = LOWER_NULLS) -> dict[str, Any]:
+    """The lower-tier reversal book net of stressed costs, beside the same book on weekly random variables, through
+    rung 2's three conditions and rung 3. A year of the span the book is flat in counts as zero, never as absent.
+    Refused when the counts say stop."""
+    counts = lower_counts(market, span)
+    if counts["stop"]:
+        return {"refused": counts["stop"], "counts": counts}
+    tier = LowerTier(market, span)
+    stressed = functools.partial(simulate_held, unit_of=listing_unit)
+
+    def whole(report: dict[str, Any]) -> dict[str, Any]:
+        years = {str(y): report["years_total_position_pct"].get(str(y), 0.0)
+                 for y in range(span[0].year, span[1].year + 1)}
+        return {**report, "years_total_position_pct": years, "stability": stability(years)}
+
+    report = whole(measure(market, lower_book(tier, skip_day_return, -1), span, simulate=stressed))
+    null_sharpes = [measure(market, lower_book(tier, lab._control("week", LOWER_NULL_SEED + k), -1), span,
+                            simulate=stressed)["annual_sharpe"] for k in range(nulls)]
+    engine = whole(measure(market, lower_book(tier, skip_day_return, -1), span, simulate=simulate_held))
+    rungs = {"2a_entry": report["clears_entry"], "2b_later_years": later_years(report["years_total_position_pct"]),
+             "2c_beside_nulls": beside_nulls(report["annual_sharpe"], null_sharpes), "3_stability": report["stability"]}
+    passes = bool(rungs["2a_entry"] and rungs["2b_later_years"]["passes"] and rungs["2c_beside_nulls"]["passes"]
+                  and rungs["3_stability"]["passes"])
+    lead = not passes and bool(engine["clears_entry"]) and rungs["2c_beside_nulls"]["passes"]
+    return {**report, "hypothesis": "H-R1", "logic": "L13", "counts": counts, "rungs": rungs, "passes": passes,
+            "at_engine_cost": {k: engine[k] for k in ("annual_sharpe", "total_position_annual_pct", "clears_entry",
+                                                      "cost_pct", "years_total_position_pct")},
+            "reading": "passes" if passes else "cost_dependent_lead" if lead else "closed"}
+
+
+# --- L14: the crash-rebound event book (round 10, hypothesis H-C1) -----------------------------------------------
+
+HOURLY_KIND = "klines-1h"
+HOUR_MS = 3_600_000
+CRASH_WINDOW_HOURS = 4                     # the reference coin's move over these hours makes an event
+CRASH_THRESHOLD = -0.05
+CRASH_RANK_HOURS = 24                      # coins are ranked on what they did over these hours, net of beta
+CRASH_HOLD_HOURS = 72
+CRASH_SPACING_HOURS = CRASH_HOLD_HOURS + 1  # the next event is looked for only after the hold: holds never overlap
+CRASH_BETA_DAYS = 60
+CRASH_SIDE_SHARE = 0.2
+CRASH_MIN_RANKED = 20
+CRASH_PLACEBOS = 300
+CRASH_MIN_EVENTS = 30                      # over the span, or nothing is measured
+CRASH_MIN_EVENTS_LATER_YEAR = 3            # in each of LATER_YEARS, or nothing is measured
+CRASH_MIN_HOURLY_SHARE = 0.9               # of the universe's coin-events must have hourly bars on file
+
+
+def hour_of(day: date) -> int:
+    return int(datetime(day.year, day.month, day.day, tzinfo=timezone.utc).timestamp()) // 3600
+
+
+def day_of(hour: int) -> date:
+    return datetime.fromtimestamp(hour * 3600, tz=timezone.utc).date()
+
+
+class Hourly:
+    """Hourly opens per symbol as flat arrays of floats (a missing hour is NaN): four hundred coins over five years
+    as bar objects do not fit the sandbox. An hour is numbered from the epoch; the open of hour ``h`` is the price
+    at that instant."""
+
+    def __init__(self) -> None:
+        self.first: dict[str, int] = {}
+        self.opens: dict[str, array] = {}
+
+    def put(self, symbol: str, prices: Mapping[int, float]) -> None:
+        if prices:
+            first, last = min(prices), max(prices)
+            self.first[symbol] = first
+            self.opens[symbol] = array("d", (prices.get(h, math.nan) for h in range(first, last + 1)))
+
+    def open(self, symbol: str, hour: int) -> float | None:
+        series = self.opens.get(symbol)
+        if series is None:
+            return None
+        k = hour - self.first[symbol]
+        if k < 0 or k >= len(series) or math.isnan(series[k]):
+            return None
+        return series[k]
+
+    def last_open(self, symbol: str, after: int, upto: int) -> tuple[int, float] | None:
+        """The latest hour in (after, upto] the coin has a bar at, and its open."""
+        for hour in range(upto, after, -1):
+            price = self.open(symbol, hour)
+            if price is not None:
+                return hour, price
+        return None
+
+
+def read_hourly(folder: Path, *, before: int | None = None) -> dict[int, float]:
+    """``{hour: open}`` from one symbol's monthly 1h zips; nothing at or after hour ``before``."""
+    out: dict[int, float] = {}
+    for path in sorted(folder.glob("*.zip")) if folder.exists() else []:
+        for row in xsb._rows(path):
+            try:
+                stamp, price = float(row[0]), float(row[1])
+            except (ValueError, IndexError):
+                continue          # the header row
+            if stamp > 1e14:      # microseconds
+                stamp /= 1000
+            hour = int(stamp // HOUR_MS)
+            if price > 0 and (before is None or hour < before):
+                out[hour] = price
+    return out
+
+
+def load_hourly(archive: Path, symbols: Iterable[str], span: tuple[date, date] = SPAN) -> Hourly:
+    """The symbols' hourly opens, cut at the span's last day: an hour after it is never read."""
+    hourly, before = Hourly(), hour_of(span[1] + timedelta(days=1))
+    for symbol in sorted(set(symbols)):
+        hourly.put(symbol, read_hourly(archive / HOURLY_KIND / symbol, before=before))
+    return hourly
+
+
+def top_hundred(market: xsb.Market, span: tuple[date, date] = SPAN) -> dict[date, tuple[str, ...]]:
+    tiers = lab.tier_members(market, span)
+    return {m: tuple(tiers["top30"][m]) + tuple(tiers["rank31_100"].get(m, ())) for m in tiers["top30"]}
+
+
+def crash_events(hourly: Hourly, span: tuple[date, date] = SPAN) -> list[int]:
+    """Hours at which the reference coin stands :data:`CRASH_THRESHOLD` or more below where it stood
+    :data:`CRASH_WINDOW_HOURS` earlier — the first such hour, then none until the hold after it is over, and none
+    whose hold would run past the span."""
+    out: list[int] = []
+    hour = hour_of(span[0]) + max(CRASH_WINDOW_HOURS, CRASH_RANK_HOURS)
+    last = hour_of(span[1] + timedelta(days=1)) - 1 - (1 + CRASH_HOLD_HOURS)
+    while hour <= last:
+        now, then = hourly.open(HEDGE, hour), hourly.open(HEDGE, hour - CRASH_WINDOW_HOURS)
+        if now is not None and then is not None and now / then - 1 <= CRASH_THRESHOLD:
+            out.append(hour)
+            hour += CRASH_SPACING_HOURS
+        else:
+            hour += 1
+    return out
+
+
+def placebo_times(events: Sequence[int], span: tuple[date, date], hourly: Hourly, seed: str) -> list[int]:
+    """As many hours in each year as that year has events, drawn where the reference coin has bars, spaced like
+    events among themselves, and clear of every real event's ranking window and hold."""
+    rng = random.Random(seed)
+    out: list[int] = []
+    clear = CRASH_SPACING_HOURS + CRASH_RANK_HOURS
+    for year in range(span[0].year, span[1].year + 1):
+        wanted = sum(1 for e in events if day_of(e).year == year)
+        lo = max(hour_of(date(year, 1, 1)), hour_of(span[0])) + CRASH_RANK_HOURS
+        hi = min(hour_of(date(year + 1, 1, 1)), hour_of(span[1] + timedelta(days=1))) - 1 - (1 + CRASH_HOLD_HOURS)
+        drawn: list[int] = []
+        for _ in range(20_000):
+            if len(drawn) == wanted or hi < lo:
+                break
+            hour = rng.randint(lo, hi)
+            if (hourly.open(HEDGE, hour) is None or hourly.open(HEDGE, hour - CRASH_RANK_HOURS) is None
+                    or any(abs(hour - e) < clear for e in events)
+                    or any(abs(hour - other) < clear for other in out + drawn)):
+                continue
+            drawn.append(hour)
+        out += drawn
+    return sorted(out)
+
+
+def crash_book(market: xsb.Market, hourly: Hourly, members: Sequence[str],
+               hour: int) -> tuple[dict[str, float], float] | None:
+    """The book decided at ``hour``: every member with hourly bars, funding and a beta is ranked on its move over the
+    :data:`CRASH_RANK_HOURS` to ``hour`` less its beta times the reference coin's; the lowest fifth is bought and the
+    highest sold, equal sizes, each side one. With it, the reference-coin leg that cancels the book's net beta.
+    Nothing after ``hour`` is read except that the coin has a bar at the entry hour."""
+    now, then = hourly.open(HEDGE, hour), hourly.open(HEDGE, hour - CRASH_RANK_HOURS)
+    if now is None or then is None:
+        return None
+    move, day = now / then - 1, day_of(hour) - timedelta(days=1)
+    residual: dict[str, float] = {}
+    betas: dict[str, float] = {}
+    for symbol in members:
+        if symbol == HEDGE or market.funding_day(symbol) is None or hourly.open(symbol, hour + 1) is None:
+            continue
+        here, before = hourly.open(symbol, hour), hourly.open(symbol, hour - CRASH_RANK_HOURS)
+        beta = bs._beta(market, symbol, day, CRASH_BETA_DAYS) if here is not None and before is not None else None
+        if beta is None:
+            continue
+        residual[symbol], betas[symbol] = here / before - 1 - beta * move, beta
+    if len(residual) < CRASH_MIN_RANKED:
+        return None
+    order = sorted(residual, key=lambda s: (residual[s], s))
+    side = max(MIN_SIDE, int(len(order) * CRASH_SIDE_SHARE))
+    weights = {**{s: 1 / side for s in order[:side]}, **{s: -1 / side for s in order[-side:]}}
+    return weights, -sum(w * betas[s] for s, w in weights.items())
+
+
+class _FundingIndex:
+    """Settlement times and running sums per symbol, so a hold's funding is two lookups."""
+
+    def __init__(self, market: xsb.Market) -> None:
+        self.market = market
+        self._rows: dict[str, tuple[list[int], list[float]]] = {}
+
+    def between(self, symbol: str, after_ms: int, upto_ms: int) -> float:
+        if symbol not in self._rows:
+            rows = self.market.funding.get(symbol) or []
+            total, sums = 0.0, [0.0]
+            for _, rate in rows:
+                total += rate
+                sums.append(total)
+            self._rows[symbol] = ([ms for ms, _ in rows], sums)
+        times, sums = self._rows[symbol]
+        return sums[bisect.bisect_right(times, upto_ms)] - sums[bisect.bisect_right(times, after_ms)]
+
+
+def crash_event(hourly: Hourly, funding: _FundingIndex, weights: Mapping[str, float], hedge: float, hour: int,
+                *, unit_of: Callable[[str], float] = None) -> dict[str, float] | None:
+    """One event's result per unit of one side: in at the open of the hour after ``hour`` — an hour after the print
+    that ranked the coins — and out :data:`CRASH_HOLD_HOURS` later. A coin whose bars stop inside the hold leaves at
+    its last open and its loss is counted; it is never dropped. Cost is paid on the way in and on the way out."""
+    unit_of = unit_of or listing_unit
+    enter, leave = hour + 1, hour + 1 + CRASH_HOLD_HOURS
+    legs = dict(weights)
+    if hedge:
+        legs[HEDGE] = legs.get(HEDGE, 0.0) + hedge
+    gross = cost = paid = 0.0
+    for symbol, weight in legs.items():
+        entry = hourly.open(symbol, enter)
+        if entry is None:
+            if symbol == HEDGE:
+                return None
+            continue
+        out = hourly.last_open(symbol, enter, leave) or (enter, entry)
+        gross += weight * (out[1] / entry - 1)
+        cost += abs(weight) * unit_of(symbol) * 2
+        paid += -weight * funding.between(symbol, enter * HOUR_MS, out[0] * HOUR_MS)
+    return {"gross": gross, "cost": cost, "funding": paid, "net": gross - cost + paid}
+
+
+def crash_daily(market: xsb.Market, hourly: Hourly, monthly: Mapping[date, Sequence[str]], times: Sequence[int],
+                *, hedged: bool = True) -> dict[date, dict[str, float]]:
+    """Each event's result on the day its hold ends."""
+    funding, daily = _FundingIndex(market), {}
+    for hour in times:
+        day = day_of(hour)
+        built = crash_book(market, hourly, monthly.get(date(day.year, day.month, 1), ()), hour)
+        result = crash_event(hourly, funding, built[0], built[1] if hedged else 0.0, hour) if built else None
+        if result is None:
+            continue
+        row = daily.setdefault(day_of(hour + 1 + CRASH_HOLD_HOURS), {"gross": 0.0, "cost": 0.0, "funding": 0.0, "net": 0.0})
+        for key, value in result.items():
+            row[key] += value
+    return daily
+
+
+def crash_counts(market: xsb.Market | None, hourly: Hourly, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """What the crash book would stand on, with no return of the book in it. With ``market`` None only the events
+    are counted (the reference coin's bars are enough for that); with it, also how much of the universe has hourly
+    bars at each event and how many events a book stands at. The stop rules are judged here."""
+    events = crash_events(hourly, span)
+    years = {str(y): {"events": 0} for y in range(span[0].year, span[1].year + 1)}
+    for hour in events:
+        years[str(day_of(hour).year)]["events"] += 1
+    standing, share = events, None
+    if market is not None:
+        monthly = top_hundred(market, span)
+        asked = found = 0
+        standing = []
+        for row in years.values():
+            row.update({"events_with_a_book": 0, "ranked": []})
+        for hour in events:
+            day = day_of(hour)
+            members = [s for s in monthly.get(date(day.year, day.month, 1), ()) if s != HEDGE]
+            asked, found = asked + len(members), found + sum(1 for s in members if hourly.open(s, hour) is not None)
+            built = crash_book(market, hourly, members, hour)
+            if built is not None:
+                standing.append(hour)
+                years[str(day.year)]["events_with_a_book"] += 1
+                years[str(day.year)]["ranked"].append(len(built[0]))
+        for row in years.values():
+            ranked = row.pop("ranked")
+            row["positions_median"] = statistics.median(ranked) if ranked else 0
+        share = found / asked if asked else None
+    per_year = {str(y): sum(1 for h in standing if day_of(h).year == y) for y in LATER_YEARS}
+    thin = [y for y, n in per_year.items() if n < CRASH_MIN_EVENTS_LATER_YEAR]
+    stops = [text for wrong, text in (
+        (len(standing) < CRASH_MIN_EVENTS, "too few events over the span"),
+        (bool(thin), "too few events in " + ", ".join(thin)),
+        (market is not None and (share is None or share < CRASH_MIN_HOURLY_SHARE),
+         "too many of the universe's coins have no hourly bars at the events"),
+    ) if wrong]
+    return {"events": len(events), "events_with_a_book": len(standing) if market is not None else None,
+            "by_year": years, "hourly_share": None if share is None else round(share, 3),
+            "event_hours": [datetime.fromtimestamp(h * 3600, tz=timezone.utc).strftime("%Y-%m-%dT%H:00Z") for h in events],
+            "reference_only": market is None, "stop": stops, "returns_computed": False}
+
+
+def crash_run(market: xsb.Market, hourly: Hourly, span: tuple[date, date] = SPAN,
+              *, placebos: int = CRASH_PLACEBOS) -> dict[str, Any]:
+    """The crash book net of stressed costs and funding, with its beta leg, beside the same book at placebo hours,
+    through rung 2's three conditions and rung 3. A month or a year with no event counts as zero. Refused when the
+    counts say stop."""
+    counts = crash_counts(market, hourly, span)
+    if counts["stop"]:
+        return {"refused": counts["stop"], "counts": counts}
+    monthly, events = top_hundred(market, span), crash_events(hourly, span)
+
+    def read(times: Sequence[int], *, hedged: bool = True) -> dict[str, Any]:
+        daily = crash_daily(market, hourly, monthly, times, hedged=hedged)
+        report = measure(market, None, span, simulate=lambda *_a, **_k: {"daily": daily})
+        years = {str(y): report["years_total_position_pct"].get(str(y), 0.0)
+                 for y in range(span[0].year, span[1].year + 1)}
+        return {**report, "years_total_position_pct": years, "stability": stability(years)}
+
+    report, bare = read(events), read(events, hedged=False)
+    nulls = [read(placebo_times(events, span, hourly, f"crash-placebo:{k}"))["annual_sharpe"] for k in range(placebos)]
+    after = [out[1] / entry - 1 for h in events
+             if (entry := hourly.open(HEDGE, h + 1)) is not None
+             and (out := hourly.last_open(HEDGE, h + 1, h + 1 + CRASH_HOLD_HOURS)) is not None]
+    rungs = {"2a_entry": report["clears_entry"], "2b_later_years": later_years(report["years_total_position_pct"]),
+             "2c_beside_placebos": beside_nulls(report["annual_sharpe"], nulls), "3_stability": report["stability"]}
+    return {**report, "hypothesis": "H-C1", "logic": "L14", "counts": counts, "rungs": rungs,
+            "passes": bool(rungs["2a_entry"] and rungs["2b_later_years"]["passes"]
+                           and rungs["2c_beside_placebos"]["passes"] and rungs["3_stability"]["passes"]),
+            "without_the_beta_leg": {k: bare[k] for k in ("annual_sharpe", "total_position_annual_pct",
+                                                          "years_total_position_pct")},
+            "reference_after_events": {"events": len(after), "mean_pct": round(statistics.fmean(after) * 100, 2) if after else None,
+                                       "positive": sum(1 for v in after if v > 0)}}
+
+
 # --- the round ---------------------------------------------------------------------------------------------------
+
+# --- L15: the deep-negative-funding book (round 11, hypothesis H-F1) -----------------------------------------------
+
+DEEP_FUNDING = -0.005                      # a coin whose last DEEP_WINDOW days of funding sum to this or less is held
+DEEP_WINDOW = 7
+DEEP_NAME_CAP = 0.20                       # of the long side: five names fill the book, fewer leave part of it idle
+DEEP_BETA_DAYS = 60
+DEEP_NEIGHBOURS = 10                       # the matched placebo draws among this many coins nearest in trailing return
+DEEP_PLACEBOS = 300
+DEEP_MIN_ACTIVE = 26                       # decisions with a position each of LATER_YEARS needs, or nothing is measured
+DEEP_MIN_FUNDING_KNOWN = 0.9               # of the pool's coin-decisions must have funding on file
+DEEP_CARRY_SHARE = 0.5                     # of a passing book's return before costs the alts' funding must be: else price carried it
+HOT_FUNDING = 0.01                         # L17 (round 14): a coin whose last DEEP_WINDOW days of funding sum to this or more is sold
+GAP_DISCOUNT = -0.00075                    # L18: the perp's close under its own spot's, averaged over DEEP_WINDOW days.
+#                                            The funding formula turns a standing premium of this size into DEEP_FUNDING a week
+GAP_MIN_DAYS = 5                           # of the DEEP_WINDOW days must have both closes, or the coin is out of L18's pool
+
+
+class DeepFunding:
+    """Per decision day, read from that day and earlier: the pool (coin perps listed :data:`xsb.MIN_AGE_DAYS` or
+    more, over the listing book's liquidity floor, with funding settled in the window and a beta), each with its
+    trailing funding, beta and trailing return; and how many otherwise eligible coins have no funding on file."""
+
+    def __init__(self, market: xsb.Market, threshold: float = DEEP_FUNDING) -> None:
+        self.market = market
+        self.threshold = threshold
+        self.side = 1 if threshold < 0 else -1      # a coin paid to hold is bought; one that pays its holders is sold
+        self._liquid = ListingPools(market).liquid
+        self._at: dict[date, tuple[dict[str, tuple[float, float, float | None]], int]] = {}
+        self._picks: dict[date, tuple[str, ...]] = {}
+        self._start: dict[tuple[str, date], date] = {}
+        self._others: dict[tuple[str, date, bool], tuple[str, ...]] = {}
+
+    def at(self, day: date) -> tuple[dict[str, tuple[float, float, float | None]], int]:
+        if day not in self._at:
+            pool: dict[str, tuple[float, float, float | None]] = {}
+            unfunded = 0
+            for symbol in sorted(self.market.bars):
+                first = self.market.first_day(symbol)
+                if (symbol == HEDGE or not symbol.endswith("USDT") or not xsb.is_coin(self.market, symbol)
+                        or first is None or first > day - timedelta(days=xsb.MIN_AGE_DAYS)
+                        or not self._liquid(symbol, day)):
+                    continue
+                if self.market.funding_day(symbol) is None:
+                    unfunded += 1
+                    continue
+                paid = self.reading(symbol, day)
+                beta = bs._beta(self.market, symbol, day, DEEP_BETA_DAYS)
+                if paid is not None and beta is not None:
+                    pool[symbol] = (paid, beta, xsb.trailing_return(self.market, symbol, day, DEEP_WINDOW))
+            self._at[day] = (pool, unfunded)
+        return self._at[day]
+
+    def reading(self, symbol: str, day: date) -> float | None:
+        """What a coin is picked on: the funding settled over the window."""
+        return xsb.trailing_funding(self.market, symbol, day, DEEP_WINDOW)
+
+    def deep(self, value: float) -> bool:
+        """Past the threshold, on the threshold's own side of zero."""
+        return value <= self.threshold if self.threshold < 0 else value >= self.threshold
+
+    def picks(self, day: date) -> tuple[str, ...]:
+        if day not in self._picks:
+            self._picks[day] = tuple(s for s, (paid, _, _) in self.at(day)[0].items() if self.deep(paid))
+        return self._picks[day]
+
+    def spell_start(self, symbol: str, day: date) -> date:
+        """The first of the unbroken run of weekly decisions, ending at ``day``, at which ``symbol`` was a pick."""
+        key = (symbol, day)
+        if key not in self._start:
+            before = day - timedelta(days=7)
+            self._start[key] = self.spell_start(symbol, before) if symbol in self.picks(before) else day
+        return self._start[key]
+
+    def partner(self, symbol: str, day: date, seed: str, *, matched: bool) -> str | None:
+        """The coin a placebo holds in place of ``symbol``: drawn once, at the first decision of the spell, from the
+        pool's coins that are not picks that day, so a placebo position lasts as long as the real one. ``matched``
+        draws among the :data:`DEEP_NEIGHBOURS` nearest to ``symbol`` in trailing return: a coin as beaten down,
+        without the funding."""
+        start = self.spell_start(symbol, day)
+        key = (symbol, start, matched)
+        if key not in self._others:
+            pool = self.at(start)[0]
+            others = sorted(s for s, (paid, _, _) in pool.items() if not self.deep(paid))
+            own = pool[symbol][2] if symbol in pool else None
+            if matched and own is not None:
+                near = sorted((s for s in others if pool[s][2] is not None), key=lambda s: (abs(pool[s][2] - own), s))
+                others = near[:DEEP_NEIGHBOURS] or others
+            self._others[key] = tuple(others)
+        others = self._others[key]
+        return random.Random(f"{seed}:{symbol}:{start.isoformat()}").choice(others) if others else None
+
+
+def deep_basket(names: Iterable[str], betas: Mapping[str, float], *, hedged: bool = True, side: int = 1) -> dict[str, float]:
+    """Equal longs (``side`` -1: equal shorts), none above :data:`DEEP_NAME_CAP`, and the hedge coin against their
+    summed beta. Under five names the rest of that side is idle and earns nothing."""
+    names = sorted(set(names))
+    if not names:
+        return {}
+    weight = side * min(1 / len(names), DEEP_NAME_CAP)
+    out = dict.fromkeys(names, weight)
+    hedge = -sum(weight * betas[s] for s in names)
+    if hedged and hedge:
+        out[HEDGE] = hedge
+    return out
+
+
+def deep_book(pools: DeepFunding, placebo: str | None = None, *, matched: bool = False,
+              hedged: bool = True) -> Callable[..., dict[str, float]]:
+    """L15: long every pool coin whose trailing funding is deep negative (L17, a pool with a positive threshold:
+    short every coin whose funding is deep positive). With ``placebo`` each of those coins is replaced by its
+    partner (held only while the partner itself is in the pool that day)."""
+    def weights(market: xsb.Market, members: Sequence[str], day: date, signal: str,
+                *, seed: str | None = None) -> dict[str, float]:
+        pool = pools.at(day)[0]
+        names = pools.picks(day)
+        if placebo is not None:
+            names = [p for s in names if (p := pools.partner(s, day, placebo, matched=matched)) is not None and p in pool]
+        return deep_basket(names, {s: pool[s][1] for s in names}, hedged=hedged, side=pools.side)
+    return weights
+
+
+def _median(values: Sequence[float | None]) -> float | None:
+    kept = [v for v in values if v is not None]
+    return round(statistics.median(kept), 4) if kept else None
+
+
+def deep_counts(market: xsb.Market, span: tuple[date, date] = SPAN, *, pools: DeepFunding | None = None) -> dict[str, Any]:
+    """What the deep-funding book would stand on, with nothing earned after a decision in it: decisions, names,
+    spells, the picks' trailing funding (the signal), and how beaten down and how volatile the picks are beside the
+    rest of the pool. The stop rules are judged here."""
+    pools = pools or DeepFunding(market)
+    days = [d for d in sundays(span) if span[0] - timedelta(days=1) <= d <= span[1]]
+    years: dict[str, dict[str, Any]] = {str(y): {"decisions": 0, "active_decisions": 0, "names": [], "invested": [],
+                                                 "spells": 0, "pool": [], "unfunded_coin_decisions": 0, "paid": [],
+                                                 "picked": []}
+                                        for y in range(span[0].year, span[1].year + 1)}
+    pooled = unfunded_total = 0
+    lengths: list[int] = []
+    running: dict[str, int] = {}
+    traits: dict[str, list[float | None]] = {"picks_back": [], "pool_back": [], "picks_vol": [], "pool_vol": []}
+    for day in days:
+        row = years.get(str(day.year))
+        if row is None:
+            continue
+        pool, unfunded = pools.at(day)
+        picks = pools.picks(day)
+        row["decisions"] += 1
+        row["pool"].append(len(pool))
+        row["unfunded_coin_decisions"] += unfunded
+        row["invested"].append(min(1.0, len(picks) * DEEP_NAME_CAP))
+        if pool:
+            row["picked"].append(len(picks) / len(pool))
+        pooled, unfunded_total = pooled + len(pool), unfunded_total + unfunded
+        for symbol in list(running):
+            if symbol not in picks:
+                lengths.append(running.pop(symbol))
+        for symbol in picks:
+            if symbol not in running:
+                row["spells"] += 1
+            running[symbol] = running.get(symbol, 0) + 1
+            row["paid"].append(pool[symbol][0])
+        if picks:
+            row["active_decisions"] += 1
+            row["names"].append(len(picks))
+        for symbol, (_, _, back) in pool.items():
+            side = "picks" if symbol in picks else "pool"
+            traits[f"{side}_back"].append(back)
+            traits[f"{side}_vol"].append(bs._vol(market, symbol, day, lab.LOOKBACK))
+    lengths.extend(running.values())
+    for row in years.values():
+        names, invested, pool_sizes, paid = row.pop("names"), row.pop("invested"), row.pop("pool"), row.pop("paid")
+        row["names_held_median"] = statistics.median(names) if names else 0
+        row["invested_share_mean"] = round(statistics.fmean(invested), 3) if invested else 0.0
+        row["pool_median"] = statistics.median(pool_sizes) if pool_sizes else 0
+        row["picks_trailing_funding_mean"] = round(statistics.fmean(paid), 5) if paid else None
+        picked = row.pop("picked")
+        row["picked_share_of_pool_mean"] = round(statistics.fmean(picked), 3) if picked else None
+    known = pooled / (pooled + unfunded_total) if pooled + unfunded_total else None
+    thin = [str(y) for y in LATER_YEARS if years.get(str(y), {}).get("active_decisions", 0) < DEEP_MIN_ACTIVE]
+    stops = [text for wrong, text in (
+        (known is None or known < DEEP_MIN_FUNDING_KNOWN, "too many of the pool's coins have no funding on file"),
+        (bool(thin), "the book holds a position at too few decisions in " + ", ".join(thin)),
+    ) if wrong]
+    return {"decisions": len(days), "active_decisions": sum(r["active_decisions"] for r in years.values()),
+            "spells": len(lengths), "spell_weeks_median": statistics.median(lengths) if lengths else 0,
+            "funding_known_share": None if known is None else round(known, 3), "by_year": years,
+            "beside_the_pool": {"trailing_move_median": {"picks": _median(traits["picks_back"]), "pool": _median(traits["pool_back"])},
+                                "volatility_median": {"picks": _median(traits["picks_vol"]), "pool": _median(traits["pool_vol"])}},
+            "last_day_in_market": lab.last_day(market).isoformat() if market.bars else None,
+            "stop": stops, "returns_computed": False}
+
+
+def _before_costs(report: Mapping[str, Any]) -> float:
+    return report["sum_pct"] + report["cost_pct"] - report["funding_pct"]
+
+
+def deep_legs(report: Mapping[str, Any], bare: Mapping[str, Any]) -> dict[str, dict[str, float]]:
+    """The book split into its alts and its hedge. The held accounting adds price, funding and cost coin by coin, so
+    the hedge is exactly the book less the same alts held without it."""
+    return {"alts": {"price_pct": round(_before_costs(bare), 2), "funding_pct": bare["funding_pct"], "cost_pct": bare["cost_pct"]},
+            "hedge": {"price_pct": round(_before_costs(report) - _before_costs(bare), 2),
+                      "funding_pct": round(report["funding_pct"] - bare["funding_pct"], 2),
+                      "cost_pct": round(report["cost_pct"] - bare["cost_pct"], 2)}}
+
+
+def deep_run(market: xsb.Market, span: tuple[date, date] = SPAN, *, placebos: int = DEEP_PLACEBOS,
+             pools: DeepFunding | None = None, names: tuple[str, str, str] = ("H-F1", "L15", "not_apart_from_beaten_down_coins"),
+             counter: Callable[..., dict[str, Any]] | None = None) -> dict[str, Any]:
+    """The deep-funding book net of stressed costs, beside the same book on placebo coins and on placebo coins as
+    beaten down, through rung 2's three conditions and rung 3. A year the book is flat in counts as zero. Refused
+    when the counts say stop. ``pools`` is the book's pool (L15's by default), ``names`` its hypothesis, logic and
+    what a book not apart from the matched placebos is called, ``counter`` the counts whose stop rules refuse it."""
+    pools = pools or DeepFunding(market)
+    counts = counter(market, span) if counter else deep_counts(market, span, pools=pools)
+    if counts["stop"]:
+        return {"refused": counts["stop"], "counts": counts}
+    stressed = functools.partial(simulate_held, unit_of=listing_unit)
+
+    def whole(report: dict[str, Any]) -> dict[str, Any]:
+        years = {str(y): report["years_total_position_pct"].get(str(y), 0.0)
+                 for y in range(span[0].year, span[1].year + 1)}
+        return {**report, "years_total_position_pct": years, "stability": stability(years)}
+
+    report = whole(measure(market, deep_book(pools), span, simulate=stressed))
+    bare = whole(measure(market, deep_book(pools, hedged=False), span, simulate=stressed))
+    side = ("annual_sharpe", "total_position_annual_pct")
+    plain_rows = [tuple(r[k] for k in side) for r in
+                  (measure(market, deep_book(pools, placebo=f"plain:{k}"), span, simulate=stressed) for k in range(placebos))]
+    alike_rows = [tuple(r[k] for k in side) for r in
+                  (measure(market, deep_book(pools, placebo=f"matched:{k}", matched=True), span, simulate=stressed)
+                   for k in range(placebos))]
+    plain, alike = [row[0] for row in plain_rows], [row[0] for row in alike_rows]
+
+    def net_mean(rows: Sequence[tuple[float | None, float | None]]) -> float | None:
+        kept = [row[1] for row in rows if row[1] is not None]
+        return round(statistics.fmean(kept), 2) if kept else None
+
+    legs = deep_legs(report, bare)
+    rungs = {"2a_entry": report["clears_entry"], "2b_later_years": later_years(report["years_total_position_pct"]),
+             "2c_beside_placebos": beside_nulls(report["annual_sharpe"], plain), "3_stability": report["stability"]}
+    matched = beside_nulls(report["annual_sharpe"], alike)
+    ladder = bool(rungs["2a_entry"] and rungs["2b_later_years"]["passes"] and rungs["2c_beside_placebos"]["passes"]
+                  and rungs["3_stability"]["passes"])
+    earned = _before_costs(report) + report["funding_pct"]
+    carried = earned > 0 and legs["alts"]["funding_pct"] >= DEEP_CARRY_SHARE * earned
+    reading = ("closed" if not ladder else names[2] if not matched["passes"]
+               else "passes_on_carry" if carried else "passes_on_price")
+    return {**report, "hypothesis": names[0], "logic": names[1], "counts": counts, "rungs": rungs,
+            "beside_matched_placebos": matched, "legs": legs,
+            # what the same book earns on coins the signal did not pick: the part of the result that is the book's
+            # structure (which side of the alts, against which side of the hedge), not the signal
+            "placebo_net_total_position_annual_pct_mean": {"plain": net_mean(plain_rows), "matched": net_mean(alike_rows)},
+            "without_the_hedge": {k: bare[k] for k in ("annual_sharpe", "total_position_annual_pct", "years_total_position_pct")},
+            "at_engine_cost_annual_sharpe": measure(market, deep_book(pools), span, simulate=simulate_held)["annual_sharpe"],
+            "passes": ladder and matched["passes"], "reading": reading}
+
+
+# --- L17: the deep-positive-funding book (round 14, hypothesis H-F2) ---------------------------------------------------
+
+HOT_NAMES = ("H-F2", "L17", "not_apart_from_run_up_coins")
+
+
+def hot_counts(market: xsb.Market, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    return deep_counts(market, span, pools=DeepFunding(market, HOT_FUNDING))
+
+
+def hot_run(market: xsb.Market, span: tuple[date, date] = SPAN, *, placebos: int = DEEP_PLACEBOS) -> dict[str, Any]:
+    """L15 mirrored: every pool coin whose funding is deep positive sold in equal weights, the hedge coin bought
+    against their summed beta, beside the same book on other coins and on coins that ran up as much."""
+    return deep_run(market, span, placebos=placebos, pools=DeepFunding(market, HOT_FUNDING), names=HOT_NAMES)
+
+
+# --- L18: the spot-gap book (round 14, hypothesis H-G1) ------------------------------------------------------------------
+
+GAP_NAMES = ("H-G1", "L18", "not_apart_from_beaten_down_coins")
+
+
+class GapPools(DeepFunding):
+    """L15's pool and book, picked on how far the perp closed under its own spot instead of on the funding. A coin
+    with no spot pair, or with both closes (within the spot-share search's price band of each other) on fewer than
+    :data:`GAP_MIN_DAYS` of the window's days, is out of the pool. The market must carry the spot bars
+    (:func:`with_spot`)."""
+
+    def __init__(self, market: xsb.Market) -> None:
+        super().__init__(market, GAP_DISCOUNT)
+
+    def reading(self, symbol: str, day: date) -> float | None:
+        pair = (getattr(self.market, "spot_of", None) or {}).get(symbol)
+        if pair is None:
+            return None
+        spot, perp = self.market.spot.get(pair[0]) or {}, self.market.bars[symbol]
+        gaps = [gap for k in range(DEEP_WINDOW)
+                if (p := perp.get(day - timedelta(days=k))) is not None
+                and (b := spot.get(day - timedelta(days=k))) is not None and b.close > 0
+                # a pair whose prices are this far apart is another asset under the same name (the spot-share
+                # search's guard): without it one mismatched pair is a pick every week and never one of L15's
+                and abs(gap := p.close / (b.close * pair[1]) - 1) <= lab.sp.PRICE_BAND]
+        return statistics.fmean(gaps) if len(gaps) >= GAP_MIN_DAYS else None
+
+
+def gap_overlap(market: xsb.Market, span: tuple[date, date] = SPAN, *, pools: GapPools | None = None) -> dict[str, Any]:
+    """How much of the gap book is L15 under another signal: of its coin-decisions, the share that are L15's picks
+    the same day (and, beside it, L17's). No return is read. The limit and the decisions it needs are the ones the
+    spot-share search judged its own overlap by."""
+    gaps, cold, hot = pools or GapPools(market), DeepFunding(market), DeepFunding(market, HOT_FUNDING)
+    picked = shared = hot_shared = decisions = chance_n = chance_d = pool_gap = pool_cold = 0
+    for day in (d for d in sundays(span) if span[0] - timedelta(days=1) <= d <= span[1]):
+        pool, mine, theirs = gaps.at(day)[0], set(gaps.picks(day)), set(cold.picks(day))
+        pool_gap, pool_cold = pool_gap + len(pool), pool_cold + len(cold.at(day)[0])
+        chance_n, chance_d = chance_n + len(theirs & set(pool)), chance_d + len(pool)
+        if mine:
+            decisions += 1
+            picked, shared, hot_shared = picked + len(mine), shared + len(mine & theirs), hot_shared + len(mine & set(hot.picks(day)))
+    share = round(shared / picked, 3) if picked else None
+    enough = decisions >= lab.sp.MIN_COMPARED
+    return {"reference": "L15", "decisions_compared": decisions, "minimum_compared": lab.sp.MIN_COMPARED,
+            "coin_decisions": picked, "limit": lab.sp.OVERLAP_LIMIT,
+            "share_that_are_l15_picks": share,
+            "share_that_are_l17_picks": round(hot_shared / picked, 3) if picked else None,
+            "chance_level": round(chance_n / chance_d, 3) if chance_d else None,
+            "pool_beside_l15s_pool": round(pool_gap / pool_cold, 3) if pool_cold else None,
+            "independent": bool(share < lab.sp.OVERLAP_LIMIT) if enough and share is not None else None}
+
+
+def gap_counts(market: xsb.Market, span: tuple[date, date] = SPAN, *, pools: GapPools | None = None) -> dict[str, Any]:
+    """L15's counts on the gap pool, with the overlap rule among the stop rules."""
+    pools = pools or GapPools(market)
+    counts = deep_counts(market, span, pools=pools)
+    for row in counts["by_year"].values():
+        row["picks_gap_mean"] = row.pop("picks_trailing_funding_mean")      # the signal here is the gap
+    overlap = gap_overlap(market, span, pools=pools)
+    stops = list(counts["stop"])
+    if overlap["independent"] is None:
+        stops.append("too few decisions with a gap pick to tell the book from L15")
+    elif not overlap["independent"]:
+        stops.append("the gap picks are L15's picks: H-F1 under another signal, not a reading of its own")
+    return {**counts, "overlap": overlap, "stop": stops}
+
+
+def gap_run(market: xsb.Market, span: tuple[date, date] = SPAN, *, placebos: int = DEEP_PLACEBOS) -> dict[str, Any]:
+    pools = GapPools(market)
+    return deep_run(market, span, placebos=placebos, pools=pools, names=GAP_NAMES,
+                    counter=functools.partial(gap_counts, pools=pools))
+
+
+def with_spot(cache: Path, market: xsb.Market, span: tuple[date, date] = SPAN) -> xsb.Market | None:
+    """``market`` with the spot bars and each perp's pair hung on it, cut at the span's end; None without a listing."""
+    try:
+        listing = set(json.loads((cache / lab.sp.SPOT_DIR / lab.ba.SYMBOLS_FILENAME).read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        listing = set()
+    if not listing:
+        return None
+    return lab.sp.attach(market, xsb.load_market(cache / lab.sp.SPOT_DIR, funding=False), listing, span[1])
+
+
+# --- L19: the open-interest flush book (round 15, hypothesis H-O1) -------------------------------------------------------
+
+FLUSH_SPAN = lab.ms.DEV_LONG               # the positioning files begin in 2022 for all but a few coins
+FLUSH_OI = -0.10                           # the open interest at the day's close against the close before, at or under this
+FLUSH_MOVE = -0.05                         # and the coin's own close against the close before, at or under this
+FLUSH_CLOSING_HOUR = 23                    # the day's last positioning row must be stamped this hour, or the day has no value
+FLUSH_HOLD_DAYS = 3                        # bought at the next open and held this many days (round 10's 72 hours)
+FLUSH_BETA_DAYS = 60
+FLUSH_NEIGHBOURS = 3                       # the matched placebo draws among this many members nearest in the day's move
+FLUSH_PLACEBOS = 300
+FLUSH_CADENCE = "S-REV"                    # only its daily cadence is used
+FLUSH_WIDE = 10                            # members flushing on one day at or over this: the day is the market's, no event is taken
+FLUSH_MIN_EVENT_DAYS = 30                  # days with an event over the span, or nothing is measured (round 10's number)
+FLUSH_MIN_EVENT_DAYS_A_YEAR = 10           # and in each year of the span
+FLUSH_MIN_KNOWN = 0.9                      # of each year's member coin-days must have the open interest of both closes
+FLUSH_MAX_NO_PLACEBO = 0.1                 # of the events may be without a placebo coin, of either kind
+
+
+class Flushes:
+    """Per day, read from that day and earlier: the month's top thirty but the hedge coin, each with the change in
+    its open interest from close to close and its own move; the events (both at or past their thresholds, on a day
+    that is not the market's); and the coins a book holds the next day (an event is held :data:`FLUSH_HOLD_DAYS`
+    days)."""
+
+    def __init__(self, market: xsb.Market, span: tuple[date, date] = FLUSH_SPAN) -> None:
+        self.market = market
+        self.monthly = monthly_members(market, span)
+        self._read: dict[date, dict[str, tuple[float | None, float | None]]] = {}
+
+    def read(self, day: date) -> dict[str, tuple[float | None, float | None]]:
+        if day not in self._read:
+            metrics, before = getattr(self.market, "closing_oi", {}), day - timedelta(days=1)
+            out: dict[str, tuple[float | None, float | None]] = {}
+            for symbol in self.monthly.get(date(day.year, day.month, 1), ()):
+                if symbol == HEDGE:
+                    continue
+                days, bars = metrics.get(symbol) or {}, self.market.bars.get(symbol) or {}
+                now, then = days.get(day), days.get(before)
+                a, b = bars.get(day), bars.get(before)
+                out[symbol] = (None if now is None or not then else now / then - 1,
+                               None if a is None or b is None or b.close <= 0 else a.close / b.close - 1)
+            self._read[day] = out
+        return self._read[day]
+
+    def flushed(self, day: date) -> tuple[str, ...]:
+        return tuple(s for s, (change, move) in self.read(day).items()
+                     if change is not None and move is not None and change <= FLUSH_OI and move <= FLUSH_MOVE)
+
+    def events(self, day: date) -> tuple[str, ...]:
+        """The day's flushed coins, or none on a day so many flush that it is the market's (round 10's ground)."""
+        flushed = self.flushed(day)
+        return flushed if len(flushed) < FLUSH_WIDE else ()
+
+    def partner(self, symbol: str, day: date, seed: str, *, matched: bool) -> str | None:
+        """The member a placebo holds in place of an event's coin: one whose open interest is known that day and
+        that is not an event. ``matched`` draws among the :data:`FLUSH_NEIGHBOURS` nearest in the day's move: a coin
+        that fell as much while its open interest stayed."""
+        read, events = self.read(day), set(self.events(day))
+        others = sorted(s for s, (change, move) in read.items() if s not in events and change is not None and move is not None)
+        if matched and others and symbol in read:
+            own = read[symbol][1]
+            others = sorted(others, key=lambda s: (abs(read[s][1] - own), s))[:FLUSH_NEIGHBOURS]
+        return random.Random(f"{seed}:{symbol}:{day.isoformat()}").choice(others) if others else None
+
+    def names(self, day: date, placebo: str | None = None, *, matched: bool = False) -> list[str]:
+        out: list[str] = []
+        for back in range(FLUSH_HOLD_DAYS):
+            at = day - timedelta(days=back)
+            for symbol in self.events(at):
+                name = symbol if placebo is None else self.partner(symbol, at, placebo, matched=matched)
+                if name is not None:
+                    out.append(name)
+        return sorted(set(out))
+
+
+def flush_book(flushes: Flushes, placebo: str | None = None, *, matched: bool = False,
+               hedged: bool = True) -> Callable[..., dict[str, float]]:
+    """L19: every coin with an event in the last :data:`FLUSH_HOLD_DAYS` days bought in equal weights under L15's
+    cap, the hedge coin sold against their summed beta."""
+    def weights(market: xsb.Market, members: Sequence[str], day: date, signal: str,
+                *, seed: str | None = None) -> dict[str, float]:
+        betas = {s: beta for s in flushes.names(day, placebo, matched=matched)
+                 if (beta := bs._beta(market, s, day, FLUSH_BETA_DAYS)) is not None}
+        return deep_basket(betas, betas, hedged=hedged)
+    return weights
+
+
+def flush_counts(market: xsb.Market, span: tuple[date, date] = FLUSH_SPAN, *,
+                 crash_days: Iterable[date] = ()) -> dict[str, Any]:
+    """What the flush book would stand on, with nothing after an event in it: events and the days they fall on, the
+    days left out as the market's, how much of the universe has its open interest on file, whether a placebo can be
+    drawn, and how many events fall on round 10's event days (``crash_days``) or the day after."""
+    flushes = Flushes(market, span)
+    crashes = {d + timedelta(days=k) for d in crash_days for k in (0, 1)}
+    years: dict[str, dict[str, Any]] = {str(y): {"events": 0, "event_days": 0, "days_with_a_position": 0, "names": [],
+                                                 "wide_days": 0, "flushes_on_wide_days": 0,
+                                                 "member_coin_days": 0, "known_coin_days": 0}
+                                        for y in range(span[0].year, span[1].year + 1)}
+    no_plain = no_matched = on_crash = 0
+    oi_changes: list[float | None] = []
+    moves: list[float | None] = []
+    partner_moves: list[float | None] = []     # the day's move of the coin the matched placebo would hold instead
+    for day in xsb.held_days(*span):
+        row, read, events, flushed = years[str(day.year)], flushes.read(day), flushes.events(day), flushes.flushed(day)
+        row["member_coin_days"] += len(read)
+        row["known_coin_days"] += sum(1 for change, _ in read.values() if change is not None)
+        names = flushes.names(day)
+        if names:
+            row["days_with_a_position"] += 1
+            row["names"].append(len(names))
+        if flushed and not events:
+            row["wide_days"] += 1
+            row["flushes_on_wide_days"] += len(flushed)
+        if events:
+            row["events"] += len(events)
+            row["event_days"] += 1
+            on_crash += len(events) if day in crashes else 0
+            for symbol in events:
+                oi_changes.append(read[symbol][0])
+                moves.append(read[symbol][1])
+                no_plain += flushes.partner(symbol, day, "counts", matched=False) is None
+                alike = flushes.partner(symbol, day, "counts", matched=True)
+                no_matched += alike is None
+                if alike is not None:
+                    partner_moves.append(read[alike][1])
+    total = sum(r["events"] for r in years.values())
+    event_days = sum(r["event_days"] for r in years.values())
+    for row in years.values():
+        names = row.pop("names")
+        row["names_held_median"] = statistics.median(names) if names else 0
+        row["known_share"] = round(row["known_coin_days"] / row["member_coin_days"], 3) if row["member_coin_days"] else None
+    thin = [y for y, r in years.items() if r["event_days"] < FLUSH_MIN_EVENT_DAYS_A_YEAR]
+    blind = [y for y, r in years.items() if r["known_share"] is None or r["known_share"] < FLUSH_MIN_KNOWN]
+    bare = max(no_plain, no_matched) / total if total else 1.0
+    crash_share = on_crash / total if total else None
+    stops = [text for wrong, text in (
+        (event_days < FLUSH_MIN_EVENT_DAYS, "too few days with an event over the span"),
+        (bool(thin), "too few days with an event in " + ", ".join(thin)),
+        (bool(blind), "too little of the universe has its open interest on file in " + ", ".join(blind)),
+        (bare > FLUSH_MAX_NO_PLACEBO, "too many events have no placebo coin to draw"),
+        (crash_share is not None and crash_share >= lab.sp.OVERLAP_LIMIT,
+         "the events fall on round 10's event days: H-C1 on daily bars, not a reading of its own"),
+    ) if wrong]
+    return {"events": total, "event_days": event_days, "by_year": years,
+            "events_on_crash_days_share": None if crash_share is None else round(crash_share, 3),
+            "crash_days_limit": lab.sp.OVERLAP_LIMIT,
+            "events_without_a_placebo_share": {"plain": round(no_plain / total, 3) if total else None,
+                                               "matched": round(no_matched / total, 3) if total else None},
+            "events_signal_median": {"open_interest_change": _median(oi_changes), "day_move": _median(moves)},
+            # a decision-day value, not a return after it: whether the matched placebo's coins fell as the events did
+            "matched_partner_day_move_median": _median(partner_moves),
+            "last_day_in_market": lab.last_day(market).isoformat() if market.bars else None,
+            "stop": stops, "returns_computed": False}
+
+
+def flush_run(market: xsb.Market, span: tuple[date, date] = FLUSH_SPAN, *, placebos: int = FLUSH_PLACEBOS,
+              crash_days: Iterable[date] = ()) -> dict[str, Any]:
+    """The flush book net of stressed costs, beside the same book on other members and on members that fell as
+    much, through rung 2's three conditions and rung 3 over the span the positioning files cover."""
+    counts = flush_counts(market, span, crash_days=crash_days)
+    if counts["stop"]:
+        return {"refused": counts["stop"], "counts": counts}
+    flushes = Flushes(market, span)
+    stressed = functools.partial(simulate_held, unit_of=listing_unit)
+
+    def read(weigher: Callable[..., dict[str, float]], simulate: Callable[..., Any] = stressed) -> dict[str, Any]:
+        report = measure(market, weigher, span, simulate=simulate, cadence=FLUSH_CADENCE)
+        years = {str(y): report["years_total_position_pct"].get(str(y), 0.0) for y in range(span[0].year, span[1].year + 1)}
+        return {**report, "years_total_position_pct": years, "stability": stability(years)}
+
+    report, bare = read(flush_book(flushes)), read(flush_book(flushes, hedged=False))
+    side = ("annual_sharpe", "total_position_annual_pct")
+    plain_rows = [tuple(r[k] for k in side) for r in (read(flush_book(flushes, placebo=f"plain:{k}")) for k in range(placebos))]
+    alike_rows = [tuple(r[k] for k in side) for r in
+                  (read(flush_book(flushes, placebo=f"matched:{k}", matched=True)) for k in range(placebos))]
+
+    def net_mean(rows: Sequence[tuple[float | None, float | None]]) -> float | None:
+        kept = [row[1] for row in rows if row[1] is not None]
+        return round(statistics.fmean(kept), 2) if kept else None
+
+    rungs = {"2a_entry": report["clears_entry"], "2b_later_years": later_years(report["years_total_position_pct"]),
+             "2c_beside_placebos": beside_nulls(report["annual_sharpe"], [row[0] for row in plain_rows]),
+             "3_stability": report["stability"]}
+    matched = beside_nulls(report["annual_sharpe"], [row[0] for row in alike_rows])
+    ladder = bool(rungs["2a_entry"] and rungs["2b_later_years"]["passes"] and rungs["2c_beside_placebos"]["passes"]
+                  and rungs["3_stability"]["passes"])
+    reading = "closed" if not ladder else "not_apart_from_beaten_down_coins" if not matched["passes"] else "passes"
+    return {**report, "hypothesis": "H-O1", "logic": "L19", "counts": counts, "rungs": rungs,
+            "beside_matched_placebos": matched, "legs": deep_legs(report, bare),
+            "placebo_net_total_position_annual_pct_mean": {"plain": net_mean(plain_rows), "matched": net_mean(alike_rows)},
+            "without_the_hedge": {k: bare[k] for k in ("annual_sharpe", "total_position_annual_pct", "years_total_position_pct")},
+            "at_engine_cost_annual_sharpe": read(flush_book(flushes), simulate_held)["annual_sharpe"],
+            "passes": ladder and matched["passes"], "reading": reading}
+
+
+def closing_oi(folder: Path, symbols: Iterable[str], span: tuple[date, date] = FLUSH_SPAN) -> dict[str, dict[date, float]]:
+    """Each symbol's open interest at the day's close: ``sum_open_interest`` on the row of the day's file with the
+    latest stamp of that day, when that stamp is at :data:`FLUSH_CLOSING_HOUR` or later. The latest stamp, not the
+    file's last row: some files (most of April 2024) are not in time order. Only files dated from the day before the
+    span to its last day are opened."""
+    first, out = span[0] - timedelta(days=1), {}
+    for symbol in sorted(set(symbols)):
+        days: dict[date, float] = {}
+        for path in sorted((folder / symbol).glob("*.zip")) if (folder / symbol).is_dir() else []:
+            try:
+                day = date.fromisoformat(path.stem[-10:])
+                if not first <= day <= span[1]:
+                    continue
+                with zipfile.ZipFile(path) as z:
+                    rows = list(csv.reader(io.StringIO(z.read(z.namelist()[0]).decode("utf-8"))))
+                stamp, raw = max((row[0], row[2]) for row in rows[1:] if len(row) > 2 and row[0][:10] == day.isoformat())
+                value = float(raw)
+            except (OSError, ValueError, IndexError, zipfile.BadZipFile):
+                continue
+            if int(stamp[11:13]) >= FLUSH_CLOSING_HOUR and math.isfinite(value) and value > 0:
+                days[day] = value
+        if days:
+            out[symbol] = days
+    return out
+
+
+def crash_days_of(hourly: Hourly, span: tuple[date, date] = FLUSH_SPAN) -> list[date]:
+    """The UTC days round 10's events fall on, within ``span``. The events are found over round 10's own span, so
+    they are the hours that round measured (an event's place depends on the events before it)."""
+    days = {day_of(hour) for hour in crash_events(hourly)}
+    return sorted(d for d in days if span[0] <= d <= span[1])
+
+
+# --- L16: the alt-against-Bitcoin rotation book (round 12, hypothesis H-D1) ----------------------------------------
+
+ROTATION_WINDOW = 28                       # days of the spread's own return that set the side
+ROTATION_BETA_DAYS = 60
+ROTATION_SHIFT_MARGIN = 8                  # decisions a placebo's shift keeps away from zero, at both ends
+ROTATION_MIN_FLIPS = 6                     # over the span: under it the book is a standing bet no shift can be told from
+ROTATION_MIN_ACTIVE = 26                   # decisions with a side each of LATER_YEARS needs, or nothing is measured
+
+
+class Rotation:
+    """The side of the alt basket against the hedge coin at each decision, from the spread's own trailing return.
+
+    The signal is read on what could have been held through the window: the top thirty of the month the window
+    *begins* in, with the betas of the day it begins. This month's top thirty would not do. A coin enters it on a
+    volume surge, which follows a run-up, so its trailing return is high by selection and the sign would lean to
+    "alts up" after every refresh."""
+
+    def __init__(self, market: xsb.Market, span: tuple[date, date] = SPAN) -> None:
+        self.market = market
+        self.monthly = monthly_members(market, span)
+        self.days = [d for d in sundays(span) if span[0] - timedelta(days=1) <= d <= span[1]]
+        self._signal: dict[date, float | None] = {}
+        self._active: list[tuple[date, int]] | None = None
+        self._index: dict[date, int] = {}
+
+    def signal(self, day: date) -> float | None:
+        if day not in self._signal:
+            start = day - timedelta(days=ROTATION_WINDOW)
+            rows = [(moved, beta) for s in self.monthly.get(date(start.year, start.month, 1), ()) if s != HEDGE
+                    if (moved := xsb.trailing_return(self.market, s, day, ROTATION_WINDOW)) is not None
+                    and (beta := bs._beta(self.market, s, start, ROTATION_BETA_DAYS)) is not None]
+            ref = xsb.trailing_return(self.market, HEDGE, day, ROTATION_WINDOW)
+            self._signal[day] = (None if ref is None or len(rows) < lab.MIN_NAMES else
+                                 statistics.fmean(m for m, _ in rows) - statistics.fmean(b for _, b in rows) * ref)
+        return self._signal[day]
+
+    def basket(self, members: Sequence[str], day: date) -> dict[str, float]:
+        """The coins the book trades at ``day`` (this month's members but the hedge), each with its beta."""
+        return {s: beta for s in members
+                if s != HEDGE and (beta := bs._beta(self.market, s, day, ROTATION_BETA_DAYS)) is not None}
+
+    def active(self) -> list[tuple[date, int]]:
+        """The decisions with a side, in order: a signal that is not zero and enough coins to trade."""
+        if self._active is None:
+            rows = []
+            for day in self.days:
+                value = self.signal(day)
+                members = self.monthly.get(date(day.year, day.month, 1), ())
+                if value and len(self.basket(members, day)) >= lab.MIN_NAMES:
+                    rows.append((day, 1 if value > 0 else -1))
+            self._active = rows
+            self._index = {day: i for i, (day, _) in enumerate(rows)}
+        return self._active
+
+    def way(self, day: date, shift: int = 0) -> int:
+        """+1 long the alts, -1 short them, 0 flat. With ``shift`` the side is the one the real book took that many
+        active decisions later, wrapping round: the same runs in the same order, moved off the returns they led."""
+        rows = self.active()
+        at = self._index.get(day)
+        return 0 if at is None else rows[(at + shift) % len(rows)][1]
+
+    def shifts(self) -> range:
+        return range(ROTATION_SHIFT_MARGIN, len(self.active()) - ROTATION_SHIFT_MARGIN + 1)
+
+
+def rotation_book(rot: Rotation, shift: int = 0, *, hedge: str | None = "beta") -> Callable[..., dict[str, float]]:
+    """L16: the month's top thirty but the hedge coin in equal weights on the signal's side, and the hedge coin
+    against them: by their summed beta (``"beta"``, the judged book), by the same dollars (``"dollar"``), or not at
+    all (None, the alts alone for the leg split)."""
+    def weights(market: xsb.Market, members: Sequence[str], day: date, signal: str,
+                *, seed: str | None = None) -> dict[str, float]:
+        way, betas = rot.way(day, shift), rot.basket(members, day)
+        if not way or len(betas) < lab.MIN_NAMES:
+            return {}
+        weight = way / len(betas)
+        out = dict.fromkeys(sorted(betas), weight)
+        if hedge == "beta":
+            out[HEDGE] = -weight * sum(betas.values())
+        elif hedge == "dollar":
+            out[HEDGE] = -float(way)
+        return out
+    return weights
+
+
+def rotation_counts(market: xsb.Market, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """What the rotation book would stand on, with no return of the book and no side in it: decisions with a side,
+    how often the side turns and how long it lasts. The stop rules are judged here."""
+    rot = Rotation(market, span)
+    years: dict[str, dict[str, Any]] = {str(y): {"decisions": 0, "active_decisions": 0, "flips": 0, "names": []}
+                                        for y in range(span[0].year, span[1].year + 1)}
+    for day in rot.days:
+        if str(day.year) in years:
+            years[str(day.year)]["decisions"] += 1
+    runs: list[int] = []
+    previous = None
+    for day, way in rot.active():
+        row = years.get(str(day.year))
+        if row is None:
+            continue
+        row["active_decisions"] += 1
+        row["names"].append(len(rot.basket(rot.monthly.get(date(day.year, day.month, 1), ()), day)))
+        if way != previous:
+            if previous is not None:
+                row["flips"] += 1
+            runs.append(0)
+        runs[-1] += 1
+        previous = way
+    for row in years.values():
+        names = row.pop("names")
+        row["names_traded_median"] = statistics.median(names) if names else 0
+    flips = sum(row["flips"] for row in years.values())
+    thin = [str(y) for y in LATER_YEARS if years.get(str(y), {}).get("active_decisions", 0) < ROTATION_MIN_ACTIVE]
+    stops = [text for wrong, text in (
+        (bool(thin), "the book has a side at too few decisions in " + ", ".join(thin)),
+        (flips < ROTATION_MIN_FLIPS, "the side turns too rarely to be told from a standing bet"),
+    ) if wrong]
+    return {"decisions": len(rot.days), "active_decisions": len(rot.active()), "flips": flips, "runs": len(runs),
+            "run_weeks_median": statistics.median(runs) if runs else 0, "placebo_shifts": len(rot.shifts()),
+            "by_year": years, "last_day_in_market": lab.last_day(market).isoformat() if market.bars else None,
+            "stop": stops, "returns_computed": False}
+
+
+def rotation_run(market: xsb.Market, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """The rotation book net of stressed costs, beside the same sides shifted in time, through rung 2's three
+    conditions and rung 3. A year the book is flat in counts as zero. Refused when the counts say stop."""
+    counts = rotation_counts(market, span)
+    if counts["stop"]:
+        return {"refused": counts["stop"], "counts": counts}
+    rot = Rotation(market, span)
+    stressed = functools.partial(simulate_held, unit_of=listing_unit)
+
+    def whole(report: dict[str, Any]) -> dict[str, Any]:
+        years = {str(y): report["years_total_position_pct"].get(str(y), 0.0)
+                 for y in range(span[0].year, span[1].year + 1)}
+        return {**report, "years_total_position_pct": years, "stability": stability(years)}
+
+    report = whole(measure(market, rotation_book(rot), span, simulate=stressed))
+    bare = whole(measure(market, rotation_book(rot, hedge=None), span, simulate=stressed))
+    dollar = whole(measure(market, rotation_book(rot, hedge="dollar"), span, simulate=stressed))
+    engine = whole(measure(market, rotation_book(rot), span, simulate=simulate_held))
+    nulls = [measure(market, rotation_book(rot, shift), span, simulate=stressed)["annual_sharpe"] for shift in rot.shifts()]
+    rungs = {"2a_entry": report["clears_entry"], "2b_later_years": later_years(report["years_total_position_pct"]),
+             "2c_beside_shifted_sides": beside_nulls(report["annual_sharpe"], nulls), "3_stability": report["stability"]}
+    passes = bool(rungs["2a_entry"] and rungs["2b_later_years"]["passes"] and rungs["2c_beside_shifted_sides"]["passes"]
+                  and rungs["3_stability"]["passes"])
+    lead = not passes and bool(engine["clears_entry"]) and rungs["2c_beside_shifted_sides"]["passes"]
+    years = report["years_total_position_pct"]
+    total, best = sum(years.values()), max(years.values())
+    side = ("annual_sharpe", "total_position_annual_pct", "years_total_position_pct")
+    return {**report, "hypothesis": "H-D1", "logic": "L16", "counts": counts, "rungs": rungs, "passes": passes,
+            "legs": deep_legs(report, bare),
+            "legs_by_year_total_position_pct": {
+                "alts": bare["years_total_position_pct"],
+                "hedge": {y: round(years[y] - bare["years_total_position_pct"][y], 2) for y in years}},
+            "largest_year_share": round(best / total, 3) if total > 0 and best > 0 else None,
+            "dollar_hedged": {k: dollar[k] for k in side},
+            "at_engine_cost": {k: engine[k] for k in (*side, "clears_entry", "cost_pct")},
+            "reading": "passes" if passes else "cost_dependent_lead" if lead else "closed"}
+
+
+# --- the ladder's bar (round 13, a tool round) --------------------------------------------------------------------
+
+BAR_SHAPES = ("rank_week", "rank_fixed", "deep", "rotation", "crash")
+BAR_BOOKS = 300                            # null books a shape is read on (the rotation shape has as many as it has shifts)
+BAR_SEED = 3000                            # the rank shapes' random variables; the sweep's begin at 1000, round 9's at 2000
+BAR_GRID = tuple(k * 2.5 for k in range(49))   # the net return a null book is moved to, % of total position a year: 0 .. 120
+BAR_LEVELS = (0.5, 0.8)                    # the pass rates the bar is read at
+
+
+def read_daily(daily: Mapping[date, Mapping[str, float]], span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """:func:`measure`'s reading of a daily series that is already simulated, with every year of the span present
+    (a flat year is zero, as the hypothesis rounds count it). A test holds the two to the same numbers."""
+    start, end = span
+    sharpe, values = bs.annual_sharpe(daily, start, end)
+    report: dict[str, Any] = {"annual_sharpe": sharpe, "sum_pct": round(sum(values) * 100, 2), "months": len(values)}
+    report["total_position_annual_pct"] = bs.total_position_annual_pct(report["sum_pct"], report["months"])
+    report["clears_entry"] = bs.clears_entry(report)
+    by_year = dict.fromkeys(range(start.year, end.year + 1), 0.0)
+    for day, row in daily.items():
+        if day.year in by_year:
+            by_year[day.year] += row["net"]
+    report["years_total_position_pct"] = {str(y): round(v * 100 / bs.POSITION_TOTAL, 2) for y, v in by_year.items()}
+    report["stability"] = stability(report["years_total_position_pct"])
+    return report
+
+
+def squeeze(daily: Mapping[date, Mapping[str, float]], span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """All of a daily series the ladder reads, and all a steady edge needs: net and the number of days with a row,
+    by complete month and by year, and the cost. Three hundred full series do not fit beside the market; these do."""
+    start, end = span
+    months = bs._complete_months(start, end)
+    net, held = dict.fromkeys(months, 0.0), dict.fromkeys(months, 0)
+    year_net, year_held = dict.fromkeys(range(start.year, end.year + 1), 0.0), dict.fromkeys(range(start.year, end.year + 1), 0)
+    cost = 0.0
+    for day, row in daily.items():
+        key = day.strftime("%Y-%m")
+        if key in net:
+            net[key] += row["net"]
+            held[key] += 1
+            cost += row.get("cost", 0.0)
+        if day.year in year_net and start <= day <= end:
+            year_net[day.year] += row["net"]
+            year_held[day.year] += 1
+    return {"net": [net[m] for m in months], "held": [held[m] for m in months],
+            "year_net": year_net, "year_held": year_held, "cost": cost}
+
+
+def read_squeezed(book: Mapping[str, Any], add: float = 0.0) -> dict[str, Any]:
+    """:func:`read_daily` of the series ``book`` was squeezed from, with ``add`` put on every day it has a row. A book
+    earns nothing while flat, so a year it is mostly out of gets less of what is added."""
+    values = [n + add * h for n, h in zip(book["net"], book["held"])]
+    spread = statistics.stdev(values) if len(values) > 1 else 0.0
+    sharpe = round(statistics.fmean(values) / spread * math.sqrt(12), 3) if spread else None
+    report: dict[str, Any] = {"annual_sharpe": sharpe, "sum_pct": round(sum(values) * 100, 2), "months": len(values)}
+    report["total_position_annual_pct"] = bs.total_position_annual_pct(report["sum_pct"], report["months"])
+    report["clears_entry"] = bs.clears_entry(report)
+    report["years_total_position_pct"] = {str(y): round((book["year_net"][y] + add * book["year_held"][y]) * 100 / bs.POSITION_TOTAL, 2)
+                                          for y in book["year_net"]}
+    report["stability"] = stability(report["years_total_position_pct"])
+    return report
+
+
+def moved_to(book: Mapping[str, Any], net_pct: float) -> float | None:
+    """What to add on each of the book's days so that its net return is ``net_pct`` of total position a year; None
+    for a book that never holds anything."""
+    days = sum(book["held"])
+    if not days:
+        return None
+    return (net_pct / 100 * bs.POSITION_TOTAL * len(book["net"]) / 12 - sum(book["net"])) / days
+
+
+def _crossing(rows: Sequence[Mapping[str, Any]], level: float) -> float | None:
+    """The first net return on the grid at which the share passing every condition reaches ``level``; None when it
+    is not reached. Not interpolated: the floor is a step, and a line across it would put the bar under the floor."""
+    return next((row["net_pct"] for row in rows if row["all"] is not None and row["all"] >= level), None)
+
+
+def bar_curve(books: Sequence[Mapping[str, Any]], grid: Sequence[float] = BAR_GRID) -> dict[str, Any]:
+    """How large a steady net return a shape's null books need before they pass the ladder. Each null book is moved
+    to the net return and read through rung 2's three conditions and rung 3; its null for 2(c) is the other books,
+    unmoved. No real edge is this steady: what passes here is a floor under what a real book would need."""
+    base = [read_squeezed(book) for book in books]
+    sharpes = [b["annual_sharpe"] for b in base]
+    years = len(books[0]["net"]) / 12 if books else 0
+    rows = []
+    for target in grid:
+        seen = {"sharpe": 0, "floor": 0, "2a": 0, "2b": 0, "2c": 0, "3": 0, "all": 0}
+        moved = 0
+        for i, book in enumerate(books):
+            add = moved_to(book, target)
+            if add is None:
+                continue
+            moved += 1
+            report = read_squeezed(book, add)
+            sharpe, yearly = report["annual_sharpe"], report["total_position_annual_pct"]
+            passed = {"sharpe": sharpe is not None and sharpe >= bs.ENTRY_SHARPE,
+                      "floor": yearly is not None and yearly >= bs.ENTRY_RETURN_TOTAL_PCT,
+                      "2a": report["clears_entry"],
+                      "2b": later_years(report["years_total_position_pct"])["passes"],
+                      "2c": beside_nulls(sharpe, sharpes[:i] + sharpes[i + 1:])["passes"],
+                      "3": report["stability"]["passes"]}
+            passed["all"] = passed["2a"] and passed["2b"] and passed["2c"] and passed["3"]
+            for key, ok in passed.items():
+                seen[key] += bool(ok)
+        rows.append({"net_pct": target, **{k: round(v / moved, 3) if moved else None for k, v in seen.items()}})
+    kept = [v for v in sharpes if v is not None]
+    nets = [b["total_position_annual_pct"] for b in base if b["total_position_annual_pct"] is not None]
+    costs = [book["cost"] * 100 / bs.POSITION_TOTAL / years for book in books] if years else []
+    net, cost = (statistics.fmean(nets) if nets else None), (statistics.fmean(costs) if costs else None)
+    return {"books": len(books),
+            "null": {"net_total_position_annual_pct_mean": None if net is None else round(net, 2),
+                     "cost_total_position_annual_pct_mean": None if cost is None else round(cost, 2),
+                     "before_cost_total_position_annual_pct_mean": None if net is None or cost is None else round(net + cost, 2),
+                     "annual_sharpe_mean": round(statistics.fmean(kept), 3) if kept else None,
+                     "annual_sharpe_sd": round(statistics.stdev(kept), 3) if len(kept) > 1 else None},
+            "floor_pct": bs.ENTRY_RETURN_TOTAL_PCT,
+            "bar_net_pct": {str(level): _crossing(rows, level) for level in BAR_LEVELS},
+            "curve": rows}
+
+
+def bar_books(market: xsb.Market, shape: str, span: tuple[date, date] = SPAN, *, books: int = BAR_BOOKS,
+              hourly: "Hourly | None" = None) -> list[dict[str, Any]]:
+    """A shape's null books, each built the way the round that used the shape built its null and squeezed at once.
+
+    ``rank_week`` / ``rank_fixed``: L1 on the top thirty with a random variable redrawn weekly / fixed per coin, the
+    engine's cost (the ladder's own candidates). ``deep``: round 11's plain placebo. ``rotation``: round 12's shifted
+    sides, every shift. ``crash``: round 10's placebo hours."""
+    start, end = span
+    stressed = functools.partial(simulate_held, unit_of=listing_unit)
+
+    def held(simulate: Callable[..., Any], weigher: Callable[..., dict[str, float]], monthly: Mapping[date, Sequence[str]]) -> dict[str, Any]:
+        return squeeze(simulate(market, bs.CADENCE, monthly, start=start, end=end, weigher=weigher)["daily"], span)
+
+    if shape in ("rank_week", "rank_fixed"):
+        monthly, kind = monthly_members(market, span), shape.split("_")[1]
+        return [held(simulate_held, book(lab._control(kind, BAR_SEED + k), lambda _day: 1), monthly) for k in range(books)]
+    if shape == "deep":
+        monthly, pools = monthly_members(market, span), DeepFunding(market)
+        return [held(stressed, deep_book(pools, placebo=f"bar:{k}"), monthly) for k in range(books)]
+    if shape == "rotation":
+        monthly, rot = monthly_members(market, span), Rotation(market, span)
+        return [held(stressed, rotation_book(rot, shift), monthly) for shift in rot.shifts()]
+    if shape == "crash":
+        if hourly is None:
+            raise ValueError("the crash shape needs the hourly opens")
+        monthly, events = top_hundred(market, span), crash_events(hourly, span)
+        return [squeeze(crash_daily(market, hourly, monthly, placebo_times(events, span, hourly, f"bar:{k}")), span)
+                for k in range(books)]
+    raise ValueError(f"unknown shape {shape!r}")
+
 
 def _spread(values: Sequence[float | None]) -> dict[str, Any]:
     kept = sorted(v for v in values if v is not None)
@@ -931,7 +2252,11 @@ def run_round(market: xsb.Market, span: tuple[date, date] = SPAN, *, which: str 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="strategy_ladder", description=__doc__.splitlines()[0])
     parser.add_argument("command", choices=("list", "run", "confirm-counts", "confirm", "sweep", "transfer",
-                                            "listing-counts", "listing"))
+                                            "listing-counts", "listing", "lower-counts", "lower",
+                                            "crash-symbols", "crash-events", "crash-counts", "crash",
+                                            "deep-counts", "deep", "rotation-counts", "rotation", "bar",
+                                            "hot-counts", "hot", "gap-counts", "gap", "flush-counts", "flush"))
+    parser.add_argument("--shape", choices=BAR_SHAPES, default=None, help="bar: the book shape whose null books are read")
     parser.add_argument("--only", default=None,
                         help="sweep, transfer: variable groups (comma list), or `null` for the random books")
     parser.add_argument("--cache", type=Path, default=None, help="default: $RESEARCH_CACHE")
@@ -973,6 +2298,97 @@ def main(argv: list[str] | None = None) -> int:
                           "span": [d.isoformat() for d in SPAN], "command": args.command, **body},
                          indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or (args.command == "listing-counts" and body["stop"]) else EXIT_OK
+    if args.command.startswith("crash"):
+        archive = cache / "archive"
+        if args.command == "crash-events":                       # the reference coin's bars alone decide the events
+            body = crash_counts(None, load_hourly(archive, [HEDGE]))
+        else:
+            market = lab.hold(cache, attach=False)
+            if market is None:
+                print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+                return EXIT_BLOCKED
+            names = sorted({HEDGE, *(s for members in top_hundred(market).values() for s in members)})
+            if args.command == "crash-symbols":
+                print(",".join(names))
+                return EXIT_OK
+            hourly = load_hourly(archive, names)
+            body = crash_counts(market, hourly) if args.command == "crash-counts" else crash_run(market, hourly)
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "command": args.command, **body},
+                         indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_BLOCKED if body.get("refused") or (args.command != "crash" and body["stop"]) else EXIT_OK
+    if args.command == "bar":
+        if args.shape is None:
+            print("usage: bar needs --shape", file=sys.stderr)
+            return EXIT_USAGE
+        market = lab.hold(cache, attach=False)
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        hourly = None
+        if args.shape == "crash":
+            names = sorted({HEDGE, *(s for members in top_hundred(market).values() for s in members)})
+            hourly = load_hourly(cache / "archive", names)
+        body = bar_curve(bar_books(market, args.shape, hourly=hourly))
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "command": args.command, "shape": args.shape, **body},
+                         indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_OK
+    if args.command in ("rotation-counts", "rotation"):
+        market = lab.hold(cache, attach=False)
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        body = rotation_counts(market) if args.command == "rotation-counts" else rotation_run(market)
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "command": args.command, **body},
+                         indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_BLOCKED if body.get("refused") or (args.command == "rotation-counts" and body["stop"]) else EXIT_OK
+    if args.command in ("flush-counts", "flush"):
+        market = lab.hold(cache, FLUSH_SPAN, attach=False)
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        members = {s for names in monthly_members(market, FLUSH_SPAN).values() for s in names}
+        market.closing_oi = closing_oi(cache / "archive-metrics" / "metrics", members)
+        crashes = crash_days_of(load_hourly(cache / "archive", [HEDGE]))
+        body = (flush_counts if args.command == "flush-counts" else flush_run)(market, crash_days=crashes)
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in FLUSH_SPAN], "command": args.command, **body},
+                         indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_BLOCKED if body.get("refused") or (args.command == "flush-counts" and body["stop"]) else EXIT_OK
+    if args.command in ("hot-counts", "hot", "gap-counts", "gap"):
+        market = lab.hold(cache, attach=False)
+        if market is not None and args.command.startswith("gap"):
+            market = with_spot(cache, market)
+        if market is None:
+            print("BLOCKED: contract types or the spot listing are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        body = {"hot-counts": hot_counts, "hot": hot_run, "gap-counts": gap_counts, "gap": gap_run}[args.command](market)
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "command": args.command, **body},
+                         indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_BLOCKED if body.get("refused") or (args.command.endswith("counts") and body["stop"]) else EXIT_OK
+    if args.command in ("deep-counts", "deep"):
+        market = lab.hold(cache, attach=False)
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        body = deep_counts(market) if args.command == "deep-counts" else deep_run(market)
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "command": args.command, **body},
+                         indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_BLOCKED if body.get("refused") or (args.command == "deep-counts" and body["stop"]) else EXIT_OK
+    if args.command in ("lower-counts", "lower"):
+        market = lab.hold(cache, attach=False)
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        body = lower_counts(market) if args.command == "lower-counts" else lower_run(market)
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "command": args.command, **body},
+                         indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_BLOCKED if body.get("refused") or (args.command == "lower-counts" and body["stop"]) else EXIT_OK
     if args.command in ("sweep", "transfer"):
         wanted = set((args.only or "").split(",")) - {""}
         names = null_variables() if wanted == {"null"} else {n: v for n, v in lab.variables().items() if v[0] in wanted}
