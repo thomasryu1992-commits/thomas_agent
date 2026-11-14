@@ -61,8 +61,8 @@ MIN_DECISIONS = 20                         # decisions a cell needs before it sh
 MIN_SPELLS = 4                             # separate stretches a scenario cell needs: one long bull run is one sample
 REFERENCE_DECISIONS = 52                   # trailing decisions a scenario's own median is taken over
 REFERENCE_MIN = 26
-CONTROLS_WEEKLY = 25                       # random variables redrawn at every decision
-CONTROLS_FIXED = 25                        # random variables fixed per coin, like a slow characteristic
+CONTROLS_WEEKLY = 28                       # random variables redrawn at every decision (25 until the registry grew to 30)
+CONTROLS_FIXED = 28                        # random variables fixed per coin, like a slow characteristic
 EXTREME_MOVE = 0.30                        # a daily close-to-close move this large is an extreme day
 WILD_MOVE = 0.50                           # a coin whose largest daily move in the lookback reached this is wild
 AGE_CAP_DAYS = 1000                        # listing age is read up to here; older coins are alike
@@ -85,6 +85,20 @@ def _control(kind: str, k: int) -> Variable:
         stamp = day if kind == "week" else date(2000, 1, 1)
         return int(xsb.random_key(f"{SPEC}|{kind}|{k}", stamp, symbol)[:12], 16) / 16 ** 12
     return value
+
+
+def _change(level: Variable) -> Variable:
+    """A registered level at the decision day less the same level one :data:`LOOKBACK` earlier (section 3.1's first
+    shape: the change against the period before). Both readings are of that day and earlier."""
+    def value(market: xsb.Market, symbol: str, day: date) -> float | None:
+        now, before = level(market, symbol, day), level(market, symbol, day - timedelta(days=LOOKBACK))
+        return None if now is None or before is None else now - before
+    return value
+
+
+# The positioning levels whose 30-day change is registered (STRATEGY_DISCOVERY_LOOP_V0.1 section 33). Open interest
+# is already a change; the divergence is the difference of two of these and its change adds no reading of its own.
+CHANGE_OF = {"ls_change": "ls_level", "top_change": "top_level", "taker_change": "taker_level"}
 
 
 def _daily_moves(market: xsb.Market, symbol: str, day: date, lookback: int) -> list[float] | None:
@@ -183,6 +197,10 @@ def variables() -> dict[str, tuple[str, Variable]]:
     out[f"taker_buy_share_{LOOKBACK}"] = ("trade_flow", _taker_buy_share)
     out[f"trade_size_{LOOKBACK}"] = ("trade_flow", _trade_size)
     out[f"trade_size_growth_{LOOKBACK}"] = ("trade_flow", _trade_size_growth)
+    # Added 2026-11-14 (section 33): "the change of positioning", which the first inventory listed as there and unread.
+    for name, base in CHANGE_OF.items():
+        group, level = out[f"{base}_{LOOKBACK}"]
+        out[f"{name}_{LOOKBACK}"] = (group, _change(level))
     return out
 
 

@@ -417,6 +417,39 @@ def test_a_run_of_the_positioning_group_loads_its_values_alone_cut_at_the_spans_
     capsys.readouterr()
 
 
+def test_a_positioning_change_is_the_level_now_less_the_level_a_lookback_earlier_and_reads_nothing_later():
+    day = date(2023, 6, 4)
+    days = [day - timedelta(days=k) for k in range(-10, 80)]
+
+    def world(later=0.0):
+        """AUSDT's long share: 0.40 until 30 days before ``day``, 0.50 since; ``later`` is added after ``day``."""
+        market = xsb.Market(bars={"AUSDT": {}, "BUSDT": {}})
+        market.metrics = {"AUSDT": {d: {"oi": 1.0, "ls": (0.40 if d <= day - timedelta(days=30) else 0.50) + (later if d > day else 0.0),
+                                        "top": 0.60, "taker": None} for d in days},
+                          "BUSDT": {d: {"oi": 1.0, "ls": 0.5, "top": None, "taker": None} for d in days[:40]}}
+        return market
+
+    names = lab.variables()
+    assert {n: names[n][0] for n in ("ls_change_30", "top_change_30", "taker_change_30")} == dict.fromkeys(
+        ("ls_change_30", "top_change_30", "taker_change_30"), "positioning")
+    change, level = names["ls_change_30"][1], names["ls_level_30"][1]
+    assert level(world(), "AUSDT", day) == pytest.approx(0.50) and level(world(), "AUSDT", day - timedelta(days=30)) == pytest.approx(0.40)
+    assert change(world(), "AUSDT", day) == pytest.approx(0.10), "the 30-day mean now less the 30-day mean thirty days ago"
+    assert names["top_change_30"][1](world(), "AUSDT", day) == pytest.approx(0.0)
+    assert names["taker_change_30"][1](world(), "AUSDT", day) is None, "no level, no change"
+    assert change(world(), "BUSDT", day) is None, "a level missing at either end leaves no change"
+    assert change(world(later=0.3), "AUSDT", day) == change(world(), "AUSDT", day), "what comes after the day changes nothing"
+    assert "divergence_change_30" not in names and "oi_growth_change_30" not in names
+
+
+def test_the_registry_stays_inside_what_its_controls_and_the_sweeps_null_can_correct_for():
+    from scripts.research import strategy_ladder as sl
+    assert len(lab.variables()) == 30
+    assert len(lab.controls()) == 56 >= 2 * len(lab.variables()) - 4, "the random variables grow with the real ones"
+    assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / len(lab.variables()), "thirty is the most 300 null books can correct for"
+    assert not 1 / (sl.SWEEP_NULLS + 1) < 0.10 / (len(lab.variables()) + 1)
+
+
 def test_the_by_variable_check_has_enough_placebos_for_a_real_effect_to_pass_the_correction():
     """The smallest p a test can show is one over the placebos plus one. It has to be under what Benjamini–Hochberg
     asks of the best of a few hundred tests, or nothing could ever pass (the first run, 2026-11-13: 200 placebos)."""
