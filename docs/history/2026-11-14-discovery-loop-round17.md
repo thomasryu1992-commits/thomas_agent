@@ -33,3 +33,21 @@ read M04's score on coins outside the month's top 30. Thomas 2026-11-14: "ê·¸ í›
 - *What had been seen is in the form.* The sweep read both variables singly on the top 30 under the held
   accounting and neither stood apart from random books; the map's cells for this tier were empty. The size line
   carries M04's record to 26 bps (16.7% a year of total position, at the floor before two discounts).
+
+**Results (same day).**
+
+- *The data came in whole.* 88,168 files fetched between 09:00 and 11:50 UTC, 555 days the archive does not serve,
+  no error; a second pass had nothing to fetch. The rebuild took the derived daily values from 68,155 rows to
+  156,323 with every old row unchanged. The fingerprint recorded here uses a stated formula; the one written on
+  2026-11-11 was computed some other way and cannot be compared, so the evidence that M04's inputs did not move is
+  the row comparison and the files' own timestamps.
+- *The counts did not stop the book, and the null was a fair one.* No read day without a file or a cause; 91% to
+  99% of the tier ranked; 13 to 14 coins a side; the book's weekly turnover 0.93 of its null books'. Costs alone
+  came to 11% of total position a year, so the book needed M04's own gross to reach the floor.
+- *H-M1 failed every rung and is closed.* Annual Sharpe -0.698 net over three years, -17.0% of total position a
+  year, every year negative, p 0.342 beside 300 books on slow noise. Price was negative before costs.
+- *It does not replicate under M04's own accounting either.* The engine accounting at 8 bps, printed beside the
+  verdict as registered, gives -0.122 where M04 on the top 30 gave 1.134.
+- *What this does not do.* M04's verdict and forward screen stand as registered, and M04 was not re-measured on
+  the top 30 under the held accounting. Whether M04 is an effect of the largest coins or a value that came up by
+  chance there is not something this result separates; the registered screen is what does.
