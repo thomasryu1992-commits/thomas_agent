@@ -62,8 +62,8 @@ MIN_DECISIONS = 20                         # decisions a cell needs before it sh
 MIN_SPELLS = 4                             # separate stretches a scenario cell needs: one long bull run is one sample
 REFERENCE_DECISIONS = 52                   # trailing decisions a scenario's own median is taken over
 REFERENCE_MIN = 26
-CONTROLS_WEEKLY = 50                       # random variables redrawn at every decision (25, 28, 32, 42, 44, 47 as the registry grew)
-CONTROLS_FIXED = 50                        # random variables fixed per coin, like a slow characteristic
+CONTROLS_WEEKLY = 53                       # random variables redrawn at every decision (25, 28, 32, 42, 44, 47, 50 as the registry grew)
+CONTROLS_FIXED = 53                        # random variables fixed per coin, like a slow characteristic
 EXTREME_MOVE = 0.30                        # a daily close-to-close move this large is an extreme day
 WILD_MOVE = 0.50                           # a coin whose largest daily move in the lookback reached this is wild
 AGE_CAP_DAYS = 1000                        # listing age is read up to here; older coins are alike
@@ -135,7 +135,7 @@ CHANGE_OF = {"ls_change": "ls_level", "top_change": "top_level", "taker_change":
              "taker_buy_share_change": "taker_buy_share"}
 
 
-SPREAD_LOOKBACKS = (7, 14, 90)             # section 3.1's fourth shape for the spread
+SPREAD_LOOKBACKS = (7, 14, 90)             # section 3.1's fourth shape for the two late levels (the name is the first's)
 LATE_LEVELS = ("spread", "premium")        # levels registered after the shape rounds; each gets its change and position
 HISTORY_POINTS = 6                         # a level's own history: its value at each of the six lookbacks before
 HISTORY_MIN = 4                            # of those points must be there, or the coin has no position that day
@@ -289,6 +289,9 @@ def variables() -> dict[str, tuple[str, Variable]]:
     # rule); the premium's are struck there. They are levels at another window and get no shape.
     for lookback in SPREAD_LOOKBACKS:
         out[f"spread_{lookback}"] = ("price_volume", _with_lookback(_spread, lookback))
+    # Added 2026-11-14 (section 43): the premium's too. Section 40 struck them on grounds that did not stand.
+    for lookback in SPREAD_LOOKBACKS:
+        out[f"premium_{lookback}"] = ("premium", _with_lookback(_premium, lookback))
     return out
 
 
@@ -362,11 +365,11 @@ def _spread(market: xsb.Market, symbol: str, day: date, lookback: int = LOOKBACK
     return math.sqrt(max(0.0, statistics.fmean(terms)))
 
 
-def _premium(market: xsb.Market, symbol: str, day: date) -> float | None:
+def _premium(market: xsb.Market, symbol: str, day: date, lookback: int = LOOKBACK) -> float | None:
     """The mean of the premium index's daily close over the lookback: how far the perp has stood from its index."""
     series = (getattr(market, "premium", None) or {}).get(symbol) or {}
-    values = [series[d] for d in (day - timedelta(days=k) for k in range(LOOKBACK)) if d in series]
-    return statistics.fmean(values) if len(values) >= math.ceil(LOOKBACK * bs.MIN_SHARE) else None
+    values = [series[d] for d in (day - timedelta(days=k) for k in range(lookback)) if d in series]
+    return statistics.fmean(values) if len(values) >= math.ceil(lookback * bs.MIN_SHARE) else None
 
 
 # name: (the group whose data it reads, the reading, the registered kin it is ranked beside)
