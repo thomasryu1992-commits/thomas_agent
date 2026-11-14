@@ -48,3 +48,14 @@ missed, nothing is picked, and the book loses at the engine's cost too (−0.275
   the form.
 
 With this, every one of the twelve cells that meet the map's lead rule is tied to a record.
+
+**Added (23:05Z).** One reading corrected, the verdict unchanged: split by year from the two printed accountings,
+the book's loss before costs is the four decisions of 2020 (−20.6). Over 2021–2024, the years the map cell has its
+decisions, the book is about flat before costs (+1.1% a year, swinging −23, +39, −12, 0) and loses on cost. The
+falsifier at the engine's cost still holds on those years.
+
+Then one more row of the table (§50). The premium files came from the venue's public API, which serves listed
+symbols only, so the premium was read on survivors: 44.5 coins a decision on ranks 31–100 against 53.3 for bar
+variables. The archive holds monthly premium index klines for 1,010 symbols, delisted ones included. Filling them
+is a reach round on a source already in use, so it is done without asking; the premium's readings are then read
+again on the changed inputs. A sweep scope line is corrected too: the sweep read the top tier only.
