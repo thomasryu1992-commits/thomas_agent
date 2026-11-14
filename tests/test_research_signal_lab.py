@@ -394,6 +394,29 @@ def test_a_run_may_map_one_group_alone_and_refuses_a_group_nobody_registered(mon
     assert lab.main(["run", "--only", "spot"]) == lab.EXIT_BLOCKED and asked == {"attach": True, "flow": False}
 
 
+def test_a_run_of_the_positioning_group_loads_its_values_alone_cut_at_the_spans_end(monkeypatch, capsys):
+    asked = []
+    span_end = lab.SPAN[1]
+    late = span_end + timedelta(days=2)
+    row = {"oi": 1.0, "ls": 0.5, "top": None, "taker": None}
+
+    def hold(cache, span=None, *, attach=True, flow=False):
+        asked.append((attach, flow))
+        return None if len(asked) == 1 else lab.xsb.Market(bars={})
+
+    monkeypatch.setattr(lab.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(lab, "hold", hold)
+    monkeypatch.setattr(lab.ms, "load_daily", lambda cache: {"AUSDT": {span_end: row, late: row}})
+    assert lab.main(["run", "--only", "positioning"]) == lab.EXIT_BLOCKED, "no contract types"
+    held = lab.hold_positioning("cache")
+    assert asked == [(False, False), (False, False)], "the bars and funding, without depth or spot"
+    assert held.metrics == {"AUSDT": {span_end: row}}, "nothing after the span's last day"
+    assert not hasattr(held, "depth") and not hasattr(held, "spot")
+    monkeypatch.setattr(lab.ms, "load_daily", lambda cache: {})
+    assert lab.hold_positioning("cache") is None, "no derived positioning values"
+    capsys.readouterr()
+
+
 def test_the_by_variable_check_has_enough_placebos_for_a_real_effect_to_pass_the_correction():
     """The smallest p a test can show is one over the placebos plus one. It has to be under what Benjamini–Hochberg
     asks of the best of a few hundred tests, or nothing could ever pass (the first run, 2026-11-13: 200 placebos)."""

@@ -722,6 +722,19 @@ def hold(cache: Path, span: tuple[date, date] = SPAN, *, attach: bool = True, fl
     return attach_trade_flow(held, archive, span) if flow else held
 
 
+def hold_positioning(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | None:
+    """The market cut at the span's last day with the positioning values alone attached: all a run of that group
+    reads. Depth and spot are most of the attached memory, and once the positioning files of both tiers were on
+    disk the three no longer fitted the sandbox together (the first run of 2026-11-14 was killed while loading).
+    None when the contract types or the derived positioning values are missing."""
+    held = hold(cache, span, attach=False)
+    daily = ms.load_daily(cache)
+    if held is None or not daily:
+        return None
+    held.metrics = {s: {d: v for d, v in days.items() if d <= span[1]} for s, days in daily.items()}
+    return held
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="signal_lab", description=__doc__.splitlines()[0])
     parser.add_argument("command", choices=("list", "run", "axes", "axes-by-variable", "inventory", "universe"))
@@ -759,9 +772,12 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_USAGE
     groups = {group for group, _ in chosen.values()}
     # Load what the chosen variables read and nothing else: the attached series are most of the memory.
-    market = hold(cache, attach=bool(groups & {"positioning", "depth", "spot"}), flow="trade_flow" in groups)
+    if groups == {"positioning"}:
+        market = hold_positioning(cache)
+    else:
+        market = hold(cache, attach=bool(groups & {"positioning", "depth", "spot"}), flow="trade_flow" in groups)
     if market is None:
-        print("BLOCKED: contract types or the spot symbol list is missing from the cache", file=sys.stderr)
+        print("BLOCKED: contract types, the spot symbol list or the derived values are missing from the cache", file=sys.stderr)
         return EXIT_BLOCKED
     if args.command == "axes-by-variable":
         print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
