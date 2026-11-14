@@ -40,3 +40,10 @@ coverage before and now, and those two are the only ones that moved.
 
 **D10 answered the same day: "올리지 않음".** The lead does not go on the ladder. It stopped at the form's door, not
 at a closing rule; it stays on record and is not re-read under any other definition.
+
+**Result (2026-11-14 21:34Z).** All eight groups pass the amended gate: round 4's 230 tests are all present, the 220
+on unchanged inputs match to the digit, and the only differences are the ten named beforehand. Of 642 tests none
+survives the correction; 37 are under 0.05 where chance gives 32.1. The nearest is the one round 4 had nearest,
+30-day funding across the funding-level axis (p 0.00069 against a first threshold of 0.00016), and the book built
+on that combination lost the confirm span. The breadth axis, seen by variable for the first time, has nothing
+near its threshold.
