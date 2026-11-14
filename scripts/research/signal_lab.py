@@ -61,8 +61,8 @@ MIN_DECISIONS = 20                         # decisions a cell needs before it sh
 MIN_SPELLS = 4                             # separate stretches a scenario cell needs: one long bull run is one sample
 REFERENCE_DECISIONS = 52                   # trailing decisions a scenario's own median is taken over
 REFERENCE_MIN = 26
-CONTROLS_WEEKLY = 32                       # random variables redrawn at every decision (25, then 28, as the registry grew)
-CONTROLS_FIXED = 32                        # random variables fixed per coin, like a slow characteristic
+CONTROLS_WEEKLY = 42                       # random variables redrawn at every decision (25, 28, 32 as the registry grew)
+CONTROLS_FIXED = 42                        # random variables fixed per coin, like a slow characteristic
 EXTREME_MOVE = 0.30                        # a daily close-to-close move this large is an extreme day
 WILD_MOVE = 0.50                           # a coin whose largest daily move in the lookback reached this is wild
 AGE_CAP_DAYS = 1000                        # listing age is read up to here; older coins are alike
@@ -118,6 +118,40 @@ CHANGE_OF = {"ls_change": "ls_level", "top_change": "top_level", "taker_change":
              # Section 35: the rest of the change shape, after the strikes written there.
              "momentum_change": "momentum", "funding_change": "funding", "spot_share_change": "spot_share",
              "taker_buy_share_change": "taker_buy_share"}
+
+
+HISTORY_POINTS = 6                         # a level's own history: its value at each of the six lookbacks before
+HISTORY_MIN = 4                            # of those points must be there, or the coin has no position that day
+
+
+def _position(level: Variable) -> Variable:
+    """Where a registered level stands against the coin's own recent past (section 3.1's second shape): the level
+    at the decision day less the mean of the same level at the :data:`HISTORY_POINTS` earlier lookbacks, over their
+    spread. Unlike a number taken off every coin alike, this is centred coin by coin, so it changes the ranks.
+    Every reading is of the decision day or earlier."""
+    def value(market: xsb.Market, symbol: str, day: date) -> float | None:
+        now = level(market, symbol, day)
+        past = [v for v in (level(market, symbol, day - timedelta(days=LOOKBACK * k)) for k in range(1, HISTORY_POINTS + 1))
+                if v is not None]
+        if now is None or len(past) < HISTORY_MIN:
+            return None
+        spread = statistics.pstdev(past)
+        return (now - statistics.fmean(past)) / spread if spread > 0 else None
+    return value
+
+
+# The levels whose own-history position is registered (section 37, after the strikes written there).
+POSITION_OF = {"momentum_position": "momentum", "funding_position": "funding", "ls_position": "ls_level",
+               "top_position": "top_level", "taker_position": "taker_level", "spot_share_position": "spot_share",
+               "taker_buy_share_position": "taker_buy_share", "trade_size_position": "trade_size"}
+
+
+def _residual_momentum(market: xsb.Market, symbol: str, day: date) -> float | None:
+    """The coin's month less its beta times the reference coin's month (section 3.1's third shape). Taking the
+    market's move off every coin alike would change no rank; the beta is the coin's own, so this does."""
+    own, market_move = xsb.trailing_return(market, symbol, day, LOOKBACK), xsb.trailing_return(market, REFERENCE, day, LOOKBACK)
+    beta = bs._beta(market, symbol, day, LOOKBACK)
+    return None if own is None or market_move is None or beta is None else own - beta * market_move
 
 
 def _daily_moves(market: xsb.Market, symbol: str, day: date, lookback: int) -> list[float] | None:
@@ -220,6 +254,11 @@ def variables() -> dict[str, tuple[str, Variable]]:
     for name, base in CHANGE_OF.items():
         group, level = out[f"{base}_{LOOKBACK}"]
         out[f"{name}_{LOOKBACK}"] = (group, _change(level))
+    # Added 2026-11-14 (section 37): the second and third shapes. The fourth (other lookbacks) left no survivor.
+    for name, base in POSITION_OF.items():
+        group, level = out[f"{base}_{LOOKBACK}"]
+        out[f"{name}_{LOOKBACK}"] = (group, _position(level))
+    out[f"residual_momentum_{LOOKBACK}"] = ("price_volume", _residual_momentum)
     return out
 
 
@@ -500,7 +539,7 @@ PLACEBO_AXES = 200                         # shuffled-spell copies each axis is 
 # One variable at a time there are a few hundred tests, and the smallest p a test can show is one over the number
 # of placebos plus one. With 200 that floor (0.005) sits above anything Benjamini-Hochberg could pass at q 0.10
 # over 230 tests (0.0004) — the first run could not have passed anything. 5,000 puts the floor at 0.0002.
-PLACEBO_AXES_BY_VARIABLE = 5000
+PLACEBO_AXES_BY_VARIABLE = 6000            # 5000 until the registry passed 41 variables: the first 5000 are the same placebos
 
 
 def ic_series(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tuple[date, date] = SPAN

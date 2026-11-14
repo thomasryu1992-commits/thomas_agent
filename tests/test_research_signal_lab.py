@@ -540,11 +540,56 @@ def test_the_candidate_axes_are_labelled_from_the_past_held_to_stricter_levels_a
 
 def test_the_registry_stays_inside_what_its_controls_and_the_sweeps_null_can_correct_for():
     from scripts.research import strategy_ladder as sl
-    assert len(lab.variables()) == 34
-    assert len(lab.controls()) == 64 >= 2 * len(lab.variables()) - 4, "the random variables grow with the real ones"
+    assert len(lab.variables()) == 43
+    assert len(lab.controls()) == 84 >= 2 * len(lab.variables()) - 4, "the random variables grow with the real ones"
     assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / len(lab.variables()), "the sweep's null can correct for every variable"
     assert not 1 / (sl.SWEEP_NULLS_ROUND_6 + 1) < 0.10 / len(lab.variables()), "300 null books could not: thirty was their most"
-    assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / 40 and not 1 / (sl.SWEEP_NULLS + 1) < 0.10 / 41, "400 reach forty variables"
+    assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / 50 and not 1 / (sl.SWEEP_NULLS + 1) < 0.10 / 51, "500 reach fifty variables"
+
+
+def test_a_position_is_the_level_against_the_coins_own_six_earlier_lookbacks_and_asks_for_no_later_day():
+    asked = []
+    series = {0: 5.0, 30: 1.0, 60: 2.0, 90: 3.0, 120: 2.0, 150: 1.0, 180: 3.0}
+    day = date(2023, 6, 4)
+
+    def level(market, symbol, on):
+        asked.append(on)
+        return series.get((day - on).days, 99.0 if on > day else None)
+
+    value = lab._position(level)(None, "AUSDT", day)
+    assert value == pytest.approx((5.0 - 2.0) / (4 / 6) ** 0.5), "now less the six earlier values' mean, over their spread"
+    assert max(asked) == day and sorted(day - d for d in asked) == [timedelta(days=30 * k) for k in range(7)], \
+        "the day itself and the six lookbacks before it: nothing later"
+    series.pop(30), series.pop(60), series.pop(90)
+    assert lab._position(level)(None, "AUSDT", day) is None, "three earlier values are too few"
+    flat = lab._position(lambda market, symbol, on: 1.0)
+    assert flat(None, "AUSDT", day) is None, "a level that never moved has no position"
+    names = lab.variables()
+    assert set(lab.POSITION_OF) == {"momentum_position", "funding_position", "ls_position", "top_position", "taker_position",
+                                    "spot_share_position", "taker_buy_share_position", "trade_size_position"}
+    market = _market(date(2021, 6, 30))
+    decision = date(2021, 3, 7)
+    for name, base in lab.POSITION_OF.items():
+        group, position = names[f"{name}_30"]
+        assert group == names[f"{base}_30"][0], name
+        assert position(market, SYMBOLS[1], decision) == lab._position(names[f"{base}_30"][1])(market, SYMBOLS[1], decision), name
+    twisted = _market(date(2021, 6, 30), twist_after=decision)
+    for name in ("momentum_position_30", "funding_position_30", "residual_momentum_30"):
+        assert names[name][1](market, SYMBOLS[1], decision) is not None
+        assert names[name][1](twisted, SYMBOLS[1], decision) == names[name][1](market, SYMBOLS[1], decision), name
+
+
+def test_residual_momentum_takes_the_coins_own_beta_times_the_reference_coins_month_off_its_month():
+    names = lab.variables()
+    market, day = _market(date(2021, 6, 30)), date(2021, 3, 7)
+    coin = SYMBOLS[2]
+    own, reference = xsb.trailing_return(market, coin, day, 30), xsb.trailing_return(market, "BTCUSDT", day, 30)
+    beta = lab.bs._beta(market, coin, day, 30)
+    assert names["residual_momentum_30"] == ("price_volume", lab._residual_momentum)
+    assert names["residual_momentum_30"][1](market, coin, day) == pytest.approx(own - beta * reference)
+    assert names["residual_momentum_30"][1](market, coin, day) != pytest.approx(names["momentum_30"][1](market, coin, day))
+    ranks = lab._ranks([1.0, 3.0, 2.0])
+    assert ranks == lab._ranks([1.0 - 7, 3.0 - 7, 2.0 - 7]), "one number off every coin moves no rank: only a per-coin loading can"
 
 
 def test_every_registered_change_is_its_own_level_now_less_that_level_a_lookback_earlier():
@@ -603,8 +648,10 @@ def test_the_by_variable_check_has_enough_placebos_for_a_real_effect_to_pass_the
     """The smallest p a test can show is one over the placebos plus one. It has to be under what Benjamini–Hochberg
     asks of the best of a few hundred tests, or nothing could ever pass (the first run, 2026-11-13: 200 placebos)."""
     tests, q = len(lab.variables()) * len(lab.TIERS) * len(lab.AXES), 0.10
-    assert tests == 34 * 2 * 6
+    assert tests == 43 * 2 * 6
     assert 1 / (lab.PLACEBO_AXES_BY_VARIABLE + 1) < q / tests
+    assert lab.PLACEBO_AXES_BY_VARIABLE == 6000 and 1 / (6000 + 1) < q / (50 * 2 * 6), "enough for fifty variables"
+    assert not 1 / (5000 + 1) < q / tests, "the earlier 5000 no longer were"
     assert not 1 / (200 + 1) < q / tests
 
 

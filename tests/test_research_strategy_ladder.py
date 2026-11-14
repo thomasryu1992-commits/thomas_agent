@@ -445,10 +445,10 @@ def test_a_tail_out_book_never_holds_a_tail_coin(monkeypatch):
 
 def test_the_sweeps_null_variables_are_their_own_and_enough_for_the_correction():
     nulls = sl.null_variables()
-    assert len(nulls) == sl.SWEEP_NULLS == 400 and not set(nulls) & set(sl.lab.controls())
+    assert len(nulls) == sl.SWEEP_NULLS == 500 and not set(nulls) & set(sl.lab.controls())
     earlier = sl.null_variables(sl.SWEEP_NULLS_ROUND_6)
     market, day = xsb.Market(), date(2021, 1, 3)
-    assert len(earlier) == 300 and set(earlier) <= set(nulls), "round 6's null books are among the 400, by name"
+    assert len(earlier) == 300 and set(earlier) <= set(nulls), "round 6's null books are among the 500, by name"
     assert all(earlier[name][1](market, "AUSDT", day) == nulls[name][1](market, "AUSDT", day) for name in earlier), \
         "and each is the same random variable"
     market, day = xsb.Market(), date(2021, 1, 3)
