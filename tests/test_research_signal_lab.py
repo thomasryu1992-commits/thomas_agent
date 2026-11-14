@@ -391,7 +391,9 @@ def test_a_run_may_map_one_group_alone_and_refuses_a_group_nobody_registered(mon
     monkeypatch.setattr(lab, "hold", hold)
     assert lab.main(["run", "--only", "trade_flow"]) == lab.EXIT_BLOCKED
     assert asked == {"attach": False, "flow": True}, "the trade-flow columns and nothing heavier"
-    assert lab.main(["run", "--only", "spot"]) == lab.EXIT_BLOCKED and asked == {"attach": True, "flow": False}
+    assert lab.main(["run", "--only", "depth"]) == lab.EXIT_BLOCKED and asked == {"attach": True, "flow": False}
+    assert lab.main(["run", "--only", "spot"]) == lab.EXIT_BLOCKED and asked == {"attach": False, "flow": False}, \
+        "the spot group loads its bars through the lighter loader"
 
 
 def test_a_run_of_the_positioning_group_loads_its_values_alone_cut_at_the_spans_end(monkeypatch, capsys):
@@ -478,17 +480,70 @@ def test_breadth_is_the_share_of_the_top_tier_up_over_the_week_split_at_its_own_
 
 def test_the_registry_stays_inside_what_its_controls_and_the_sweeps_null_can_correct_for():
     from scripts.research import strategy_ladder as sl
-    assert len(lab.variables()) == 30
-    assert len(lab.controls()) == 56 >= 2 * len(lab.variables()) - 4, "the random variables grow with the real ones"
-    assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / len(lab.variables()), "thirty is the most 300 null books can correct for"
-    assert not 1 / (sl.SWEEP_NULLS + 1) < 0.10 / (len(lab.variables()) + 1)
+    assert len(lab.variables()) == 34
+    assert len(lab.controls()) == 64 >= 2 * len(lab.variables()) - 4, "the random variables grow with the real ones"
+    assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / len(lab.variables()), "the sweep's null can correct for every variable"
+    assert not 1 / (sl.SWEEP_NULLS_ROUND_6 + 1) < 0.10 / len(lab.variables()), "300 null books could not: thirty was their most"
+    assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / 40 and not 1 / (sl.SWEEP_NULLS + 1) < 0.10 / 41, "400 reach forty variables"
+
+
+def test_every_registered_change_is_its_own_level_now_less_that_level_a_lookback_earlier():
+    names = lab.variables()
+    assert set(lab.CHANGE_OF) == {"ls_change", "top_change", "taker_change", "momentum_change", "funding_change",
+                                  "spot_share_change", "taker_buy_share_change"}
+    assert "illiquidity_change_30" not in names, "struck: its change is the change of volume and of the size of moves"
+    market = _market(date(2021, 6, 30))
+    day = date(2021, 3, 7)
+    for name, base in lab.CHANGE_OF.items():
+        group, change = names[f"{name}_30"]
+        base_group, level = names[f"{base}_30"]
+        assert group == base_group, name
+        now, before = level(market, SYMBOLS[1], day), level(market, SYMBOLS[1], day - timedelta(days=30))
+        expected = None if now is None or before is None else now - before
+        assert change(market, SYMBOLS[1], day) == expected, name
+    assert names["momentum_change_30"][1](market, SYMBOLS[1], day) is not None and names["funding_change_30"][1](market, SYMBOLS[1], day) is not None
+    twisted = _market(date(2021, 6, 30), twist_after=day)
+    for name in ("momentum_change_30", "funding_change_30"):
+        assert names[name][1](twisted, SYMBOLS[1], day) == names[name][1](market, SYMBOLS[1], day), "nothing after the day is read"
+
+
+def test_a_run_of_the_spot_group_loads_the_spot_bars_alone(monkeypatch, tmp_path):
+    asked = []
+    span_end = lab.SPAN[1]
+    bar = xsb.Bar(open=1.0, close=1.0, quote_volume=1.0)
+
+    def hold(cache, span=None, *, attach=True, flow=False):
+        asked.append((attach, flow))
+        return xsb.Market(bars={"AUSDT": {span_end: bar}})
+
+    def never(*args, **kwargs):
+        raise AssertionError("positioning or depth was loaded")
+
+    monkeypatch.setattr(lab, "hold", hold)
+    monkeypatch.setattr(lab.ms, "load_daily", never)
+    monkeypatch.setattr(lab.ds, "load_daily", never)
+    assert lab.hold_spot(tmp_path) is None, "no spot listing on file"
+    folder = tmp_path / lab.sp.SPOT_DIR
+    folder.mkdir()
+    (folder / lab.ba.SYMBOLS_FILENAME).write_text(json.dumps(["AUSDT"]), encoding="utf-8")
+    (folder / lab.sp.KLINES).mkdir()
+    late = span_end + timedelta(days=2)
+    monkeypatch.setattr(lab.xsb, "load_market", lambda path, funding=True: xsb.Market(bars={"AUSDT": {span_end: bar, late: bar}}))
+    held = lab.hold_spot(tmp_path)
+    assert asked == [(False, False), (False, False)]
+    assert set(held.spot["AUSDT"]) == {span_end} and held.spot_of["AUSDT"] == ("AUSDT", 1.0), "cut at the span's end"
+    assert not hasattr(held, "metrics") and not hasattr(held, "depth")
+    seen = []
+    monkeypatch.setattr(lab.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(lab, "hold_spot", lambda cache: seen.append("spot"))
+    assert lab.main(["run", "--only", "spot"]) == lab.EXIT_BLOCKED and seen == ["spot"], "the spot group goes through it"
 
 
 def test_the_by_variable_check_has_enough_placebos_for_a_real_effect_to_pass_the_correction():
     """The smallest p a test can show is one over the placebos plus one. It has to be under what Benjamini–Hochberg
     asks of the best of a few hundred tests, or nothing could ever pass (the first run, 2026-11-13: 200 placebos)."""
     tests, q = len(lab.variables()) * len(lab.TIERS) * len(lab.AXES), 0.10
-    assert tests == 30 * 2 * 6
+    assert tests == 34 * 2 * 6
     assert 1 / (lab.PLACEBO_AXES_BY_VARIABLE + 1) < q / tests
     assert not 1 / (200 + 1) < q / tests
 

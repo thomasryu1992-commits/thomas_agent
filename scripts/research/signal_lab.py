@@ -61,8 +61,8 @@ MIN_DECISIONS = 20                         # decisions a cell needs before it sh
 MIN_SPELLS = 4                             # separate stretches a scenario cell needs: one long bull run is one sample
 REFERENCE_DECISIONS = 52                   # trailing decisions a scenario's own median is taken over
 REFERENCE_MIN = 26
-CONTROLS_WEEKLY = 28                       # random variables redrawn at every decision (25 until the registry grew to 30)
-CONTROLS_FIXED = 28                        # random variables fixed per coin, like a slow characteristic
+CONTROLS_WEEKLY = 32                       # random variables redrawn at every decision (25, then 28, as the registry grew)
+CONTROLS_FIXED = 32                        # random variables fixed per coin, like a slow characteristic
 EXTREME_MOVE = 0.30                        # a daily close-to-close move this large is an extreme day
 WILD_MOVE = 0.50                           # a coin whose largest daily move in the lookback reached this is wild
 AGE_CAP_DAYS = 1000                        # listing age is read up to here; older coins are alike
@@ -101,7 +101,10 @@ def _change(level: Variable) -> Variable:
 
 # The positioning levels whose 30-day change is registered (STRATEGY_DISCOVERY_LOOP_V0.1 section 33). Open interest
 # is already a change; the divergence is the difference of two of these and its change adds no reading of its own.
-CHANGE_OF = {"ls_change": "ls_level", "top_change": "top_level", "taker_change": "taker_level"}
+CHANGE_OF = {"ls_change": "ls_level", "top_change": "top_level", "taker_change": "taker_level",
+             # Section 35: the rest of the change shape, after the strikes written there.
+             "momentum_change": "momentum", "funding_change": "funding", "spot_share_change": "spot_share",
+             "taker_buy_share_change": "taker_buy_share"}
 
 
 def _daily_moves(market: xsb.Market, symbol: str, day: date, lookback: int) -> list[float] | None:
@@ -760,6 +763,19 @@ def hold_positioning(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market 
     return held
 
 
+def hold_spot(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | None:
+    """The market cut at the span's last day with the spot bars alone attached: all a run of the spot group reads.
+    None when the contract types or the spot listing are missing."""
+    held = hold(cache, span, attach=False)
+    try:
+        listing = set(json.loads((cache / sp.SPOT_DIR / ba.SYMBOLS_FILENAME).read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        listing = set()
+    if held is None or not listing:
+        return None
+    return sp.attach(held, xsb.load_market(cache / sp.SPOT_DIR, funding=False), listing, span[1], sp.months_on_disk(cache))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="signal_lab", description=__doc__.splitlines()[0])
     parser.add_argument("command", choices=("list", "run", "axes", "axes-by-variable", "inventory", "universe"))
@@ -799,6 +815,8 @@ def main(argv: list[str] | None = None) -> int:
     # Load what the chosen variables read and nothing else: the attached series are most of the memory.
     if groups == {"positioning"}:
         market = hold_positioning(cache)
+    elif groups == {"spot"}:
+        market = hold_spot(cache)
     else:
         market = hold(cache, attach=bool(groups & {"positioning", "depth", "spot"}), flow="trade_flow" in groups)
     if market is None:
