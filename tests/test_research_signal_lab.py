@@ -404,6 +404,69 @@ def test_the_axis_check_by_variable_finds_the_one_an_axis_moves_and_counts_what_
     assert first["state_means"] == {"cool": pytest.approx(-0.2, abs=0.01), "hot": pytest.approx(0.2, abs=0.01)}
     assert [(t["variable"], t["axis"]) for t in out["survive_benjamini_hochberg"]] == [("moved", "heat")]
     assert len(out["all_tests"]) == 2
+    assert sorted(row[:3] for row in out["counts"]) == [["moved", "top30", "heat"], ["still", "top30", "heat"]]
+    moved = next(row for row in out["counts"] if row[0] == "moved")
+    assert moved[3:5] == [0, 60] and moved[5:] == [None, None] and out["dropped"] == [], "60 placebos: no count at 5,000"
+    # The counts at an earlier placebo count are what a run with that many placebos gives: the same draws in order.
+    monkeypatch.setattr(lab, "PLACEBO_AXES_BY_VARIABLE_ROUND_4", 40)
+    long = lab.axis_by_variable(xsb.Market(), {}, SPAN)
+    monkeypatch.setattr(lab, "PLACEBO_AXES_BY_VARIABLE", 40)
+    short = lab.axis_by_variable(xsb.Market(), {}, SPAN)
+    assert {tuple(r[:3]): r[5:] for r in long["counts"]} == {tuple(r[:3]): r[3:5] for r in short["counts"]}
+    assert lab.round4_matches(long["counts"], short["all_tests"]) == {"shared": 2, "differ": []}
+    moved_p = next(row for row in short["all_tests"] if row[0] == "moved")
+    wrong = [[*row[:3], row[3] + 0.01] if row is moved_p else row for row in short["all_tests"]]
+    assert lab.round4_matches(long["counts"], wrong) == {"shared": 2, "differ": [["moved", "top30", "heat"]]}
+    assert lab.round4_matches(long["counts"], [["absent", "top30", "heat", 0.5]]) == {"shared": 0, "differ": []}
+    assert sorted(lab.round4_matches(out["counts"], out["all_tests"])["differ"]) == [
+        ["moved", "top30", "heat"], ["still", "top30", "heat"]], "a run with no count at that point matches nothing"
+
+
+def test_the_family_reading_is_made_from_counts_over_every_groups_run(monkeypatch):
+    days = [date(2021, 1, 3) + timedelta(days=7 * k) for k in range(120)]
+    heat = (["hot"] * 10 + ["cool"] * 10) * 6
+    series = {("moved", "top30"): {d: (0.2 if h == "hot" else -0.2) + (0.01 if k % 2 else -0.01) for k, (d, h) in enumerate(zip(days, heat))},
+              ("still", "top30"): {d: 0.05 * (((k * 7919) % 13) - 6) / 6 for k, d in enumerate(days)},
+              ("other", "top30"): {d: 0.05 * (((k * 104729) % 11) - 5) / 5 for k, d in enumerate(days)}}
+    monkeypatch.setattr(lab, "PLACEBO_AXES_BY_VARIABLE", 60)
+    monkeypatch.setattr(lab, "ic_series", lambda market, names, span: (days, {k: v for k, v in series.items() if k[0] in names}))
+    monkeypatch.setattr(lab, "tier_members", lambda market, span: {"top30": {}})
+    monkeypatch.setattr(lab, "scenario_labels", lambda market, monthly, asked, span: {d: {"heat": h} for d, h in zip(days, heat)})
+    together = lab.axis_by_variable(xsb.Market(), {"moved": 1, "still": 1, "other": 1}, SPAN)
+    apart = [lab.axis_by_variable(xsb.Market(), {"moved": 1}, SPAN), lab.axis_by_variable(xsb.Market(), {"still": 1, "other": 1}, SPAN)]
+    assert sorted(map(tuple, together["counts"])) == sorted(tuple(r) for run in apart for r in run["counts"]), \
+        "a test's counts do not depend on which other variables ran beside it"
+    family = lab.axes_family(apart)
+    assert family["tests"] == 3 and family["placebos_per_test"] == 60 and family["variables"] == 3 and family["dropped"] == []
+    assert family["tests_by_axis"] == {"heat": 3} and family["smallest_possible_p"] == pytest.approx(1 / 61)
+    assert [r["variable"] for r in family["survive_benjamini_hochberg"]] == ["moved"], "1/61 is under 0.10 x 1/3"
+    assert family["survive_benjamini_hochberg"][0]["p"] == 1 / 61, "the p is exact, from the counts"
+    assert apart[1]["survive_benjamini_hochberg"] == [] and family["first_threshold"] == pytest.approx(0.10 / 3)
+    # Seven tests at 1/61 would each pass alone in a run of one; the family asks 0.10 x rank / 7 of them together.
+    assert lab.axes_family([apart[0], apart[0]]) == {"refused": "a test appears in two runs", "test": ["moved", "top30", "heat"]}
+    other = {**apart[1], "placebos_per_test": 59}
+    assert lab.axes_family([apart[0], other]) == {"refused": "the runs used different numbers of placebos", "placebos_per_test": [59, 60]}
+    thin = {**apart[1], "counts": [[*apart[1]["counts"][0][:3], 0, 10, None, None], *apart[1]["counts"][1:]]}
+    dropped = lab.axes_family([apart[0], thin])
+    assert dropped["tests"] == 2 and dropped["dropped"] == [list(apart[1]["counts"][0][:3])], "a thin test is named, not silently gone"
+
+
+def test_the_depth_group_loads_its_values_alone_cut_at_the_spans_end(monkeypatch):
+    span_end = lab.SPAN[1]
+    row = {"x": 1.0}
+    asked = []
+
+    def hold(cache, span=None, *, attach=True, flow=False):
+        asked.append((attach, flow))
+        return lab.xsb.Market(bars={})
+
+    monkeypatch.setattr(lab, "hold", hold)
+    monkeypatch.setattr(lab.ds, "load_daily", lambda cache: {"AUSDT": {span_end: row, span_end + timedelta(days=3): row}})
+    held = lab.hold_depth("cache")
+    assert asked == [(False, False)] and held.depth == {"AUSDT": {span_end: row}}, "nothing after the span's last day"
+    assert not hasattr(held, "metrics") and not hasattr(held, "spot")
+    monkeypatch.setattr(lab.ds, "load_daily", lambda cache: {})
+    assert lab.hold_depth("cache") is None, "no depth values on disk: blocked, not an empty check"
 
 
 def test_a_run_may_map_one_group_alone_and_refuses_a_group_nobody_registered(monkeypatch, capsys):
@@ -419,7 +482,8 @@ def test_a_run_may_map_one_group_alone_and_refuses_a_group_nobody_registered(mon
     monkeypatch.setattr(lab, "hold", hold)
     assert lab.main(["run", "--only", "trade_flow"]) == lab.EXIT_BLOCKED
     assert asked == {"attach": False, "flow": True}, "the trade-flow columns and nothing heavier"
-    assert lab.main(["run", "--only", "depth"]) == lab.EXIT_BLOCKED and asked == {"attach": True, "flow": False}
+    assert lab.main(["run", "--only", "depth"]) == lab.EXIT_BLOCKED and asked == {"attach": False, "flow": False}, \
+        "the depth group loads its values alone (section 47): the combined load no longer fits the sandbox"
     assert lab.main(["run", "--only", "spot"]) == lab.EXIT_BLOCKED and asked == {"attach": False, "flow": False}, \
         "the spot group loads its bars through the lighter loader"
 

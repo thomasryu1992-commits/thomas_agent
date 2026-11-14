@@ -678,6 +678,7 @@ FINER_PLACEBOS = 400                       # the axes that stand 8th and later: 
 # of placebos plus one. With 200 that floor (0.005) sits above anything Benjamini-Hochberg could pass at q 0.10
 # over 230 tests (0.0004) — the first run could not have passed anything. 5,000 puts the floor at 0.0002.
 PLACEBO_AXES_BY_VARIABLE = 7200            # 5000 until 41 variables, 6000 until 50: the earlier ones are the same placebos
+PLACEBO_AXES_BY_VARIABLE_ROUND_4 = 5000    # what round 4's reading used; the counts at that point are kept beside the full ones
 
 
 def ic_series(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tuple[date, date] = SPAN
@@ -792,12 +793,15 @@ def axis_by_variable(market: xsb.Market, names: Mapping[str, tuple[str, Variable
     days, series = ic_series(market, names, span)
     labels = scenario_labels(market, tier_members(market, span)["top30"], days, span)
     tests = []
+    counts: list[list[Any]] = []             # [variable, tier, axis, above, counted, above and counted at round 4's 5000]
+    dropped: list[list[str]] = []            # a test whose placebos mostly had no separation: named, never silently gone
     for axis in AXES:
         real = [labels[d].get(axis) for d in days]
         actual_labels = dict(zip(days, real))
         actual = {key: separation({key: values}, actual_labels) for key, values in series.items()}
         actual = {key: value for key, value in actual.items() if value is not None}
         above, counted = dict.fromkeys(actual, 0), dict.fromkeys(actual, 0)
+        early: tuple[dict, dict] | None = None
         for k in range(PLACEBO_AXES_BY_VARIABLE):                # one placebo at a time: none is kept
             fake = dict(zip(days, shuffled_spells(real, f"{SPEC}|axis|{axis}|{k}")))
             for key, value in actual.items():
@@ -805,8 +809,13 @@ def axis_by_variable(market: xsb.Market, names: Mapping[str, tuple[str, Variable
                 if placebo is not None:
                     counted[key] += 1
                     above[key] += placebo >= value
+            if k + 1 == PLACEBO_AXES_BY_VARIABLE_ROUND_4:        # the same placebos round 4 read, in the same order
+                early = (dict(above), dict(counted))
         for key in sorted(actual):
+            counts.append([key[0], key[1], axis, above[key], counted[key],
+                           *((early[0][key], early[1][key]) if early is not None else (None, None))])
             if counted[key] < PLACEBO_AXES_BY_VARIABLE // 2:
+                dropped.append([key[0], key[1], axis])
                 continue
             states: dict[str, list[float]] = {}
             for day, ic in series[key].items():
@@ -821,7 +830,54 @@ def axis_by_variable(market: xsb.Market, names: Mapping[str, tuple[str, Variable
     return {"tests": len(tests), "p_under_0.05": sum(1 for t in tests if t["p"] < 0.05),
             "expected_under_0.05_by_chance": round(0.05 * len(tests), 1), "q": q,
             "placebos_per_test": PLACEBO_AXES_BY_VARIABLE, "survive_benjamini_hochberg": ordered[:cutoff], "smallest_p": ordered[:10],
-            "all_tests": [[t["variable"], t["tier"], t["axis"], t["p"]] for t in ordered]}
+            "all_tests": [[t["variable"], t["tier"], t["axis"], t["p"]] for t in ordered], "counts": counts, "dropped": dropped}
+
+
+def round4_matches(counts: Sequence[Sequence[Any]], recorded: Sequence[Sequence[Any]]) -> dict[str, Any]:
+    """A run's counts at round 4's 5,000 placebos beside round 4's recorded p, for every test both hold. The placebos
+    are drawn in the same order from the same seeds, so the two must agree to the recorded five places."""
+    at = {(row[0], row[1], row[2]): (row[5], row[6]) for row in counts}
+    shared, differ = 0, []
+    for variable, tier, axis, p in recorded:
+        if (variable, tier, axis) not in at:
+            continue
+        shared += 1
+        above, counted = at[(variable, tier, axis)]
+        if above is None or round((1 + above) / (1 + counted), 5) != p:
+            differ.append([variable, tier, axis])
+    return {"shared": shared, "differ": differ}
+
+
+def axes_family(runs: Sequence[Mapping[str, Any]], *, q: float = 0.10) -> dict[str, Any]:
+    """The per-variable axis check over every group's run as ONE family, from the counts and not from any run's
+    printed p (rounded) or its own survivor list (a correction over that group alone). Refuses runs with different
+    placebo counts and a test that appears twice."""
+    sizes = {run["placebos_per_test"] for run in runs}
+    if len(sizes) != 1:
+        return {"refused": "the runs used different numbers of placebos", "placebos_per_test": sorted(sizes)}
+    size = sizes.pop()
+    rows: dict[tuple[str, str, str], dict[str, Any]] = {}
+    dropped = []
+    for run in runs:
+        for variable, tier, axis, above, counted, *_ in run["counts"]:
+            key = (variable, tier, axis)
+            if key in rows or [variable, tier, axis] in dropped:
+                return {"refused": "a test appears in two runs", "test": list(key)}
+            if counted < size // 2:
+                dropped.append([variable, tier, axis])
+                continue
+            rows[key] = {"variable": variable, "tier": tier, "axis": axis, "above": above, "counted": counted,
+                         "p": (1 + above) / (1 + counted)}
+    ordered = sorted(rows.values(), key=lambda r: (r["p"], r["variable"], r["tier"], r["axis"]))
+    cutoff = max((i for i, r in enumerate(ordered, start=1) if r["p"] <= q * i / len(ordered)), default=0)
+    by_axis: dict[str, int] = {}
+    for r in ordered:
+        by_axis[r["axis"]] = by_axis.get(r["axis"], 0) + 1
+    return {"tests": len(ordered), "placebos_per_test": size, "q": q, "tests_by_axis": dict(sorted(by_axis.items())),
+            "variables": len({r["variable"] for r in ordered}), "dropped": sorted(dropped),
+            "p_under_0.05": sum(1 for r in ordered if r["p"] < 0.05), "expected_under_0.05_by_chance": round(0.05 * len(ordered), 1),
+            "first_threshold": q / len(ordered) if ordered else None, "smallest_possible_p": 1 / (1 + size),
+            "survive_benjamini_hochberg": ordered[:cutoff], "smallest_p": ordered[:10]}
 
 
 # --- what kind of universe is it, month by month (D7) ------------------------------------------------------------
@@ -1044,6 +1100,17 @@ def hold_premium(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | No
     return held if held.premium else None
 
 
+def hold_depth(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | None:
+    """The market cut at the span's last day with the depth values alone attached. The combined load (positioning,
+    depth and spot together) no longer fits the sandbox. None when a piece is missing."""
+    held = hold(cache, span, attach=False)
+    daily = ds.load_daily(cache)
+    if held is None or not daily:
+        return None
+    held.depth = {s: {d: v for d, v in days.items() if d <= span[1]} for s, days in daily.items()}
+    return held
+
+
 def hold_spot(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | None:
     """The market cut at the span's last day with the spot bars alone attached: all a run of the spot group reads.
     None when the contract types or the spot listing are missing."""
@@ -1117,6 +1184,8 @@ def main(argv: list[str] | None = None) -> int:
         market = hold_spot(cache)
     elif groups == {"premium"}:
         market = hold_premium(cache)
+    elif groups == {"depth"}:
+        market = hold_depth(cache)
     else:
         market = hold(cache, attach=bool(groups & {"positioning", "depth", "spot"}), flow="trade_flow" in groups)
     if market is None:
