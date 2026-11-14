@@ -39,3 +39,25 @@ funding basis to a per-coin tail, default yes). That is a reading, not his "yes"
   changed and no narrower rule is run.
 - *Not a re-judgement of FUNDING_BASIS_V0.2.* B-POS's verdict, its forward screen and its script are untouched. A
   pass here buys no confirm read: that span was read by B-POS.
+
+**Results (same day).**
+
+- *D9 was answered before the counts.* To "I read 'next' as D9; measure it as is?" Thomas said "그대로 진행", and
+  later "결과 나오면 #1473도 병합".
+- *The counts did not stop the book.* A pair at 49 to 53 decisions in each later year, 17% of the pool held (under
+  the 25% label), spells of three weeks. The refilled size line already said costs eat the tail's funding after
+  2021: the held coins' trailing funding was 0.16% to 0.44% a week in 2022-2024 against a round trip of 1.14% of a
+  leg.
+- *H-B1 failed every rung and is closed.* Annual Sharpe -0.353 net over five years, -1.8% of total position a year,
+  all three later years negative, p 0.196 against the same book on other pool coins. Funding received 10.4% a year,
+  costs 9.3%, price -2.9%.
+- *The price loss is the margin rule's days, and they do not decide the verdict.* Thirty-two days on which a perp's
+  high reached 1.95 times the mark it was held from, most of the loss on coins that ran several-fold and fell back
+  the same day (UNFI, TRB): the short is gone at the high and the spot is unhedged to the close. Without those days
+  the book would be about +1.2% a year, still far under the floor. That figure is arithmetic on the output, not a
+  second judgement.
+- *The placebo line in the registration was wrong.* It said rung 2's placebo condition would be easy to pass
+  because funding persists. It was not passed: 58 of 300 other-coin pair books did as well.
+- *The measurement ran from the counts commit before that commit's checks had finished* (they passed while it
+  ran). The code is byte-identical to the registration commit's, whose checks had passed; the registered order said
+  "commit, then measure" and named no wait.
