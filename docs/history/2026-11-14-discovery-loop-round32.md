@@ -23,3 +23,13 @@ hedge.
   leg that earned it. The hedge coin is one position (its rank weight and the hedge together) and is kept whole.
 - *The form's door is quoted, not softened*: lines 1 to 3 must be filled or the idea does not go on the ladder
   without asking Thomas, and no payer is invented.
+
+**Result (2026-11-14 20:12Z).** Both gates pass (the legs sum to the book to 1e-16; the run reproduces 1.667 and
+34.4%). The untied coins earn 61% of the five-year net, so the rule does not close the lead.
+
+- *By year the picture is weaker than the total.* The variable's own leg earns in four years and loses 32.1% of
+  total position in 2024; that year's +15.9% for the book is the name-ordered coins (+33.5%) and the hedge
+  (+14.4%). So the 2024 pass in round 31's later-years check was not the variable's.
+- *The name-ordered leg flips sign from year to year* at the same order of magnitude as the variable's leg.
+- *The form's door is where this stops for now.* No check has shown who pays, and what the variable measures is
+  not known. The form's rule says such an idea goes on the ladder only by asking Thomas.
