@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from datetime import date, timedelta
 
 import pytest
@@ -272,7 +273,8 @@ def test_the_axis_check_reads_every_axis_beside_its_placebos(tiers, monkeypatch)
     monkeypatch.setattr(lab, "FINER_PLACEBOS", 5)
     out = lab.axis_check(lab.cut_market(_market(SPAN[1]), SPAN), NAMES, SPAN)
     assert set(out["axes"]) == {"trend", "vol", "dispersion", "heat", "universe", "breadth", *lab.CANDIDATE_AXES,
-                                *lab.FINER_AXES}
+                                *lab.FINER_AXES, "funding_spread"}
+    assert out["axes"]["funding_spread"]["level"] == round(0.05 / 14, 5), "the fourteenth axis checked"
     assert "level" not in out["axes"]["trend"] and out["axes"]["breadth"]["level"] == 0.05
     assert out["axes"]["month"]["level"] == round(0.05 / 6, 5) and isinstance(out["axes"]["month"]["beats_its_placebos"], bool)
     assert out["axes"]["leverage"]["separation"] is None and out["axes"]["leverage"]["beats_its_placebos"] is False, \
@@ -283,7 +285,8 @@ def test_the_axis_check_reads_every_axis_beside_its_placebos(tiers, monkeypatch)
             "states", "separation", "placebo_mean", "placebo_p95", "placebos_at_or_above", "placebos",
             *(("parts", "merged", "split") if fine else ())}, axis
         assert ("level" in body) == (axis in lab.AXIS_ORDER), "only the axes checked since breadth carry a level"
-        assert body["placebos"] <= (5 if fine else 8) and sum(body["states"].values()) == out["decisions"], axis
+        late = fine or axis in lab.LATE_AXES
+        assert body["placebos"] <= (5 if late else 8) and sum(body["states"].values()) == out["decisions"], axis
     fine = out["axes"]["vol_fine"]
     assert fine["level"] == round(0.05 / 9, 5) and sum(n["decisions"] for n in fine["parts"].values()) \
         == out["decisions"] - out["axes"]["vol"]["states"]["None"], "the finer cut labels the weeks the coarse one does"
@@ -293,9 +296,11 @@ def test_the_axis_check_reads_every_axis_beside_its_placebos(tiers, monkeypatch)
     assert fine["split"] == ["vol"] and fine["placebos"] == 5 and set(fine["states"]) == {"None", "high", "mid", "low"}
     assert fine["separation"] is not None and 0 <= fine["placebos_at_or_above"] <= 5 and fine["p"] is not None
     monkeypatch.setattr(lab, "FINER_AXES", ())
+    monkeypatch.setattr(lab, "LATE_AXES", ())
     without = lab.axis_check(lab.cut_market(_market(SPAN[1]), SPAN), NAMES, SPAN)
-    assert without["axes"] == {axis: body for axis, body in again["axes"].items() if axis not in lab.FINER_OF}, \
-        "checking the finer axes changes no other axis's row"
+    assert without["axes"] == {axis: body for axis, body in again["axes"].items()
+                               if axis not in lab.FINER_OF and axis != "funding_spread"}, \
+        "checking the later axes changes no other axis's row"
 
 
 def test_the_inventory_names_what_is_on_disk_and_the_kline_columns_no_loader_keeps(tmp_path, capsys, monkeypatch):
@@ -502,11 +507,11 @@ def test_breadth_is_the_share_of_the_top_tier_up_over_the_week_split_at_its_own_
 
 def test_the_candidate_axes_are_labelled_from_the_past_held_to_stricter_levels_and_never_mapped():
     assert not set(lab.CANDIDATE_AXES) & set(lab.AXES)
-    assert lab.AXIS_ORDER == ("breadth",) + lab.CANDIDATE_AXES + lab.FINER_AXES
-    assert lab.scenario_keys({"breadth": "broad", "dominance": "btc_led", "month": "start"}) == ["all", "breadth=broad"], \
+    assert lab.AXIS_ORDER == ("breadth",) + lab.CANDIDATE_AXES + lab.FINER_AXES + ("funding_spread",)
+    assert lab.scenario_keys({"breadth": "broad", "dominance": "btc_led", "month": "start", "funding_spread": "apart"}) == ["all", "breadth=broad"], \
         "an axis under check adds no cell to the map"
     levels = [lab.axis_level(axis) for axis in lab.AXIS_ORDER]
-    assert levels == [0.05 / k for k in range(1, 14)] and lab.axis_level("trend") is None
+    assert levels == [0.05 / k for k in range(1, 15)] and lab.axis_level("trend") is None
     assert 1 / (lab.PLACEBO_AXES + 1) < levels[6], "200 placebos can resolve the strictest level of the first seven"
     assert 1 / (lab.FINER_PLACEBOS + 1) < levels[-1] < 1 / (lab.PLACEBO_AXES + 1), "the finer six need more than 200"
     start = date(2021, 1, 4)                                      # a Monday
@@ -859,3 +864,103 @@ def test_an_axis_the_gate_leaves_uncut_is_not_checked(tiers, monkeypatch):
         assert out[axis]["split"] == [] and out[axis]["separation"] is None and out[axis]["placebos"] == 0, axis
         assert out[axis]["beats_its_placebos"] is False and out[axis]["p"] is None
     assert all(out[axis] == before[axis] for axis in out if axis not in lab.FINER_OF), "the gate is the finer axes' only"
+
+
+def _flat_bar(close: float, up: float, down: float) -> xsb.Bar:
+    return xsb.Bar(open=close, close=close, quote_volume=1.0, high=close * math.exp(up), low=close * math.exp(-down))
+
+
+def test_the_estimated_spread_is_how_far_the_close_sits_from_the_middle_of_two_days_ranges():
+    day = date(2021, 3, 31)
+    days = [day - timedelta(days=k) for k in range(40)]
+    market = lambda bar_of: xsb.Market(bars={"AUSDT": {d: bar_of(d) for d in days}})           # noqa: E731
+    # Every day closes 0.01 under the middle of its range (0.01 up, 0.03 down): the estimate is twice that.
+    assert lab._spread(market(lambda d: _flat_bar(100.0, 0.01, 0.03)), "AUSDT", day) == pytest.approx(0.02)
+    assert lab._spread(market(lambda d: _flat_bar(100.0, 0.02, 0.02)), "AUSDT", day) == pytest.approx(0.0)
+    # A close above one day's middle and below the next day's: the product is negative and the estimate is zero.
+    swing = market(lambda d: _flat_bar(100.0, 0.01, 0.03) if d.toordinal() % 2 else _flat_bar(100.0, 0.03, 0.01))
+    assert lab._spread(swing, "AUSDT", day) == 0.0
+    later = market(lambda d: _flat_bar(100.0, 0.01, 0.03))
+    later.bars["AUSDT"][day + timedelta(days=1)] = _flat_bar(100.0, 0.5, 0.0)
+    assert lab._spread(later, "AUSDT", day) == pytest.approx(0.02), "the day after is not read"
+    later.bars["AUSDT"][day] = _flat_bar(100.0, 0.5, 0.0)
+    assert lab._spread(later, "AUSDT", day) != pytest.approx(0.02), "the day itself is"
+    short = xsb.Market(bars={"AUSDT": {d: _flat_bar(100.0, 0.01, 0.03) for d in days[:20]}})
+    assert lab._spread(short, "AUSDT", day) is None and lab._spread(short, "BUSDT", day) is None
+
+
+def test_the_premium_is_read_to_the_spans_last_day_and_no_further(tmp_path):
+    last = date(2021, 3, 31)
+    folder = tmp_path / "binance" / "derivative" / "premium"
+    folder.mkdir(parents=True)
+    stamp = lambda d: int((d - date(1970, 1, 1)).total_seconds() * 1000)                         # noqa: E731
+    rows = [json.dumps([stamp(last - timedelta(days=k)), "0", "0", "0", str(0.001 * (k + 1))]) for k in range(-5, 30)]
+    (folder / "AUSDT.1d.jsonl").write_text("\n".join(rows + ["{torn", json.dumps([stamp(last), "x"])]) + "\n")
+    held = lab.read_premium(tmp_path, ["AUSDT", "BUSDT"], last)
+    assert set(held) == {"AUSDT"} and max(held["AUSDT"]) == last and len(held["AUSDT"]) == 30, "five later days are dropped"
+    market = xsb.Market(bars={})
+    assert lab._premium(market, "AUSDT", last) is None, "no premium attached"
+    market.premium = held
+    assert lab._premium(market, "AUSDT", last) == pytest.approx(0.001 * sum(range(1, 31)) / 30)
+    assert lab._premium(market, "AUSDT", last + timedelta(days=11)) is None, "nineteen days in the window: too few"
+    assert lab._premium(market, "AUSDT", last + timedelta(days=10)) == pytest.approx(0.001 * sum(range(1, 21)) / 20)
+
+
+def test_a_candidate_that_orders_coins_as_its_kin_does_is_not_mapped_and_no_return_is_read(tiers, monkeypatch):
+    market = lab.cut_market(_market(SPAN[1]), SPAN)
+    vol, noise = lab.variables()["vol_30"][1], list(lab.controls().values())[0][1]
+    monkeypatch.setattr(lab, "OVERLAP_CANDIDATES", {
+        "copy": ("price_volume", vol, ("momentum_30", "vol_30")),
+        "mirror": ("price_volume", lambda m, s, d: None if (v := vol(m, s, d)) is None else -v, ("vol_30",)),
+        "other": ("price_volume", noise, ("vol_30", "momentum_30")),
+        "blind": ("price_volume", lambda m, s, d: None, ("vol_30",))})
+
+    def no_returns(*args, **kwargs):
+        raise AssertionError("the overlap check reads no return")
+    monkeypatch.setattr(lab, "forward_return", no_returns)
+    copy, mirror = lab.overlap(market, "copy", SPAN), lab.overlap(market, "mirror", SPAN)
+    assert copy["nearest_kin"] == "vol_30" and copy["mapped"] is False and copy["compared"] is True
+    assert copy["tiers"]["top30"]["kin"]["vol_30"]["median_rank_correlation"] == 1.0
+    assert mirror["tiers"]["top30"]["kin"]["vol_30"]["median_rank_correlation"] == -1.0 and mirror["mapped"] is False
+    other = lab.overlap(market, "other", SPAN)
+    assert other["mapped"] is True and other["threshold"] == 0.8
+    assert all(abs(k["median_rank_correlation"]) < 0.8 for k in other["tiers"]["top30"]["kin"].values())
+    assert other["tiers"]["top30"]["decisions_ranked"] == other["tiers"]["top30"]["kin"]["vol_30"]["decisions"] > 20
+    blind = lab.overlap(market, "blind", SPAN)
+    assert blind["compared"] is False and blind["mapped"] is False, "nothing compared is not a pass"
+    assert set(lab.variables()) & {"spread_30", "premium_30"} == set(), "a candidate is not in the registry"
+    monkeypatch.setattr(lab.xsb, "_in_sandbox", lambda: True)
+    assert lab.main(["overlap", "--candidate", "nothing"]) == lab.EXIT_USAGE
+
+
+def test_the_funding_spread_axis_reads_how_far_apart_the_weeks_funding_stands():
+    start = date(2021, 1, 4)
+    days = [start + timedelta(days=k) for k in range(72 * 7)]
+    coins = [f"C{i:02d}USDT" for i in range(10)]
+    stamp = lambda d: int((d - date(1970, 1, 1)).total_seconds() * 1000) + 3600 * 1000              # noqa: E731
+
+    def world(later=1.0):
+        """Six-week blocks: in even ones every coin pays the same funding, in odd ones they fan out, a little wider
+        as time goes. ``later`` scales the fan after week 60."""
+        bars = {s: {d: xsb.Bar(open=100.0, close=100.0, quote_volume=1e8, high=101.0, low=99.0) for d in days}
+                for s in coins + ["BTCUSDT"]}
+        funding = {s: [] for s in bars}
+        for k, day in enumerate(days):
+            week = k // 7
+            fan = 0.0 if (week // 6) % 2 == 0 else 1e-4 * (1 + week / 100) * (later if week > 60 else 1.0)
+            for i, s in enumerate(coins):
+                funding[s].append((stamp(day), 1e-4 + fan * (i - 4.5)))
+            funding["BTCUSDT"].append((stamp(day), 1e-4))
+        return xsb.Market(bars=bars, funding=funding)
+
+    span = (start, days[-1])
+    monthly = {date(d.year, d.month, 1): ["BTCUSDT"] + coins for d in days}
+    sundays = [d for d in days if d.weekday() == 6]
+    labels = lab.scenario_labels(world(), monthly, sundays, span)
+    last_of = lambda block: sundays[block * 6 + 5]                # noqa: E731 - the block's last decision
+    assert labels[last_of(8)]["funding_spread"] == "together" and labels[last_of(9)]["funding_spread"] == "apart"
+    assert "funding_spread" not in labels[sundays[3]], "no history to compare with yet"
+    shrunk = lab.scenario_labels(world(later=0.0), monthly, sundays, span)     # the fan closes after week 60
+    early = [d for d in sundays if (d - start).days // 7 <= 60]
+    assert all(shrunk[d] == labels[d] for d in early), "later weeks change no earlier label"
+    assert any(shrunk[d].get("funding_spread") != labels[d].get("funding_spread") for d in sundays if d not in early)

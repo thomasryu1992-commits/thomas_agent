@@ -47,6 +47,7 @@ from scripts.research import basket_search as bs  # noqa: E402
 from scripts.research import cross_section_basket as xsb  # noqa: E402
 from scripts.research import depth_basket_search as ds  # noqa: E402
 from scripts.research import forward_panel as fp  # noqa: E402
+from scripts.research import lake  # noqa: E402
 from scripts.research import metrics_basket_search as ms  # noqa: E402
 from scripts.research import regime_strategies as rg  # noqa: E402
 from scripts.research import spot_share_search as sp  # noqa: E402
@@ -85,8 +86,14 @@ FINER_OF = {"trend_fine": "trend", "vol_fine": "vol", "dispersion_fine": "disper
             "universe_fine": "universe", "breadth_fine": "breadth"}
 FINER_AXES = tuple(FINER_OF)
 EARLY_DECISIONS = 4                        # a trend spell's first four weekly decisions are "early": a month
+# Section 40: how far apart the top tier's coins' funding stands. Checked like the finer axes, never mapped.
+LATE_AXES = ("funding_spread",)
 # breadth was the first new axis; each later one meets a stricter level
-AXIS_ORDER = ("breadth",) + CANDIDATE_AXES + FINER_AXES
+AXIS_ORDER = ("breadth",) + CANDIDATE_AXES + FINER_AXES + LATE_AXES
+# Section 40: a variable with a file and no record is first ranked beside its nearest registered kin, on inputs
+# alone. One that orders the top tier's coins as a kin does (this rank correlation or more, either sign) is that
+# kin read again, and is not mapped.
+OVERLAP_MAX = 0.8
 DRAWDOWN_DAYS = 365                        # the reference coin's high is looked for over these days
 MONTH_START_DAYS = 7                       # a decision in the month's first week is "start"
 
@@ -323,6 +330,65 @@ def _median_split(value: float | None, history: Sequence[float], high: str, low:
     return high if value > statistics.median(history) else low
 
 
+def _spread(market: xsb.Market, symbol: str, day: date) -> float | None:
+    """A spread estimated from daily highs, lows and closes over the lookback: with ``c`` the log close and ``m`` the
+    middle of the log high and log low, the root of the mean of ``4 (c_t - m_t)(c_t - m_{t+1})`` over the day pairs
+    that end by ``day``, and zero where that mean is negative. A close far from both days' middles is a wide spread."""
+    bars = market.bars.get(symbol) or {}
+    terms = []
+    for k in range(LOOKBACK):
+        now, after = bars.get(day - timedelta(days=k + 1)), bars.get(day - timedelta(days=k))
+        if any(b is None or b.high is None or b.low is None or min(b.high, b.low, b.close) <= 0 for b in (now, after)):
+            continue
+        middle = lambda b: (math.log(b.high) + math.log(b.low)) / 2          # noqa: E731
+        terms.append(4 * (math.log(now.close) - middle(now)) * (math.log(now.close) - middle(after)))
+    if len(terms) < math.ceil(LOOKBACK * bs.MIN_SHARE):
+        return None
+    return math.sqrt(max(0.0, statistics.fmean(terms)))
+
+
+def _premium(market: xsb.Market, symbol: str, day: date) -> float | None:
+    """The mean of the premium index's daily close over the lookback: how far the perp has stood from its index."""
+    series = (getattr(market, "premium", None) or {}).get(symbol) or {}
+    values = [series[d] for d in (day - timedelta(days=k) for k in range(LOOKBACK)) if d in series]
+    return statistics.fmean(values) if len(values) >= math.ceil(LOOKBACK * bs.MIN_SHARE) else None
+
+
+# name: (the group whose data it reads, the reading, the registered kin it is ranked beside)
+OVERLAP_CANDIDATES: dict[str, tuple[str, Variable, tuple[str, ...]]] = {
+    "spread_30": ("price_volume", _spread, ("range_30", "illiquidity_30", "vol_30")),
+    "premium_30": ("premium", _premium, ("funding_7", "funding_30")),
+}
+
+
+def overlap(market: xsb.Market, name: str, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """How alike a candidate and each of its kin order a tier's coins: at every weekly decision the rank correlation
+    of the two over the coins with both, then the median over decisions. Reads no return. The rule reads the top
+    tier: at :data:`OVERLAP_MAX` or more with any kin, either sign, the candidate is not mapped."""
+    _, read, kin = OVERLAP_CANDIDATES[name]
+    registered = variables()
+    tiers = tier_members(market, span)
+    out: dict[str, Any] = {}
+    for tier, monthly in tiers.items():
+        rows: dict[str, list[float]] = {k: [] for k in kin}
+        ranked = 0
+        for day in decisions(span, HORIZONS[0]):
+            own = {s: v for s in monthly.get(date(day.year, day.month, 1), ()) if (v := read(market, s, day)) is not None}
+            ranked += len(own) >= MIN_NAMES
+            for k in kin:
+                pairs = [(own[s], v) for s in own if (v := registered[k][1](market, s, day)) is not None]
+                if len(pairs) >= MIN_NAMES and (rho := rank_correlation(pairs)) is not None:
+                    rows[k].append(rho)
+        out[tier] = {"decisions_ranked": ranked,
+                     "kin": {k: {"decisions": len(v), "median_rank_correlation": round(statistics.median(v), 4) if v else None}
+                             for k, v in rows.items()}}
+    top = {k: abs(v["median_rank_correlation"]) for k, v in out["top30"]["kin"].items()
+           if v["median_rank_correlation"] is not None and v["decisions"] >= MIN_DECISIONS}
+    nearest = max(top, key=top.get) if top else None
+    return {"candidate": name, "tiers": out, "threshold": OVERLAP_MAX, "nearest_kin": nearest,
+            "compared": bool(top), "mapped": bool(top) and top[nearest] < OVERLAP_MAX}
+
+
 def _third_split(value: float | None, history: Sequence[float], high: str, low: str) -> str | None:
     """Where the value stands among its own earlier values: two thirds or more of them under it is ``high``, fewer
     than a third is ``low``, and between is ``mid``. A ``high`` here is a ``high`` of :func:`_median_split` too."""
@@ -359,6 +425,11 @@ def scenario_labels(market: xsb.Market, monthly: Mapping[date, Sequence[str]], d
     def wild_share(day: date) -> float | None:
         moves = [m for m in (_daily_moves(market, s, day, LOOKBACK) for s in members(day)) if m is not None]
         return sum(1 for m in moves if max(m) >= WILD_MOVE) / len(moves) if len(moves) >= MIN_NAMES else None
+
+    def funding_spread(day: date) -> float | None:
+        """How far apart the top tier's coins' week of funding stands: the spread of what :func:`heat` takes the middle of."""
+        values = [v for v in (xsb.trailing_funding(market, s, day, 7) for s in members(day)) if v is not None]
+        return statistics.pstdev(values) if len(values) >= MIN_NAMES else None
 
     def breadth(day: date) -> float | None:
         """The share of the top tier's coins that are up over the last seven days."""
@@ -425,7 +496,7 @@ def scenario_labels(market: xsb.Market, monthly: Mapping[date, Sequence[str]], d
             "universe": (wild_share, "wild", "calm"), "breadth": (breadth, "broad", "thin"),
             "dominance": (dominance, "btc_led", "alt_led"), "volume": (volume, "busy", "quiet"),
             "correlation": (correlation, "tight", "loose"), "drawdown": (drawdown, "shallow", "deep"),
-            "leverage": (leverage, "levered", "light")}
+            "leverage": (leverage, "levered", "light"), "funding_spread": (funding_spread, "apart", "together")}
     series = {axis: {d: read(d) for d in weekly} for axis, (read, _, _) in axes.items()}
     # How many weekly decisions in a row, this one included, have carried the same trend label.
     age: dict[date, int] = {}
@@ -583,7 +654,7 @@ def grid(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tu
 # --- is a scenario axis worth having? (the monthly check) --------------------------------------------------------
 
 PLACEBO_AXES = 200                         # shuffled-spell copies each axis is compared with
-FINER_PLACEBOS = 400                       # the finer axes stand 8th to 13th: 0.05 / 13 lies under one in 201
+FINER_PLACEBOS = 400                       # the axes that stand 8th and later: 0.05 / 11 already lies under one in 201
 # One variable at a time there are a few hundred tests, and the smallest p a test can show is one over the number
 # of placebos plus one. With 200 that floor (0.005) sits above anything Benjamini-Hochberg could pass at q 0.10
 # over 230 tests (0.0004) — the first run could not have passed anything. 5,000 puts the floor at 0.0002.
@@ -669,14 +740,14 @@ def axis_check(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], sp
     days, series = ic_series(market, names, span)
     labels = scenario_labels(market, tier_members(market, span)["top30"], days, span)
     out = {}
-    for axis in AXES + CANDIDATE_AXES + FINER_AXES:
+    for axis in AXES + CANDIDATE_AXES + FINER_AXES + LATE_AXES:
         real, gate = [labels[d].get(axis) for d in days], None
         if axis in FINER_OF:
             real, gate = finer_gate(axis, real)
         checked = gate is None or bool(gate["split"])          # nothing cut finer: nothing to check
         actual = separation(series, dict(zip(days, real))) if checked else None
         fake = [separation(series, dict(zip(days, shuffled_spells(real, f"{SPEC}|axis|{axis}|{k}"))))
-                for k in range((PLACEBO_AXES if gate is None else FINER_PLACEBOS) if checked else 0)]
+                for k in range((PLACEBO_AXES if axis in AXES + CANDIDATE_AXES else FINER_PLACEBOS) if checked else 0)]
         fake = sorted(v for v in fake if v is not None)
         out[axis] = {**(gate or {}),
                      "states": dict(sorted({str(k): real.count(k) for k in set(real)}.items())),
@@ -927,6 +998,33 @@ def hold_positioning(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market 
     return held
 
 
+def read_premium(cache: Path, symbols: Sequence[str], last: date) -> dict[str, dict[date, float]]:
+    """``{symbol: {day: the premium index's daily close}}`` up to ``last`` and no further: the files run on past the
+    search span, and nothing after it is kept."""
+    out: dict[str, dict[date, float]] = {}
+    for symbol in symbols:
+        days: dict[date, float] = {}
+        for row in lake.read_rows(lake.derivative_path(cache, "premium", symbol, "1d")):
+            try:
+                day, close = xsb._utc_day(float(row[0])), float(row[4])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if day <= last:
+                days[day] = close
+        if days:
+            out[symbol] = days
+    return out
+
+
+def hold_premium(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | None:
+    """The market cut at the span's last day with the premium index attached. None when a piece is missing."""
+    held = hold(cache, span, attach=False)
+    if held is None:
+        return None
+    held.premium = read_premium(cache, sorted(held.bars), span[1])
+    return held if held.premium else None
+
+
 def hold_spot(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | None:
     """The market cut at the span's last day with the spot bars alone attached: all a run of the spot group reads.
     None when the contract types or the spot listing are missing."""
@@ -942,7 +1040,8 @@ def hold_spot(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="signal_lab", description=__doc__.splitlines()[0])
-    parser.add_argument("command", choices=("list", "run", "axes", "axes-by-variable", "inventory", "universe"))
+    parser.add_argument("command", choices=("list", "run", "axes", "axes-by-variable", "inventory", "universe", "overlap"))
+    parser.add_argument("--candidate", default=None, help="overlap: the candidate variable to rank beside its kin")
     parser.add_argument("--only", default=None, help="run: a variable group to map alone, with the random variables")
     parser.add_argument("--cache", type=Path, default=None, help="default: $RESEARCH_CACHE")
     args = parser.parse_args(argv)
@@ -971,6 +1070,22 @@ def main(argv: list[str] | None = None) -> int:
                           "judgement": None, **universe_character(market, span)}, indent=1, sort_keys=True))
         return EXIT_OK
     bs.check_development_span(SPAN)
+    if args.command == "overlap":
+        if args.candidate not in OVERLAP_CANDIDATES:
+            print(f"refused: --candidate is one of {sorted(OVERLAP_CANDIDATES)}", file=sys.stderr)
+            return EXIT_USAGE
+        market = hold_premium(cache) if OVERLAP_CANDIDATES[args.candidate][0] == "premium" else hold(cache, attach=False)
+        if market is None:
+            print("BLOCKED: contract types or the premium files are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "last_day_read": last_day(market).isoformat(),
+                          "reads_returns": False, "judgement": None,
+                          **({"premium_symbols": len(market.premium),
+                              "premium_last_day": max(max(days) for days in market.premium.values()).isoformat()}
+                             if getattr(market, "premium", None) else {}),
+                          **overlap(market, args.candidate)}, indent=1, sort_keys=True))
+        return EXIT_OK
     chosen = {n: v for n, v in variables().items() if args.only is None or v[0] == args.only}
     if not chosen:
         print(f"refused: no registered variable is in group {args.only!r}", file=sys.stderr)
