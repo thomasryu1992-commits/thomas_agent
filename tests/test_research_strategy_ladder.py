@@ -1983,3 +1983,19 @@ def test_the_wide_commands_hang_the_positioning_values_and_nothing_after_their_s
         assert market.metrics["AUSDT"] == {date(2024, 12, 30): {"oi": 5.0, "ls": 0.5, "top": None, "taker": None}}
         assert market.metrics_unserved == {"AUSDT": {date(2024, 12, 29)}}
     assert '"span": [\n  "2022-01-01",\n  "2024-12-31"\n ]' in capsys.readouterr().out
+
+
+def test_the_value_printed_as_m04_was_measured_is_what_m04s_own_protocol_gives_on_the_tiers_members(monkeypatch):
+    ms = sl.lab.ms
+    market = _wide_world()
+    tier = sl.WideTier(market, WIDE_TEST_SPAN)
+    printed = sl.wide_run(market, WIDE_TEST_SPAN, nulls=1)["as_m04_was_measured"]      # beside the verdict
+    ours = sl.measure(market, tier.book(), WIDE_TEST_SPAN)
+    monkeypatch.setattr(sl.bs.xsb, "universes", lambda market, **kw: dict(tier.monthly))   # M04's path, on the tier
+    theirs = sl.bs.measure(market, ms.CANDIDATES["M04"], WIDE_TEST_SPAN, ms.FEATURES)
+    for key in ("annual_sharpe", "sum_pct", "cost_pct", "funding_pct", "months"):
+        assert ours[key] == theirs[key], key
+    for key in ("annual_sharpe", "cost_pct", "funding_pct"):
+        assert printed[key] == theirs[key], key
+    assert printed["total_position_annual_pct"] == sl.bs.total_position_annual_pct(theirs["sum_pct"], theirs["months"])
+    assert ours["sum_pct"] != 0 and theirs["weeks"] > 40
