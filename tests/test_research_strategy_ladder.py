@@ -589,6 +589,84 @@ def test_the_lead_check_counts_ties_and_lays_the_positions_beside_other_books_wi
     assert sl.main(["lead-check", "--only", "lead"]) == sl.EXIT_BLOCKED
 
 
+def test_the_held_accounting_splits_the_same_net_by_leg_and_changes_nothing_without_it():
+    """UP is in leg "a" at the first decision and "b" at the second; FLAT is held once and then dropped."""
+    market, sunday = _two_coin_market([0.10, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.05, 0.0])
+    second = sunday + timedelta(days=7)
+    wednesday = sunday + timedelta(days=3)                       # UP's longs pay funding once, midweek
+    market.funding = {"UPUSDT": [(int((wednesday - date(1970, 1, 1)).total_seconds() * 1000) + 3600 * 1000, 0.002)]}
+    target = {sunday: {"UPUSDT": 1.0, "FLATUSDT": -1.0}, second: {"UPUSDT": 0.5}}
+    weigher = lambda m, members, day, signal, seed=None: dict(target.get(day, {}))      # noqa: E731
+    monthly = {date(2021, 1, 1): ["UPUSDT", "FLATUSDT"]}
+    span = dict(start=sunday + timedelta(days=1), end=sunday + timedelta(days=10))
+    leg_of = lambda symbol, decision: "flat" if symbol == "FLATUSDT" else ("a" if decision == sunday else "b")  # noqa: E731
+    plain = sl.simulate_held(market, sl.bs.CADENCE, monthly, weigher=weigher, **span)["daily"]
+    split = sl.simulate_held(market, sl.bs.CADENCE, monthly, weigher=weigher, leg_of=leg_of, **span)["daily"]
+    assert all("legs" not in row for row in plain.values()), "nothing is added unless a leg is asked for"
+    assert {d: {k: v for k, v in row.items() if k != "legs"} for d, row in split.items()} == plain
+    assert all(sum(row["legs"].values()) == pytest.approx(row["net"], abs=1e-12) for row in split.values())
+    unit = (xsb.cost.DEFAULT_TAKER_FEE_BPS + xsb.cost.DEFAULT_SLIPPAGE_BPS) / 1e4
+    first, later = sunday + timedelta(days=1), second + timedelta(days=1)
+    assert split[first]["legs"] == pytest.approx({"a": 0.10 - unit, "flat": -unit}), "entry costs and Monday's move"
+    # At the second decision UP is worth 1.1 and the target is 0.5: that trade is leg b's, the coin's new leg.
+    # FLAT is no longer held: closing it is charged to the leg it leaves.
+    assert split[later]["legs"]["b"] == pytest.approx(-0.6 * unit + 0.5 * -0.05, abs=1e-9)
+    assert split[later]["legs"]["flat"] == pytest.approx(-unit) and "a" not in split[later]["legs"]
+    assert plain[wednesday]["funding"] == pytest.approx(-1.1 * 0.002), "a long worth 1.1 pays the rate"
+    assert split[wednesday]["legs"] == pytest.approx({"a": -1.1 * 0.002, "flat": 0.0}), "and the payment is its leg's"
+
+
+def test_the_leads_return_is_split_between_tied_coins_untied_coins_and_the_hedge(monkeypatch):
+    members = [f"C{i:02d}" for i in range(1, 42)]
+    lead = {**{f"C{i:02d}": float(i - 16) for i in range(1, 16)}, **{f"C{i:02d}": 0.0 for i in range(16, 27)},
+            **{f"C{i:02d}": float(i - 26) for i in range(27, 42)}}          # eleven coins tied at zero
+    start = date(2020, 12, 1)
+    bars = {}
+    for i, s in enumerate(members + [sl.HEDGE]):
+        price, out = 100.0, {}
+        for k in range(240):
+            day = start + timedelta(days=k)
+            # The hedge coin climbs; the coins with a low value climb, those with a high value sink, the tied ones wobble.
+            drift = 0.004 if s == sl.HEDGE else (0.002 if lead.get(s, 0) < 0 else -0.002 if lead.get(s, 0) > 0 else 0.001 * (i % 3 - 1))
+            opened, price = price, price * (1 + drift)
+            out[day] = xsb.Bar(open=opened, close=price, quote_volume=1.0)
+        bars[s] = out
+    market = xsb.Market(bars=bars)
+    monkeypatch.setattr(sl.lab, "variables", lambda: {"lead": ("g", lambda m, s, d: lead.get(s))})
+    monkeypatch.setattr(sl, "LEADS", {"lead": {"long": "low", "group": "price_volume"}})
+    monkeypatch.setattr(sl, "monthly_members", lambda market, span=None: {date(2021, m, 1): members for m in range(1, 7)})
+    monkeypatch.setattr(sl, "without_tail", lambda market, members, day: list(members))
+
+    def hedged(read, direction):
+        inner = sl.book(read, direction)
+        return lambda market, members, day, signal, seed=None: {**inner(market, members, day, signal), sl.HEDGE: -0.3}
+    monkeypatch.setitem(sl.BOOKS, sl.SWEEP_LOGIC, hedged)
+    span = (date(2021, 1, 1), date(2021, 6, 30))
+    out = sl.lead_attribution(market, "lead", span)
+    assert out["largest_gap"] < 1e-9 and set(out["legs"]) == set(sl.LEAD_LEGS) and out["decisions_named"] >= 5
+    parts = sum(out["legs"][leg]["total_pct"] for leg in sl.LEAD_LEGS)
+    assert parts == pytest.approx(out["book_total_pct"], abs=0.02), "the three legs are the book"
+    assert out["legs"]["untied"]["total_pct"] > 0, "the low side was bought and it climbed; the high side was sold and it sank"
+    assert out["legs"]["hedge"]["total_pct"] < 0, "short a hedge coin that rose"
+    assert abs(out["legs"]["tied"]["total_pct"]) < out["legs"]["untied"]["total_pct"]
+    whole = sl.measure(market, hedged(lambda m, s, d: lead.get(s), lambda _d: -1), span, simulate=sl.ACCOUNTING[sl.SWEEP_ACCOUNTING])
+    assert out["annual_sharpe"] == whole["annual_sharpe"] and out["total_position_annual_pct"] == whole["total_position_annual_pct"], \
+        "the split book is the measured book"
+    share = out["legs"]["untied"]["total_pct"] / out["book_total_pct"]
+    assert out["rule"] == {"untied_share_of_net": pytest.approx(share, abs=1e-3), "threshold": 0.5,
+                           "about_the_variable": share >= 0.5}
+    assert sl.LEAD_UNTIED_SHARE == 0.5
+    # A split that does not add up is refused, never read.
+    def broken(market, signal, monthly, **kwargs):
+        sim = sl.simulate_held(market, signal, monthly, every=4, **kwargs)
+        for row in sim["daily"].values():
+            row["legs"]["untied"] = row["legs"].get("untied", 0.0) + 0.01
+        return sim
+    monkeypatch.setitem(sl.ACCOUNTING, sl.SWEEP_ACCOUNTING, broken)
+    refused = sl.lead_attribution(market, "lead", span)
+    assert set(refused) == {"refused", "largest_gap"} and refused["largest_gap"] == pytest.approx(0.01)
+
+
 def test_the_one_lead_on_record_is_the_swept_book_and_nothing_else():
     assert sl.LEADS == {"spread_change_30": {"long": "low", "group": "price_volume"}}
     assert sl.LEAD_KIN[0] == "idio_vol_30" and sl.LEAD_KIN_MAX == 0.5, "the rule reads the closed cluster's book"

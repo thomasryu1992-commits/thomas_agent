@@ -273,7 +273,8 @@ def is_decision(signal: str, day: date, every: int) -> bool:
 
 def simulate_held(market: xsb.Market, signal: str, monthly: Mapping[date, Sequence[str]], *, start: date, end: date,
                   weigher: Callable[..., dict[str, float]], every: int = 1,
-                  unit_of: Callable[[str], float] | None = None) -> dict[str, Any]:
+                  unit_of: Callable[[str], float] | None = None,
+                  leg_of: Callable[[str, date], str] | None = None) -> dict[str, Any]:
     """Daily net returns of a book whose quantities are fixed at each decision and held to the next.
 
     ``cross_section_basket.simulate`` adds each day's return at the decision's dollar weights, which is a book
@@ -283,9 +284,13 @@ def simulate_held(market: xsb.Market, signal: str, monthly: Mapping[date, Sequen
     difference between the target and what the held position has become, and funding is paid on what the position
     is worth that day. Costs per unit traded are the engine's. The engine itself is not changed: registered screens
     read through it. ``every`` holds each decision for that many weeks (L10: four). ``unit_of`` gives a coin its own
-    cost per unit traded (L12); without it every coin pays the engine's, by the same arithmetic as before."""
+    cost per unit traded (L12); without it every coin pays the engine's, by the same arithmetic as before.
+    ``leg_of`` names the leg a coin belongs to at a decision (section 46); each day's row then carries ``legs``,
+    the same net split by leg. A trade is charged to the coin's leg at the new decision, or to the leg it leaves
+    when it is no longer held. Nothing else changes: without ``leg_of`` the rows are what they always were."""
     unit = (xsb.cost.DEFAULT_TAKER_FEE_BPS + xsb.cost.DEFAULT_SLIPPAGE_BPS) / 10_000
     held: dict[str, tuple[float, float]] = {}            # coin -> (weight at entry, entry open)
+    legs: dict[str, str] = {}                             # coin -> its leg at the decision it is held from
     daily: dict[date, dict[str, float]] = {}
     for day in xsb.held_days(start, end):
         decision = day - timedelta(days=1)
@@ -299,7 +304,17 @@ def simulate_held(market: xsb.Market, signal: str, monthly: Mapping[date, Sequen
                 trade_cost = sum(abs(enter.get(s, 0.0) - now.get(s, 0.0)) for s in set(now) | set(enter)) * unit
             else:
                 trade_cost = sum(abs(enter.get(s, 0.0) - now.get(s, 0.0)) * unit_of(s) for s in set(now) | set(enter))
+            by_leg: dict[str, float] = {}
+            if leg_of is not None:
+                entering = {s: leg_of(s, decision) for s in enter}
+                for s in set(now) | set(enter):
+                    leg = entering[s] if s in entering else legs.get(s) or leg_of(s, decision)
+                    by_leg[leg] = by_leg.get(leg, 0.0) - abs(enter.get(s, 0.0) - now.get(s, 0.0)) * (
+                        unit if unit_of is None else unit_of(s))
+                legs = entering
             held = {s: (w, market.bars[s][day].open) for s, w in enter.items()}
+        else:
+            by_leg = {}
         if not held and not trade_cost:
             continue
         gross = funding = exit_cost = 0.0
@@ -310,18 +325,25 @@ def simulate_held(market: xsb.Market, signal: str, monthly: Mapping[date, Sequen
             if today is None:
                 gone.append(symbol)
                 continue
+            own_gross = own_exit = 0.0
             if tomorrow is None:                      # the coin stops here: out at today's close
-                gross += w * (today.close - today.open) / entry
-                exit_cost += abs(w) * today.close / entry * (unit if unit_of is None else unit_of(symbol))
+                own_gross = w * (today.close - today.open) / entry
+                own_exit = abs(w) * today.close / entry * (unit if unit_of is None else unit_of(symbol))
                 gone.append(symbol)
             else:
-                gross += w * (tomorrow.open - today.open) / entry
+                own_gross = w * (tomorrow.open - today.open) / entry
             rate, _known = xsb.funding_on(market, symbol, day)
-            funding += -w * today.open / entry * rate
+            own_funding = -w * today.open / entry * rate
+            gross, exit_cost, funding = gross + own_gross, exit_cost + own_exit, funding + own_funding
+            if leg_of is not None:
+                leg = legs[symbol]
+                by_leg[leg] = by_leg.get(leg, 0.0) + own_gross - own_exit + own_funding
         for symbol in gone:
             held.pop(symbol)
         daily[day] = {"gross": gross, "cost": trade_cost + exit_cost, "funding": funding,
                       "net": gross - trade_cost - exit_cost + funding}
+        if leg_of is not None:
+            daily[day]["legs"] = by_leg
     return {"daily": daily}
 
 
@@ -647,6 +669,7 @@ def lead_check(market: xsb.Market, name: str, span: tuple[date, date] = SPAN) ->
     others = {kin: BOOKS[SWEEP_LOGIC](registry[kin][1], lambda _day: -1) for kin in LEAD_KIN}
     rows: dict[str, list[float]] = {"zero_share": [], "tied_share": [], "tied_weight_share": [], "coins_held": []}
     alike: dict[str, list[float]] = {kin: [] for kin in LEAD_KIN}
+    dated: list[list[Any]] = []
     decisions = 0
     for day in xsb.held_days(*span):
         decision = day - timedelta(days=1)
@@ -667,6 +690,7 @@ def lead_check(market: xsb.Market, name: str, span: tuple[date, date] = SPAN) ->
         rows["tied_share"].append(len(tied) / len(values))
         rows["tied_weight_share"].append(sum(abs(w) for s, w in weights.items() if s in tied) / gross)
         rows["coins_held"].append(float(len(weights)))
+        dated.append([decision.isoformat(), round(rows["tied_share"][-1], 4), round(rows["tied_weight_share"][-1], 4)])
         for kin, build in others.items():
             other = {s: w for s, w in build(market, members, decision, bs.CADENCE, seed=None).items() if s != HEDGE}
             if (value := _cosine(weights, other)) is not None:
@@ -679,9 +703,60 @@ def lead_check(market: xsb.Market, name: str, span: tuple[date, date] = SPAN) ->
     return {"lead": name, "long": LEADS[name]["long"], "logic": SWEEP_LOGIC, "decisions_with_a_book": decisions,
             "medians": {k: middle(v) for k, v in rows.items()},
             "largest": {k: round(max(v), 4) if v else None for k, v in rows.items() if k != "coins_held"},
+            "by_decision": dated,          # [decision, tied share of coins, tied share of weight]
             "position_overlap": kin, "kin_rule": {"beside": LEAD_KIN[0], "threshold": LEAD_KIN_MAX,
                                                   "kin": first is not None and abs(first) >= LEAD_KIN_MAX},
             "reads_returns": False}
+
+
+LEAD_LEGS = ("untied", "tied", "hedge")
+LEAD_UNTIED_SHARE = 0.5                    # of the book's net the untied coins must carry for the lead to be about the variable
+
+
+def lead_attribution(market: xsb.Market, name: str, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """The swept book's own net return split by leg: the coins whose value another coin shares at the decision
+    (ordered by name, not by the variable), the coins with a value of their own, and the hedge coin. The same
+    book, the same accounting, one run; the legs sum to the book's net day by day or nothing is returned."""
+    registry, monthly = lab.variables(), monthly_members(market, span)
+    read = registry[name][1]
+    way = 1 if LEADS[name]["long"] == "high" else -1
+    weigher = BOOKS[SWEEP_LOGIC](read, lambda _day: way)
+    tied_at: dict[date, set[str]] = {}
+
+    def leg_of(symbol: str, decision: date) -> str:
+        if symbol == HEDGE:
+            return "hedge"
+        if decision not in tied_at:
+            members = monthly.get(date(decision.year, decision.month, 1), ())
+            values = {s: v for s in without_tail(market, members, decision) if (v := read(market, s, decision)) is not None}
+            seen: dict[float, int] = {}
+            for v in values.values():
+                seen[v] = seen.get(v, 0) + 1
+            tied_at[decision] = {s for s, v in values.items() if seen[v] > 1}
+        return "tied" if symbol in tied_at[decision] else "untied"
+
+    sim = ACCOUNTING[SWEEP_ACCOUNTING](market, bs.CADENCE, monthly, start=span[0], end=span[1], weigher=weigher, leg_of=leg_of)
+    daily = sim["daily"]
+    worst = max((abs(sum(row["legs"].values()) - row["net"]) for row in daily.values()), default=0.0)
+    if worst > 1e-9:
+        return {"refused": "the legs do not sum to the book's net", "largest_gap": worst}
+    sharpe, months = bs.annual_sharpe(daily, *span)
+    total = sum(months)
+    years = sorted({d.year for d in daily})
+    pct = lambda value: round(value * 100 / bs.POSITION_TOTAL, 2)                                  # noqa: E731
+    legs = {leg: {"total_pct": pct(sum(row["legs"].get(leg, 0.0) for row in daily.values())),
+                  "by_year_pct": {str(y): pct(sum(row["legs"].get(leg, 0.0) for d, row in daily.items() if d.year == y))
+                                  for y in years}} for leg in LEAD_LEGS}
+    book_total = pct(sum(row["net"] for row in daily.values()))
+    untied = legs["untied"]["total_pct"]
+    share = round(untied / book_total, 4) if book_total > 0 else None
+    return {"lead": name, "long": LEADS[name]["long"], "logic": SWEEP_LOGIC, "accounting": SWEEP_ACCOUNTING,
+            "annual_sharpe": sharpe, "total_position_annual_pct": bs.total_position_annual_pct(round(total * 100, 2), len(months)),
+            "book_total_pct": book_total,
+            "book_by_year_pct": {str(y): pct(sum(row["net"] for d, row in daily.items() if d.year == y)) for y in years},
+            "legs": legs, "largest_gap": worst, "decisions_named": len(tied_at),
+            "rule": {"untied_share_of_net": share, "threshold": LEAD_UNTIED_SHARE,
+                     "about_the_variable": share is not None and share >= LEAD_UNTIED_SHARE}}
 
 
 # --- the transfer check: does a book that looks good on earlier years earn in the next one? ---------------------
@@ -2921,7 +2996,7 @@ def run_round(market: xsb.Market, span: tuple[date, date] = SPAN, *, which: str 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="strategy_ladder", description=__doc__.splitlines()[0])
-    parser.add_argument("command", choices=("list", "run", "confirm-counts", "confirm", "sweep", "transfer", "lead-check",
+    parser.add_argument("command", choices=("list", "run", "confirm-counts", "confirm", "sweep", "transfer", "lead-check", "lead-legs",
                                             "listing-counts", "listing", "lower-counts", "lower",
                                             "crash-symbols", "crash-events", "crash-counts", "crash",
                                             "deep-counts", "deep", "rotation-counts", "rotation", "bar",
@@ -3073,7 +3148,7 @@ def main(argv: list[str] | None = None) -> int:
                           "span": [d.isoformat() for d in SPAN], "command": args.command, **body},
                          indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or (args.command == "lower-counts" and body["stop"]) else EXIT_OK
-    if args.command == "lead-check":
+    if args.command in ("lead-check", "lead-legs"):
         if args.only not in LEADS:
             print(f"refused: --only names a lead: {sorted(LEADS)}", file=sys.stderr)
             return EXIT_USAGE
@@ -3083,7 +3158,8 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_BLOCKED
         print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
                           "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
-                          "command": args.command, "judgement": None, **lead_check(market, args.only)},
+                          "command": args.command, "judgement": None,
+                          **(lead_check if args.command == "lead-check" else lead_attribution)(market, args.only)},
                          indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_OK
     if args.command in ("sweep", "transfer"):
