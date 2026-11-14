@@ -269,17 +269,33 @@ def test_an_axis_that_moves_a_variable_separates_and_a_shuffled_copy_of_it_does_
 
 def test_the_axis_check_reads_every_axis_beside_its_placebos(tiers, monkeypatch):
     monkeypatch.setattr(lab, "PLACEBO_AXES", 8)
+    monkeypatch.setattr(lab, "FINER_PLACEBOS", 5)
     out = lab.axis_check(lab.cut_market(_market(SPAN[1]), SPAN), NAMES, SPAN)
-    assert set(out["axes"]) == {"trend", "vol", "dispersion", "heat", "universe", "breadth", *lab.CANDIDATE_AXES}
+    assert set(out["axes"]) == {"trend", "vol", "dispersion", "heat", "universe", "breadth", *lab.CANDIDATE_AXES,
+                                *lab.FINER_AXES}
     assert "level" not in out["axes"]["trend"] and out["axes"]["breadth"]["level"] == 0.05
     assert out["axes"]["month"]["level"] == round(0.05 / 6, 5) and isinstance(out["axes"]["month"]["beats_its_placebos"], bool)
     assert out["axes"]["leverage"]["separation"] is None and out["axes"]["leverage"]["beats_its_placebos"] is False, \
         "no positioning values attached: the leverage axis has no label and passes nothing"
     for axis, body in out["axes"].items():
+        fine = axis in lab.FINER_AXES
         assert set(body) - {"level", "p", "beats_its_placebos"} == {
-            "states", "separation", "placebo_mean", "placebo_p95", "placebos_at_or_above", "placebos"}
+            "states", "separation", "placebo_mean", "placebo_p95", "placebos_at_or_above", "placebos",
+            *(("parts", "merged", "split") if fine else ())}, axis
         assert ("level" in body) == (axis in lab.AXIS_ORDER), "only the axes checked since breadth carry a level"
-        assert body["placebos"] <= 8 and sum(body["states"].values()) == out["decisions"], axis
+        assert body["placebos"] <= (5 if fine else 8) and sum(body["states"].values()) == out["decisions"], axis
+    fine = out["axes"]["vol_fine"]
+    assert fine["level"] == round(0.05 / 9, 5) and sum(n["decisions"] for n in fine["parts"].values()) \
+        == out["decisions"] - out["axes"]["vol"]["states"]["None"], "the finer cut labels the weeks the coarse one does"
+    monkeypatch.setattr(lab, "MIN_DECISIONS", 8)                 # the fixture is 78 weeks: a third of them is under 20
+    again = lab.axis_check(lab.cut_market(_market(SPAN[1]), SPAN), NAMES, SPAN)
+    fine = again["axes"]["vol_fine"]
+    assert fine["split"] == ["vol"] and fine["placebos"] == 5 and set(fine["states"]) == {"None", "high", "mid", "low"}
+    assert fine["separation"] is not None and 0 <= fine["placebos_at_or_above"] <= 5 and fine["p"] is not None
+    monkeypatch.setattr(lab, "FINER_AXES", ())
+    without = lab.axis_check(lab.cut_market(_market(SPAN[1]), SPAN), NAMES, SPAN)
+    assert without["axes"] == {axis: body for axis, body in again["axes"].items() if axis not in lab.FINER_OF}, \
+        "checking the finer axes changes no other axis's row"
 
 
 def test_the_inventory_names_what_is_on_disk_and_the_kline_columns_no_loader_keeps(tmp_path, capsys, monkeypatch):
@@ -485,12 +501,14 @@ def test_breadth_is_the_share_of_the_top_tier_up_over_the_week_split_at_its_own_
 
 
 def test_the_candidate_axes_are_labelled_from_the_past_held_to_stricter_levels_and_never_mapped():
-    assert not set(lab.CANDIDATE_AXES) & set(lab.AXES) and lab.AXIS_ORDER == ("breadth",) + lab.CANDIDATE_AXES
+    assert not set(lab.CANDIDATE_AXES) & set(lab.AXES)
+    assert lab.AXIS_ORDER == ("breadth",) + lab.CANDIDATE_AXES + lab.FINER_AXES
     assert lab.scenario_keys({"breadth": "broad", "dominance": "btc_led", "month": "start"}) == ["all", "breadth=broad"], \
         "an axis under check adds no cell to the map"
     levels = [lab.axis_level(axis) for axis in lab.AXIS_ORDER]
-    assert levels == [0.05 / k for k in range(1, 8)] and lab.axis_level("trend") is None
-    assert 1 / (lab.PLACEBO_AXES + 1) < levels[-1], "200 placebos can resolve the strictest level"
+    assert levels == [0.05 / k for k in range(1, 14)] and lab.axis_level("trend") is None
+    assert 1 / (lab.PLACEBO_AXES + 1) < levels[6], "200 placebos can resolve the strictest level of the first seven"
+    assert 1 / (lab.FINER_PLACEBOS + 1) < levels[-1] < 1 / (lab.PLACEBO_AXES + 1), "the finer six need more than 200"
     start = date(2021, 1, 4)                                      # a Monday
     days = [start + timedelta(days=k) for k in range(72 * 7)]
     coins = [f"C{i:02d}USDT" for i in range(10)]
@@ -750,3 +768,94 @@ def test_a_cell_on_a_resting_axis_is_shown_and_is_not_a_lead():
     assert [(c["variable"], c["scenario"]) for c in out["leads"]] == [("steady", "all")] and out["met_the_rule"] == 1
     assert out["resting_axes"] == sorted(lab.RESTING_AXES)
 
+
+def test_a_finer_label_cuts_an_axis_at_its_own_thirds_and_agrees_with_the_coarse_one(tiers):
+    history = [float(k) for k in range(30)]
+    cut = lambda value: lab._third_split(value, history, "high", "low")           # noqa: E731
+    assert [cut(v) for v in (25.0, 20.0, 19.0, 15.0, 10.0, 9.0, 5.0)] == ["high", "high", "mid", "mid", "mid", "low", "low"]
+    assert cut(None) is None and lab._third_split(5.0, history[:lab.REFERENCE_MIN - 1], "high", "low") is None
+    market = lab.cut_market(_market(SPAN[1]), SPAN)
+    days = lab.decisions(SPAN, 7)
+    labels = lab.scenario_labels(market, lab.tier_members(market, SPAN)["top30"], days, SPAN)
+    pairs = {"vol": ("high", "low"), "dispersion": ("wide", "narrow"), "heat": ("hot", "cool"),
+             "universe": ("wild", "calm"), "breadth": ("broad", "thin")}
+    seen = set()
+    for row in labels.values():
+        for axis, (high, low) in pairs.items():
+            fine = row.get(f"{axis}_fine")
+            assert (fine is None) == (axis not in row), "a finer label exists exactly where the coarse one does"
+            assert fine in (None, high, low, "mid")
+            if fine in (high, low):
+                assert row[axis] == fine, "the upper third is above the median and the lower third is not"
+            seen.add((axis, fine))
+    assert {("vol", "mid"), ("vol", "high"), ("vol", "low")} <= seen
+    assert lab.scenario_keys({"vol": "high", "vol_fine": "mid", "trend": "bull", "trend_fine": "bull_early"}) == [
+        "all", "trend=bull", "vol=high", "trend=bull|vol=high"], "a finer axis adds no cell to the map"
+
+
+def test_a_trend_spell_is_early_for_its_first_four_decisions_and_never_looks_ahead(tiers, monkeypatch):
+    market = lab.cut_market(_market(SPAN[1]), SPAN)
+    members = lab.tier_members(market, SPAN)["top30"]
+    days = lab.decisions(SPAN, 7)
+
+    def trend_of(blocks):
+        """``blocks``: (state, weeks) in order from the first decision; every day of a week carries its state."""
+        states = [state for state, weeks in blocks for _ in range(weeks)]
+        by_day = {}
+        for k, day in enumerate(days):
+            if k < len(states) and states[k] is not None:
+                by_day.update({day - timedelta(days=back): states[k] for back in range(7)})
+        return lambda data, end: {"labels": by_day, "lagged_days": 0}
+
+    blocks = [(None, 2), ("BULL", 6), ("BEAR", 3), ("BULL", 5), ("SIDEWAYS", 9)]
+    monkeypatch.setattr(lab.rg, "regime_labels", trend_of(blocks))
+    labels = lab.scenario_labels(market, members, days, SPAN)
+    fine = [labels[d].get("trend_fine") for d in days[:25]]
+    assert fine == ([None] * 2 + ["bull_early"] * 4 + ["bull_late"] * 2 + ["bear_early"] * 3
+                    + ["bull_early"] * 4 + ["bull_late"] + ["sideways_early"] * 4 + ["sideways_late"] * 5)
+    assert all(("trend_fine" in labels[d]) == ("trend" in labels[d]) for d in days)
+    # The same first sixteen weeks, then the bull run ends at once instead of lasting five: nothing earlier moves.
+    monkeypatch.setattr(lab.rg, "regime_labels", trend_of(blocks[:3] + [("BULL", 1), ("BEAR", 13)]))
+    other = lab.scenario_labels(market, members, days, SPAN)
+    assert [other[d].get("trend_fine") for d in days[:12]] == fine[:12], "a spell's later length marks no earlier week"
+    assert [other[d].get("trend_fine") for d in days[11:18]] == ["bull_early"] + ["bear_early"] * 4 + ["bear_late"] * 2
+
+
+def test_a_state_is_cut_finer_only_where_every_part_is_thick_enough():
+    def run(*blocks):
+        return [label for label, n in blocks for _ in range(n)]
+
+    # Six bull spells of 4 early and 5 late weeks; bear comes twice, so its early part has two spells.
+    trend = run(*([("bull_early", 4), ("bull_late", 5), ("sideways_early", 4), ("sideways_late", 3)] * 6),
+                ("bear_early", 4), ("bear_late", 30), ("bull_early", 4), ("bear_early", 4), ("bear_late", 30), (None, 3))
+    kept, gate = lab.finer_gate("trend_fine", trend)
+    assert gate["parts"]["bull_early"] == {"decisions": 28, "spells": 7} and gate["parts"]["bear_early"] == {"decisions": 8, "spells": 2}
+    assert gate["parts"]["sideways_late"] == {"decisions": 18, "spells": 6}
+    assert gate["merged"] == ["bear", "sideways"] and gate["split"] == ["bull"]
+    assert set(kept) == {"bull_early", "bull_late", "sideways", "bear", None} and kept.count(None) == 3
+    assert [k is None for k in kept] == [label is None for label in trend], "the gate moves no label and names none"
+    thick = run(*([("high", 3), ("mid", 2), ("low", 3), ("mid", 2)] * 8))
+    kept, gate = lab.finer_gate("vol_fine", thick)
+    assert kept == thick and gate["split"] == ["vol"] and gate["merged"] == []
+    thin = run(("high", 30), ("mid", 8), ("low", 30), ("mid", 8), ("high", 30), ("mid", 8), ("low", 30), ("high", 30), ("low", 30))
+    kept, gate = lab.finer_gate("vol_fine", thin)
+    assert gate["parts"]["mid"] == {"decisions": 24, "spells": 3}, "enough decisions, too few spells"
+    assert gate["split"] == [] and gate["merged"] == ["vol"] and set(kept) == {"vol"}
+
+
+def test_an_axis_the_gate_leaves_uncut_is_not_checked(tiers, monkeypatch):
+    monkeypatch.setattr(lab, "PLACEBO_AXES", 3)
+    monkeypatch.setattr(lab, "FINER_PLACEBOS", 3)
+    days = lab.decisions(SPAN, 7)                                # six weeks up, six weeks down: both states are thick
+    trend = {day - timedelta(days=back): ("BULL" if (k // 6) % 2 == 0 else "BEAR") for k, day in enumerate(days) for back in range(7)}
+    monkeypatch.setattr(lab.rg, "regime_labels", lambda data, end: {"labels": trend, "lagged_days": 0})
+    before = lab.axis_check(lab.cut_market(_market(SPAN[1]), SPAN), NAMES, SPAN)["axes"]
+    assert before["trend"]["separation"] is not None and before["trend_fine"]["merged"] == ["bear", "bull"], \
+        "each late part is two weeks a spell: under twenty decisions, so no trend state is cut"
+    assert before["trend_fine"]["states"] == before["trend"]["states"], "what the gate left is the coarse axis"
+    monkeypatch.setattr(lab, "MIN_SPELLS", 10_000)
+    out = lab.axis_check(lab.cut_market(_market(SPAN[1]), SPAN), NAMES, SPAN)["axes"]
+    for axis in lab.FINER_AXES:
+        assert out[axis]["split"] == [] and out[axis]["separation"] is None and out[axis]["placebos"] == 0, axis
+        assert out[axis]["beats_its_placebos"] is False and out[axis]["p"] is None
+    assert all(out[axis] == before[axis] for axis in out if axis not in lab.FINER_OF), "the gate is the finer axes' only"

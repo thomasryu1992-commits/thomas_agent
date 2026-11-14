@@ -79,7 +79,14 @@ AXES = ("trend", "vol", "dispersion", "heat", "universe", "breadth")       # the
 # positioning values are attached, so it is checked in a run that loads them.
 CANDIDATE_AXES = ("dominance", "volume", "correlation", "drawdown", "month", "leverage")
 AXIS_ALPHA = 0.05                          # an axis is held to this over its place in the order axes were checked in
-AXIS_ORDER = ("breadth",) + CANDIDATE_AXES # breadth was the first new axis; each later one meets a stricter level
+# The map's six axes cut finer (section 39): the five that split at their own median are cut at their own thirds,
+# and a trend state is cut into a spell's first decisions and the rest. Checked beside placebos, never mapped.
+FINER_OF = {"trend_fine": "trend", "vol_fine": "vol", "dispersion_fine": "dispersion", "heat_fine": "heat",
+            "universe_fine": "universe", "breadth_fine": "breadth"}
+FINER_AXES = tuple(FINER_OF)
+EARLY_DECISIONS = 4                        # a trend spell's first four weekly decisions are "early": a month
+# breadth was the first new axis; each later one meets a stricter level
+AXIS_ORDER = ("breadth",) + CANDIDATE_AXES + FINER_AXES
 DRAWDOWN_DAYS = 365                        # the reference coin's high is looked for over these days
 MONTH_START_DAYS = 7                       # a decision in the month's first week is "start"
 
@@ -316,6 +323,15 @@ def _median_split(value: float | None, history: Sequence[float], high: str, low:
     return high if value > statistics.median(history) else low
 
 
+def _third_split(value: float | None, history: Sequence[float], high: str, low: str) -> str | None:
+    """Where the value stands among its own earlier values: two thirds or more of them under it is ``high``, fewer
+    than a third is ``low``, and between is ``mid``. A ``high`` here is a ``high`` of :func:`_median_split` too."""
+    if value is None or len(history) < REFERENCE_MIN:
+        return None
+    under = sum(1 for h in history if h < value)
+    return high if 3 * under >= 2 * len(history) else low if 3 * under < len(history) else "mid"
+
+
 def scenario_labels(market: xsb.Market, monthly: Mapping[date, Sequence[str]], days: Sequence[date],
                     span: tuple[date, date] = SPAN) -> dict[date, dict[str, str]]:
     """``{decision: {axis: label}}``, each label read from that day and earlier. ``monthly`` is the top tier."""
@@ -411,16 +427,27 @@ def scenario_labels(market: xsb.Market, monthly: Mapping[date, Sequence[str]], d
             "correlation": (correlation, "tight", "loose"), "drawdown": (drawdown, "shallow", "deep"),
             "leverage": (leverage, "levered", "light")}
     series = {axis: {d: read(d) for d in weekly} for axis, (read, _, _) in axes.items()}
+    # How many weekly decisions in a row, this one included, have carried the same trend label.
+    age: dict[date, int] = {}
+    previous, run = None, 0
+    for d in weekly:
+        state = trend.get(d)
+        run = 0 if state is None else run + 1 if state == previous else 1
+        previous, age[d] = state, run
     out: dict[date, dict[str, str]] = {}
     for day in days:
         labels: dict[str, str] = {}
         if trend.get(day) is not None:
             labels["trend"] = str(trend[day]).lower()
+            if age.get(day):
+                labels["trend_fine"] = f"{labels['trend']}_{'early' if age[day] <= EARLY_DECISIONS else 'late'}"
         for axis, (_, high, low) in axes.items():
             earlier = [series[axis][d] for d in weekly if d < day and series[axis][d] is not None][-REFERENCE_DECISIONS:]
             label = _median_split(series[axis].get(day), earlier, high, low)
             if label is not None:
                 labels[axis] = label
+            if f"{axis}_fine" in FINER_OF and (fine := _third_split(series[axis].get(day), earlier, high, low)):
+                labels[f"{axis}_fine"] = fine
         labels["month"] = "start" if day.day <= MONTH_START_DAYS else "rest"      # the calendar: no history needed
         out[day] = labels
     return out
@@ -556,6 +583,7 @@ def grid(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tu
 # --- is a scenario axis worth having? (the monthly check) --------------------------------------------------------
 
 PLACEBO_AXES = 200                         # shuffled-spell copies each axis is compared with
+FINER_PLACEBOS = 400                       # the finer axes stand 8th to 13th: 0.05 / 13 lies under one in 201
 # One variable at a time there are a few hundred tests, and the smallest p a test can show is one over the number
 # of placebos plus one. With 200 that floor (0.005) sits above anything Benjamini-Hochberg could pass at q 0.10
 # over 230 tests (0.0004) — the first run could not have passed anything. 5,000 puts the floor at 0.0002.
@@ -619,19 +647,39 @@ def shuffled_spells(labels: Sequence[str | None], seed: str) -> list[str | None]
     return [None if label is None else next(moved) for label in labels]
 
 
+def finer_gate(axis: str, labels: Sequence[str | None]) -> tuple[list[str | None], dict[str, Any]]:
+    """A state is cut finer only where every part has :data:`MIN_DECISIONS` decisions in :data:`MIN_SPELLS` spells
+    (section 3.2: "모자라면 나누지 않는다"). A trend state with a thin part goes back to the whole state; one of the
+    other axes, cut in three, is cut whole or not at all. Reads labels only."""
+    whole = (lambda label: label.rsplit("_", 1)[0]) if axis == "trend_fine" else (lambda label: FINER_OF[axis])
+    places: dict[str, list[int]] = {}
+    for i, label in enumerate(labels):
+        if label is not None:
+            places.setdefault(label, []).append(i)
+    parts = {label: {"decisions": len(at), "spells": spells(at)} for label, at in sorted(places.items())}
+    thin = {whole(label) for label, n in parts.items() if n["decisions"] < MIN_DECISIONS or n["spells"] < MIN_SPELLS}
+    kept = [None if label is None else whole(label) if whole(label) in thin else label for label in labels]
+    return kept, {"parts": parts, "merged": sorted(thin), "split": sorted({whole(label) for label in places} - thin)}
+
+
 def axis_check(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tuple[date, date] = SPAN) -> dict[str, Any]:
     """Each axis's separation beside what :data:`PLACEBO_AXES` shuffled copies of it reach. An axis no better than
-    its placebos is a candidate to rest; this decides nothing by itself."""
+    its placebos is a candidate to rest; this decides nothing by itself. A finer axis is first passed through
+    :func:`finer_gate`, and stands beside :data:`FINER_PLACEBOS` copies of what the gate left."""
     days, series = ic_series(market, names, span)
     labels = scenario_labels(market, tier_members(market, span)["top30"], days, span)
     out = {}
-    for axis in AXES + CANDIDATE_AXES:
-        real = [labels[d].get(axis) for d in days]
-        actual = separation(series, dict(zip(days, real)))
+    for axis in AXES + CANDIDATE_AXES + FINER_AXES:
+        real, gate = [labels[d].get(axis) for d in days], None
+        if axis in FINER_OF:
+            real, gate = finer_gate(axis, real)
+        checked = gate is None or bool(gate["split"])          # nothing cut finer: nothing to check
+        actual = separation(series, dict(zip(days, real))) if checked else None
         fake = [separation(series, dict(zip(days, shuffled_spells(real, f"{SPEC}|axis|{axis}|{k}"))))
-                for k in range(PLACEBO_AXES)]
+                for k in range((PLACEBO_AXES if gate is None else FINER_PLACEBOS) if checked else 0)]
         fake = sorted(v for v in fake if v is not None)
-        out[axis] = {"states": dict(sorted({str(k): real.count(k) for k in set(real)}.items())),
+        out[axis] = {**(gate or {}),
+                     "states": dict(sorted({str(k): real.count(k) for k in set(real)}.items())),
                      "separation": round(actual, 5) if actual is not None else None,
                      "placebo_mean": round(statistics.fmean(fake), 5) if fake else None,
                      "placebo_p95": round(fake[int(0.95 * (len(fake) - 1))], 5) if fake else None,
