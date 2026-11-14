@@ -20,3 +20,16 @@ readings are owed.
 14-day readings do not carry their ranks from week to week (persistence about 0 and 0.35), so the lead rule would
 have dropped them anyway. The spread is finished, and so is the variable side of round 26's table: 25 variables
 added since round 18, no lead.
+
+**The last research item on the table was answered without a run (17:50Z).** §7 says the hypothesis channel is to
+be tested on past data "without waiting for the deploy". The channel was deployed on 2026-11-13 and real fires have
+screened real proposals since, so where proposals fall is in those fires' refusal reasons. No read prints that
+tally, and the doors §7 names do not all exist under those names (there is no refusal called a cost door). A
+past-data run of hand-written proposals answers a different question, so none is registered; a read-only tally tool
+is proposed apart from this branch.
+
+**The table was read once more before any "nothing left" sentence, and three rows were wrong or missing.** The
+premium's other lookbacks had been struck as "read by registered screens, and funding's kin": the kin ground fell
+with round 26's own rule (0.72 is under the line), and neither screen's signal is a cross-sectional 30-day premium.
+The sweep of round 6 and the per-variable axis check of round 4 were scoped to "the 27 registered variables" and
+have not been run on what was added since; nothing written strikes them. All three are owed, in that order.
