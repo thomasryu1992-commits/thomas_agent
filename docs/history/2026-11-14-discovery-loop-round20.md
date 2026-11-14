@@ -17,3 +17,13 @@
   rows in the same output are not a re-judgement of them.
 - *Adding an axis adds cells to every later map*, the random variables' included, so the lead line can move. The
   round-five re-check guards the registered books.
+
+**Results (same day).**
+
+- *Breadth is not woken.* Its separation is 0.00697 against a placebo 95th percentile of 0.00867; 21 of its 200
+  shuffled-spell placebos separate at least as much, where the rule asked for nine or fewer. It stays at rest and
+  its cells stay on the map.
+- *Adding the axis moved no registered value*: the round-five re-check returned all 102 unchanged.
+- *The weekly and monthly checks have now each been run once by hand on the data in hand* (rounds 18 to 20): the
+  map on the newly reached cells, the inventory, more shapes of variables, one new axis, the one-page report. No
+  new lead, nothing alive past rung 3. What the lists still hold for later months is written at the end of §34.
