@@ -20,3 +20,12 @@ registry's rule for growing variables (§3.1), which names four shapes and asks 
   it. With 56 the lead line can move, so the five positioning variables mapped in round 18 are not read again as
   evidence.
 - *A lead buys a form, not a book.* And the three were raised after H-M1 was seen; the registration says so.
+
+**Results (same day).**
+
+- *No lead.* The three new variables' largest |t| is 2.73, on a resting axis; their whole-span cells are all under
+  1.7. Of their 94 shown cells four are over 2, fewer than the random variables' rate would give.
+- *Growing the random variables moved nothing that was registered.* The lead line is 4.30 and 4.75 with 56 as with
+  50, and the round-five re-check returned every value unchanged.
+- *The registry is full at 30* until the sweep's null is enlarged; the rest of the change shapes are listed for a
+  later round.
