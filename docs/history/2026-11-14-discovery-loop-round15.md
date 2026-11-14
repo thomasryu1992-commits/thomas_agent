@@ -25,3 +25,26 @@
   anything is counted.
 - *The structure is a headwind here.* Long alts against short Bitcoin lost about 9% a year net on placebo coins
   over 2020–2024. The size line says so, as round 14's said the mirror was a tailwind.
+
+**Results (same day).**
+
+- *The first count was not read, for a tooling reason.* Open interest was on file for 88.7% of 2024's member
+  coin-days, under the 90% stop. The reader took each file's last row as the day's close, as
+  `regime_strategies.read_oi` does, and some files are not in time order (758 of April 2024's 1,080). Reading the
+  latest stamp of the day recovers 1,039 days. The registration had said a coverage stop means "not read: fix the
+  tool, count once", so the definition stayed as it was and the count was run once more: 455 events on 249 days,
+  98.5% to 99.9% of the universe on file, 13.8% of events on round 10's event days.
+- *H-O1 failed every rung and is closed.* Annual Sharpe -0.676 net over three years, -9.9% of total position a
+  year, p 0.581 against the same book on other members that day. The rebound (+8% over three years on the long
+  side) was a fifth of the alts' costs (42%).
+- *The matched null says something about fallers, not about this book.* Against members that fell as much with
+  their open interest unchanged the book's p is 0.033, and those placebo books netted -13.3% a year against
+  -7.5% for random members. Buying a coin the day after it fell loses more than buying any coin; a coin that
+  fell with its open interest draining lost less than other fallers, and still more than a random member. With
+  the entry rule and the plain null missed this counts as nothing, and a long-short book built on that gap would
+  be a hypothesis written after this result. It is not put up.
+- *With this the three variants round 12's table left are done, and none passed.* Seven measured hypotheses
+  netted between -10.4% and +6.6% of total position a year against a floor of 15%. Nothing with a structural
+  payer is left on the data on disk; the next step of the reform order is a new source, which is Thomas's.
+- *`regime_strategies.read_oi` has the same last-row reading.* Not fixed here; reported as a follow-up.
+
