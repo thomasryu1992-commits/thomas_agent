@@ -1558,8 +1558,9 @@ GAP_NAMES = ("H-G1", "L18", "not_apart_from_beaten_down_coins")
 
 class GapPools(DeepFunding):
     """L15's pool and book, picked on how far the perp closed under its own spot instead of on the funding. A coin
-    with no spot pair, or with both closes on fewer than :data:`GAP_MIN_DAYS` of the window's days, is out of the
-    pool. The market must carry the spot bars (:func:`with_spot`)."""
+    with no spot pair, or with both closes (within the spot-share search's price band of each other) on fewer than
+    :data:`GAP_MIN_DAYS` of the window's days, is out of the pool. The market must carry the spot bars
+    (:func:`with_spot`)."""
 
     def __init__(self, market: xsb.Market) -> None:
         super().__init__(market, GAP_DISCOUNT)
@@ -1569,9 +1570,12 @@ class GapPools(DeepFunding):
         if pair is None:
             return None
         spot, perp = self.market.spot.get(pair[0]) or {}, self.market.bars[symbol]
-        gaps = [p.close / (b.close * pair[1]) - 1 for k in range(DEEP_WINDOW)
+        gaps = [gap for k in range(DEEP_WINDOW)
                 if (p := perp.get(day - timedelta(days=k))) is not None
-                and (b := spot.get(day - timedelta(days=k))) is not None and b.close > 0]
+                and (b := spot.get(day - timedelta(days=k))) is not None and b.close > 0
+                # a pair whose prices are this far apart is another asset under the same name (the spot-share
+                # search's guard): without it one mismatched pair is a pick every week and never one of L15's
+                and abs(gap := p.close / (b.close * pair[1]) - 1) <= lab.sp.PRICE_BAND]
         return statistics.fmean(gaps) if len(gaps) >= GAP_MIN_DAYS else None
 
 

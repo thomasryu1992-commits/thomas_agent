@@ -1356,8 +1356,9 @@ def _gap_world(alone: bool = False):
     market.spot = {"DEEP0USDT": spot("DEEP0USDT", -0.001), "DEEP3USDT": spot("DEEP3USDT", wide),
                    "DEEP4USDT": spot("DEEP4USDT", 0.0), "DEEP5USDT": spot("DEEP5USDT", -0.01, last=4),
                    "SIXUSDT": spot("DEEP6USDT", 2 * wide, scale=1000.0)}
+    market.spot["OTHERUSDT"] = spot("DEEP7USDT", -0.3)             # a spot of that name that is another asset
     market.spot_of = {**{s: (s, 1.0) for s in ("DEEP0USDT", "DEEP3USDT", "DEEP4USDT", "DEEP5USDT")},
-                      "DEEP6USDT": ("SIXUSDT", 1000.0), "DEEP1USDT": None}
+                      "DEEP6USDT": ("SIXUSDT", 1000.0), "DEEP1USDT": None, "DEEP7USDT": ("OTHERUSDT", 1.0)}
     return market
 
 
@@ -1365,6 +1366,7 @@ def test_the_gap_pool_is_the_coins_with_a_spot_close_beside_theirs_and_the_picks
     pools = sl.GapPools(_gap_world())
     pool = pools.at(DEEP_DAY)[0]
     assert set(pool) == {"DEEP0USDT", "DEEP3USDT", "DEEP4USDT", "DEEP6USDT"}, "no pair, or too few days of it, is out"
+    assert pools.reading("DEEP7USDT", DEEP_DAY) is None, "a pair priced 30% away is another asset, not a deep discount"
     assert pools.side == 1 and pools.picks(DEEP_DAY) == ("DEEP0USDT", "DEEP3USDT", "DEEP6USDT")
     assert pool["DEEP0USDT"][0] == pytest.approx(-0.001) and pool["DEEP6USDT"][0] == pytest.approx(-0.002), "the price multiple is undone"
     assert pool["DEEP4USDT"][0] == pytest.approx(0.0)
