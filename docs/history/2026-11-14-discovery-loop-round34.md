@@ -27,3 +27,10 @@ round does that, once.
 
 Also in this commit, by addition to §48: twelve cells meet the lead rule, not eleven (extreme days on the top
 tier, tied to its sweep row), and §3.3's "rebuild every lead under each new logic" is superseded by §22.2.
+
+**Counts (22:26Z, no return read).** No stop: 99.2% of ranked coin-decisions have funding on file, and each of 2022,
+2023 and 2024 has a book at every decision. 2020 has a book at 4 of 52 decisions, since the tier barely existed;
+the five-year reading counts those months as zero, as registered. The book's weekly turnover is 0.766 against the
+null books' 0.722 (ratio 1.06, inside the band), so the p will be about what is picked. Turnover alone puts the cost
+at 10.4% of total position a year at 26 bps; with the cell's own mean spread the form's size line now reads about
+−16% a year after costs.
