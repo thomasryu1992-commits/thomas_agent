@@ -25,13 +25,16 @@ from __future__ import annotations
 
 import argparse
 import bisect
+import csv
 import functools
+import io
 import json
 import math
 import os
 import random
 import statistics
 import sys
+import zipfile
 from array import array
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -344,10 +347,11 @@ def stability(years_total_pct: Mapping[str, float]) -> dict[str, Any]:
 
 
 def measure(market: xsb.Market, weigher: Callable[..., dict[str, float]], span: tuple[date, date] = SPAN,
-            *, simulate: Callable[..., Any] = xsb.simulate) -> dict[str, Any]:
-    """One book over the span, net of the engine's costs and funding: rung 2 (the entry rule) and rung 3."""
+            *, simulate: Callable[..., Any] = xsb.simulate, cadence: str = bs.CADENCE) -> dict[str, Any]:
+    """One book over the span, net of the engine's costs and funding: rung 2 (the entry rule) and rung 3.
+    ``cadence`` names the engine signal whose decision days are used (weekly unless a book says otherwise)."""
     start, end = span
-    sim = simulate(market, bs.CADENCE, monthly_members(market, span), start=start, end=end, weigher=weigher)
+    sim = simulate(market, cadence, monthly_members(market, span), start=start, end=end, weigher=weigher)
     sharpe, values = bs.annual_sharpe(sim["daily"], start, end)
     report: dict[str, Any] = {"annual_sharpe": sharpe, "sum_pct": round(sum(values) * 100, 2), "months": len(values)}
     report["total_position_annual_pct"] = bs.total_position_annual_pct(report["sum_pct"], report["months"])
@@ -1635,6 +1639,233 @@ def with_spot(cache: Path, market: xsb.Market, span: tuple[date, date] = SPAN) -
     return lab.sp.attach(market, xsb.load_market(cache / lab.sp.SPOT_DIR, funding=False), listing, span[1])
 
 
+# --- L19: the open-interest flush book (round 15, hypothesis H-O1) -------------------------------------------------------
+
+FLUSH_SPAN = lab.ms.DEV_LONG               # the positioning files begin in 2022 for all but a few coins
+FLUSH_OI = -0.10                           # the open interest at the day's close against the close before, at or under this
+FLUSH_MOVE = -0.05                         # and the coin's own close against the close before, at or under this
+FLUSH_CLOSING_HOUR = 23                    # the day's last positioning row must be stamped this hour, or the day has no value
+FLUSH_HOLD_DAYS = 3                        # bought at the next open and held this many days (round 10's 72 hours)
+FLUSH_BETA_DAYS = 60
+FLUSH_NEIGHBOURS = 3                       # the matched placebo draws among this many members nearest in the day's move
+FLUSH_PLACEBOS = 300
+FLUSH_CADENCE = "S-REV"                    # only its daily cadence is used
+FLUSH_WIDE = 10                            # members flushing on one day at or over this: the day is the market's, no event is taken
+FLUSH_MIN_EVENT_DAYS = 30                  # days with an event over the span, or nothing is measured (round 10's number)
+FLUSH_MIN_EVENT_DAYS_A_YEAR = 10           # and in each year of the span
+FLUSH_MIN_KNOWN = 0.9                      # of each year's member coin-days must have the open interest of both closes
+FLUSH_MAX_NO_PLACEBO = 0.1                 # of the events may be without a placebo coin, of either kind
+
+
+class Flushes:
+    """Per day, read from that day and earlier: the month's top thirty but the hedge coin, each with the change in
+    its open interest from close to close and its own move; the events (both at or past their thresholds, on a day
+    that is not the market's); and the coins a book holds the next day (an event is held :data:`FLUSH_HOLD_DAYS`
+    days)."""
+
+    def __init__(self, market: xsb.Market, span: tuple[date, date] = FLUSH_SPAN) -> None:
+        self.market = market
+        self.monthly = monthly_members(market, span)
+        self._read: dict[date, dict[str, tuple[float | None, float | None]]] = {}
+
+    def read(self, day: date) -> dict[str, tuple[float | None, float | None]]:
+        if day not in self._read:
+            metrics, before = getattr(self.market, "closing_oi", {}), day - timedelta(days=1)
+            out: dict[str, tuple[float | None, float | None]] = {}
+            for symbol in self.monthly.get(date(day.year, day.month, 1), ()):
+                if symbol == HEDGE:
+                    continue
+                days, bars = metrics.get(symbol) or {}, self.market.bars.get(symbol) or {}
+                now, then = days.get(day), days.get(before)
+                a, b = bars.get(day), bars.get(before)
+                out[symbol] = (None if now is None or not then else now / then - 1,
+                               None if a is None or b is None or b.close <= 0 else a.close / b.close - 1)
+            self._read[day] = out
+        return self._read[day]
+
+    def flushed(self, day: date) -> tuple[str, ...]:
+        return tuple(s for s, (change, move) in self.read(day).items()
+                     if change is not None and move is not None and change <= FLUSH_OI and move <= FLUSH_MOVE)
+
+    def events(self, day: date) -> tuple[str, ...]:
+        """The day's flushed coins, or none on a day so many flush that it is the market's (round 10's ground)."""
+        flushed = self.flushed(day)
+        return flushed if len(flushed) < FLUSH_WIDE else ()
+
+    def partner(self, symbol: str, day: date, seed: str, *, matched: bool) -> str | None:
+        """The member a placebo holds in place of an event's coin: one whose open interest is known that day and
+        that is not an event. ``matched`` draws among the :data:`FLUSH_NEIGHBOURS` nearest in the day's move: a coin
+        that fell as much while its open interest stayed."""
+        read, events = self.read(day), set(self.events(day))
+        others = sorted(s for s, (change, move) in read.items() if s not in events and change is not None and move is not None)
+        if matched and others and symbol in read:
+            own = read[symbol][1]
+            others = sorted(others, key=lambda s: (abs(read[s][1] - own), s))[:FLUSH_NEIGHBOURS]
+        return random.Random(f"{seed}:{symbol}:{day.isoformat()}").choice(others) if others else None
+
+    def names(self, day: date, placebo: str | None = None, *, matched: bool = False) -> list[str]:
+        out: list[str] = []
+        for back in range(FLUSH_HOLD_DAYS):
+            at = day - timedelta(days=back)
+            for symbol in self.events(at):
+                name = symbol if placebo is None else self.partner(symbol, at, placebo, matched=matched)
+                if name is not None:
+                    out.append(name)
+        return sorted(set(out))
+
+
+def flush_book(flushes: Flushes, placebo: str | None = None, *, matched: bool = False,
+               hedged: bool = True) -> Callable[..., dict[str, float]]:
+    """L19: every coin with an event in the last :data:`FLUSH_HOLD_DAYS` days bought in equal weights under L15's
+    cap, the hedge coin sold against their summed beta."""
+    def weights(market: xsb.Market, members: Sequence[str], day: date, signal: str,
+                *, seed: str | None = None) -> dict[str, float]:
+        betas = {s: beta for s in flushes.names(day, placebo, matched=matched)
+                 if (beta := bs._beta(market, s, day, FLUSH_BETA_DAYS)) is not None}
+        return deep_basket(betas, betas, hedged=hedged)
+    return weights
+
+
+def flush_counts(market: xsb.Market, span: tuple[date, date] = FLUSH_SPAN, *,
+                 crash_days: Iterable[date] = ()) -> dict[str, Any]:
+    """What the flush book would stand on, with nothing after an event in it: events and the days they fall on, the
+    days left out as the market's, how much of the universe has its open interest on file, whether a placebo can be
+    drawn, and how many events fall on round 10's event days (``crash_days``) or the day after."""
+    flushes = Flushes(market, span)
+    crashes = {d + timedelta(days=k) for d in crash_days for k in (0, 1)}
+    years: dict[str, dict[str, Any]] = {str(y): {"events": 0, "event_days": 0, "days_with_a_position": 0, "names": [],
+                                                 "wide_days": 0, "flushes_on_wide_days": 0,
+                                                 "member_coin_days": 0, "known_coin_days": 0}
+                                        for y in range(span[0].year, span[1].year + 1)}
+    no_plain = no_matched = on_crash = 0
+    oi_changes: list[float | None] = []
+    moves: list[float | None] = []
+    partner_moves: list[float | None] = []     # the day's move of the coin the matched placebo would hold instead
+    for day in xsb.held_days(*span):
+        row, read, events, flushed = years[str(day.year)], flushes.read(day), flushes.events(day), flushes.flushed(day)
+        row["member_coin_days"] += len(read)
+        row["known_coin_days"] += sum(1 for change, _ in read.values() if change is not None)
+        names = flushes.names(day)
+        if names:
+            row["days_with_a_position"] += 1
+            row["names"].append(len(names))
+        if flushed and not events:
+            row["wide_days"] += 1
+            row["flushes_on_wide_days"] += len(flushed)
+        if events:
+            row["events"] += len(events)
+            row["event_days"] += 1
+            on_crash += len(events) if day in crashes else 0
+            for symbol in events:
+                oi_changes.append(read[symbol][0])
+                moves.append(read[symbol][1])
+                no_plain += flushes.partner(symbol, day, "counts", matched=False) is None
+                alike = flushes.partner(symbol, day, "counts", matched=True)
+                no_matched += alike is None
+                if alike is not None:
+                    partner_moves.append(read[alike][1])
+    total = sum(r["events"] for r in years.values())
+    event_days = sum(r["event_days"] for r in years.values())
+    for row in years.values():
+        names = row.pop("names")
+        row["names_held_median"] = statistics.median(names) if names else 0
+        row["known_share"] = round(row["known_coin_days"] / row["member_coin_days"], 3) if row["member_coin_days"] else None
+    thin = [y for y, r in years.items() if r["event_days"] < FLUSH_MIN_EVENT_DAYS_A_YEAR]
+    blind = [y for y, r in years.items() if r["known_share"] is None or r["known_share"] < FLUSH_MIN_KNOWN]
+    bare = max(no_plain, no_matched) / total if total else 1.0
+    crash_share = on_crash / total if total else None
+    stops = [text for wrong, text in (
+        (event_days < FLUSH_MIN_EVENT_DAYS, "too few days with an event over the span"),
+        (bool(thin), "too few days with an event in " + ", ".join(thin)),
+        (bool(blind), "too little of the universe has its open interest on file in " + ", ".join(blind)),
+        (bare > FLUSH_MAX_NO_PLACEBO, "too many events have no placebo coin to draw"),
+        (crash_share is not None and crash_share >= lab.sp.OVERLAP_LIMIT,
+         "the events fall on round 10's event days: H-C1 on daily bars, not a reading of its own"),
+    ) if wrong]
+    return {"events": total, "event_days": event_days, "by_year": years,
+            "events_on_crash_days_share": None if crash_share is None else round(crash_share, 3),
+            "crash_days_limit": lab.sp.OVERLAP_LIMIT,
+            "events_without_a_placebo_share": {"plain": round(no_plain / total, 3) if total else None,
+                                               "matched": round(no_matched / total, 3) if total else None},
+            "events_signal_median": {"open_interest_change": _median(oi_changes), "day_move": _median(moves)},
+            # a decision-day value, not a return after it: whether the matched placebo's coins fell as the events did
+            "matched_partner_day_move_median": _median(partner_moves),
+            "last_day_in_market": lab.last_day(market).isoformat() if market.bars else None,
+            "stop": stops, "returns_computed": False}
+
+
+def flush_run(market: xsb.Market, span: tuple[date, date] = FLUSH_SPAN, *, placebos: int = FLUSH_PLACEBOS,
+              crash_days: Iterable[date] = ()) -> dict[str, Any]:
+    """The flush book net of stressed costs, beside the same book on other members and on members that fell as
+    much, through rung 2's three conditions and rung 3 over the span the positioning files cover."""
+    counts = flush_counts(market, span, crash_days=crash_days)
+    if counts["stop"]:
+        return {"refused": counts["stop"], "counts": counts}
+    flushes = Flushes(market, span)
+    stressed = functools.partial(simulate_held, unit_of=listing_unit)
+
+    def read(weigher: Callable[..., dict[str, float]], simulate: Callable[..., Any] = stressed) -> dict[str, Any]:
+        report = measure(market, weigher, span, simulate=simulate, cadence=FLUSH_CADENCE)
+        years = {str(y): report["years_total_position_pct"].get(str(y), 0.0) for y in range(span[0].year, span[1].year + 1)}
+        return {**report, "years_total_position_pct": years, "stability": stability(years)}
+
+    report, bare = read(flush_book(flushes)), read(flush_book(flushes, hedged=False))
+    side = ("annual_sharpe", "total_position_annual_pct")
+    plain_rows = [tuple(r[k] for k in side) for r in (read(flush_book(flushes, placebo=f"plain:{k}")) for k in range(placebos))]
+    alike_rows = [tuple(r[k] for k in side) for r in
+                  (read(flush_book(flushes, placebo=f"matched:{k}", matched=True)) for k in range(placebos))]
+
+    def net_mean(rows: Sequence[tuple[float | None, float | None]]) -> float | None:
+        kept = [row[1] for row in rows if row[1] is not None]
+        return round(statistics.fmean(kept), 2) if kept else None
+
+    rungs = {"2a_entry": report["clears_entry"], "2b_later_years": later_years(report["years_total_position_pct"]),
+             "2c_beside_placebos": beside_nulls(report["annual_sharpe"], [row[0] for row in plain_rows]),
+             "3_stability": report["stability"]}
+    matched = beside_nulls(report["annual_sharpe"], [row[0] for row in alike_rows])
+    ladder = bool(rungs["2a_entry"] and rungs["2b_later_years"]["passes"] and rungs["2c_beside_placebos"]["passes"]
+                  and rungs["3_stability"]["passes"])
+    reading = "closed" if not ladder else "not_apart_from_beaten_down_coins" if not matched["passes"] else "passes"
+    return {**report, "hypothesis": "H-O1", "logic": "L19", "counts": counts, "rungs": rungs,
+            "beside_matched_placebos": matched, "legs": deep_legs(report, bare),
+            "placebo_net_total_position_annual_pct_mean": {"plain": net_mean(plain_rows), "matched": net_mean(alike_rows)},
+            "without_the_hedge": {k: bare[k] for k in ("annual_sharpe", "total_position_annual_pct", "years_total_position_pct")},
+            "at_engine_cost_annual_sharpe": read(flush_book(flushes), simulate_held)["annual_sharpe"],
+            "passes": ladder and matched["passes"], "reading": reading}
+
+
+def closing_oi(folder: Path, symbols: Iterable[str], span: tuple[date, date] = FLUSH_SPAN) -> dict[str, dict[date, float]]:
+    """Each symbol's open interest at the day's close: ``sum_open_interest`` on the last row of the day's file,
+    when that row is stamped that day at :data:`FLUSH_CLOSING_HOUR` or later. Only files dated from the day before
+    the span to its last day are opened."""
+    first, out = span[0] - timedelta(days=1), {}
+    for symbol in sorted(set(symbols)):
+        days: dict[date, float] = {}
+        for path in sorted((folder / symbol).glob("*.zip")) if (folder / symbol).is_dir() else []:
+            try:
+                day = date.fromisoformat(path.stem[-10:])
+                if not first <= day <= span[1]:
+                    continue
+                with zipfile.ZipFile(path) as z:
+                    rows = list(csv.reader(io.StringIO(z.read(z.namelist()[0]).decode("utf-8"))))
+                last = [row for row in rows[1:] if len(row) > 2][-1]
+                stamp, value = last[0], float(last[2])
+            except (OSError, ValueError, IndexError, zipfile.BadZipFile):
+                continue
+            if stamp[:10] == day.isoformat() and int(stamp[11:13]) >= FLUSH_CLOSING_HOUR and math.isfinite(value) and value > 0:
+                days[day] = value
+        if days:
+            out[symbol] = days
+    return out
+
+
+def crash_days_of(hourly: Hourly, span: tuple[date, date] = FLUSH_SPAN) -> list[date]:
+    """The UTC days round 10's events fall on, within ``span``. The events are found over round 10's own span, so
+    they are the hours that round measured (an event's place depends on the events before it)."""
+    days = {day_of(hour) for hour in crash_events(hourly)}
+    return sorted(d for d in days if span[0] <= d <= span[1])
+
+
 # --- L16: the alt-against-Bitcoin rotation book (round 12, hypothesis H-D1) ----------------------------------------
 
 ROTATION_WINDOW = 28                       # days of the spread's own return that set the side
@@ -2023,7 +2254,7 @@ def main(argv: list[str] | None = None) -> int:
                                             "listing-counts", "listing", "lower-counts", "lower",
                                             "crash-symbols", "crash-events", "crash-counts", "crash",
                                             "deep-counts", "deep", "rotation-counts", "rotation", "bar",
-                                            "hot-counts", "hot", "gap-counts", "gap"))
+                                            "hot-counts", "hot", "gap-counts", "gap", "flush-counts", "flush"))
     parser.add_argument("--shape", choices=BAR_SHAPES, default=None, help="bar: the book shape whose null books are read")
     parser.add_argument("--only", default=None,
                         help="sweep, transfer: variable groups (comma list), or `null` for the random books")
@@ -2112,6 +2343,19 @@ def main(argv: list[str] | None = None) -> int:
                           "span": [d.isoformat() for d in SPAN], "command": args.command, **body},
                          indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or (args.command == "rotation-counts" and body["stop"]) else EXIT_OK
+    if args.command in ("flush-counts", "flush"):
+        market = lab.hold(cache, FLUSH_SPAN, attach=False)
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        members = {s for names in monthly_members(market, FLUSH_SPAN).values() for s in names}
+        market.closing_oi = closing_oi(cache / "archive-metrics" / "metrics", members)
+        crashes = crash_days_of(load_hourly(cache / "archive", [HEDGE]))
+        body = (flush_counts if args.command == "flush-counts" else flush_run)(market, crash_days=crashes)
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in FLUSH_SPAN], "command": args.command, **body},
+                         indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_BLOCKED if body.get("refused") or (args.command == "flush-counts" and body["stop"]) else EXIT_OK
     if args.command in ("hot-counts", "hot", "gap-counts", "gap"):
         market = lab.hold(cache, attach=False)
         if market is not None and args.command.startswith("gap"):

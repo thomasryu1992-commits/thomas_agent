@@ -33,3 +33,20 @@ records whose results are known? Thomas, 2026-11-14: "셋 다 돌림".
   belongs there.
 - *The open-interest variant waits one round.* It reads other data and nothing in these two results can reach its
   definition.
+
+**Results (same day).**
+
+- *H-F2 stopped at its counts and is closed unmeasured.* Funding of +1.0% a week is 2021's: the book would hold a
+  position at 5, 5 and 20 decisions in 2022, 2023 and 2024 against the 26 the stop rule asks for. No second
+  threshold was counted and no return was read.
+- *H-G1 cleared its overlap rule and failed the ladder.* Only 17.1% of its coin-decisions are L15's picks (chance
+  4.9%), so it was measured: annual Sharpe -0.135 net, -3.6% of total position a year, p 0.153 against the same
+  book on other coins and 0.160 against coins as beaten down. It was not a tail (46% of the pool in 2022) and the
+  funding its alts received did not cover their costs. Closed.
+- *A guard was added before H-G1's counts were read.* The registered code counted every day with both closes; the
+  spot-share search drops days when the two are more than 10% apart, because such a pair is another asset under
+  the same name. Without the band one mismatched pair is a pick every week and never one of L15's, which pushes
+  the overlap toward "a reading of its own". The unbanded counts were set aside unopened and the count was re-run.
+- *The structure showed again.* The placebo books (long alts, short beta of Bitcoin, on coins the signal did not
+  pick) netted -8% to -10% of total position a year, as H-F1's did. A book of this shape starts there.
+

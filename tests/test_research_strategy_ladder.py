@@ -1425,3 +1425,185 @@ def test_the_hot_commands_load_bars_and_funding_alone_and_the_gap_commands_hang_
     held = sl.with_spot(tmp_path, market, (date(2020, 6, 1), date(2021, 6, 30)))
     assert set(held.spot["DEEP0USDT"]) == {DEEP_DAY}, "cut at the span's end"
     assert held.spot_of["DEEP0USDT"] == ("DEEP0USDT", 1.0) and held.spot_of["DEEP3USDT"] is None
+
+
+# --- round 15: the open-interest flush book ----------------------------------------------------------------------------
+
+import io  # noqa: E402
+import zipfile  # noqa: E402
+
+FLUSH_START = date(2022, 1, 1)
+FLUSH_TEST_SPAN = (date(2022, 1, 1), date(2022, 6, 30))
+FLUSH_DAY = date(2022, 4, 12)
+FLUSH_COINS = [f"F{i:02d}USDT" for i in range(14)]
+
+
+def _flush_world(monkeypatch, *, wide: bool = False, after: float = 0.0):
+    """BTC moving two percent up and down by turns and fourteen members that move (1 + i/20) times as much, each
+    with a flat open interest of 1000. On :data:`FLUSH_DAY` F00 falls 12% with its open interest down 20% (a flush),
+    F01 falls 12% with its open interest flat, F02 loses 20% of its open interest on an ordinary day and F03's open
+    interest for that day is missing. ``wide`` flushes F04..F12 as well that day. ``after`` is F00's move the day
+    after the flush (nothing a decision on the flush day may read)."""
+    first = date(2021, 6, 1)
+    days = [first + timedelta(days=k) for k in range((FLUSH_TEST_SPAN[1] - first).days + 1)]
+    falls = {"F00USDT", "F01USDT"} | ({f"F{i:02d}USDT" for i in range(4, 13)} if wide else set())
+    drains = {"F00USDT", "F02USDT"} | ({f"F{i:02d}USDT" for i in range(4, 13)} if wide else set())
+
+    def bars(name, scale, volume):
+        out, price = {}, 100.0
+        for k, day in enumerate(days):
+            move = (0.02 if k % 2 else -0.02) * scale
+            if day == FLUSH_DAY and name in falls:
+                move = -0.12
+            if day == FLUSH_DAY + timedelta(days=1) and name == "F00USDT":
+                move = after or move
+            out[day] = xsb.Bar(open=price, close=price * (1 + move), quote_volume=volume)
+            price *= 1 + move
+        return out
+
+    names = {"BTCUSDT": bars("BTCUSDT", 1.0, 9e9), **{s: bars(s, 1 + i / 20, 5e7) for i, s in enumerate(FLUSH_COINS)}}
+    stamp = lambda d: int(datetime(d.year, d.month, d.day, 8, tzinfo=timezone.utc).timestamp() * 1000)  # noqa: E731
+    market = xsb.Market(bars=names, funding={s: [(stamp(d), 0.0) for d in days] for s in names})
+    market.closing_oi = {s: {d: (800.0 if d >= FLUSH_DAY and s in drains else 1000.0) for d in days} for s in FLUSH_COINS}
+    del market.closing_oi["F03USDT"][FLUSH_DAY]
+    months = {date(y, m, 1) for y, m in ((d.year, d.month) for d in days)}
+    monkeypatch.setattr(sl, "monthly_members", lambda held, span=None: {m: ["BTCUSDT", *FLUSH_COINS] for m in months})
+    return market
+
+
+def test_a_flush_is_a_coin_whose_open_interest_and_price_both_fell_by_the_days_close(monkeypatch):
+    flushes = sl.Flushes(_flush_world(monkeypatch), FLUSH_TEST_SPAN)
+    read = flushes.read(FLUSH_DAY)
+    assert "BTCUSDT" not in read and read["F00USDT"] == pytest.approx((-0.2, -0.12))
+    assert read["F03USDT"][0] is None, "no open interest at that close: no change, and no event"
+    assert flushes.events(FLUSH_DAY) == ("F00USDT",), "the price alone (F01) or the open interest alone (F02) is not one"
+    assert flushes.events(FLUSH_DAY + timedelta(days=1)) == (), "the day after, the open interest is level again"
+    later = sl.Flushes(_flush_world(monkeypatch, after=0.3), FLUSH_TEST_SPAN)
+    assert later.read(FLUSH_DAY) == read, "nothing after the day's close is in what the decision reads"
+
+
+def test_a_day_on_which_many_members_flush_is_the_markets_and_carries_no_event(monkeypatch):
+    flushes = sl.Flushes(_flush_world(monkeypatch, wide=True), FLUSH_TEST_SPAN)
+    assert len(flushes.flushed(FLUSH_DAY)) == 10 == sl.FLUSH_WIDE and flushes.events(FLUSH_DAY) == ()
+    assert flushes.names(FLUSH_DAY) == []
+
+
+def test_a_flush_is_bought_at_the_next_open_and_held_three_days_with_the_hedge_against_its_beta(monkeypatch):
+    market = _flush_world(monkeypatch, after=0.3)
+    flushes = sl.Flushes(market, FLUSH_TEST_SPAN)
+    held = [k for k in range(-1, 5) if "F00USDT" in flushes.names(FLUSH_DAY + timedelta(days=k))]
+    assert held == [0, 1, 2], "in the book decided on the flush day and the two after: held three days from the next open"
+    weights = sl.flush_book(flushes)(market, (), FLUSH_DAY, "x")
+    assert weights["F00USDT"] == sl.DEEP_NAME_CAP and weights["BTCUSDT"] == pytest.approx(-sl.DEEP_NAME_CAP * 1.0, rel=0.2)
+    assert set(sl.flush_book(flushes, hedged=False)(market, (), FLUSH_DAY, "x")) == {"F00USDT"}
+    sim = sl.simulate_held(market, sl.FLUSH_CADENCE, {}, start=FLUSH_TEST_SPAN[0], end=FLUSH_TEST_SPAN[1],
+                           weigher=sl.flush_book(flushes, hedged=False), unit_of=sl.listing_unit)
+    assert sorted(sim["daily"]) == [FLUSH_DAY + timedelta(days=k) for k in (1, 2, 3, 4)], "three held days, and the exit's cost"
+    assert sim["daily"][FLUSH_DAY + timedelta(days=4)]["gross"] == 0.0
+    first = sim["daily"][FLUSH_DAY + timedelta(days=1)]
+    assert first["gross"] == pytest.approx(sl.DEEP_NAME_CAP * 0.3), "the day after the flush is earned from its open"
+
+
+def test_a_flush_placebo_is_a_member_without_the_flush_and_the_matched_one_fell_as_much(monkeypatch):
+    flushes = sl.Flushes(_flush_world(monkeypatch), FLUSH_TEST_SPAN)
+    for seed in ("a", "b", "c", "d"):
+        plain = flushes.partner("F00USDT", FLUSH_DAY, seed, matched=False)
+        assert plain not in ("F00USDT", "F03USDT", "BTCUSDT") and plain in FLUSH_COINS, "not the event, and its open interest is known"
+    monkeypatch.setattr(sl, "FLUSH_NEIGHBOURS", 1)
+    assert flushes.partner("F00USDT", FLUSH_DAY, "a", matched=True) == "F01USDT", "the coin that fell 12% with its open interest flat"
+    assert flushes.names(FLUSH_DAY, "a", matched=True) == ["F01USDT"]
+
+
+def _oi_zip(folder, symbol, day, stamps):
+    folder = folder / symbol
+    folder.mkdir(parents=True, exist_ok=True)
+    rows = ["create_time,symbol,sum_open_interest,sum_open_interest_value"]
+    rows += [f"{stamp},{symbol},{value},1" for stamp, value in stamps]
+    with zipfile.ZipFile(folder / f"{symbol}-metrics-{day.isoformat()}.zip", "w") as z:
+        z.writestr(f"{symbol}-metrics-{day.isoformat()}.csv", "\n".join(rows) + "\n")
+
+
+def test_the_closing_open_interest_is_the_days_last_row_and_no_file_past_the_span_is_opened(tmp_path):
+    span = (date(2022, 1, 1), date(2022, 1, 3))
+    _oi_zip(tmp_path, "AUSDT", date(2021, 12, 31), [("2021-12-31 23:55:00", 90)])
+    _oi_zip(tmp_path, "AUSDT", date(2022, 1, 1), [("2022-01-01 00:00:00", 5), ("2022-01-01 23:55:00", 100)])
+    _oi_zip(tmp_path, "AUSDT", date(2022, 1, 2), [("2022-01-02 00:00:00", 7), ("2022-01-02 12:00:00", 8)])
+    _oi_zip(tmp_path, "AUSDT", date(2022, 1, 4), [("2022-01-04 23:55:00", 400)])
+    (tmp_path / "AUSDT" / "AUSDT-metrics-2022-01-05.zip").write_bytes(b"not a zip")
+    (tmp_path / "AUSDT" / "AUSDT-metrics-2022-01-03.zip").write_bytes(b"not a zip")
+    got = sl.closing_oi(tmp_path, ["AUSDT", "NOFILESUSDT"], span)
+    assert got == {"AUSDT": {date(2021, 12, 31): 90.0, date(2022, 1, 1): 100.0}}, (
+        "the day before the span is read for the first change; a day whose last row is at noon has no closing value; "
+        "a broken file has none; a day past the span is not there")
+
+
+def test_the_flush_counts_carry_nothing_earned_and_stop_a_thin_book_or_one_on_round_tens_days(monkeypatch):
+    market = _flush_world(monkeypatch)
+    counts = sl.flush_counts(market, FLUSH_TEST_SPAN)
+    assert counts["events"] == 1 == counts["event_days"] and counts["returns_computed"] is False
+    assert counts["by_year"]["2022"]["days_with_a_position"] == 3 and counts["by_year"]["2022"]["known_share"] > 0.99
+    assert counts["events_signal_median"] == {"open_interest_change": -0.2, "day_move": -0.12}
+    assert counts["events_without_a_placebo_share"] == {"plain": 0.0, "matched": 0.0}
+    assert abs(counts["matched_partner_day_move_median"]) <= 0.12, "one of the three nearest: F01 fell as much, the others barely moved"
+    monkeypatch.setattr(sl, "FLUSH_NEIGHBOURS", 1)
+    assert sl.flush_counts(market, FLUSH_TEST_SPAN)["matched_partner_day_move_median"] == -0.12, "the nearest one fell as the event did"
+    monkeypatch.setattr(sl, "FLUSH_NEIGHBOURS", 3)
+    assert counts["stop"] == ["too few days with an event over the span", "too few days with an event in 2022"]
+    flat = json.dumps(counts)
+    assert "sharpe" not in flat and "pct" not in flat
+    assert sl.flush_run(market, FLUSH_TEST_SPAN)["refused"] == counts["stop"], "a stopped book is not measured"
+    monkeypatch.setattr(sl, "FLUSH_MIN_EVENT_DAYS", 1)
+    monkeypatch.setattr(sl, "FLUSH_MIN_EVENT_DAYS_A_YEAR", 1)
+    assert sl.flush_counts(market, FLUSH_TEST_SPAN)["stop"] == []
+    for crash in (FLUSH_DAY, FLUSH_DAY - timedelta(days=1)):
+        on = sl.flush_counts(market, FLUSH_TEST_SPAN, crash_days=[crash])
+        assert on["events_on_crash_days_share"] == 1.0
+        assert on["stop"] == ["the events fall on round 10's event days: H-C1 on daily bars, not a reading of its own"]
+    assert sl.flush_counts(market, FLUSH_TEST_SPAN, crash_days=[FLUSH_DAY - timedelta(days=2)])["stop"] == []
+    wide = sl.flush_counts(_flush_world(monkeypatch, wide=True), FLUSH_TEST_SPAN)
+    assert wide["events"] == 0 and wide["by_year"]["2022"]["wide_days"] == 1 and wide["by_year"]["2022"]["flushes_on_wide_days"] == 10
+    del market.closing_oi["F05USDT"], market.closing_oi["F06USDT"]
+    blind = sl.flush_counts(market, FLUSH_TEST_SPAN)
+    assert blind["stop"] == ["too little of the universe has its open interest on file in 2022"]
+
+
+def test_the_flush_run_is_read_daily_over_its_own_span_and_the_weekly_books_are_read_as_before(monkeypatch):
+    market = _flush_world(monkeypatch)
+    monkeypatch.setattr(sl, "FLUSH_MIN_EVENT_DAYS", 1)
+    monkeypatch.setattr(sl, "FLUSH_MIN_EVENT_DAYS_A_YEAR", 1)
+    run = sl.flush_run(market, FLUSH_TEST_SPAN, placebos=3)
+    assert (run["hypothesis"], run["logic"]) == ("H-O1", "L19") and set(run["years_total_position_pct"]) == {"2022"}
+    assert run["rungs"]["2c_beside_placebos"]["null_books"] == 3 == run["beside_matched_placebos"]["null_books"]
+    assert run["reading"] in ("closed", "not_apart_from_beaten_down_coins", "passes")
+    assert run["passes"] is (run["reading"] == "passes")
+    assert run["legs"]["alts"]["cost_pct"] > 0 and set(run["placebo_net_total_position_annual_pct_mean"]) == {"plain", "matched"}
+    asked: list[date] = []
+
+    def recorder(held, members, day, signal, *, seed=None):
+        asked.append(day)
+        return {}
+
+    sl.measure(market, recorder, FLUSH_TEST_SPAN, simulate=sl.simulate_held)
+    assert asked and all(day.weekday() == 6 for day in asked), "a book that names no cadence is decided on Sundays, as before"
+    asked.clear()
+    sl.measure(market, recorder, FLUSH_TEST_SPAN, simulate=sl.simulate_held, cadence=sl.FLUSH_CADENCE)
+    assert len(asked) == (FLUSH_TEST_SPAN[1] - FLUSH_TEST_SPAN[0]).days + 1, "the flush book is decided every day"
+
+
+def test_the_flush_commands_load_bars_and_funding_over_their_span_then_the_closing_open_interest(monkeypatch, capsys):
+    asked, read = [], []
+    market = _flush_world(monkeypatch)
+
+    def hold(cache, span=None, *, attach=True, flow=False):
+        asked.append((span, attach, flow))
+        return None if len(asked) == 1 else market
+
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(sl.lab, "hold", hold)
+    monkeypatch.setattr(sl, "closing_oi", lambda folder, symbols, span=None: read.append(sorted(symbols)) or market.closing_oi)
+    monkeypatch.setattr(sl, "load_hourly", lambda archive, symbols, span=None: read.append(list(symbols)) or sl.Hourly())
+    assert sl.main(["flush-counts"]) == sl.EXIT_BLOCKED and read == [], "no contract types: blocked before anything else is read"
+    assert sl.main(["flush-counts"]) == sl.EXIT_BLOCKED, "the test market has one event: the counts say stop"
+    assert asked == [(sl.FLUSH_SPAN, False, False)] * 2
+    assert read == [["BTCUSDT", *FLUSH_COINS], ["BTCUSDT"]], "the members' closing open interest, and the hedge coin's hours alone"
+    assert json.loads(capsys.readouterr().out)["returns_computed"] is False
