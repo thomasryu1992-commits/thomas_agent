@@ -487,7 +487,8 @@ def test_the_registry_stays_inside_what_its_controls_and_the_sweeps_null_can_cor
 def test_the_by_variable_check_has_enough_placebos_for_a_real_effect_to_pass_the_correction():
     """The smallest p a test can show is one over the placebos plus one. It has to be under what Benjamini–Hochberg
     asks of the best of a few hundred tests, or nothing could ever pass (the first run, 2026-11-13: 200 placebos)."""
-    tests, q = 27 * 2 * 5, 0.10
+    tests, q = len(lab.variables()) * len(lab.TIERS) * len(lab.AXES), 0.10
+    assert tests == 30 * 2 * 6
     assert 1 / (lab.PLACEBO_AXES_BY_VARIABLE + 1) < q / tests
     assert not 1 / (200 + 1) < q / tests
 

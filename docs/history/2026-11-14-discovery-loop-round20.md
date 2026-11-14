@@ -26,4 +26,9 @@
 - *Adding the axis moved no registered value*: the round-five re-check returned all 102 unchanged.
 - *The weekly and monthly checks have now each been run once by hand on the data in hand* (rounds 18 to 20): the
   map on the newly reached cells, the inventory, more shapes of variables, one new axis, the one-page report. No
-  new lead, nothing alive past rung 3. What the lists still hold for later months is written at the end of §34.
+  new lead, nothing alive past rung 3. What is next in the lists is written at the end of §34; the rounds go on.
+- *The round-five re-check does not cover an axis*: its books read no scenario label. The first round's
+  scenario-switching book was therefore re-run at the commit before the axis and at the one after: every value
+  equal. The same comparison showed that the first round's recorded placebo line differs from today's code, and
+  that this dates from the 2026-11-13 fix to the shuffled-spell placebo, not from the axis; the book's own values
+  are unchanged and the candidate is closed.
