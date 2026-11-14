@@ -34,3 +34,17 @@ the five-year reading counts those months as zero, as registered. The book's wee
 null books' 0.722 (ratio 1.06, inside the band), so the p will be about what is picked. Turnover alone puts the cost
 at 10.4% of total position a year at 26 bps; with the cell's own mean spread the form's size line now reads about
 −16% a year after costs.
+
+**Result (22:44Z): H-R2 fails and is closed.** Annual Sharpe −0.559 after costs, −12.1% of total position a year,
+four losing years of five, p 0.445 beside 300 null books. All three registered falsifiers show: the entry rule is
+missed, nothing is picked, and the book loses at the engine's cost too (−0.275).
+
+- *The rank was right and the mean lost, in the book as on the map.* The cell's rank correlation was −0.06; the book
+  built on that rank lost 1.7% a year on price before any cost, the direction the cell's own top-minus-bottom mean
+  had pointed.
+- *The null books lose too* (−8.9% a year on average): on this tier a weekly rank book costs that much with nothing
+  in it.
+- *The form's size line* said about −16% a year; the book made −12.1%. Sign and magnitude held; funding was not in
+  the form.
+
+With this, every one of the twelve cells that meet the map's lead rule is tied to a record.
