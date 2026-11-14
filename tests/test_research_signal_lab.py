@@ -273,6 +273,8 @@ def test_the_axis_check_reads_every_axis_beside_its_placebos(tiers, monkeypatch)
     assert set(out["axes"]) == {"trend", "vol", "dispersion", "heat", "universe", "breadth", *lab.CANDIDATE_AXES}
     assert "level" not in out["axes"]["trend"] and out["axes"]["breadth"]["level"] == 0.05
     assert out["axes"]["month"]["level"] == round(0.05 / 6, 5) and isinstance(out["axes"]["month"]["beats_its_placebos"], bool)
+    assert out["axes"]["leverage"]["separation"] is None and out["axes"]["leverage"]["beats_its_placebos"] is False, \
+        "no positioning values attached: the leverage axis has no label and passes nothing"
     for axis, body in out["axes"].items():
         assert set(body) - {"level", "p", "beats_its_placebos"} == {
             "states", "separation", "placebo_mean", "placebo_p95", "placebos_at_or_above", "placebos"}
@@ -487,7 +489,7 @@ def test_the_candidate_axes_are_labelled_from_the_past_held_to_stricter_levels_a
     assert lab.scenario_keys({"breadth": "broad", "dominance": "btc_led", "month": "start"}) == ["all", "breadth=broad"], \
         "an axis under check adds no cell to the map"
     levels = [lab.axis_level(axis) for axis in lab.AXIS_ORDER]
-    assert levels == [0.05 / k for k in range(1, 7)] and lab.axis_level("trend") is None
+    assert levels == [0.05 / k for k in range(1, 8)] and lab.axis_level("trend") is None
     assert 1 / (lab.PLACEBO_AXES + 1) < levels[-1], "200 placebos can resolve the strictest level"
     start = date(2021, 1, 4)                                      # a Monday
     days = [start + timedelta(days=k) for k in range(72 * 7)]
@@ -536,6 +538,51 @@ def test_the_candidate_axes_are_labelled_from_the_past_held_to_stricter_levels_a
     before = [d for d in sundays if (d - start).days // 7 <= 65]
     assert labels[before[-1]]["drawdown"] == "shallow"
     assert all(soaring[d] == labels[d] for d in before), "a higher high after the day deepens no earlier drawdown"
+
+
+def test_leverage_is_open_interest_in_quote_terms_over_volume_and_has_no_label_without_positioning():
+    start = date(2021, 1, 4)
+    days = [start + timedelta(days=k) for k in range(60 * 7)]
+    coins = [f"C{i:02d}USDT" for i in range(10)]
+
+    def world(later=1.0, priced=100.0):
+        """Ten coins at a flat price. Open interest, in contracts, is high in even six-week blocks and low in odd
+        ones (a little more extreme as time goes, so nothing ties); ``later`` scales it after week 50."""
+        bars = {s: {d: xsb.Bar(open=priced, close=priced, quote_volume=1e8) for d in days} for s in coins + ["BTCUSDT"]}
+        market = xsb.Market(bars=bars, funding={s: [] for s in bars})
+        market.metrics = {}
+        for s in coins:
+            market.metrics[s] = {}
+            for k, d in enumerate(days):
+                week = k // 7
+                level = 2e6 * (1 + week / 1000) if (week // 6) % 2 == 0 else 1e6 * (1 - week / 1000)
+                market.metrics[s][d] = {"oi": level * (later if week > 50 else 1.0), "ls": 0.5, "top": None, "taker": None}
+        return market
+
+    span = (start, days[-1])
+    monthly = {date(d.year, d.month, 1): ["BTCUSDT"] + coins for d in days}
+    sundays = [d for d in days if d.weekday() == 6]
+    labels = lab.scenario_labels(world(), monthly, sundays, span)
+    assert labels[sundays[8 * 6 + 5]]["leverage"] == "levered" and labels[sundays[7 * 6 + 5]]["leverage"] == "light"
+    assert "leverage" not in labels[sundays[3]], "no history to compare with yet"
+    bare = world()
+    del bare.metrics
+    assert all("leverage" not in row for row in lab.scenario_labels(bare, monthly, sundays, span).values()), \
+        "without the positioning values there is no label"
+    twisted = lab.scenario_labels(world(later=0.01), monthly, sundays, span)
+    early = [d for d in sundays if (d - start).days // 7 <= 50]
+    assert all(twisted[d].get("leverage") == labels[d].get("leverage") for d in early), "later weeks change no earlier label"
+    assert any(twisted[d].get("leverage") != labels[d].get("leverage") for d in sundays if d not in early)
+    # contracts times the close: the same contracts on a coin priced a hundredth as much are a hundredth of the leverage
+    series = lambda market: lab.scenario_labels(market, monthly, sundays, span)        # noqa: E731
+    assert series(world(priced=1.0)) == series(world()), "one price for every week moves every week alike: same labels"
+    cheap_late = world()
+    for s in coins:
+        for d in days[50 * 7:]:
+            cheap_late.bars[s][d] = xsb.Bar(open=1.0, close=1.0, quote_volume=1e8)
+    late = [d for d in sundays if (d - start).days // 7 >= 52]
+    assert all(series(cheap_late)[d]["leverage"] == "light" for d in late), \
+        "the same contracts at a hundredth of the price are little open interest: the close is in the measure"
 
 
 def test_the_registry_stays_inside_what_its_controls_and_the_sweeps_null_can_correct_for():

@@ -75,8 +75,9 @@ MIN_PERSISTENCE = 0.5                      # week-to-week rank correlation a lea
 RESTING_AXES = frozenset({"trend", "vol", "dispersion", "heat", "universe", "breadth"})
 AXES = ("trend", "vol", "dispersion", "heat", "universe", "breadth")       # the order cells and checks list them in
 # Axes under check (section 36): labelled and checked beside their placebos, never mapped. One that beats its
-# placebos at its own level may join AXES in a later round. A sixth, leverage, needs the positioning files.
-CANDIDATE_AXES = ("dominance", "volume", "correlation", "drawdown", "month")
+# placebos at its own level may join AXES in a later round. Leverage (section 38) has a label only where the
+# positioning values are attached, so it is checked in a run that loads them.
+CANDIDATE_AXES = ("dominance", "volume", "correlation", "drawdown", "month", "leverage")
 AXIS_ALPHA = 0.05                          # an axis is held to this over its place in the order axes were checked in
 AXIS_ORDER = ("breadth",) + CANDIDATE_AXES # breadth was the first new axis; each later one meets a stricter level
 DRAWDOWN_DAYS = 365                        # the reference coin's high is looked for over these days
@@ -379,6 +380,24 @@ def scenario_labels(market: xsb.Market, monthly: Mapping[date, Sequence[str]], d
             return None
         return statistics.fmean(statistics.correlation(a, b) for i, a in enumerate(series) for b in series[i + 1:])
 
+    def leverage(day: date) -> float | None:
+        """The top tier's open interest against its trading: per coin, the week's open interest in quote terms (the
+        positioning files give contracts, so each day's is multiplied by that day's close) over the week's quote
+        volume; then the median over the coins with all seven days of both. None without positioning values."""
+        metrics = getattr(market, "metrics", None) or {}
+        ratios = []
+        for symbol in members(day):
+            bars, values = market.bars.get(symbol) or {}, metrics.get(symbol) or {}
+            held = traded = 0.0
+            for d in (day - timedelta(days=k) for k in range(7)):
+                bar, oi = bars.get(d), (values.get(d) or {}).get("oi")
+                if bar is None or oi is None or bar.quote_volume <= 0:
+                    break
+                held, traded = held + oi * bar.close, traded + bar.quote_volume
+            else:
+                ratios.append(held / traded)
+        return statistics.median(ratios) if len(ratios) >= MIN_NAMES else None
+
     def drawdown(day: date) -> float | None:
         """The reference coin's close against its highest close of the last :data:`DRAWDOWN_DAYS` days (0 at a high)."""
         closes = [b.close for d in (day - timedelta(days=k) for k in range(DRAWDOWN_DAYS)) if (b := btc.get(d)) is not None]
@@ -389,7 +408,8 @@ def scenario_labels(market: xsb.Market, monthly: Mapping[date, Sequence[str]], d
     axes = {"vol": (btc_vol, "high", "low"), "dispersion": (dispersion, "wide", "narrow"), "heat": (heat, "hot", "cool"),
             "universe": (wild_share, "wild", "calm"), "breadth": (breadth, "broad", "thin"),
             "dominance": (dominance, "btc_led", "alt_led"), "volume": (volume, "busy", "quiet"),
-            "correlation": (correlation, "tight", "loose"), "drawdown": (drawdown, "shallow", "deep")}
+            "correlation": (correlation, "tight", "loose"), "drawdown": (drawdown, "shallow", "deep"),
+            "leverage": (leverage, "levered", "light")}
     series = {axis: {d: read(d) for d in weekly} for axis, (read, _, _) in axes.items()}
     out: dict[date, dict[str, str]] = {}
     for day in days:
