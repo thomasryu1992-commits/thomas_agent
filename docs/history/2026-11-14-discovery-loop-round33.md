@@ -23,3 +23,20 @@ variables. The map has six axes and 55 variables now. This is the last row of th
   re-checked; a second kind of check would reopen that door.
 - *Depth gets a loader of its own.* The combined load is the one round 18 was killed on.
 - *A thin test is named.* Round 4 dropped a test whose placebos mostly had no separation without a trace.
+
+**The gate stopped the chain at the first group (20:44Z); nothing was read.** Ten of the funding group's twenty
+tests shared with round 4 came out different, all on ranks 31–100. The cause is an input, not the code: round 8
+fetched funding files for 158 more symbols after round 4 had run, so the coins that tier ranks by funding went from
+46.4 to 52.7 a decision; the top tier is unchanged at 27.1. All 46 of round 4's variable-tiers were compared on
+coverage before and now, and those two are the only ones that moved.
+
+- *The registered gate was too strong.* "All 230 must reproduce" assumed nothing on disk had changed since round 4.
+  It is amended by addition before any other group runs: the two changed variable-tiers are named from the inputs,
+  their ten tests are new tests, and the other 220 must still match to the digit. The funding run is kept, not
+  re-run; `scripts/` is unchanged by the amendment.
+- *What it says about the record.* Round 4's funding tests on ranks 31–100, and the first maps' funding cells on
+  that tier, were read on the 330-symbol funding set that round 8's own registration called a lookahead subset.
+  Round 4's verdict is not changed.
+
+**D10 answered the same day: "올리지 않음".** The lead does not go on the ladder. It stopped at the form's door, not
+at a closing rule; it stays on record and is not re-read under any other definition.
