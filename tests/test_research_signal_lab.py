@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import zipfile
 from datetime import date, timedelta
 
 import pytest
@@ -963,15 +964,34 @@ def test_the_estimated_spread_is_how_far_the_close_sits_from_the_middle_of_two_d
     assert registry["spread_14"][1](wide, "AUSDT", day) > lab._spread(wide, "AUSDT", day) > 0.02
 
 
-def test_the_premium_is_read_to_the_spans_last_day_and_no_further(tmp_path):
+def _stamp(day: date) -> int:
+    return int((day - date(1970, 1, 1)).total_seconds() * 1000)
+
+
+def _premium_zip(cache, symbol: str, name: str, rows) -> None:
+    """One archive file: a header row, then ``open_time, open, high, low, close, volume`` as the archive writes them."""
+    folder = cache / "archive" / lab.ba.PREMIUM_KIND / symbol
+    folder.mkdir(parents=True, exist_ok=True)
+    text = "open_time,open,high,low,close,volume\n" + "".join(f"{_stamp(d)},0,0,0,{close},0\n" for d, close in rows)
+    with zipfile.ZipFile(folder / name, "w") as z:
+        z.writestr(name.replace(".zip", ".csv"), text)
+
+
+def _premium_api(cache, symbol: str, rows) -> None:
+    folder = cache / "binance" / "derivative" / "premium"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{symbol}.1d.jsonl").write_text("".join(json.dumps([_stamp(d), "0", "0", "0", str(close)]) + "\n" for d, close in rows))
+
+
+def test_the_premium_is_read_from_the_archive_to_the_spans_last_day_and_no_further(tmp_path):
     last = date(2021, 3, 31)
-    folder = tmp_path / "binance" / "derivative" / "premium"
-    folder.mkdir(parents=True)
-    stamp = lambda d: int((d - date(1970, 1, 1)).total_seconds() * 1000)                         # noqa: E731
-    rows = [json.dumps([stamp(last - timedelta(days=k)), "0", "0", "0", str(0.001 * (k + 1))]) for k in range(-5, 30)]
-    (folder / "AUSDT.1d.jsonl").write_text("\n".join(rows + ["{torn", json.dumps([stamp(last), "x"])]) + "\n")
+    days = [(last - timedelta(days=k), 0.001 * (k + 1)) for k in range(-5, 30)]
+    _premium_zip(tmp_path, "AUSDT", "AUSDT-1d-2021-03.zip", [r for r in days if r[0].month == 3])
+    _premium_zip(tmp_path, "AUSDT", "AUSDT-1d-2021-04.zip", [r for r in days if r[0].month == 4])
+    _premium_api(tmp_path, "BUSDT", days)                         # the venue API's file is no longer what ranks coins
     held = lab.read_premium(tmp_path, ["AUSDT", "BUSDT"], last)
     assert set(held) == {"AUSDT"} and max(held["AUSDT"]) == last and len(held["AUSDT"]) == 30, "five later days are dropped"
+    assert set(lab.read_premium_api(tmp_path, ["AUSDT", "BUSDT"], last)) == {"BUSDT"}, "the other source is read only to compare"
     market = xsb.Market(bars={})
     assert lab._premium(market, "AUSDT", last) is None, "no premium attached"
     market.premium = held
@@ -1049,11 +1069,11 @@ def test_a_run_of_the_premium_group_loads_the_premium_cut_at_the_span_and_nothin
     monkeypatch.setattr(lab.xsb, "read_contract_types", lambda archive: ({"BTCUSDT": "PERPETUAL"}, None))
     monkeypatch.setattr(lab.xsb, "load_market", lambda archive, funding=True: _market(date(2021, 12, 31)))
     assert lab.hold_premium(tmp_path, span) is None, "no premium file: blocked, not an empty map"
-    folder = tmp_path / "binance" / "derivative" / "premium"
-    folder.mkdir(parents=True)
-    stamp = lambda d: int((d - date(1970, 1, 1)).total_seconds() * 1000)                         # noqa: E731
     days = [date(2021, 6, 1) + timedelta(days=k) for k in range(60)]
-    (folder / "C01USDT.1d.jsonl").write_text("".join(json.dumps([stamp(d), 0, 0, 0, 0.001]) + "\n" for d in days))
+    _premium_api(tmp_path, "C02USDT", [(d, 0.5) for d in days])
+    assert lab.hold_premium(tmp_path, span) is None, "the venue API's files alone attach nothing"
+    _premium_zip(tmp_path, "C01USDT", "C01USDT-1d-2021-06.zip", [(d, 0.001) for d in days if d.month == 6])
+    _premium_zip(tmp_path, "C01USDT", "C01USDT-1d-2021-07.zip", [(d, 0.001) for d in days if d.month == 7])
     held = lab.hold_premium(tmp_path, span)
     assert set(held.premium) == {"C01USDT"} and max(held.premium["C01USDT"]) == span[1] == lab.last_day(held)
     assert lab._premium(held, "C01USDT", span[1]) == pytest.approx(0.001) and not hasattr(held, "metrics")
@@ -1096,3 +1116,35 @@ def test_the_two_late_levels_get_a_change_and_a_position_and_no_shape_gets_one()
     flat = xsb.Market(bars={"BUSDT": {d: _flat_bar(100.0, 0.02, 0.02) for d in days}})   # a spread of zero every month
     assert registry["spread_change_30"][1](flat, "BUSDT", last) == 0.0
     assert registry["spread_position_30"][1](flat, "BUSDT", last) is None, "no spread in its own history: no position"
+
+
+
+def test_the_two_premium_sources_are_laid_side_by_side_with_no_return_read(tiers, tmp_path, monkeypatch, capsys):
+    market = lab.cut_market(_market(SPAN[1]), SPAN)
+    march = [date(2021, 3, 1) + timedelta(days=k) for k in range(31)]
+    _premium_zip(tmp_path, "C01USDT", "C01USDT-1d-2021-03.zip", [(d, 0.001) for d in march])
+    _premium_api(tmp_path, "C01USDT", [(d, 0.001) for d in march[:20]])            # the API file stops early
+    _premium_zip(tmp_path, "C02USDT", "C02USDT-1d-2021-03.zip", [(d, 0.002) for d in march[5:]])
+    _premium_api(tmp_path, "C02USDT", [(d, 0.002) for d in march])                 # the archive starts late
+    _premium_zip(tmp_path, "C03USDT", "C03USDT-1d-2021-03.zip", [(d, 0.003) for d in march])   # the archive only
+    _premium_api(tmp_path, "C04USDT", [(d, 0.004) for d in march])                             # the API only
+    monkeypatch.setattr(lab, "forward_return", lambda *a, **k: pytest.fail("the comparison reads no return"))
+    out = lab.premium_sources(market, tmp_path, SPAN)
+    assert (out["archive_symbols"], out["api_symbols"], out["in_both"]) == (3, 3, 2) and out["reads_returns"] is False
+    assert out["days_compared"] == 20 + 26 and out["days_differ"] == 0 and out["values_equal"] is True
+    assert out["days_only_in_archive"] == 11 and out["days_only_in_api"] == 0, \
+        "gaps are counted from where both series have begun: C02's five early API days are not a gap in the archive"
+    top = out["tiers"]["top30"]
+    assert top["with_archive_premium"] > top["with_api_premium"] - top["member_months"] and "C04USDT" in top["members_without_archive_premium"]
+    assert "C03USDT" not in top["members_without_archive_premium"]
+    _premium_zip(tmp_path, "C01USDT", "C01USDT-1d-2021-03.zip", [(d, 0.001 if d.day != 7 else 0.0011) for d in march])
+    wrong = lab.premium_sources(market, tmp_path, SPAN)
+    assert wrong["days_differ"] == 1 and wrong["values_equal"] is False and wrong["first_differences"] == [["C01USDT", "2021-03-07"]]
+    empty = lab.premium_sources(market, tmp_path / "nothing", SPAN)
+    assert empty["days_compared"] == 0 and empty["values_equal"] is False, "nothing compared is not a pass"
+    monkeypatch.setattr(lab.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(lab, "hold", lambda cache, span=None, *, attach=True, flow=False: market)
+    monkeypatch.setattr(lab, "SPAN", SPAN)
+    monkeypatch.setattr(lab.bs, "check_development_span", lambda span: None)
+    assert lab.main(["premium-sources", "--cache", str(tmp_path)]) == lab.EXIT_BLOCKED, "a difference blocks"
+    assert json.loads(capsys.readouterr().out)["days_differ"] == 1

@@ -1073,9 +1073,10 @@ def hold_positioning(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market 
     return held
 
 
-def read_premium(cache: Path, symbols: Sequence[str], last: date) -> dict[str, dict[date, float]]:
-    """``{symbol: {day: the premium index's daily close}}`` up to ``last`` and no further: the files run on past the
-    search span, and nothing after it is kept."""
+def read_premium_api(cache: Path, symbols: Sequence[str], last: date) -> dict[str, dict[date, float]]:
+    """The premium index's daily close from the venue API's files, up to ``last``. These exist only for the symbols
+    an earlier search asked for (section 50), so nothing ranks coins on them any more; :func:`premium_sources`
+    lays them beside the archive's."""
     out: dict[str, dict[date, float]] = {}
     for symbol in symbols:
         days: dict[date, float] = {}
@@ -1089,6 +1090,65 @@ def read_premium(cache: Path, symbols: Sequence[str], last: date) -> dict[str, d
         if days:
             out[symbol] = days
     return out
+
+
+def read_premium(cache: Path, symbols: Sequence[str], last: date) -> dict[str, dict[date, float]]:
+    """``{symbol: {day: the premium index's daily close}}`` from the archive's monthly files, up to ``last`` and no
+    further. One source and the same rule for every coin: a day the archive lacks is not filled from elsewhere."""
+    out: dict[str, dict[date, float]] = {}
+    for symbol in symbols:
+        folder = cache / "archive" / ba.PREMIUM_KIND / symbol
+        days: dict[date, float] = {}
+        for path in sorted(folder.glob("*.zip")) if folder.exists() else []:
+            for row in xsb._rows(path):
+                try:
+                    day, close = xsb._utc_day(float(row[0])), float(row[4])
+                except (TypeError, ValueError, IndexError):
+                    continue          # the header row
+                if day <= last:
+                    days[day] = close
+        if days:
+            out[symbol] = days
+    return out
+
+
+def premium_sources(market: xsb.Market, cache: Path, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """The archive's premium beside the venue API's, with no return in it: where both have a day the closes must be
+    equal; which days each has that the other lacks; and how many of each tier's members have a premium at all,
+    under each source."""
+    symbols = sorted(market.bars)
+    archive, api = read_premium(cache, symbols, span[1]), read_premium_api(cache, symbols, span[1])
+    compared = differ = only_api = only_archive = 0
+    worst: list[list[Any]] = []
+    for symbol in sorted(set(archive) & set(api)):
+        a, b = archive[symbol], api[symbol]
+        for day in set(a) & set(b):
+            compared += 1
+            if a[day] != b[day]:
+                differ += 1
+                if len(worst) < 10:
+                    worst.append([symbol, day.isoformat()])
+        first = max(min(a), min(b))                      # count gaps only where both series have begun
+        only_api += sum(1 for d in b if d not in a and d >= first)
+        only_archive += sum(1 for d in a if d not in b and d >= first)
+    tiers = {}
+    for tier, monthly in tier_members(market, span).items():
+        rows = {"member_months": 0, "with_archive_premium": 0, "with_api_premium": 0}
+        without: set[str] = set()
+        for month, members in monthly.items():
+            if not span[0] <= month <= span[1]:
+                continue
+            for symbol in members:
+                rows["member_months"] += 1
+                rows["with_archive_premium"] += symbol in archive
+                rows["with_api_premium"] += symbol in api
+                if symbol not in archive:
+                    without.add(symbol)
+        tiers[tier] = {**rows, "members_without_archive_premium": sorted(without)}
+    return {"symbols": len(symbols), "archive_symbols": len(archive), "api_symbols": len(api),
+            "in_both": len(set(archive) & set(api)), "days_compared": compared, "days_differ": differ,
+            "first_differences": worst, "days_only_in_api": only_api, "days_only_in_archive": only_archive,
+            "tiers": tiers, "values_equal": compared > 0 and differ == 0, "reads_returns": False}
 
 
 def hold_premium(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | None:
@@ -1126,7 +1186,8 @@ def hold_spot(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="signal_lab", description=__doc__.splitlines()[0])
-    parser.add_argument("command", choices=("list", "run", "axes", "axes-by-variable", "inventory", "universe", "overlap"))
+    parser.add_argument("command", choices=("list", "run", "axes", "axes-by-variable", "inventory", "universe", "overlap",
+                                            "premium-sources"))
     parser.add_argument("--candidate", default=None, help="overlap: the candidate variable to rank beside its kin")
     parser.add_argument("--only", default=None, help="run: a variable group to map alone, with the random variables")
     parser.add_argument("--cache", type=Path, default=None, help="default: $RESEARCH_CACHE")
@@ -1156,6 +1217,16 @@ def main(argv: list[str] | None = None) -> int:
                           "judgement": None, **universe_character(market, span)}, indent=1, sort_keys=True))
         return EXIT_OK
     bs.check_development_span(SPAN)
+    if args.command == "premium-sources":
+        market = hold(cache, attach=False)
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        body = premium_sources(market, cache)
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "last_day_read": last_day(market).isoformat(),
+                          "judgement": None, **body}, indent=1, sort_keys=True))
+        return EXIT_OK if body["values_equal"] else EXIT_BLOCKED
     if args.command == "overlap":
         if args.candidate not in OVERLAP_CANDIDATES:
             print(f"refused: --candidate is one of {sorted(OVERLAP_CANDIDATES)}", file=sys.stderr)
