@@ -95,6 +95,7 @@ SCRIPTS: dict[str, str] = {
     "scripts/probe_signal_rate.py": READ,
     "scripts/selection_evidence.py": READ,
     "scripts/strategy_funnel.py": READ,
+    "scripts/trial_refusals.py": READ,  # counts of what the proposer and the trial screen refused, by reason; no returns
     "scripts/verify_factory_tier_freeze.py": READ,
     "scripts/walk_forward_stability_report.py": READ,
 }
