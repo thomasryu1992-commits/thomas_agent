@@ -620,6 +620,70 @@ def sweep_family(earlier: Mapping[str, Mapping[str, Any]], later: Mapping[str, M
             "new_survivors": [r["variable"] for r in reading["survive_benjamini_hochberg"] if r["new"]]}
 
 
+# --- a lead from the sweep, before any hypothesis form (section 45) -----------------------------------------------
+
+# The book the sweep read, exactly: its variable and the side the sweep chose. Nothing here is a variant of it.
+LEADS = {"spread_change_30": {"long": "low", "group": "price_volume"}}
+# Books the lead's positions are laid beside, each long its LOW side in the sweep's logic. The rule reads the first:
+# the closed volatility cluster's book (C010). The rest are printed for the form's "nearest record" line.
+LEAD_KIN = ("idio_vol_30", "vol_30", "illiquidity_30", "momentum_30", "spread_30")
+LEAD_KIN_MAX = 0.5                         # a median position overlap of this size, either sign, is the same book
+
+
+def _cosine(a: Mapping[str, float], b: Mapping[str, float]) -> float | None:
+    dot = sum(w * b.get(s, 0.0) for s, w in a.items())
+    size = math.sqrt(sum(w * w for w in a.values())) * math.sqrt(sum(w * w for w in b.values()))
+    return dot / size if size > 0 else None
+
+
+def lead_check(market: xsb.Market, name: str, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """What a lead's book holds, decision by decision, with no return read: how many of its coins share a value (a
+    tie is broken by the coin's name, which is not the variable), how much of the book those coins carry, and how
+    alike its positions are to each reference book's (the cosine of the two books' coin weights, hedge left out)."""
+    registry, monthly = lab.variables(), monthly_members(market, span)
+    read = registry[name][1]
+    way = 1 if LEADS[name]["long"] == "high" else -1
+    own = BOOKS[SWEEP_LOGIC](read, lambda _day: way)
+    others = {kin: BOOKS[SWEEP_LOGIC](registry[kin][1], lambda _day: -1) for kin in LEAD_KIN}
+    rows: dict[str, list[float]] = {"zero_share": [], "tied_share": [], "tied_weight_share": [], "coins_held": []}
+    alike: dict[str, list[float]] = {kin: [] for kin in LEAD_KIN}
+    decisions = 0
+    for day in xsb.held_days(*span):
+        decision = day - timedelta(days=1)
+        if not is_decision(bs.CADENCE, decision, HOLD_WEEKS[SWEEP_ACCOUNTING]):
+            continue
+        members = monthly.get(date(decision.year, decision.month, 1), ())
+        weights = {s: w for s, w in own(market, members, decision, bs.CADENCE, seed=None).items() if s != HEDGE}
+        if not weights:
+            continue
+        decisions += 1
+        values = {s: v for s in without_tail(market, members, decision) if (v := read(market, s, decision)) is not None}
+        seen: dict[float, int] = {}
+        for v in values.values():
+            seen[v] = seen.get(v, 0) + 1
+        tied = {s for s, v in values.items() if seen[v] > 1}
+        gross = sum(abs(w) for w in weights.values())
+        rows["zero_share"].append(sum(1 for v in values.values() if v == 0) / len(values))
+        rows["tied_share"].append(len(tied) / len(values))
+        rows["tied_weight_share"].append(sum(abs(w) for s, w in weights.items() if s in tied) / gross)
+        rows["coins_held"].append(float(len(weights)))
+        for kin, build in others.items():
+            other = {s: w for s, w in build(market, members, decision, bs.CADENCE, seed=None).items() if s != HEDGE}
+            if (value := _cosine(weights, other)) is not None:
+                alike[kin].append(value)
+    def middle(values: Sequence[float]) -> float | None:
+        return round(statistics.median(values), 4) if values else None
+    kin = {k: {"decisions": len(v), "median": middle(v), "share_positive": round(sum(1 for x in v if x > 0) / len(v), 3) if v else None}
+           for k, v in alike.items()}
+    first = kin[LEAD_KIN[0]]["median"]
+    return {"lead": name, "long": LEADS[name]["long"], "logic": SWEEP_LOGIC, "decisions_with_a_book": decisions,
+            "medians": {k: middle(v) for k, v in rows.items()},
+            "largest": {k: round(max(v), 4) if v else None for k, v in rows.items() if k != "coins_held"},
+            "position_overlap": kin, "kin_rule": {"beside": LEAD_KIN[0], "threshold": LEAD_KIN_MAX,
+                                                  "kin": first is not None and abs(first) >= LEAD_KIN_MAX},
+            "reads_returns": False}
+
+
 # --- the transfer check: does a book that looks good on earlier years earn in the next one? ---------------------
 
 # (the years a book's side is chosen and its Sharpe is ranked on, the year it is then read on). All inside development.
@@ -2857,7 +2921,7 @@ def run_round(market: xsb.Market, span: tuple[date, date] = SPAN, *, which: str 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="strategy_ladder", description=__doc__.splitlines()[0])
-    parser.add_argument("command", choices=("list", "run", "confirm-counts", "confirm", "sweep", "transfer",
+    parser.add_argument("command", choices=("list", "run", "confirm-counts", "confirm", "sweep", "transfer", "lead-check",
                                             "listing-counts", "listing", "lower-counts", "lower",
                                             "crash-symbols", "crash-events", "crash-counts", "crash",
                                             "deep-counts", "deep", "rotation-counts", "rotation", "bar",
@@ -3009,6 +3073,19 @@ def main(argv: list[str] | None = None) -> int:
                           "span": [d.isoformat() for d in SPAN], "command": args.command, **body},
                          indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or (args.command == "lower-counts" and body["stop"]) else EXIT_OK
+    if args.command == "lead-check":
+        if args.only not in LEADS:
+            print(f"refused: --only names a lead: {sorted(LEADS)}", file=sys.stderr)
+            return EXIT_USAGE
+        market = sweep_market(cache, {LEADS[args.only]["group"]})
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
+                          "command": args.command, "judgement": None, **lead_check(market, args.only)},
+                         indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_OK
     if args.command in ("sweep", "transfer"):
         wanted = set((args.only or "").split(",")) - {""}
         names = null_variables() if wanted == {"null"} else {n: v for n, v in lab.variables().items() if v[0] in wanted}

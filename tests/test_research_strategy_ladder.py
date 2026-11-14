@@ -543,6 +543,59 @@ def test_the_family_reading_puts_every_book_beside_one_null_and_refuses_a_rerun_
     assert sl.sweep_matches(earlier, later) == [] and sl.sweep_matches({}, later) == []
 
 
+# --- round 31: what a lead's book holds, with no return read ------------------------------------------------------------
+
+def test_the_lead_check_counts_ties_and_lays_the_positions_beside_other_books_without_a_return(monkeypatch, capsys):
+    members = [f"C{i:02d}" for i in range(1, 42)]
+    lead = {**{f"C{i:02d}": float(i - 16) for i in range(1, 16)}, **{f"C{i:02d}": 0.0 for i in range(16, 27)},
+            **{f"C{i:02d}": float(i - 26) for i in range(27, 42)}}          # fifteen falls, eleven exact zeros, fifteen rises
+    shuffled = {s: float((17 * int(s[1:])) % 41) for s in members}          # a fixed order unrelated to the lead's
+    registry = {"lead": ("g", lambda m, s, d: lead.get(s)), "same": ("g", lambda m, s, d: lead.get(s) + 0.01 * int(s[1:])),
+                "mirror": ("g", lambda m, s, d: -(lead.get(s) + 0.01 * int(s[1:]))), "other": ("g", lambda m, s, d: shuffled[s])}
+    monkeypatch.setattr(sl.lab, "variables", lambda: registry)
+    monkeypatch.setattr(sl, "LEADS", {"lead": {"long": "low", "group": "price_volume"}})
+    monkeypatch.setattr(sl, "LEAD_KIN", ("same", "mirror", "other"))
+    monkeypatch.setattr(sl, "monthly_members", lambda market, span=None: {date(2021, m, 1): members for m in range(1, 7)})
+    monkeypatch.setattr(sl, "without_tail", lambda market, members, day: list(members))
+    monkeypatch.setitem(sl.BOOKS, sl.SWEEP_LOGIC, sl.book)
+
+    def never(*args, **kwargs):
+        raise AssertionError("the lead check reads no return")
+    for owner, name in ((sl, "measure"), (sl, "decision_ics"), (sl.lab, "forward_return"), (sl, "simulate_held")):
+        monkeypatch.setattr(owner, name, never)
+    span = (date(2021, 1, 1), date(2021, 6, 30))
+    out = sl.lead_check(xsb.Market(), "lead", span)
+    held = [d - timedelta(days=1) for d in xsb.held_days(*span) if sl.is_decision(sl.bs.CADENCE, d - timedelta(days=1), 4)]
+    assert out["decisions_with_a_book"] == len(held) >= 5 and out["reads_returns"] is False and out["long"] == "low"
+    assert out["medians"]["zero_share"] == out["medians"]["tied_share"] == pytest.approx(11 / 41, abs=1e-4)
+    assert out["medians"]["tied_weight_share"] == pytest.approx(30 / 420, abs=1e-3), \
+        "the tied coins sit in the middle, eleven of 41 coins and 7% of the weight (distances 5..0..5 of 420)"
+    assert out["medians"]["coins_held"] == 40, "the middle coin of 41 has no weight"
+    kin = out["position_overlap"]
+    assert kin["same"]["median"] > 0.95 and kin["mirror"]["median"] < -0.95 and abs(kin["other"]["median"]) < 0.5
+    assert kin["same"]["decisions"] == len(held) and kin["mirror"]["share_positive"] == 0.0
+    assert out["kin_rule"] == {"beside": "same", "threshold": 0.5, "kin": True}
+    monkeypatch.setattr(sl, "LEAD_KIN", ("mirror", "other"))
+    assert sl.lead_check(xsb.Market(), "lead", span)["kin_rule"]["kin"] is True, "the same book upside down is the same book"
+    monkeypatch.setattr(sl, "LEAD_KIN", ("other", "same"))
+    assert sl.lead_check(xsb.Market(), "lead", span)["kin_rule"]["kin"] is False, "the rule reads the first book only"
+    # A tie is broken by the coin's name: with every value equal the book is the alphabet, and the check says so.
+    registry["lead"] = ("g", lambda m, s, d: 0.0)
+    flat = sl.lead_check(xsb.Market(), "lead", span)
+    assert flat["medians"]["tied_share"] == 1.0 and flat["medians"]["tied_weight_share"] == pytest.approx(1.0)
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    assert sl.main(["lead-check", "--only", "nothing"]) == sl.EXIT_USAGE and "names a lead" in capsys.readouterr().err
+    monkeypatch.setattr(sl, "sweep_market", lambda cache, wanted: None)
+    assert sl.main(["lead-check", "--only", "lead"]) == sl.EXIT_BLOCKED
+
+
+def test_the_one_lead_on_record_is_the_swept_book_and_nothing_else():
+    assert sl.LEADS == {"spread_change_30": {"long": "low", "group": "price_volume"}}
+    assert sl.LEAD_KIN[0] == "idio_vol_30" and sl.LEAD_KIN_MAX == 0.5, "the rule reads the closed cluster's book"
+    assert set(sl.LEAD_KIN) | set(sl.LEADS) <= set(sl.lab.variables())
+    assert {sl.lab.variables()[k][0] for k in sl.LEAD_KIN} == {"price_volume"}, "all read from bars: one load"
+
+
 # --- confirm read 3: the tail-out book ---------------------------------------------------------------------------------
 
 def test_the_third_read_is_c010_which_differs_from_the_second_reads_book_only_by_the_tail():
