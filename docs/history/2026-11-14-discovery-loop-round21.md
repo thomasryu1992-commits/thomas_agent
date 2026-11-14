@@ -20,3 +20,14 @@ entries in `CHANGE_OF`, `hold_spot`, the random variables from 56 to 64), `scrip
   because a one-group map loaded every attached series.
 - *Only the four new variables' cells are read.* The lead line has moved with the larger random set and with the
   breadth cells; re-reading old variables against a new line would be reading them twice.
+
+**Results (same day).**
+
+- *No lead among the four.* Their largest |t| is 3.60 against a line of 4.30; every one of their largest cells is
+  on a resting axis. Of their 256 shown cells 31 are over 2 where the random variables' rate gives about 21: a
+  small excess, most of it the change of momentum and of taker share on ranks 31-100, both negative there.
+- *The outputs list leads that are not this round's.* The volatility cluster and the trade-size cell were seen in
+  earlier rounds; the registration said only the new variables' cells would be read, and the record says so.
+- *All four group runs fitted the sandbox*, the spot group through the loader built beforehand, and the
+  round-five re-check was unchanged with 64 random variables.
+- *The change shape is finished*: every registered level that could carry it now does. Three shapes remain.
