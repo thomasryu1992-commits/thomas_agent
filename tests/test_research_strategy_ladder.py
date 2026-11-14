@@ -1261,3 +1261,165 @@ def test_each_bar_shape_is_built_as_its_rounds_null_was_and_the_command_loads_wh
     monkeypatch.setattr(sl.lab, "hold", hold)
     assert sl.main(["bar"]) == sl.EXIT_USAGE and sl.main(["bar", "--shape", "deep"]) == sl.EXIT_BLOCKED
     assert asked == [(None, False, False)]
+
+
+# --- round 14: the deep-positive-funding book and the spot-gap book -----------------------------------------------------
+
+def _hot_world(collapse: str | None = None):
+    """:func:`_deep_world` with the funding turned round and doubled: DEEP0 and DEEP1 now *charge* their longs 0.2% a
+    day (1.4% a week) and DEEP2 half of that; BTC charges its longs 0.01% a day."""
+    cold = _deep_world(collapse)
+    funding = {s: [(t, -2 * rate) for t, rate in rows] for s, rows in cold.funding.items()}
+    funding["BTCUSDT"] = [(t, 0.0001) for t, _ in cold.funding["BTCUSDT"]]
+    return xsb.Market(bars=cold.bars, funding=funding)
+
+
+def test_the_hot_pool_picks_the_coins_that_charge_their_longs_most_and_l15s_pool_is_as_it_was():
+    pools = sl.DeepFunding(_hot_world(), sl.HOT_FUNDING)
+    assert pools.side == -1 and pools.picks(DEEP_DAY) == ("DEEP0USDT", "DEEP1USDT"), "1.4% a week is past the bar; 0.7% is not"
+    start = pools.spell_start("DEEP0USDT", DEEP_DAY)
+    for seed in ("a", "b", "c"):
+        partner = pools.partner("DEEP0USDT", DEEP_DAY, seed, matched=False)
+        assert pools.at(start)[0][partner][0] < sl.HOT_FUNDING, "a placebo coin is one under the threshold"
+    cold = sl.DeepFunding(_hot_world())
+    assert cold.side == 1 and cold.threshold == sl.DEEP_FUNDING and cold.picks(DEEP_DAY) == (), "nothing here is paid to hold"
+
+
+def test_the_hot_book_is_equal_shorts_under_the_cap_with_the_hedge_bought_against_their_beta():
+    market = _hot_world()
+    pools = sl.DeepFunding(market, sl.HOT_FUNDING)
+    weights = sl.deep_book(pools)(market, (), DEEP_DAY, "x")
+    assert weights["DEEP0USDT"] == weights["DEEP1USDT"] == -sl.DEEP_NAME_CAP, "two names do not fill the short side"
+    assert weights["BTCUSDT"] == pytest.approx(sl.DEEP_NAME_CAP * (1.0 + 1.1)), "the hedge is bought"
+    assert set(sl.deep_book(pools, hedged=False)(market, (), DEEP_DAY, "x")) == {"DEEP0USDT", "DEEP1USDT"}
+
+
+def test_a_hot_matched_placebo_is_the_coin_that_ran_up_most_alike_without_the_funding(monkeypatch):
+    pools = sl.DeepFunding(_hot_world(), sl.HOT_FUNDING)
+    monkeypatch.setattr(sl, "DEEP_NEIGHBOURS", 1)
+    start = pools.spell_start("DEEP0USDT", DEEP_DAY)
+    pool = pools.at(start)[0]
+    nearest = min((s for s in pool if s not in pools.picks(start)), key=lambda s: abs(pool[s][2] - pool["DEEP0USDT"][2]))
+    assert pools.partner("DEEP0USDT", DEEP_DAY, "a", matched=True) == nearest == "DEEP2USDT"
+
+
+def test_a_shorted_coin_that_stops_trading_is_closed_at_its_last_close():
+    def held(market):
+        sim = sl.simulate_held(market, sl.bs.CADENCE, {}, start=date(2021, 3, 1), end=date(2021, 3, 31),
+                               weigher=sl.deep_book(sl.DeepFunding(market, sl.HOT_FUNDING)), unit_of=sl.listing_unit)
+        return sum(row["gross"] for row in sim["daily"].values())
+    gained = held(_hot_world(collapse="DEEP0USDT")) - held(_hot_world())
+    assert gained > 0.08, "a fifth of the short side was in a coin that halved and then stopped"
+
+
+def test_the_hot_run_is_paid_on_its_shorts_pays_on_its_hedge_and_reads_carry_on_a_short_book(monkeypatch):
+    span = (date(2020, 6, 1), date(2021, 6, 30))
+    monkeypatch.setattr(sl, "DEEP_MIN_ACTIVE", 0)
+    monkeypatch.setattr(sl, "DEEP_MIN_FUNDING_KNOWN", 0.5)
+    monkeypatch.setattr(sl, "SPAN", span)
+    counts = sl.hot_counts(_hot_world(), span)
+    assert counts["returns_computed"] is False and 0 < counts["by_year"]["2021"]["picked_share_of_pool_mean"] < 0.5
+    assert counts["by_year"]["2021"]["picks_trailing_funding_mean"] == pytest.approx(0.014)
+    run = sl.hot_run(_hot_world(), span, placebos=3)
+    assert (run["hypothesis"], run["logic"]) == ("H-F2", "L17")
+    legs = run["legs"]
+    assert legs["alts"]["funding_pct"] > 0, "the shorts are paid by the longs of the coins they sold"
+    assert legs["hedge"]["funding_pct"] < 0, "the bought hedge pays its own funding"
+    assert legs["alts"]["funding_pct"] + legs["hedge"]["funding_pct"] == pytest.approx(run["funding_pct"], abs=0.02)
+    assert set(run["placebo_net_total_position_annual_pct_mean"]) == {"plain", "matched"}
+    assert run["reading"] in ("closed", "not_apart_from_run_up_coins", "passes_on_carry", "passes_on_price")
+    # every rung let through: what is left is whether the alts' funding carried the book
+    monkeypatch.setattr(sl.bs, "clears_entry", lambda report: True)
+    monkeypatch.setattr(sl, "later_years", lambda years: {"passes": True})
+    monkeypatch.setattr(sl, "stability", lambda years: {"passes": True})
+    monkeypatch.setattr(sl, "beside_nulls", lambda value, nulls, **kw: {"passes": True, "null_books": len(nulls)})
+    assert sl.hot_run(_hot_world(), span, placebos=1)["reading"] == "passes_on_carry"
+    monkeypatch.setattr(sl, "DEEP_CARRY_SHARE", 100.0)
+    assert sl.hot_run(_hot_world(), span, placebos=1)["reading"] == "passes_on_price"
+    monkeypatch.setattr(sl, "beside_nulls", lambda value, nulls, **kw: {"passes": False, "null_books": len(nulls)})
+    assert sl.hot_run(_hot_world(), span, placebos=1)["reading"] == "closed", "a rung of the ladder itself was missed"
+
+
+def _gap_world(alone: bool = False):
+    """:func:`_deep_world` (DEEP0 and DEEP1 are L15's picks) with spot bars: DEEP0's, DEEP3's and DEEP6's perps close
+    0.1%, 0.1% and 0.2% under their spot (DEEP6's spot is quoted per coin, its perp per thousand), DEEP4's closes on
+    its spot, DEEP5 has spot bars on the last four days only, the rest have no pair. ``alone`` leaves the gap on
+    DEEP0 only."""
+    market = _deep_world()
+
+    def spot(name, gap, scale=1.0, last=None):
+        rows = sorted(market.bars[name].items())
+        rows = rows if last is None else [(d, b) for d, b in rows if DEEP_DAY - timedelta(days=last) < d <= DEEP_DAY]
+        return {d: xsb.Bar(open=b.open / scale, close=b.close / scale / (1 + gap), quote_volume=1e7) for d, b in rows}
+
+    wide = 0.0 if alone else -0.001
+    market.spot = {"DEEP0USDT": spot("DEEP0USDT", -0.001), "DEEP3USDT": spot("DEEP3USDT", wide),
+                   "DEEP4USDT": spot("DEEP4USDT", 0.0), "DEEP5USDT": spot("DEEP5USDT", -0.01, last=4),
+                   "SIXUSDT": spot("DEEP6USDT", 2 * wide, scale=1000.0)}
+    market.spot_of = {**{s: (s, 1.0) for s in ("DEEP0USDT", "DEEP3USDT", "DEEP4USDT", "DEEP5USDT")},
+                      "DEEP6USDT": ("SIXUSDT", 1000.0), "DEEP1USDT": None}
+    return market
+
+
+def test_the_gap_pool_is_the_coins_with_a_spot_close_beside_theirs_and_the_picks_close_under_it():
+    pools = sl.GapPools(_gap_world())
+    pool = pools.at(DEEP_DAY)[0]
+    assert set(pool) == {"DEEP0USDT", "DEEP3USDT", "DEEP4USDT", "DEEP6USDT"}, "no pair, or too few days of it, is out"
+    assert pools.side == 1 and pools.picks(DEEP_DAY) == ("DEEP0USDT", "DEEP3USDT", "DEEP6USDT")
+    assert pool["DEEP0USDT"][0] == pytest.approx(-0.001) and pool["DEEP6USDT"][0] == pytest.approx(-0.002), "the price multiple is undone"
+    assert pool["DEEP4USDT"][0] == pytest.approx(0.0)
+    weights = sl.deep_book(pools)(pools.market, (), DEEP_DAY, "x")
+    assert weights["DEEP3USDT"] == sl.DEEP_NAME_CAP and weights["BTCUSDT"] < 0, "L15's book on other picks"
+
+
+def test_a_gap_book_that_is_l15s_picks_is_not_measured_and_one_with_too_few_decisions_is_not_either(monkeypatch):
+    span = (date(2020, 6, 1), date(2021, 6, 30))
+    monkeypatch.setattr(sl, "DEEP_MIN_ACTIVE", 0)
+    monkeypatch.setattr(sl, "DEEP_MIN_FUNDING_KNOWN", 0.5)
+    few = sl.gap_counts(_gap_world(), span)
+    assert few["overlap"]["independent"] is None
+    assert few["stop"] == ["too few decisions with a gap pick to tell the book from L15"]
+    monkeypatch.setattr(sl.lab.sp, "MIN_COMPARED", 10)
+    apart = sl.gap_counts(_gap_world(), span)
+    overlap = apart["overlap"]
+    assert overlap["share_that_are_l15_picks"] == pytest.approx(1 / 3, abs=1e-3) and overlap["independent"] is True
+    assert overlap["chance_level"] == pytest.approx(1 / 4, abs=1e-3), "one of the four pool coins is an L15 pick"
+    assert overlap["share_that_are_l17_picks"] == 0.0 and apart["stop"] == []
+    assert "picks_gap_mean" in apart["by_year"]["2021"] and "picks_trailing_funding_mean" not in apart["by_year"]["2021"]
+    flat = json.dumps(apart)
+    assert apart["returns_computed"] is False and "sharpe" not in flat and "pct" not in flat
+    same = sl.gap_counts(_gap_world(alone=True), span)
+    assert same["overlap"]["share_that_are_l15_picks"] == 1.0 and same["overlap"]["independent"] is False
+    assert same["stop"] == ["the gap picks are L15's picks: H-F1 under another signal, not a reading of its own"]
+    assert sl.gap_run(_gap_world(alone=True), span)["refused"] == same["stop"], "a stopped book is not measured"
+    monkeypatch.setattr(sl, "SPAN", span)
+    run = sl.gap_run(_gap_world(), span, placebos=2)
+    assert (run["hypothesis"], run["logic"]) == ("H-G1", "L18") and run["counts"]["overlap"]["independent"] is True
+
+
+def test_the_hot_commands_load_bars_and_funding_alone_and_the_gap_commands_hang_the_spot_bars(monkeypatch, capsys, tmp_path):
+    asked, hung = [], []
+    market = _deep_world()
+
+    def hold(cache, span=None, *, attach=True, flow=False):
+        asked.append((span, attach, flow))
+        return None if len(asked) <= 2 else market
+
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(sl.lab, "hold", hold)
+    monkeypatch.setattr(sl, "with_spot", lambda cache, held: hung.append(held))
+    assert sl.main(["hot-counts"]) == sl.EXIT_BLOCKED and sl.main(["hot"]) == sl.EXIT_BLOCKED and hung == []
+    assert sl.main(["gap-counts"]) == sl.EXIT_BLOCKED and sl.main(["gap"]) == sl.EXIT_BLOCKED
+    assert asked == [(None, False, False)] * 4 and hung == [market, market], "no listing: blocked"
+    monkeypatch.undo()
+    assert sl.with_spot(tmp_path, market) is None, "no spot listing on file"
+    folder = tmp_path / sl.lab.sp.SPOT_DIR
+    folder.mkdir()
+    (folder / sl.lab.ba.SYMBOLS_FILENAME).write_text(json.dumps(["DEEP0USDT"]), encoding="utf-8")
+    late = date(2030, 1, 1)
+    spot = xsb.Market(bars={"DEEP0USDT": {DEEP_DAY: xsb.Bar(open=1.0, close=1.0, quote_volume=1.0),
+                                          late: xsb.Bar(open=1.0, close=1.0, quote_volume=1.0)}})
+    monkeypatch.setattr(sl.xsb, "load_market", lambda path, funding=True: spot)
+    held = sl.with_spot(tmp_path, market, (date(2020, 6, 1), date(2021, 6, 30)))
+    assert set(held.spot["DEEP0USDT"]) == {DEEP_DAY}, "cut at the span's end"
+    assert held.spot_of["DEEP0USDT"] == ("DEEP0USDT", 1.0) and held.spot_of["DEEP3USDT"] is None
