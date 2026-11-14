@@ -270,9 +270,13 @@ def test_an_axis_that_moves_a_variable_separates_and_a_shuffled_copy_of_it_does_
 def test_the_axis_check_reads_every_axis_beside_its_placebos(tiers, monkeypatch):
     monkeypatch.setattr(lab, "PLACEBO_AXES", 8)
     out = lab.axis_check(lab.cut_market(_market(SPAN[1]), SPAN), NAMES, SPAN)
-    assert set(out["axes"]) == {"trend", "vol", "dispersion", "heat", "universe", "breadth"}
+    assert set(out["axes"]) == {"trend", "vol", "dispersion", "heat", "universe", "breadth", *lab.CANDIDATE_AXES}
+    assert "level" not in out["axes"]["trend"] and out["axes"]["breadth"]["level"] == 0.05
+    assert out["axes"]["month"]["level"] == round(0.05 / 6, 5) and isinstance(out["axes"]["month"]["beats_its_placebos"], bool)
     for axis, body in out["axes"].items():
-        assert set(body) == {"states", "separation", "placebo_mean", "placebo_p95", "placebos_at_or_above", "placebos"}
+        assert set(body) - {"level", "p", "beats_its_placebos"} == {
+            "states", "separation", "placebo_mean", "placebo_p95", "placebos_at_or_above", "placebos"}
+        assert ("level" in body) == (axis in lab.AXIS_ORDER), "only the axes checked since breadth carry a level"
         assert body["placebos"] <= 8 and sum(body["states"].values()) == out["decisions"], axis
 
 
@@ -476,6 +480,62 @@ def test_breadth_is_the_share_of_the_top_tier_up_over_the_week_split_at_its_own_
     early = [d for d in sundays if (d - start).days // 7 <= 50]
     assert all(twisted[d].get("breadth") == labels[d].get("breadth") for d in early), "later weeks change no earlier label"
     assert any(twisted[d].get("breadth") != labels[d].get("breadth") for d in sundays if d not in early), "the twist is seen later"
+
+
+def test_the_candidate_axes_are_labelled_from_the_past_held_to_stricter_levels_and_never_mapped():
+    assert not set(lab.CANDIDATE_AXES) & set(lab.AXES) and lab.AXIS_ORDER == ("breadth",) + lab.CANDIDATE_AXES
+    assert lab.scenario_keys({"breadth": "broad", "dominance": "btc_led", "month": "start"}) == ["all", "breadth=broad"], \
+        "an axis under check adds no cell to the map"
+    levels = [lab.axis_level(axis) for axis in lab.AXIS_ORDER]
+    assert levels == [0.05 / k for k in range(1, 7)] and lab.axis_level("trend") is None
+    assert 1 / (lab.PLACEBO_AXES + 1) < levels[-1], "200 placebos can resolve the strictest level"
+    start = date(2021, 1, 4)                                      # a Monday
+    days = [start + timedelta(days=k) for k in range(72 * 7)]
+    coins = [f"C{i:02d}USDT" for i in range(10)]
+
+    def world(later=1.0, after=60):
+        """Six-week blocks. Even blocks: BTC climbs, the coins sink together on one shared move, on double volume.
+        Odd blocks: BTC falls, each coin moves on its own. Busy weeks get a little busier and quiet ones a little
+        quieter as time goes, so no two weeks tie at the median.
+        ``later`` scales every move after week ``after``."""
+        bars = {s: {} for s in coins + ["BTCUSDT"]}
+        price = dict.fromkeys(bars, 100.0)
+        for k, day in enumerate(days):
+            week = k // 7
+            calm = (week // 6) % 2 == 0
+            scale = later if week > after else 1.0
+            shared = (_unit("shared", day) - 0.6) * 0.02
+            for i, s in enumerate(coins):
+                move = (shared if calm else (_unit(s, day) - 0.45) * 0.02) * scale
+                bars[s][day] = xsb.Bar(open=price[s], close=price[s] * (1 + move),
+                                       quote_volume=2e8 * (1 + week / 1000) if calm else 1e8 * (1 - week / 1000))
+                price[s] *= 1 + move
+            move = (0.004 if calm else -0.004) * scale
+            bars["BTCUSDT"][day] = xsb.Bar(open=price["BTCUSDT"], close=price["BTCUSDT"] * (1 + move), quote_volume=1e9)
+            price["BTCUSDT"] *= 1 + move
+        return xsb.Market(bars=bars, funding={s: [] for s in bars})
+
+    span = (start, days[-1])
+    monthly = {date(d.year, d.month, 1): ["BTCUSDT"] + coins for d in days}
+    sundays = [d for d in days if d.weekday() == 6]
+    labels = lab.scenario_labels(world(), monthly, sundays, span)
+    last_of = lambda block: sundays[block * 6 + 5]                # noqa: E731 - the block's last decision
+    climbing, falling = labels[last_of(8)], labels[last_of(9)]
+    assert {k: climbing[k] for k in ("dominance", "volume", "correlation", "drawdown")} == {
+        "dominance": "btc_led", "volume": "busy", "correlation": "tight", "drawdown": "shallow"}
+    assert {k: falling[k] for k in ("dominance", "volume", "correlation", "drawdown")} == {
+        "dominance": "alt_led", "volume": "quiet", "correlation": "loose", "drawdown": "deep"}
+    assert all(labels[d]["month"] == ("start" if d.day <= 7 else "rest") for d in sundays)
+    assert "dominance" not in labels[sundays[3]], "no history to compare with yet"
+    twisted = lab.scenario_labels(world(later=-3.0), monthly, sundays, span)
+    early = [d for d in sundays if (d - start).days // 7 <= 60]
+    assert all(twisted[d] == labels[d] for d in early), "later weeks change no earlier label"
+    assert any(twisted[d] != labels[d] for d in sundays if d not in early), "the twist is seen later"
+    # BTC is at its high at the end of the climb in weeks 60-65; then, instead of falling, it soars.
+    soaring = lab.scenario_labels(world(later=-6.0, after=65), monthly, sundays, span)
+    before = [d for d in sundays if (d - start).days // 7 <= 65]
+    assert labels[before[-1]]["drawdown"] == "shallow"
+    assert all(soaring[d] == labels[d] for d in before), "a higher high after the day deepens no earlier drawdown"
 
 
 def test_the_registry_stays_inside_what_its_controls_and_the_sweeps_null_can_correct_for():

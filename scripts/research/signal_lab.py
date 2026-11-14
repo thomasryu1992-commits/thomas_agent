@@ -74,6 +74,19 @@ MIN_PERSISTENCE = 0.5                      # week-to-week rank correlation a lea
 # cells may be a lead.
 RESTING_AXES = frozenset({"trend", "vol", "dispersion", "heat", "universe", "breadth"})
 AXES = ("trend", "vol", "dispersion", "heat", "universe", "breadth")       # the order cells and checks list them in
+# Axes under check (section 36): labelled and checked beside their placebos, never mapped. One that beats its
+# placebos at its own level may join AXES in a later round. A sixth, leverage, needs the positioning files.
+CANDIDATE_AXES = ("dominance", "volume", "correlation", "drawdown", "month")
+AXIS_ALPHA = 0.05                          # an axis is held to this over its place in the order axes were checked in
+AXIS_ORDER = ("breadth",) + CANDIDATE_AXES # breadth was the first new axis; each later one meets a stricter level
+DRAWDOWN_DAYS = 365                        # the reference coin's high is looked for over these days
+MONTH_START_DAYS = 7                       # a decision in the month's first week is "start"
+
+
+def axis_level(axis: str) -> float | None:
+    """The share of placebo axes a new axis must beat: :data:`AXIS_ALPHA` over its place in :data:`AXIS_ORDER`.
+    Checking several axes at one level each wakes one by chance; the first five axes have no level (they rest)."""
+    return AXIS_ALPHA / (AXIS_ORDER.index(axis) + 1) if axis in AXIS_ORDER else None
 REFERENCE = bs.REFERENCE
 
 Variable = Callable[[xsb.Market, str, date], "float | None"]
@@ -296,10 +309,48 @@ def scenario_labels(market: xsb.Market, monthly: Mapping[date, Sequence[str]], d
         values = [v for v in (xsb.trailing_return(market, s, day, 7) for s in members(day)) if v is not None]
         return sum(1 for v in values if v > 0) / len(values) if len(values) >= MIN_NAMES else None
 
+    def dominance(day: date) -> float | None:
+        """The reference coin's month against the median of the top tier's other coins: who led."""
+        own = xsb.trailing_return(market, REFERENCE, day, LOOKBACK)
+        others = [v for v in (xsb.trailing_return(market, s, day, LOOKBACK) for s in members(day) if s != REFERENCE)
+                  if v is not None]
+        return None if own is None or len(others) < MIN_NAMES else own - statistics.median(others)
+
+    def volume(day: date) -> float | None:
+        """The top tier's quote volume over the last seven days, summed over the coins with all seven."""
+        totals = []
+        for symbol in members(day):
+            bars = market.bars.get(symbol) or {}
+            week = [bars[d].quote_volume for d in (day - timedelta(days=k) for k in range(7)) if d in bars]
+            if len(week) == 7:
+                totals.append(sum(week))
+        return sum(totals) if len(totals) >= MIN_NAMES else None
+
+    def correlation(day: date) -> float | None:
+        """The mean correlation between pairs of the top tier's coins, on a month of daily moves."""
+        series = []
+        for symbol in members(day):
+            bars = market.bars.get(symbol) or {}
+            closes = [bars.get(day - timedelta(days=k)) for k in range(LOOKBACK + 1)]
+            if all(b is not None and b.close > 0 for b in closes):
+                moves = [closes[k].close / closes[k + 1].close - 1 for k in range(LOOKBACK)]
+                if len(set(moves)) > 1:
+                    series.append(moves)
+        if len(series) < MIN_NAMES:
+            return None
+        return statistics.fmean(statistics.correlation(a, b) for i, a in enumerate(series) for b in series[i + 1:])
+
+    def drawdown(day: date) -> float | None:
+        """The reference coin's close against its highest close of the last :data:`DRAWDOWN_DAYS` days (0 at a high)."""
+        closes = [b.close for d in (day - timedelta(days=k) for k in range(DRAWDOWN_DAYS)) if (b := btc.get(d)) is not None]
+        return None if btc.get(day) is None or len(closes) < DRAWDOWN_DAYS // 2 else btc[day].close / max(closes) - 1
+
     # Each axis is compared with its own values at the earlier weekly decisions, never with a later one.
     weekly = [d for d in xsb.held_days(span[0], span[1]) if xsb.is_rebalance_day(bs.CADENCE, d)]
     axes = {"vol": (btc_vol, "high", "low"), "dispersion": (dispersion, "wide", "narrow"), "heat": (heat, "hot", "cool"),
-            "universe": (wild_share, "wild", "calm"), "breadth": (breadth, "broad", "thin")}
+            "universe": (wild_share, "wild", "calm"), "breadth": (breadth, "broad", "thin"),
+            "dominance": (dominance, "btc_led", "alt_led"), "volume": (volume, "busy", "quiet"),
+            "correlation": (correlation, "tight", "loose"), "drawdown": (drawdown, "shallow", "deep")}
     series = {axis: {d: read(d) for d in weekly} for axis, (read, _, _) in axes.items()}
     out: dict[date, dict[str, str]] = {}
     for day in days:
@@ -311,6 +362,7 @@ def scenario_labels(market: xsb.Market, monthly: Mapping[date, Sequence[str]], d
             label = _median_split(series[axis].get(day), earlier, high, low)
             if label is not None:
                 labels[axis] = label
+        labels["month"] = "start" if day.day <= MONTH_START_DAYS else "rest"      # the calendar: no history needed
         out[day] = labels
     return out
 
@@ -514,7 +566,7 @@ def axis_check(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], sp
     days, series = ic_series(market, names, span)
     labels = scenario_labels(market, tier_members(market, span)["top30"], days, span)
     out = {}
-    for axis in AXES:
+    for axis in AXES + CANDIDATE_AXES:
         real = [labels[d].get(axis) for d in days]
         actual = separation(series, dict(zip(days, real)))
         fake = [separation(series, dict(zip(days, shuffled_spells(real, f"{SPEC}|axis|{axis}|{k}"))))
@@ -526,6 +578,11 @@ def axis_check(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], sp
                      "placebo_p95": round(fake[int(0.95 * (len(fake) - 1))], 5) if fake else None,
                      "placebos_at_or_above": sum(1 for v in fake if actual is not None and v >= actual),
                      "placebos": len(fake)}
+        level = axis_level(axis)
+        if level is not None:
+            share = (1 + out[axis]["placebos_at_or_above"]) / (1 + len(fake)) if fake and actual is not None else None
+            out[axis].update(level=round(level, 5), p=None if share is None else round(share, 5),
+                             beats_its_placebos=share is not None and share < level)
     return {"axes": out, "variables": len({name for name, _ in series}), "decisions": len(days)}
 
 
