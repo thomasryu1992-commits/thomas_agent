@@ -1835,9 +1835,10 @@ def flush_run(market: xsb.Market, span: tuple[date, date] = FLUSH_SPAN, *, place
 
 
 def closing_oi(folder: Path, symbols: Iterable[str], span: tuple[date, date] = FLUSH_SPAN) -> dict[str, dict[date, float]]:
-    """Each symbol's open interest at the day's close: ``sum_open_interest`` on the last row of the day's file,
-    when that row is stamped that day at :data:`FLUSH_CLOSING_HOUR` or later. Only files dated from the day before
-    the span to its last day are opened."""
+    """Each symbol's open interest at the day's close: ``sum_open_interest`` on the row of the day's file with the
+    latest stamp of that day, when that stamp is at :data:`FLUSH_CLOSING_HOUR` or later. The latest stamp, not the
+    file's last row: some files (most of April 2024) are not in time order. Only files dated from the day before the
+    span to its last day are opened."""
     first, out = span[0] - timedelta(days=1), {}
     for symbol in sorted(set(symbols)):
         days: dict[date, float] = {}
@@ -1848,11 +1849,11 @@ def closing_oi(folder: Path, symbols: Iterable[str], span: tuple[date, date] = F
                     continue
                 with zipfile.ZipFile(path) as z:
                     rows = list(csv.reader(io.StringIO(z.read(z.namelist()[0]).decode("utf-8"))))
-                last = [row for row in rows[1:] if len(row) > 2][-1]
-                stamp, value = last[0], float(last[2])
+                stamp, raw = max((row[0], row[2]) for row in rows[1:] if len(row) > 2 and row[0][:10] == day.isoformat())
+                value = float(raw)
             except (OSError, ValueError, IndexError, zipfile.BadZipFile):
                 continue
-            if stamp[:10] == day.isoformat() and int(stamp[11:13]) >= FLUSH_CLOSING_HOUR and math.isfinite(value) and value > 0:
+            if int(stamp[11:13]) >= FLUSH_CLOSING_HOUR and math.isfinite(value) and value > 0:
                 days[day] = value
         if days:
             out[symbol] = days

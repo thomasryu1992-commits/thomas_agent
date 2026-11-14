@@ -1526,14 +1526,15 @@ def _oi_zip(folder, symbol, day, stamps):
 def test_the_closing_open_interest_is_the_days_last_row_and_no_file_past_the_span_is_opened(tmp_path):
     span = (date(2022, 1, 1), date(2022, 1, 3))
     _oi_zip(tmp_path, "AUSDT", date(2021, 12, 31), [("2021-12-31 23:55:00", 90)])
-    _oi_zip(tmp_path, "AUSDT", date(2022, 1, 1), [("2022-01-01 00:00:00", 5), ("2022-01-01 23:55:00", 100)])
+    _oi_zip(tmp_path, "AUSDT", date(2022, 1, 1), [("2022-01-01 12:00:00", 6), ("2022-01-01 23:55:00", 100), ("2022-01-01 00:00:00", 5)])
     _oi_zip(tmp_path, "AUSDT", date(2022, 1, 2), [("2022-01-02 00:00:00", 7), ("2022-01-02 12:00:00", 8)])
     _oi_zip(tmp_path, "AUSDT", date(2022, 1, 4), [("2022-01-04 23:55:00", 400)])
     (tmp_path / "AUSDT" / "AUSDT-metrics-2022-01-05.zip").write_bytes(b"not a zip")
     (tmp_path / "AUSDT" / "AUSDT-metrics-2022-01-03.zip").write_bytes(b"not a zip")
     got = sl.closing_oi(tmp_path, ["AUSDT", "NOFILESUSDT"], span)
     assert got == {"AUSDT": {date(2021, 12, 31): 90.0, date(2022, 1, 1): 100.0}}, (
-        "the day before the span is read for the first change; a day whose last row is at noon has no closing value; "
+        "the day before the span is read for the first change; the closing row is the latest stamp wherever it sits "
+        "in the file; a day whose latest row is at noon has no closing value; "
         "a broken file has none; a day past the span is not there")
 
 
