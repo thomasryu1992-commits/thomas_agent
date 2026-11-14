@@ -55,3 +55,16 @@ round; the first five axes' average check is not re-judged (the record says a re
 new registered definition); the sweep, the transfer check and every candidate book read the top tier only. One
 thing is owed and registered before it is opened: the map's funding cells on ranks 31–100, which later map outputs
 hold on the full funding set and nobody read.
+
+**The registered reading and the table (22:10Z).** The map's funding cells on ranks 31–100, on the full funding set:
+no lead (largest |t| 2.30 against 4.30; 2.49 on the old set). Then §48, the table of §3 to §7.
+
+- *"No row left" was about to be written a fourth time and was wrong again.* Three rows did not stand against the
+  record. The map prints how many cells meet the lead rule and lists three; eleven meet it, and one of them, 30-day
+  momentum on ranks 31–100, was never put through the hypothesis form because it sat thirteenth in the first map's
+  list. The reach row names depth on ranks 31–100 as its own example and that fetch was never made; an earlier
+  table had excused it with the spread sampler's start date, which is a different dataset. And the thirteen
+  unmapped axes' average check read only the bars-and-funding variables.
+- *Dispositions.* The momentum cell is the next round. The depth fetch is about 150,000 files and 60 GB of raw data
+  against 26 GB free, on a disk Thomas had cleared two days earlier, so it is asked (D11, default: no). The axes'
+  variable scope is a recorded gap: their registrations fixed it and said a failing axis is not re-checked.
