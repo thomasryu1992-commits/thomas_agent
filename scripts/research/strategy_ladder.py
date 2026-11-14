@@ -520,7 +520,7 @@ def confirm(market: xsb.Market, entry: Mapping[str, Any], *, simulate: Callable[
 # --- the book sweep: which variables make a book at all? ------------------------------------------------------------
 
 SWEEP_LOGIC, SWEEP_ACCOUNTING = "L9T", "held4"       # the logic and accounting of the best book so far (C010)
-SWEEP_NULLS = 500                          # random-variable books: enough for a p under what the correction asks of 50
+SWEEP_NULLS = 600                          # random-variable books: enough for a p under what the correction asks of 60
 SWEEP_NULLS_ROUND_6 = 300                  # the sweep of round 6 read these; they are the same books, by name, among the 400
 
 

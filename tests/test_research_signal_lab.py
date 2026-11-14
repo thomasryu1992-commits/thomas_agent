@@ -611,11 +611,11 @@ def test_leverage_is_open_interest_in_quote_terms_over_volume_and_has_no_label_w
 
 def test_the_registry_stays_inside_what_its_controls_and_the_sweeps_null_can_correct_for():
     from scripts.research import strategy_ladder as sl
-    assert len(lab.variables()) == 49
-    assert len(lab.controls()) == 94 >= 2 * len(lab.variables()) - 4, "the random variables grow with the real ones"
+    assert len(lab.variables()) == 52
+    assert len(lab.controls()) == 100 >= 2 * len(lab.variables()) - 4, "the random variables grow with the real ones"
     assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / len(lab.variables()), "the sweep's null can correct for every variable"
     assert not 1 / (sl.SWEEP_NULLS_ROUND_6 + 1) < 0.10 / len(lab.variables()), "300 null books could not: thirty was their most"
-    assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / 50 and not 1 / (sl.SWEEP_NULLS + 1) < 0.10 / 51, "500 reach fifty variables"
+    assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / 60 and not 1 / (sl.SWEEP_NULLS + 1) < 0.10 / 61, "600 reach sixty variables"
 
 
 def test_a_position_is_the_level_against_the_coins_own_six_earlier_lookbacks_and_asks_for_no_later_day():
@@ -719,9 +719,9 @@ def test_the_by_variable_check_has_enough_placebos_for_a_real_effect_to_pass_the
     """The smallest p a test can show is one over the placebos plus one. It has to be under what Benjamini–Hochberg
     asks of the best of a few hundred tests, or nothing could ever pass (the first run, 2026-11-13: 200 placebos)."""
     tests, q = len(lab.variables()) * len(lab.TIERS) * len(lab.AXES), 0.10
-    assert tests == 49 * 2 * 6
+    assert tests == 52 * 2 * 6
     assert 1 / (lab.PLACEBO_AXES_BY_VARIABLE + 1) < q / tests
-    assert lab.PLACEBO_AXES_BY_VARIABLE == 6000 and 1 / (6000 + 1) < q / (50 * 2 * 6), "enough for fifty variables"
+    assert lab.PLACEBO_AXES_BY_VARIABLE == 7200 and 1 / (7200 + 1) < q / (60 * 2 * 6), "enough for sixty variables"
     assert not 1 / (5000 + 1) < q / tests, "the earlier 5000 no longer were"
     assert not 1 / (200 + 1) < q / tests
 
@@ -888,6 +888,15 @@ def test_the_estimated_spread_is_how_far_the_close_sits_from_the_middle_of_two_d
     assert lab._spread(later, "AUSDT", day) != pytest.approx(0.02), "the day itself is"
     short = xsb.Market(bars={"AUSDT": {d: _flat_bar(100.0, 0.01, 0.03) for d in days[:20]}})
     assert lab._spread(short, "AUSDT", day) is None and lab._spread(short, "BUSDT", day) is None
+    # The other windows read their own days: a week of wide ranges at the end shows at 7 days and fades at 90.
+    wide = market(lambda d: _flat_bar(100.0, 0.01, 0.03) if (day - d).days >= 7 else _flat_bar(100.0, 0.01, 0.09))
+    registry = lab.variables()
+    week, quarter = registry["spread_7"][1](wide, "AUSDT", day), registry["spread_90"][1](wide, "AUSDT", day)
+    # Seven pairs end in the week: six wide-wide (0.04 x 0.04) and the one that starts on the last narrow day.
+    assert week == pytest.approx(math.sqrt(4 * (6 * 0.04 * 0.04 + 0.01 * 0.04) / 7))
+    assert lab._spread(short, "AUSDT", day, 14) == pytest.approx(0.02)
+    assert quarter is None, "forty days on file are under two thirds of ninety"
+    assert registry["spread_14"][1](wide, "AUSDT", day) > lab._spread(wide, "AUSDT", day) > 0.02
 
 
 def test_the_premium_is_read_to_the_spans_last_day_and_no_further(tmp_path):
@@ -999,7 +1008,10 @@ def test_the_two_late_levels_get_a_change_and_a_position_and_no_shape_gets_one()
         "spread_change_30": "price_volume", "spread_position_30": "price_volume",
         "premium_change_30": "premium", "premium_position_30": "premium"}
     assert not [n for n in registry if n.count("change") + n.count("position") + n.count("growth") > 1], "no shape of a shape"
-    assert not [n for n in registry if n.startswith(("spread_", "premium_")) and not n.endswith("_30")], "thirty-day levels only"
+    assert {n for n in registry if n.startswith(("spread_", "premium_"))} == {
+        "spread_30", "spread_change_30", "spread_position_30", "premium_30", "premium_change_30", "premium_position_30",
+        "spread_7", "spread_14", "spread_90"}, "shapes of the thirty-day levels only; the other windows are bare levels"
+    assert all(registry[f"spread_{k}"][0] == "price_volume" for k in (7, 14, 90))
     last = date(2021, 12, 31)
     days = [last - timedelta(days=k) for k in range(300)]
     market = xsb.Market(bars={})

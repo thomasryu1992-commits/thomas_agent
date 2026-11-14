@@ -62,8 +62,8 @@ MIN_DECISIONS = 20                         # decisions a cell needs before it sh
 MIN_SPELLS = 4                             # separate stretches a scenario cell needs: one long bull run is one sample
 REFERENCE_DECISIONS = 52                   # trailing decisions a scenario's own median is taken over
 REFERENCE_MIN = 26
-CONTROLS_WEEKLY = 47                       # random variables redrawn at every decision (25, 28, 32, 42, 44 as the registry grew)
-CONTROLS_FIXED = 47                        # random variables fixed per coin, like a slow characteristic
+CONTROLS_WEEKLY = 50                       # random variables redrawn at every decision (25, 28, 32, 42, 44, 47 as the registry grew)
+CONTROLS_FIXED = 50                        # random variables fixed per coin, like a slow characteristic
 EXTREME_MOVE = 0.30                        # a daily close-to-close move this large is an extreme day
 WILD_MOVE = 0.50                           # a coin whose largest daily move in the lookback reached this is wild
 AGE_CAP_DAYS = 1000                        # listing age is read up to here; older coins are alike
@@ -135,6 +135,7 @@ CHANGE_OF = {"ls_change": "ls_level", "top_change": "top_level", "taker_change":
              "taker_buy_share_change": "taker_buy_share"}
 
 
+SPREAD_LOOKBACKS = (7, 14, 90)             # section 3.1's fourth shape for the spread
 LATE_LEVELS = ("spread", "premium")        # levels registered after the shape rounds; each gets its change and position
 HISTORY_POINTS = 6                         # a level's own history: its value at each of the six lookbacks before
 HISTORY_MIN = 4                            # of those points must be there, or the coin has no position that day
@@ -284,6 +285,10 @@ def variables() -> dict[str, tuple[str, Variable]]:
         group, level = out[f"{base}_{LOOKBACK}"]
         out[f"{base}_change_{LOOKBACK}"] = (group, _change(level))
         out[f"{base}_position_{LOOKBACK}"] = (group, _position(level))
+    # Added 2026-11-14 (section 42): the spread at the other lookbacks. No closed reading strikes them (section 37.2's
+    # rule); the premium's are struck there. They are levels at another window and get no shape.
+    for lookback in SPREAD_LOOKBACKS:
+        out[f"spread_{lookback}"] = ("price_volume", _with_lookback(_spread, lookback))
     return out
 
 
@@ -340,19 +345,19 @@ def _median_split(value: float | None, history: Sequence[float], high: str, low:
     return high if value > statistics.median(history) else low
 
 
-def _spread(market: xsb.Market, symbol: str, day: date) -> float | None:
+def _spread(market: xsb.Market, symbol: str, day: date, lookback: int = LOOKBACK) -> float | None:
     """A spread estimated from daily highs, lows and closes over the lookback: with ``c`` the log close and ``m`` the
     middle of the log high and log low, the root of the mean of ``4 (c_t - m_t)(c_t - m_{t+1})`` over the day pairs
     that end by ``day``, and zero where that mean is negative. A close far from both days' middles is a wide spread."""
     bars = market.bars.get(symbol) or {}
     terms = []
-    for k in range(LOOKBACK):
+    for k in range(lookback):
         now, after = bars.get(day - timedelta(days=k + 1)), bars.get(day - timedelta(days=k))
         if any(b is None or b.high is None or b.low is None or min(b.high, b.low, b.close) <= 0 for b in (now, after)):
             continue
         middle = lambda b: (math.log(b.high) + math.log(b.low)) / 2          # noqa: E731
         terms.append(4 * (math.log(now.close) - middle(now)) * (math.log(now.close) - middle(after)))
-    if len(terms) < math.ceil(LOOKBACK * bs.MIN_SHARE):
+    if len(terms) < math.ceil(lookback * bs.MIN_SHARE):
         return None
     return math.sqrt(max(0.0, statistics.fmean(terms)))
 
@@ -669,7 +674,7 @@ FINER_PLACEBOS = 400                       # the axes that stand 8th and later: 
 # One variable at a time there are a few hundred tests, and the smallest p a test can show is one over the number
 # of placebos plus one. With 200 that floor (0.005) sits above anything Benjamini-Hochberg could pass at q 0.10
 # over 230 tests (0.0004) — the first run could not have passed anything. 5,000 puts the floor at 0.0002.
-PLACEBO_AXES_BY_VARIABLE = 6000            # 5000 until the registry passed 41 variables: the first 5000 are the same placebos
+PLACEBO_AXES_BY_VARIABLE = 7200            # 5000 until 41 variables, 6000 until 50: the earlier ones are the same placebos
 
 
 def ic_series(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tuple[date, date] = SPAN
