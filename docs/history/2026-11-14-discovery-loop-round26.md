@@ -32,3 +32,16 @@ above). Both candidate variables stand under the threshold beside their kin on t
 - *The prior on the spread was wrong.* It was expected to order coins as the daily range does; the rank correlation
   with the range is 0.05. The reason is not known. The overlap output now also prints the share of values at zero,
   since an estimate floored at zero may tie many coins; the rule's numbers must not move.
+
+**Result, second half (2026-11-14 16:55Z).** No lead among the two: the spread's largest |t| is 2.67 against a line
+of 4.30, the premium's 3.50 (28 days) against 4.96.
+
+- *More than half of the spread's values are zero* (52% and 54% by tier), because the estimate is floored at zero.
+  So the first half's sentence "the overlap already answered that the spread is not the volatility cluster read
+  again" was more than a rank correlation of 0.13 can carry, and the result says so. The floor and the 0.8 are not
+  changed and nothing is re-ranked.
+- *The "what is left" table now goes item by item*: the rows of §3, the bullets under them, the sentences of §7 and
+  the cache's folders. Two things come out of it. The two new levels are owed their shapes (change and position),
+  since no written exclusion covers them. And §7's past-data test of the hypothesis channel was never run; the
+  screen is a pure function, so it looks runnable on the research side, but it is the factory's layer and needs its
+  own registration first.
