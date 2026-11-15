@@ -63,3 +63,13 @@ Three sandbox runs at `7080fe85`, one each. Files: `~/research/signal-lab/run13-
 
 **What is left on the table after this round:** the depth files for ranks 31–100 (D11, Thomas's answer; default
 no). One gap added to the record: the universe's default that admits expired dated contracts.
+
+## Added after the result (00:40Z)
+
+- *One sentence was wrong*: "the 0.8% without funding are the dated names". Of 13,992 ranked coin-decisions in
+  H-R2's tier, 110 had no funding: 47 dated contracts and 63 of one perpetual (`GTCUSDT`, whose funding folder
+  holds one 2026 file). The book does not set such coins aside; it held them at zero funding.
+- *Checked and kept*: the premium and 30-day funding split the same way on the heat axis (state means printed for
+  both); the sweep picks a book's side from the sign of its mean rank correlation, the same rule for null books;
+  nothing else reads the premium series the map loads; the inventory differs only by the new kind.
+- *The gap with no recorded reason*: the sweep has only ever read the top 30. That is the next round.
