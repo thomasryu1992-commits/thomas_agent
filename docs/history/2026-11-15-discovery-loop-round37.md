@@ -40,3 +40,17 @@ One sandbox run at `42212065`; `~/research/discovery/tier-lead1/lead.json`.
   of the net and the top five were 82%; the top three months were 52%; the net is the difference of two large
   sides (in 2021 the long side made +143 and the short side lost 104).
 - *Also recorded here*: Thomas answered D11 — "받지 않음". The depth files for ranks 31–100 are not fetched.
+
+## After the result: the table laid against the record again
+
+- *A sentence corrected*: the low side is first named after the weeks of 2021–2023, not "after 2024".
+- *Funding inside the span, counted per member-month (inputs only)*: 9 of 1,641 member-months on the top 30 and
+  31 of 3,229 on ranks 31–100 have bars and no funding. GTCUSDT's 15 months are our own gap (the archive has
+  them); ICP, TLM, BNX and LEND are the archive's. GTCUSDT is not fetched now because that would move the tier's
+  only reproduce-exactly gate and the sweep's rows while producing no new reading; it is fetched inside the next
+  registration that reads funding on that tier, with the changed cells named at its gate.
+- *The map points the other way from a book on ranks 31–100*: in 15 of the 17 weekly all-weeks cells with |t| of
+  2 or more, the mean return difference between the top and bottom thirds has the opposite sign to the rank
+  correlation (2 of 13 on the top 30). The map's lead rule reads the rank correlation only; a rank book earns the
+  mean. That is a tool gap with no recorded reason and is the next round's candidate: a t for the spread in every
+  cell, beside the random variables' largest, as a second lead rule.
