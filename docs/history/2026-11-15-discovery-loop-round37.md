@@ -24,3 +24,19 @@ that close it fixed first.
   asked a new question. No payer is written to fit.
 - *No confirm read is asked for*: a book picked on funding is kin of C002 and C007, whose results on that span
   are known.
+
+## Result: the lead is closed
+
+One sandbox run at `42212065`; `~/research/discovery/tier-lead1/lead.json`.
+
+- *The gate passed*: the row is the sweep's on all eleven values. Unrounded, the Sharpe is 0.99964; the entry rule
+  read the rounded 1.000, as it always has, and that reading stands.
+- *Not the closed book*: median cosine with H-R2's positions is −0.117.
+- *Rung 2(b) fails*: the earlier years named the high side for 2022 (rank correlation +0.0082 over 51 weeks) and
+  for 2023 (+0.0017 over 103), and the low side only for 2024. Read that way the three years are −18.65, −39.90
+  and −3.33: mean −20.63% against a floor of 7.5%, three negative years against at most one. By the registered
+  table the lead is closed and no form is written.
+- *Printed with no rule*: funding was 40% of the return before costs (price carried it); one coin (DOGE) was 30%
+  of the net and the top five were 82%; the top three months were 52%; the net is the difference of two large
+  sides (in 2021 the long side made +143 and the short side lost 104).
+- *Also recorded here*: Thomas answered D11 — "받지 않음". The depth files for ranks 31–100 are not fetched.
