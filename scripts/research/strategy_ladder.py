@@ -2862,6 +2862,168 @@ TIER_GATE_KEYS = ("annual_sharpe", "sum_pct", "months", "total_position_annual_p
                   "years_total_position_pct", "cost_pct", "funding_pct")
 
 
+# --- a lead from the tier sweep, before any hypothesis form (round 37, section 53) -------------------------------------
+
+# The book the tier sweep read, exactly: its variable and the side the sweep chose. Nothing here is a variant of it.
+TIER_LEADS = {"funding_30": {"long": "low"}}
+TIER_LEAD_CLOSED = "momentum_30"           # H-R2's book on this tier, long its low side: the closed book it is laid beside
+TIER_LEAD_BESIDE = ("funding_7",)          # printed for the form's "nearest record" line; no rule reads them
+TIER_LEAD_ROW_KEYS = ("long", "start", "months", "annual_sharpe", "sum_pct", "total_position_annual_pct", "clears_entry",
+                      "years_total_position_pct", "price_pct", "funding_pct", "cost_pct")
+TIER_LEAD_TOP = 5                          # coins and months listed at each end
+
+
+def _only(weigher: Callable[..., dict[str, float]], sign: int) -> Callable[..., dict[str, float]]:
+    """The same book with one side's coins alone. In the held accounting every coin earns on its own, so the two
+    one-sided books add up to the whole."""
+    def weights(market: xsb.Market, members: Sequence[str], day: date, signal: str,
+                *, seed: str | None = None) -> dict[str, float]:
+        return {s: w for s, w in weigher(market, members, day, signal, seed=seed).items() if w * sign > 0}
+    return weights
+
+
+def tier_lead_check(market: xsb.Market, name: str, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """The tier sweep's lead, read again as the same book and taken apart: the row it must reproduce, the side each
+    later year's earlier years name and what the book on that side made that year, the two sides' price, funding
+    and cost by year, which coins and months carried it, how much stood on bars with no volume, how alike its
+    positions are to the closed book's, and how much of each side the closed funding-tail books would have held."""
+    registry = lab.variables()
+    read, way = registry[name][1], (1 if TIER_LEADS[name]["long"] == "high" else -1)
+    tier = TierSweep(market, span)
+    start = tier.start(read)
+    months = tier.months(start)
+    own = tier.weigher(read, way)
+
+    def held(weigher: Callable[..., dict[str, float]], **more: Any) -> dict[date, dict[str, Any]]:
+        return simulate_held(market, bs.CADENCE, {}, start=span[0], end=span[1], weigher=weigher, unit_of=listing_unit,
+                             **more)["daily"]
+
+    def monthly(daily: Mapping[date, Mapping[str, Any]]) -> dict[str, dict[str, float]]:
+        out: dict[str, dict[str, float]] = {}
+        for day, row in daily.items():
+            month = out.setdefault(_month(day), {"net": 0.0, "cost": 0.0, "funding": 0.0})
+            for key in month:
+                month[key] += row.get(key, 0.0)
+        return out
+
+    def yearly(rows: Mapping[str, Mapping[str, float]]) -> dict[str, dict[str, float]]:
+        out: dict[str, dict[str, float]] = {}
+        for m in months:
+            row, year = rows.get(m, {}), out.setdefault(m[:4], {"price": 0.0, "funding": 0.0, "cost": 0.0, "net": 0.0})
+            net, cost, funding = (row.get(k, 0.0) * 100 / bs.POSITION_TOTAL for k in ("net", "cost", "funding"))
+            for key, value in (("price", net + cost - funding), ("funding", funding), ("cost", cost), ("net", net)):
+                year[key] += value
+        return {y: {k: round(v, 2) for k, v in row.items()} for y, row in out.items()}
+
+    def dead(symbol: str, decision: date) -> str:
+        bar = (market.bars.get(symbol) or {}).get(decision)
+        return "no_volume" if bar is not None and bar.quote_volume == 0 else "traded"
+
+    by_coin = held(own, leg_of=lambda symbol, _decision: symbol)
+    rows = monthly(by_coin)
+    report = tier_reading(rows, months)
+    values = [rows.get(m, {}).get("net", 0.0) for m in months]
+    cost, funding = (sum(rows.get(m, {}).get(k, 0.0) for m in months) * 100 for k in ("cost", "funding"))
+    row = {"long": TIER_LEADS[name]["long"], "start": start.isoformat() if start else None, **report,
+           "years_total_position_pct": {y: v["net"] for y, v in yearly(rows).items()},
+           "price_pct": round(report["sum_pct"] + cost - funding, 2), "funding_pct": round(funding, 2), "cost_pct": round(cost, 2)}
+    unrounded = (statistics.fmean(values) / statistics.stdev(values) * math.sqrt(12)
+                 if len(values) >= 2 and statistics.stdev(values) != 0 else None)
+
+    # the side the earlier years name, year by year (rung 2(b): later_years)
+    ics = tier.ics(read)
+    other_rows: dict[str, dict[str, float]] | None = None
+    transfer: dict[str, Any] = {}
+    for year in LATER_YEARS:
+        earlier = [ic for day, ic in ics.items()
+                   if start is not None and day >= start and day + timedelta(days=1 + lab.HORIZONS[0]) <= date(year, 1, 1)]
+        if len(earlier) < lab.MIN_DECISIONS:
+            transfer[str(year)] = {"decisions_before": len(earlier), "long": None, "total_position_pct": None}
+            continue
+        mean = statistics.fmean(earlier)
+        picked = 1 if mean > 0 else -1
+        if picked != way and other_rows is None:
+            other_rows = monthly(held(tier.weigher(read, -way)))
+        source = rows if picked == way else other_rows
+        value = sum(source.get(m, {}).get("net", 0.0) for m in months if m[:4] == str(year)) * 100 / bs.POSITION_TOTAL
+        transfer[str(year)] = {"decisions_before": len(earlier), "rank_correlation_before": round(mean, 4),
+                               "long": "high" if picked > 0 else "low", "same_side_as_the_lead": picked == way,
+                               "total_position_pct": round(value, 2)}
+    rule = later_years({y: v["total_position_pct"] for y, v in transfer.items()})
+
+    # the two sides, each a book of its own coins
+    sides = {label: yearly(monthly(held(_only(own, sign)))) for label, sign in (("long", 1), ("short", -1))}
+    whole = yearly(rows)
+    before_costs = sum(v["price"] + v["funding"] for v in whole.values())
+    received = sum(v["funding"] for v in whole.values())
+
+    # which coins and which months
+    coins: dict[str, float] = {}
+    for day, body in by_coin.items():
+        if _month(day) in months:
+            for symbol, value in body.get("legs", {}).items():
+                coins[symbol] = coins.get(symbol, 0.0) + value * 100 / bs.POSITION_TOTAL
+    ordered = sorted(coins.items(), key=lambda kv: (-kv[1], kv[0]))
+    net = sum(coins.values())
+    by_month = sorted(((m, rows.get(m, {}).get("net", 0.0) * 100 / bs.POSITION_TOTAL) for m in months), key=lambda kv: (-kv[1], kv[0]))
+    still: dict[str, float] = {}
+    for day, body in held(own, leg_of=dead).items():
+        if _month(day) in months:
+            for label, value in body.get("legs", {}).items():
+                still[label] = still.get(label, 0.0) + value * 100 / bs.POSITION_TOTAL
+
+    # positions beside the closed book's and the kin's; the closed funding tails' coins on each side
+    closed = tier.weigher(registry[TIER_LEAD_CLOSED][1], -1)
+    beside = {kin: tier.weigher(registry[kin][1], way) for kin in TIER_LEAD_BESIDE}
+    alike: dict[str, list[float]] = {TIER_LEAD_CLOSED: [], **{kin: [] for kin in TIER_LEAD_BESIDE}}
+    deep_long, hot_short, decisions = [], [], 0
+    for day in tier.days:
+        if start is None or day < start - timedelta(days=7):
+            continue
+        weights = own(market, (), day, bs.CADENCE)
+        if not weights:
+            continue
+        decisions += 1
+        for kin, build in ((TIER_LEAD_CLOSED, closed), *beside.items()):
+            if (value := _cosine(weights, build(market, (), day, bs.CADENCE))) is not None:
+                alike[kin].append(value)
+        week = {s: xsb.trailing_funding(market, s, day, DEEP_WINDOW) for s in weights}
+        deep_long.append(sum(w for s, w in weights.items() if w > 0 and week[s] is not None and week[s] <= DEEP_FUNDING))
+        hot_short.append(sum(-w for s, w in weights.items() if w < 0 and week[s] is not None and week[s] >= HOT_FUNDING))
+
+    def middle(numbers: Sequence[float]) -> float | None:
+        return round(statistics.median(numbers), 4) if numbers else None
+
+    first = middle(alike[TIER_LEAD_CLOSED])
+    return {"lead": name, "tier": TIER_SWEEP_TIER, "logic": MID_NAMES[1], "row": row, "annual_sharpe_unrounded": unrounded,
+            "transfer": {"years": transfer, "later_years": rule},
+            "legs_by_year_total_position_pct": {"book": whole, **sides},
+            "funding_share_of_return_before_costs": round(received / before_costs, 3) if before_costs > 0 else None,
+            "carry_rule": {"share": DEEP_CARRY_SHARE,
+                           "funding_carried_it": bool(before_costs > 0 and received >= DEEP_CARRY_SHARE * before_costs)},
+            "coins": {"held": len(coins), "net_total_position_pct": round(net, 2),
+                      "top": [[s, round(v, 2)] for s, v in ordered[:TIER_LEAD_TOP]],
+                      "bottom": [[s, round(v, 2)] for s, v in ordered[-TIER_LEAD_TOP:]],
+                      "top_share_of_net": {str(k): round(sum(v for _, v in ordered[:k]) / net, 3) if net else None
+                                           for k in (1, 3, TIER_LEAD_TOP)},
+                      "gainers": sum(1 for v in coins.values() if v > 0), "losers": sum(1 for v in coins.values() if v < 0)},
+            "months": {"top": [[m, round(v, 2)] for m, v in by_month[:TIER_LEAD_TOP]],
+                       "bottom": [[m, round(v, 2)] for m, v in by_month[-TIER_LEAD_TOP:]],
+                       "top_share_of_net": {str(k): round(sum(v for _, v in by_month[:k]) / net, 3) if net else None
+                                            for k in (1, 3, TIER_LEAD_TOP)},
+                       "positive": sum(1 for _, v in by_month if v > 0), "of": len(by_month)},
+            "on_bars_with_no_volume_total_position_pct": {k: round(v, 2) for k, v in sorted(still.items())},
+            "decisions_with_a_book": decisions,
+            "positions_beside": {kin: {"decisions": len(v), "median_cosine": middle(v)} for kin, v in alike.items()},
+            "closed_book": {"name": TIER_LEAD_CLOSED, "max": LEAD_KIN_MAX,
+                            "is_the_closed_book_again": first is not None and abs(first) >= LEAD_KIN_MAX},
+            "closed_funding_tails": {"long_weight_in_deep_coins_median": middle(deep_long),
+                                     "long_weight_in_deep_coins_mean": round(statistics.fmean(deep_long), 4) if deep_long else None,
+                                     "short_weight_in_hot_coins_median": middle(hot_short),
+                                     "short_weight_in_hot_coins_mean": round(statistics.fmean(hot_short), 4) if hot_short else None,
+                                     "deep_threshold": DEEP_FUNDING, "hot_threshold": HOT_FUNDING, "window_days": DEEP_WINDOW}}
+
+
 # --- L19: the open-interest flush book (round 15, hypothesis H-O1) -------------------------------------------------------
 
 FLUSH_SPAN = lab.ms.DEV_LONG               # the positioning files begin in 2022 for all but a few coins
@@ -3480,7 +3642,7 @@ def main(argv: list[str] | None = None) -> int:
                                             "deep-counts", "deep", "rotation-counts", "rotation", "bar",
                                             "hot-counts", "hot", "gap-counts", "gap", "flush-counts", "flush",
                                             "basis-counts", "basis", "wide-counts", "wide", "mid-counts", "mid",
-                                            "tier-gate", "tier-counts", "tier-sweep"))
+                                            "tier-gate", "tier-counts", "tier-sweep", "tier-lead"))
     parser.add_argument("--shape", choices=BAR_SHAPES, default=None, help="bar: the book shape whose null books are read")
     parser.add_argument("--only", default=None,
                         help="sweep, transfer: variable groups (comma list), or `null` for the random books")
@@ -3579,6 +3741,19 @@ def main(argv: list[str] | None = None) -> int:
                           "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
                           "command": args.command, **body}, indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or (args.command == "mid-counts" and body["stop"]) else EXIT_OK
+    if args.command == "tier-lead":
+        if args.only not in TIER_LEADS:
+            print(f"refused: --only names a lead of the tier sweep: {sorted(TIER_LEADS)}", file=sys.stderr)
+            return EXIT_USAGE
+        market = lab.hold(cache, attach=False)
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
+                          "command": args.command, **tier_lead_check(market, args.only)},
+                         indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_OK
     if args.command in ("tier-gate", "tier-counts", "tier-sweep"):
         wanted = set((args.only or "").split(",")) - {""}
         names = {n: v for n, v in tier_sweep_names().items() if v[0] in wanted}

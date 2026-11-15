@@ -2507,3 +2507,141 @@ def test_the_tier_commands_refuse_what_has_no_book_and_print_what_was_left_out(m
     assert sl.main(["tier-sweep", "--only", "null"]) == sl.EXIT_OK and seen["null"] is True
     monkeypatch.setattr(sl.lab, "hold", lambda cache, span=None, *, attach=True, flow=False: None)
     assert sl.main(["tier-gate"]) == sl.EXIT_BLOCKED and sl.main(["tier-counts", "--only", "funding"]) == sl.EXIT_BLOCKED
+
+
+# --- round 37: the tier sweep's lead, before any form -------------------------------------------------------------------
+
+LEAD_TEST_SPAN = (date(2022, 1, 1), date(2023, 12, 31))
+
+
+def _funded_world():
+    """Thirty large flat coins and sixteen smaller ones. Each smaller coin pays or receives a funding rate of its own,
+    fixed for the whole span (the lowest is deep under H-F1's threshold, the highest over H-F2's), swings on a 60-day
+    cycle of its own, and drifts up the more the lower its funding."""
+    start, end = date(2021, 6, 1), date(2023, 12, 31)
+    days = [start + timedelta(days=k) for k in range((end - start).days + 1)]
+    mids = [f"MID{i:02d}USDT" for i in range(16)]
+    epoch = date(1970, 1, 1)
+
+    def swing(i):
+        out, price = {}, 100.0
+        for k, day in enumerate(days):
+            up = ((k + 4 * i) // 30) % 2 == 0
+            move = (0.004 if up else -0.004) + (7.5 - i) * 0.0003
+            out[day] = xsb.Bar(open=price, close=price * (1 + move), quote_volume=1e7 - i * 1e4)
+            price *= 1 + move
+        return out
+
+    names = {f"BIG{i:02d}USDT": {d: xsb.Bar(open=100.0, close=100.0, quote_volume=1e9 - i) for d in days} for i in range(30)}
+    names.update({s: swing(i) for i, s in enumerate(mids)})
+    stamp = lambda day: int((day - epoch).total_seconds() * 1000) + 8 * 3600 * 1000      # noqa: E731
+    funding = {s: [(stamp(d), 0.0) for d in days[:1]] for s in names if s.startswith("BIG")}
+    funding.update({s: [(stamp(d), -0.001 + i * 0.0002) for d in days] for i, s in enumerate(mids)})
+    return xsb.Market(bars=names, funding=funding), mids
+
+
+def test_the_tier_lead_check_reproduces_the_sweeps_row_and_its_parts_add_up(monkeypatch):
+    monkeypatch.setattr(sl, "TIER_SWEEP_MIN_MONTHS", 8)
+    market, mids = _funded_world()
+    registered = sl.lab.variables()
+    swept = sl.tier_sweep(market, {"funding_30": registered["funding_30"]}, LEAD_TEST_SPAN)["funding_30"]
+    assert swept["long"] == "low" == sl.TIER_LEADS["funding_30"]["long"], "in this world the coins paid to hold also rise"
+    check = sl.tier_lead_check(market, "funding_30", LEAD_TEST_SPAN)
+    for key in sl.TIER_LEAD_ROW_KEYS:
+        assert check["row"][key] == swept[key], key
+    assert round(check["annual_sharpe_unrounded"], 3) == swept["annual_sharpe"] and check["annual_sharpe_unrounded"] != swept["annual_sharpe"]
+    legs = check["legs_by_year_total_position_pct"]
+    for year, whole in legs["book"].items():
+        for key in ("price", "funding", "cost", "net"):
+            assert legs["long"][year][key] + legs["short"][year][key] == pytest.approx(whole[key], abs=0.03), (year, key)
+        assert whole["net"] == pytest.approx(whole["price"] + whole["funding"] - whole["cost"], abs=0.03)
+    assert all(legs[side][year]["funding"] > 0 for side in ("long", "short") for year in legs["book"]), \
+        "the long side is paid by its coins' shorts and the short side by its coins' longs"
+    assert set(check["row"]["years_total_position_pct"]) == set(legs["book"]) == {"2022", "2023"}
+    assert check["row"]["years_total_position_pct"]["2023"] == legs["book"]["2023"]["net"]
+    total = sum(v["net"] for v in legs["book"].values())
+    coins = check["coins"]
+    assert coins["net_total_position_pct"] == pytest.approx(total, abs=0.05) and coins["held"] == 16
+    assert coins["gainers"] + coins["losers"] <= 16 and len(coins["top"]) == sl.TIER_LEAD_TOP == len(coins["bottom"])
+    assert coins["top"][0][1] >= coins["top"][1][1] >= coins["bottom"][-1][1]
+    assert coins["top_share_of_net"]["1"] == pytest.approx(coins["top"][0][1] / coins["net_total_position_pct"], abs=0.01)
+    months = check["months"]
+    assert months["of"] == check["row"]["months"] and months["top"][0][1] >= months["bottom"][-1][1]
+    assert months["top_share_of_net"]["3"] == pytest.approx(sum(v for _, v in months["top"][:3]) / total, abs=0.01)
+    before = sum(v["price"] + v["funding"] for v in legs["book"].values())
+    received = sum(v["funding"] for v in legs["book"].values())
+    assert check["funding_share_of_return_before_costs"] == pytest.approx(received / before, abs=0.002)
+    assert check["carry_rule"] == {"share": 0.5, "funding_carried_it": received >= 0.5 * before}
+
+
+def test_the_tier_lead_check_reads_each_later_year_on_the_side_its_earlier_years_name(monkeypatch):
+    monkeypatch.setattr(sl, "TIER_SWEEP_MIN_MONTHS", 8)
+    monkeypatch.setattr(sl, "LATER_YEARS", (2022, 2023))
+    market, mids = _funded_world()
+    check = sl.tier_lead_check(market, "funding_30", LEAD_TEST_SPAN)
+    years = check["transfer"]["years"]
+    assert years["2022"] == {"decisions_before": 0, "long": None, "total_position_pct": None}, "nothing before the book's first year"
+    assert years["2023"]["long"] == "low" and years["2023"]["same_side_as_the_lead"] is True and years["2023"]["rank_correlation_before"] < 0
+    assert years["2023"]["total_position_pct"] == check["row"]["years_total_position_pct"]["2023"]
+    tier = sl.TierSweep(market, LEAD_TEST_SPAN)
+    read = sl.lab.variables()["funding_30"][1]
+    counted = [d for d in tier.ics(read) if d >= date(2022, 2, 1) and d + timedelta(days=8) <= date(2023, 1, 1)]
+    assert years["2023"]["decisions_before"] == len(counted) > 40, "only weeks that ended before the year began"
+    assert check["transfer"]["later_years"]["passes"] is False, "a year with no earlier years to name its side does not pass"
+    monkeypatch.setattr(sl, "LATER_YEARS", (2023,))
+    passing = sl.tier_lead_check(market, "funding_30", LEAD_TEST_SPAN)["transfer"]["later_years"]
+    assert passing["years"] == {"2023": years["2023"]["total_position_pct"]}
+    assert passing["passes"] == (years["2023"]["total_position_pct"] >= passing["floor_pct"])
+    # a lead registered on the side the earlier years do not name: the year is read on the side they do name
+    monkeypatch.setattr(sl, "TIER_LEADS", {"funding_30": {"long": "high"}})
+    wrong = sl.tier_lead_check(market, "funding_30", LEAD_TEST_SPAN)
+    flipped = wrong["transfer"]["years"]["2023"]
+    assert flipped["long"] == "low" and flipped["same_side_as_the_lead"] is False
+    assert flipped["total_position_pct"] == years["2023"]["total_position_pct"], "the other side's book, that year"
+    assert wrong["row"]["years_total_position_pct"]["2023"] != flipped["total_position_pct"]
+
+
+def test_the_tier_lead_check_lays_the_book_beside_the_closed_book_and_the_closed_funding_tails(monkeypatch):
+    monkeypatch.setattr(sl, "TIER_SWEEP_MIN_MONTHS", 8)
+    market, mids = _funded_world()
+    check = sl.tier_lead_check(market, "funding_30", LEAD_TEST_SPAN)
+    assert set(check["positions_beside"]) == {"momentum_30", "funding_7"} and check["closed_book"]["name"] == "momentum_30"
+    assert check["positions_beside"]["funding_7"]["median_cosine"] == pytest.approx(1.0), "a fixed rate ranks the same over 7 and 30 days"
+    assert abs(check["positions_beside"]["momentum_30"]["median_cosine"]) < 0.5 and check["closed_book"]["is_the_closed_book_again"] is False
+    assert check["positions_beside"]["momentum_30"]["decisions"] == check["decisions_with_a_book"] > 90
+    tails = check["closed_funding_tails"]
+    assert (tails["deep_threshold"], tails["hot_threshold"], tails["window_days"]) == (-0.005, 0.01, 7)
+    tier = sl.TierSweep(market, LEAD_TEST_SPAN)
+    weights = tier.weigher(sl.lab.variables()["funding_30"][1], -1)(market, (), date(2023, 6, 4), "x")
+    deep = sum(w for s, w in weights.items() if w > 0 and int(s[3:5]) <= 1)       # -0.7% and -0.56% a week
+    hot = sum(-w for s, w in weights.items() if w < 0 and int(s[3:5]) >= 13)      # 1.12%, 1.26% and 1.4% a week
+    assert tails["long_weight_in_deep_coins_median"] == pytest.approx(deep, abs=1e-4) and 0 < deep < 1
+    assert tails["short_weight_in_hot_coins_median"] == pytest.approx(hot, abs=1e-4) and 0 < hot < 1
+    assert check["on_bars_with_no_volume_total_position_pct"].keys() == {"traded"}
+    # the closed book itself, registered as a lead, is the closed book again
+    monkeypatch.setattr(sl, "TIER_LEADS", {"momentum_30": {"long": "low"}})
+    again = sl.tier_lead_check(market, "momentum_30", LEAD_TEST_SPAN)
+    assert again["positions_beside"]["momentum_30"]["median_cosine"] == pytest.approx(1.0) and again["closed_book"]["is_the_closed_book_again"] is True
+    # a coin whose bars stop trading: what the book makes on it from then is set apart
+    for day in list(market.bars[mids[0]]):
+        if day >= date(2023, 3, 1):
+            bar = market.bars[mids[0]][day]
+            market.bars[mids[0]][day] = xsb.Bar(open=bar.open, close=bar.close, quote_volume=0.0)
+    monkeypatch.setattr(sl, "TIER_LEADS", {"funding_30": {"long": "low"}})
+    apart = sl.tier_lead_check(market, "funding_30", LEAD_TEST_SPAN)["on_bars_with_no_volume_total_position_pct"]
+    assert set(apart) == {"no_volume", "traded"} and apart["no_volume"] != 0
+
+
+def test_the_tier_lead_command_takes_only_a_registered_lead(monkeypatch, capsys):
+    market, mids = _funded_world()
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(sl.lab, "hold", lambda cache, span=None, *, attach=True, flow=False: market)
+    assert sl.TIER_LEADS == {"funding_30": {"long": "low"}}, "the book the tier sweep read, and no variant of it"
+    assert sl.main(["tier-lead", "--only", "funding_7"]) == sl.EXIT_USAGE and sl.main(["tier-lead"]) == sl.EXIT_USAGE
+    capsys.readouterr()
+    monkeypatch.setattr(sl, "tier_lead_check", lambda m, name: {"lead": name})
+    assert sl.main(["tier-lead", "--only", "funding_30"]) == sl.EXIT_OK
+    out = json.loads(capsys.readouterr().out)
+    assert out["lead"] == "funding_30" and out["command"] == "tier-lead"
+    monkeypatch.setattr(sl.lab, "hold", lambda cache, span=None, *, attach=True, flow=False: None)
+    assert sl.main(["tier-lead", "--only", "funding_30"]) == sl.EXIT_BLOCKED
