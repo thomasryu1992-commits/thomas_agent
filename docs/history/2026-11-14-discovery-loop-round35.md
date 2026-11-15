@@ -44,3 +44,22 @@ the tier was read on coins chosen with later knowledge. The archive holds the sa
   premium in either source, so this round's comparison does not see them. Changing the default would move tier
   membership under every reproduce-exactly gate and re-measure closed hypotheses on another universe, so it is a
   gap on record: a tool round of its own if taken up.
+
+## Result (2026-11-15 00:02Z): no lead on the filled premium
+
+Three sandbox runs at `7080fe85`, one each. Files: `~/research/signal-lab/run13-premium.json`,
+`~/research/discovery/sweep3/`, `~/research/signal-lab/byvar4/`.
+
+- *Map*: 480 cells, 0 meet the lead rule (0 before). Ranks 31–100 now rank 53.1 coins a decision (44.5). The
+  largest |t| is 3.97 against a line of 4.96 (30-day level in low volatility, 28 days; 3.50 before).
+- *Sweep*: none of the six premium books clears the entry rule (p 0.12–0.61). The family reading is unchanged and
+  the non-premium rows are identical to the last reading's. The change book switched sides because the sweep picks
+  the side from a rank correlation that went from −0.0002 to +0.0008; the null books pick theirs the same way.
+- *Per-variable axis check*: 642 tests, 0 survive (0 before); 39 under 0.05 where chance gives 32.1. The premium's
+  smallest p is 0.0022 (30-day level by funding heat on the top 30) against a threshold of 0.00016. It is the same
+  axis and direction as 30-day funding, which it overlaps at 0.73, so it is not counted as a second finding.
+- *Carried by file, not re-run*: the other 49 books, the 600 null books and seven groups of the axis check.
+  §44's lead and D10 were not re-judged.
+
+**What is left on the table after this round:** the depth files for ranks 31–100 (D11, Thomas's answer; default
+no). One gap added to the record: the universe's default that admits expired dated contracts.
