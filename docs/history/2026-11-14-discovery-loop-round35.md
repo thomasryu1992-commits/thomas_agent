@@ -64,7 +64,7 @@ Three sandbox runs at `7080fe85`, one each. Files: `~/research/signal-lab/run13-
 **What is left on the table after this round:** the depth files for ranks 31–100 (D11, Thomas's answer; default
 no). One gap added to the record: the universe's default that admits expired dated contracts.
 
-## Added after the result (00:40Z)
+## Added after the result (00:09Z)
 
 - *One sentence was wrong*: "the 0.8% without funding are the dated names". Of 13,992 ranked coin-decisions in
   H-R2's tier, 110 had no funding: 47 dated contracts and 63 of one perpetual (`GTCUSDT`, whose funding folder
