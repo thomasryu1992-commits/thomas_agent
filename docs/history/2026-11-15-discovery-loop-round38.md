@@ -27,3 +27,16 @@ line from the random variables, so nothing could say whether that disagreement m
   beside it and not rebuilt.
 - *One line for future sweeps*: a swept book is called a lead only after rung 2(b) on the sides its earlier years
   name. No code while no sweep is pending.
+
+## Result: no cell meets the second rule
+
+Eight sandbox runs at `470d3bed`, one per group; `~/research/signal-lab/run14-<group>.json` with a gate file each.
+
+- *All eight gates passed*: every older value of every compared cell is what it was, and the first rule's counts
+  are unchanged.
+- *The spread's line from the random variables* is 3.39 at seven days and 3.95 at twenty-eight. The largest real
+  value anywhere is 3.36 and 3.38. No cell meets the rule, forbidden variable or not.
+- *The fifteen cells behind §54.2* have a spread t between +0.13 and +1.60. The sign disagreement was noise in the
+  mean: on ranks 31–100 the ranks lean one way and the mean difference does not stand apart from zero. That fits
+  what happened when a strong rank cell there was built into a book (H-R2: about zero before costs).
+- *What stays*: the map prints both statistics for every cell and reads both rules for any variable added later.
