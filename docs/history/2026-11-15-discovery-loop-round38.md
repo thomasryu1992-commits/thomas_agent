@@ -40,3 +40,18 @@ Eight sandbox runs at `470d3bed`, one per group; `~/research/signal-lab/run14-<g
   mean: on ranks 31–100 the ranks lean one way and the mean difference does not stand apart from zero. That fits
   what happened when a strong rank cell there was built into a book (H-R2: about zero before costs).
 - *What stays*: the map prints both statistics for every cell and reads both rules for any variable added later.
+
+## Added after the result
+
+- *A paragraph narrowed*: the result said strong rank cells fail as books because the mean difference is absent,
+  naming the volatility family. The same run shows the top tier's volatility cells at a spread t of −0.7 to −1.7
+  beside a rank-correlation t of −5 to −7, and those cells' books cleared rung 2 on the exploration span. A low
+  spread t does not stop a book clearing the entry rule. What holds is narrower: on ranks 31–100 the mean
+  difference in those cells does not stand apart from zero, and H-R2 is the one book built there.
+- *The second rule's limit*: it did not pick out the first rule's strongest cells either, so "no cell meets it"
+  says "no effect of the size this rule can see", and that size has not been measured.
+- *One comparison dropped*: real all-weeks cells against the random variables' all-scenario cells are not the
+  same set.
+- *The table*: two sweeps not done have recorded reasons (another hold on either tier). Two rows have none: a map
+  and sweep below rank 100, and how large an effect either door can see. The second comes first, because a map of
+  another tier read before it would return another "no lead" of unknown meaning.
