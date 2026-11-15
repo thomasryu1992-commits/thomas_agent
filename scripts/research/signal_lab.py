@@ -594,13 +594,17 @@ def cell(samples: Sequence[tuple[int, float, float]], *, scenario: str) -> dict[
     if n < MIN_DECISIONS or (scenario != "all" and runs < MIN_SPELLS):
         return {"decisions": n, "spells": runs, "too_few": True}
     ics = [s[1] for s in samples]
-    spread = statistics.fmean(s[2] for s in samples)
-    sd = statistics.stdev(ics)
+    spreads = [s[2] for s in samples]
+    spread = statistics.fmean(spreads)
+    sd, spread_sd = statistics.stdev(ics), statistics.stdev(spreads)
+    # ``spread_t`` (round 38): the rank correlation says which way the ranks lean, the spread's own t says whether
+    # the mean a rank book earns stands apart from zero. On the second tier the two often point opposite ways.
     return {"decisions": n, "spells": runs, "too_few": False,
             "mean_rank_correlation": round(statistics.fmean(ics), 4),
             "t": round(statistics.fmean(ics) / (sd / math.sqrt(n)), 2) if sd > 0 else None,
             "positive_share": round(sum(1 for v in ics if v > 0) / n, 3),
-            "tercile_spread_bps": round(spread * 10_000, 1)}
+            "tercile_spread_bps": round(spread * 10_000, 1),
+            "spread_t": round(spread / (spread_sd / math.sqrt(n)), 2) if spread_sd > 0 else None}
 
 
 # --- the grid ----------------------------------------------------------------------------------------------------
@@ -966,7 +970,58 @@ def chance(control_cells: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         out[str(horizon)] = {"cells": len(ts), "largest_abs_t": ts[-1] if ts else None,
                              "p95_abs_t": ts[int(0.95 * (len(ts) - 1))] if ts else None,
                              "share_abs_t_over_2": round(sum(1 for t in ts if t > 2) / len(ts), 4) if ts else None}
+        spreads = sorted(abs(c["spread_t"]) for c in _shown(control_cells)
+                         if c["horizon_days"] == horizon and c.get("spread_t") is not None)
+        out[str(horizon)].update({"spread_cells": len(spreads), "largest_abs_spread_t": spreads[-1] if spreads else None,
+                                  "p95_abs_spread_t": spreads[int(0.95 * (len(spreads) - 1))] if spreads else None,
+                                  "share_abs_spread_t_over_2": (round(sum(1 for t in spreads if t > 2) / len(spreads), 4)
+                                                                if spreads else None)})
     return out
+
+
+# Round 38: a second lead rule on the same cells, read on the spread's own t. A cell that meets it is a lead for the
+# hypothesis form, never a book: these variables give no book on the named tier ("*" is every tier) whatever it says.
+SPREAD_NO_BOOK: dict[tuple[str, str], str] = {
+    **{("*", name): "the closed volatility cluster and its kin: no more books from it (sections 20, 33.1)"
+       for name in ("vol_30", "idio_vol_30", "max_30", "skew_30", "range_30", "beta_30", "extreme_days_30")},
+    **{("rank31_100", name): "H-R2's book and its other windows (section 49)" for name in ("momentum_30", "momentum_7", "momentum_90")},
+    **{("rank31_100", name): "H-M1's variables on this tier (section 32.2)" for name in ("oi_growth_30", "ls_level_30")},
+    **{("rank31_100", name): "the tier sweep's lead, closed, and its other window (section 53.6)" for name in ("funding_30", "funding_7")},
+    **{("rank31_100", name): "the tier sweep's second and third books: left alone (section 52.8)"
+       for name in ("taker_level_30", "taker_buy_share_30")},
+    ("*", "spread_change_30"): "the top tier's lead, not put on the ladder (D10): never read again (section 46)",
+    ("*", "trade_size_position_30"): "the top tier's runner-up: left alone (section 45)",
+}
+
+
+def no_book(variable: str, tier: str) -> str | None:
+    return SPREAD_NO_BOOK.get(("*", variable)) or SPREAD_NO_BOOK.get((tier, variable))
+
+
+def spread_candidates(real: Mapping[str, Any], against: Mapping[str, Any]) -> dict[str, Any]:
+    """The cells whose spread stands out: |spread t| above the largest any random variable reached at that horizon,
+    a variable that keeps its rank from week to week, the same sign as the variable's all-weeks spread in its tier,
+    and not on a resting axis. Every such cell is listed (no cap), each with whether the rank correlation agrees in
+    sign and whether a record forbids a book of that variable there."""
+    shown = [c for c in _shown(real["cells"]) if c.get("spread_t") is not None]
+    whole = {(c["variable"], c["tier"], c["horizon_days"]): c for c in shown if c["scenario"] == "all"}
+    found = []
+    for c in shown:
+        if any(part.split("=")[0] in RESTING_AXES for part in c["scenario"].split("|") if "=" in part):
+            continue
+        bar = against[str(c["horizon_days"])].get("largest_abs_spread_t")
+        steady = real["variables"].get(f"{c['variable']}|{c['tier']}", {}).get("rank_persistence")
+        base = whole.get((c["variable"], c["tier"], c["horizon_days"]))
+        if bar is None or abs(c["spread_t"]) <= bar or steady is None or steady < MIN_PERSISTENCE:
+            continue
+        if base is None or (base["spread_t"] > 0) != (c["spread_t"] > 0):
+            continue
+        found.append({**c, "rank_correlation_agrees": (c["t"] > 0) == (c["spread_t"] > 0),
+                      "no_book": no_book(c["variable"], c["tier"])})
+    found.sort(key=lambda c: (-abs(c["spread_t"]), c["variable"], c["tier"], c["scenario"]))
+    return {"rule": "abs(spread t) above the random variables' largest at that horizon; rank persistence at least "
+                    f"{MIN_PERSISTENCE}; same sign as the variable's all-weeks spread in its tier; not on a resting axis",
+            "met_the_rule": len(found), "leads": found}
 
 
 def candidates(real: Mapping[str, Any], against: Mapping[str, Any]) -> dict[str, Any]:
@@ -1279,7 +1334,8 @@ def main(argv: list[str] | None = None) -> int:
                       "span": [d.isoformat() for d in SPAN], "last_day_read": last_day(market).isoformat(),
                       "before_costs": True, "judgement": None, "only": args.only,
                       "chance": against, "excess": excess(real["cells"], against),
-                      "candidates": candidates(real, against), "dropped": real["dropped"],
+                      "candidates": candidates(real, against), "spread_candidates": spread_candidates(real, against),
+                      "dropped": real["dropped"],
                       "variables": real["variables"], "cells": real["cells"],
                       **({"baseline_pool": pool(market)} if args.only is None else {})},
                      indent=1, sort_keys=True, ensure_ascii=False))

@@ -173,8 +173,15 @@ def test_chance_is_what_the_random_variables_reached():
     cells = [_cell(f"control_week_{i:02d}", "all", t) for i, t in enumerate((0.3, -1.1, 2.4, -3.2, 0.9))]
     cells.append({**_cell("control_week_09", "vol=high", 9.0), "too_few": True})
     out = lab.chance(cells)
-    assert out["7"] == {"cells": 5, "largest_abs_t": 3.2, "p95_abs_t": 2.4, "share_abs_t_over_2": 0.4}
+    assert {k: out["7"][k] for k in ("cells", "largest_abs_t", "p95_abs_t", "share_abs_t_over_2")} == {
+        "cells": 5, "largest_abs_t": 3.2, "p95_abs_t": 2.4, "share_abs_t_over_2": 0.4}
     assert out["28"]["largest_abs_t"] is None
+    assert out["7"]["spread_cells"] == 0 and out["7"]["largest_abs_spread_t"] is None, "cells written before the spread had a t"
+    spread = [{**c, "spread_t": v} for c, v in zip(cells, (0.5, -4.1, 2.2, None, 1.0, 7.0))]
+    with_spread = lab.chance(spread)["7"]
+    assert (with_spread["spread_cells"], with_spread["largest_abs_spread_t"], with_spread["p95_abs_spread_t"]) == (4, 4.1, 2.2), \
+        "its own line: the largest |spread t| among the random variables' shown cells, a too-thin cell left out"
+    assert with_spread["share_abs_spread_t_over_2"] == 0.5 and with_spread["largest_abs_t"] == 3.2, "the rank correlation's line is untouched"
 
 
 def test_the_baseline_pool_is_the_plain_mean_of_every_registered_definition():
@@ -1148,3 +1155,65 @@ def test_the_two_premium_sources_are_laid_side_by_side_with_no_return_read(tiers
     monkeypatch.setattr(lab.bs, "check_development_span", lambda span: None)
     assert lab.main(["premium-sources", "--cache", str(tmp_path)]) == lab.EXIT_BLOCKED, "a difference blocks"
     assert json.loads(capsys.readouterr().out)["days_differ"] == 1
+
+
+# --- round 38: the spread's own t and a second lead rule --------------------------------------------------------------
+
+def test_a_cell_carries_the_spreads_own_t_and_the_older_values_are_what_they_were():
+    samples = [(i, 0.10 if i % 3 else -0.02, 0.004 if i % 2 else -0.001) for i in range(40)]
+    out = lab.cell(samples, scenario="all")
+    spreads = [s[2] for s in samples]
+    mean, sd = sum(spreads) / 40, lab.statistics.stdev(spreads)
+    assert out["spread_t"] == round(mean / (sd / 40 ** 0.5), 2) and out["tercile_spread_bps"] == round(mean * 10_000, 1)
+    ics = [s[1] for s in samples]
+    assert out["t"] == round((sum(ics) / 40) / (lab.statistics.stdev(ics) / 40 ** 0.5), 2), "the rank correlation's t is not touched"
+    assert set(out) == {"decisions", "spells", "too_few", "mean_rank_correlation", "t", "positive_share", "tercile_spread_bps", "spread_t"}
+    opposite = lab.cell([(i, -0.05 - 0.01 * (i % 2), 0.02 + 0.001 * (i % 3)) for i in range(40)], scenario="all")
+    assert opposite["t"] < -10 and opposite["spread_t"] > 10, "ranks lean one way while the mean of the thirds leans the other"
+    assert lab.cell([(i, 0.1 * (i % 2), 0.003) for i in range(40)], scenario="all")["spread_t"] is None, "no spread in the spreads"
+    assert lab.cell(samples[:5], scenario="all") == {"decisions": 5, "spells": 1, "too_few": True}
+
+
+def test_a_spread_lead_beats_every_random_variables_spread_and_is_never_a_book_where_a_record_forbids(monkeypatch):
+    monkeypatch.setattr(lab, "RESTING_AXES", frozenset({"trend"}))
+    against = {"7": {"largest_abs_t": 3.0, "largest_abs_spread_t": 4.0}, "28": {"largest_abs_t": None, "largest_abs_spread_t": None}}
+
+    def cell(variable, scenario, spread_t, *, t=1.0, tier="top30", horizon=7):
+        return {**_cell(variable, scenario, t, tier=tier, horizon=horizon), "spread_t": spread_t}
+    cells = [
+        cell("steady", "all", 4.5, t=-2.0),                        # over the line; the rank correlation leans the other way
+        cell("steady", "vol=high", 6.0),                           # over the line, same sign as its whole
+        cell("steady", "vol=low", -5.0),                           # over the line, against its own whole
+        cell("steady", "trend=bull", 9.0),                         # a resting axis
+        cell("at_the_line", "all", 4.0),                           # not above
+        cell("fickle", "all", 8.0),                                # does not keep its rank
+        cell("vol_30", "all", -7.0, t=-6.0),                       # the closed cluster, any tier
+        cell("funding_30", "all", 5.0, tier="rank31_100"),         # closed on this tier
+        cell("funding_30", "all", 5.5),                            # the same variable on the top tier: no record forbids it
+        cell("old_file", "all", None),                             # a cell with no spread t
+        cell("steady", "all", 9.9, horizon=28),                    # no line at this horizon
+        {**cell("thin", "all", 50.0), "too_few": True},
+    ]
+    variables = {f"{name}|{tier}": {"rank_persistence": 0.2 if name == "fickle" else 0.9}
+                 for name in ("steady", "at_the_line", "fickle", "vol_30", "funding_30", "old_file", "thin") for tier in ("top30", "rank31_100")}
+    out = lab.spread_candidates({"cells": cells, "variables": variables}, against)
+    got = [(c["variable"], c["tier"], c["scenario"]) for c in out["leads"]]
+    assert got == [("vol_30", "top30", "all"), ("steady", "top30", "vol=high"), ("funding_30", "top30", "all"),
+                   ("funding_30", "rank31_100", "all"), ("steady", "top30", "all")], "largest |spread t| first, and every one listed"
+    assert out["met_the_rule"] == 5
+    by = {(c["variable"], c["tier"], c["scenario"]): c for c in out["leads"]}
+    assert by[("steady", "top30", "all")]["rank_correlation_agrees"] is False and by[("steady", "top30", "vol=high")]["rank_correlation_agrees"] is True
+    assert "volatility cluster" in by[("vol_30", "top30", "all")]["no_book"]
+    assert "53.6" in by[("funding_30", "rank31_100", "all")]["no_book"] and by[("funding_30", "top30", "all")]["no_book"] is None
+    assert by[("steady", "top30", "all")]["no_book"] is None
+    # the list of forbidden books, by name
+    assert all(lab.no_book(v, t) for t in ("top30", "rank31_100")
+               for v in ("vol_30", "idio_vol_30", "max_30", "skew_30", "range_30", "beta_30", "extreme_days_30", "spread_change_30", "trade_size_position_30"))
+    assert all(lab.no_book(v, "rank31_100") and lab.no_book(v, "top30") is None
+               for v in ("momentum_30", "momentum_7", "momentum_90", "oi_growth_30", "ls_level_30", "funding_30", "funding_7",
+                         "taker_level_30", "taker_buy_share_30"))
+    assert lab.no_book("premium_30", "rank31_100") is None
+    assert {name for _, name in lab.SPREAD_NO_BOOK} <= set(lab.variables()), "every forbidden name is a registered variable"
+    # the first rule reads what it read: a cell with a huge spread t and a small rank-correlation t is not its lead
+    first = lab.candidates({"cells": cells, "variables": variables}, against)
+    assert ("steady", "vol=high") not in [(c["variable"], c["scenario"]) for c in first["leads"]]
