@@ -37,3 +37,19 @@ the map having read this tier does not stand in for it.
   three positioning books have months inside their span with no book (their Sharpe is pressed toward zero).
 - *Ties*: the four spread levels stand at one value in over half their cells and the listing age in a quarter; if
   one of them is a lead, round 32's untied-leg rule applies as registered.
+
+## Result: one lead, not a candidate
+
+Six sandbox runs at `7b44b1a2`, one each; files under `~/research/discovery/tier1/`.
+
+- *One book survives the correction and clears the entry rule*: 30-day funding, long the low side, on ranks
+  31–100 over 2021-01..2024-12. Annual Sharpe 1.000 after costs (on the entry line as rounded), +16.95% a year on
+  total position (price +14.3, funding +9.6, cost −6.9), none of 600 null books at or above (the highest is
+  0.988). Years: +39.2, +5.8, +26.2, −3.3. Its side was picked on a mean rank correlation of −0.0071.
+- *The other 35 do not survive*: three are under 0.05 where chance gives 1.8, and none is a survivor under the
+  entry rule. The median book returns −5.2% a year (the prior said about −9%).
+- *Kin already on file*: 7-day funding on the same side scored 0.637 with all of it in 2021; the top tier's
+  30-day funding book scored 0.009 in its own sweep.
+- *What it is*: a lead by the registered rule. It is not on the ladder. The checks before the form (transfer,
+  legs, concentration, closed kin) are the next round, with their closing rules fixed before any reading. Nothing
+  printed yet shows which coins or which months earned it.
