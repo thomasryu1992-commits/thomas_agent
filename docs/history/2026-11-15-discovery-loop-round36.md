@@ -27,3 +27,13 @@ the map having read this tier does not stand in for it.
   recorded and nothing is built from it. The sweep is read once: no other hold, cost, weighting or null.
 - *The tier is read as it is*, with the dated contracts and the coin without funding that round 35 recorded;
   their share is counted before any return and again if a lead appears.
+
+## Gate and counts (no new return read)
+
+- *The gate passed*: H-R2's book through the new code equals `mid1.json` on all eight keys.
+- *36 books are built.* Two of the 38 have under 24 months of their own (the top-trader share's change and
+  position). 29 books run 48 months from 2021-01; the seven positioning books run 27–36 months.
+- *No book trades less than the null* (ratios 1.08 to 8.10). Two books rank under 80% of what a null book ranks;
+  three positioning books have months inside their span with no book (their Sharpe is pressed toward zero).
+- *Ties*: the four spread levels stand at one value in over half their cells and the listing age in a quarter; if
+  one of them is a lead, round 32's untied-leg rule applies as registered.
