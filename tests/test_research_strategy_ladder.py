@@ -2303,3 +2303,207 @@ def test_the_mid_run_is_judged_held_at_stressed_cost_beside_slow_null_books(monk
     monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
     monkeypatch.setattr(sl.lab, "hold", lambda cache, span=None, *, attach=True, flow=False: None)
     assert sl.main(["mid-counts"]) == sl.EXIT_BLOCKED and sl.main(["mid"]) == sl.EXIT_BLOCKED
+
+
+# --- round 36: the sweep on the map's second tier ----------------------------------------------------------------------
+
+def _late(read, first: date):
+    return lambda market, symbol, day: None if day < first else read(market, symbol, day)
+
+
+def test_the_tier_sweep_builds_no_book_the_record_forbids_and_names_why():
+    names = sl.tier_sweep_names()
+    registered = sl.lab.variables()
+    assert set(names) | set(sl.TIER_SWEEP_OUT) == set(registered) and not set(names) & set(sl.TIER_SWEEP_OUT)
+    assert {"vol_30", "idio_vol_30", "max_30", "skew_30", "range_30", "beta_30", "extreme_days_30"} <= set(sl.TIER_SWEEP_OUT)
+    assert {"oi_growth_30", "ls_level_30", "momentum_30", "momentum_7", "momentum_90"} <= set(sl.TIER_SWEEP_OUT)
+    assert {"spread_change_30", "trade_size_position_30"} <= set(sl.TIER_SWEEP_OUT), "the top tier's lead and its runner-up"
+    assert {"momentum_change_30", "momentum_position_30", "residual_momentum_30", "ls_change_30"} <= set(names), "shapes are kin, not the closed book"
+    assert not [n for n, (group, _) in names.items() if group == "depth"], "no depth files on this tier"
+    assert all(sl.TIER_SWEEP_OUT.values()) and len(names) == len(registered) - len(sl.TIER_SWEEP_OUT) == 38
+    assert sl.TIER_SWEEP_NULLS == 600 and 0.10 / len(names) > 1 / (sl.TIER_SWEEP_NULLS + 1), "a book above every null can survive"
+
+
+def test_the_tier_book_is_h_r2s_book_for_any_variable_and_the_gate_reads_h_r2s_numbers():
+    market, mids = _mid_world()
+    tier, mid = sl.TierSweep(market, MID_TEST_SPAN), sl.MidTier(market, MID_TEST_SPAN)
+    read = sl.lab.variables()["momentum_30"][1]
+    assert sl.TIER_SWEEP_TIER == sl.MID_TIER and set(tier.members(MID_DAY)) == set(mids)
+    assert tier.weigher(read, -1)(market, (), MID_DAY, "x") == mid.book()(market, (), MID_DAY, "x")
+    high = tier.weigher(read, 1)(market, (), MID_DAY, "x")
+    assert high == {s: -w for s, w in mid.book()(market, (), MID_DAY, "x").items()}, "the other side is the same book reversed"
+    stressed = sl.functools.partial(sl.simulate_held, unit_of=sl.listing_unit)
+    record = sl.measure(market, mid.book(), MID_TEST_SPAN, simulate=stressed)        # how H-R2 was read
+    gate = sl.tier_sweep_gate(market, MID_TEST_SPAN)
+    for key in ("annual_sharpe", "sum_pct", "months", "total_position_annual_pct", "clears_entry", "cost_pct", "funding_pct"):
+        assert gate[key] == record[key], key
+    assert gate["years_total_position_pct"] == record["years_total_position_pct"] and gate["sum_pct"] != 0
+    assert set(sl.TIER_GATE_KEYS) <= set(gate)
+
+
+def test_a_tier_null_is_one_fixed_draw_per_coin_and_trades_less_than_a_months_return():
+    market, mids = _mid_world()
+    tier = sl.TierSweep(market, MID_TEST_SPAN)
+    fixed = tier.fixed("tier:0")
+    values = {s: fixed(market, s, MID_DAY) for s in mids}
+    assert len(set(values.values())) == len(mids) and all(v is not None for v in values.values())
+    assert {s: fixed(market, s, MID_DAY + timedelta(days=77)) for s in mids} == values, "it never changes"
+    assert fixed(market, mids[0], date(2021, 1, 1)) is None, "no value where the coin has no bar"
+    other = tier.fixed("tier:1")
+    assert {s: other(market, s, MID_DAY) for s in mids} != values, "another seed is another variable"
+    again = sl.TierSweep(_mid_world()[0], MID_TEST_SPAN).fixed("tier:0")
+    assert {s: again(market, s, MID_DAY) for s in mids} == values, "a seed is a book"
+    assert {s: fixed(market, s, MID_DAY) for s in mids} == values, "asking for another seed in between changes nothing"
+    assert tier.turnover(fixed) == 0.0 < tier.turnover(sl.lab.variables()["momentum_30"][1]), "members do not change in this world"
+
+
+def test_a_tier_book_is_read_on_its_own_span_and_a_short_one_is_named_and_not_built(monkeypatch):
+    market, mids = _mid_world()
+    tier = sl.TierSweep(market, MID_TEST_SPAN)
+    read = sl.lab.variables()["momentum_30"][1]
+    assert tier.first_decision(read) == date(2022, 1, 2), "the span's first weekly decision"
+    assert tier.start(read) == date(2022, 2, 1) and len(tier.months(tier.start(read))) == 11, "the month of the entry is not read"
+    late = _late(read, date(2022, 6, 10))
+    assert tier.first_decision(late) == date(2022, 6, 12) and tier.start(late) == date(2022, 7, 1)
+    assert tier.months(tier.start(late)) == [f"2022-{m:02d}" for m in range(7, 13)]
+    assert tier.start(_late(read, date(2022, 12, 20))) == date(2023, 1, 1), "December rolls into the next year"
+    assert tier.start(lambda m, s, d: None) is None and tier.months(None) == []
+    names = {"whole": ("g", read), "late": ("g", late), "never": ("g", lambda m, s, d: None)}
+    monkeypatch.setattr(sl, "TIER_SWEEP_MIN_MONTHS", 8)
+    books = sl.tier_sweep(market, names, MID_TEST_SPAN)
+    assert books["late"] == {"group": "g", "skipped": "its own span is 6 complete months, under 8"}
+    assert books["never"]["skipped"].startswith("its own span is 0 complete months")
+    assert books["whole"]["months"] == 11 and books["whole"]["start"] == "2022-02-01"
+    monkeypatch.setattr(sl, "TIER_SWEEP_MIN_MONTHS", 6)
+    monkeypatch.setattr(sl.lab, "MIN_DECISIONS", 10)
+    late_book = sl.tier_sweep(market, names, MID_TEST_SPAN)["late"]
+    assert (late_book["start"], late_book["months"]) == ("2022-07-01", 6) and set(late_book["years_total_position_pct"]) == {"2022"}
+    whole = tier.monthly_rows(late, -1 if late_book["long"] == "low" else 1)
+    assert late_book["sum_pct"] == pytest.approx(sum(whole[m]["net"] for m in tier.months(date(2022, 7, 1))) * 100, abs=0.01)
+    assert whole["2022-06"]["cost"] > 0, "the entry is paid in the month before its own span and is not read"
+    monkeypatch.setattr(sl.lab, "MIN_DECISIONS", 40)
+    assert sl.tier_sweep(market, names, MID_TEST_SPAN)["late"]["skipped"] == "ranked at too few decisions"
+
+
+def test_a_tier_book_is_long_the_side_its_own_rank_correlation_names_on_its_own_span(monkeypatch):
+    monkeypatch.setattr(sl, "TIER_SWEEP_MIN_MONTHS", 8)
+    market, mids = _mid_world()
+    read = sl.lab.variables()["momentum_30"][1]
+    names = {"fell_rises": ("g", read), "negated": ("g", lambda m, s, d: None if (v := read(m, s, d)) is None else -v)}
+    books = sl.tier_sweep(market, names, MID_TEST_SPAN)
+    assert books["fell_rises"]["long"] == "low" and books["fell_rises"]["mean_rank_correlation"] < 0
+    assert books["negated"]["long"] == "high" and books["negated"]["mean_rank_correlation"] == -books["fell_rises"]["mean_rank_correlation"]
+    for key in ("annual_sharpe", "sum_pct", "cost_pct", "funding_pct", "price_pct", "total_position_annual_pct"):
+        assert books["negated"][key] == pytest.approx(books["fell_rises"][key], abs=0.02), key
+    book = books["fell_rises"]
+    assert book["price_pct"] > 0 and book["cost_pct"] > 0
+    assert book["sum_pct"] == pytest.approx(book["price_pct"] + book["funding_pct"] - book["cost_pct"], abs=0.02)
+    tier = sl.TierSweep(market, MID_TEST_SPAN)
+    rows, months = tier.monthly_rows(read, -1), [f"2022-{m:02d}" for m in range(2, 13)]
+    assert book["months"] == 11 and book["decisions_ranked"] == sum(1 for d in tier.ics(read) if d >= date(2022, 2, 1))
+    assert book["annual_sharpe"] == sl.tier_reading(rows, months)["annual_sharpe"] is not None
+    assert book["cost_pct"] == pytest.approx(sum(rows[m]["cost"] for m in months) * 100, abs=0.01), "every coin at 5 + 21 bps, its own months"
+    assert book["total_position_annual_pct"] == sl.bs.total_position_annual_pct(book["sum_pct"], 11)
+    assert book["clears_entry"] == sl.bs.clears_entry(book)
+    assert sl.tier_side({date(2022, 1, 2): 0.5, date(2022, 6, 5): -0.1, date(2022, 6, 12): -0.1}, date(2022, 6, 1)) == (-1, pytest.approx(-0.1))
+    assert sl.tier_side({date(2022, 1, 2): 0.5, date(2022, 6, 5): -0.1}, date(2022, 1, 1))[0] == 1
+    assert sl.tier_side({date(2022, 1, 2): 0.5}, date(2022, 6, 1)) == (-1, None)
+
+
+def test_the_tier_counts_carry_nothing_earned_and_show_ties_dated_names_dead_bars_and_missing_funding(monkeypatch):
+    market, mids = _mid_world(funded=False)
+    dated, dead = "MID15USDT_221230", mids[14]
+    market.bars[dated] = market.bars.pop(mids[15])
+    for day in list(market.bars[dead]):
+        if day >= date(2022, 6, 1):
+            bar = market.bars[dead][day]
+            market.bars[dead][day] = xsb.Bar(open=bar.open, close=bar.close, quote_volume=0.0 if day >= date(2022, 7, 1) else bar.quote_volume)
+
+    def never(*args, **kwargs):
+        raise AssertionError("the counts read no return")
+    for name in ("measure", "simulate_held"):
+        monkeypatch.setattr(sl, name, never)
+    monkeypatch.setattr(sl.lab, "forward_return", never)
+    read = sl.lab.variables()["momentum_30"][1]
+    half = lambda m, s, d: 0.0 if s in mids[:8] else read(m, s, d)                     # noqa: E731
+    monkeypatch.setattr(sl, "TIER_SWEEP_MIN_MONTHS", 8)
+    counts = sl.tier_sweep_counts(market, {"month": ("g", read), "half_tied": ("g", half),
+                                           "late": ("g", _late(read, date(2022, 6, 10)))}, MID_TEST_SPAN)
+    assert counts["returns_computed"] is False and counts["tier"] == "rank31_100" and counts["null_turnover_books"] == sl.TIER_SWEEP_TURNOVER_NULLS
+    month, tied, late = (counts["books"][k] for k in ("month", "half_tied", "late"))
+    assert (month["first_decision"], month["start"], month["months"]) == ("2022-01-02", "2022-02-01", 11) and "skipped" not in month
+    assert month["ranked_median"] == 16 and month["ranked_cells"] == 16 * month["decisions_with_a_book"]
+    assert month["tied_share"] == 0.0 and tied["tied_share"] == 0.5, "eight of sixteen stand at one value"
+    assert month["dated_cells"] == month["decisions_with_a_book"], "the dated contract is ranked at every decision"
+    assert 0 < month["zero_volume_cells"] < month["decisions_with_a_book"], "a bar with no volume, from July"
+    assert month["unfunded_share"] == pytest.approx(11 / 16, abs=0.001), "ten without a file here, and the dated contract has none"
+    assert month["turnover"] > 0 and counts["null_turnover_mean"] is not None
+    assert month["ranked_beside_null"] == 1.0 and month["months_without_a_book"] == 0
+    thin = lambda m, s, d: None if s in mids[:4] or (d.month == 9 and d.year == 2022) else read(m, s, d)   # noqa: E731
+    gaps = sl.tier_sweep_counts(market, {"thin": ("g", thin)}, MID_TEST_SPAN)["books"]["thin"]
+    assert gaps["ranked_beside_null"] == 0.75, "twelve of the sixteen a null book ranks"
+    assert gaps["months_without_a_book"] == 1, "September stands inside its span with no book"
+    assert late["skipped"] == "its own span is 6 complete months, under 8" and late["months"] == 6
+    flat = json.dumps(counts)
+    assert "sharpe" not in flat and "sum_pct" not in flat and "rank_correlation" not in flat
+
+
+def test_the_tier_null_books_are_kept_whole_and_cut_to_each_books_own_months():
+    market, mids = _mid_world()
+    null = sl.tier_sweep_null(market, MID_TEST_SPAN, nulls=3)
+    assert set(null) == {"tier:0", "tier:1", "tier:2"}
+    body = null["tier:0"]
+    assert set(body) == {"ics", "high", "low"} and len(body["high"]) == 12 == len(body["low"]) and len(body["ics"]) > 40
+    assert all(body["high"][m] < 0 or body["low"][m] < 0 for m in body["high"]), "the two sides are one book reversed, both pay costs"
+    # the family reading, on made-up books: a null whose better side changes with the span it is cut to
+    months = [f"2022-{m:02d}" for m in range(1, 13)]
+    wave = {m: (0.02 if i % 2 else 0.01) for i, m in enumerate(months)}
+    other = {m: (0.05 if i % 2 else 0.01) for i, m in enumerate(months)}          # the low side's months: another shape
+    made = {f"n{k}": {"ics": {"2022-01-09": 0.9, "2022-08-07": -0.2, "2022-09-04": -0.2},
+                      "high": {m: v * (k + 1) / 10 for m, v in wave.items()},
+                      "low": {m: (other[m] if m >= "2022-07" else -v) * (k + 1) / 10 for m, v in wave.items()}} for k in range(9)}
+    whole = sl.tier_reading({m: {"net": v} for m, v in wave.items()}, months)["annual_sharpe"]
+    half = sl.tier_reading({m: {"net": other[m]} for m in months[6:]}, months[6:])["annual_sharpe"]
+    assert whole is not None and half is not None and half != sl.tier_reading({m: {"net": wave[m]} for m in months[6:]}, months[6:])["annual_sharpe"]
+    book = {"group": "g", "long": "high", "total_position_annual_pct": 20.0}
+    books = {"strong": {**book, "start": "2022-01-01", "months": 12, "annual_sharpe": whole + 5, "clears_entry": True},
+             "strong_thin": {**book, "start": "2022-01-01", "months": 12, "annual_sharpe": whole + 4, "clears_entry": False},
+             "weak": {**book, "start": "2022-01-01", "months": 12, "annual_sharpe": whole - 5, "clears_entry": False},
+             "late_weak": {**book, "start": "2022-07-01", "months": 6, "annual_sharpe": half - 5, "clears_entry": False},
+             "short": {"group": "g", "skipped": "its own span is 3 complete months, under 24"}}
+    reading = sl.tier_sweep_reading(books, made, q=0.5)
+    rows = {r["variable"]: r for r in reading["all"]}
+    assert reading["books"] == 4 and reading["skipped"] == {"short": "its own span is 3 complete months, under 24"}
+    assert rows["strong"]["null_books"] == 9 and rows["strong"]["p"] == pytest.approx(1 / 10) and rows["weak"]["p"] == 1.0
+    assert rows["strong"]["null_max"] == whole, "on the whole year every null is long its high side: the first-half rank correlation wins"
+    assert rows["late_weak"]["null_max"] == half and rows["late_weak"]["null_books"] == 9, \
+        "cut to the second half the null picks its low side and is read on those six months only"
+    assert reading["survive_benjamini_hochberg"] == ["strong", "strong_thin"]
+    assert reading["leads"] == ["strong"], "a lead survives the correction AND clears the entry rule"
+    assert reading["survivors_under_the_entry_rule"] == ["strong_thin"], "named, and nothing is built from it"
+    assert reading["clear_entry"] == ["strong"] and reading["first_threshold"] == pytest.approx(0.5 / 4)
+    strict = sl.tier_sweep_reading(books, made, q=0.10)
+    assert strict["survive_benjamini_hochberg"] == [] == strict["leads"], "one in ten is over a tenth of a quarter"
+
+
+def test_the_tier_commands_refuse_what_has_no_book_and_print_what_was_left_out(monkeypatch, capsys):
+    market, mids = _mid_world()
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(sl, "SPAN", MID_TEST_SPAN)
+    monkeypatch.setattr(sl.lab, "hold", lambda cache, span=None, *, attach=True, flow=False: market)
+    monkeypatch.setattr(sl, "TIER_SWEEP_MIN_MONTHS", 8)
+    assert sl.main(["tier-sweep", "--only", "depth"]) == sl.EXIT_USAGE, "depth has no book on this tier"
+    assert sl.main(["tier-counts", "--only", "null"]) == sl.EXIT_USAGE and sl.main(["tier-sweep"]) == sl.EXIT_USAGE
+    capsys.readouterr()
+    monkeypatch.setattr(sl, "tier_sweep_gate", lambda m, span=None: {"annual_sharpe": 1.0})
+    assert sl.main(["tier-gate"]) == sl.EXIT_OK
+    gate = json.loads(capsys.readouterr().out)
+    assert gate["book"] == {"annual_sharpe": 1.0} and (gate["variable"], gate["long"], gate["tier"], gate["logic"]) == ("momentum_30", "low", "rank31_100", "L22")
+    assert gate["left_out"] == sl.TIER_SWEEP_OUT
+    seen = {}
+    monkeypatch.setattr(sl, "tier_sweep", lambda m, names: seen.setdefault("books", sorted(names)) and {})
+    monkeypatch.setattr(sl, "tier_sweep_null", lambda m: seen.setdefault("null", True) and {})
+    assert sl.main(["tier-sweep", "--only", "coin_character"]) == sl.EXIT_OK and seen["books"] == ["listing_age"]
+    assert sl.main(["tier-sweep", "--only", "null"]) == sl.EXIT_OK and seen["null"] is True
+    monkeypatch.setattr(sl.lab, "hold", lambda cache, span=None, *, attach=True, flow=False: None)
+    assert sl.main(["tier-gate"]) == sl.EXIT_BLOCKED and sl.main(["tier-counts", "--only", "funding"]) == sl.EXIT_BLOCKED

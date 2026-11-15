@@ -2546,6 +2546,322 @@ def mid_run(market: xsb.Market, span: tuple[date, date] = SPAN, *, nulls: int = 
                        else "cost_dependent_lead" if lead else "closed"}
 
 
+# --- the sweep on the map's second tier (round 36, section 52) ---------------------------------------------------------
+
+TIER_SWEEP_TIER = MID_TIER                 # the map's ranks 31 to 100, as the map reads them: nothing filtered
+TIER_SWEEP_NULLS = 600                     # one class: a value fixed per coin, the slowest a rank book can trade
+TIER_SWEEP_MIN_MONTHS = 24                 # complete months a book needs: a yearly rate under two years is one year's
+TIER_SWEEP_TURNOVER_NULLS = 20
+# Registered variables no book is built from on this tier, each with the record that says so.
+TIER_SWEEP_OUT: dict[str, str] = {
+    **dict.fromkeys(("vol_30", "idio_vol_30", "max_30", "skew_30"),
+                    "the closed volatility cluster: no more books from it (section 20)"),
+    **dict.fromkeys(("range_30", "beta_30", "extreme_days_30"),
+                    "read as kin of the closed volatility cluster (section 33.1)"),
+    **dict.fromkeys(("oi_growth_30", "ls_level_30"),
+                    "H-M1's variables: on this tier they are not built into a book (section 32.2)"),
+    "momentum_30": "H-R2's own book: the gate, not a new reading (section 49)",
+    **dict.fromkeys(("momentum_7", "momentum_90"),
+                    "H-R2 at another window: its registration says the window is never changed (section 49)"),
+    "spread_change_30": "the top tier's lead, not put on the ladder (D10): never read again on another tier (section 46)",
+    "trade_size_position_30": "the top tier's runner-up: left alone (section 45)",
+    **dict.fromkeys(("imbalance_1_30", "imbalance_5_30", "depth_growth_30"), "no depth files on this tier (D11)"),
+}
+
+
+def tier_sweep_names() -> dict[str, tuple[str, lab.Variable]]:
+    """The registered variables a book is built from on the second tier: all but :data:`TIER_SWEEP_OUT`."""
+    registered = lab.variables()
+    unknown = sorted(set(TIER_SWEEP_OUT) - set(registered))
+    if unknown:
+        raise ValueError(f"left-out names that are not registered: {unknown}")
+    return {name: body for name, body in registered.items() if name not in TIER_SWEEP_OUT}
+
+
+def _month(day: date) -> str:
+    return day.strftime("%Y-%m")
+
+
+class TierSweep:
+    """H-R2's book (L22) for any variable: the map's second tier as it is, L1's rank weights over every ranked member,
+    weekly, held, every coin at the stressed cost. A book is read on its own span: from the first day of the month
+    after its first decision with weights to the span's end, so a variable whose files begin late is not averaged
+    with empty months, and the null books are cut to the same months."""
+
+    def __init__(self, market: xsb.Market, span: tuple[date, date] = SPAN) -> None:
+        self.market, self.span = market, span
+        self.monthly = {m: tuple(v) for m, v in lab.tier_members(market, span)[TIER_SWEEP_TIER].items()}
+        self.days = [d for d in sundays(span) if span[0] - timedelta(days=1) <= d <= span[1]]
+        self.ic_days = lab.decisions(span, lab.HORIZONS[0])
+        self._forward: dict[date, dict[str, float]] = {}
+        self._fixed: tuple[str, dict[str, float]] = ("", {})
+
+    def members(self, day: date) -> tuple[str, ...]:
+        return self.monthly.get(date(day.year, day.month, 1), ())
+
+    def weigher(self, read: lab.Variable, way: int) -> Callable[..., dict[str, float]]:
+        inner = book(read, lambda _day: way)
+
+        def weights(market: xsb.Market, members: Sequence[str], day: date, signal: str,
+                    *, seed: str | None = None) -> dict[str, float]:
+            return inner(market, self.members(day), day, signal, seed=seed)
+        return weights
+
+    def fixed(self, seed: str) -> lab.Variable:
+        """A variable with nothing in it that never changes: one draw per coin, wherever the coin has a bar that
+        day. Its ranks move only when the tier's members do, so no real book trades less for the same reason."""
+        def read(market: xsb.Market, symbol: str, day: date) -> float | None:
+            if day not in (market.bars.get(symbol) or {}):
+                return None
+            if self._fixed[0] != seed:
+                self._fixed = (seed, {})
+            values = self._fixed[1]
+            if symbol not in values:
+                values[symbol] = random.Random(f"{seed}:{symbol}").gauss(0.0, 1.0)
+            return values[symbol]
+        return read
+
+    def first_decision(self, read: lab.Variable) -> date | None:
+        """The first decision at which the book has weights."""
+        weigher = self.weigher(read, 1)
+        return next((d for d in self.days if weigher(self.market, (), d, bs.CADENCE)), None)
+
+    def start(self, read: lab.Variable) -> date | None:
+        """The first day of the month after the first decision with weights: the book's own span begins there."""
+        first = self.first_decision(read)
+        if first is None:
+            return None
+        return date(first.year + (first.month == 12), first.month % 12 + 1, 1)
+
+    def months(self, start: date | None) -> list[str]:
+        return [] if start is None else bs._complete_months(max(start, self.span[0]), self.span[1])
+
+    def forward(self, day: date) -> dict[str, float]:
+        if day not in self._forward:
+            self._forward[day] = {s: v for s in self.members(day)
+                                  if (v := lab.forward_return(self.market, s, day, lab.HORIZONS[0])) is not None}
+        return self._forward[day]
+
+    def ics(self, read: lab.Variable) -> dict[date, float]:
+        """The variable's rank correlation with the week that follows, per decision that has one (the sweep's rule)."""
+        out = {}
+        for day in self.ic_days:
+            pairs = [(value, forward) for s, forward in self.forward(day).items()
+                     if (value := read(self.market, s, day)) is not None]
+            if len(pairs) >= lab.MIN_NAMES and (ic := lab.rank_correlation(pairs)) is not None:
+                out[day] = ic
+        return out
+
+    def monthly_rows(self, read: lab.Variable, way: int) -> dict[str, dict[str, float]]:
+        """The book over the whole span, summed by calendar month: net, cost and funding. Held, stressed cost."""
+        sim = simulate_held(self.market, bs.CADENCE, {}, start=self.span[0], end=self.span[1],
+                            weigher=self.weigher(read, way), unit_of=listing_unit)
+        out: dict[str, dict[str, float]] = {}
+        for day, row in sim["daily"].items():
+            month = out.setdefault(_month(day), {"net": 0.0, "cost": 0.0, "funding": 0.0})
+            for key in month:
+                month[key] += row.get(key, 0.0)
+        return out
+
+    def turnover(self, read: lab.Variable) -> float | None:
+        """Mean over consecutive decisions with weights of half the summed change in weights."""
+        weigher, moves, before = self.weigher(read, 1), [], None
+        for day in self.days:
+            now = weigher(self.market, (), day, bs.CADENCE)
+            if before and now:
+                moves.append(sum(abs(now.get(s, 0.0) - before.get(s, 0.0)) for s in set(now) | set(before)) / 2)
+            before = now
+        return round(statistics.fmean(moves), 4) if moves else None
+
+
+def tier_side(ics: Mapping[date, float], start: date) -> tuple[int, float | None]:
+    """The side a book is long on its own span: the sign of its mean rank correlation over the decisions from
+    ``start`` on. The same rule for a real variable and a null one."""
+    values = [ic for day, ic in ics.items() if day >= start]
+    if not values:
+        return -1, None
+    mean = statistics.fmean(values)
+    return (1 if mean > 0 else -1), mean
+
+
+def tier_reading(rows: Mapping[str, Mapping[str, float]], months: Sequence[str]) -> dict[str, Any]:
+    """A book's months as the entry rule reads them: the annual Sharpe of the monthly nets and the yearly rate on
+    total position, by :mod:`basket_search`'s own arithmetic."""
+    values = [rows.get(m, {}).get("net", 0.0) for m in months]
+    sharpe = (round(statistics.fmean(values) / statistics.stdev(values) * math.sqrt(12), 3)
+              if len(values) >= 2 and statistics.stdev(values) != 0 else None)
+    report: dict[str, Any] = {"annual_sharpe": sharpe, "sum_pct": round(sum(values) * 100, 2), "months": len(values)}
+    report["total_position_annual_pct"] = bs.total_position_annual_pct(report["sum_pct"], report["months"])
+    report["clears_entry"] = bs.clears_entry(report)
+    return report
+
+
+def _tier_skip(tier: TierSweep, read: lab.Variable) -> tuple[date | None, list[str], str | None]:
+    start = tier.start(read)
+    months = tier.months(start)
+    if len(months) < TIER_SWEEP_MIN_MONTHS:
+        return start, months, f"its own span is {len(months)} complete months, under {TIER_SWEEP_MIN_MONTHS}"
+    return start, months, None
+
+
+def tier_sweep_counts(market: xsb.Market, names: Mapping[str, tuple[str, lab.Variable]],
+                      span: tuple[date, date] = SPAN, *, tier: TierSweep | None = None) -> dict[str, Any]:
+    """What each book would stand on, with nothing earned after a decision in it: when it begins, how many coins it
+    ranks, how many of those are tied at one value, are dated contracts, stand on a bar with no volume or have no
+    funding on file, how many coins it ranks beside what a null book ranks on the same days, how many months inside
+    its own span have no decision with a book, and how much it trades beside the null books."""
+    tier = tier or TierSweep(market, span)
+    others = [t for t in (tier.turnover(tier.fixed(f"turnover:{k}")) for k in range(TIER_SWEEP_TURNOVER_NULLS)) if t is not None]
+    beside = round(statistics.fmean(others), 4) if others else None
+    books: dict[str, Any] = {}
+    for name, (group, read) in names.items():
+        start, months, skip = _tier_skip(tier, read)
+        first = tier.first_decision(read)
+        cells = tied = dated = still = unfunded = with_bar = 0
+        ranked, active = [], set()
+        for day in tier.days:
+            if start is None or day < start - timedelta(days=7):
+                continue
+            values = {s: v for s in tier.members(day) if (v := read(market, s, day)) is not None}
+            if len(values) < lab.MIN_NAMES:
+                continue
+            active.add(_month(day))
+            with_bar += sum(1 for s in tier.members(day) if day in market.bars[s])      # what a null book ranks that day
+            seen: dict[float, int] = {}
+            for v in values.values():
+                seen[v] = seen.get(v, 0) + 1
+            ranked.append(len(values))
+            cells += len(values)
+            tied += sum(n for n in seen.values() if n > 1)
+            dated += sum(1 for s in values if not s.endswith("USDT"))
+            still += sum(1 for s in values if (bar := market.bars[s].get(day)) is not None and bar.quote_volume == 0)
+            unfunded += sum(1 for s in values if market.funding_day(s) is None)
+        own = tier.turnover(read)
+        books[name] = {"group": group, "first_decision": None if first is None else first.isoformat(),
+                       "start": None if start is None else start.isoformat(), "months": len(months),
+                       "decisions_with_a_book": len(ranked), "ranked_median": statistics.median(ranked) if ranked else 0,
+                       "ranked_cells": cells, "ranked_beside_null": round(cells / with_bar, 3) if with_bar else None,
+                       "months_without_a_book": sum(1 for m in months if m not in active),
+                       "tied_share": round(tied / cells, 4) if cells else None,
+                       "dated_cells": dated, "zero_volume_cells": still,
+                       "unfunded_share": round(unfunded / cells, 4) if cells else None,
+                       "turnover": own, "turnover_beside_null": round(own / beside, 3) if own is not None and beside else None,
+                       **({"skipped": skip} if skip else {})}
+    return {"tier": TIER_SWEEP_TIER, "decisions": len(tier.days), "null_turnover_mean": beside, "null_turnover_books": len(others),
+            "min_months": TIER_SWEEP_MIN_MONTHS, "books": books, "returns_computed": False}
+
+
+def tier_sweep(market: xsb.Market, names: Mapping[str, tuple[str, lab.Variable]],
+               span: tuple[date, date] = SPAN, *, tier: TierSweep | None = None) -> dict[str, Any]:
+    """Every variable in ``names`` as the tier's book, on its own span, long the side its own rank correlation
+    names. A book whose span is too short is named and not built."""
+    tier = tier or TierSweep(market, span)
+    out: dict[str, Any] = {}
+    for name, (group, read) in names.items():
+        start, months, skip = _tier_skip(tier, read)
+        if skip:
+            out[name] = {"group": group, "skipped": skip}
+            continue
+        ics = tier.ics(read)
+        way, mean = tier_side(ics, start)
+        if mean is None or sum(1 for d in ics if d >= start) < lab.MIN_DECISIONS:
+            out[name] = {"group": group, "skipped": "ranked at too few decisions"}
+            continue
+        rows = tier.monthly_rows(read, way)
+        report = tier_reading(rows, months)
+        years = sorted({m[:4] for m in months})
+        cost, funding = (sum(rows.get(m, {}).get(k, 0.0) for m in months) * 100 for k in ("cost", "funding"))
+        out[name] = {"group": group, "start": start.isoformat(), "long": "high" if way > 0 else "low",
+                     "mean_rank_correlation": round(mean, 4), "decisions_ranked": sum(1 for d in ics if d >= start),
+                     **report,
+                     "years_total_position_pct": {y: round(sum(rows.get(m, {}).get("net", 0.0) for m in months if m[:4] == y)
+                                                           * 100 / bs.POSITION_TOTAL, 2) for y in years},
+                     "price_pct": round(report["sum_pct"] + cost - funding, 2),
+                     "funding_pct": round(funding, 2), "cost_pct": round(cost, 2)}
+    return out
+
+
+def tier_sweep_null(market: xsb.Market, span: tuple[date, date] = SPAN, *, nulls: int = TIER_SWEEP_NULLS,
+                    tier: TierSweep | None = None) -> dict[str, Any]:
+    """The null books, each kept whole: its rank correlation at every decision and both sides' monthly nets, so it
+    can be cut to any book's own span with its side picked on that span."""
+    tier = tier or TierSweep(market, span)
+    out: dict[str, Any] = {}
+    for k in range(nulls):
+        read = tier.fixed(f"tier:{k}")
+        out[f"tier:{k}"] = {"ics": {d.isoformat(): round(ic, 6) for d, ic in tier.ics(read).items()},
+                            **{side: {m: round(row["net"], 8) for m, row in tier.monthly_rows(read, way).items()}
+                               for side, way in (("high", 1), ("low", -1))}}
+    return out
+
+
+def tier_sweep_reading(books: Mapping[str, Mapping[str, Any]], null: Mapping[str, Mapping[str, Any]],
+                       *, q: float = 0.10) -> dict[str, Any]:
+    """Each book beside the same null books cut to its own months, their side picked on those months. A lead is a
+    book that survives Benjamini-Hochberg at ``q`` AND clears the entry rule; a survivor under the entry rule is
+    named and nothing is built from it."""
+    by_start: dict[str, list[float]] = {}
+
+    def null_sharpes(start: str, months: int) -> list[float]:
+        if start not in by_start:
+            first = date.fromisoformat(start)
+            values = []
+            for body in null.values():
+                way, mean = tier_side({date.fromisoformat(d): ic for d, ic in body["ics"].items()}, first)
+                if mean is None:
+                    continue
+                side = body["high" if way > 0 else "low"]
+                kept = sorted(m for m in side if m >= start[:7])[:months]
+                sharpe = tier_reading({m: {"net": side[m]} for m in kept}, kept)["annual_sharpe"]
+                if sharpe is not None and len(kept) == months:
+                    values.append(sharpe)
+            by_start[start] = sorted(values)
+        return by_start[start]
+
+    rows, skipped = [], {}
+    for name, body in books.items():
+        if body.get("skipped") or body.get("annual_sharpe") is None:
+            skipped[name] = body.get("skipped", "no Sharpe")
+            continue
+        nulls = null_sharpes(body["start"], body["months"])
+        if not nulls:
+            skipped[name] = "no null book covers its months"
+            continue
+        above = sum(1 for v in nulls if v >= body["annual_sharpe"])
+        rows.append({"variable": name, **{k: body[k] for k in ("group", "start", "months", "long", "annual_sharpe",
+                                                               "total_position_annual_pct", "clears_entry")},
+                     "null_books": len(nulls), "null_at_or_above": above, "p": (1 + above) / (1 + len(nulls)),
+                     "null_median": nulls[len(nulls) // 2], "null_max": nulls[-1]})
+    rows.sort(key=lambda r: (r["p"], -r["annual_sharpe"], r["variable"]))
+    cutoff = max((i for i, r in enumerate(rows, start=1) if r["p"] <= q * i / len(rows)), default=0)
+    survivors = rows[:cutoff]
+    return {"books": len(rows), "skipped": skipped, "q": q, "first_threshold": q / len(rows) if rows else None,
+            "p_under_0.05": sum(1 for r in rows if r["p"] < 0.05), "expected_under_0.05_by_chance": round(0.05 * len(rows), 2),
+            "clear_entry": [r["variable"] for r in rows if r["clears_entry"]],
+            "survive_benjamini_hochberg": [r["variable"] for r in survivors],
+            "leads": [r["variable"] for r in survivors if r["clears_entry"]],
+            "survivors_under_the_entry_rule": [r["variable"] for r in survivors if not r["clears_entry"]],
+            "all": rows}
+
+
+def tier_sweep_gate(market: xsb.Market, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """H-R2's book through this section's code, over the whole span as H-R2 was read: it must give H-R2's record."""
+    tier = TierSweep(market, span)
+    read = lab.variables()[MID_VARIABLE][1]
+    rows = tier.monthly_rows(read, -1)
+    months = bs._complete_months(span[0], span[1])
+    report = tier_reading(rows, months)
+    years = {str(y): round(sum(row["net"] for m, row in rows.items() if m[:4] == str(y)) * 100 / bs.POSITION_TOTAL, 2)
+             for y in range(span[0].year, span[1].year + 1)}
+    return {**report, "years_total_position_pct": years,
+            "cost_pct": round(sum(row["cost"] for row in rows.values()) * 100, 2),
+            "funding_pct": round(sum(row["funding"] for row in rows.values()) * 100, 2)}
+
+
+TIER_GATE_KEYS = ("annual_sharpe", "sum_pct", "months", "total_position_annual_pct", "clears_entry",
+                  "years_total_position_pct", "cost_pct", "funding_pct")
+
+
 # --- L19: the open-interest flush book (round 15, hypothesis H-O1) -------------------------------------------------------
 
 FLUSH_SPAN = lab.ms.DEV_LONG               # the positioning files begin in 2022 for all but a few coins
@@ -3163,7 +3479,8 @@ def main(argv: list[str] | None = None) -> int:
                                             "crash-symbols", "crash-events", "crash-counts", "crash",
                                             "deep-counts", "deep", "rotation-counts", "rotation", "bar",
                                             "hot-counts", "hot", "gap-counts", "gap", "flush-counts", "flush",
-                                            "basis-counts", "basis", "wide-counts", "wide", "mid-counts", "mid"))
+                                            "basis-counts", "basis", "wide-counts", "wide", "mid-counts", "mid",
+                                            "tier-gate", "tier-counts", "tier-sweep"))
     parser.add_argument("--shape", choices=BAR_SHAPES, default=None, help="bar: the book shape whose null books are read")
     parser.add_argument("--only", default=None,
                         help="sweep, transfer: variable groups (comma list), or `null` for the random books")
@@ -3262,6 +3579,36 @@ def main(argv: list[str] | None = None) -> int:
                           "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
                           "command": args.command, **body}, indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or (args.command == "mid-counts" and body["stop"]) else EXIT_OK
+    if args.command in ("tier-gate", "tier-counts", "tier-sweep"):
+        wanted = set((args.only or "").split(",")) - {""}
+        names = {n: v for n, v in tier_sweep_names().items() if v[0] in wanted}
+        if args.command != "tier-gate" and not names and wanted != {"null"}:
+            print("refused: --only names no group with a book on this tier (or `null`)", file=sys.stderr)
+            return EXIT_USAGE
+        if args.command == "tier-counts" and wanted == {"null"}:
+            print("refused: the counts are per variable group", file=sys.stderr)
+            return EXIT_USAGE
+        try:
+            market = lab.hold(cache, attach=False) if args.command == "tier-gate" else sweep_market(cache, wanted)
+        except ValueError as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        if market is None:
+            print("BLOCKED: contract types, the spot symbol list or the attached values are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        if args.command == "tier-gate":
+            body: dict[str, Any] = {"book": tier_sweep_gate(market), "variable": MID_VARIABLE, "long": "low"}
+        elif args.command == "tier-counts":
+            body = tier_sweep_counts(market, names)
+        elif wanted == {"null"}:
+            body = {"null": tier_sweep_null(market)}
+        else:
+            body = {"books": tier_sweep(market, names)}
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
+                          "tier": TIER_SWEEP_TIER, "logic": MID_NAMES[1], "left_out": TIER_SWEEP_OUT,
+                          "only": sorted(wanted), "command": args.command, **body}, indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_OK
     if args.command in ("wide-counts", "wide"):
         market = lab.hold(cache, WIDE_SPAN, attach=False)
         if market is not None:
