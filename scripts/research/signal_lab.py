@@ -1008,7 +1008,10 @@ SPREAD_NO_BOOK: dict[tuple[str, str], str] = {
     # (``strategy_ladder.lower_positioning_market``); before that they were struck as a sample chosen by next month's rank.
     **{(LOWER_TIER_NAME, name): "H-M1's variables: closed with 'the tier boundary is not changed' (section 31)"
        for name in ("oi_growth_30", "ls_level_30")},
-    **{(LOWER_TIER_NAME, name): "no depth file lies in the span" for name in ("imbalance_1_30", "imbalance_5_30", "depth_growth_30")},
+    # Section 65.2: the archive serves this tier's depth files from 2023-01-01; the disk does not hold them, and D11's
+    # grounds (two years only; the top tier's depth search closed with nothing) do not depend on the tier.
+    **{(LOWER_TIER_NAME, name): "this tier's depth files are not on disk; not fetched on D11's grounds (sections 53.7, 62.2, 65.2)"
+       for name in ("imbalance_1_30", "imbalance_5_30", "depth_growth_30")},
 }
 
 
