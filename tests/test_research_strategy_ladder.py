@@ -3591,3 +3591,30 @@ def test_the_accounts_candidates_read_the_accounts_ratio_and_not_the_positions_r
         assert sl.lab.OVERLAP_CANDIDATES[name][1](market, "A", day) is not None, name
     assert not any(n.startswith("top_account") for n in sl.lab.variables()), "registered only after the overlap reads"
 
+
+
+# --- round 49: the spot pair's trade flow ---------------------------------------------------------------------------
+
+def test_the_spot_flow_reads_the_spot_pairs_columns_on_same_asset_days_only(tmp_path):
+    import zipfile as zf
+    start, day = date(2021, 1, 1), date(2021, 1, 30)
+    days = [start + timedelta(days=k) for k in range(30)]
+    folder = tmp_path / "archive-spot" / "klines-1d" / "AUSDT"
+    folder.mkdir(parents=True)
+    ms = lambda d: int((d - date(1970, 1, 1)).total_seconds() * 1000)
+    rows = "".join(f"{ms(d)},1,1,1,1,1,0,100.0,{10 if k < 25 else 50},0,{60.0 if k < 25 else 20.0},0\n" for k, d in enumerate(days))
+    with zf.ZipFile(folder / "AUSDT-1d-2021-01.zip", "w") as archive:
+        archive.writestr("x.csv", rows)
+    market = xsb.Market(bars={"AUSDT": {d: xsb.Bar(open=1.0, close=1.0 if k < 25 else 2.0, quote_volume=1.0)
+                                        for k, d in enumerate(days)}}, funding={})
+    market.spot = {"AUSDT": {d: xsb.Bar(open=1.0, close=1.0, quote_volume=100.0) for d in days}}
+    market.spot_of = {"AUSDT": ("AUSDT", 1.0)}
+    sl.lab.attach_spot_flow(market, [tmp_path / "archive-spot"], day)
+    assert market.spot_flow["AUSDT"][days[0]] == (0.6, 10.0)
+    share, size = sl.lab.OVERLAP_CANDIDATES["spot_taker_share_30"][1], sl.lab.OVERLAP_CANDIDATES["spot_trade_size_30"][1]
+    assert share(market, "AUSDT", day) == pytest.approx(0.6), "the last five days are another asset (price band)"
+    assert size(market, "AUSDT", day) == pytest.approx(10.0)
+    market.spot_of = {}
+    assert share(market, "AUSDT", day) is None, "no pair, no value"
+    assert sl.lab.OVERLAP_CANDIDATES["spot_taker_share_30"][0] == "spot_flow"
+    assert not any(n.startswith("spot_taker") or n.startswith("spot_trade") for n in sl.lab.variables())

@@ -437,6 +437,65 @@ def hold_top_account(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market 
 
 _top_account_level = _with_lookback(ms._level("top_account"))
 
+
+# Section 67: the spot klines' trade count and taker-buy columns, which no variable read (section 65.3). The perp's
+# own columns are read by the trade-flow group; these are the same columns of the coin's spot pair.
+def attach_spot_flow(held: xsb.Market, roots: Sequence[Path], end: date) -> xsb.Market:
+    """Hang each spot pair's ``{day: (taker-buy share of quote volume, quote volume per trade)}`` from the monthly
+    zips under ``roots`` (by :func:`read_trade_flow`, the perp's reader), cut at ``end``."""
+    flow: dict[str, dict[date, tuple[float, float]]] = {}
+    for root in roots:
+        folder = root / sp.KLINES
+        for pair in sorted(p for p in folder.iterdir() if p.is_dir()) if folder.exists() else []:
+            flow.setdefault(pair.name, {}).update({d: v for d, v in read_trade_flow(pair).items() if d <= end})
+    held.spot_flow = flow
+    return held
+
+
+def _spot_flow_window(market: xsb.Market, symbol: str, day: date) -> list[tuple[float, float]] | None:
+    """The spot pair's flow values over the lookback, on the days S01 counts as the same asset (both closes there,
+    the perp's within ``spot_share_search.PRICE_BAND`` of the spot's); None under the usual share of days."""
+    link = getattr(market, "spot_of", {}).get(symbol)
+    if link is None:
+        return None
+    pair, multiple = link
+    perp = market.bars.get(symbol) or {}
+    spot = (getattr(market, "spot", {}) or {}).get(pair) or {}
+    flow = (getattr(market, "spot_flow", {}) or {}).get(pair) or {}
+    kept = []
+    for k in range(LOOKBACK):
+        d = day - timedelta(days=k)
+        a, b, f = perp.get(d), spot.get(d), flow.get(d)
+        if a is None or b is None or f is None or a.close <= 0 or b.close <= 0:
+            continue
+        if abs(a.close / (multiple * b.close) - 1) <= sp.PRICE_BAND:
+            kept.append(f)
+    return kept if len(kept) >= math.ceil(LOOKBACK * bs.MIN_SHARE) else None
+
+
+def _spot_taker_share(market: xsb.Market, symbol: str, day: date) -> float | None:
+    values = _spot_flow_window(market, symbol, day)
+    return None if values is None else statistics.fmean(v[0] for v in values)
+
+
+def _spot_trade_size(market: xsb.Market, symbol: str, day: date) -> float | None:
+    values = _spot_flow_window(market, symbol, day)
+    return None if values is None else statistics.fmean(v[1] for v in values)
+
+
+def hold_spot_flow(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | None:
+    """The top tiers' market with the perp's trade flow (the kin read it), the spot bars and pairs (the spot share
+    and the same-asset rule read them) and the spot pairs' flow attached. None when a piece is missing."""
+    held = hold(cache, span, attach=False, flow=True)
+    try:
+        listing = set(json.loads((cache / sp.SPOT_DIR / ba.SYMBOLS_FILENAME).read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        listing = set()
+    if held is None or not listing:
+        return None
+    held = sp.attach(held, xsb.load_market(cache / sp.SPOT_DIR, funding=False), listing, span[1], sp.months_on_disk(cache))
+    return attach_spot_flow(held, [cache / sp.SPOT_DIR], span[1])
+
 # name: (the group whose data it reads, the reading, the registered kin it is ranked beside)
 OVERLAP_CANDIDATES: dict[str, tuple[str, Variable, tuple[str, ...]]] = {
     "spread_30": ("price_volume", _spread, ("range_30", "illiquidity_30", "vol_30")),
@@ -445,6 +504,9 @@ OVERLAP_CANDIDATES: dict[str, tuple[str, Variable, tuple[str, ...]]] = {
     "top_account_30": ("top_account", _top_account_level, ("top_level_30", "ls_level_30", "divergence_30")),
     "top_account_change_30": ("top_account", _change(_top_account_level), ("top_change_30", "ls_change_30")),
     "top_account_position_30": ("top_account", _position(_top_account_level), ("top_position_30", "ls_position_30")),
+    # Section 67: the spot pair's flow beside the perp's own flow and the spot share.
+    "spot_taker_share_30": ("spot_flow", _spot_taker_share, ("taker_buy_share_30", "spot_share_30")),
+    "spot_trade_size_30": ("spot_flow", _spot_trade_size, ("trade_size_30", "spot_share_30")),
 }
 
 
@@ -1375,7 +1437,7 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_USAGE
         kind = OVERLAP_CANDIDATES[args.candidate][0]
         market = (hold_premium(cache) if kind == "premium" else hold_top_account(cache) if kind == "top_account"
-                  else hold(cache, attach=False))
+                  else hold_spot_flow(cache) if kind == "spot_flow" else hold(cache, attach=False))
         if market is None:
             print("BLOCKED: contract types or the premium files are missing from the cache", file=sys.stderr)
             return EXIT_BLOCKED
