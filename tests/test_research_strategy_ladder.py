@@ -3053,3 +3053,167 @@ def test_the_sensitivity_command_takes_a_family_and_its_own_null_file(monkeypatc
     assert sl.main(["sens", "--family", "mid", "--null", str(wrong)]) == sl.EXIT_USAGE, "another tier's nulls"
     monkeypatch.setattr(sl.lab, "hold", lambda cache, span=None, *, attach=True, flow=False: None)
     assert sl.main(["sens", "--family", "lower", "--null", str(wrong)]) == sl.EXIT_BLOCKED
+
+
+# --- round 43: a scenario effect, read by the scenario cells and by the axis check ---------------------------------------
+
+def test_the_split_share_is_the_axis_checks_separation_and_its_sums_path_is_the_same_number():
+    rng = random_module.Random("split")
+    days = [date(2022, 1, 2) + timedelta(days=7 * k) for k in range(90)]
+    labels = [None] * 10 + [("a" if (k // 7) % 3 == 0 else "b" if (k // 7) % 3 == 1 else "c") for k in range(80)]
+    x = [rng.gauss(0, 0.1) for _ in days]
+    groups = [[i for i, s in enumerate(labels) if s == st] for st in ("a", "b", "c")]
+    exact = sl.lab.separation({("v", "t"): dict(zip(days, x))}, dict(zip(days, labels)))
+    assert sl.split_share(x, groups) == pytest.approx(exact, rel=1e-12)
+    labelled = [x[i] for g in groups for i in g]
+    whole = (sum(labelled), sum(v * v for v in labelled), len(labelled))
+    assert sl._split_share_full(x.__getitem__, groups, whole) == pytest.approx(exact, rel=1e-9)
+    holes = list(x)
+    holes[12] = holes[40] = None
+    with_holes = sl.lab.separation({("v", "t"): {d: v for d, v in zip(days, holes) if v is not None}}, dict(zip(days, labels)))
+    assert sl.split_share(holes, groups) == pytest.approx(with_holes, rel=1e-12)
+    thin = [g[:5] if i == 2 else g for i, g in enumerate(groups)]
+    assert sl.split_share(x, thin) == pytest.approx(sl.split_share(x, groups[:2]), rel=1e-12), "a thin state is left out"
+
+
+def test_the_axis_placebos_are_the_checks_own_and_a_test_reads_them_the_same_way_fast_or_slow():
+    real = [None] * 5 + ["hi"] * 8 + ["lo"] * 9 + ["hi"] * 7 + ["lo"] * 12 + ["hi"] * 9 + ["lo"] * 10
+    placebos = sl.axis_placebos(real, "vol", 30)
+    for k in (0, 7, 29):
+        shuffled = sl.lab.shuffled_spells(real, f"{sl.lab.SPEC}|axis|vol|{k}")
+        assert [list(g) for g in placebos[k]] == [[i for i, s in enumerate(shuffled) if s == st] for st in ("hi", "lo")]
+    assert all(len(p[0]) == real.count("hi") and len(p[1]) == real.count("lo") for p in placebos)
+    assert sl.axis_carrier(real) == "hi" and sl.axis_carrier([None, "b", "a"]) == "a" and sl.axis_carrier([None]) is None
+    assert sl.axis_planted_size("hi", "hi", "flip", 0.1) == 0.1 and sl.axis_planted_size("lo", "hi", "flip", 0.1) == -0.1
+    assert sl.axis_planted_size("lo", "hi", "one", 0.1) == 0.0 and sl.axis_planted_size(None, "hi", "flip", 0.1) == 0.0
+    rng = random_module.Random("axis-test")
+    x = [rng.gauss(0.3 if s == "hi" else 0.0, 0.1) for s in real]
+    fast = sl.axis_test(x, real, placebos)
+    assert fast["counted"] == 30 and fast["p"] == pytest.approx(1 / 31), "a large state difference beats every placebo"
+    groups = [[i for i, s in enumerate(real) if s == st] for st in ("hi", "lo")]
+    actual = sl.split_share(x, groups)
+    slow_above = sum(1 for p in placebos if sl.split_share(x, p) >= actual - 1e-12)
+    assert fast["p"] == (1 + slow_above) / 31
+    x[3] = None                                         # an unlabelled decision: still the fast path
+    x[8] = None                                         # a labelled one missing: the slow path, same rule
+    slow = sl.axis_test(x, real, placebos)
+    assert slow["counted"] == 30 and slow["p"] == pytest.approx(1 / 31)
+
+
+def _axis_world(monkeypatch, decisions=80):
+    frames = _door_frames(decisions=decisions, coins=20)[("top30", 7)]
+    days = [d for d, _ in frames]
+    labels = {d: ({} if k < 10 else {"vol": "high" if ((k - 10) // 7) % 2 == 0 or k >= decisions - 4 else "low"}) for k, d in enumerate(days)}
+    monkeypatch.setattr(sl.lab, "decisions", lambda span, horizon: days)
+    monkeypatch.setattr(sl.lab, "tier_members", lambda market, span: {"top30": {}})
+    monkeypatch.setattr(sl.lab, "scenario_labels", lambda market, monthly, ds, span: {d: labels[d] for d in ds})
+    return frames
+
+
+def test_the_axis_power_reads_a_scenario_effect_by_the_cells_and_by_the_axis_check(monkeypatch):
+    frames = _axis_world(monkeypatch)
+    out = sl.axis_power(None, "top30", DOOR_LINES, sizes=(0.0, 0.6), seeds=4, axes=("vol",), placebos=50, frames=frames)
+    rows = {(r["shape"], r["size"]): r for r in out["rows"]}
+    assert out["carriers"] == {"vol": "low"} and out["states"]["vol"] == {"None": 10, "high": 39, "low": 31}
+    assert out["threshold"] == pytest.approx(0.10 / 642) and out["placebos_per_test"] == 50
+    for shape in sl.AXIS_POWER_SHAPES:
+        assert rows[(shape, 0.0)]["cell_rule_share"] == 0.0 and rows[(shape, 0.0)]["wake_share"] == 0.0
+        assert rows[(shape, 0.6)]["cell_rule_share"] == 1.0 and rows[(shape, 0.6)]["median_carrier_ic"] > 0.3
+        assert rows[(shape, 0.6)]["wake_share"] == 0.0, "fifty placebos cannot reach the family's first threshold"
+    assert rows[("one", 0.0)]["median_separation"] == rows[("flip", 0.0)]["median_separation"], "size 0 is one series"
+    monkeypatch.setattr(sl, "AXIS_POWER_FAMILY", 1)
+    loose = sl.axis_power(None, "top30", DOOR_LINES, sizes=(0.0, 0.6), seeds=4, axes=("vol",), placebos=50, frames=frames)
+    flip = next(r for r in loose["rows"] if (r["shape"], r["size"]) == ("flip", 0.6))
+    assert flip["wake_share"] == 1.0, "a large flip beats every placebo"
+    bracket = next(b for b in loose["reading"]["brackets"] if b["shape"] == "flip")
+    assert bracket["wake_share"] == {"under": 0.0, "at_or_over": 0.6} and bracket["order"] == "same"
+
+
+def test_the_axis_power_reading_orders_the_two_brackets_and_stops_on_false_alarms():
+    def row(axis, size, wake, rule, p05=5):
+        return {"axis": axis, "shape": "one", "size": size, "wake_share": wake, "cell_rule_share": rule,
+                "cell_t_alone_share": rule, "p_under_0.05": p05}
+    rows = [row("vol", 0.0, 0.0, 0.0), row("vol", 0.05, 0.3, 0.8), row("vol", 0.1, 0.9, 1.0),
+            row("heat", 0.0, 0.0, 0.0), row("heat", 0.05, 0.85, 0.2), row("heat", 0.1, 1.0, 0.5)]
+    reading = sl.axis_power_reading(rows)
+    by = {b["axis"]: b for b in reading["brackets"]}
+    assert by["vol"]["order"] == "cells_first" and by["vol"]["cell_rule_share"] == {"under": 0.0, "at_or_over": 0.05}
+    assert by["heat"]["order"] == "axis_only" and by["heat"]["cell_rule_share"] == {"under": 0.1, "at_or_over": None}
+    assert reading["stop"] is False
+    alarm = sl.axis_power_reading([row("vol", 0.0, 0.0, 0.0, p05=13), row("vol", 0.1, 1.0, 1.0)])
+    assert alarm["stop"] and alarm["false_alarm_axes"] == ["vol"] and alarm["brackets"] is None
+    assert sl.axis_power_reading([row("vol", 0.0, 0.0, 0.0, p05=12)])["stop"] is False
+
+
+def test_the_axis_power_command_takes_a_tier_and_holds_the_maps_line_to_the_record(monkeypatch, capsys):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    assert sl.main(["axis-power"]) == sl.EXIT_USAGE
+    market, mids = _mid_world()
+    monkeypatch.setattr(sl, "SPAN", MID_TEST_SPAN)
+    monkeypatch.setattr(sl.lab, "hold", lambda cache, span=None, *, attach=True, flow=False: market)
+    monkeypatch.setattr(sl.lab, "grid", lambda market, names, span=None, **kw: {"cells": []})
+    monkeypatch.setattr(sl.lab, "chance", lambda cells: {"7": {"largest_abs_t": 4.1}, "28": {"largest_abs_t": 5.0}})
+    called = []
+    monkeypatch.setattr(sl, "axis_power", lambda *a, **k: called.append(1))
+    assert sl.main(["axis-power", "--tier", "top30"]) == sl.EXIT_BLOCKED and not called, "another line: nothing is read"
+    assert "not the record" in capsys.readouterr().out
+
+
+def test_a_scenario_cell_meets_the_lead_rule_only_over_the_line_steady_and_with_its_all_weeks_sign():
+    cells = {"up": {"t": 5.0, "mean_rank_correlation": 0.08}, "down": {"t": -4.5, "mean_rank_correlation": -0.06},
+             "thin": {"decisions": 12, "spells": 2, "too_few": True}}
+    shown, over, rule = sl.axis_cell_rule(cells, {"mean_rank_correlation": -0.01, "t": -0.3}, 0.9, 4.30)
+    assert set(shown) == {"up", "down"} and over == {"up", "down"}
+    assert rule == {"down"}, "the up state's sign is not its all-weeks cell's"
+    assert sl.axis_cell_rule(cells, {"mean_rank_correlation": 0.01}, 0.9, 4.30)[2] == {"up"}
+    assert sl.axis_cell_rule(cells, {"mean_rank_correlation": 0.01}, 0.4, 4.30)[2] == set(), "a rank that does not keep"
+    assert sl.axis_cell_rule(cells, {"mean_rank_correlation": 0.01}, None, 4.30)[2] == set()
+    assert sl.axis_cell_rule(cells, {"too_few": True}, 0.9, 4.30)[2] == set()
+    assert sl.axis_cell_rule(cells, {"mean_rank_correlation": 0.01}, 0.9, 4.6)[1] == {"up"}, "|t| strictly over the line"
+
+
+def test_an_axis_test_on_a_tier_with_missing_decisions_takes_the_sums_path_and_gives_the_slow_paths_p():
+    real = [None] * 5 + (["hi"] * 6 + ["lo"] * 6) * 8
+    placebos = sl.axis_placebos(real, "heat", 40)
+    rng = random_module.Random("cut")
+    x = [rng.gauss(0.05 if s == "hi" else 0.0, 0.1) for s in real]
+    for i in range(5, 30):                          # the tier's first labelled decisions have no value
+        x[i] = None
+    base = {i for i, v in enumerate(x) if v is not None}
+    cut = (frozenset(i for i in base if real[i] is not None),
+           [[[i for i in g if i in base] for g in p] for p in placebos])
+    fast = sl.axis_test(x, real, placebos, cut=cut)
+    slow = sl.axis_test(x, real, placebos)
+    assert fast["counted"] == slow["counted"] == 40 and fast["p"] == slow["p"]
+    assert fast["separation"] == pytest.approx(slow["separation"], rel=1e-9)
+    calls = []
+    original = sl.split_share
+    monkey = lambda xs, gs: calls.append(1) or original(xs, gs)        # noqa: E731
+    sl.split_share, saved = monkey, sl.split_share
+    try:
+        sl.axis_test(x, real, placebos, cut=cut)
+        thin_free = sum(1 for p in cut[1] if all(len(g) >= sl.lab.MIN_DECISIONS for g in p))
+        assert len(calls) == 1 + (40 - thin_free), "the real axis once, then only the placebos with a thin state"
+        calls.clear()
+        other = list(x)
+        other[40] = None                            # a series with values elsewhere than the cut: the slow path
+        sl.axis_test(other, real, placebos, cut=cut)
+        assert len(calls) == 41
+    finally:
+        sl.split_share = saved
+
+
+def test_a_placebo_left_with_a_thin_state_after_the_cut_is_read_as_the_slow_path_reads_it():
+    real = [None] * 5 + (["hi"] * 3 + ["lo"] * 7) * 9
+    placebos = sl.axis_placebos(real, "breadth", 200)
+    rng = random_module.Random("thin")
+    x = [rng.gauss(0.04 if s == "hi" else 0.0, 0.1) for s in real]
+    for i in range(5, 20):
+        x[i] = None
+    base = {i for i, v in enumerate(x) if v is not None}
+    cut = (frozenset(i for i in base if real[i] is not None),
+           [[[i for i in g if i in base] for g in p] for p in placebos])
+    thin = sum(1 for p in cut[1] if any(len(g) < sl.lab.MIN_DECISIONS for g in p))
+    assert 0 < thin < 200, "some placebos keep under twenty of a state after the cut"
+    fast, slow = sl.axis_test(x, real, placebos, cut=cut), sl.axis_test(x, real, placebos)
+    assert fast["counted"] == slow["counted"] and fast["p"] == slow["p"]

@@ -3210,6 +3210,249 @@ def door_reading(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     return {"false_alarms": alarms, "planting_broken": bool(alarms), "brackets": brackets}
 
 
+# --- round 43 (section 61): a scenario effect, read by the map's scenario cells and by the axis check ------------------
+
+AXIS_POWER_SIZES = (0.0, 0.02, 0.03, 0.04, 0.05, 0.065, 0.08, 0.10, 0.13, 0.16, 0.20)
+AXIS_POWER_SEEDS = 100
+AXIS_POWER_SHAPES = ("one", "flip")        # the size in the smallest state and 0 elsewhere, or minus it elsewhere
+AXIS_POWER_HORIZON = 7                     # the axis check reads the week; the map's 7-day line is one for both tiers
+AXIS_POWER_FAMILY = 642                    # the per-variable axis check's family (section 47: 55 variables, six axes)
+AXIS_POWER_Q = 0.10
+AXIS_POWER_SHARE = 0.8                     # of the seeds: a bracket's upper size is the smallest that reaches it
+AXIS_POWER_ALARM_MAX = 12                  # at size 0, seeds with p < 0.05 per axis; more stops (binomial 100 at 5%)
+AXIS_POWER_LINE_RECORD = {"7": 4.30}       # the 7-day line of the map (run14, section 56.2): recomputed and compared
+
+
+def axis_carrier(labels: Sequence[str | None]) -> str | None:
+    """The state the planted effect sits in: the axis's smallest by decisions, ties by name. Unlabelled is no state."""
+    counts: dict[str, int] = {}
+    for label in labels:
+        if label is not None:
+            counts[label] = counts.get(label, 0) + 1
+    return min(counts, key=lambda s: (counts[s], s)) if counts else None
+
+
+def axis_planted_size(label: str | None, carrier: str | None, shape: str, size: float) -> float:
+    if label is None or carrier is None:
+        return 0.0
+    if label == carrier:
+        return size
+    return -size if shape == "flip" else 0.0
+
+
+def split_share(x: Sequence[float | None], groups: Sequence[Sequence[int]]) -> float | None:
+    """:func:`signal_lab.separation` for one series given as a list over the decisions and an axis given as each
+    state's positions: the share of the variance between the states' means, over the states with
+    :data:`signal_lab.MIN_DECISIONS` values. One function for the real axis and every placebo."""
+    get = x.__getitem__
+    kept = []
+    for positions in groups:
+        values = [v for v in map(get, positions) if v is not None]
+        if len(values) >= lab.MIN_DECISIONS:
+            kept.append(values)
+    if len(kept) < 2:
+        return None
+    everything = [v for values in kept for v in values]
+    mean, total = statistics.fmean(everything), statistics.pvariance(everything) * len(everything)
+    if total <= 0:
+        return None
+    return sum(len(v) * (statistics.fmean(v) - mean) ** 2 for v in kept) / total
+
+
+def _split_share_full(get: Callable[[int], float], groups: Sequence[Sequence[int]], whole: tuple[float, float, int]
+                      ) -> float | None:
+    """:func:`split_share` for a series with a value at every labelled decision, where every state has
+    :data:`signal_lab.MIN_DECISIONS` of them: the same number from sums alone (the last state by difference)."""
+    total_sum, total_square, n = whole
+    centred = total_square - total_sum * total_sum / n
+    if centred <= 0:
+        return None
+    between, rest = 0.0, total_sum
+    for positions in groups[:-1]:
+        s = sum(map(get, positions))
+        between += s * s / len(positions)
+        rest -= s
+    between += rest * rest / len(groups[-1])
+    return (between - total_sum * total_sum / n) / centred
+
+
+def axis_placebos(real: Sequence[str | None], axis: str, count: int = lab.PLACEBO_AXES_BY_VARIABLE) -> list[list[array]]:
+    """The per-variable check's placebos for an axis, as each state's positions: the same seeds and order."""
+    states = sorted({s for s in real if s is not None})
+    out = []
+    for k in range(count):
+        shuffled = lab.shuffled_spells(real, f"{lab.SPEC}|axis|{axis}|{k}")
+        out.append([array("H", [i for i, s in enumerate(shuffled) if s == state]) for state in states])
+    return out
+
+
+def axis_test(x: Sequence[float | None], real: Sequence[str | None], placebos: Sequence[Sequence[Sequence[int]]],
+              *, cut: tuple[frozenset[int], Sequence[Sequence[Sequence[int]]]] | None = None) -> dict[str, Any]:
+    """One (series, axis) test as the per-variable check reads it: the separation and the share of placebos at or
+    above it. ``cut`` holds the labelled decisions a tier's series has values on and the placebos restricted to
+    them: when the series has values exactly there, sums alone give each placebo's number; otherwise every placebo
+    goes through :func:`split_share`. A placebo with a thin state goes through it too, so the number is the same."""
+    states = sorted({s for s in real if s is not None})
+    groups = [[i for i, s in enumerate(real) if s == state] for state in states]
+    actual = split_share(x, groups)
+    if actual is None:
+        return {"separation": None, "p": None, "counted": 0}
+    present = frozenset(i for g in groups for i in g if x[i] is not None)
+    fast: Sequence[Sequence[Sequence[int]]] | None = None
+    if cut is not None and present == cut[0]:
+        fast = cut[1]
+    elif cut is None and len(present) == sum(len(g) for g in groups):
+        fast = placebos
+    kept = [[i for i in g if x[i] is not None] for g in groups]
+    above = counted = 0
+    if fast is not None and all(len(g) >= lab.MIN_DECISIONS for g in kept):
+        labelled = [x[i] for g in kept for i in g]
+        whole = (sum(labelled), sum(v * v for v in labelled), len(labelled))
+        get = x.__getitem__
+        actual = _split_share_full(get, kept, whole)
+        for placebo in fast:
+            if all(len(g) >= lab.MIN_DECISIONS for g in placebo):
+                value = _split_share_full(get, placebo, whole)
+            else:
+                value = split_share(x, placebo)
+            if value is not None:
+                counted += 1
+                above += value >= actual
+    else:
+        for placebo in placebos:
+            value = split_share(x, placebo)
+            if value is not None:
+                counted += 1
+                above += value >= actual
+    return {"separation": actual, "p": (1 + above) / (1 + counted) if counted else None, "counted": counted}
+
+
+def axis_cell_rule(cells: Mapping[str, Mapping[str, Any]], whole: Mapping[str, Any], persistence: float | None,
+                   line: float) -> tuple[dict[str, Mapping[str, Any]], set[str], set[str]]:
+    """The map's lead rule on one axis's state cells with only its resting clause lifted: |t| over the line, the
+    variable keeps its rank week to week, and the cell's sign is its all-weeks cell's. Returns the shown cells, the
+    states over the line (|t| alone) and the states that meet the whole rule."""
+    shown = {st: c for st, c in cells.items() if not c.get("too_few") and c.get("t") is not None}
+    over = {st for st, c in shown.items() if abs(c["t"]) > line}
+    steady = persistence is not None and persistence >= lab.MIN_PERSISTENCE
+    base = None if whole.get("too_few") else whole.get("mean_rank_correlation")
+    rule = {st for st in over if steady and base is not None and (base > 0) == (shown[st]["mean_rank_correlation"] > 0)}
+    return shown, over, rule
+
+
+def axis_power(market: xsb.Market, tier: str, lines: Mapping[str, Mapping[str, Any]], span: tuple[date, date] = SPAN,
+               *, sizes: Sequence[float] = AXIS_POWER_SIZES, seeds: int = AXIS_POWER_SEEDS,
+               axes: Sequence[str] = lab.AXES, placebos: int = lab.PLACEBO_AXES_BY_VARIABLE,
+               frames: Sequence[tuple[date, Mapping[str, float]]] | None = None) -> dict[str, Any]:
+    """A variable whose rank correlation with the coming week depends on one axis's state, planted as round 39
+    planted (rank shape, round 39's fixed noise), read two ways at each size: by the map's scenario cells of that
+    axis under the lead rule with only its resting clause lifted (either state), and by the per-variable axis check
+    against its placebos with the family's first threshold."""
+    decided = list(frames) if frames is not None else door_frames(market, span)[(tier, AXIS_POWER_HORIZON)]
+    days = lab.decisions(span, AXIS_POWER_HORIZON)
+    where = {day: i for i, day in enumerate(days)}
+    labels = lab.scenario_labels(market, lab.tier_members(market, span)["top30"], days, span)
+    line = lines[str(AXIS_POWER_HORIZON)]["largest_abs_t"]
+    threshold = AXIS_POWER_Q / AXIS_POWER_FAMILY
+    real = {axis: [labels[d].get(axis) for d in days] for axis in axes}
+    carriers = {axis: axis_carrier(real[axis]) for axis in axes}
+    shams = {axis: axis_placebos(real[axis], axis, placebos) for axis in axes}
+    base = {where[day] for day, _ in decided if day in where}       # the decisions this tier's series can have values on
+    cuts = {axis: (frozenset(i for i in base if real[axis][i] is not None),
+                   [[array("H", [i for i in g if i in base]) for g in placebo] for placebo in shams[axis]])
+            for axis in axes}
+    kept: dict[tuple[str, str, float], dict[str, list[Any]]] = {}
+
+    def series(noise: Sequence[Mapping[str, float]], axis: str | None, shape: str, size: float) -> dict[str, Any]:
+        x: list[float | None] = [None] * len(days)
+        samples, before, rhos = [], None, []
+        for position, ((day, returns), draw) in enumerate(zip(decided, noise)):
+            label = real[axis][where[day]] if axis is not None and day in where else None
+            values = planted(returns, "rank", axis_planted_size(label, carriers.get(axis), shape, size), draw)
+            if len(values) < lab.MIN_NAMES:
+                continue
+            pairs = [(values[s], returns[s]) for s in values]
+            ic = lab.rank_correlation(pairs)
+            if ic is None:
+                continue
+            if day in where:
+                x[where[day]] = ic
+            samples.append((position, ic, lab.tercile_spread(pairs), day))
+            if before is not None:
+                shared = [(before[s], values[s]) for s in values if s in before]
+                if len(shared) >= lab.MIN_NAMES and (rho := lab.rank_correlation(shared)) is not None:
+                    rhos.append(rho)
+            before = values
+        return {"x": x, "samples": samples, "persistence": statistics.fmean(rhos) if rhos else None}
+
+    for k in range(seeds):
+        noise = _door_noise("fixed", k, decided, f"{tier}:{AXIS_POWER_HORIZON}")
+        zero = series(noise, None, "one", 0.0)
+        for axis in axes:
+            for shape in AXIS_POWER_SHAPES:
+                for size in sizes:
+                    body = zero if size == 0 else series(noise, axis, shape, size)
+                    test = axis_test(body["x"], real[axis], shams[axis], cut=cuts[axis])
+                    whole = lab.cell([s[:3] for s in body["samples"]], scenario="all")
+                    cells = {}
+                    for state in sorted({s for s in real[axis] if s is not None}):
+                        part = [s[:3] for s in body["samples"] if s[3] in where and real[axis][where[s[3]]] == state]
+                        cells[state] = lab.cell(part, scenario=f"{axis}={state}")
+                    shown, over, rule = axis_cell_rule(cells, whole, body["persistence"], line)
+                    into = kept.setdefault((axis, shape, size), {"wake": [], "p05": [], "rule": [], "t_alone": [],
+                                                                 "carrier_t": [], "carrier_ic": [], "separation": []})
+                    into["wake"].append(test["p"] is not None and test["p"] <= threshold)
+                    into["p05"].append(test["p"] is not None and test["p"] < 0.05)
+                    into["rule"].append(bool(rule))
+                    into["t_alone"].append(bool(over))
+                    carrier = shown.get(carriers[axis])
+                    if carrier is not None:
+                        into["carrier_t"].append(abs(carrier["t"]))
+                        into["carrier_ic"].append(carrier["mean_rank_correlation"])
+                    if test["separation"] is not None:
+                        into["separation"].append(test["separation"])
+        del noise
+    rows = []
+    for (axis, shape, size), into in sorted(kept.items()):
+        n = len(into["wake"])
+
+        def middle(xs: Sequence[float], places: int = 4) -> float | None:
+            return round(statistics.median(xs), places) if xs else None
+        rows.append({"axis": axis, "shape": shape, "size": size, "seeds": n, "carrier": carriers[axis],
+                     "wake_share": sum(into["wake"]) / n, "p_under_0.05": sum(into["p05"]),
+                     "cell_rule_share": sum(into["rule"]) / n, "cell_t_alone_share": sum(into["t_alone"]) / n,
+                     "median_carrier_abs_t": middle(into["carrier_t"], 3), "median_carrier_ic": middle(into["carrier_ic"]),
+                     "median_separation": middle(into["separation"], 5)})
+    states = {axis: {str(s): real[axis].count(s) for s in sorted(set(real[axis]), key=str)} for axis in axes}
+    return {"tier": tier, "horizon_days": AXIS_POWER_HORIZON, "line": line, "threshold": threshold,
+            "placebos_per_test": placebos, "family": AXIS_POWER_FAMILY, "states": states, "carriers": carriers,
+            "decisions": len(days), "decided": len(decided), "rows": rows, "reading": axis_power_reading(rows)}
+
+
+def axis_power_reading(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The false-alarm gate at size 0, then per axis and shape the two brackets: the smallest size at which
+    :data:`AXIS_POWER_SHARE` of the seeds wake the axis, and the smallest at which that share have a scenario cell
+    meeting the lead rule (resting clause lifted); with the size under each."""
+    alarms = sorted({r["axis"] for r in rows if r["size"] == 0 and r["p_under_0.05"] > AXIS_POWER_ALARM_MAX})
+    groups: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+    for row in rows:
+        groups.setdefault((row["axis"], row["shape"]), []).append(row)
+    brackets = []
+    for (axis, shape), group in sorted(groups.items()):
+        group = sorted(group, key=lambda r: r["size"])
+        out: dict[str, Any] = {"axis": axis, "shape": shape}
+        for key in ("wake_share", "cell_rule_share", "cell_t_alone_share"):
+            first = next((r["size"] for r in group if r[key] >= AXIS_POWER_SHARE), None)
+            under = [r["size"] for r in group if first is None or r["size"] < first]
+            out[key] = {"under": under[-1] if under else None, "at_or_over": first}
+        axis_at, cell_at = out["wake_share"]["at_or_over"], out["cell_rule_share"]["at_or_over"]
+        out["order"] = ("neither" if axis_at is None and cell_at is None else "cells_only" if axis_at is None
+                        else "axis_only" if cell_at is None else "axis_first" if axis_at < cell_at
+                        else "same" if axis_at == cell_at else "cells_first")
+        brackets.append(out)
+    return {"false_alarm_axes": alarms, "stop": bool(alarms), "brackets": None if alarms else brackets}
+
+
 # --- ranks 101 and after, read by the map and by the tier sweep (round 40, section 57) --------------------------------
 
 LOWER_NAME = lab.LOWER_TIER_NAME           # H-R1's tier as coded: LowerTier's held coins, per decision day
@@ -4359,8 +4602,9 @@ def main(argv: list[str] | None = None) -> int:
                                             "basis-counts", "basis", "wide-counts", "wide", "mid-counts", "mid",
                                             "tier-gate", "tier-counts", "tier-sweep", "tier-lead", "door-size",
                                             "lower-gate", "lower-counts", "lower-map", "lower-sweep", "lower-overlap",
-                                            "ha1-gate", "ha1-counts", "ha1", "sens"))
+                                            "ha1-gate", "ha1-counts", "ha1", "sens", "axis-power"))
     parser.add_argument("--family", choices=tuple(SENS_FAMILIES), default=None, help="sens: the sweep whose door is measured")
+    parser.add_argument("--tier", choices=("top30", "rank31_100"), default=None, help="axis-power: the map tier read")
     parser.add_argument("--null", type=Path, default=None, help="sens: that sweep's stored null books (JSON)")
     parser.add_argument("--shape", choices=BAR_SHAPES, default=None, help="bar: the book shape whose null books are read")
     parser.add_argument("--only", default=None,
@@ -4543,6 +4787,28 @@ def main(argv: list[str] | None = None) -> int:
                           "tier": LOWER_NAME, "logic": MID_NAMES[1], "left_out": lower_out(), "coverage_floor": LOWER_COVERAGE,
                           "only": sorted(wanted), "command": args.command, **body}, indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_OK
+    if args.command == "axis-power":
+        if args.tier is None:
+            print("refused: axis-power needs --tier", file=sys.stderr)
+            return EXIT_USAGE
+        market = lab.hold(cache, attach=False)
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        if lab.last_day(market) > SPAN[1]:
+            print("refused: the market reaches past the search span", file=sys.stderr)
+            return EXIT_USAGE
+        lines = lab.chance(lab.grid(market, lab.controls())["cells"])
+        recomputed = {h: round(lines[h]["largest_abs_t"], 2) for h in AXIS_POWER_LINE_RECORD}
+        if recomputed != AXIS_POWER_LINE_RECORD:
+            body: dict[str, Any] = {"refused": f"the map's line is {recomputed}, not the record's {AXIS_POWER_LINE_RECORD}"}
+        else:
+            body = axis_power(market, args.tier, lines)
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
+                          "command": args.command, "planted": "built from the forward return the cell reads: a calibration, "
+                          "not a variable", "line_recomputed": recomputed, **body}, indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_BLOCKED if body.get("refused") or body["reading"]["stop"] else EXIT_OK
     if args.command == "door-size":
         market = lab.hold(cache, attach=False)
         if market is None:
