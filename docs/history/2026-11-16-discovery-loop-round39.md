@@ -26,3 +26,20 @@ rounds. Neither says anything until we know what size of effect each rule can se
 - *A false-alarm gate*: size 0 seen in more than 3 of 100 seeds in any combination means the planting is broken.
 - *What the result decides is one thing*: whether the next round reads the tier below rank 100 with the map alone
   or with the map and a sweep together. No line, cap or closed reading moves.
+
+## Result: the map's doors are coarser than the entry rule
+
+One sandbox run at `b1db9846` (18 minutes); `~/research/discovery/door1/door.json`.
+
+- *Both gates passed*: the same run's random-variable lines equal round 38's, and size 0 was seen in at most 2 of
+  100 seeds in any combination.
+- *The decision bracket* (ranks 31–100, weekly, noise fixed per coin, rank shape, the full lead rule): 77% of seeds
+  at ρ 0.05, where a weekly rank book makes 29.9% a year before costs, and 100% at ρ 0.065 (38.5%). Both exceed
+  the entry rule plus the median cost (24%). An effect exactly the size of the entry rule is seen about half the
+  time. On the top 30 the bracket is 40.6–50.7%, and the 28-day cells are coarser still.
+- *The second rule* (the spread's t) is nowhere finer than the first.
+- *The planted cells are cleaner than real ones* (per-decision rank correlation spread 0.130 against 0.160 on ranks
+  31–100), so for real variables the doors are coarser again by about a fifth.
+- *What it says about earlier rounds*: the map's "no lead" on all-weeks cells means no effect of roughly 30–40% a
+  year before costs in that form. Closed readings are not re-judged.
+- *Next, by the registered table*: the tier below rank 100 is read with the map and a sweep together.
