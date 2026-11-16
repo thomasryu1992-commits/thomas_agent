@@ -3613,6 +3613,7 @@ def lower_sweep_reading(books: Mapping[str, Mapping[str, Any]], null: Mapping[st
 # Round 41 (section 58): round 40's two map leads, each with the side its cell names. Nothing here is a variant.
 LOWER_LEADS = {"residual_momentum_30": {"long": "low", "horizon_days": 7, "group": "price_volume"},
                "listing_age": {"long": "high", "horizon_days": 28, "group": "coin_character"}}
+LOWER_OVERLAP_UNLOADED = frozenset({"positioning", "depth"})   # round 41 loaded neither (section 58.2)
 LOWER_OVERLAP_CLOSE = 0.5                  # |median cosine| with a struck or closed book at which a lead re-builds it
 
 
@@ -3623,7 +3624,7 @@ def lower_lead_overlap(market: xsb.Market, span: tuple[date, date] = SPAN) -> di
     :data:`LOWER_OVERLAP_CLOSE` against any of them re-builds that book and is closed."""
     tier = lower_sweep_tier(market, span)
     registered = lab.variables()
-    refused = lower_refused_groups()
+    refused = lower_refused_groups() | LOWER_OVERLAP_UNLOADED
     others: dict[str, Callable[..., dict[str, float]]] = {
         name: tier.weigher(registered[name][1], 1) for name in sorted(lower_out()) if registered[name][0] not in refused}
     others["H-R1"] = tier.weigher(skip_day_return, -1)
@@ -3959,6 +3960,180 @@ def sens_run(market: xsb.Market, family: str, null: Mapping[str, Mapping[str, An
             "false_alarm": {"p_under_0.05_at_zero": zero, "range": list(SENS_FALSE_ALARM), "stop": false_alarm},
             "sizes": rows,
             "brackets": None if false_alarm or late else {key: sens_bracket(v) for key, v in shares.items()}}
+
+
+# --- round 45 (section 63): positioning on ranks 101+, from a fetch of its own -------------------------------------------
+
+HOST_COMMANDS = ("lower-positioning-digest", "lower-positioning-build", "lower-positioning-seal")
+LOWER_METRICS_ROOT = "archive-metrics-lower"     # beside the shared root, which M04's screen reads and fetches into
+LOWER_METRICS_DAILY = "metrics-daily-lower"      # beside derived/metrics-daily, which M04's screen reads
+LOWER_METRICS_PLAN = "plan.json"
+LOWER_METRICS_COMPLETE = "complete.json"         # written only when every planned day is on disk or answered absent
+LOWER_METRICS_WINDOW = 210                       # days before a decision a positioning variable reads (six 30-day steps)
+METRICS_FIRST_DAY = date(2020, 9, 27)            # the archive's first metrics day on disk (the shared root's file names)
+
+
+def lower_metrics_plan(market: xsb.Market, shared: Path, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """The metrics days the positioning variables read on ranks 101+: for every weekly decision of the span, every
+    coin the tier holds, the :data:`LOWER_METRICS_WINDOW` days before it, from the archive's first metrics day and
+    the coin's first bar on. Days already in the shared root, or answered absent there, are not asked again. Spans
+    are cut at calendar months so a fetch can stop between them. Reads file names and bars only."""
+    tier = LowerTier(market, span)
+    decisions = [d for d in sundays(span) if span[0] <= d <= span[1]]
+    need: dict[str, set[date]] = {}
+    for day in decisions:
+        for symbol in tier.at(day)[0]:
+            first = max(METRICS_FIRST_DAY, min(market.bars[symbol]))
+            for k in range(LOWER_METRICS_WINDOW + 1):
+                d = day - timedelta(days=k)
+                if first <= d <= span[1]:
+                    need.setdefault(symbol, set()).add(d)
+    try:
+        absent = {n for names in json.loads((shared / lab.ba.MISSING_FILENAME).read_text()).values() for n in names}
+    except (OSError, ValueError):
+        absent = set()
+    spans: list[list[str]] = []
+    counts = {"symbol_days": 0, "in_shared_root": 0, "absent_in_shared_root": 0, "to_fetch": 0}
+    for symbol in sorted(need):
+        folder = shared / lab.ba.METRICS / symbol
+        on_disk = {p.name for p in folder.glob("*.zip")} if folder.exists() else set()
+        wanted = []
+        for d in sorted(need[symbol]):
+            name = lab.ba.daily_name(symbol, lab.ba.METRICS, d)
+            counts["symbol_days"] += 1
+            if name in on_disk:
+                counts["in_shared_root"] += 1
+            elif name in absent:
+                counts["absent_in_shared_root"] += 1
+            else:
+                wanted.append(d)
+        counts["to_fetch"] += len(wanted)
+        for d in wanted:
+            last = spans[-1] if spans else None
+            if (last is not None and last[0] == symbol and date.fromisoformat(last[2]) + timedelta(days=1) == d
+                    and last[2][:7] == d.isoformat()[:7]):
+                last[2] = d.isoformat()
+            else:
+                spans.append([symbol, d.isoformat(), d.isoformat()])
+    return {"decisions": len(decisions), "first_decision": decisions[0].isoformat() if decisions else None,
+            "window_days": LOWER_METRICS_WINDOW, "first_metrics_day": METRICS_FIRST_DAY.isoformat(),
+            "held_symbols": sorted(need), **counts, "spans": spans}
+
+
+def lower_metrics_build(cache: Path, *, say: Callable[[str], None] = print) -> int:
+    """Host only, values and no returns: each held coin's daily positioning values from the zips of both roots (the
+    shared one read, never written), into :data:`LOWER_METRICS_DAILY`. One file per coin the plan names."""
+    plan = json.loads((cache / LOWER_METRICS_ROOT / LOWER_METRICS_PLAN).read_text())
+    out_dir = cache / "derived" / LOWER_METRICS_DAILY
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written = 0
+    for symbol in plan["held_symbols"]:
+        paths: dict[str, Path] = {}
+        for root in (cache / "archive-metrics", cache / LOWER_METRICS_ROOT):
+            folder = root / lab.ba.METRICS / symbol
+            for path in sorted(folder.glob("*.zip")) if folder.exists() else []:
+                paths.setdefault(path.name, path)
+        lines = []
+        for name in sorted(paths):
+            try:
+                day = date.fromisoformat(Path(name).stem[-10:])
+            except ValueError:
+                continue
+            values = lab.ms.daily_values(lab.ba.read_metrics_zip(paths[name]), day)
+            lines.append(json.dumps([day.isoformat(), *(values[c] for c in lab.ms.COLUMNS)]))
+        (out_dir / f"{symbol}.jsonl").write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+        written += len(lines)
+    say(f"built {written} symbol-day(s) for {len(plan['held_symbols'])} coin(s) under {out_dir}")
+    return written
+
+
+def tree_digest(root: Path) -> dict[str, Any]:
+    """A digest of every file under ``root``: relative path and bytes, in path order."""
+    import hashlib
+    h, files = hashlib.sha256(), 0
+    for path in sorted(p for p in root.rglob("*") if p.is_file()) if root.exists() else []:
+        h.update(str(path.relative_to(root)).encode() + b"\0")
+        h.update(path.read_bytes())
+        files += 1
+    return {"files": files, "sha256": h.hexdigest()}
+
+
+def shared_metrics_digest(cache: Path) -> dict[str, Any]:
+    """What M04's screen and the forward panel read and fetch into: the shared root and the shared daily file."""
+    return {"archive-metrics": tree_digest(cache / "archive-metrics"),
+            "derived/metrics-daily": tree_digest(cache / "derived" / "metrics-daily")}
+
+
+def lower_metrics_seal(cache: Path, before: Mapping[str, Any]) -> dict[str, Any]:
+    """Host only. The fetch is complete when every planned day is on disk in either root or answered absent, the
+    shared root and the shared daily file are byte-identical to ``before``, and every held coin has a daily file.
+    Only then is :data:`LOWER_METRICS_COMPLETE` written; without it no command reads positioning on this tier."""
+    root = cache / LOWER_METRICS_ROOT
+    plan = json.loads((root / LOWER_METRICS_PLAN).read_text())
+    absent: set[str] = set()
+    for missing in (root / lab.ba.MISSING_FILENAME, cache / "archive-metrics" / lab.ba.MISSING_FILENAME):
+        try:
+            absent |= {n for names in json.loads(missing.read_text()).values() for n in names}
+        except (OSError, ValueError):
+            pass
+    open_days = 0
+    for symbol, first, last in plan["spans"]:
+        d = date.fromisoformat(first)
+        while d <= date.fromisoformat(last):
+            name = lab.ba.daily_name(symbol, lab.ba.METRICS, d)
+            if not (root / lab.ba.METRICS / symbol / name).exists() and name not in absent:
+                open_days += 1
+            d += timedelta(days=1)
+    now = shared_metrics_digest(cache)
+    unbuilt = [s for s in plan["held_symbols"] if not (cache / "derived" / LOWER_METRICS_DAILY / f"{s}.jsonl").exists()]
+    problems = ([f"{open_days} planned day(s) neither on disk nor answered absent"] if open_days else []) + \
+        [f"{k} changed since the fetch began" for k in now if now[k] != before.get(k)] + \
+        ([f"{len(unbuilt)} held coin(s) without a daily file"] if unbuilt else [])
+    report = {"open_days": open_days, "shared": now, "before": dict(before), "unbuilt": len(unbuilt), "problems": problems}
+    marker = root / LOWER_METRICS_COMPLETE
+    if problems:
+        marker.unlink(missing_ok=True)
+    else:
+        marker.write_text(json.dumps({**report, "sealed": True}, indent=1, sort_keys=True))
+    return report
+
+
+def lower_positioning_market(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | None:
+    """The market cut at the span's end with ranks 101+'s own positioning values attached, and nothing else: None
+    unless the fetch was sealed. The shared daily file is never attached here, so a coin's values never depend on
+    whether it was about to join the top hundred."""
+    if not (cache / LOWER_METRICS_ROOT / LOWER_METRICS_COMPLETE).exists():
+        return None
+    held = lab.hold(cache, span, attach=False)
+    if held is None:
+        return None
+    folder = cache / "derived" / LOWER_METRICS_DAILY
+    metrics: dict[str, dict[date, dict[str, float | None]]] = {}
+    for path in sorted(folder.glob("*.jsonl")):
+        days = {}
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                row = json.loads(line)
+                day = date.fromisoformat(row[0])
+                if day <= span[1]:
+                    days[day] = dict(zip(lab.ms.COLUMNS, row[1:]))
+        metrics[path.stem] = days
+    held.metrics = metrics
+    return held
+
+
+def lower_metrics_agree(cache: Path, market: xsb.Market) -> dict[str, Any]:
+    """Every symbol-day in both the shared daily file and this tier's must carry the same values (one zip, one
+    reading). The shared file is read here and nowhere else in this round."""
+    shared = lab.ms.load_daily(cache)
+    both = differ = 0
+    for symbol, days in market.metrics.items():
+        other = shared.get(symbol) or {}
+        for day, values in days.items():
+            if day in other:
+                both += 1
+                differ += other[day] != values
+    return {"shared_symbol_days": both, "differ": differ}
 
 
 def lower_map(market: xsb.Market, names: Mapping[str, tuple[str, lab.Variable]],
@@ -4602,9 +4777,12 @@ def main(argv: list[str] | None = None) -> int:
                                             "basis-counts", "basis", "wide-counts", "wide", "mid-counts", "mid",
                                             "tier-gate", "tier-counts", "tier-sweep", "tier-lead", "door-size",
                                             "lower-gate", "lower-counts", "lower-map", "lower-sweep", "lower-overlap",
-                                            "ha1-gate", "ha1-counts", "ha1", "sens", "axis-power"))
+                                            "ha1-gate", "ha1-counts", "ha1", "sens", "axis-power",
+                                            "lower-positioning-plan", "lower-positioning-digest",
+                                            "lower-positioning-build", "lower-positioning-seal"))
     parser.add_argument("--family", choices=tuple(SENS_FAMILIES), default=None, help="sens: the sweep whose door is measured")
     parser.add_argument("--tier", choices=("top30", "rank31_100"), default=None, help="axis-power: the map tier read")
+    parser.add_argument("--before", type=Path, default=None, help="lower-positioning-seal: the digest taken before the fetch")
     parser.add_argument("--null", type=Path, default=None, help="sens: that sweep's stored null books (JSON)")
     parser.add_argument("--shape", choices=BAR_SHAPES, default=None, help="bar: the book shape whose null books are read")
     parser.add_argument("--only", default=None,
@@ -4616,10 +4794,32 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"spec": SPEC, "span": [d.isoformat() for d in SPAN], "name_cap": NAME_CAP,
                           "candidates": CANDIDATES}, indent=1, ensure_ascii=False))
         return EXIT_OK
+    host_cache = args.cache or Path(os.environ.get("RESEARCH_CACHE", str(Path.home() / "research" / "cache")))
+    if args.command in HOST_COMMANDS:                     # host: file digests and values from zips, never a return
+        if args.command == "lower-positioning-digest":
+            print(json.dumps(shared_metrics_digest(host_cache), indent=1, sort_keys=True))
+            return EXIT_OK
+        if args.command == "lower-positioning-build":
+            lower_metrics_build(host_cache)
+            return EXIT_OK
+        if args.before is None:
+            print("refused: lower-positioning-seal needs --before", file=sys.stderr)
+            return EXIT_USAGE
+        report = lower_metrics_seal(host_cache, json.loads(args.before.read_text()))
+        print(json.dumps(report, indent=1, sort_keys=True))
+        return EXIT_BLOCKED if report["problems"] else EXIT_OK
     if not xsb._in_sandbox():
         print("refused: runs in the research sandbox only (scripts/research/sandbox_run.sh)", file=sys.stderr)
         return EXIT_USAGE
     cache = args.cache or Path(os.environ.get("RESEARCH_CACHE", str(Path.home() / "research" / "cache")))
+    if args.command == "lower-positioning-plan":
+        market = lab.hold(cache, attach=False)
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), "spec": SPEC, "tier": LOWER_NAME,
+                          **lower_metrics_plan(market, cache / "archive-metrics")}, indent=1, sort_keys=True))
+        return EXIT_OK
     if args.command in ("confirm-counts", "confirm"):
         entry = next_confirm_read()
         if entry is None:
@@ -4765,7 +4965,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "lower-map":       # the map shows a group's struck variables too; no lead is taken from them
             names = {n: v for n, v in lab.variables().items() if v[0] in wanted}
         try:
-            market = lab.hold(cache, attach=False) if args.command == "lower-gate" else sweep_market(cache, wanted)
+            if "positioning" in wanted:                   # this tier's own files only (section 63), read alone
+                if wanted != {"positioning"}:
+                    raise ValueError("positioning is read alone on this tier")
+                market = lower_positioning_market(cache)
+                if market is None:
+                    print("BLOCKED: this tier's positioning fetch is not sealed (section 63)", file=sys.stderr)
+                    return EXIT_BLOCKED
+            else:
+                market = lab.hold(cache, attach=False) if args.command == "lower-gate" else sweep_market(cache, wanted)
         except ValueError as exc:
             print(f"refused: {exc}", file=sys.stderr)
             return EXIT_USAGE
@@ -4774,6 +4982,11 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_BLOCKED
         if args.command == "lower-gate":
             body: dict[str, Any] = {"book": lower_gate(market), "variable": LOWER_GATE_RECORD, "long": "low"}
+            if "positioning" in wanted:
+                body["metrics_agree"] = lower_metrics_agree(cache, market)
+                if args.null is not None:
+                    stored = json.loads(args.null.read_text(encoding="utf-8"))
+                    body["null_check"] = sens_null_check(lower_sweep_tier(market), stored["null"]) or "matches"
         elif args.command == "lower-counts":
             body = lower_tier_counts(market, names)
         elif args.command == "lower-map":

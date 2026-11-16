@@ -1004,10 +1004,10 @@ SPREAD_NO_BOOK: dict[tuple[str, str], str] = {
        for name in ("momentum_30", "momentum_90")},
     **{(LOWER_TIER_NAME, name): "the tier sweep's closed lead: never on another tier, never at another window (section 53.6)"
        for name in ("funding_30", "funding_7")},
-    **{(LOWER_TIER_NAME, name): "positioning files were fetched for the top hundred's member months: on this tier a coin "
-                                "has a value mostly when it is a top-hundred member the next month (section 32)"
-       for name in ("oi_growth_30", "ls_level_30", "top_level_30", "divergence_30", "taker_level_30", "ls_change_30",
-                    "top_change_30", "taker_change_30", "ls_position_30", "top_position_30", "taker_position_30")},
+    # Round 45 (section 63) fetched this tier's own positioning files, so the other nine are read here from them
+    # (``strategy_ladder.lower_positioning_market``); before that they were struck as a sample chosen by next month's rank.
+    **{(LOWER_TIER_NAME, name): "H-M1's variables: closed with 'the tier boundary is not changed' (section 31)"
+       for name in ("oi_growth_30", "ls_level_30")},
     **{(LOWER_TIER_NAME, name): "no depth file lies in the span" for name in ("imbalance_1_30", "imbalance_5_30", "depth_growth_30")},
 }
 

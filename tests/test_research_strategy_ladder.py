@@ -2778,12 +2778,15 @@ def test_the_lower_tier_strikes_by_name_what_the_record_forbids_there_and_both_r
     registered = sl.lab.variables()
     assert set(out) | set(names) == set(registered) and not set(out) & set(names)
     assert {"momentum_7", "momentum_30", "momentum_90", "funding_7", "funding_30"} <= set(out), "H-R1, H-R2, round 37's closed lead"
-    assert {n for n, (g, _) in registered.items() if g in ("positioning", "depth")} <= set(out)
+    assert {n for n, (g, _) in registered.items() if g == "depth"} <= set(out)
+    positioning = {n for n, (g, _) in registered.items() if g == "positioning"}
+    assert positioning & set(out) == {"oi_growth_30", "ls_level_30"}, "H-M1's two stay struck (section 63)"
+    assert len(positioning - set(out)) == 9, "the other nine are read from this tier's own files"
     assert {"vol_30", "beta_30", "spread_change_30", "trade_size_position_30"} <= set(out), "every tier's strikes hold here"
     assert {"funding_change_30", "funding_position_30", "momentum_change_30", "residual_momentum_30", "listing_age",
             "taker_buy_share_30", "premium_30", "spot_share_30"} <= set(names), "kin, built and named on the form"
     assert all(out[n] == sl.lab.no_book(n, sl.LOWER_NAME) for n in out), "the map's no_book and the sweep's list are one"
-    assert sl.lower_refused_groups() == {"positioning", "depth"} and len(names) == 27
+    assert sl.lower_refused_groups() == {"depth"} and len(names) == 36
     assert sl.lab.LOWER_TIER_NAME not in sl.lab.TIERS, "the mapped tiers are untouched"
 
 
@@ -2879,13 +2882,16 @@ def test_the_lower_tier_counts_carry_no_return(monkeypatch):
     assert "sharpe" not in flat and "_pct" not in flat
 
 
-def test_the_lower_commands_refuse_struck_groups(monkeypatch, capsys):
+def test_the_lower_commands_refuse_struck_groups(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
-    for command in ("lower-counts", "lower-map", "lower-sweep"):
-        assert sl.main([command, "--only", "positioning"]) == sl.EXIT_USAGE
+    monkeypatch.setenv("RESEARCH_CACHE", str(tmp_path))
+    for command in ("lower-counts", "lower-map", "lower-sweep", "lower-gate"):
+        assert sl.main([command, "--only", "positioning"]) == sl.EXIT_BLOCKED, "no sealed fetch: nothing is read"
         assert sl.main([command, "--only", "depth"]) == sl.EXIT_USAGE
+    assert sl.main(["lower-sweep", "--only", "positioning,funding"]) == sl.EXIT_USAGE, "positioning is read alone"
+    err = capsys.readouterr().err
+    assert "not sealed" in err and "struck on this tier" in err
     assert sl.main(["lower-counts", "--only", "null"]) == sl.EXIT_USAGE
-    assert "struck on this tier" in capsys.readouterr().err
 
 
 # --- round 41: the two map leads' overlap with what the record strikes there ----------------------------------------
@@ -3217,3 +3223,128 @@ def test_a_placebo_left_with_a_thin_state_after_the_cut_is_read_as_the_slow_path
     assert 0 < thin < 200, "some placebos keep under twenty of a state after the cut"
     fast, slow = sl.axis_test(x, real, placebos, cut=cut), sl.axis_test(x, real, placebos)
     assert fast["counted"] == slow["counted"] and fast["p"] == slow["p"]
+
+
+# --- round 45: positioning on ranks 101+, from a fetch of its own -------------------------------------------------------
+
+def _metrics_zip(path, day, ls=1.0, oi=100.0):
+    """A day's metrics file with every five-minute row filled."""
+    import zipfile as zf
+    rows = ["create_time,symbol,sum_open_interest,sum_open_interest_value,count_toptrader_long_short_ratio,"
+            "sum_toptrader_long_short_ratio,count_long_short_ratio,sum_taker_long_short_vol_ratio"]
+    for k in range(288):
+        stamp = f"{day.isoformat()} {k // 12:02d}:{(k % 12) * 5:02d}:00"
+        rows.append(f"{stamp},X,{oi},1,1,{ls},{ls},{ls}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zf.ZipFile(path, "w") as archive:
+        archive.writestr(path.stem + ".csv", "\n".join(rows) + "\n")
+
+
+def test_the_lower_metrics_plan_asks_for_every_held_coins_window_not_already_in_the_shared_root(monkeypatch, tmp_path):
+    monkeypatch.setattr(sl, "LOWER_TIER_FROM", 4)
+    monkeypatch.setattr(sl, "METRICS_FIRST_DAY", date(2020, 3, 1))
+    market = _lower_market()
+    shared = tmp_path / "archive-metrics"
+    have = sl.lab.ba.daily_name("LOW0USDT", "metrics", date(2021, 6, 1))
+    _metrics_zip(shared / "metrics" / "LOW0USDT" / have, date(2021, 6, 1))
+    gone = sl.lab.ba.daily_name("LOW1USDT", "metrics", date(2021, 6, 2))
+    (shared / "missing.json").write_text(json.dumps({"LOW1USDT": [gone]}))
+    plan = sl.lower_metrics_plan(market, shared, LOWER_TEST_SPAN)
+    assert set(plan["held_symbols"]) == {f"LOW{i}USDT" for i in range(9)}, "no funding or too thin: never held"
+    assert plan["in_shared_root"] == 1 and plan["absent_in_shared_root"] == 1
+    assert plan["to_fetch"] == plan["symbol_days"] - 2
+    asked = {(s, f, l) for s, f, l in plan["spans"]}
+    assert all(f[:7] == l[:7] and f <= l for _, f, l in asked), "a span never crosses a month"
+    days = {(s, date.fromisoformat(f) + timedelta(days=k)) for s, f, l in plan["spans"]
+            for k in range((date.fromisoformat(l) - date.fromisoformat(f)).days + 1)}
+    assert ("LOW0USDT", date(2021, 6, 1)) not in days and ("LOW1USDT", date(2021, 6, 2)) not in days
+    assert min(d for _, d in days) == date(2020, 3, 1), "from the archive's first metrics day"
+    assert max(d for _, d in days) == date(2021, 6, 27), "the span's last decision"
+    first_decision = date.fromisoformat(plan["first_decision"])
+    tier = sl.LowerTier(market, LOWER_TEST_SPAN)
+    held_day = next(d for d in sl.sundays(LOWER_TEST_SPAN) if tier.at(d)[0] and d >= date(2020, 12, 1))
+    assert all(("LOW2USDT", held_day - timedelta(days=k)) in days for k in range(sl.LOWER_METRICS_WINDOW + 1))
+    assert first_decision <= held_day and plan["window_days"] == 210
+
+
+def test_the_positioning_variables_read_nothing_older_than_the_planned_window():
+    day = date(2021, 6, 6)
+    read: set[date] = set()
+
+    class Recording(dict):
+        def get(self, key, default=None):
+            read.add(key)
+            return super().get(key, default)
+
+        def __getitem__(self, key):
+            read.add(key)
+            return super().__getitem__(key)
+    values = {"oi": 100.0, "ls": 0.5, "top": 0.5, "taker": 0.5}
+    start = date(2020, 1, 1)
+    bars = {start + timedelta(days=k): xsb.Bar(open=1.0, close=1.0, quote_volume=1.0) for k in range(560)}
+    market = xsb.Market(bars={"A": bars}, funding={})
+    registered = sl.lab.variables()
+    nine = [n for n, (g, _) in registered.items() if g == "positioning" and n not in ("oi_growth_30", "ls_level_30")]
+    assert len(nine) == 9
+    for name in nine + ["oi_growth_30", "ls_level_30"]:
+        market.metrics = {"A": Recording({d: dict(values) for d in bars})}
+        read.clear()
+        registered[name][1](market, "A", day)
+        assert read and min(read) >= day - timedelta(days=sl.LOWER_METRICS_WINDOW), name
+        assert max(read) <= day, name
+
+
+def test_the_lower_daily_file_reads_both_roots_and_the_seal_holds_the_shared_root_still(tmp_path):
+    cache = tmp_path
+    root = cache / sl.LOWER_METRICS_ROOT
+    shared = cache / "archive-metrics"
+    d1, d2, d3 = date(2022, 3, 1), date(2022, 3, 2), date(2022, 3, 3)
+    _metrics_zip(shared / "metrics" / "LOW0USDT" / sl.lab.ba.daily_name("LOW0USDT", "metrics", d1), d1, ls=1.0)
+    _metrics_zip(root / "metrics" / "LOW0USDT" / sl.lab.ba.daily_name("LOW0USDT", "metrics", d2), d2, ls=3.0)
+    (cache / "derived" / "metrics-daily").mkdir(parents=True)
+    (cache / "derived" / "metrics-daily" / "LOW0USDT.jsonl").write_text(json.dumps([d1.isoformat(), 100.0, 0.5, 0.5, 0.5]) + "\n")
+    plan = {"held_symbols": ["LOW0USDT"], "spans": [["LOW0USDT", d2.isoformat(), d3.isoformat()]]}
+    (root / sl.LOWER_METRICS_PLAN).write_text(json.dumps(plan))
+    before = sl.shared_metrics_digest(cache)
+    assert sl.lower_metrics_build(cache, say=lambda _: None) == 2
+    built = [json.loads(line) for line in (cache / "derived" / sl.LOWER_METRICS_DAILY / "LOW0USDT.jsonl").read_text().splitlines()]
+    assert [row[0] for row in built] == [d1.isoformat(), d2.isoformat()] and built[1][2] == pytest.approx(0.75)
+    report = sl.lower_metrics_seal(cache, before)
+    assert report["open_days"] == 1 and report["problems"] and not (root / sl.LOWER_METRICS_COMPLETE).exists()
+    assert sl.lower_positioning_market(cache) is None, "not sealed: nothing is read"
+    (root / "missing.json").write_text(json.dumps({"LOW0USDT": [sl.lab.ba.daily_name("LOW0USDT", "metrics", d3)]}))
+    assert sl.lower_metrics_seal(cache, before)["problems"] == [] and (root / sl.LOWER_METRICS_COMPLETE).exists()
+    (shared / "missing.json").write_text("{}")                  # the shared root moved
+    moved = sl.lower_metrics_seal(cache, before)
+    assert moved["problems"] == ["archive-metrics changed since the fetch began"]
+    assert not (root / sl.LOWER_METRICS_COMPLETE).exists(), "a failed seal removes the marker"
+
+
+def test_the_lower_positioning_market_attaches_this_tiers_file_alone_and_agrees_with_the_shared_one(monkeypatch, tmp_path):
+    cache = tmp_path
+    root = cache / sl.LOWER_METRICS_ROOT
+    root.mkdir(parents=True)
+    (root / sl.LOWER_METRICS_COMPLETE).write_text("{}")
+    lower = cache / "derived" / sl.LOWER_METRICS_DAILY
+    lower.mkdir(parents=True)
+    (lower / "LOW0USDT.jsonl").write_text(json.dumps(["2021-01-01", 1.0, 0.5, 0.5, 0.5]) + "\n"
+                                          + json.dumps(["2025-01-01", 1.0, 0.5, 0.5, 0.5]) + "\n")
+    (cache / "derived" / "metrics-daily").mkdir(parents=True)
+    (cache / "derived" / "metrics-daily" / "LOW0USDT.jsonl").write_text(json.dumps(["2021-01-01", 1.0, 0.5, 0.5, 0.6]) + "\n")
+    (cache / "derived" / "metrics-daily" / "BIG0USDT.jsonl").write_text(json.dumps(["2021-01-01", 9.0, 0.5, 0.5, 0.5]) + "\n")
+    market = _lower_market()
+    monkeypatch.setattr(sl.lab, "hold", lambda c, span=None, *, attach=True, flow=False: market)
+    got = sl.lower_positioning_market(cache, LOWER_TEST_SPAN)
+    assert set(got.metrics) == {"LOW0USDT"}, "the shared file is never attached"
+    assert set(got.metrics["LOW0USDT"]) == {date(2021, 1, 1)}, "nothing after the span"
+    assert sl.lower_metrics_agree(cache, got) == {"shared_symbol_days": 1, "differ": 1}
+
+
+def test_only_the_three_host_commands_run_outside_the_sandbox(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: False)
+    assert set(sl.HOST_COMMANDS) == {"lower-positioning-digest", "lower-positioning-build", "lower-positioning-seal"}
+    assert sl.main(["lower-positioning-digest", "--cache", str(tmp_path)]) == sl.EXIT_OK
+    assert json.loads(capsys.readouterr().out)["archive-metrics"]["files"] == 0
+    assert sl.main(["lower-positioning-seal", "--cache", str(tmp_path)]) == sl.EXIT_USAGE
+    for command in ("lower-positioning-plan", "lower-sweep", "sens", "axis-power"):
+        assert sl.main([command, "--cache", str(tmp_path)]) == sl.EXIT_USAGE, command
