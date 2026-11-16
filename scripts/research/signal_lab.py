@@ -56,6 +56,9 @@ SPEC = "STRATEGY_RESEARCH_REBUILD_V0.1"
 SPAN = bs.DEV                              # 2020-01-01 .. 2024-12-31; nothing later is read
 HORIZONS = (7, 28)                         # days held; 28 is read on every fourth decision so windows do not overlap
 TIERS = {"top30": (0, 30), "rank31_100": (30, 100)}    # by the month's trailing volume, highest first
+# Round 40 (section 57): H-R1's tier, read by its own runs only. Its members come per decision day from
+# ``strategy_ladder.LowerTier``; it is never one of TIERS, so the existing tiers' cells and lines cannot move.
+LOWER_TIER_NAME = "rank101_liquid"
 LOOKBACK = 30
 MIN_NAMES = 8                              # coins a decision needs before its cross-section is ranked
 MIN_DECISIONS = 20                         # decisions a cell needs before it shows a number
@@ -617,13 +620,18 @@ def tier_members(market: xsb.Market, span: tuple[date, date]) -> dict[str, dict[
             for tier, (lo, hi) in TIERS.items()}
 
 
-def grid(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tuple[date, date] = SPAN) -> dict[str, Any]:
+def grid(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tuple[date, date] = SPAN,
+         *, members: Mapping[str, Callable[[date], Sequence[str]]] | None = None) -> dict[str, Any]:
     """Every cell of ``names`` over the span, with coverage, week-to-week rank persistence and what was dropped.
-    ``market`` must already be cut at the span's last day."""
+    ``market`` must already be cut at the span's last day. ``members`` replaces :data:`TIERS` with tiers whose
+    members are given per decision day (round 40); the scenario labels stay the top thirty's either way."""
     latest = last_day(market)
     if latest is not None and latest > span[1]:
         raise ValueError(f"the market reaches {latest}, past the span's last day {span[1]}; cut it first")
     tiers = tier_members(market, span)
+    by_day: dict[str, Callable[[date], Sequence[str]]] = (
+        dict(members) if members is not None else
+        {tier: (lambda day, monthly=monthly: monthly.get(date(day.year, day.month, 1), ())) for tier, monthly in tiers.items()})
     samples: dict[tuple[str, str, int, str], list[tuple[int, float, float]]] = {}
     coverage: dict[tuple[str, str], list[int]] = {}
     persistence: dict[tuple[str, str], list[float]] = {}
@@ -631,12 +639,11 @@ def grid(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tu
     for horizon in HORIZONS:
         days = decisions(span, horizon)
         labels = scenario_labels(market, tiers["top30"], days, span)
-        for tier, monthly in tiers.items():
+        for tier, members_at in by_day.items():
             previous: dict[str, dict[str, float]] = {}
             for position, day in enumerate(days):
-                members = monthly.get(date(day.year, day.month, 1), ())
                 returns = {}
-                for symbol in members:
+                for symbol in members_at(day):
                     dropped["returns_asked"] += 1
                     value = forward_return(market, symbol, day, horizon)
                     if value is None:
@@ -991,6 +998,17 @@ SPREAD_NO_BOOK: dict[tuple[str, str], str] = {
        for name in ("taker_level_30", "taker_buy_share_30")},
     ("*", "spread_change_30"): "the top tier's lead, not put on the ladder (D10): never read again (section 46)",
     ("*", "trade_size_position_30"): "the top tier's runner-up: left alone (section 45)",
+    # Round 40 (section 57): H-R1's tier, ranks 101 and after. One list for the map and the tier sweep there.
+    (LOWER_TIER_NAME, "momentum_7"): "H-R1 without its skip day: the week's return on this tier is H-R1's variable (section 23.2)",
+    **{(LOWER_TIER_NAME, name): "H-R2's record: never measured below rank 100, nor at another window (section 49)"
+       for name in ("momentum_30", "momentum_90")},
+    **{(LOWER_TIER_NAME, name): "the tier sweep's closed lead: never on another tier, never at another window (section 53.6)"
+       for name in ("funding_30", "funding_7")},
+    **{(LOWER_TIER_NAME, name): "positioning files were fetched for the top hundred's member months: on this tier a coin "
+                                "has a value mostly when it is a top-hundred member the next month (section 32)"
+       for name in ("oi_growth_30", "ls_level_30", "top_level_30", "divergence_30", "taker_level_30", "ls_change_30",
+                    "top_change_30", "taker_change_30", "ls_position_30", "top_position_30", "taker_position_30")},
+    **{(LOWER_TIER_NAME, name): "no depth file lies in the span" for name in ("imbalance_1_30", "imbalance_5_30", "depth_growth_30")},
 }
 
 
@@ -1024,7 +1042,7 @@ def spread_candidates(real: Mapping[str, Any], against: Mapping[str, Any]) -> di
             "met_the_rule": len(found), "leads": found}
 
 
-def candidates(real: Mapping[str, Any], against: Mapping[str, Any]) -> dict[str, Any]:
+def candidates(real: Mapping[str, Any], against: Mapping[str, Any], *, cap: int | None = CANDIDATE_CAP) -> dict[str, Any]:
     """The leads, by the rule fixed before the run: a shown cell whose |t| is above the largest any random variable
     reached at that horizon, whose variable keeps its rank from week to week, and whose sign agrees with the same
     variable's all-weeks cell in its tier. At most :data:`CANDIDATE_CAP`, largest |t| first."""
@@ -1045,7 +1063,7 @@ def candidates(real: Mapping[str, Any], against: Mapping[str, Any]) -> dict[str,
     return {"rule": "abs(t) above the random variables' largest at that horizon; rank persistence at least "
                     f"{MIN_PERSISTENCE}; same sign as the variable's all-weeks cell in its tier; not on a resting axis",
             "resting_axes": sorted(RESTING_AXES),
-            "cap": CANDIDATE_CAP, "met_the_rule": len(found), "leads": found[:CANDIDATE_CAP]}
+            "cap": cap, "met_the_rule": len(found), "leads": found if cap is None else found[:cap]}
 
 
 def excess(real_cells: Sequence[Mapping[str, Any]], against: Mapping[str, Any]) -> dict[str, Any]:

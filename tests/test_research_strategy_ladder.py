@@ -2766,3 +2766,122 @@ def test_the_door_command_reads_the_random_variables_lines_from_the_same_run(mon
     assert seen["names"] == sorted(sl.lab.controls()) and out["lines"] == DOOR_LINES and "calibration" in out["planted"]
     monkeypatch.setattr(sl.lab, "hold", lambda cache, span=None, *, attach=True, flow=False: None)
     assert sl.main(["door-size"]) == sl.EXIT_BLOCKED
+
+
+# --- round 40: ranks 101 and after, read by the map and by the tier sweep --------------------------------------------
+
+LOWER_TEST_SPAN = (date(2020, 1, 1), date(2021, 6, 30))
+
+
+def test_the_lower_tier_strikes_by_name_what_the_record_forbids_there_and_both_readers_use_one_list():
+    out, names = sl.lower_out(), sl.lower_names()
+    registered = sl.lab.variables()
+    assert set(out) | set(names) == set(registered) and not set(out) & set(names)
+    assert {"momentum_7", "momentum_30", "momentum_90", "funding_7", "funding_30"} <= set(out), "H-R1, H-R2, round 37's closed lead"
+    assert {n for n, (g, _) in registered.items() if g in ("positioning", "depth")} <= set(out)
+    assert {"vol_30", "beta_30", "spread_change_30", "trade_size_position_30"} <= set(out), "every tier's strikes hold here"
+    assert {"funding_change_30", "funding_position_30", "momentum_change_30", "residual_momentum_30", "listing_age",
+            "taker_buy_share_30", "premium_30", "spot_share_30"} <= set(names), "kin, built and named on the form"
+    assert all(out[n] == sl.lab.no_book(n, sl.LOWER_NAME) for n in out), "the map's no_book and the sweep's list are one"
+    assert sl.lower_refused_groups() == {"positioning", "depth"} and len(names) == 27
+    assert sl.lab.LOWER_TIER_NAME not in sl.lab.TIERS, "the mapped tiers are untouched"
+
+
+def test_the_lower_sweep_tier_holds_lower_tiers_coins_and_the_gate_reads_h_r1s_numbers(monkeypatch):
+    monkeypatch.setattr(sl, "LOWER_TIER_FROM", 4)
+    monkeypatch.setattr(sl, "LOWER_MIN_ACTIVE", 0)
+    market = _lower_market({f"LOW{i}USDT": (i - 4) / 1000 for i in range(9)})
+    tier = sl.lower_sweep_tier(market, LOWER_TEST_SPAN)
+    day = date(2021, 3, 7)
+    assert tier.members(day) == sl.LowerTier(market, LOWER_TEST_SPAN).at(day)[0] and tier.name == sl.LOWER_NAME
+    lower = sl.LowerTier(market, LOWER_TEST_SPAN)
+    assert tier.weigher(sl.skip_day_return, -1)(market, (), day, "x") == sl.lower_book(lower, sl.skip_day_return, -1)(market, (), day, "x")
+    record = sl.lower_run(market, LOWER_TEST_SPAN, nulls=1)                     # how H-R1 was read
+    gate = sl.lower_gate(market, LOWER_TEST_SPAN)
+    for key in ("annual_sharpe", "sum_pct", "months", "total_position_annual_pct", "clears_entry", "cost_pct", "funding_pct"):
+        assert gate[key] == record[key], key
+    assert gate["years_total_position_pct"] == record["years_total_position_pct"] and gate["sum_pct"] != 0
+
+
+def test_the_default_tier_sweep_and_grid_are_the_mapped_tiers():
+    market, mids = _mid_world()
+    assert set(sl.TierSweep(market, MID_TEST_SPAN).members(MID_DAY)) == set(mids)
+    names = {"momentum_30": sl.lab.variables()["momentum_30"]}
+    whole = sl.lab.grid(market, names, MID_TEST_SPAN)
+    tiers = sl.lab.tier_members(market, MID_TEST_SPAN)
+    given = {t: (lambda d, m=m: m.get(date(d.year, d.month, 1), ())) for t, m in tiers.items()}
+    assert sl.lab.grid(market, names, MID_TEST_SPAN, members=given) == whole, "passing the tiers changes nothing"
+    alone = sl.lab.grid(market, names, MID_TEST_SPAN, members={"rank31_100": given["rank31_100"]})
+    assert {c["tier"] for c in alone["cells"]} == {"rank31_100"}
+    assert [c for c in whole["cells"] if c["tier"] == "rank31_100"] == alone["cells"], "a tier's cells do not depend on the others"
+
+
+def test_coverage_stops_a_variable_that_has_values_mostly_on_coins_about_to_join_the_higher_tier(monkeypatch):
+    monkeypatch.setattr(sl, "LOWER_TIER_FROM", 4)
+    market = _lower_market()
+    tier = sl.lower_sweep_tier(market, LOWER_TEST_SPAN)
+    everywhere = lambda m, s, d: 1.0 if s.startswith("LOW") else None
+    rising = lambda m, s, d: 1.0 if s in ("LOW0USDT", "LOW1USDT") else None
+    monkeypatch.setattr(sl.xsb, "universes", lambda market, *, top_n, start, end, named=(): {
+        date(2020, m, 1) if m <= 12 else date(2021, m - 12, 1): ["BTCUSDT", "BIG0USDT", "BIG1USDT", "LOW0USDT"]
+        for m in range(1, 19)})
+    cover = sl.lower_coverage(market, {"all": ("g", everywhere), "rising": ("g", rising)}, LOWER_TEST_SPAN, tier=tier)
+    assert cover["all"]["stop"] is None and cover["all"]["share"] == 1.0 and cover["all"]["share_not_top_next_month"] == 1.0
+    assert cover["rising"]["share"] is None and "None" in cover["rising"]["stop"], "never ranks eight coins: no span, stopped"
+    monkeypatch.setattr(sl.xsb, "universes", lambda market, *, top_n, start, end, named=(): {
+        date(2020, m, 1) if m <= 12 else date(2021, m - 12, 1): ["BTCUSDT", "LOW0USDT", "LOW1USDT", "LOW2USDT"]
+        for m in range(1, 19)})
+    late = lambda m, s, d: 1.0 if d < date(2021, 1, 1) or s in ("LOW0USDT", "LOW1USDT", "LOW2USDT", "LOW3USDT", "LOW4USDT") else None
+    cover = sl.lower_coverage(market, {"late": ("g", late)}, LOWER_TEST_SPAN, tier=tier)["late"]
+    assert cover["share"] >= sl.LOWER_COVERAGE > cover["share_not_top_next_month"], cover
+    assert "not in the first" in cover["stop"], "the second share stops it on its own"
+
+
+def test_the_later_years_rule_names_each_side_from_the_years_before_and_never_drops_a_year(monkeypatch):
+    monkeypatch.setattr(sl, "LATER_YEARS", (2022, 2023, 2024))
+
+    class Stub:
+        def ics(self, read):
+            out = {date(2021, 9, 5) + timedelta(days=7 * k): -0.1 for k in range(10)}        # ten before 2022
+            out.update({date(2022, 1, 2) + timedelta(days=7 * k): 0.2 for k in range(52)})   # 2022 names "high"
+            return out
+
+        def monthly_rows(self, read, way):
+            return {f"{y}-06": {"net": (0.2 if way > 0 else -0.2) * sl.bs.POSITION_TOTAL / 100 * 10}
+                    for y in (2022, 2023, 2024)}
+    months = [f"{y}-{m:02d}" for y in (2022, 2023, 2024) for m in range(1, 13)]
+    got = sl.tier_later(Stub(), None, months)
+    assert got["sides"]["2022"] == {"decisions_before": 10, "long": None} and got["years"]["2022"] == 0.0, "too few: zero, kept"
+    assert got["sides"]["2023"]["long"] == "high" and got["years"]["2023"] == pytest.approx(2.0)
+    assert set(got["years"]) == {"2022", "2023", "2024"} and got["passes"] is False, "mean 1.33 under the floor"
+
+
+def test_the_lower_reading_closes_a_survivor_that_fails_the_later_years():
+    null = {f"n{k}": {"ics": {"2021-10-03": 0.01}, "high": {"2021-10": -0.01, "2021-11": 0.0, "2021-12": -0.02},
+                      "low": {"2021-10": -0.01, "2021-11": -0.03, "2021-12": 0.0}} for k in range(30)}
+    body = {"group": "g", "start": "2021-10-01", "months": 3, "long": "high", "annual_sharpe": 5.0,
+            "total_position_annual_pct": 40.0, "clears_entry": True}
+    books = {"a": {**body, "later_years": {"passes": True}}, "b": {**body, "later_years": {"passes": False}}}
+    reading = sl.lower_sweep_reading(books, null)
+    assert reading["leads_before_later_years"] == ["a", "b"] and reading["leads"] == ["a"]
+    assert reading["closed_at_later_years"] == ["b"]
+
+
+def test_the_lower_tier_counts_carry_no_return(monkeypatch):
+    monkeypatch.setattr(sl, "LOWER_TIER_FROM", 4)
+    market = _lower_market()
+    names = {"momentum_change_30": sl.lab.variables()["momentum_change_30"]}
+    counts = sl.lower_tier_counts(market, names, LOWER_TEST_SPAN)
+    assert counts["returns_computed"] is False and counts["unfunded_share"] == pytest.approx(0.1)
+    assert set(counts["sweep"]["books"]["momentum_change_30"]["ranked_decisions_before"]) == {"2022", "2023", "2024"}
+    flat = json.dumps(counts)
+    assert "sharpe" not in flat and "_pct" not in flat
+
+
+def test_the_lower_commands_refuse_struck_groups(monkeypatch, capsys):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    for command in ("lower-counts", "lower-map", "lower-sweep"):
+        assert sl.main([command, "--only", "positioning"]) == sl.EXIT_USAGE
+        assert sl.main([command, "--only", "depth"]) == sl.EXIT_USAGE
+    assert sl.main(["lower-counts", "--only", "null"]) == sl.EXIT_USAGE
+    assert "struck on this tier" in capsys.readouterr().err

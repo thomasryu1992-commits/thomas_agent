@@ -2586,17 +2586,25 @@ class TierSweep:
     """H-R2's book (L22) for any variable: the map's second tier as it is, L1's rank weights over every ranked member,
     weekly, held, every coin at the stressed cost. A book is read on its own span: from the first day of the month
     after its first decision with weights to the span's end, so a variable whose files begin late is not averaged
-    with empty months, and the null books are cut to the same months."""
+    with empty months, and the null books are cut to the same months.
 
-    def __init__(self, market: xsb.Market, span: tuple[date, date] = SPAN) -> None:
-        self.market, self.span = market, span
-        self.monthly = {m: tuple(v) for m, v in lab.tier_members(market, span)[TIER_SWEEP_TIER].items()}
+    ``members`` (round 40) gives another tier's members per decision day, and ``name`` names it; without them the
+    tier is the map's second, as round 36 read it."""
+
+    def __init__(self, market: xsb.Market, span: tuple[date, date] = SPAN, *,
+                 members: Callable[[date], Sequence[str]] | None = None, name: str = TIER_SWEEP_TIER) -> None:
+        self.market, self.span, self.name = market, span, name
+        self._members = members
+        self.monthly = ({} if members is not None else
+                        {m: tuple(v) for m, v in lab.tier_members(market, span)[TIER_SWEEP_TIER].items()})
         self.days = [d for d in sundays(span) if span[0] - timedelta(days=1) <= d <= span[1]]
         self.ic_days = lab.decisions(span, lab.HORIZONS[0])
         self._forward: dict[date, dict[str, float]] = {}
         self._fixed: tuple[str, dict[str, float]] = ("", {})
 
     def members(self, day: date) -> tuple[str, ...]:
+        if self._members is not None:
+            return tuple(self._members(day))
         return self.monthly.get(date(day.year, day.month, 1), ())
 
     def weigher(self, read: lab.Variable, way: int) -> Callable[..., dict[str, float]]:
@@ -2747,7 +2755,7 @@ def tier_sweep_counts(market: xsb.Market, names: Mapping[str, tuple[str, lab.Var
                        "unfunded_share": round(unfunded / cells, 4) if cells else None,
                        "turnover": own, "turnover_beside_null": round(own / beside, 3) if own is not None and beside else None,
                        **({"skipped": skip} if skip else {})}
-    return {"tier": TIER_SWEEP_TIER, "decisions": len(tier.days), "null_turnover_mean": beside, "null_turnover_books": len(others),
+    return {"tier": tier.name, "decisions": len(tier.days), "null_turnover_mean": beside, "null_turnover_books": len(others),
             "min_months": TIER_SWEEP_MIN_MONTHS, "books": books, "returns_computed": False}
 
 
@@ -2846,9 +2854,13 @@ def tier_sweep_reading(books: Mapping[str, Mapping[str, Any]], null: Mapping[str
 
 def tier_sweep_gate(market: xsb.Market, span: tuple[date, date] = SPAN) -> dict[str, Any]:
     """H-R2's book through this section's code, over the whole span as H-R2 was read: it must give H-R2's record."""
-    tier = TierSweep(market, span)
-    read = lab.variables()[MID_VARIABLE][1]
-    rows = tier.monthly_rows(read, -1)
+    return _whole_span(TierSweep(market, span), lab.variables()[MID_VARIABLE][1], -1, span)
+
+
+def _whole_span(tier: TierSweep, read: lab.Variable, way: int, span: tuple[date, date]) -> dict[str, Any]:
+    """A book through the tier sweep's code over every month of the span, a month without a book counting as zero:
+    how the closed books (H-R2, H-R1) were read, so a gate can hold the code to their records."""
+    rows = tier.monthly_rows(read, way)
     months = bs._complete_months(span[0], span[1])
     report = tier_reading(rows, months)
     years = {str(y): round(sum(row["net"] for m, row in rows.items() if m[:4] == str(y)) * 100 / bs.POSITION_TOTAL, 2)
@@ -3205,6 +3217,184 @@ def door_reading(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             doors[door] = {"below": at(last), "seen": at(first)}
         brackets.append({"tier": tier, "horizon_days": horizon, "noise": kind, "shape": shape, **doors})
     return {"false_alarms": alarms, "planting_broken": bool(alarms), "brackets": brackets}
+
+
+# --- ranks 101 and after, read by the map and by the tier sweep (round 40, section 57) --------------------------------
+
+LOWER_NAME = lab.LOWER_TIER_NAME           # H-R1's tier as coded: LowerTier's held coins, per decision day
+LOWER_COVERAGE = 0.8                       # of what a null book ranks: a variable under it on this tier is not read
+LOWER_GATE_RECORD = "skip_day_return"      # H-R1's variable, long its low side: the gate's book
+
+
+def lower_out() -> dict[str, str]:
+    """Every registered variable no book and no lead is taken from on this tier, with the record that says so. The
+    map and the sweep read this one list (``signal_lab.SPREAD_NO_BOOK``)."""
+    return {name: reason for name in lab.variables() if (reason := lab.no_book(name, LOWER_NAME))}
+
+
+def lower_names() -> dict[str, tuple[str, lab.Variable]]:
+    out = lower_out()
+    return {name: body for name, body in lab.variables().items() if name not in out}
+
+
+def lower_refused_groups() -> set[str]:
+    """The groups every variable of which is struck on this tier: they are not loaded, mapped or swept there."""
+    groups: dict[str, list[str]] = {}
+    for name, (group, _) in lab.variables().items():
+        groups.setdefault(group, []).append(name)
+    out = lower_out()
+    return {group for group, names in groups.items() if all(n in out for n in names)}
+
+
+def lower_sweep_tier(market: xsb.Market, span: tuple[date, date] = SPAN) -> TierSweep:
+    tier = LowerTier(market, span)
+    return TierSweep(market, span, members=lambda day: tier.at(day)[0], name=LOWER_NAME)
+
+
+def lower_gate(market: xsb.Market, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """H-R1's book through the tier sweep's code on this round's tier, over the whole span as H-R1 was read: it must
+    give H-R1's record."""
+    return _whole_span(lower_sweep_tier(market, span), skip_day_return, -1, span)
+
+
+def _next_month(day: date) -> date:
+    return date(day.year + (day.month == 12), day.month % 12 + 1, 1)
+
+
+def lower_coverage(market: xsb.Market, names: Mapping[str, tuple[str, lab.Variable]],
+                   span: tuple[date, date] = SPAN, *, tier: TierSweep | None = None) -> dict[str, Any]:
+    """Per variable, on its own span: the share of what a null book ranks (members with a bar that day) that has a
+    value, overall and on the coins that are not among the first :data:`LOWER_TIER_FROM` the next month. A file
+    fetched for a higher tier's member months covers a coin of this tier mostly when it is about to join that tier;
+    the second share sees that. Under :data:`LOWER_COVERAGE` on either, the variable is not read on this tier."""
+    tier = tier or lower_sweep_tier(market, span)
+    ranked = xsb.universes(market, top_n=LOWER_TIER_FROM,
+                           start=date(span[0].year, span[0].month, 1) - timedelta(days=1), end=span[1])
+    top = {date(m.year, m.month, 1): set(v) for m, v in ranked.items()}
+    out: dict[str, Any] = {}
+    for name, (group, read) in names.items():
+        start = tier.start(read)
+        cells = valued = rest = rest_valued = 0
+        for day in tier.days:
+            if start is None or day < start - timedelta(days=7):
+                continue
+            following = top.get(_next_month(day))
+            for symbol in tier.members(day):
+                if day not in market.bars[symbol]:
+                    continue
+                has = read(market, symbol, day) is not None
+                cells, valued = cells + 1, valued + has
+                if following is not None and symbol not in following:
+                    rest, rest_valued = rest + 1, rest_valued + has
+        share = valued / cells if cells else None
+        share_rest = rest_valued / rest if rest else None
+        stop = None
+        if share is None or share < LOWER_COVERAGE:
+            stop = f"has a value on {share if share is None else round(share, 3)} of what a null book ranks, under {LOWER_COVERAGE}"
+        elif share_rest is None or share_rest < LOWER_COVERAGE:
+            stop = (f"has a value on {share_rest if share_rest is None else round(share_rest, 3)} of the coins not in the "
+                    f"first {LOWER_TIER_FROM} the next month, under {LOWER_COVERAGE}")
+        out[name] = {"group": group, "start": None if start is None else start.isoformat(), "cells": cells,
+                     "share": None if share is None else round(share, 4), "cells_not_top_next_month": rest,
+                     "share_not_top_next_month": None if share_rest is None else round(share_rest, 4), "stop": stop}
+    return out
+
+
+def lower_tier_counts(market: xsb.Market, names: Mapping[str, tuple[str, lab.Variable]],
+                      span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """What the map and the sweep would stand on there, with nothing earned after a decision in it: coverage and its
+    stop, the sweep's counts, and per book the decisions ranked before each of :data:`LATER_YEARS` (the later-years
+    rule names a side from them)."""
+    tier = lower_sweep_tier(market, span)
+    coverage = lower_coverage(market, names, span, tier=tier)
+    sweep = tier_sweep_counts(market, names, span, tier=tier)
+    for name, (_, read) in names.items():
+        before = {str(y): 0 for y in LATER_YEARS}
+        for day in tier.ic_days:
+            if sum(1 for s in tier.members(day) if read(market, s, day) is not None) >= lab.MIN_NAMES:
+                for y in LATER_YEARS:
+                    before[str(y)] += day.year < y
+        sweep["books"][name]["ranked_decisions_before"] = before
+    held = unfunded = 0
+    lower = LowerTier(market, span)
+    for day in tier.days:
+        h, u = lower.at(day)
+        held, unfunded = held + len(h), unfunded + len(u)
+    return {"coverage": coverage, "coverage_floor": LOWER_COVERAGE, "sweep": sweep,
+            "unfunded_share": round(unfunded / (held + unfunded), 4) if held + unfunded else None,
+            "returns_computed": False}
+
+
+def tier_later(tier: TierSweep, read: lab.Variable, months: Sequence[str]) -> dict[str, Any]:
+    """Rung 2(b) for a sweep's book (section 55.5, in code from round 40): each of :data:`LATER_YEARS` is read on the
+    side the book's rank correlations before that year name. A year with fewer than :data:`lab.MIN_DECISIONS` of them
+    names no side and counts as zero, as a year with no book did for H-R1; it is never left out."""
+    ics = tier.ics(read)
+    rows = {way: tier.monthly_rows(read, way) for way in (1, -1)}
+    years: dict[str, float] = {}
+    sides: dict[str, Any] = {}
+    for year in LATER_YEARS:
+        before = [ic for day, ic in ics.items() if day.year < year]
+        if len(before) < lab.MIN_DECISIONS:
+            years[str(year)] = 0.0
+            sides[str(year)] = {"decisions_before": len(before), "long": None}
+            continue
+        mean = statistics.fmean(before)
+        way = 1 if mean > 0 else -1
+        years[str(year)] = round(sum(rows[way].get(m, {}).get("net", 0.0) for m in months if m[:4] == str(year))
+                                 * 100 / bs.POSITION_TOTAL, 2)
+        sides[str(year)] = {"decisions_before": len(before), "mean_rank_correlation_before": round(mean, 4),
+                            "long": "high" if way > 0 else "low"}
+    return {**later_years(years), "sides": sides}
+
+
+def lower_sweep(market: xsb.Market, names: Mapping[str, tuple[str, lab.Variable]],
+                span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """Round 36's sweep on this tier: a variable under the coverage floor is named and not built; a book that clears
+    the entry rule is also read by :func:`tier_later`."""
+    tier = lower_sweep_tier(market, span)
+    coverage = lower_coverage(market, names, span, tier=tier)
+    kept = {n: v for n, v in names.items() if not coverage[n]["stop"]}
+    books = tier_sweep(market, kept, span, tier=tier)
+    for name, (group, _) in names.items():
+        if name not in kept:
+            books[name] = {"group": group, "skipped": coverage[name]["stop"]}
+    for name, body in books.items():
+        if body.get("clears_entry"):
+            body["later_years"] = tier_later(tier, names[name][1], tier.months(date.fromisoformat(body["start"])))
+    return books
+
+
+def lower_sweep_reading(books: Mapping[str, Mapping[str, Any]], null: Mapping[str, Mapping[str, Any]],
+                        *, q: float = 0.10) -> dict[str, Any]:
+    """Round 36's family reading, then the later-years rule: a lead survives Benjamini-Hochberg, clears the entry
+    rule AND passes :func:`tier_later`. A book that does the first two only is named, closed at rung 2(b)."""
+    reading = tier_sweep_reading(books, null, q=q)
+    before = reading["leads"]
+    leads = [name for name in before if books[name].get("later_years", {}).get("passes")]
+    return {**reading, "leads_before_later_years": before, "leads": leads,
+            "closed_at_later_years": [name for name in before if name not in leads]}
+
+
+def lower_map(market: xsb.Market, names: Mapping[str, tuple[str, lab.Variable]],
+              span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """The map on this tier alone, against the random variables on this tier alone: its own lines, so the lines of
+    the two mapped tiers are never recomputed. A variable under the coverage floor is not mapped; a lead on a struck
+    variable says so."""
+    lower = LowerTier(market, span)
+    members = {LOWER_NAME: lambda day: lower.at(day)[0]}
+    coverage = lower_coverage(market, names, span,
+                              tier=TierSweep(market, span, members=members[LOWER_NAME], name=LOWER_NAME))
+    kept = {n: v for n, v in names.items() if not coverage[n]["stop"]}
+    real = lab.grid(market, kept, span, members=members)
+    random_cells = lab.grid(market, lab.controls(), span, members=members)
+    against = lab.chance(random_cells["cells"])
+    leads = lab.candidates(real, against, cap=None)        # every cell that meets the rule: struck ones are named, not counted
+    leads["leads"] = [{**c, "no_book": lab.no_book(c["variable"], c["tier"])} for c in leads["leads"]]
+    return {"tier": LOWER_NAME, "coverage": coverage, "not_mapped": {n: coverage[n]["stop"] for n in names if n not in kept},
+            "chance": against, "excess": lab.excess(real["cells"], against), "candidates": leads,
+            "spread_candidates": lab.spread_candidates(real, against), "dropped": real["dropped"],
+            "variables": real["variables"], "cells": real["cells"]}
 
 
 # --- L19: the open-interest flush book (round 15, hypothesis H-O1) -------------------------------------------------------
@@ -3825,7 +4015,8 @@ def main(argv: list[str] | None = None) -> int:
                                             "deep-counts", "deep", "rotation-counts", "rotation", "bar",
                                             "hot-counts", "hot", "gap-counts", "gap", "flush-counts", "flush",
                                             "basis-counts", "basis", "wide-counts", "wide", "mid-counts", "mid",
-                                            "tier-gate", "tier-counts", "tier-sweep", "tier-lead", "door-size"))
+                                            "tier-gate", "tier-counts", "tier-sweep", "tier-lead", "door-size",
+                                            "lower-gate", "lower-counts", "lower-map", "lower-sweep"))
     parser.add_argument("--shape", choices=BAR_SHAPES, default=None, help="bar: the book shape whose null books are read")
     parser.add_argument("--only", default=None,
                         help="sweep, transfer: variable groups (comma list), or `null` for the random books")
@@ -3924,6 +4115,41 @@ def main(argv: list[str] | None = None) -> int:
                           "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
                           "command": args.command, **body}, indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or (args.command == "mid-counts" and body["stop"]) else EXIT_OK
+    if args.command in ("lower-gate", "lower-counts", "lower-map", "lower-sweep"):
+        wanted = set((args.only or "").split(",")) - {""}
+        refused = wanted & lower_refused_groups()
+        names = {n: v for n, v in lower_names().items() if v[0] in wanted}
+        if refused:
+            print(f"refused: every variable of {sorted(refused)} is struck on this tier", file=sys.stderr)
+            return EXIT_USAGE
+        if args.command != "lower-gate" and not names and not (args.command == "lower-sweep" and wanted == {"null"}):
+            print("refused: --only names no group with a variable read on this tier (or `null` for lower-sweep)", file=sys.stderr)
+            return EXIT_USAGE
+        if args.command == "lower-map":       # the map shows a group's struck variables too; no lead is taken from them
+            names = {n: v for n, v in lab.variables().items() if v[0] in wanted}
+        try:
+            market = lab.hold(cache, attach=False) if args.command == "lower-gate" else sweep_market(cache, wanted)
+        except ValueError as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        if market is None:
+            print("BLOCKED: contract types, the spot symbol list or the attached values are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        if args.command == "lower-gate":
+            body: dict[str, Any] = {"book": lower_gate(market), "variable": LOWER_GATE_RECORD, "long": "low"}
+        elif args.command == "lower-counts":
+            body = lower_tier_counts(market, names)
+        elif args.command == "lower-map":
+            body = lower_map(market, names)
+        elif wanted == {"null"}:
+            body = {"null": tier_sweep_null(market, tier=lower_sweep_tier(market))}
+        else:
+            body = {"books": lower_sweep(market, names)}
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
+                          "tier": LOWER_NAME, "logic": MID_NAMES[1], "left_out": lower_out(), "coverage_floor": LOWER_COVERAGE,
+                          "only": sorted(wanted), "command": args.command, **body}, indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_OK
     if args.command == "door-size":
         market = lab.hold(cache, attach=False)
         if market is None:
