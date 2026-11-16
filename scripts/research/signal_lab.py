@@ -65,8 +65,9 @@ MIN_DECISIONS = 20                         # decisions a cell needs before it sh
 MIN_SPELLS = 4                             # separate stretches a scenario cell needs: one long bull run is one sample
 REFERENCE_DECISIONS = 52                   # trailing decisions a scenario's own median is taken over
 REFERENCE_MIN = 26
-CONTROLS_WEEKLY = 53                       # random variables redrawn at every decision (25, 28, 32, 42, 44, 47, 50 as the registry grew)
-CONTROLS_FIXED = 53                        # random variables fixed per coin, like a slow characteristic
+CONTROLS_WEEKLY = 55                       # random variables redrawn at every decision (25, 28, 32, 42, 44, 47, 50, 53 as the registry grew)
+CONTROLS_FIXED = 55                        # random variables fixed per coin, like a slow characteristic
+CONTROLS_BEFORE_SPOT_FLOW = 53                # each kind's count before section 67 added two variables: the old lines' set
 EXTREME_MOVE = 0.30                        # a daily close-to-close move this large is an extreme day
 WILD_MOVE = 0.50                           # a coin whose largest daily move in the lookback reached this is wild
 AGE_CAP_DAYS = 1000                        # listing age is read up to here; older coins are alike
@@ -295,7 +296,18 @@ def variables() -> dict[str, tuple[str, Variable]]:
     # Added 2026-11-14 (section 43): the premium's too. Section 40 struck them on grounds that did not stand.
     for lookback in SPREAD_LOOKBACKS:
         out[f"premium_{lookback}"] = ("premium", _with_lookback(_premium, lookback))
+    # Added 2026-11-16 (section 67): the spot pair's trade flow, after both passed the overlap on inputs (0.34 and
+    # 0.72 with the perp's own, under 0.8). Its own group, so the spot and trade-flow groups read what they read.
+    out[f"spot_taker_share_{LOOKBACK}"] = ("spot_flow", _spot_taker_share)
+    out[f"spot_trade_size_{LOOKBACK}"] = ("spot_flow", _spot_trade_size)
     return out
+
+
+def earlier_control_cells(cells: Sequence[Mapping[str, Any]], count: int = CONTROLS_BEFORE_SPOT_FLOW) -> list[Mapping[str, Any]]:
+    """The cells of the first ``count`` random variables of each kind: the set the lines were drawn from before
+    section 67, so a run can show the old lines again before a new one is read."""
+    keep = {f"control_{kind}_{k:02d}" for kind in ("week", "fixed") for k in range(count)}
+    return [c for c in cells if c["variable"] in keep]
 
 
 def controls() -> dict[str, tuple[str, Variable]]:
@@ -309,7 +321,7 @@ def controls() -> dict[str, tuple[str, Variable]]:
 def cut_market(market: xsb.Market, span: tuple[date, date] = SPAN) -> xsb.Market:
     """``market`` with no bar, settlement or attached series after the span's last day."""
     held = bs.cut(market, span[1])
-    for name in ("metrics", "depth", "spot", "trade_flow"):
+    for name in ("metrics", "depth", "spot", "trade_flow", "spot_flow"):
         series = getattr(market, name, None)
         if series is not None:
             setattr(held, name, {s: {d: v for d, v in days.items() if d <= span[1]} for s, days in series.items()})
@@ -1463,6 +1475,11 @@ def main(argv: list[str] | None = None) -> int:
         market = hold_premium(cache)
     elif groups == {"depth"}:
         market = hold_depth(cache)
+    elif groups == {"spot_flow"}:
+        market = hold_spot_flow(cache)
+    elif "spot_flow" in groups:
+        print("refused: the spot flow group is mapped alone", file=sys.stderr)
+        return EXIT_USAGE
     else:
         market = hold(cache, attach=bool(groups & {"positioning", "depth", "spot"}), flow="trade_flow" in groups)
     if market is None:
@@ -1481,10 +1498,11 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_OK
     real, random = grid(market, chosen), grid(market, controls())
     against = chance(random["cells"])
+    before = chance(earlier_control_cells(random["cells"]))
     print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
                       "span": [d.isoformat() for d in SPAN], "last_day_read": last_day(market).isoformat(),
                       "before_costs": True, "judgement": None, "only": args.only,
-                      "chance": against, "excess": excess(real["cells"], against),
+                      "chance": against, "chance_before_spot_flow": before, "excess": excess(real["cells"], against),
                       "candidates": candidates(real, against), "spread_candidates": spread_candidates(real, against),
                       "dropped": real["dropped"],
                       "variables": real["variables"], "cells": real["cells"],

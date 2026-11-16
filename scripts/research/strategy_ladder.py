@@ -603,7 +603,8 @@ def sweep_reading(real: Mapping[str, Mapping[str, Any]], null: Mapping[str, Mapp
 # The sweep, one group at a time (section 44). Round 6 loaded positioning, depth and spot together; with both tiers'
 # positioning files on disk that load no longer fits the sandbox, and the premium has a door of its own.
 SWEEP_BARS_GROUPS = frozenset({"price_volume", "funding", "coin_character", "trade_flow"})
-SWEEP_ALONE = {"positioning": "hold_positioning", "spot": "hold_spot", "premium": "hold_premium"}
+SWEEP_ALONE = {"positioning": "hold_positioning", "spot": "hold_spot", "premium": "hold_premium",
+               "spot_flow": "hold_spot_flow"}      # section 67
 SWEEP_ROW_KEYS = ("long", "annual_sharpe", "total_position_annual_pct", "decisions_ranked")
 
 
@@ -4294,6 +4295,13 @@ def lower_spot_market(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market
     return lab.sp.attach(held, xsb.Market(bars=bars, funding={}), listing, span[1], files)
 
 
+def lower_spot_flow_market(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | None:
+    """Ranks 101+'s spot market (:func:`lower_spot_market`, sealed by round 46) with the spot pairs' trade flow of
+    both roots attached (section 67). None unless that fetch was sealed."""
+    held = lower_spot_market(cache, span)
+    return None if held is None else lab.attach_spot_flow(held, [cache / lab.sp.SPOT_DIR, cache / LOWER_SPOT_ROOT], span[1])
+
+
 def lower_spot_agree(cache: Path) -> dict[str, Any]:
     """Every pair-day in both spot roots must carry the same bar (one archive file, one reading)."""
     shared = xsb.load_market(cache / lab.sp.SPOT_DIR, funding=False).bars
@@ -4351,6 +4359,46 @@ def top_account_build(cache: Path, *, say: Callable[[str], None] = print) -> dic
             "moved": [k for k in after if after[k] != before.get(k)]}
 
 
+FAMILY_READERS = {"top30": "sweep_reading", "rank31_100": "tier_sweep_reading", "rank101_liquid": "lower_sweep_reading"}
+
+
+def recorded_family_check(recorded: Mapping[str, Any], again: Mapping[str, Any]) -> list[str]:
+    """Where a reading of the recorded books alone differs from the recorded reading: each top-level key both hold
+    (``all`` and ``skipped`` aside), and each recorded row on the keys the reading function writes."""
+    def rows_differ(old_rows: Sequence[Mapping[str, Any]], new_rows: Sequence[Mapping[str, Any]]) -> bool:
+        old = {r["variable"]: r for r in old_rows}
+        return set(old) != {r["variable"] for r in new_rows} or any(
+            any(old[r["variable"]].get(k) != v for k, v in r.items()) for r in new_rows)
+
+    out = []
+    for k in again:
+        if k not in recorded or k in ("all", "skipped"):
+            continue
+        listed = isinstance(again[k], list) and all(isinstance(r, Mapping) and "variable" in r for r in again[k])
+        if (rows_differ(recorded[k], again[k]) if listed else again[k] != recorded[k]):
+            out.append(k)
+    rows = {r["variable"]: r for r in recorded.get("all", [])}
+    for row in again.get("all", []):
+        old = rows.get(row["variable"])
+        if old is None or any(old.get(k) != v for k, v in row.items()):
+            out.append(f"row {row['variable']}")
+    return out
+
+
+def tier_family(tier: str, recorded: Mapping[str, Any], null: Mapping[str, Any], new: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """A tier's sweep family (section 66.3): the recorded reading's rows as the books, read by that tier's own
+    function against its own nulls; they must give the recorded reading back before a new book is added, and a new
+    book may not carry a recorded name."""
+    reader = globals()[FAMILY_READERS[tier]]
+    books = {r["variable"]: dict(r) for r in recorded["all"]}
+    again = reader(books, null)
+    differ = recorded_family_check(recorded, again)
+    clash = sorted(set(new) & set(books))
+    if differ or clash:
+        return {"blocked": True, "differ": differ, "clash": clash}
+    return {"blocked": False, "recorded_books": len(books), "new": sorted(new), "reading": reader({**books, **new}, null)}
+
+
 def lower_sweep_family(recorded: Sequence[Mapping[str, Mapping[str, Any]]],
                        new: Mapping[str, Mapping[str, Any]]) -> dict[str, Mapping[str, Any]]:
     """The ranks-101+ sweep family: the recorded books as recorded, then the new ones. A name recorded twice is an
@@ -4381,10 +4429,11 @@ def lower_map(market: xsb.Market, names: Mapping[str, tuple[str, lab.Variable]],
     real = lab.grid(market, kept, span, members=members)
     random_cells = lab.grid(market, lab.controls(), span, members=members)
     against = lab.chance(random_cells["cells"])
+    before = lab.chance(lab.earlier_control_cells(random_cells["cells"]))
     leads = lab.candidates(real, against, cap=None)        # every cell that meets the rule: struck ones are named, not counted
     leads["leads"] = [{**c, "no_book": lab.no_book(c["variable"], c["tier"])} for c in leads["leads"]]
     return {"tier": LOWER_NAME, "coverage": coverage, "not_mapped": {n: coverage[n]["stop"] for n in names if n not in kept},
-            "chance": against, "excess": lab.excess(real["cells"], against), "candidates": leads,
+            "chance": against, "chance_before_spot_flow": before, "excess": lab.excess(real["cells"], against), "candidates": leads,
             "spread_candidates": lab.spread_candidates(real, against), "dropped": real["dropped"],
             "variables": real["variables"], "cells": real["cells"]}
 
@@ -5013,11 +5062,13 @@ def main(argv: list[str] | None = None) -> int:
                                             "lower-positioning-plan", "lower-positioning-digest",
                                             "lower-positioning-build", "lower-positioning-seal",
                                             "lower-spot-plan", "lower-spot-digest", "lower-spot-fetch", "lower-spot-seal",
-                                            "lower-family", "top-account-build"))
+                                            "lower-family", "top-account-build", "family"))
     parser.add_argument("--family", choices=tuple(SENS_FAMILIES), default=None, help="sens: the sweep whose door is measured")
     parser.add_argument("--tier", choices=("top30", "rank31_100"), default=None, help="axis-power: the map tier read")
     parser.add_argument("--before", type=Path, default=None, help="lower-positioning-seal: the digest taken before the fetch")
     parser.add_argument("--null", type=Path, default=None, help="sens: that sweep's stored null books (JSON)")
+    parser.add_argument("--tier-name", default=None, help="family: top30, rank31_100 or rank101_liquid")
+    parser.add_argument("--reading", type=Path, default=None, help="family: the tier's recorded reading")
     parser.add_argument("--records", default=None, help="lower-family: the recorded sweep files, comma-separated, in order")
     parser.add_argument("--new", type=Path, default=None, help="lower-family: the new sweep file")
     parser.add_argument("--check", type=Path, default=None, help="lower-family: the recorded family reading the recorded books must give")
@@ -5079,6 +5130,20 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"measured_at": timeutil.utc_now_iso(), "spec": SPEC, "tier": LOWER_NAME,
                           **lower_spot_plan(market, cache, listing)}, indent=1, sort_keys=True))
         return EXIT_OK
+    if args.command == "family":
+        if args.tier_name not in FAMILY_READERS or args.reading is None or args.new is None or args.null is None:
+            print("refused: family needs --tier-name, --reading, --null and --new", file=sys.stderr)
+            return EXIT_USAGE
+        recorded = json.loads(args.reading.read_text(encoding="utf-8"))
+        recorded = recorded.get("reading", recorded)
+        stored = json.loads(args.null.read_text(encoding="utf-8"))
+        null = stored["books"] if args.tier_name == "top30" else stored["null"]
+        new = {n: b for n, b in json.loads(args.new.read_text(encoding="utf-8"))["books"].items()
+               if not b.get("skipped") and b.get("annual_sharpe") is not None}
+        body = tier_family(args.tier_name, recorded, null, new)
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), "spec": SPEC, "tier": args.tier_name, **body},
+                         indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_BLOCKED if body["blocked"] else EXIT_OK
     if args.command == "lower-family":
         if not args.records or args.new is None or args.null is None:
             print("refused: lower-family needs --records, --new and --null", file=sys.stderr)
@@ -5249,6 +5314,13 @@ def main(argv: list[str] | None = None) -> int:
                 market = lower_positioning_market(cache)
                 if market is None:
                     print("BLOCKED: this tier's positioning fetch is not sealed (section 63)", file=sys.stderr)
+                    return EXIT_BLOCKED
+            elif "spot_flow" in wanted:                   # the spot pairs' flow on round 46's sealed roots (section 67)
+                if wanted != {"spot_flow"}:
+                    raise ValueError("spot_flow is read alone on this tier")
+                market = lower_spot_flow_market(cache)
+                if market is None:
+                    print("BLOCKED: this tier's spot fetch is not sealed (section 64)", file=sys.stderr)
                     return EXIT_BLOCKED
             elif "spot" in wanted:                        # this tier's own fetch beside the shared root (section 64)
                 if wanted != {"spot"}:

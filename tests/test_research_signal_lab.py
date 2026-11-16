@@ -211,7 +211,7 @@ def test_it_runs_in_the_sandbox_only(monkeypatch, capsys):
     assert listed["span"] == ["2020-01-01", "2024-12-31"]
     assert listed["controls"] == lab.CONTROLS_WEEKLY + lab.CONTROLS_FIXED >= 2 * len(lab.variables()) - 4
     assert {"price_volume", "funding", "positioning", "depth", "spot", "coin_character", "trade_flow",
-            "premium"} == set(listed["variables"].values())
+            "premium", "spot_flow"} == set(listed["variables"].values())
 
 
 def test_a_book_that_reads_bars_and_funding_alone_loads_nothing_else(monkeypatch, tmp_path):
@@ -683,8 +683,12 @@ def test_leverage_is_open_interest_in_quote_terms_over_volume_and_has_no_label_w
 
 def test_the_registry_stays_inside_what_its_controls_and_the_sweeps_null_can_correct_for():
     from scripts.research import strategy_ladder as sl
-    assert len(lab.variables()) == 55
-    assert len(lab.controls()) == 106 >= 2 * len(lab.variables()) - 4, "the random variables grow with the real ones"
+    assert len(lab.variables()) == 57
+    assert len(lab.controls()) == 110 >= 2 * len(lab.variables()) - 4, "the random variables grow with the real ones"
+    first = {f"control_{kind}_{k:02d}" for kind in ("week", "fixed") for k in range(lab.CONTROLS_BEFORE_SPOT_FLOW)}
+    assert len(first) == 106 and first <= set(lab.controls()), "section 67 added controls after the first 106, by name"
+    cells = [{"variable": name} for name in lab.controls()]
+    assert {c["variable"] for c in lab.earlier_control_cells(cells)} == first
     assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / len(lab.variables()), "the sweep's null can correct for every variable"
     assert not 1 / (sl.SWEEP_NULLS_ROUND_6 + 1) < 0.10 / len(lab.variables()), "300 null books could not: thirty was their most"
     assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / 60 and not 1 / (sl.SWEEP_NULLS + 1) < 0.10 / 61, "600 reach sixty variables"
@@ -791,7 +795,7 @@ def test_the_by_variable_check_has_enough_placebos_for_a_real_effect_to_pass_the
     """The smallest p a test can show is one over the placebos plus one. It has to be under what Benjamini–Hochberg
     asks of the best of a few hundred tests, or nothing could ever pass (the first run, 2026-11-13: 200 placebos)."""
     tests, q = len(lab.variables()) * len(lab.TIERS) * len(lab.AXES), 0.10
-    assert tests == 55 * 2 * 6
+    assert tests == 57 * 2 * 6
     assert 1 / (lab.PLACEBO_AXES_BY_VARIABLE + 1) < q / tests
     assert lab.PLACEBO_AXES_BY_VARIABLE == 7200 and 1 / (7200 + 1) < q / (60 * 2 * 6), "enough for sixty variables"
     assert not 1 / (5000 + 1) < q / tests, "the earlier 5000 no longer were"
