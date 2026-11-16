@@ -3376,6 +3376,45 @@ def lower_sweep_reading(books: Mapping[str, Mapping[str, Any]], null: Mapping[st
             "closed_at_later_years": [name for name in before if name not in leads]}
 
 
+# Round 41 (section 58): round 40's two map leads, each with the side its cell names. Nothing here is a variant.
+LOWER_LEADS = {"residual_momentum_30": {"long": "low", "horizon_days": 7, "group": "price_volume"},
+               "listing_age": {"long": "high", "horizon_days": 28, "group": "coin_character"}}
+LOWER_OVERLAP_CLOSE = 0.5                  # |median cosine| with a struck or closed book at which a lead re-builds it
+
+
+def lower_lead_overlap(market: xsb.Market, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """Weights only, no return: each lead's book (L22 on this tier, its cell's side) beside every book the record
+    strikes on this tier that has values here, and H-R1's closed book. Per comparison, the cosine of the two books'
+    coin weights at each weekly decision where both stand; a lead whose median's size reaches
+    :data:`LOWER_OVERLAP_CLOSE` against any of them re-builds that book and is closed."""
+    tier = lower_sweep_tier(market, span)
+    registered = lab.variables()
+    refused = lower_refused_groups()
+    others: dict[str, Callable[..., dict[str, float]]] = {
+        name: tier.weigher(registered[name][1], 1) for name in sorted(lower_out()) if registered[name][0] not in refused}
+    others["H-R1"] = tier.weigher(skip_day_return, -1)
+    out: dict[str, Any] = {}
+    for lead, spec in LOWER_LEADS.items():
+        mine = tier.weigher(registered[lead][1], 1 if spec["long"] == "high" else -1)
+        values: dict[str, list[float]] = {name: [] for name in others}
+        for day in tier.days:
+            weights = mine(market, (), day, bs.CADENCE)
+            if not weights:
+                continue
+            for name, build in others.items():
+                if (value := _cosine(weights, build(market, (), day, bs.CADENCE))) is not None:
+                    values[name].append(value)
+        rows = {}
+        for name, v in values.items():
+            v = sorted(v)
+            median = statistics.median(v) if v else None
+            rows[name] = {"decisions": len(v), "median_cosine": None if median is None else round(median, 4),
+                          "quartiles": [round(v[len(v) // 4], 4), round(v[(3 * len(v)) // 4], 4)] if v else None,
+                          "closes": median is not None and abs(median) >= LOWER_OVERLAP_CLOSE}
+        out[lead] = {**spec, "beside": rows, "closed_by": sorted(n for n, r in rows.items() if r["closes"])}
+    return {"threshold": LOWER_OVERLAP_CLOSE, "compared": sorted(others), "leads": out, "returns_computed": False}
+
+
 def lower_map(market: xsb.Market, names: Mapping[str, tuple[str, lab.Variable]],
               span: tuple[date, date] = SPAN) -> dict[str, Any]:
     """The map on this tier alone, against the random variables on this tier alone: its own lines, so the lines of
@@ -4016,7 +4055,7 @@ def main(argv: list[str] | None = None) -> int:
                                             "hot-counts", "hot", "gap-counts", "gap", "flush-counts", "flush",
                                             "basis-counts", "basis", "wide-counts", "wide", "mid-counts", "mid",
                                             "tier-gate", "tier-counts", "tier-sweep", "tier-lead", "door-size",
-                                            "lower-gate", "lower-counts", "lower-map", "lower-sweep"))
+                                            "lower-gate", "lower-counts", "lower-map", "lower-sweep", "lower-overlap"))
     parser.add_argument("--shape", choices=BAR_SHAPES, default=None, help="bar: the book shape whose null books are read")
     parser.add_argument("--only", default=None,
                         help="sweep, transfer: variable groups (comma list), or `null` for the random books")
@@ -4115,6 +4154,16 @@ def main(argv: list[str] | None = None) -> int:
                           "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
                           "command": args.command, **body}, indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or (args.command == "mid-counts" and body["stop"]) else EXIT_OK
+    if args.command == "lower-overlap":
+        market = lab.hold(cache, attach=False, flow=True)
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
+                          "tier": LOWER_NAME, "command": args.command, **lower_lead_overlap(market)},
+                         indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_OK
     if args.command in ("lower-gate", "lower-counts", "lower-map", "lower-sweep"):
         wanted = set((args.only or "").split(",")) - {""}
         refused = wanted & lower_refused_groups()

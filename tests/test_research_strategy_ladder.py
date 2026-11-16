@@ -2885,3 +2885,25 @@ def test_the_lower_commands_refuse_struck_groups(monkeypatch, capsys):
         assert sl.main([command, "--only", "depth"]) == sl.EXIT_USAGE
     assert sl.main(["lower-counts", "--only", "null"]) == sl.EXIT_USAGE
     assert "struck on this tier" in capsys.readouterr().err
+
+
+# --- round 41: the two map leads' overlap with what the record strikes there ----------------------------------------
+
+def test_the_lead_overlap_lays_each_lead_beside_every_struck_book_with_values_and_h_r1(monkeypatch):
+    monkeypatch.setattr(sl, "LOWER_TIER_FROM", 4)
+    moves = {f"LOW{i}USDT": (i - 4) / 1000 for i in range(9)}
+    market = _lower_market(moves)
+    registered = sl.lab.variables()
+    # The beta-netted month needs a moving reference coin; this market's is flat, so the lead reads the plain month.
+    monkeypatch.setattr(sl.lab, "variables", lambda: {**registered, "residual_momentum_30": registered["momentum_30"]})
+    got = sl.lower_lead_overlap(market, LOWER_TEST_SPAN)
+    assert got["returns_computed"] is False and got["threshold"] == 0.5
+    struck = {n for n, (g, _) in sl.lab.variables().items() if n in sl.lower_out() and g not in ("positioning", "depth")}
+    assert set(got["compared"]) == struck | {"H-R1"} and {"vol_30", "momentum_30", "funding_30", "extreme_days_30"} <= struck
+    res = got["leads"]["residual_momentum_30"]
+    assert res["long"] == "low" and res["beside"]["momentum_30"]["decisions"] > 0
+    # Every coin drifts at its own steady rate, so the month's return and the reversal rank the coins alike:
+    # long the low month is long the low week, which is H-R1's side, and is momentum_30's high side reversed.
+    assert res["beside"]["H-R1"]["median_cosine"] > 0.5 and "H-R1" in res["closed_by"]
+    assert res["beside"]["momentum_30"]["median_cosine"] < -0.5 and "momentum_30" in res["closed_by"], "the size is read, not the sign"
+    assert set(got["leads"]) == {"residual_momentum_30", "listing_age"} and got["leads"]["listing_age"]["long"] == "high"
