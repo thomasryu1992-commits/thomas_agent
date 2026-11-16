@@ -19,3 +19,14 @@ raised. Thomas answered D12 "올림": one registered four-week book, read once.
   the long side. Splitting legs into tied and untied would therefore only split long from short. The twin gives
   tied coins their group's mean weight and must clear the entry rule too.
 - *The gate is the same path with weekly holding*, which must reproduce round 40's row for the variable.
+
+## Result (2026-11-16 09:04Z): closed
+
+- The gate reproduced round 40's weekly row to the digit. No count stopped the run (11, 13 and 13 four-week
+  decisions with a book in 2022–2024).
+- Three of the five conditions failed. Sharpe was 0.633 against 1.0, although the yearly figure was 16.06%. The
+  p against 600 null books was 0.0649, and the no-name twin's Sharpe was 0.613. Rungs 2(b) and 3 passed: the later
+  years read +35.30, +10.77 and +24.09, and no year was negative.
+- Section 59.6 reads this as closed. Listing age on ranks 101+ is not read again under any hold, cost, weight,
+  tie rule, tier, side or null. No confirm read was used.
+- Next is round 42, the sweep's sensitivity, with its own registration.
