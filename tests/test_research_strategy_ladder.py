@@ -3340,11 +3340,190 @@ def test_the_lower_positioning_market_attaches_this_tiers_file_alone_and_agrees_
     assert sl.lower_metrics_agree(cache, got) == {"shared_symbol_days": 1, "differ": 1}
 
 
-def test_only_the_three_host_commands_run_outside_the_sandbox(monkeypatch, tmp_path, capsys):
+def test_only_the_named_host_commands_run_outside_the_sandbox(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: False)
-    assert set(sl.HOST_COMMANDS) == {"lower-positioning-digest", "lower-positioning-build", "lower-positioning-seal"}
+    assert set(sl.HOST_COMMANDS) == {"lower-positioning-digest", "lower-positioning-build", "lower-positioning-seal",
+                                     "lower-spot-digest", "lower-spot-fetch", "lower-spot-seal"}
     assert sl.main(["lower-positioning-digest", "--cache", str(tmp_path)]) == sl.EXIT_OK
     assert json.loads(capsys.readouterr().out)["archive-metrics"]["files"] == 0
     assert sl.main(["lower-positioning-seal", "--cache", str(tmp_path)]) == sl.EXIT_USAGE
-    for command in ("lower-positioning-plan", "lower-sweep", "sens", "axis-power"):
+    assert sl.main(["lower-spot-digest", "--cache", str(tmp_path)]) == sl.EXIT_OK
+    assert json.loads(capsys.readouterr().out)["archive-spot"]["files"] == 0
+    assert sl.main(["lower-spot-seal", "--cache", str(tmp_path)]) == sl.EXIT_USAGE
+    for command in ("lower-positioning-plan", "lower-spot-plan", "lower-family", "lower-sweep", "sens", "axis-power"):
         assert sl.main([command, "--cache", str(tmp_path)]) == sl.EXIT_USAGE, command
+
+
+# --- round 46: the spot group on ranks 101+, from a fetch of its own ----------------------------------------------------
+
+def _spot_zip(root, pair, month, days, close=100.0, volume=1.0):
+    """A month's spot 1d klines for ``days`` (dates) under ``root``'s klines folder."""
+    import zipfile as zf
+    folder = root / "klines-1d" / pair
+    folder.mkdir(parents=True, exist_ok=True)
+    ms = lambda d: int((d - date(1970, 1, 1)).total_seconds() * 1000)
+    rows = "".join(f"{ms(d)},{close},{close},{close},{close},1,0,{volume},1,0,0,0\n" for d in days)
+    with zf.ZipFile(folder / f"{pair}-1d-{month}.zip", "w") as archive:
+        archive.writestr("x.csv", "open_time,open,high,low,close,volume,close_time,quote_volume,count,tbv,tbqv,ignore\n" + rows)
+
+
+def test_the_lower_spot_plan_asks_for_every_held_coins_window_months_not_in_the_shared_root(monkeypatch, tmp_path):
+    monkeypatch.setattr(sl, "LOWER_TIER_FROM", 4)
+    market = _lower_market()
+    listing = {f"LOW{i}USDT" for i in range(8)}                 # LOW8 has no spot pair
+    _spot_zip(tmp_path / "archive-spot", "LOW0USDT", "2021-05", [date(2021, 5, 1)])
+    plan = sl.lower_spot_plan(market, tmp_path, listing, LOWER_TEST_SPAN)
+    assert plan["no_pair_symbols"] == ["LOW8USDT"] and "LOW8USDT" in plan["held_symbols"]
+    assert "LOW8USDT" not in plan["pairs"] and set(plan["pairs"]) == listing
+    low0 = plan["pairs"]["LOW0USDT"]
+    assert "2021-05" in low0["months"] and "2021-05" not in low0["to_ask"], "a shared-root month is not asked again"
+    assert plan["in_shared_root"] == 1 and plan["to_ask"] == plan["pair_months"] - 1
+    tier = sl.LowerTier(market, LOWER_TEST_SPAN)
+    held_day = next(d for d in sl.sundays(LOWER_TEST_SPAN) if "LOW2USDT" in tier.at(d)[0] and d >= date(2020, 12, 1))
+    window = {f"{held_day - timedelta(days=k):%Y-%m}" for k in range(sl.LOWER_METRICS_WINDOW + 1)}
+    assert window <= set(plan["pairs"]["LOW2USDT"]["months"])
+    assert min(plan["pairs"]["LOW2USDT"]["months"]) == "2020-01", "from the coin's first bar"
+    assert max(m for b in plan["pairs"].values() for m in b["months"]) <= "2021-06"
+
+
+def test_the_spot_variables_read_nothing_older_than_the_planned_window():
+    day = date(2021, 6, 6)
+    read: set[date] = set()
+
+    class Recording(dict):
+        def get(self, key, default=None):
+            read.add(key)
+            return super().get(key, default)
+    start = date(2020, 1, 1)
+    days = [start + timedelta(days=k) for k in range(560)]
+    market = xsb.Market(bars={"AUSDT": {d: xsb.Bar(open=1.0, close=1.0, quote_volume=1.0) for d in days}}, funding={})
+    names = [n for n, (g, _) in sl.lab.variables().items() if g == "spot"]
+    assert len(names) == 3
+    for name in names:
+        market.spot = {"AUSDT": Recording({d: xsb.Bar(open=1.0, close=1.0, quote_volume=1.0 + (k * 7919) % 13)
+                                           for k, d in enumerate(days)})}
+        market.spot_of = {"AUSDT": ("AUSDT", 1.0)}
+        read.clear()
+        assert sl.lab.variables()[name][1](market, "AUSDT", day) is not None, name
+        assert read and min(read) >= day - timedelta(days=sl.LOWER_METRICS_WINDOW) and max(read) <= day, name
+
+
+def test_the_lower_spot_fetch_writes_the_listing_first_and_stops_in_the_quiet_window(tmp_path):
+    root = tmp_path / sl.LOWER_SPOT_ROOT
+    root.mkdir()
+    plan = {"pairs": {"AUSDT": {"months": ["2021-01", "2021-03"], "to_ask": ["2021-01", "2021-03"]},
+                      "BUSDT": {"months": ["2021-02"], "to_ask": []}}}
+    (root / sl.LOWER_SPOT_PLAN).write_text(json.dumps(plan))
+    asked = []
+
+    def fetcher(dest, *, kind, symbols, start, end, market):
+        asked.append((dest, kind, tuple(symbols), start, end, market))
+        return {symbols[0]: {"kept": 2, "present": 0, "missing": 0}}
+    lister = lambda prefix: ([], [f"{prefix}AUSDT-1d-2021-01.zip", f"{prefix}AUSDT-1d-2021-01.zip.CHECKSUM",
+                                  f"{prefix}AUSDT-1d-2021-03.zip"])
+    assert sl.lower_spot_fetch(tmp_path, fetcher=fetcher, lister=lister, quiet=lambda: False, say=lambda _: None) == sl.EXIT_OK
+    assert asked == [(root, "klines-1d", ("AUSDT",), date(2021, 1, 1), date(2021, 3, 31), "spot")], "only pairs with months to ask"
+    assert json.loads((root / sl.LOWER_SPOT_SERVED).read_text()) == {"AUSDT": ["2021-01", "2021-03"]}
+    assert sl.lower_spot_fetch(tmp_path, fetcher=fetcher, lister=lister, quiet=lambda: True, say=lambda _: None) == sl.EXIT_BLOCKED
+
+    def broken(prefix):
+        raise sl.lab.ba.ArchiveError("listing: the bucket answered 404")
+    (root / sl.LOWER_SPOT_SERVED).unlink()
+    with pytest.raises(sl.lab.ba.ArchiveError):
+        sl.lower_spot_fetch(tmp_path, fetcher=fetcher, lister=broken, quiet=lambda: False, say=lambda _: None)
+    assert json.loads((root / sl.LOWER_SPOT_SERVED).read_text() if (root / sl.LOWER_SPOT_SERVED).exists() else "{}") == {}, \
+        "a failed listing is never written as a pair the archive does not serve"
+
+
+def test_the_lower_spot_seal_counts_asked_months_and_holds_the_shared_root_still(tmp_path):
+    cache = tmp_path
+    root, shared = cache / sl.LOWER_SPOT_ROOT, cache / "archive-spot"
+    _spot_zip(shared, "AUSDT", "2021-01", [date(2021, 1, 1)])
+    _spot_zip(root, "AUSDT", "2021-02", [date(2021, 2, 1)])
+    plan = {"pairs": {"AUSDT": {"months": ["2021-01", "2021-02", "2021-03", "2021-04"],
+                                "to_ask": ["2021-02", "2021-03", "2021-04"]}}}
+    (root / sl.LOWER_SPOT_PLAN).write_text(json.dumps(plan))
+    before = sl.shared_spot_digest(cache)
+    report = sl.lower_spot_seal(cache, before)
+    assert report["unlisted"] == ["AUSDT"] and report["problems"] and not (root / sl.LOWER_SPOT_COMPLETE).exists()
+    assert sl.lower_spot_market(cache) is None, "not sealed: nothing is read"
+    (root / sl.LOWER_SPOT_SERVED).write_text(json.dumps({"AUSDT": ["2021-01", "2021-02", "2021-03"]}))
+    report = sl.lower_spot_seal(cache, before)
+    assert report["open_months"] == 1 and report["not_served"] == 1, "March served and missing; April not served"
+    _spot_zip(root, "AUSDT", "2021-03", [date(2021, 3, 1)])
+    assert sl.lower_spot_seal(cache, before)["problems"] == [] and (root / sl.LOWER_SPOT_COMPLETE).exists()
+    plan["pairs"]["AUSDT"]["to_ask"].append("2021-01")      # asked, but held in the shared root: on disk
+    (root / sl.LOWER_SPOT_PLAN).write_text(json.dumps(plan))
+    assert sl.lower_spot_seal(cache, before)["problems"] == []
+    derived = cache / "derived" / "spot-share"
+    derived.mkdir(parents=True)
+    (derived / "served.json").write_text(json.dumps({"AUSDT": ["2020-12", "2021-01"]}))   # the shared list moved
+    moved = sl.lower_spot_seal(cache, before)
+    assert "derived/spot-share changed since the fetch began" in moved["problems"]
+    assert "1 pair(s) whose listing lacks a month the shared served list holds" in moved["problems"]
+    assert not (root / sl.LOWER_SPOT_COMPLETE).exists(), "a failed seal removes the marker"
+
+
+def test_the_lower_spot_market_reads_both_roots_and_agrees_where_they_overlap(monkeypatch, tmp_path):
+    cache = tmp_path
+    root, shared = cache / sl.LOWER_SPOT_ROOT, cache / "archive-spot"
+    _spot_zip(shared, "LOW0USDT", "2021-01", [date(2021, 1, 1), date(2021, 1, 2)], close=100.0)
+    _spot_zip(root, "LOW0USDT", "2021-01", [date(2021, 1, 1), date(2021, 1, 2)], close=100.0)
+    _spot_zip(root, "LOW0USDT", "2021-02", [date(2021, 2, 1)], close=100.0)
+    _spot_zip(root, "LOW1USDT", "2021-01", [date(2021, 1, 1)], close=50.0)
+    _spot_zip(shared, "LOW0USDT", "2020-12", [date(2020, 12, 31)], close=100.0)
+    (shared / "symbols.json").write_text(json.dumps(["LOW0USDT", "LOW1USDT"]))
+    market = _lower_market()
+    monkeypatch.setattr(sl.lab, "hold", lambda c, span=None, *, attach=True, flow=False: market)
+    (root / sl.LOWER_SPOT_COMPLETE).write_text("{}")
+    got = sl.lower_spot_market(cache, LOWER_TEST_SPAN)
+    assert set(got.spot["LOW0USDT"]) == {date(2020, 12, 31), date(2021, 1, 1), date(2021, 1, 2), date(2021, 2, 1)}
+    assert got.spot_of["LOW0USDT"] == ("LOW0USDT", 1.0)
+    assert got.spot_files["LOW0USDT"] == {"2020-12", "2021-01", "2021-02"}
+    assert sl.lower_spot_agree(cache) == {"shared_pair_days": 2, "differ": 0}
+    _spot_zip(shared, "LOW0USDT", "2021-01", [date(2021, 1, 1), date(2021, 1, 2)], close=101.0)
+    assert sl.lower_spot_agree(cache) == {"shared_pair_days": 2, "differ": 2}
+
+
+def test_the_ranks_101_spot_commands_stop_until_the_fetch_is_sealed(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    for command in ("lower-gate", "lower-counts", "lower-map", "lower-sweep"):
+        assert sl.main([command, "--only", "spot", "--cache", str(tmp_path)]) == sl.EXIT_BLOCKED, command
+        assert "spot fetch is not sealed" in capsys.readouterr().err
+    assert sl.main(["lower-sweep", "--only", "spot,funding", "--cache", str(tmp_path)]) == sl.EXIT_USAGE
+
+
+def test_the_ranks_101_family_keeps_every_recorded_book_and_fills_only_skipped_rows(tmp_path, capsys):
+    read = {"start": "2021-09-01", "months": 40, "long": "high", "annual_sharpe": 0.1, "group": "g",
+            "total_position_annual_pct": 1.0, "clears_entry": False}
+    first = {"a": read, "s": {"skipped": "under 0.8"}}
+    second = {"b": read}
+    family = sl.lower_sweep_family([first, second], {"s": dict(read, group="spot")})
+    assert list(family) == ["a", "s", "b"] and family["s"]["group"] == "spot"
+    with pytest.raises(ValueError, match="never replaced"):
+        sl.lower_sweep_family([first, second], {"a": read})
+    with pytest.raises(ValueError, match="recorded twice"):
+        sl.lower_sweep_family([first, {"a": read}], {})
+    monkeypatch_null = {f"tier:{k}": {"ics": {"2021-09-05": 0.01}, "high": {"2021-09": 0.0}, "low": {"2021-09": 0.0}} for k in range(2)}
+    paths = {}
+    for name, body in (("r1", {"books": first}), ("r2", {"books": second}), ("new", {"books": {"s": dict(read, group="spot")}}),
+                       ("null", {"null": monkeypatch_null})):
+        paths[name] = tmp_path / f"{name}.json"
+        paths[name].write_text(json.dumps(body))
+    saved = sl.xsb._in_sandbox
+    sl.xsb._in_sandbox = lambda: True
+    try:
+        args = ["lower-family", "--records", f"{paths['r1']},{paths['r2']}", "--new", str(paths["new"]),
+                "--null", str(paths["null"]), "--cache", str(tmp_path)]
+        assert sl.main(args) == sl.EXIT_OK
+        out = json.loads(capsys.readouterr().out)
+        assert out["family"] == ["a", "b", "s"] and "s" in out["recorded_reading"]["skipped"]
+        paths["check"] = tmp_path / "check.json"
+        paths["check"].write_text(json.dumps({"reading": out["recorded_reading"]}))
+        assert sl.main(args + ["--check", str(paths["check"])]) == sl.EXIT_OK
+        capsys.readouterr()
+        paths["check"].write_text(json.dumps({"reading": {**out["recorded_reading"], "books": 99}}))
+        assert sl.main(args + ["--check", str(paths["check"])]) == sl.EXIT_BLOCKED
+    finally:
+        sl.xsb._in_sandbox = saved
+

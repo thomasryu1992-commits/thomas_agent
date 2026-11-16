@@ -3964,7 +3964,8 @@ def sens_run(market: xsb.Market, family: str, null: Mapping[str, Mapping[str, An
 
 # --- round 45 (section 63): positioning on ranks 101+, from a fetch of its own -------------------------------------------
 
-HOST_COMMANDS = ("lower-positioning-digest", "lower-positioning-build", "lower-positioning-seal")
+HOST_COMMANDS = ("lower-positioning-digest", "lower-positioning-build", "lower-positioning-seal",
+                 "lower-spot-digest", "lower-spot-fetch", "lower-spot-seal")
 LOWER_METRICS_ROOT = "archive-metrics-lower"     # beside the shared root, which M04's screen reads and fetches into
 LOWER_METRICS_DAILY = "metrics-daily-lower"      # beside derived/metrics-daily, which M04's screen reads
 LOWER_METRICS_PLAN = "plan.json"
@@ -4134,6 +4135,193 @@ def lower_metrics_agree(cache: Path, market: xsb.Market) -> dict[str, Any]:
                 both += 1
                 differ += other[day] != values
     return {"shared_symbol_days": both, "differ": differ}
+
+
+# Round 46 (section 64): the spot group on ranks 101+, from a fetch of its own. The shared spot root is what the forward
+# panel's S01 reads and fetches into (and its fetch rewrites served.json with its own pairs), so nothing here writes it.
+LOWER_SPOT_ROOT = "archive-spot-lower"
+LOWER_SPOT_PLAN = "plan.json"
+LOWER_SPOT_SERVED = "served.json"                # each asked pair's archive listing, as YYYY-MM
+LOWER_SPOT_COMPLETE = "complete.json"
+
+
+def _spot_months(root: Path) -> dict[str, set[str]]:
+    """Each pair's monthly spot files under one root, as ``YYYY-MM`` (the shared root's reader, for any root)."""
+    folder = root / lab.sp.KLINES
+    out: dict[str, set[str]] = {}
+    for pair in sorted(p for p in folder.iterdir() if p.is_dir()) if folder.exists() else []:
+        months = {lab.ba._month_of(path.name) for path in pair.glob("*.zip")}
+        out[pair.name] = {f"{m[0]:04d}-{m[1]:02d}" for m in months if m}
+    return out
+
+
+def lower_spot_plan(market: xsb.Market, cache: Path, listing: set[str], span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """The spot months the spot group reads on ranks 101+: for every weekly decision, every held coin with a spot pair,
+    the calendar months touched by the :data:`LOWER_METRICS_WINDOW` days before it (from the coin's first bar). Months
+    already in the shared spot root are not asked again. Reads file names, the spot symbol list and bars only."""
+    tier = LowerTier(market, span)
+    decisions = [d for d in sundays(span) if span[0] <= d <= span[1]]
+    need: dict[str, set[str]] = {}
+    held, no_pair = set(), set()
+    for day in decisions:
+        for symbol in tier.at(day)[0]:
+            held.add(symbol)
+            link = lab.sp.pair_of(symbol, listing)
+            if link is None:
+                no_pair.add(symbol)
+                continue
+            first = min(market.bars[symbol])
+            for k in range(LOWER_METRICS_WINDOW + 1):
+                d = day - timedelta(days=k)
+                if first <= d <= span[1]:
+                    need.setdefault(link[0], set()).add(f"{d:%Y-%m}")
+    shared = _spot_months(cache / lab.sp.SPOT_DIR)
+    pairs = {pair: {"months": sorted(months), "to_ask": sorted(months - shared.get(pair, set()))}
+             for pair, months in sorted(need.items())}
+    counts = {"pair_months": sum(len(b["months"]) for b in pairs.values()),
+              "to_ask": sum(len(b["to_ask"]) for b in pairs.values())}
+    counts["in_shared_root"] = counts["pair_months"] - counts["to_ask"]
+    return {"decisions": len(decisions), "first_decision": decisions[0].isoformat() if decisions else None,
+            "window_days": LOWER_METRICS_WINDOW, "held_symbols": sorted(held), "no_pair_symbols": sorted(no_pair),
+            "pairs_asked": sum(1 for b in pairs.values() if b["to_ask"]), **counts, "pairs": pairs}
+
+
+def lower_spot_fetch(cache: Path, *, fetcher: Callable[..., Any] = lab.ba.fetch_monthly,
+                     lister: Callable[..., Any] = lab.ba.listing, quiet: Callable[[], bool] | None = None,
+                     say: Callable[[str], None] = print) -> int:
+    """Host only. Per pair with months to ask: its archive listing (written to :data:`LOWER_SPOT_SERVED` before
+    anything is fetched, so a listing that fails is an error, never "not served"), then every month the listing holds
+    between the first and last asked month. A range fetch may also keep months the plan did not ask for (between
+    them, or held in the shared root too); the seal counts asked months only. Stops inside 07:30 - 09:00 UTC."""
+    from datetime import datetime, timezone
+
+    from scripts.research import funding_basis_refresh as fbr
+
+    quiet = quiet or (lambda: fbr.in_quiet(datetime.now(timezone.utc)))
+    root = cache / LOWER_SPOT_ROOT
+    plan = json.loads((root / LOWER_SPOT_PLAN).read_text())
+    served_path = root / LOWER_SPOT_SERVED
+    served: dict[str, list[str]] = json.loads(served_path.read_text()) if served_path.exists() else {}
+    total = {"kept": 0, "present": 0, "missing": 0}
+    asked = [(pair, body["to_ask"]) for pair, body in sorted(plan["pairs"].items()) if body["to_ask"]]
+    for number, (pair, months) in enumerate(asked, 1):
+        if quiet():
+            say("HALTED: inside the quiet window 07:30-09:00 UTC; rerun the same command after 09:00 UTC")
+            return EXIT_BLOCKED
+        _, keys = lister(lab.ba.monthly_folder(lab.sp.KLINES, pair, "spot"))
+        served[pair] = sorted({f"{m[0]:04d}-{m[1]:02d}" for m in (lab.ba._month_of(k.rsplit("/", 1)[-1]) for k in keys
+                                                                if k.endswith(".zip")) if m})
+        served_path.write_text(json.dumps(served, indent=0, sort_keys=True))
+        lo = date.fromisoformat(months[0] + "-01")
+        last = date.fromisoformat(months[-1] + "-01")
+        hi = date(last.year + (last.month == 12), last.month % 12 + 1, 1) - timedelta(days=1)
+        tally = fetcher(root, kind=lab.sp.KLINES, symbols=[pair], start=lo, end=hi, market="spot")[pair]
+        for key in total:
+            total[key] += tally[key]
+        if number % 20 == 0:
+            say(f"[{number}/{len(asked)}] {pair}: total {total}")
+    say(f"FETCH_DONE {json.dumps({'pairs': len(asked), **total})}")
+    return EXIT_OK
+
+
+def shared_spot_digest(cache: Path) -> dict[str, Any]:
+    """What the forward panel's S01 and the other spot readers read and fetch into: the shared spot root and its
+    served list."""
+    return {"archive-spot": tree_digest(cache / lab.sp.SPOT_DIR), "derived/spot-share": tree_digest(lab.sp.derived_dir(cache))}
+
+
+def lower_spot_seal(cache: Path, before: Mapping[str, Any]) -> dict[str, Any]:
+    """Host only. Complete when every asked month is on disk in either root or absent from that pair's own listing,
+    every asked pair has a listing, a pair's listing holds every month the shared served list recorded for it, and
+    the shared spot root and its served list are byte-identical to ``before``. Only then is
+    :data:`LOWER_SPOT_COMPLETE` written; without it no command reads spot on this tier."""
+    root = cache / LOWER_SPOT_ROOT
+    plan = json.loads((root / LOWER_SPOT_PLAN).read_text())
+    try:
+        served = json.loads((root / LOWER_SPOT_SERVED).read_text())
+    except (OSError, ValueError):
+        served = {}
+    old = lab.sp.read_served(cache) or {}
+    lower, shared = _spot_months(root), _spot_months(cache / lab.sp.SPOT_DIR)
+    open_months, not_served, unlisted = 0, 0, set()
+    for pair, body in plan["pairs"].items():
+        for month in body["to_ask"]:
+            if month in lower.get(pair, set()) or month in shared.get(pair, set()):
+                continue
+            if pair not in served:
+                unlisted.add(pair)
+            elif month in served[pair]:
+                open_months += 1
+            else:
+                not_served += 1
+    shrank = sorted(p for p in served if p in old and not set(old[p]) <= set(served[p]))
+    now = shared_spot_digest(cache)
+    problems = ([f"{open_months} asked month(s) served but not on disk"] if open_months else []) + \
+        ([f"{len(unlisted)} asked pair(s) without a listing"] if unlisted else []) + \
+        ([f"{len(shrank)} pair(s) whose listing lacks a month the shared served list holds"] if shrank else []) + \
+        [f"{k} changed since the fetch began" for k in now if now[k] != before.get(k)]
+    report = {"open_months": open_months, "not_served": not_served, "unlisted": sorted(unlisted), "shrank": shrank,
+              "shared": now, "before": dict(before), "problems": problems}
+    marker = root / LOWER_SPOT_COMPLETE
+    if problems:
+        marker.unlink(missing_ok=True)
+    else:
+        marker.write_text(json.dumps({**report, "sealed": True}, indent=1, sort_keys=True))
+    return report
+
+
+def lower_spot_market(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | None:
+    """The market cut at the span's end with the spot bars of both roots attached (one archive file, one set of bars),
+    and nothing else: None unless the fetch was sealed. After the seal every month a held coin's window reads is on
+    disk or not served, so a coin's value does not depend on whether it was about to join the top hundred."""
+    if not (cache / LOWER_SPOT_ROOT / LOWER_SPOT_COMPLETE).exists():
+        return None
+    held = lab.hold(cache, span, attach=False)
+    try:
+        listing = set(json.loads((cache / lab.sp.SPOT_DIR / lab.ba.SYMBOLS_FILENAME).read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        listing = set()
+    if held is None or not listing:
+        return None
+    bars: dict[str, dict[date, Any]] = {}
+    for root in (cache / lab.sp.SPOT_DIR, cache / LOWER_SPOT_ROOT):
+        for pair, days in xsb.load_market(root, funding=False).bars.items():
+            bars.setdefault(pair, {}).update(days)
+    files: dict[str, set[str]] = {}
+    for root in (cache / lab.sp.SPOT_DIR, cache / LOWER_SPOT_ROOT):
+        for pair, months in _spot_months(root).items():
+            files.setdefault(pair, set()).update(months)
+    return lab.sp.attach(held, xsb.Market(bars=bars, funding={}), listing, span[1], files)
+
+
+def lower_spot_agree(cache: Path) -> dict[str, Any]:
+    """Every pair-day in both spot roots must carry the same bar (one archive file, one reading)."""
+    shared = xsb.load_market(cache / lab.sp.SPOT_DIR, funding=False).bars
+    both = differ = 0
+    for pair, days in xsb.load_market(cache / LOWER_SPOT_ROOT, funding=False).bars.items():
+        other = shared.get(pair) or {}
+        for day, bar in days.items():
+            if day in other:
+                both += 1
+                differ += other[day] != bar
+    return {"shared_pair_days": both, "differ": differ}
+
+
+def lower_sweep_family(recorded: Sequence[Mapping[str, Mapping[str, Any]]],
+                       new: Mapping[str, Mapping[str, Any]]) -> dict[str, Mapping[str, Any]]:
+    """The ranks-101+ sweep family: the recorded books as recorded, then the new ones. A name recorded twice is an
+    error; a new book may take the place only of a recorded row that was skipped (never of a book that was read)."""
+    family: dict[str, Mapping[str, Any]] = {}
+    for books in recorded:
+        for name, body in books.items():
+            if name in family:
+                raise ValueError(f"{name}: recorded twice")
+            family[name] = body
+    for name, body in new.items():
+        if name in family and not family[name].get("skipped"):
+            raise ValueError(f"{name}: a recorded book is never replaced")
+        family[name] = body
+    return family
 
 
 def lower_map(market: xsb.Market, names: Mapping[str, tuple[str, lab.Variable]],
@@ -4779,11 +4967,16 @@ def main(argv: list[str] | None = None) -> int:
                                             "lower-gate", "lower-counts", "lower-map", "lower-sweep", "lower-overlap",
                                             "ha1-gate", "ha1-counts", "ha1", "sens", "axis-power",
                                             "lower-positioning-plan", "lower-positioning-digest",
-                                            "lower-positioning-build", "lower-positioning-seal"))
+                                            "lower-positioning-build", "lower-positioning-seal",
+                                            "lower-spot-plan", "lower-spot-digest", "lower-spot-fetch", "lower-spot-seal",
+                                            "lower-family"))
     parser.add_argument("--family", choices=tuple(SENS_FAMILIES), default=None, help="sens: the sweep whose door is measured")
     parser.add_argument("--tier", choices=("top30", "rank31_100"), default=None, help="axis-power: the map tier read")
     parser.add_argument("--before", type=Path, default=None, help="lower-positioning-seal: the digest taken before the fetch")
     parser.add_argument("--null", type=Path, default=None, help="sens: that sweep's stored null books (JSON)")
+    parser.add_argument("--records", default=None, help="lower-family: the recorded sweep files, comma-separated, in order")
+    parser.add_argument("--new", type=Path, default=None, help="lower-family: the new sweep file")
+    parser.add_argument("--check", type=Path, default=None, help="lower-family: the recorded family reading the recorded books must give")
     parser.add_argument("--shape", choices=BAR_SHAPES, default=None, help="bar: the book shape whose null books are read")
     parser.add_argument("--only", default=None,
                         help="sweep, transfer: variable groups (comma list), or `null` for the random books")
@@ -4802,10 +4995,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "lower-positioning-build":
             lower_metrics_build(host_cache)
             return EXIT_OK
+        if args.command == "lower-spot-digest":
+            print(json.dumps(shared_spot_digest(host_cache), indent=1, sort_keys=True))
+            return EXIT_OK
+        if args.command == "lower-spot-fetch":
+            return lower_spot_fetch(host_cache)
         if args.before is None:
-            print("refused: lower-positioning-seal needs --before", file=sys.stderr)
+            print(f"refused: {args.command} needs --before", file=sys.stderr)
             return EXIT_USAGE
-        report = lower_metrics_seal(host_cache, json.loads(args.before.read_text()))
+        seal = lower_spot_seal if args.command == "lower-spot-seal" else lower_metrics_seal
+        report = seal(host_cache, json.loads(args.before.read_text()))
         print(json.dumps(report, indent=1, sort_keys=True))
         return EXIT_BLOCKED if report["problems"] else EXIT_OK
     if not xsb._in_sandbox():
@@ -4819,6 +5018,37 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_BLOCKED
         print(json.dumps({"measured_at": timeutil.utc_now_iso(), "spec": SPEC, "tier": LOWER_NAME,
                           **lower_metrics_plan(market, cache / "archive-metrics")}, indent=1, sort_keys=True))
+        return EXIT_OK
+    if args.command == "lower-spot-plan":
+        market = lab.hold(cache, attach=False)
+        try:
+            listing = set(json.loads((cache / lab.sp.SPOT_DIR / lab.ba.SYMBOLS_FILENAME).read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            listing = set()
+        if market is None or not listing:
+            print("BLOCKED: contract types or the spot symbol list are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), "spec": SPEC, "tier": LOWER_NAME,
+                          **lower_spot_plan(market, cache, listing)}, indent=1, sort_keys=True))
+        return EXIT_OK
+    if args.command == "lower-family":
+        if not args.records or args.new is None or args.null is None:
+            print("refused: lower-family needs --records, --new and --null", file=sys.stderr)
+            return EXIT_USAGE
+        recorded = [json.loads(Path(f).read_text(encoding="utf-8"))["books"] for f in args.records.split(",")]
+        null = json.loads(args.null.read_text(encoding="utf-8"))["null"]
+        try:
+            family = lower_sweep_family(recorded, json.loads(args.new.read_text(encoding="utf-8"))["books"])
+        except ValueError as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        before = lower_sweep_reading(lower_sweep_family(recorded, {}), null)
+        if args.check is not None and json.loads(args.check.read_text(encoding="utf-8"))["reading"] != before:
+            print("BLOCKED: the recorded books no longer give the recorded family reading", file=sys.stderr)
+            return EXIT_BLOCKED
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), "spec": SPEC, "tier": LOWER_NAME,
+                          "family": sorted(family), "recorded_reading": before,
+                          "reading": lower_sweep_reading(family, null)}, indent=1, sort_keys=True))
         return EXIT_OK
     if args.command in ("confirm-counts", "confirm"):
         entry = next_confirm_read()
@@ -4972,6 +5202,13 @@ def main(argv: list[str] | None = None) -> int:
                 if market is None:
                     print("BLOCKED: this tier's positioning fetch is not sealed (section 63)", file=sys.stderr)
                     return EXIT_BLOCKED
+            elif "spot" in wanted:                        # this tier's own fetch beside the shared root (section 64)
+                if wanted != {"spot"}:
+                    raise ValueError("spot is read alone on this tier")
+                market = lower_spot_market(cache)
+                if market is None:
+                    print("BLOCKED: this tier's spot fetch is not sealed (section 64)", file=sys.stderr)
+                    return EXIT_BLOCKED
             else:
                 market = lab.hold(cache, attach=False) if args.command == "lower-gate" else sweep_market(cache, wanted)
         except ValueError as exc:
@@ -4982,8 +5219,11 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_BLOCKED
         if args.command == "lower-gate":
             body: dict[str, Any] = {"book": lower_gate(market), "variable": LOWER_GATE_RECORD, "long": "low"}
-            if "positioning" in wanted:
-                body["metrics_agree"] = lower_metrics_agree(cache, market)
+            if "spot" in wanted:
+                body["spot_agree"] = lower_spot_agree(cache)
+            if wanted & {"positioning", "spot"}:
+                if "positioning" in wanted:
+                    body["metrics_agree"] = lower_metrics_agree(cache, market)
                 if args.null is not None:
                     stored = json.loads(args.null.read_text(encoding="utf-8"))
                     body["null_check"] = sens_null_check(lower_sweep_tier(market), stored["null"]) or "matches"
