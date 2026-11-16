@@ -4,6 +4,7 @@ without the year they trade, the placebo scenario, and the two rungs' arithmetic
 from __future__ import annotations
 
 import json
+import random as random_module
 from datetime import date, timedelta
 
 import pytest
@@ -2645,3 +2646,123 @@ def test_the_tier_lead_command_takes_only_a_registered_lead(monkeypatch, capsys)
     assert out["lead"] == "funding_30" and out["command"] == "tier-lead"
     monkeypatch.setattr(sl.lab, "hold", lambda cache, span=None, *, attach=True, flow=False: None)
     assert sl.main(["tier-lead", "--only", "funding_30"]) == sl.EXIT_BLOCKED
+
+
+# --- round 39: how large an effect the map's two doors can see --------------------------------------------------------
+
+def _door_frames(decisions=60, coins=20, *, offset=0):
+    """Made-up decisions: each coin's forward return is its own fixed draw plus a weekly one."""
+    rng = random_module.Random("door-test")
+    base = {f"C{i:02d}USDT": rng.gauss(0, 0.01) for i in range(coins + offset)}
+    frames = []
+    for k in range(decisions):
+        day = date(2022, 1, 2) + timedelta(days=7 * k)
+        frames.append((day, {s: b + rng.gauss(0, 0.05) for s, b in list(base.items())[offset:]}))
+    return {("top30", 7): frames}
+
+
+DOOR_LINES = {"7": {"largest_abs_t": 4.0, "largest_abs_spread_t": 3.5}, "28": {"largest_abs_t": 5.0, "largest_abs_spread_t": 4.0}}
+
+
+def test_a_planted_variable_is_its_size_of_the_forward_return_and_never_a_registered_variable():
+    returns = {"A": 0.10, "B": -0.20, "C": 0.0, "D": 0.05}
+    noise = {"A": 0.3, "B": -1.0, "C": 0.7, "D": 0.0}
+    assert sl.planted(returns, "rank", 0.0, noise) == noise, "size 0 is the noise alone"
+    full = sl.planted(returns, "rank", 1.0, noise)
+    assert sorted(full, key=full.get) == sorted(returns, key=returns.get), "size 1 orders coins as the return does"
+    assert sum(full.values()) == pytest.approx(0.0) and full["B"] == -max(full.values())
+    raw = sl.planted(returns, "raw", 1.0, noise)
+    assert raw["A"] - raw["C"] == pytest.approx(2 * (raw["D"] - raw["C"])), "the raw shape keeps the returns' spacing"
+    half = sl.planted(returns, "raw", 0.6, noise)
+    assert half["A"] == pytest.approx(0.6 * raw["A"] + 0.8 * noise["A"])
+    assert sl.planted({"A": 0.1, "B": 0.1}, "raw", 0.5, noise) == {}, "no spread in the returns, no signal"
+    registered = set(sl.lab.variables()) | set(sl.lab.controls())
+    assert not {n for n in registered if "door" in n or "plant" in n}
+    assert not any(row.startswith("door") for row in sl.TIER_SWEEP_OUT) and set(sl.DOOR_SHAPES) == {"rank", "raw"}
+
+
+def test_door_noise_is_redrawn_weekly_or_fixed_per_coin_and_a_seed_is_a_draw():
+    frames = _door_frames(decisions=5, coins=10)[("top30", 7)]
+    week = sl._door_noise("week", 0, frames, "t")
+    fixed = sl._door_noise("fixed", 0, frames, "t")
+    assert week[0] != week[1] and fixed[0] == fixed[1] == fixed[4]
+    assert sl._door_noise("week", 0, frames, "t") == week and sl._door_noise("week", 1, frames, "t") != week
+    assert sl._door_noise("fixed", 1, frames, "t") != fixed
+    later = _door_frames(decisions=5, coins=10, offset=3)[("top30", 7)]
+    moved = sl._door_noise("fixed", 0, later, "t")
+    assert all(moved[0][s] == fixed[0][s] for s in moved[0] if s in fixed[0]), "a coin keeps its draw whatever else is listed"
+
+
+def test_the_doors_see_a_large_planted_effect_and_not_a_planted_nothing():
+    frames = _door_frames()
+    out = sl.door_size(None, DOOR_LINES, sizes=(0.0, 0.05, 0.6), seeds=12, frames=frames)
+    rows = {(r["noise"], r["shape"], r["size"]): r for r in out["rows"]}
+    assert len(out["rows"]) == 2 * 2 * 3 and out["lines"]["7"] == {"largest_abs_t": 4.0, "largest_abs_spread_t": 3.5}
+    for kind in sl.DOOR_NOISE:
+        for shape in sl.DOOR_SHAPES:
+            nothing, big = rows[(kind, shape, 0.0)], rows[(kind, shape, 0.6)]
+            assert nothing["seeds"] == 12 and nothing["seen_either"] == 0.0
+            assert big["seen_ic"] == 1.0 and big["mean_rank_correlation"] > 0.3 and big["rank_book_gross_total_position_annual_pct"] > 0
+            assert abs(nothing["mean_rank_correlation"]) < 0.02
+    assert rows[("fixed", "rank", 0.0)]["median_persistence"] > 0.9 > 0.2 > abs(rows[("week", "rank", 0.0)]["median_persistence"])
+    assert rows[("week", "rank", 0.6)]["seen_rule"] == 0.0, "noise redrawn weekly never keeps its rank: the full rule cannot pass"
+    assert rows[("fixed", "rank", 0.0)]["seen_rule"] == 0.0
+    reading = out["reading"]
+    assert reading["planting_broken"] is False and reading["false_alarms"] == []
+    apart = sl.door_size(None, {**DOOR_LINES, "7": {"largest_abs_t": 100.0, "largest_abs_spread_t": 0.0}}, sizes=(0.6,), seeds=3, frames=frames)
+    assert all(r["seen_ic"] == 0.0 and r["seen_spread"] == 1.0 == r["seen_either"] for r in apart["rows"]), "each door reads its own line"
+    bracket = next(b for b in reading["brackets"] if (b["noise"], b["shape"]) == ("week", "rank"))
+    assert bracket["ic"]["seen"]["size"] == 0.6 and bracket["ic"]["below"]["size"] == 0.05
+    # the cell is the map's own, and the gross is L1's rank book on the planted values
+    noise = sl._door_noise("week", 0, frames[("top30", 7)], "top30:7")
+    day, returns = frames[("top30", 7)][3]
+    values = sl.planted(returns, "rank", 0.6, noise[3])
+    weights = sl.rank_weights(values, long_high=True)
+    assert sl._gross(values, returns) == pytest.approx(sum(w * returns[s] for s, w in weights.items()))
+
+
+def test_the_door_reading_brackets_each_door_and_stops_on_false_alarms():
+    def row(size, ic, spread=0.0, rule=0.0, either=None, seeds=100):
+        return {"tier": "top30", "horizon_days": 7, "noise": "fixed", "shape": "rank", "size": size, "seeds": seeds,
+                "seen_ic": ic, "seen_spread": spread, "seen_rule": rule, "seen_either": max(ic, spread) if either is None else either,
+                "mean_rank_correlation": size / 2, "tercile_spread_bps": size * 1000, "rank_book_gross_total_position_annual_pct": size * 100}
+    rows = [row(0.0, 0.0), row(0.03, 0.4), row(0.05, 0.79, 0.1), row(0.08, 0.8, 0.5, 0.8), row(0.1, 1.0, 0.95, 1.0)]
+    reading = sl.door_reading(rows)
+    b = reading["brackets"][0]
+    assert (b["ic"]["below"]["size"], b["ic"]["seen"]["size"]) == (0.05, 0.08), "0.79 is under the share, 0.8 is at it"
+    assert (b["spread"]["below"]["size"], b["spread"]["seen"]["size"]) == (0.08, 0.1)
+    assert b["ic"]["seen"]["rank_book_gross_total_position_annual_pct"] == 8.0
+    assert reading["planting_broken"] is False
+    never = sl.door_reading([row(0.0, 0.0), row(0.1, 0.5)])["brackets"][0]
+    assert never["ic"]["seen"] is None and never["ic"]["below"]["size"] == 0.1, "never seen: the largest size is the floor"
+    alarm = sl.door_reading([row(0.0, 0.04), row(0.1, 1.0)])
+    assert alarm["planting_broken"] is True and alarm["false_alarms"] == [["top30", 7, "fixed", "rank", 0.04]]
+    assert sl.door_reading([row(0.0, 0.03), row(0.1, 1.0)])["planting_broken"] is False, "three of a hundred is allowed"
+
+
+def test_the_door_frames_are_the_maps_decisions_and_refuse_a_market_past_the_span(monkeypatch):
+    market, mids = _mid_world()
+    frames = sl.door_frames(market, MID_TEST_SPAN)
+    assert set(frames) == {(t, h) for t in ("top30", "rank31_100") for h in (7, 28)}
+    days = [d for d, _ in frames[("rank31_100", 7)]]
+    assert days == [d for d in sl.lab.decisions(MID_TEST_SPAN, 7)], "every map decision on this tier has its sixteen coins"
+    day, returns = frames[("rank31_100", 7)][10]
+    assert set(returns) == set(mids) and returns[mids[0]] == sl.lab.forward_return(market, mids[0], day, 7)
+    assert [d for d, _ in frames[("rank31_100", 28)]] == sl.lab.decisions(MID_TEST_SPAN, 28)
+    with pytest.raises(ValueError, match="past the span"):
+        sl.door_frames(market, (date(2022, 1, 1), date(2022, 6, 30)))
+
+
+def test_the_door_command_reads_the_random_variables_lines_from_the_same_run(monkeypatch, capsys):
+    market, mids = _mid_world()
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(sl.lab, "hold", lambda cache, span=None, *, attach=True, flow=False: market)
+    seen = {}
+    monkeypatch.setattr(sl.lab, "grid", lambda m, names: seen.setdefault("names", sorted(names)) and {"cells": []})
+    monkeypatch.setattr(sl.lab, "chance", lambda cells: DOOR_LINES)
+    monkeypatch.setattr(sl, "door_size", lambda m, lines: {"lines": lines, "rows": []})
+    assert sl.main(["door-size"]) == sl.EXIT_OK
+    out = json.loads(capsys.readouterr().out)
+    assert seen["names"] == sorted(sl.lab.controls()) and out["lines"] == DOOR_LINES and "calibration" in out["planted"]
+    monkeypatch.setattr(sl.lab, "hold", lambda cache, span=None, *, attach=True, flow=False: None)
+    assert sl.main(["door-size"]) == sl.EXIT_BLOCKED

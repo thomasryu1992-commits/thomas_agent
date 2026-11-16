@@ -3024,6 +3024,189 @@ def tier_lead_check(market: xsb.Market, name: str, span: tuple[date, date] = SPA
                                      "deep_threshold": DEEP_FUNDING, "hot_threshold": HOT_FUNDING, "window_days": DEEP_WINDOW}}
 
 
+# --- how large an effect the map's two doors can see (round 39, section 56) ---------------------------------------------
+
+# A planted variable is a calibration object: it is built from the very forward return the cell reads, so it looks
+# ahead by construction. It is never registered, never ranked beside a real variable and never printed as one.
+DOOR_SIZES = (0.0, 0.01, 0.02, 0.03, 0.04, 0.05, 0.065, 0.08, 0.10, 0.13, 0.16)
+DOOR_SEEDS = 100
+DOOR_SHAPES = ("rank", "raw")              # the forward return's normal score among the members, or the return itself
+DOOR_NOISE = ("week", "fixed")             # noise redrawn every decision (a best case), or one draw per coin (persistent)
+DOOR_DETECTED = 0.8                        # of the seeds: the share at which a door is said to see a size
+DOOR_FALSE_ALARMS = 3                      # of the seeds at size 0, in any one combination: more and the planting is broken
+
+
+def _normal_scores(values: Mapping[str, float]) -> dict[str, float]:
+    ranks = lab._ranks([values[s] for s in sorted(values)])
+    n = len(ranks)
+    normal = statistics.NormalDist()
+    return {s: normal.inv_cdf((r - 0.5) / n) for s, r in zip(sorted(values), ranks)}
+
+
+def _standardised(values: Mapping[str, float]) -> dict[str, float] | None:
+    if len(values) < 2:
+        return None
+    mean, sd = statistics.fmean(values.values()), statistics.pstdev(values.values())
+    return {s: (v - mean) / sd for s, v in values.items()} if sd > 0 else None
+
+
+def door_frames(market: xsb.Market, span: tuple[date, date] = SPAN) -> dict[tuple[str, int], list[tuple[date, dict[str, float]]]]:
+    """Per tier and horizon, the map's own decisions with each member's forward return, exactly as the map reads
+    them: members of the decision's month, a return only where the coin traded, a decision only with
+    :data:`signal_lab.MIN_NAMES` coins. Refuses a market that reaches past the span."""
+    latest = lab.last_day(market)
+    if latest is not None and latest > span[1]:
+        raise ValueError(f"the market reaches {latest}, past the span's last day {span[1]}; cut it first")
+    tiers = lab.tier_members(market, span)
+    out: dict[tuple[str, int], list[tuple[date, dict[str, float]]]] = {}
+    for horizon in lab.HORIZONS:
+        days = lab.decisions(span, horizon)
+        for tier, monthly in tiers.items():
+            rows = []
+            for day in days:
+                returns = {s: r for s in monthly.get(date(day.year, day.month, 1), ())
+                           if (r := lab.forward_return(market, s, day, horizon)) is not None}
+                if len(returns) >= lab.MIN_NAMES:
+                    rows.append((day, returns))
+            out[(tier, horizon)] = rows
+    return out
+
+
+def planted(returns: Mapping[str, float], shape: str, size: float, noise: Mapping[str, float]) -> dict[str, float]:
+    """``size`` times the forward return's signal plus the rest in noise: rank shape is the normal score of the
+    return's rank, raw shape the return standardised across the coins. Size 0 is noise alone, size 1 the signal."""
+    signal = _normal_scores(returns) if shape == "rank" else _standardised(returns)
+    if signal is None:
+        return {}
+    rest = math.sqrt(max(0.0, 1 - size * size))
+    return {s: size * signal[s] + rest * noise[s] for s in returns}
+
+
+def _door_noise(kind: str, seed: int, frames: Sequence[tuple[date, Mapping[str, float]]], tag: str) -> list[dict[str, float]]:
+    if kind == "fixed":
+        fixed: dict[str, float] = {}
+        out = []
+        for _, returns in frames:
+            for s in sorted(returns):
+                if s not in fixed:
+                    fixed[s] = random.Random(f"door:fixed:{seed}:{s}").gauss(0.0, 1.0)
+            out.append({s: fixed[s] for s in returns})
+        return out
+    rng = random.Random(f"door:week:{seed}:{tag}")
+    return [{s: rng.gauss(0.0, 1.0) for s in sorted(returns)} for _, returns in frames]
+
+
+def _gross(values: Mapping[str, float], returns: Mapping[str, float]) -> float:
+    """What L1's rank weights, long the high side, made on the forward returns: on two units of position."""
+    weights = rank_weights(values, long_high=True)
+    return sum(w * returns[s] for s, w in weights.items())
+
+
+def door_size(market: xsb.Market, lines: Mapping[str, Mapping[str, Any]], span: tuple[date, date] = SPAN, *,
+              sizes: Sequence[float] = DOOR_SIZES, seeds: int = DOOR_SEEDS,
+              frames: Mapping[tuple[str, int], Sequence[tuple[date, Mapping[str, float]]]] | None = None) -> dict[str, Any]:
+    """Every planted variable through the map's own cell and both lead rules' lines, on the all-weeks cell: per shape,
+    noise, tier, horizon and size, how many seeds each door sees, with what the planted effect is in the map's units
+    (mean rank correlation, tercile spread) and in a book's (L1's rank weights before costs, yearly on total position).
+    One seed's noise is drawn, read at every shape and size, and dropped before the next."""
+    frames = frames if frames is not None else door_frames(market, span)
+    rows: list[dict[str, Any]] = []
+    for (tier, horizon), decided in sorted(frames.items()):
+        ic_line = lines[str(horizon)]["largest_abs_t"]
+        spread_line = lines[str(horizon)]["largest_abs_spread_t"]
+        per_year = 365.25 / horizon
+        for kind in DOOR_NOISE:
+            kept = {(shape, size): {"seen": {"ic": 0, "spread": 0, "either": 0, "rule": 0}, "ts": [], "spread_ts": [],
+                                    "ics": [], "spreads": [], "grosses": [], "steady": [], "ic_sd": [], "spread_sd": []}
+                    for shape in DOOR_SHAPES for size in sizes}
+            for k in range(seeds):
+                noise = _door_noise(kind, k, decided, f"{tier}:{horizon}")
+                for shape in DOOR_SHAPES:
+                    for size in sizes:
+                        into = kept[(shape, size)]
+                        samples, before, rhos, gross = [], None, [], []
+                        for position, ((day, returns), draw) in enumerate(zip(decided, noise)):
+                            values = planted(returns, shape, size, draw)
+                            if len(values) < lab.MIN_NAMES:
+                                continue
+                            pairs = [(values[s], returns[s]) for s in values]
+                            ic = lab.rank_correlation(pairs)
+                            if ic is None:
+                                continue
+                            samples.append((position, ic, lab.tercile_spread(pairs)))
+                            gross.append(_gross(values, returns))
+                            if before is not None:
+                                shared = [(before[s], values[s]) for s in values if s in before]
+                                if len(shared) >= lab.MIN_NAMES and (rho := lab.rank_correlation(shared)) is not None:
+                                    rhos.append(rho)
+                            before = values
+                        cell = lab.cell(samples, scenario="all")
+                        if cell["too_few"] or cell["t"] is None or cell.get("spread_t") is None:
+                            continue
+                        persistence = statistics.fmean(rhos) if rhos else None
+                        over_ic, over_spread = abs(cell["t"]) > ic_line, abs(cell["spread_t"]) > spread_line
+                        seen = into["seen"]
+                        seen["ic"] += over_ic
+                        seen["spread"] += over_spread
+                        seen["either"] += over_ic or over_spread
+                        seen["rule"] += over_ic and persistence is not None and persistence >= lab.MIN_PERSISTENCE
+                        into["ts"].append(abs(cell["t"]))
+                        into["spread_ts"].append(abs(cell["spread_t"]))
+                        into["ics"].append(cell["mean_rank_correlation"])
+                        into["spreads"].append(cell["tercile_spread_bps"])
+                        into["grosses"].append(statistics.fmean(gross) * per_year / bs.POSITION_TOTAL * 100)
+                        if persistence is not None:
+                            into["steady"].append(persistence)
+                        into["ic_sd"].append(statistics.stdev(x[1] for x in samples))
+                        into["spread_sd"].append(statistics.stdev(x[2] for x in samples) * 10_000)
+                del noise
+            for shape in DOOR_SHAPES:
+                for size in sizes:
+                    into = kept[(shape, size)]
+                    n = len(into["ts"])
+
+                    def middle(xs: Sequence[float], places: int = 4) -> float | None:
+                        return round(statistics.median(xs), places) if xs else None
+                    rows.append({"tier": tier, "horizon_days": horizon, "noise": kind, "shape": shape, "size": size,
+                                 "seeds": n, "decisions": len(decided),
+                                 **{f"seen_{k}": round(v / n, 3) if n else None for k, v in into["seen"].items()},
+                                 "median_abs_t": middle(into["ts"]), "median_abs_spread_t": middle(into["spread_ts"]),
+                                 "mean_rank_correlation": round(statistics.fmean(into["ics"]), 5) if n else None,
+                                 "tercile_spread_bps": round(statistics.fmean(into["spreads"]), 1) if n else None,
+                                 "rank_book_gross_total_position_annual_pct": round(statistics.fmean(into["grosses"]), 2) if n else None,
+                                 "median_persistence": middle(into["steady"]),
+                                 "median_ic_sd": middle(into["ic_sd"]), "median_spread_sd_bps": middle(into["spread_sd"], 1)})
+    return {"lines": {h: {k: lines[h][k] for k in ("largest_abs_t", "largest_abs_spread_t")} for h in map(str, lab.HORIZONS)},
+            "sizes": list(sizes), "seeds": seeds, "detected_share": DOOR_DETECTED, "rows": rows,
+            "reading": door_reading(rows)}
+
+
+def door_reading(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Per tier, horizon, noise and shape, each door's bracket: the largest size seen in under :data:`DOOR_DETECTED`
+    of the seeds and the smallest seen in that share or more. The false-alarm gate reads size 0."""
+    groups: dict[tuple[str, int, str, str], list[Mapping[str, Any]]] = {}
+    for row in rows:
+        groups.setdefault((row["tier"], row["horizon_days"], row["noise"], row["shape"]), []).append(row)
+    brackets, alarms = [], []
+    for (tier, horizon, kind, shape), group in sorted(groups.items()):
+        group = sorted(group, key=lambda r: r["size"])
+        zero = next((r for r in group if r["size"] == 0), None)
+        if zero is not None and zero["seeds"] and zero["seen_either"] * zero["seeds"] > DOOR_FALSE_ALARMS:
+            alarms.append([tier, horizon, kind, shape, zero["seen_either"]])
+        doors = {}
+        for door in ("ic", "spread", "rule"):
+            first = next((r for r in group if r[f"seen_{door}"] is not None and r[f"seen_{door}"] >= DOOR_DETECTED), None)
+            under = [r for r in group if first is None or r["size"] < first["size"]]
+            last = under[-1] if under else None
+
+            def at(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
+                return None if row is None else {k: row[k] for k in ("size", f"seen_{door}", "mean_rank_correlation",
+                                                                     "tercile_spread_bps", "rank_book_gross_total_position_annual_pct")}
+            doors[door] = {"below": at(last), "seen": at(first)}
+        brackets.append({"tier": tier, "horizon_days": horizon, "noise": kind, "shape": shape, **doors})
+    return {"false_alarms": alarms, "planting_broken": bool(alarms), "brackets": brackets}
+
+
 # --- L19: the open-interest flush book (round 15, hypothesis H-O1) -------------------------------------------------------
 
 FLUSH_SPAN = lab.ms.DEV_LONG               # the positioning files begin in 2022 for all but a few coins
@@ -3642,7 +3825,7 @@ def main(argv: list[str] | None = None) -> int:
                                             "deep-counts", "deep", "rotation-counts", "rotation", "bar",
                                             "hot-counts", "hot", "gap-counts", "gap", "flush-counts", "flush",
                                             "basis-counts", "basis", "wide-counts", "wide", "mid-counts", "mid",
-                                            "tier-gate", "tier-counts", "tier-sweep", "tier-lead"))
+                                            "tier-gate", "tier-counts", "tier-sweep", "tier-lead", "door-size"))
     parser.add_argument("--shape", choices=BAR_SHAPES, default=None, help="bar: the book shape whose null books are read")
     parser.add_argument("--only", default=None,
                         help="sweep, transfer: variable groups (comma list), or `null` for the random books")
@@ -3741,6 +3924,17 @@ def main(argv: list[str] | None = None) -> int:
                           "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
                           "command": args.command, **body}, indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or (args.command == "mid-counts" and body["stop"]) else EXIT_OK
+    if args.command == "door-size":
+        market = lab.hold(cache, attach=False)
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        lines = lab.chance(lab.grid(market, lab.controls())["cells"])
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
+                          "command": args.command, "planted": "built from the forward return the cell reads: a calibration, "
+                          "not a variable", **door_size(market, lines)}, indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_OK
     if args.command == "tier-lead":
         if args.only not in TIER_LEADS:
             print(f"refused: --only names a lead of the tier sweep: {sorted(TIER_LEADS)}", file=sys.stderr)
