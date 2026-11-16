@@ -21,3 +21,16 @@ mid|lower --null PATH`), tests, `docs/proposals/STRATEGY_DISCOVERY_LOOP_V0.1.md`
   which most clear the entry rule alone. No outside line is brought in.
 - *One book alone in its family meets Benjamini-Hochberg's first threshold.* A family with other small p's could
   be looser. The real families had three and zero books under 0.05.
+
+## Result (2026-11-16 09:47Z): both sweeps are as fine as the entry rule
+
+- All three gates passed. The first five stored null books matched on both tiers, and at size 0 the count of
+  p < 0.05 was 5 and 8.
+- On both tiers the lead bracket equals the entry-only bracket. On ranks 31–100, 81% of seeds are leads at
+  ρ 0.05 (rank correlation 0.046, Sharpe 1.55, 26.8%/yr after cost). On ranks 101+, 82% are leads at ρ 0.08
+  (0.077, 1.64, 26.6%/yr). What binds the sweep's lead rule is the entry rule; the family correction asks no more.
+- On ranks 31–100 the null maximum (0.988) sits under the entry rule's Sharpe of 1.0, so p and the entry rule
+  move together there.
+- The planted books trade less than real ones (cost 3.7–6.1%/yr on ranks 31–100 against the real books' median of
+  9.0%), so a real variable with the same rank correlation would keep less.
+- Nothing closed is re-judged. Next is round 43, the map's scenario cells' sensitivity.
