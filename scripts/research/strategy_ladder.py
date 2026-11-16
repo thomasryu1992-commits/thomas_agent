@@ -646,7 +646,12 @@ def sweep_family(earlier: Mapping[str, Mapping[str, Any]], later: Mapping[str, M
 # --- a lead from the sweep, before any hypothesis form (section 45) -----------------------------------------------
 
 # The book the sweep read, exactly: its variable and the side the sweep chose. Nothing here is a variant of it.
-LEADS = {"spread_change_30": {"long": "low", "group": "price_volume"}}
+LEADS = {"spread_change_30": {"long": "low", "group": "price_volume"},
+         # Section 68: round 49's map lead, the side its cell names. Laid beside every book closed, struck or left
+         # alone on this tier that has values (the strikes on every tier, by code) and the perp's own trade size,
+         # whose lead was bound by its book (section 48.1); the rule reads all of them, sizes only (section 58.2).
+         "spot_trade_size_30": {"long": "high", "group": "spot_flow",
+                                "kin": tuple(sorted(n for (t, n) in lab.SPREAD_NO_BOOK if t == "*")) + ("trade_size_30",)}}
 # Books the lead's positions are laid beside, each long its LOW side in the sweep's logic. The rule reads the first:
 # the closed volatility cluster's book (C010). The rest are printed for the form's "nearest record" line.
 LEAD_KIN = ("idio_vol_30", "vol_30", "illiquidity_30", "momentum_30", "spread_30")
@@ -667,9 +672,11 @@ def lead_check(market: xsb.Market, name: str, span: tuple[date, date] = SPAN) ->
     read = registry[name][1]
     way = 1 if LEADS[name]["long"] == "high" else -1
     own = BOOKS[SWEEP_LOGIC](read, lambda _day: way)
-    others = {kin: BOOKS[SWEEP_LOGIC](registry[kin][1], lambda _day: -1) for kin in LEAD_KIN}
+    listed = LEADS[name].get("kin")
+    kin_names = tuple(listed) if listed else LEAD_KIN
+    others = {kin: BOOKS[SWEEP_LOGIC](registry[kin][1], lambda _day: -1) for kin in kin_names}
     rows: dict[str, list[float]] = {"zero_share": [], "tied_share": [], "tied_weight_share": [], "coins_held": []}
-    alike: dict[str, list[float]] = {kin: [] for kin in LEAD_KIN}
+    alike: dict[str, list[float]] = {kin: [] for kin in kin_names}
     dated: list[list[Any]] = []
     decisions = 0
     for day in xsb.held_days(*span):
@@ -700,14 +707,17 @@ def lead_check(market: xsb.Market, name: str, span: tuple[date, date] = SPAN) ->
         return round(statistics.median(values), 4) if values else None
     kin = {k: {"decisions": len(v), "median": middle(v), "share_positive": round(sum(1 for x in v if x > 0) / len(v), 3) if v else None}
            for k, v in alike.items()}
-    first = kin[LEAD_KIN[0]]["median"]
+    if listed:                     # section 68: every listed book is read by the rule
+        hit = sorted(k for k, v in kin.items() if v["median"] is not None and abs(v["median"]) >= LEAD_KIN_MAX)
+        rule = {"beside": list(kin_names), "threshold": LEAD_KIN_MAX, "kin": bool(hit), "rebuilds": hit}
+    else:
+        first = kin[LEAD_KIN[0]]["median"]
+        rule = {"beside": LEAD_KIN[0], "threshold": LEAD_KIN_MAX, "kin": first is not None and abs(first) >= LEAD_KIN_MAX}
     return {"lead": name, "long": LEADS[name]["long"], "logic": SWEEP_LOGIC, "decisions_with_a_book": decisions,
             "medians": {k: middle(v) for k, v in rows.items()},
             "largest": {k: round(max(v), 4) if v else None for k, v in rows.items() if k != "coins_held"},
             "by_decision": dated,          # [decision, tied share of coins, tied share of weight]
-            "position_overlap": kin, "kin_rule": {"beside": LEAD_KIN[0], "threshold": LEAD_KIN_MAX,
-                                                  "kin": first is not None and abs(first) >= LEAD_KIN_MAX},
-            "reads_returns": False}
+            "position_overlap": kin, "kin_rule": rule, "reads_returns": False}
 
 
 LEAD_LEGS = ("untied", "tied", "hedge")

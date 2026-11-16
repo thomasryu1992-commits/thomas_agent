@@ -669,9 +669,13 @@ def test_the_leads_return_is_split_between_tied_coins_untied_coins_and_the_hedge
 
 
 def test_the_one_lead_on_record_is_the_swept_book_and_nothing_else():
-    assert sl.LEADS == {"spread_change_30": {"long": "low", "group": "price_volume"}}
+    assert sl.LEADS["spread_change_30"] == {"long": "low", "group": "price_volume"}
+    lead = sl.LEADS["spot_trade_size_30"]
+    assert lead["long"] == "high" and lead["group"] == "spot_flow"
+    assert set(lead["kin"]) == {"vol_30", "idio_vol_30", "max_30", "skew_30", "range_30", "beta_30", "extreme_days_30",
+                                "spread_change_30", "trade_size_position_30", "trade_size_30"}, "section 68's list"
     assert sl.LEAD_KIN[0] == "idio_vol_30" and sl.LEAD_KIN_MAX == 0.5, "the rule reads the closed cluster's book"
-    assert set(sl.LEAD_KIN) | set(sl.LEADS) <= set(sl.lab.variables())
+    assert set(sl.LEAD_KIN) | set(sl.LEADS) | set(lead["kin"]) <= set(sl.lab.variables())
     assert {sl.lab.variables()[k][0] for k in sl.LEAD_KIN} == {"price_volume"}, "all read from bars: one load"
 
 
@@ -3645,3 +3649,21 @@ def test_the_ranks_101_spot_flow_commands_stop_until_the_spot_fetch_is_sealed(mo
         assert "spot fetch is not sealed" in capsys.readouterr().err
     assert sl.main(["lower-sweep", "--only", "spot_flow,spot", "--cache", str(tmp_path)]) == sl.EXIT_USAGE
     assert sl.SWEEP_ALONE["spot_flow"] == "hold_spot_flow"
+
+
+def test_a_lead_with_its_own_list_is_ruled_on_every_book_in_it(monkeypatch):
+    members = [f"C{i:02d}" for i in range(1, 42)]
+    lead = {f"C{i:02d}": float(i - 21) for i in range(1, 42)}
+    shuffled = {s: float((17 * int(s[1:])) % 41) for s in members}
+    registry = {"lead": ("g", lambda m, s, d: lead.get(s)), "mirror": ("g", lambda m, s, d: -lead.get(s)),
+                "other": ("g", lambda m, s, d: shuffled[s])}
+    monkeypatch.setattr(sl.lab, "variables", lambda: registry)
+    monkeypatch.setattr(sl, "LEADS", {"lead": {"long": "high", "group": "price_volume", "kin": ("other", "mirror")}})
+    monkeypatch.setattr(sl, "monthly_members", lambda market, span=None: {date(2021, m, 1): members for m in range(1, 7)})
+    monkeypatch.setattr(sl, "without_tail", lambda market, members, day: list(members))
+    monkeypatch.setitem(sl.BOOKS, sl.SWEEP_LOGIC, sl.book)
+    span = (date(2021, 1, 1), date(2021, 6, 30))
+    out = sl.lead_check(xsb.Market(), "lead", span)
+    assert out["kin_rule"] == {"beside": ["other", "mirror"], "threshold": 0.5, "kin": True, "rebuilds": ["mirror"]}, \
+        "every listed book is read, not the first only; upside down is the same book"
+    assert abs(out["position_overlap"]["other"]["median"]) < 0.5 and out["reads_returns"] is False

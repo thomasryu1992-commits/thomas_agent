@@ -22,8 +22,11 @@ the recorded reading back before a new book joins. Run on this tree with no new 
 
 Read once in the registered order, all exit 0 (§67.2). The old lines reproduced from the first 106 controls, and
 all three families gave their recorded readings back. On the top tier, the spot trade size's 7-day all-weeks cell
-cleared the map rule (t +4.50 against the new line 4.34), the first map lead since round 40; its own weekly book
+cleared the map rule (t +4.50 against the new line 4.34), the first map lead since round 40; its own book in the top tier's sweep (L9T, held four weeks)
 read in the same round is under the entry rule (Sharpe 0.714, p 0.21). On ranks 31–100 the spot taker-buy share
 survived the correction as the step-up's second rank (p 2/601, behind the recorded funding_30), under the entry rule
 (0.900), so it is named and nothing is built. Ranks 101+ have nothing. No candidate; the next round is the lead's
 check.
+
+**Correction (2026-11-16 23:43Z).** The result above first called that book weekly. The top tier's sweep holds each
+decision four weeks (§67.3), so the lead's own 7-day book has not been read.
