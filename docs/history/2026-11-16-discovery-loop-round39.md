@@ -43,3 +43,16 @@ One sandbox run at `b1db9846` (18 minutes); `~/research/discovery/door1/door.jso
 - *What it says about earlier rounds*: the map's "no lead" on all-weeks cells means no effect of roughly 30–40% a
   year before costs in that form. Closed readings are not re-judged.
 - *Next, by the registered table*: the tier below rank 100 is read with the map and a sweep together.
+
+## Added after the result
+
+- *The yearly figures are the planted shape's translation.* The door reads a t in units of mean rank correlation
+  (0.047–0.061 for 80% of seeds on ranks 31–100, weekly). Turning that into money assumes the effect is spread
+  evenly across ranks. Both real anchors sit off that translation in opposite directions: the top tier's
+  volatility cells have rank t of 5.5–6.9 with spreads of 31–94 bp, where the planted rows with that t carry
+  164–206 bp; 30-day funding on ranks 31–100 has an 88 bp spread with a rank t of −1.25, where the planted row
+  with that spread has a median t of 4.36. So "no lead means no effect over 30–40% a year" holds for evenly spread
+  effects only. The decision stands, and this supports it.
+- *Short-history cells are coarser*: real all-weeks cells run 25–243 decisions, the calibration 212–243.
+- *The spread door* leads the rank door on the raw shape at ranks 31–100 for ρ 0.04–0.05.
+- *False alarms*: the largest over all sixteen combinations is 2%.
