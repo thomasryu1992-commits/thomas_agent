@@ -28,3 +28,16 @@ below rank 100 with both the map and a sweep. No reason was ever written for not
   names no side and counts as zero, as H-R1 counted a year with no book. It is never dropped.
 - *Leads are listed without the cap of three*, each marked with whether a record strikes its variable. Otherwise
   three struck cells could hide one that is not struck.
+
+## Result (2026-11-16 04:55Z): the sweep found nothing; the map found two leads
+
+- All three gates reproduced their records to the digit. Spot was stopped by coverage (0.67). 24 books were built
+  on ranks 101+, each over 40 months from 2021-09.
+- **Sweep:** none of the 24 survived Benjamini-Hochberg and none cleared the entry rule. The smallest p was 0.151.
+- **Map:** this tier's own lines are 3.64 (7 days) and 3.21 (28 days). Two cells of unstruck variables met the first
+  rule: residual momentum 30 at 7 days (t −3.80) and listing age at 28 days (t +3.44, 41 decisions). A struck cell
+  (momentum 30, H-R2's record) also met it and is only named. No cell met the second rule.
+- Neither lead is a candidate. The sweep's books on the same two variables are already read and lose money after
+  costs. Round 41 is their check round, as section 57.8 registered.
+- Both leads' |t| sit under the two mapped tiers' lines (4.30/4.96). That is recorded as a fact and not used to
+  re-judge anything: the registration used this tier's own lines.
