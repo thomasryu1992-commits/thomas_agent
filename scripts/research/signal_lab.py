@@ -34,7 +34,7 @@ import statistics
 import sys
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -375,10 +375,76 @@ def _premium(market: xsb.Market, symbol: str, day: date, lookback: int = LOOKBAC
     return statistics.fmean(values) if len(values) >= math.ceil(lookback * bs.MIN_SHARE) else None
 
 
+# Section 66: the metrics files' top-trader ACCOUNTS ratio, which no variable read (section 65.3). The registered
+# positioning levels read the top traders' POSITIONS ratio ("top"), all accounts ("ls") and the taker ratio.
+ACCOUNTS_COLUMN = "count_toptrader_long_short_ratio"
+ACCOUNTS_DAILY = "metrics-accounts-daily"               # from the shared root alone, as the top tiers' positioning is
+ACCOUNTS_DAILY_LOWER = "metrics-accounts-daily-lower"   # ranks 101+: both roots, as round 45's daily file is
+
+
+def accounts_value(rows: Iterable[Mapping[str, str]], day: date) -> float | None:
+    """One UTC day's top-trader accounts long share, by ``metrics_basket_search.daily_values``'s own rule: the mean of
+    ratio / (1 + ratio) over the day's own rows, None under ``MIN_ROWS``."""
+    seen = []
+    for row in rows:
+        if str(row.get("create_time"))[:10] != day.isoformat():
+            continue
+        try:
+            value = float(row.get(ACCOUNTS_COLUMN) or "")
+        except ValueError:
+            continue
+        if math.isfinite(value) and value > 0:
+            seen.append(value / (1 + value))
+    return statistics.fmean(seen) if len(seen) >= ms.MIN_ROWS else None
+
+
+def load_accounts(cache: Path, folder: str = ACCOUNTS_DAILY) -> dict[str, dict[date, float | None]]:
+    out: dict[str, dict[date, float | None]] = {}
+    for path in sorted((cache / "derived" / folder).glob("*.jsonl")) if (cache / "derived" / folder).exists() else []:
+        days = {}
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                row = json.loads(line)
+                days[date.fromisoformat(row[0])] = row[1]
+        out[path.stem] = days
+    return out
+
+
+def with_accounts(metrics: Mapping[str, Mapping[date, Mapping[str, Any]]], accounts: Mapping[str, Mapping[date, float | None]],
+                  end: date) -> dict[str, dict[date, dict[str, Any]]]:
+    """The positioning values with ``top_account`` beside them, day by day, up to ``end``. A day the accounts file has
+    and the positioning file lacks carries the accounts value alone."""
+    out: dict[str, dict[date, dict[str, Any]]] = {}
+    for symbol in set(metrics) | set(accounts):
+        days: dict[date, dict[str, Any]] = {d: dict(v) for d, v in (metrics.get(symbol) or {}).items() if d <= end}
+        for d, v in (accounts.get(symbol) or {}).items():
+            if d <= end:
+                days.setdefault(d, {})["top_account"] = v
+        out[symbol] = days
+    return out
+
+
+def hold_top_account(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | None:
+    """The top tiers' market with the shared positioning values and the accounts values attached (the kin read the
+    first, the new readings the second). None when either derived file is missing."""
+    held = hold(cache, span, attach=False)
+    daily, accounts = ms.load_daily(cache), load_accounts(cache)
+    if held is None or not daily or not accounts:
+        return None
+    held.metrics = with_accounts(daily, accounts, span[1])
+    return held
+
+
+_top_account_level = _with_lookback(ms._level("top_account"))
+
 # name: (the group whose data it reads, the reading, the registered kin it is ranked beside)
 OVERLAP_CANDIDATES: dict[str, tuple[str, Variable, tuple[str, ...]]] = {
     "spread_30": ("price_volume", _spread, ("range_30", "illiquidity_30", "vol_30")),
     "premium_30": ("premium", _premium, ("funding_7", "funding_30")),
+    # Section 66: each shape beside the same shape of the positioning levels it could repeat.
+    "top_account_30": ("top_account", _top_account_level, ("top_level_30", "ls_level_30", "divergence_30")),
+    "top_account_change_30": ("top_account", _change(_top_account_level), ("top_change_30", "ls_change_30")),
+    "top_account_position_30": ("top_account", _position(_top_account_level), ("top_position_30", "ls_position_30")),
 }
 
 
@@ -1307,7 +1373,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.candidate not in OVERLAP_CANDIDATES:
             print(f"refused: --candidate is one of {sorted(OVERLAP_CANDIDATES)}", file=sys.stderr)
             return EXIT_USAGE
-        market = hold_premium(cache) if OVERLAP_CANDIDATES[args.candidate][0] == "premium" else hold(cache, attach=False)
+        kind = OVERLAP_CANDIDATES[args.candidate][0]
+        market = (hold_premium(cache) if kind == "premium" else hold_top_account(cache) if kind == "top_account"
+                  else hold(cache, attach=False))
         if market is None:
             print("BLOCKED: contract types or the premium files are missing from the cache", file=sys.stderr)
             return EXIT_BLOCKED

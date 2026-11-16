@@ -3965,7 +3965,7 @@ def sens_run(market: xsb.Market, family: str, null: Mapping[str, Mapping[str, An
 # --- round 45 (section 63): positioning on ranks 101+, from a fetch of its own -------------------------------------------
 
 HOST_COMMANDS = ("lower-positioning-digest", "lower-positioning-build", "lower-positioning-seal",
-                 "lower-spot-digest", "lower-spot-fetch", "lower-spot-seal")
+                 "lower-spot-digest", "lower-spot-fetch", "lower-spot-seal", "top-account-build")
 LOWER_METRICS_ROOT = "archive-metrics-lower"     # beside the shared root, which M04's screen reads and fetches into
 LOWER_METRICS_DAILY = "metrics-daily-lower"      # beside derived/metrics-daily, which M04's screen reads
 LOWER_METRICS_PLAN = "plan.json"
@@ -4305,6 +4305,50 @@ def lower_spot_agree(cache: Path) -> dict[str, Any]:
                 both += 1
                 differ += other[day] != bar
     return {"shared_pair_days": both, "differ": differ}
+
+
+def sealed_roots_digest(cache: Path) -> dict[str, Any]:
+    """Every root a sealed or shared reading stands on, beside each other: M04's and the forward panel's metrics
+    root and daily file, and round 45's root and daily file (its completion marker included)."""
+    return {**shared_metrics_digest(cache), LOWER_METRICS_ROOT: tree_digest(cache / LOWER_METRICS_ROOT),
+            f"derived/{LOWER_METRICS_DAILY}": tree_digest(cache / "derived" / LOWER_METRICS_DAILY)}
+
+
+def top_account_build(cache: Path, *, say: Callable[[str], None] = print) -> dict[str, Any]:
+    """Host only, values and no returns (section 66). Each coin's daily top-trader accounts long share: for the top
+    tiers from the shared metrics root alone, as their positioning values are; for ranks 101+ from both roots, for
+    the coins round 45's plan holds, as its daily file is. Every zip is read, never written; the roots under
+    :func:`sealed_roots_digest` must hash the same after as before, or the report names them."""
+    before = sealed_roots_digest(cache)
+    shared = cache / "archive-metrics" / lab.ba.METRICS
+    held = json.loads((cache / LOWER_METRICS_ROOT / LOWER_METRICS_PLAN).read_text())["held_symbols"]
+    jobs = [(lab.ACCOUNTS_DAILY, sorted(p.name for p in shared.iterdir() if p.is_dir()), (cache / "archive-metrics",)),
+            (lab.ACCOUNTS_DAILY_LOWER, held, (cache / "archive-metrics", cache / LOWER_METRICS_ROOT))]
+    written = {}
+    for folder, symbols, roots in jobs:
+        out_dir = cache / "derived" / folder
+        out_dir.mkdir(parents=True, exist_ok=True)
+        count = 0
+        for symbol in symbols:
+            paths: dict[str, Path] = {}
+            for root in roots:
+                where = root / lab.ba.METRICS / symbol
+                for path in sorted(where.glob("*.zip")) if where.exists() else []:
+                    paths.setdefault(path.name, path)
+            lines = []
+            for name in sorted(paths):
+                try:
+                    day = date.fromisoformat(Path(name).stem[-10:])
+                except ValueError:
+                    continue
+                lines.append(json.dumps([day.isoformat(), lab.accounts_value(lab.ba.read_metrics_zip(paths[name]), day)]))
+            (out_dir / f"{symbol}.jsonl").write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+            count += len(lines)
+        written[folder] = {"coins": len(symbols), "symbol_days": count}
+        say(f"built {count} symbol-day(s) for {len(symbols)} coin(s) under {out_dir}")
+    after = sealed_roots_digest(cache)
+    return {"written": written, "before": before, "after": after,
+            "moved": [k for k in after if after[k] != before.get(k)]}
 
 
 def lower_sweep_family(recorded: Sequence[Mapping[str, Mapping[str, Any]]],
@@ -4969,7 +5013,7 @@ def main(argv: list[str] | None = None) -> int:
                                             "lower-positioning-plan", "lower-positioning-digest",
                                             "lower-positioning-build", "lower-positioning-seal",
                                             "lower-spot-plan", "lower-spot-digest", "lower-spot-fetch", "lower-spot-seal",
-                                            "lower-family"))
+                                            "lower-family", "top-account-build"))
     parser.add_argument("--family", choices=tuple(SENS_FAMILIES), default=None, help="sens: the sweep whose door is measured")
     parser.add_argument("--tier", choices=("top30", "rank31_100"), default=None, help="axis-power: the map tier read")
     parser.add_argument("--before", type=Path, default=None, help="lower-positioning-seal: the digest taken before the fetch")
@@ -5000,6 +5044,10 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_OK
         if args.command == "lower-spot-fetch":
             return lower_spot_fetch(host_cache)
+        if args.command == "top-account-build":
+            report = top_account_build(host_cache)
+            print(json.dumps(report, indent=1, sort_keys=True))
+            return EXIT_BLOCKED if report["moved"] else EXIT_OK
         if args.before is None:
             print(f"refused: {args.command} needs --before", file=sys.stderr)
             return EXIT_USAGE

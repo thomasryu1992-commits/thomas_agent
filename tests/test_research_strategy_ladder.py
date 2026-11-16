@@ -3343,7 +3343,7 @@ def test_the_lower_positioning_market_attaches_this_tiers_file_alone_and_agrees_
 def test_only_the_named_host_commands_run_outside_the_sandbox(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: False)
     assert set(sl.HOST_COMMANDS) == {"lower-positioning-digest", "lower-positioning-build", "lower-positioning-seal",
-                                     "lower-spot-digest", "lower-spot-fetch", "lower-spot-seal"}
+                                     "lower-spot-digest", "lower-spot-fetch", "lower-spot-seal", "top-account-build"}
     assert sl.main(["lower-positioning-digest", "--cache", str(tmp_path)]) == sl.EXIT_OK
     assert json.loads(capsys.readouterr().out)["archive-metrics"]["files"] == 0
     assert sl.main(["lower-positioning-seal", "--cache", str(tmp_path)]) == sl.EXIT_USAGE
@@ -3526,4 +3526,68 @@ def test_the_ranks_101_family_keeps_every_recorded_book_and_fills_only_skipped_r
         assert sl.main(args + ["--check", str(paths["check"])]) == sl.EXIT_BLOCKED
     finally:
         sl.xsb._in_sandbox = saved
+
+
+# --- round 48: the top-trader accounts ratio, built from the files on disk ------------------------------------------
+
+def _accounts_zip(path, day, accounts=1.0, top=3.0):
+    """A day's metrics file whose accounts ratio and positions ratio differ, so a test can tell which was read."""
+    import zipfile as zf
+    rows = ["create_time,symbol,sum_open_interest,sum_open_interest_value,count_toptrader_long_short_ratio,"
+            "sum_toptrader_long_short_ratio,count_long_short_ratio,sum_taker_long_short_vol_ratio"]
+    for k in range(288):
+        rows.append(f"{day.isoformat()} {k // 12:02d}:{(k % 12) * 5:02d}:00,X,100,1,{accounts},{top},1,1")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zf.ZipFile(path, "w") as archive:
+        archive.writestr(path.stem + ".csv", "\n".join(rows) + "\n")
+
+
+def test_the_accounts_value_reads_the_accounts_column_by_the_daily_rule():
+    day = date(2022, 3, 1)
+    rows = [{"create_time": f"{day.isoformat()} 00:{k:02d}:00", sl.lab.ACCOUNTS_COLUMN: "3.0",
+             "sum_toptrader_long_short_ratio": "1.0"} for k in range(sl.lab.ms.MIN_ROWS)]
+    assert sl.lab.accounts_value(rows, day) == pytest.approx(0.75), "ratio 3 is a long share of three quarters"
+    assert sl.lab.accounts_value(rows[:-1], day) is None, "under the minimum rows"
+    other = [dict(r, create_time="2022-03-02 00:00:00") for r in rows]
+    assert sl.lab.accounts_value(other, day) is None, "another day's rows are not this day's"
+
+
+def test_the_accounts_build_reads_both_roots_for_the_lower_tier_and_moves_no_sealed_root(tmp_path):
+    cache = tmp_path
+    d1, d2 = date(2022, 3, 1), date(2022, 3, 2)
+    shared, lower = cache / "archive-metrics" / "metrics", cache / sl.LOWER_METRICS_ROOT / "metrics"
+    _accounts_zip(shared / "BIGUSDT" / sl.lab.ba.daily_name("BIGUSDT", "metrics", d1), d1, accounts=1.0)
+    _accounts_zip(shared / "LOWUSDT" / sl.lab.ba.daily_name("LOWUSDT", "metrics", d1), d1, accounts=3.0)
+    _accounts_zip(lower / "LOWUSDT" / sl.lab.ba.daily_name("LOWUSDT", "metrics", d2), d2, accounts=1.0)
+    (cache / sl.LOWER_METRICS_ROOT / sl.LOWER_METRICS_PLAN).write_text(json.dumps({"held_symbols": ["LOWUSDT"]}))
+    report = sl.top_account_build(cache, say=lambda _: None)
+    assert report["moved"] == [] and report["written"][sl.lab.ACCOUNTS_DAILY] == {"coins": 2, "symbol_days": 2}
+    top = sl.lab.load_accounts(cache)
+    assert top == {"BIGUSDT": {d1: pytest.approx(0.5)}, "LOWUSDT": {d1: pytest.approx(0.75)}}, "the shared root alone"
+    low = sl.lab.load_accounts(cache, sl.lab.ACCOUNTS_DAILY_LOWER)
+    assert low == {"LOWUSDT": {d1: pytest.approx(0.75), d2: pytest.approx(0.5)}}, "both roots, held coins only"
+
+
+def test_the_accounts_values_sit_beside_the_positioning_values_and_the_kin_still_read_theirs():
+    d1, d2 = date(2022, 3, 1), date(2022, 3, 2)
+    metrics = {"A": {d1: {"oi": 1.0, "ls": 0.5, "top": 0.6, "taker": 0.5}}}
+    merged = sl.lab.with_accounts(metrics, {"A": {d1: 0.7, d2: 0.8}, "B": {d1: 0.4}}, d1)
+    assert merged == {"A": {d1: {"oi": 1.0, "ls": 0.5, "top": 0.6, "taker": 0.5, "top_account": 0.7}},
+                      "B": {d1: {"top_account": 0.4}}}, "nothing after the end; the positioning values unchanged"
+    assert metrics["A"][d1] == {"oi": 1.0, "ls": 0.5, "top": 0.6, "taker": 0.5}, "the input is not changed"
+
+
+def test_the_accounts_candidates_read_the_accounts_ratio_and_not_the_positions_ratio():
+    import statistics
+    start, day = date(2020, 1, 1), date(2021, 6, 6)
+    days = [start + timedelta(days=k) for k in range(560)]
+    market = xsb.Market(bars={"A": {d: xsb.Bar(open=1.0, close=1.0, quote_volume=1.0) for d in days}}, funding={})
+    market.metrics = {"A": {d: {"top": 0.9, "ls": 0.5, "top_account": 0.55 + (k % 7) / 100} for k, d in enumerate(days)}}
+    group, read, kin = sl.lab.OVERLAP_CANDIDATES["top_account_30"]
+    assert group == "top_account" and "top_level_30" in kin
+    assert read(market, "A", day) == pytest.approx(statistics.fmean(0.55 + (k % 7) / 100 for k, d in enumerate(days)
+                                                                       if day - timedelta(days=29) <= d <= day))
+    for name in ("top_account_change_30", "top_account_position_30"):
+        assert sl.lab.OVERLAP_CANDIDATES[name][1](market, "A", day) is not None, name
+    assert not any(n.startswith("top_account") for n in sl.lab.variables()), "registered only after the overlap reads"
 
