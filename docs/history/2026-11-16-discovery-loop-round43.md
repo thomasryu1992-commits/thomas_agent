@@ -34,9 +34,10 @@ and 47). So the same planted values are read by both doors, side by side.
   per axis was 3–6.
 - An effect in one state only (`one`): in eleven of twelve tier-axis pairs the scenario cells reach 80% at a
   smaller size than the axis check. On ranks 31–100 the cells see it at δ 0.08 (trend 0.10) and the axis wakes
-  at 0.10–0.13; on ranks 1–30 at 0.13 (trend 0.16) against 0.16–0.20. Between those sizes a resting axis hides
-  a scenario cell the line would show. Breadth on ranks 1–30 shares a grid step.
+  at 0.10–0.13; on ranks 1–30 at 0.13 (trend 0.16) against 0.16–0.20. Between those sizes a scenario cell cannot
+  be a lead. Whether the all-weeks cell already shows the same effect there was not counted (section 61.8); it is a
+  gap for round 44's table. Breadth on ranks 1–30 shares a grid step.
 - An effect that flips sign (`flip`): the axis wakes first in nine pairs and shares a step in three.
-- The cell side came out where section 61.5 expected it; the axis side came out one grid step larger than the
-  rough expectation. Nothing moves: resting axes, lines, placebos, family and closed readings stay as they are.
+- The cell side came out where section 61.5 expected it. The axis side landed on the expected grid step for four
+  axes; heat and trend came out one step larger (section 61.8). Nothing moves: resting axes, lines, placebos, family and closed readings stay as they are.
 - Next is round 44: the table re-laid with the three measured doors side by side.
