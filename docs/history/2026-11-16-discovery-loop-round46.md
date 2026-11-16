@@ -23,3 +23,13 @@ stopped it at the coverage floor (0.67) before any return was read.
 - *Two lessons from round 45 are written before the read.* The threshold is stated as the function computes it, for
   any number of new books. Months without a book count as flat, while the null books stand, and that does not change
   the reading.
+
+## Result (2026-11-16 22:00Z)
+
+Read once, all exit 0 (§64.6). The fetch kept 1,622 files; 59 asked months are absent from a successful listing. The
+seal found no problems, and the shared spot root and served list hash as before. The gates held: H-R1 reproduces,
+the null books match, and 303 overlapping pair-days carry equal bars. Coverage rose from 0.665–0.677 to 0.924–0.956.
+
+**Map: 0 leads. Sweep: 0 leads.** The family is 34 books (the 31 recorded ones reproduce round 45's reading, plus
+three spot books in their skipped rows), with 0 at p < 0.05 against 1.7 expected by chance. The three new books have
+Sharpe −1.432 to −0.661. The row closes as "read, nothing"; next, the table is re-laid.
