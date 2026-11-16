@@ -17,3 +17,10 @@
   sample as their kin. The build reads every zip and writes none; the sealed roots must hash as before.
 - *Map controls grow nested.* The first 106 keep their seeds; a line can only rise, and the old lines must
   reproduce from the first 106 before a new line is read.
+
+## Result (2026-11-16 22:47Z)
+
+The build ran on the host and moved no sealed root (§66.5). The overlap read no return. All three shapes rank coins
+almost as the all-accounts ratio does: median rank correlation 0.965–0.979 on the top tier, 0.946–0.979 on ranks
+31–100. That is over the 0.8 rule, so none was registered. The registry stays at 55, and the controls and the map
+lines do not move. The next list is the spot trade flow.
