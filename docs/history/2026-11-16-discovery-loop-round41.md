@@ -23,3 +23,13 @@
   match; it is not a closing rule. An earlier draft treated it as one, and that draft was dropped.
 - *Round 42 is fixed now.* If nothing passes, it measures the sweep's sensitivity, which section 57.7 records as
   never measured. Steps 1–4 of section 4's order are recorded as done, and step 5 is not asked.
+
+## Result (2026-11-16 06:17Z)
+
+- Both cells reproduced to the digit.
+- **Residual momentum is closed.** Its book's weights sit at median cosine −0.950 with momentum_30's book on this
+  tier, a reading H-R2's record forbids there. It is also −0.506 with momentum_90.
+- **Listing age passed the overlap**: the largest overlap is −0.272, with the intraday range. The form could not
+  fill line 1 (who pays) or line 3 (size) from the record. The only recorded payer is H-L1's, which was measured at
+  7–63 days and closed. So by the form's default the lead is not raised, and Thomas is asked (D12; default no).
+- Round 42 measures the sweep's sensitivity. That registration does not depend on D12.
