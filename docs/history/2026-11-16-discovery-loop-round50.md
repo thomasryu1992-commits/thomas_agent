@@ -14,3 +14,11 @@ round of section 58's form.
 - *The form's door is open.* The top tier's sweep holds four weeks, so the lead's own 7-day book is unread; the way
   to it is the hypothesis form, with a question to Thomas if its first and third lines cannot be filled from the
   record, as D12 was.
+
+## Result (2026-11-16 23:54Z)
+
+Closed at the overlap, with no return read (§68.5). The lead's book, long the high spot trade size, sits beside the
+perp's average trade size book, long its low side, at a median cosine of −0.566. All 48 decisions are negative, so
+the two hold the same coins on the same side. That clears the 0.5 rule, so the lead rebuilds that book. The other nine
+books sit at 0.04–0.34, and no value is tied. The spot trade size's shapes are not added; the spot taker-buy
+share's stay on the next list.
