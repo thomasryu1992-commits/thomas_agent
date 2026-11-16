@@ -2975,3 +2975,81 @@ def test_ha1_passes_only_with_every_rung_and_the_twin():
         bad = dict(good)
         bad[key] = False if isinstance(good[key], bool) else {"passes": False}
         assert not sl.ha1_passes(bad), key
+
+
+# --- round 42: the sweep's sensitivity --------------------------------------------------------------------------------
+
+def test_a_planted_sweep_variable_is_its_size_of_next_weeks_rank_and_noise_fixed_per_coin(monkeypatch):
+    market, mids = _mid_world()
+    tier = sl.TierSweep(market, MID_TEST_SPAN)
+    nothing = sl.sens_planted(tier, 0.0, 0)
+    values = {s: nothing(market, s, MID_DAY) for s in mids}
+    assert {s: nothing(market, s, MID_DAY + timedelta(days=21)) for s in mids} == values, "size 0 is the noise, fixed per coin"
+    fixed = tier.fixed("tier:0")
+    assert values != {s: fixed(market, s, MID_DAY) for s in mids}, "its noise is not a stored null book's"
+    assert {s: sl.sens_planted(tier, 0.0, 1)(market, s, MID_DAY) for s in mids} != values, "a seed is a draw"
+    assert nothing(market, mids[0], date(2021, 1, 1)) is None, "no value where the coin has no bar"
+    whole = sl.sens_planted(tier, 1.0, 0)
+    ics = tier.ics(whole)
+    assert ics and all(ic == pytest.approx(1.0) for ic in ics.values()), "size 1 is next week's rank itself"
+    assert all(abs(ic) < 0.9 for ic in tier.ics(nothing).values())
+    lone = tier.forward(MID_DAY)
+    some = dict(list(lone.items())[:5])
+    monkeypatch.setattr(tier, "forward", lambda day: some)
+    half = sl.sens_planted(tier, 0.6, 0)
+    missing = next(s for s in mids if s not in some)
+    assert half(market, missing, MID_DAY) == pytest.approx(0.8 * sl.random.Random(f"plant:0:{missing}").gauss(0.0, 1.0)), \
+        "a coin with no next-week return is its noise alone"
+    assert set(sl.lab.variables()).isdisjoint({"planted", "plant"}), "never registered"
+
+
+def test_the_sensitivity_lead_is_the_sweeps_rule_for_one_book_in_its_registered_family():
+    mid, lower = sl.SENS_FAMILIES["mid"], sl.SENS_FAMILIES["lower"]
+    assert (mid["books"], mid["start"], mid["later_years"]) == (36, date(2021, 1, 1), False)
+    assert (lower["books"], lower["start"], lower["later_years"]) == (24, date(2021, 9, 1), True)
+    assert mid["tier"] == sl.TIER_SWEEP_TIER and lower["tier"] == sl.LOWER_NAME
+    book = {"clears_entry": True}
+    assert sl.sens_lead(book, 1 / 601, mid) and not sl.sens_lead(book, 2 / 601, mid), "ranks 31-100: above every null"
+    passed = {"clears_entry": True, "later_years": {"passes": True}}
+    assert sl.sens_lead(passed, 2 / 601, lower) and not sl.sens_lead(passed, 3 / 601, lower), "ranks 101+: one null may stand above"
+    assert not sl.sens_lead({"clears_entry": True, "later_years": {"passes": False}}, 1 / 601, lower)
+    assert not sl.sens_lead({"clears_entry": True}, 1 / 601, lower), "the later-years rule is read there"
+    assert not sl.sens_lead({"clears_entry": False}, 1 / 601, mid)
+    assert sl.sens_bracket({0.0: 0.0, 0.05: 0.5, 0.08: 0.8, 0.1: 1.0}) == {"under": 0.05, "at_or_over": 0.08}
+    assert sl.sens_bracket({0.0: 0.0, 0.05: 0.79}) == {"under": 0.05, "at_or_over": None}
+    assert sl.sens_bracket({0.0: 0.9, 0.05: 1.0}) == {"under": None, "at_or_over": 0.0}
+
+
+def test_the_sensitivity_run_checks_the_stored_nulls_and_stops_on_false_alarms(monkeypatch):
+    market, mids = _mid_world()
+    tier = sl.TierSweep(market, MID_TEST_SPAN)
+    null = sl.tier_sweep_null(market, MID_TEST_SPAN, nulls=10)
+    assert sl.sens_null_check(tier, null) == []
+    broken = json.loads(json.dumps(null))
+    broken["tier:2"]["high"]["2022-03"] += 0.01
+    assert sl.sens_null_check(tier, broken) == ["tier:2"]
+    family = {**sl.SENS_FAMILIES["mid"], "books": 1, "start": date(2022, 2, 1)}
+    monkeypatch.setattr(sl, "SENS_FAMILIES", {"mid": family})
+    assert sl.sens_run(market, "mid", broken, MID_TEST_SPAN, sizes=(0.0,), seeds=1)["refused"].startswith("stored null books differ")
+    run = sl.sens_run(market, "mid", null, MID_TEST_SPAN, sizes=(0.0, 1.0), seeds=3)
+    assert run["months"] == 11 and run["null_books"] == 10 and run["threshold"] == pytest.approx(0.1)
+    whole = run["sizes"]["1.0"]
+    assert whole["entry_share"] == 1.0 == whole["lead_share"] and whole["median"]["mean_rank_correlation"] == pytest.approx(1.0)
+    assert len(whole["turnover"]) == 3 and run["own_start_later"] == []
+    assert run["false_alarm"]["p_under_0.05_at_zero"] == 0 and run["false_alarm"]["stop"] and run["brackets"] is None, \
+        "with ten nulls no p is under 0.05: the gate cannot be met, so nothing is bracketed"
+    monkeypatch.setattr(sl, "SENS_FALSE_ALARM", (0, 10))
+    again = sl.sens_run(market, "mid", null, MID_TEST_SPAN, sizes=(0.0, 1.0), seeds=3)
+    assert again["brackets"]["lead_share"]["at_or_over"] == 1.0
+    flat = json.dumps(again)
+    assert "momentum" not in flat and "funding_30" not in flat, "no real variable is read"
+
+
+def test_the_sensitivity_command_takes_a_family_and_its_own_null_file(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    assert sl.main(["sens"]) == sl.EXIT_USAGE
+    wrong = tmp_path / "null.json"
+    wrong.write_text(json.dumps({"tier": sl.LOWER_NAME, "null": {}}), encoding="utf-8")
+    assert sl.main(["sens", "--family", "mid", "--null", str(wrong)]) == sl.EXIT_USAGE, "another tier's nulls"
+    monkeypatch.setattr(sl.lab, "hold", lambda cache, span=None, *, attach=True, flow=False: None)
+    assert sl.main(["sens", "--family", "lower", "--null", str(wrong)]) == sl.EXIT_BLOCKED

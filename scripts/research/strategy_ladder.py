@@ -2814,18 +2814,7 @@ def tier_sweep_reading(books: Mapping[str, Mapping[str, Any]], null: Mapping[str
 
     def null_sharpes(start: str, months: int) -> list[float]:
         if start not in by_start:
-            first = date.fromisoformat(start)
-            values = []
-            for body in null.values():
-                way, mean = tier_side({date.fromisoformat(d): ic for d, ic in body["ics"].items()}, first)
-                if mean is None:
-                    continue
-                side = body["high" if way > 0 else "low"]
-                kept = sorted(m for m in side if m >= start[:7])[:months]
-                sharpe = tier_reading({m: {"net": side[m]} for m in kept}, kept)["annual_sharpe"]
-                if sharpe is not None and len(kept) == months:
-                    values.append(sharpe)
-            by_start[start] = sorted(values)
+            by_start[start] = _null_sharpes(null, start, months)
         return by_start[start]
 
     rows, skipped = [], {}
@@ -3570,6 +3559,165 @@ def ha1_run(market: xsb.Market, span: tuple[date, date] = SPAN, *, nulls: int = 
             "reading": "passes" if passes else "closed"}
 
 
+# --- round 42 (section 60): the sweep's sensitivity. Planted variables only; no real variable is read ------------------
+
+SENS_SIZES = (0.0, 0.02, 0.03, 0.04, 0.05, 0.065, 0.08, 0.10, 0.13, 0.16, 0.20)
+SENS_SEEDS = 100
+SENS_Q = 0.10                              # the sweeps' Benjamini-Hochberg q
+SENS_SHARE = 0.80                          # of the seeds: the bracket's upper size is the smallest that reaches it
+SENS_TURNOVER_SEEDS = 5                    # seeds per size whose turnover is printed
+SENS_NULL_CHECK = 5                        # stored null books recomputed in the run: they must match the file
+SENS_FALSE_ALARM = (1, 10)                 # at size 0, seeds with p < 0.05 must lie in this range (binomial 100 at 5%)
+# The two registered sweeps, as they were read: the family size N (Benjamini-Hochberg's first threshold is q / N) and
+# the months most of their books stood on (§56.3; §57.10). Fixed here so that no file of real rows is opened.
+SENS_FAMILIES: dict[str, dict[str, Any]] = {
+    "mid": {"tier": TIER_SWEEP_TIER, "books": 36, "start": date(2021, 1, 1), "later_years": False,
+            "record": "round 36 (section 52): 36 books, 29 of them over 48 months from 2021-01"},
+    "lower": {"tier": LOWER_NAME, "books": 24, "start": date(2021, 9, 1), "later_years": True,
+              "record": "round 40 (section 57): 24 books, each over 40 months from 2021-09; the later-years rule"},
+}
+
+
+def sens_tier(market: xsb.Market, family: str, span: tuple[date, date] = SPAN) -> TierSweep:
+    return lower_sweep_tier(market, span) if family == "lower" else TierSweep(market, span)
+
+
+def sens_planted(tier: TierSweep, rho: float, seed: int) -> lab.Variable:
+    """A variable whose rank correlation with the coming week is set: ``rho`` times the normal score of the coin's
+    next-week return among the tier's members (round 39's rank shape, :func:`_normal_scores`; 0 for a coin with
+    none), plus noise drawn once per coin. It reads the future by construction, so it is never registered and never
+    stands beside a real variable."""
+    scores: dict[date, dict[str, float]] = {}
+    noise: dict[str, float] = {}
+    keep = math.sqrt(1.0 - rho * rho)
+
+    def read(market: xsb.Market, symbol: str, day: date) -> float | None:
+        if day not in (market.bars.get(symbol) or {}):
+            return None
+        if day not in scores:
+            forward = tier.forward(day)
+            scores[day] = _normal_scores(forward) if rho and forward else {}
+        if symbol not in noise:
+            noise[symbol] = random.Random(f"plant:{seed}:{symbol}").gauss(0.0, 1.0)
+        return rho * scores[day].get(symbol, 0.0) + keep * noise[symbol]
+    return read
+
+
+def sens_book(tier: TierSweep, read: lab.Variable, start: date, *, later: bool) -> dict[str, Any]:
+    """A planted variable through the sweep's own path, read on the family's months: the side its own rank
+    correlation names over those months, the weekly held book, the entry rule, and (``later``) rung 2(b)."""
+    months = tier.months(start)
+    ics = tier.ics(read)
+    way, mean = tier_side(ics, start)
+    rows = tier.monthly_rows(read, way)
+    report = tier_reading(rows, months)
+    cost, funding = (sum(rows.get(m, {}).get(k, 0.0) for m in months) * 100 for k in ("cost", "funding"))
+    body = {"start": start.isoformat(), "own_start": (own := tier.start(read)) and own.isoformat(),
+            "long": "high" if way > 0 else "low", "mean_rank_correlation": None if mean is None else round(mean, 4),
+            **report, "cost_pct": round(cost, 2), "funding_pct": round(funding, 2),
+            "before_cost_annual_pct": bs.total_position_annual_pct(round(report["sum_pct"] + cost, 2), report["months"]),
+            "cost_annual_pct": bs.total_position_annual_pct(round(cost, 2), report["months"])}
+    if later and report["clears_entry"]:
+        body["later_years"] = tier_later(tier, read, months)
+    return body
+
+
+def _null_sharpes(null: Mapping[str, Mapping[str, Any]], start: str, months: int) -> list[float]:
+    """The null books cut to a book's months, each long the side its own rank correlation names from ``start``:
+    the rule :func:`tier_sweep_reading` applies, sorted."""
+    first = date.fromisoformat(start)
+    values = []
+    for body in null.values():
+        way, mean = tier_side({date.fromisoformat(d): ic for d, ic in body["ics"].items()}, first)
+        if mean is None:
+            continue
+        side = body["high" if way > 0 else "low"]
+        kept = sorted(m for m in side if m >= start[:7])[:months]
+        sharpe = tier_reading({m: {"net": side[m]} for m in kept}, kept)["annual_sharpe"]
+        if sharpe is not None and len(kept) == months:
+            values.append(sharpe)
+    return sorted(values)
+
+
+def sens_null_check(tier: TierSweep, null: Mapping[str, Mapping[str, Any]], *, books: int = SENS_NULL_CHECK) -> list[str]:
+    """The first stored null books recomputed in this run; the names of those that differ (empty: the file holds)."""
+    differ = []
+    for k in range(books):
+        read = tier.fixed(f"tier:{k}")
+        again = {"ics": {d.isoformat(): round(ic, 6) for d, ic in tier.ics(read).items()},
+                 **{side: {m: round(row["net"], 8) for m, row in tier.monthly_rows(read, way).items()}
+                    for side, way in (("high", 1), ("low", -1))}}
+        if again != null.get(f"tier:{k}"):
+            differ.append(f"tier:{k}")
+    return differ
+
+
+def sens_lead(book: Mapping[str, Any], p: float, family: Mapping[str, Any], *, q: float = SENS_Q) -> bool:
+    """The sweep's lead rule for one book alone in its family: Benjamini-Hochberg's first threshold q / N, the entry
+    rule, and on a tier that reads it the later-years rule."""
+    return (p <= q / family["books"] and bool(book.get("clears_entry"))
+            and (not family["later_years"] or bool(book.get("later_years", {}).get("passes"))))
+
+
+def sens_bracket(shares: Mapping[float, float], *, share: float = SENS_SHARE) -> dict[str, float | None]:
+    """The largest size under ``share`` below the smallest size at or over it."""
+    sizes = sorted(shares)
+    upper = next((s for s in sizes if shares[s] >= share), None)
+    lower = max((s for s in sizes if shares[s] < share and (upper is None or s < upper)), default=None)
+    return {"under": lower, "at_or_over": upper}
+
+
+def sens_run(market: xsb.Market, family: str, null: Mapping[str, Mapping[str, Any]], span: tuple[date, date] = SPAN,
+             *, sizes: Sequence[float] = SENS_SIZES, seeds: int = SENS_SEEDS) -> dict[str, Any]:
+    """Every size and seed through the sweep's book, each beside the stored null books: the shares of seeds that
+    are leads, that clear the entry rule, and whose p is under the threshold, with the sizes in four words."""
+    spec = SENS_FAMILIES[family]
+    tier = sens_tier(market, family, span)
+    differ = sens_null_check(tier, null)
+    if differ:
+        return {"refused": f"stored null books differ when recomputed: {differ}", "family": family}
+    start = spec["start"]
+    nulls = _null_sharpes(null, start.isoformat(), len(tier.months(start)))
+    beside = [t for t in (tier.turnover(tier.fixed(f"turnover:{k}")) for k in range(TIER_SWEEP_TURNOVER_NULLS)) if t is not None]
+    rows: dict[str, Any] = {}
+    late = []
+    for rho in sizes:
+        books = []
+        for seed in range(seeds):
+            read = sens_planted(tier, rho, seed)
+            book = sens_book(tier, read, start, later=spec["later_years"])
+            if book["own_start"] is None or date.fromisoformat(book["own_start"]) > start:
+                late.append((rho, seed))
+            above = sum(1 for v in nulls if book["annual_sharpe"] is not None and v >= book["annual_sharpe"])
+            book["p"] = (1 + above) / (1 + len(nulls))
+            book["lead"] = sens_lead(book, book["p"], spec)
+            if seed < SENS_TURNOVER_SEEDS:
+                book["turnover"] = tier.turnover(read)
+            books.append(book)
+        med = lambda key: statistics.median(b[key] for b in books if b.get(key) is not None)     # noqa: E731
+        rows[str(rho)] = {
+            "lead_share": sum(b["lead"] for b in books) / seeds,
+            "entry_share": sum(bool(b["clears_entry"]) for b in books) / seeds,
+            "p_share": sum(b["p"] <= SENS_Q / spec["books"] for b in books) / seeds,
+            "p_under_0.05": sum(b["p"] < 0.05 for b in books),
+            "later_years_share": (sum(bool(b.get("later_years", {}).get("passes")) for b in books) / seeds
+                                  if spec["later_years"] else None),
+            "median": {k: med(k) for k in ("mean_rank_correlation", "annual_sharpe", "total_position_annual_pct",
+                                           "before_cost_annual_pct", "cost_annual_pct", "months")},
+            "turnover": [b["turnover"] for b in books if "turnover" in b]}
+    zero = rows[str(sizes[0])]["p_under_0.05"] if sizes and sizes[0] == 0 else None
+    false_alarm = zero is not None and not SENS_FALSE_ALARM[0] <= zero <= SENS_FALSE_ALARM[1]
+    shares = {key: {float(r): body[key] for r, body in rows.items()} for key in ("lead_share", "entry_share", "p_share")}
+    return {"family": family, "record": spec["record"], "tier": spec["tier"], "books_in_family": spec["books"],
+            "threshold": SENS_Q / spec["books"], "start": start.isoformat(), "months": len(tier.months(start)),
+            "null_books": len(nulls), "null_max": nulls[-1] if nulls else None,
+            "null_turnover_mean": round(statistics.fmean(beside), 4) if beside else None,
+            "null_check": "matches", "own_start_later": late,
+            "false_alarm": {"p_under_0.05_at_zero": zero, "range": list(SENS_FALSE_ALARM), "stop": false_alarm},
+            "sizes": rows,
+            "brackets": None if false_alarm or late else {key: sens_bracket(v) for key, v in shares.items()}}
+
+
 def lower_map(market: xsb.Market, names: Mapping[str, tuple[str, lab.Variable]],
               span: tuple[date, date] = SPAN) -> dict[str, Any]:
     """The map on this tier alone, against the random variables on this tier alone: its own lines, so the lines of
@@ -4211,7 +4359,9 @@ def main(argv: list[str] | None = None) -> int:
                                             "basis-counts", "basis", "wide-counts", "wide", "mid-counts", "mid",
                                             "tier-gate", "tier-counts", "tier-sweep", "tier-lead", "door-size",
                                             "lower-gate", "lower-counts", "lower-map", "lower-sweep", "lower-overlap",
-                                            "ha1-gate", "ha1-counts", "ha1"))
+                                            "ha1-gate", "ha1-counts", "ha1", "sens"))
+    parser.add_argument("--family", choices=tuple(SENS_FAMILIES), default=None, help="sens: the sweep whose door is measured")
+    parser.add_argument("--null", type=Path, default=None, help="sens: that sweep's stored null books (JSON)")
     parser.add_argument("--shape", choices=BAR_SHAPES, default=None, help="bar: the book shape whose null books are read")
     parser.add_argument("--only", default=None,
                         help="sweep, transfer: variable groups (comma list), or `null` for the random books")
@@ -4327,6 +4477,27 @@ def main(argv: list[str] | None = None) -> int:
                           "tier": LOWER_NAME, "variable": HA1_VARIABLE, "long": "high", "hold_weeks": HA1_EVERY,
                           "command": args.command, **body}, indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or (args.command == "ha1-counts" and body["stop"]) else EXIT_OK
+    if args.command == "sens":
+        if args.family is None or args.null is None:
+            print("refused: sens needs --family and --null", file=sys.stderr)
+            return EXIT_USAGE
+        stored = json.loads(args.null.read_text(encoding="utf-8"))
+        if stored.get("tier", SENS_FAMILIES[args.family]["tier"]) != SENS_FAMILIES[args.family]["tier"] or "null" not in stored:
+            print("refused: --null is not that sweep's null file", file=sys.stderr)
+            return EXIT_USAGE
+        market = lab.hold(cache, attach=False)
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        if lab.last_day(market) > SPAN[1]:
+            print("refused: the market reaches past the search span", file=sys.stderr)
+            return EXIT_USAGE
+        body = sens_run(market, args.family, stored["null"])
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
+                          "command": args.command, "null_file_lake": stored.get("lake_snapshot"), **body},
+                         indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_BLOCKED if body.get("refused") or body["false_alarm"]["stop"] or body["own_start_later"] else EXIT_OK
     if args.command == "lower-overlap":
         market = lab.hold(cache, attach=False, flow=True)
         if market is None:
