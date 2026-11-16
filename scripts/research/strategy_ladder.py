@@ -2660,10 +2660,12 @@ class TierSweep:
                 out[day] = ic
         return out
 
-    def monthly_rows(self, read: lab.Variable, way: int) -> dict[str, dict[str, float]]:
-        """The book over the whole span, summed by calendar month: net, cost and funding. Held, stressed cost."""
+    def monthly_rows(self, read: lab.Variable, way: int, *, every: int = 1,
+                     weigher: Callable[..., dict[str, float]] | None = None) -> dict[str, dict[str, float]]:
+        """The book over the whole span, summed by calendar month: net, cost and funding. Held, stressed cost.
+        ``every`` holds each decision that many weeks (round 41's H-A1: four); ``weigher`` replaces L1's weights."""
         sim = simulate_held(self.market, bs.CADENCE, {}, start=self.span[0], end=self.span[1],
-                            weigher=self.weigher(read, way), unit_of=listing_unit)
+                            weigher=weigher or self.weigher(read, way), unit_of=listing_unit, every=every)
         out: dict[str, dict[str, float]] = {}
         for day, row in sim["daily"].items():
             month = out.setdefault(_month(day), {"net": 0.0, "cost": 0.0, "funding": 0.0})
@@ -3325,12 +3327,12 @@ def lower_tier_counts(market: xsb.Market, names: Mapping[str, tuple[str, lab.Var
             "returns_computed": False}
 
 
-def tier_later(tier: TierSweep, read: lab.Variable, months: Sequence[str]) -> dict[str, Any]:
+def tier_later(tier: TierSweep, read: lab.Variable, months: Sequence[str], *, every: int = 1) -> dict[str, Any]:
     """Rung 2(b) for a sweep's book (section 55.5, in code from round 40): each of :data:`LATER_YEARS` is read on the
     side the book's rank correlations before that year name. A year with fewer than :data:`lab.MIN_DECISIONS` of them
     names no side and counts as zero, as a year with no book did for H-R1; it is never left out."""
     ics = tier.ics(read)
-    rows = {way: tier.monthly_rows(read, way) for way in (1, -1)}
+    rows = {way: tier.monthly_rows(read, way, every=every) for way in (1, -1)}
     years: dict[str, float] = {}
     sides: dict[str, Any] = {}
     for year in LATER_YEARS:
@@ -3413,6 +3415,159 @@ def lower_lead_overlap(market: xsb.Market, span: tuple[date, date] = SPAN) -> di
                           "closes": median is not None and abs(median) >= LOWER_OVERLAP_CLOSE}
         out[lead] = {**spec, "beside": rows, "closed_by": sorted(n for n, r in rows.items() if r["closes"])}
     return {"threshold": LOWER_OVERLAP_CLOSE, "compared": sorted(others), "leads": out, "returns_computed": False}
+
+
+# --- H-A1: listing age on ranks 101+, held four weeks (round 41's D12, section 59) ----------------------------------------
+
+HA1_VARIABLE = "listing_age"
+HA1_WAY = 1                                # long the older coins: the side round 40's 28-day cell names (fitted on this span)
+HA1_EVERY = 4                              # weeks a decision is held: the map's 28-day decisions exactly (HOLD_ANCHOR)
+HA1_HORIZON = 28
+HA1_NULLS = 600
+HA1_MIN_ACTIVE = 10                        # of the thirteen four-week decisions in each of LATER_YEARS, or nothing is measured
+
+
+def tie_mean(weights: Mapping[str, float], values: Mapping[str, float]) -> dict[str, float]:
+    """``weights`` with every coin that shares its value with another given the mean weight of that group: L1 puts
+    tied coins in name order, and this twin has no name in it. Sums are unchanged."""
+    groups: dict[float, list[str]] = {}
+    for s in weights:
+        groups.setdefault(values[s], []).append(s)
+    out = dict(weights)
+    for members in groups.values():
+        if len(members) > 1:
+            mean = statistics.fmean(weights[s] for s in members)
+            out.update({s: mean for s in members})
+    return out
+
+
+def ha1_twin(tier: TierSweep, read: lab.Variable, way: int) -> Callable[..., dict[str, float]]:
+    """The H-A1 book with tied coins sharing their group's mean weight (no name order)."""
+    def weights(market: xsb.Market, members: Sequence[str], day: date, signal: str,
+                *, seed: str | None = None) -> dict[str, float]:
+        values = {s: v for s in tier.members(day) if (v := read(market, s, day)) is not None}
+        return tie_mean(rank_weights(values, long_high=way > 0), values)
+    return weights
+
+
+def ha1_days(tier: TierSweep) -> list[date]:
+    return [d for d in tier.days if is_decision(bs.CADENCE, d, HA1_EVERY)]
+
+
+def ics_at(tier: TierSweep, read: lab.Variable, horizon: int) -> dict[date, float]:
+    """The variable's rank correlation with the ``horizon``-day return at the map's decisions for that horizon."""
+    out = {}
+    for day in lab.decisions(tier.span, horizon):
+        pairs = [(v, f) for s in tier.members(day)
+                 if (v := read(tier.market, s, day)) is not None
+                 and (f := lab.forward_return(tier.market, s, day, horizon)) is not None]
+        if len(pairs) >= lab.MIN_NAMES and (ic := lab.rank_correlation(pairs)) is not None:
+            out[day] = ic
+    return out
+
+
+def ha1_counts(market: xsb.Market, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """What H-A1 stands on, with no return: four-week decisions with a book per year, the tied share, the share of
+    the long side tied coins carry, how close the book is to its no-name twin, funding coverage and turnover beside
+    the null books. Stops when a later year has fewer than :data:`HA1_MIN_ACTIVE` decisions with a book."""
+    tier = lower_sweep_tier(market, span)
+    read = lab.variables()[HA1_VARIABLE][1]
+    mine, twin = tier.weigher(read, HA1_WAY), ha1_twin(tier, read, HA1_WAY)
+    years: dict[str, dict[str, list[float]]] = {}
+    for day in ha1_days(tier):
+        values = {s: v for s in tier.members(day) if (v := read(market, s, day)) is not None}
+        w = mine(market, (), day, bs.CADENCE)
+        row = years.setdefault(str(day.year), {"decisions": [], "with_book": [], "tied": [], "long_tied": [],
+                                               "twin_cosine": [], "unfunded": []})
+        row["decisions"].append(1)
+        if not w:
+            continue
+        seen: dict[float, int] = {}
+        for v in values.values():
+            seen[v] = seen.get(v, 0) + 1
+        tied = {s for s, v in values.items() if seen[v] > 1}
+        longs = {s: x for s, x in w.items() if x > 0}
+        row["with_book"].append(1)
+        row["tied"].append(len(tied) / len(values))
+        row["long_tied"].append(sum(x for s, x in longs.items() if s in tied) / sum(longs.values()))
+        if (c := _cosine(w, twin(market, (), day, bs.CADENCE))) is not None:
+            row["twin_cosine"].append(c)
+        row["unfunded"].append(sum(1 for s in w if market.funding_day(s) is None) / len(w))
+    by_year = {y: {"decisions": len(r["decisions"]), "decisions_with_a_book": len(r["with_book"]),
+                   "tied_share_mean": round(statistics.fmean(r["tied"]), 4) if r["tied"] else None,
+                   "long_weight_on_tied_mean": round(statistics.fmean(r["long_tied"]), 4) if r["long_tied"] else None,
+                   "twin_cosine_median": round(statistics.median(r["twin_cosine"]), 4) if r["twin_cosine"] else None,
+                   "unfunded_share_mean": round(statistics.fmean(r["unfunded"]), 4) if r["unfunded"] else None}
+               for y, r in sorted(years.items())}
+
+    def turnover(weigher: Callable[..., dict[str, float]]) -> float | None:
+        moves, before = [], None
+        for day in ha1_days(tier):
+            now = weigher(market, (), day, bs.CADENCE)
+            if before and now:
+                moves.append(sum(abs(now.get(s, 0.0) - before.get(s, 0.0)) for s in set(now) | set(before)) / 2)
+            before = now
+        return round(statistics.fmean(moves), 4) if moves else None
+    own = turnover(mine)
+    nulls = [t for t in (turnover(tier.weigher(tier.fixed(f"turnover:{k}"), 1)) for k in range(TIER_SWEEP_TURNOVER_NULLS))
+             if t is not None]
+    beside = round(statistics.fmean(nulls), 4) if nulls else None
+    thin = [str(y) for y in LATER_YEARS if by_year.get(str(y), {}).get("decisions_with_a_book", 0) < HA1_MIN_ACTIVE]
+    return {"by_year": by_year, "turnover": own, "null_turnover_mean": beside,
+            "turnover_beside_null": round(own / beside, 3) if own is not None and beside else None,
+            "stop": [f"fewer than {HA1_MIN_ACTIVE} four-week decisions with a book in {', '.join(thin)}"] if thin else [],
+            "returns_computed": False}
+
+
+def ha1_reading(tier: TierSweep, rows: Mapping[str, Mapping[str, float]], span: tuple[date, date]) -> dict[str, Any]:
+    """A book's monthly rows over the whole span, a month with no book counting as zero (H-R1's rule on this tier)."""
+    months = bs._complete_months(span[0], span[1])
+    report = tier_reading(rows, months)
+    years = {str(y): round(sum(r["net"] for m, r in rows.items() if m[:4] == str(y)) * 100 / bs.POSITION_TOTAL, 2)
+             for y in range(span[0].year, span[1].year + 1)}
+    cost = round(sum(r["cost"] for r in rows.values()) * 100, 2)
+    funding = round(sum(r["funding"] for r in rows.values()) * 100, 2)
+    return {**report, "years_total_position_pct": years, "cost_pct": cost, "funding_pct": funding,
+            "price_pct": round(report["sum_pct"] + cost - funding, 2), "months_list": months}
+
+
+def ha1_passes(rungs: Mapping[str, Any]) -> bool:
+    """All four rungs and the no-name twin's entry rule: a book that clears only in name order is not H-A1."""
+    return bool(rungs["2a_entry"] and rungs["2b_later_years"]["passes"] and rungs["2c_beside_null_books"]["passes"]
+                and rungs["3_stability"]["passes"] and rungs["no_name_twin_entry"])
+
+
+def ha1_run(market: xsb.Market, span: tuple[date, date] = SPAN, *, nulls: int = HA1_NULLS) -> dict[str, Any]:
+    """H-A1 through rung 2's three conditions, rung 3 and the no-name twin. Refused when the counts say stop."""
+    counts = ha1_counts(market, span)
+    if counts["stop"]:
+        return {"refused": counts["stop"], "counts": counts}
+    tier = lower_sweep_tier(market, span)
+    read = lab.variables()[HA1_VARIABLE][1]
+    report = ha1_reading(tier, tier.monthly_rows(read, HA1_WAY, every=HA1_EVERY), span)
+    months = report.pop("months_list")
+    twin = ha1_reading(tier, tier.monthly_rows(read, HA1_WAY, every=HA1_EVERY, weigher=ha1_twin(tier, read, HA1_WAY)), span)
+    twin.pop("months_list")
+    null_sharpes, null_sides = [], {"high": 0, "low": 0}
+    for k in range(nulls):
+        fixed = tier.fixed(f"ha1:{k}")
+        ics = ics_at(tier, fixed, HA1_HORIZON)
+        way = 1 if ics and statistics.fmean(ics.values()) > 0 else -1
+        null_sides["high" if way > 0 else "low"] += 1
+        null_sharpes.append(ha1_reading(tier, tier.monthly_rows(fixed, way, every=HA1_EVERY), span)["annual_sharpe"])
+    own_ics = ics_at(tier, read, HA1_HORIZON)
+    rungs = {"2a_entry": report["clears_entry"],
+             "2b_later_years": tier_later(tier, read, months, every=HA1_EVERY),
+             "2c_beside_null_books": beside_nulls(report["annual_sharpe"], null_sharpes),
+             "3_stability": stability(report["years_total_position_pct"]),
+             "no_name_twin_entry": twin["clears_entry"]}
+    passes = ha1_passes(rungs)
+    return {**report, "hypothesis": "H-A1", "logic": "L23", "counts": counts, "rungs": rungs, "passes": passes,
+            "twin": twin, "null_sides": null_sides,
+            "own_28_day_ics": {"decisions": len(own_ics),
+                               "mean": round(statistics.fmean(own_ics.values()), 4) if own_ics else None},
+            "fixed_side_years_unread": {y: report["years_total_position_pct"].get(y) for y in map(str, LATER_YEARS)},
+            "reading": "passes" if passes else "closed"}
 
 
 def lower_map(market: xsb.Market, names: Mapping[str, tuple[str, lab.Variable]],
@@ -4055,7 +4210,8 @@ def main(argv: list[str] | None = None) -> int:
                                             "hot-counts", "hot", "gap-counts", "gap", "flush-counts", "flush",
                                             "basis-counts", "basis", "wide-counts", "wide", "mid-counts", "mid",
                                             "tier-gate", "tier-counts", "tier-sweep", "tier-lead", "door-size",
-                                            "lower-gate", "lower-counts", "lower-map", "lower-sweep", "lower-overlap"))
+                                            "lower-gate", "lower-counts", "lower-map", "lower-sweep", "lower-overlap",
+                                            "ha1-gate", "ha1-counts", "ha1"))
     parser.add_argument("--shape", choices=BAR_SHAPES, default=None, help="bar: the book shape whose null books are read")
     parser.add_argument("--only", default=None,
                         help="sweep, transfer: variable groups (comma list), or `null` for the random books")
@@ -4154,6 +4310,23 @@ def main(argv: list[str] | None = None) -> int:
                           "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
                           "command": args.command, **body}, indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or (args.command == "mid-counts" and body["stop"]) else EXIT_OK
+    if args.command in ("ha1-gate", "ha1-counts", "ha1"):
+        market = lab.hold(cache, attach=False)
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        if args.command == "ha1-gate":       # every=1 through the H-A1 path: round 40's sweep row for the variable
+            body: dict[str, Any] = {"book": tier_sweep(market, {HA1_VARIABLE: lab.variables()[HA1_VARIABLE]},
+                                                       tier=lower_sweep_tier(market))[HA1_VARIABLE]}
+        elif args.command == "ha1-counts":
+            body = ha1_counts(market)
+        else:
+            body = ha1_run(market)
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
+                          "tier": LOWER_NAME, "variable": HA1_VARIABLE, "long": "high", "hold_weeks": HA1_EVERY,
+                          "command": args.command, **body}, indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_BLOCKED if body.get("refused") or (args.command == "ha1-counts" and body["stop"]) else EXIT_OK
     if args.command == "lower-overlap":
         market = lab.hold(cache, attach=False, flow=True)
         if market is None:

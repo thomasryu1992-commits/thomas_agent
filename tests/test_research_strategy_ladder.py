@@ -2846,7 +2846,8 @@ def test_the_later_years_rule_names_each_side_from_the_years_before_and_never_dr
             out.update({date(2022, 1, 2) + timedelta(days=7 * k): 0.2 for k in range(52)})   # 2022 names "high"
             return out
 
-        def monthly_rows(self, read, way):
+        def monthly_rows(self, read, way, every=1):
+            assert every == 1
             return {f"{y}-06": {"net": (0.2 if way > 0 else -0.2) * sl.bs.POSITION_TOTAL / 100 * 10}
                     for y in (2022, 2023, 2024)}
     months = [f"{y}-{m:02d}" for y in (2022, 2023, 2024) for m in range(1, 13)]
@@ -2907,3 +2908,70 @@ def test_the_lead_overlap_lays_each_lead_beside_every_struck_book_with_values_an
     assert res["beside"]["H-R1"]["median_cosine"] > 0.5 and "H-R1" in res["closed_by"]
     assert res["beside"]["momentum_30"]["median_cosine"] < -0.5 and "momentum_30" in res["closed_by"], "the size is read, not the sign"
     assert set(got["leads"]) == {"residual_momentum_30", "listing_age"} and got["leads"]["listing_age"]["long"] == "high"
+
+
+# --- H-A1: listing age on ranks 101+, held four weeks ------------------------------------------------------------------
+
+def test_the_no_name_twin_gives_tied_coins_their_groups_mean_weight():
+    values = {"A": 18.5, "B": 18.5, "C": 18.5, **{f"X{k:02d}": float(k) for k in range(25)}}
+    weights = sl.rank_weights(values, long_high=True)
+    assert weights["C"] > weights["B"] > weights["A"], "L1 puts tied coins in name order"
+    twin = sl.tie_mean(weights, values)
+    assert twin["A"] == twin["B"] == twin["C"] == pytest.approx((weights["A"] + weights["B"] + weights["C"]) / 3)
+    assert twin["X24"] == weights["X24"] and sum(twin.values()) == pytest.approx(sum(weights.values()))
+
+
+def test_a_four_week_book_trades_only_on_the_maps_28_day_decisions(monkeypatch):
+    monkeypatch.setattr(sl, "LOWER_TIER_FROM", 4)
+    market = _lower_market({f"LOW{i}USDT": (i - 4) / 1000 for i in range(9)})
+    tier = sl.lower_sweep_tier(market, LOWER_TEST_SPAN)
+    read = sl.lab.variables()["momentum_30"][1]
+    sim = sl.simulate_held(market, sl.bs.CADENCE, {}, start=LOWER_TEST_SPAN[0], end=LOWER_TEST_SPAN[1],
+                           weigher=tier.weigher(read, 1), unit_of=sl.listing_unit, every=sl.HA1_EVERY)
+    traded = {d - timedelta(days=1) for d, row in sim["daily"].items() if row.get("cost") and d < LOWER_TEST_SPAN[1]}
+    assert traded and traded <= set(sl.lab.decisions(LOWER_TEST_SPAN, 28)) | set(sl.ha1_days(tier))
+    assert all(sl.is_decision(sl.bs.CADENCE, d, 4) for d in traded)
+    assert {d for d in sl.lab.decisions(LOWER_TEST_SPAN, 28) if d in set(tier.days)} <= set(sl.ha1_days(tier))
+    assert all(sl.is_decision(sl.bs.CADENCE, d, 4) for d in sl.ha1_days(tier)), "the map's 28-day calendar"
+    weekly = tier.monthly_rows(read, 1)
+    assert tier.monthly_rows(read, 1, every=1) == weekly != tier.monthly_rows(read, 1, every=4)
+
+
+def test_the_ha1_counts_carry_no_return_and_stop_without_the_later_years(monkeypatch):
+    monkeypatch.setattr(sl, "LOWER_TIER_FROM", 4)
+    market = _lower_market()
+    counts = sl.ha1_counts(market, LOWER_TEST_SPAN)
+    assert counts["returns_computed"] is False and counts["stop"] and "2022, 2023, 2024" in counts["stop"][0]
+    year = counts["by_year"]["2021"]
+    assert year["decisions_with_a_book"] > 0 and year["tied_share_mean"] == 1.0, "every coin starts at the archive's first day"
+    assert year["long_weight_on_tied_mean"] == 1.0
+    flat = json.dumps(counts)
+    assert "sharpe" not in flat and "_pct" not in flat
+    assert sl.ha1_run(market, LOWER_TEST_SPAN, nulls=1)["refused"] == counts["stop"]
+
+
+def test_the_ha1_run_reads_four_rungs_and_the_twin_over_the_whole_span(monkeypatch):
+    monkeypatch.setattr(sl, "LOWER_TIER_FROM", 4)
+    monkeypatch.setattr(sl, "HA1_MIN_ACTIVE", 0)
+    monkeypatch.setattr(sl, "LATER_YEARS", (2021,))
+    market = _lower_market({f"LOW{i}USDT": (i - 4) / 1000 for i in range(9)})
+    for i in range(9):                                   # give the coins different listing days
+        bars = market.bars[f"LOW{i}USDT"]
+        for d in [d for d in bars if d < date(2020, 1, 1) + timedelta(days=10 * i)]:
+            del bars[d]
+    run = sl.ha1_run(market, LOWER_TEST_SPAN, nulls=3)
+    assert set(run["rungs"]) == {"2a_entry", "2b_later_years", "2c_beside_null_books", "3_stability", "no_name_twin_entry"}
+    assert run["months"] == 18 and set(run["years_total_position_pct"]) == {"2020", "2021"}, "every month of the span"
+    assert run["rungs"]["2c_beside_null_books"]["null_books"] == 3 and sum(run["null_sides"].values()) == 3
+    assert run["rungs"]["2b_later_years"]["sides"]["2021"]["decisions_before"] >= 0
+    assert run["twin"]["annual_sharpe"] is not None and run["hypothesis"] == "H-A1" and run["reading"] in ("passes", "closed")
+
+
+def test_ha1_passes_only_with_every_rung_and_the_twin():
+    good = {"2a_entry": True, "2b_later_years": {"passes": True}, "2c_beside_null_books": {"passes": True},
+            "3_stability": {"passes": True}, "no_name_twin_entry": True}
+    assert sl.ha1_passes(good)
+    for key in good:
+        bad = dict(good)
+        bad[key] = False if isinstance(good[key], bool) else {"passes": False}
+        assert not sl.ha1_passes(bad), key
