@@ -325,10 +325,11 @@ def best(rows: Mapping[str, Mapping[str, Any]]) -> tuple[str | None, float | Non
     return name, sharpe
 
 
-def noise_variable(tier: str, repeat: int, index: int, kind: str) -> lab.Variable:
+def noise_variable(tier: str, repeat: int, index: int, kind: str, space: str = "noise") -> lab.Variable:
     """A random variable of its own seed: redrawn every day (``week``) or one draw per coin (``fixed``). Below the
-    top tier it has a value only where the coin has a bar that day, as ``TierSweep.fixed``."""
-    seed = f"{LOGIC}|noise|{tier}|{repeat}|{index}|{kind}"
+    top tier it has a value only where the coin has a bar that day, as ``TierSweep.fixed``. ``space`` keeps the
+    planted door's pools (section 71) apart from the recorded noise."""
+    seed = f"{LOGIC}|{space}|{tier}|{repeat}|{index}|{kind}"
     needs_bar = tier != TOP
 
     def value(market: xsb.Market, symbol: str, day: date) -> float | None:
@@ -339,12 +340,16 @@ def noise_variable(tier: str, repeat: int, index: int, kind: str) -> lab.Variabl
     return value
 
 
+def noise_kind(tier: str, count: int, index: int) -> str:
+    """On the top tier the first half redrawn weekly and the rest fixed (``strategy_ladder.null_variables``'s split),
+    below it all fixed."""
+    half = count // 2 if len(NOISE_KINDS[tier]) == 2 else 0
+    return "week" if index < half else "fixed"
+
+
 def noise_names(tier: str, repeat: int, count: int) -> dict[str, lab.Variable]:
-    """``count`` fresh random variables for one repeat: on the top tier the first half redrawn weekly and the rest
-    fixed (``strategy_ladder.null_variables``'s split), below it all fixed."""
-    kinds = NOISE_KINDS[tier]
-    half = count // 2 if len(kinds) == 2 else 0
-    return {f"noise_{repeat:03d}_{i:02d}": noise_variable(tier, repeat, i, "week" if i < half else "fixed")
+    """``count`` fresh random variables for one repeat, of the tier's null class (:func:`noise_kind`)."""
+    return {f"noise_{repeat:03d}_{i:02d}": noise_variable(tier, repeat, i, noise_kind(tier, count, i))
             for i in range(count)}
 
 
@@ -389,6 +394,23 @@ def merge_noise(chunks: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 def across_tiers(rows_by_tier: Sequence[Mapping[str, float | None]]) -> float | None:
     values = [v for rows in rows_by_tier for v in rows.values() if v is not None]
     return max(values) if values else None
+
+
+def null_bests(noise_runs: Sequence[Mapping[str, Any]], tiers: Sequence[str]) -> list[float]:
+    """Each noise repeat's best over every tier and configuration, sorted (repeats with none left out)."""
+    repeats = {n["repeats"] for n in noise_runs}
+    if len(repeats) != 1:
+        raise ValueError("the noise runs differ in repeats")
+    by_tier = {n["tier"]: n for n in noise_runs}
+    nulls = [across_tiers([by_tier[t]["rows"][r]["configs"] for t in tiers]) for r in range(next(iter(repeats)))]
+    return sorted(v for v in nulls if v is not None)
+
+
+def noise_p(value: float | None, kept: Sequence[float]) -> float | None:
+    """(1 + noise bests at or above ``value``) / (1 + noise bests); a missing value counts no noise best above it."""
+    if not kept:
+        return None
+    return (1 + sum(1 for v in kept if value is not None and v >= value)) / (1 + len(kept))
 
 
 def deflated_sharpe(monthly: Sequence[float], trial_sharpes: Sequence[float], trials: int) -> float | None:
@@ -445,20 +467,14 @@ def reading(noise_runs: Sequence[Mapping[str, Any]], real_runs: Sequence[Mapping
     tiers = sorted(r["tier"] for r in real_runs)
     if sorted(n["tier"] for n in noise_runs) != tiers or len(set(tiers)) != len(tiers):
         raise ValueError("one noise run and one real run per tier")
-    repeats = {n["repeats"] for n in noise_runs}
-    if len(repeats) != 1:
-        raise ValueError("the noise runs differ in repeats")
     by_tier = {n["tier"]: n for n in noise_runs}
-    nulls = []
-    for r in range(next(iter(repeats))):
-        nulls.append(across_tiers([by_tier[t]["rows"][r]["configs"] for t in tiers]))
+    kept = null_bests(noise_runs, tiers)
     real = {r["tier"]: r["configs"] for r in real_runs}
     flat = {(t, c): v for t in tiers for c, v in real[t].items()}
     value = across_tiers([{c: v["annual_sharpe"] for c, v in real[t].items()} for t in tiers])
     winner = max((k for k, v in flat.items() if v["annual_sharpe"] is not None),
                  key=lambda k: (flat[k]["annual_sharpe"], k), default=None)
-    kept = sorted(v for v in nulls if v is not None)
-    p = (1 + sum(1 for v in kept if value is not None and v >= value)) / (1 + len(kept)) if kept else None
+    p = noise_p(value, kept)
     out: dict[str, Any] = {
         "best": None if winner is None else {"tier": winner[0], "config": winner[1], **flat[winner]},
         "best_annual_sharpe": value, "null_bests": len(kept),
@@ -478,6 +494,183 @@ def reading(noise_runs: Sequence[Mapping[str, Any]], real_runs: Sequence[Mapping
             "deflated_sharpe": deflated_sharpe(report.get("monthly", []), trials, len(flat)),
             "pbo_by_tier": {t: overfit_probability({c: v["report"]["monthly"] for c, v in real[t].items()
                                                     if v.get("report", {}).get("monthly")}) for t in tiers}}
+    return out
+
+
+# --- the planted door (section 71): how large an effect the search must carry to pass its own noise ----------------
+#
+# No real variable is read. Each seed draws a fresh pool of the tier's noise (its own seed space, apart from the
+# recorded noise) and replaces the pool's last ``count`` variables, all of the fixed kind, by planted ones: ``rho``
+# times the normal score of the coin's next-week return among the tier's members (round 39's rank shape; 0 for a coin
+# with none) plus the replaced variable's own fixed draw moved to a normal score. At size 0 a planted variable ranks
+# exactly as the variable it replaced, so size 0 is that seed's noise search whatever the count. Real forward returns
+# and real books on the development span are read; the values files give only the members and how many variables are
+# usable. Every book is read from its functions (``tabulate``), so the table-path gate section 70.2 promised is not
+# spent here.
+PLANT_TIER = TOP
+PLANT_SIZES = (0.0, 0.02, 0.03, 0.04, 0.05, 0.065, 0.08, 0.10)
+PLANT_COUNTS = (1, 5)                      # one planted variable; five that share the signal with independent noise
+PLANT_SEEDS = 50
+PLANT_SHARE = 0.80                         # of the seeds: the bracket's upper size is the smallest that reaches it
+PLANT_REPLAY = 3                           # recorded noise repeats replayed in the first chunk: they must match
+PLANT_FALSE_ALARM = (0, 7)                 # at size 0, seeds with p < NOISE_ALPHA (binomial 50 at about 5%)
+PLANT_SPACE = "plant"
+
+
+def size_key(size: float) -> str:
+    return f"{size:g}"
+
+
+def pool_names(tier: str, seed: int, count: int) -> dict[str, lab.Variable]:
+    """One seed's pool: ``count`` random variables of the tier's null class, in the planted door's own seed space."""
+    return {f"pool_{seed:03d}_{i:02d}": noise_variable(tier, seed, i, noise_kind(tier, count, i), PLANT_SPACE)
+            for i in range(count)}
+
+
+def planted_variable(view: View, base: lab.Variable, rho: float) -> lab.Variable:
+    """``rho`` times the next week's normal score plus ``base``'s own uniform draw moved to a normal score (monotone,
+    so at ``rho`` 0 the ranks are ``base``'s). It reads the future by construction: never registered, never material."""
+    normal, keep, edge = statistics.NormalDist(), math.sqrt(1.0 - rho * rho), 0.5 / 16 ** 12
+    scores: dict[date, dict[str, float]] = {}
+
+    def read(market: xsb.Market, symbol: str, day: date) -> float | None:
+        u = base(market, symbol, day)
+        if u is None:
+            return None
+        if day not in scores:
+            forward = view.forward(day)
+            scores[day] = sl._normal_scores(forward) if rho and forward else {}
+        return rho * scores[day].get(symbol, 0.0) + keep * normal.inv_cdf(min(max(u, edge), 1.0 - edge))
+    return read
+
+
+def planted_indices(tier: str, pool: int, count: int) -> list[int]:
+    out = list(range(pool - count, pool))
+    if any(noise_kind(tier, pool, i) != "fixed" for i in out):
+        raise ValueError("a planted variable replaces only a fixed one")
+    return out
+
+
+def _summary(found: Mapping[str, Mapping[str, Any]], planted: Sequence[str]) -> dict[str, Any]:
+    name, sharpe = best(found)
+    out: dict[str, Any] = {"configs": {c: v["annual_sharpe"] for c, v in found.items()}, "best": name, "best_sharpe": sharpe}
+    if name is not None:
+        row, report = found[name], found[name]["report"]
+        out.update({"clears_entry": report.get("clears_entry"),
+                    "total_position_annual_pct": report.get("total_position_annual_pct"),
+                    "later_years": (row.get("later_years") or {}).get("passes"),
+                    "turnover": row.get("turnover"),
+                    "planted_chosen_years": sum(1 for c in row["chosen"].values() if set(c) & set(planted))})
+    return out
+
+
+def plant(view: View, tier: str, pool: int, seeds: range, *, sizes: Sequence[float] = PLANT_SIZES,
+          counts: Sequence[int] = PLANT_COUNTS) -> dict[str, Any]:
+    """Per seed: the pool's search (size 0), then for every count and size above 0 the search with planted variables,
+    and one planted variable's own book (the units a single-variable book is read in)."""
+    if seeds.start < 0 or seeds.stop > PLANT_SEEDS:
+        raise ValueError(f"seeds run 0 .. {PLANT_SEEDS - 1}")
+    rows = []
+    for seed in seeds:
+        base = pool_names(tier, seed, pool)
+        names = sorted(base)
+        ranks = tabulate(view, base)
+        ics = {n: correlations(view, ranks[n]) for n in names}
+        row: dict[str, Any] = {"seed": seed, "sizes": {size_key(0.0): _summary(search(view, ranks, names, ics=ics), [])}}
+        single: dict[str, Any] = {}
+        for size in sizes:
+            if size == 0:
+                continue
+            made = {names[i]: planted_variable(view, base[names[i]], size) for i in planted_indices(tier, pool, max(counts))}
+            made_ranks = tabulate(view, made)
+            made_ics = {n: correlations(view, made_ranks[n]) for n in made}
+            for count in counts:
+                swapped = [names[i] for i in planted_indices(tier, pool, count)]
+                found = search(view, {**ranks, **{n: made_ranks[n] for n in swapped}}, names,
+                               ics={**ics, **{n: made_ics[n] for n in swapped}})
+                out = _summary(found, swapped)
+                out["planted_mean_ic"] = round(statistics.fmean(v for n in swapped for v in made_ics[n].values()), 4)
+                row["sizes"].setdefault(size_key(size), {})[str(count)] = out
+            last = names[planted_indices(tier, pool, 1)[0]]
+            report = view.report(made[last])
+            single[size_key(size)] = {"annual_sharpe": report.get("annual_sharpe"),
+                                      "total_position_annual_pct": report.get("total_position_annual_pct"),
+                                      "mean_ic": round(statistics.fmean(made_ics[last].values()), 4)}
+        row["single"] = single
+        rows.append(row)
+    return {"tier": tier, "drawn_per_seed": pool, "seeds": [seeds.start, seeds.stop], "rows": rows}
+
+
+def replay(view: View, tier: str, pool: int, recorded: Mapping[str, Any], repeats: int = PLANT_REPLAY) -> list[int]:
+    """The first recorded noise repeats run again here; the repeats whose configurations differ (empty: they hold)."""
+    again = noise(view, tier, pool, range(repeats))
+    kept = {r["repeat"]: r["configs"] for r in recorded["rows"]}
+    return [r["repeat"] for r in again["rows"] if kept.get(r["repeat"]) != r["configs"]]
+
+
+def merge_plant(chunks: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    if not chunks:
+        raise ValueError("no plant chunks")
+    first = chunks[0]
+    for c in chunks:
+        if (c["tier"], c["drawn_per_seed"], c.get("usable")) != (first["tier"], first["drawn_per_seed"], first.get("usable")):
+            raise ValueError("the plant chunks differ in tier, size or material")
+    rows = sorted((r for c in chunks for r in c["rows"]), key=lambda r: r["seed"])
+    if [r["seed"] for r in rows] != list(range(PLANT_SEEDS)):
+        raise ValueError(f"the plant chunks must hold seeds 0 .. {PLANT_SEEDS - 1} once each")
+    replays = [c["replay_differs"] for c in chunks if c.get("replay_differs") is not None]
+    return {"tier": first["tier"], "drawn_per_seed": first["drawn_per_seed"], "usable": first.get("usable"),
+            "replay_differs": replays[0] if len(replays) == 1 else None, "rows": rows}
+
+
+def _median(values: Sequence[float | None]) -> float | None:
+    kept = [v for v in values if v is not None]
+    return round(statistics.median(kept), 4) if kept else None
+
+
+def plant_reading(merged: Mapping[str, Any], noise_runs: Sequence[Mapping[str, Any]],
+                  *, counts: Sequence[int] = PLANT_COUNTS, sizes: Sequence[float] = PLANT_SIZES) -> dict[str, Any]:
+    """Each seed's best read against the recorded noise bests over every tier with ``reading``'s p, per count and size;
+    the share of seeds that pass, and the bracket around :data:`PLANT_SHARE`."""
+    kept = null_bests(noise_runs, sorted(n["tier"] for n in noise_runs))
+    rows = merged["rows"]
+    zero = [r["sizes"][size_key(0.0)] for r in rows]
+    alarms = sum(1 for z in zero if (p := noise_p(z["best_sharpe"], kept)) is not None and p < NOISE_ALPHA)
+    out: dict[str, Any] = {
+        "null_bests": len(kept), "seeds": len(rows),
+        "doors": {"replay_differs": merged.get("replay_differs"),
+                  "replay_holds": merged.get("replay_differs") == [],
+                  "false_alarms_at_zero": alarms,
+                  "false_alarms_within": PLANT_FALSE_ALARM[0] <= alarms <= PLANT_FALSE_ALARM[1]},
+        "zero": {"mean_best": round(statistics.fmean(z["best_sharpe"] for z in zero if z["best_sharpe"] is not None), 4)},
+        "by_count": {}}
+    for count in counts:
+        table = {}
+        for size in sizes:
+            if size == 0:
+                continue
+            cells = [r["sizes"][size_key(size)][str(count)] for r in rows]
+            singles = [r["single"][size_key(size)] for r in rows]
+            ps = [noise_p(c["best_sharpe"], kept) for c in cells]
+            passed = [p is not None and p < NOISE_ALPHA for p in ps]
+            table[size_key(size)] = {
+                "passes": round(sum(passed) / len(rows), 4),
+                "passes_and_entry": round(sum(1 for c, ok in zip(cells, passed) if ok and c.get("clears_entry")) / len(rows), 4),
+                "passes_entry_later": round(sum(1 for c, ok in zip(cells, passed)
+                                                if ok and c.get("clears_entry") and c.get("later_years")) / len(rows), 4),
+                "planted_every_year": round(sum(1 for c in cells if c.get("planted_chosen_years") == len(TRAINED_YEARS)) / len(rows), 4),
+                "median_best_sharpe": _median([c["best_sharpe"] for c in cells]),
+                "median_best_annual_pct": _median([c.get("total_position_annual_pct") for c in cells]),
+                "median_planted_ic": _median([c["planted_mean_ic"] for c in cells]),
+                "median_turnover": _median([c.get("turnover") for c in cells]),
+                "single_median_sharpe": _median([s["annual_sharpe"] for s in singles]),
+                "single_median_annual_pct": _median([s["total_position_annual_pct"] for s in singles]),
+            }
+        below = [s for s in table if table[s]["passes"] < PLANT_SHARE]
+        above = [s for s in table if table[s]["passes"] >= PLANT_SHARE]
+        out["by_count"][str(count)] = {"sizes": table,
+                                       "bracket": {"below": max(below, key=float) if below else None,
+                                                   "reaches": min(above, key=float) if above else None}}
     return out
 
 
@@ -539,7 +732,7 @@ def parse_repeats(text: str | None) -> range:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("command", choices=("material", "values", "noise", "real", "reading"))
+    parser.add_argument("command", choices=("material", "values", "noise", "real", "reading", "plant", "plant-reading"))
     parser.add_argument("--tier", choices=TIERS, default=None)
     parser.add_argument("--only", default=None, help="values: one group of the tier's material")
     parser.add_argument("--values", default=None, help="noise, real: the tier's values files, comma-separated")
@@ -547,6 +740,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--noise", default=None,
                         help="real: this tier's noise chunks; reading: every tier's noise chunks (comma-separated)")
     parser.add_argument("--real", default=None, help="reading: the three real runs, comma-separated")
+    parser.add_argument("--seeds", default=None, help="plant: a range of seeds FIRST:STOP")
+    parser.add_argument("--plant", default=None, help="plant-reading: every plant chunk, comma-separated")
     parser.add_argument("--cache", type=Path, default=None, help="default: $RESEARCH_CACHE")
     args = parser.parse_args(argv)
     stamp = {"measured_at": timeutil.utc_now_iso(), "spec": SPEC, "logic": LOGIC}
@@ -569,6 +764,24 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_USAGE
         print(json.dumps({**stamp, "judgement": None, **body}, indent=1, sort_keys=True))
         return EXIT_OK
+    if args.command == "plant-reading":
+        if not args.noise or not args.plant:
+            print("refused: plant-reading needs --noise (every tier's chunks) and --plant", file=sys.stderr)
+            return EXIT_USAGE
+        try:
+            chunks = load(args.noise)
+            merged_noise = [merge_noise([c for c in chunks if c["tier"] == t]) for t in sorted({c["tier"] for c in chunks})]
+            if sorted(n["tier"] for n in merged_noise) != sorted(TIERS):
+                raise ValueError("the noise of every tier is needed")
+            body = plant_reading(merge_plant(load(args.plant)), merged_noise)
+        except ValueError as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        print(json.dumps({**stamp, "door": "planted", **body}, indent=1, sort_keys=True))
+        return EXIT_OK
+    if args.command == "plant" and args.tier != PLANT_TIER:
+        print(f"refused: the planted door is registered on {PLANT_TIER} only", file=sys.stderr)
+        return EXIT_USAGE
     if args.tier is None:
         print("refused: --tier is needed", file=sys.stderr)
         return EXIT_USAGE
@@ -596,12 +809,16 @@ def main(argv: list[str] | None = None) -> int:
     recorded = None
     try:
         repeats = parse_repeats(args.repeats)
-        if args.command == "real":
+        seeds = parse_repeats(args.seeds) if args.command == "plant" else None
+        if args.command == "plant" and not args.seeds:
+            print("refused: plant needs --seeds FIRST:STOP", file=sys.stderr)
+            return EXIT_USAGE
+        if args.command in ("real", "plant"):
             if not args.noise:
-                print("refused: real needs this tier's recorded noise chunks (--noise)", file=sys.stderr)
+                print(f"refused: {args.command} needs this tier's recorded noise chunks (--noise)", file=sys.stderr)
                 return EXIT_USAGE
             recorded = merge_noise(load(args.noise))
-        keep = (lambda n: False) if args.command == "noise" else (lambda n: n in material(args.tier))
+        keep = (lambda n: False) if args.command in ("noise", "plant") else (lambda n: n in material(args.tier))
         loaded = load_tier([Path(p) for p in args.values.split(",")], args.tier, keep)
     except ValueError as exc:
         print(f"refused: {exc}", file=sys.stderr)
@@ -628,6 +845,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"refused: {exc}", file=sys.stderr)
             return EXIT_USAGE
         print(json.dumps({**common, **body}, sort_keys=True))
+        return EXIT_OK
+    if args.command == "plant":
+        try:
+            body = plant(view, args.tier, len(names), seeds)
+        except ValueError as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        body["replay_differs"] = replay(view, args.tier, len(names), recorded) if seeds.start == 0 else None
+        print(json.dumps({**common, "reads_real_variables": False, **body}, sort_keys=True))
         return EXIT_OK
     found = search(view, loaded["ranks"], names)
     print(json.dumps({**common, "configs": found}, indent=1, sort_keys=True))

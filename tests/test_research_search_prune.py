@@ -303,3 +303,98 @@ def test_the_top_tiers_book_reads_as_the_ladder_measures_it(monkeypatch):
         assert tabled[key] == mine[key], key
     assert sp.members_differ(view, sp.values(view, {"x": read})["members"]) == []
     assert sp.members_differ(view, {**sp.values(view, {"x": read})["members"], "2030-01-06": []}) == ["2030-01-06"]
+
+
+# --- the planted door (section 71) ----------------------------------------------------------------------------------
+
+def test_a_planted_variable_at_size_zero_ranks_as_the_noise_it_replaced():
+    view = FakeView()
+    pool = sp.pool_names("top30", 0, 6)
+    fixed = [n for i, n in enumerate(sorted(pool)) if i in sp.planted_indices("top30", 6, 3)]
+    made = {n: sp.planted_variable(view, pool[n], 0.0) for n in fixed}
+    assert sp.tabulate(view, made) == sp.tabulate(view, {n: pool[n] for n in fixed})
+    ran = sp.plant(view, "top30", 6, range(0, 1), sizes=(0.0,), counts=(1, 3))
+    plain = sp.search(view, sp.tabulate(view, pool), sorted(pool))
+    assert ran["rows"][0]["sizes"]["0"]["configs"] == {c: v["annual_sharpe"] for c, v in plain.items()}
+
+
+def test_planted_variables_replace_only_fixed_noise_and_never_enter_the_registry():
+    assert sp.planted_indices("top30", 47, 5) == [42, 43, 44, 45, 46]
+    assert all(sp.noise_kind("top30", 47, i) == "fixed" for i in sp.planted_indices("top30", 47, 5))
+    with pytest.raises(ValueError):
+        sp.planted_indices("top30", 6, 5)
+    names = set(sp.pool_names("top30", 0, 47))
+    assert not names & set(sp.lab.variables()) and not names & set(sp.material("top30"))
+    assert sp.PLANT_TIER == "top30" and sp.PLANT_SEEDS == 50 and sp.PLANT_COUNTS == (1, 5)
+    assert sp.PLANT_SIZES == (0.0, 0.02, 0.03, 0.04, 0.05, 0.065, 0.08, 0.10)
+
+
+def test_the_planted_pools_seed_space_is_apart_from_the_recorded_noise():
+    day, coin = date(2022, 1, 2), "AUSDT"
+    recorded = sp.noise_variable("top30", 0, 0, "fixed")(None, coin, day)
+    assert recorded == int(xsb.random_key("L24|noise|top30|0|0|fixed", date(2000, 1, 1), coin)[:12], 16) / 16 ** 12, \
+        "the recorded noise's seeds do not move"
+    pool = [f(None, coin, day) for f in sp.pool_names("top30", 0, 6).values()]
+    noise = [f(None, coin, day) for f in sp.noise_names("top30", 0, 6).values()]
+    assert not set(pool) & set(noise)
+
+
+def test_a_planted_effect_is_found_and_lifts_the_search():
+    view = FakeView()
+    ran = sp.plant(view, "top30", 10, range(0, 2), sizes=(0.0, 0.6), counts=(1, 3))
+    for row in ran["rows"]:
+        strong = row["sizes"]["0.6"]
+        assert strong["3"]["planted_mean_ic"] > 0.4 and strong["3"]["planted_chosen_years"] == 3
+        assert strong["3"]["best_sharpe"] > row["sizes"]["0"]["best_sharpe"]
+        assert row["sizes"]["0"]["planted_chosen_years"] == 0, "size 0 plants nothing"
+        assert row["single"]["0.6"]["mean_ic"] > 0.4 and row["single"]["0.6"]["annual_sharpe"] > 0
+    with pytest.raises(ValueError):
+        sp.plant(view, "top30", 10, range(49, 51))
+
+
+def test_the_replay_names_recorded_repeats_that_no_longer_match():
+    view = FakeView()
+    recorded = sp.noise(view, "top30", 6, range(0, 3))
+    assert sp.replay(view, "top30", 6, recorded) == []
+    recorded["rows"][1]["configs"] = {**recorded["rows"][1]["configs"], "top3": 9.9}
+    assert sp.replay(view, "top30", 6, recorded) == [1]
+
+
+def _plant_rows(best_by_size):
+    """``best_by_size``: {size: [best per seed]} for count 1; count 5 is the same."""
+    rows = []
+    for seed in range(sp.PLANT_SEEDS):
+        sizes = {"0": {"best_sharpe": best_by_size[0.0][seed]}}
+        for size, bests in best_by_size.items():
+            if size:
+                cell = {"best_sharpe": bests[seed], "clears_entry": bests[seed] > 1.0, "later_years": True,
+                        "planted_chosen_years": 3, "planted_mean_ic": size, "total_position_annual_pct": 20.0,
+                        "turnover": 0.5}
+                sizes[sp.size_key(size)] = {"1": cell, "5": cell}
+        rows.append({"seed": seed, "sizes": sizes,
+                     "single": {sp.size_key(s): {"annual_sharpe": 0.5, "total_position_annual_pct": 5.0, "mean_ic": s}
+                                for s in best_by_size if s}})
+    return rows
+
+
+def test_the_planted_reading_uses_the_readings_p_and_brackets_at_eighty_percent():
+    nulls = [k / 100 for k in range(200)]                 # 0.00 .. 1.99: p < 0.05 needs a best above 1.89
+    noise = [{"tier": t, "repeats": 200, "rows": [{"configs": {"top3": (v if t == "top30" else None)}} for v in nulls]}
+             for t in sp.TIERS]
+    n = sp.PLANT_SEEDS
+    best = {0.0: [0.5] * (n - 3) + [1.95] * 3, 0.02: [1.0] * n, 0.03: [1.95] * 30 + [1.0] * 20, 0.04: [1.95] * 40 + [1.0] * 10,
+            0.05: [1.95] * n}
+    sizes = tuple(best)
+    merged = {"tier": "top30", "drawn_per_seed": 47, "usable": [], "replay_differs": [], "rows": _plant_rows(best)}
+    out = sp.plant_reading(merged, noise, sizes=sizes)
+    assert out["doors"] == {"replay_differs": [], "replay_holds": True, "false_alarms_at_zero": 3, "false_alarms_within": True}
+    table = out["by_count"]["1"]["sizes"]
+    assert table["0.02"]["passes"] == 0.0 and table["0.03"]["passes"] == 0.6 and table["0.04"]["passes"] == 0.8
+    assert sp.noise_p(1.95, sorted(nulls)) == pytest.approx((1 + 5) / 201) and (1 + 5) / 201 < sp.NOISE_ALPHA
+    assert sp.noise_p(1.89, sorted(nulls)) == pytest.approx((1 + 11) / 201)
+    assert out["by_count"]["5"]["bracket"] == {"below": "0.03", "reaches": "0.04"}
+    best[0.0] = [1.95] * 8 + [0.5] * (n - 8)
+    loud = sp.plant_reading({**merged, "replay_differs": [2], "rows": _plant_rows(best)}, noise, sizes=sizes)
+    assert not loud["doors"]["false_alarms_within"] and not loud["doors"]["replay_holds"]
+    with pytest.raises(ValueError):
+        sp.merge_plant([{"tier": "top30", "drawn_per_seed": 47, "usable": [], "rows": _plant_rows(best)[:-1]}])
