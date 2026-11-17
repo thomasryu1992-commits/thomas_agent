@@ -2448,6 +2448,7 @@ def test_the_tier_counts_carry_nothing_earned_and_show_ties_dated_names_dead_bar
     thin = lambda m, s, d: None if s in mids[:4] or (d.month == 9 and d.year == 2022) else read(m, s, d)   # noqa: E731
     gaps = sl.tier_sweep_counts(market, {"thin": ("g", thin)}, MID_TEST_SPAN)["books"]["thin"]
     assert gaps["ranked_beside_null"] == 0.75, "twelve of the sixteen a null book ranks"
+    assert gaps["ranked_cells"] == 0.75 * gaps["cells_beside_null"] == 528, "the share's two counts are printed"
     assert gaps["months_without_a_book"] == 1, "September stands inside its span with no book"
     assert late["skipped"] == "its own span is 6 complete months, under 8" and late["months"] == 6
     flat = json.dumps(counts)

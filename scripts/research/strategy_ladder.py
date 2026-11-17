@@ -2762,6 +2762,7 @@ def tier_sweep_counts(market: xsb.Market, names: Mapping[str, tuple[str, lab.Var
                        "start": None if start is None else start.isoformat(), "months": len(months),
                        "decisions_with_a_book": len(ranked), "ranked_median": statistics.median(ranked) if ranked else 0,
                        "ranked_cells": cells, "ranked_beside_null": round(cells / with_bar, 3) if with_bar else None,
+                       "cells_beside_null": with_bar,       # section 69: the share's denominator, so a share on a floor is exact
                        "months_without_a_book": sum(1 for m in months if m not in active),
                        "tied_share": round(tied / cells, 4) if cells else None,
                        "dated_cells": dated, "zero_volume_cells": still,
