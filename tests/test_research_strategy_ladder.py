@@ -2326,7 +2326,7 @@ def test_the_tier_sweep_builds_no_book_the_record_forbids_and_names_why():
     assert {"spread_change_30", "trade_size_position_30"} <= set(sl.TIER_SWEEP_OUT), "the top tier's lead and its runner-up"
     assert {"momentum_change_30", "momentum_position_30", "residual_momentum_30", "ls_change_30"} <= set(names), "shapes are kin, not the closed book"
     assert not [n for n, (group, _) in names.items() if group == "depth"], "no depth files on this tier"
-    assert all(sl.TIER_SWEEP_OUT.values()) and len(names) == len(registered) - len(sl.TIER_SWEEP_OUT) == 40
+    assert all(sl.TIER_SWEEP_OUT.values()) and len(names) == len(registered) - len(sl.TIER_SWEEP_OUT) == 42
     assert sl.TIER_SWEEP_NULLS == 600 and 0.10 / len(names) > 1 / (sl.TIER_SWEEP_NULLS + 1), "a book above every null can survive"
 
 
@@ -2791,7 +2791,7 @@ def test_the_lower_tier_strikes_by_name_what_the_record_forbids_there_and_both_r
     assert {"funding_change_30", "funding_position_30", "momentum_change_30", "residual_momentum_30", "listing_age",
             "taker_buy_share_30", "premium_30", "spot_share_30"} <= set(names), "kin, built and named on the form"
     assert all(out[n] == sl.lab.no_book(n, sl.LOWER_NAME) for n in out), "the map's no_book and the sweep's list are one"
-    assert sl.lower_refused_groups() == {"depth"} and len(names) == 38
+    assert sl.lower_refused_groups() == {"depth"} and len(names) == 40
     assert sl.lab.LOWER_TIER_NAME not in sl.lab.TIERS, "the mapped tiers are untouched"
 
 
@@ -3623,7 +3623,9 @@ def test_the_spot_flow_reads_the_spot_pairs_columns_on_same_asset_days_only(tmp_
     assert share(market, "AUSDT", day) is None, "no pair, no value"
     assert sl.lab.OVERLAP_CANDIDATES["spot_taker_share_30"][0] == "spot_flow"
     registered = sl.lab.variables()
-    assert {n for n, (g, _) in registered.items() if g == "spot_flow"} == {"spot_taker_share_30", "spot_trade_size_30"}
+    assert {n for n, (g, _) in registered.items() if g == "spot_flow"} == {"spot_taker_share_30", "spot_trade_size_30",
+                                                                          "spot_taker_share_change_30",
+                                                                          "spot_taker_share_position_30"}
     assert {n for n, (g, _) in registered.items() if g == "spot"} == {"spot_share_30", "spot_share_change_30",
                                                                       "spot_share_position_30"}, "the spot group reads what it read"
     assert len({n for n, (g, _) in registered.items() if g == "positioning"}) == 11

@@ -65,9 +65,10 @@ MIN_DECISIONS = 20                         # decisions a cell needs before it sh
 MIN_SPELLS = 4                             # separate stretches a scenario cell needs: one long bull run is one sample
 REFERENCE_DECISIONS = 52                   # trailing decisions a scenario's own median is taken over
 REFERENCE_MIN = 26
-CONTROLS_WEEKLY = 55                       # random variables redrawn at every decision (25, 28, 32, 42, 44, 47, 50, 53 as the registry grew)
-CONTROLS_FIXED = 55                        # random variables fixed per coin, like a slow characteristic
+CONTROLS_WEEKLY = 57                       # random variables redrawn at every decision (25, 28, 32, 42, 44, 47, 50, 53, 55 as the registry grew)
+CONTROLS_FIXED = 57                        # random variables fixed per coin, like a slow characteristic
 CONTROLS_BEFORE_SPOT_FLOW = 53                # each kind's count before section 67 added two variables: the old lines' set
+CONTROLS_BEFORE_SHAPES = 55                   # each kind's count before section 69 added two more: round 49's lines' set
 EXTREME_MOVE = 0.30                        # a daily close-to-close move this large is an extreme day
 WILD_MOVE = 0.50                           # a coin whose largest daily move in the lookback reached this is wild
 AGE_CAP_DAYS = 1000                        # listing age is read up to here; older coins are alike
@@ -300,6 +301,10 @@ def variables() -> dict[str, tuple[str, Variable]]:
     # 0.72 with the perp's own, under 0.8). Its own group, so the spot and trade-flow groups read what they read.
     out[f"spot_taker_share_{LOOKBACK}"] = ("spot_flow", _spot_taker_share)
     out[f"spot_trade_size_{LOOKBACK}"] = ("spot_flow", _spot_trade_size)
+    # Added 2026-11-17 (section 69): the taker-buy share's two shapes, after both passed the overlap on inputs (0.32
+    # and 0.23 with the perp's own shapes, under 0.8). The trade size's shapes are not added (section 68.5).
+    out[f"spot_taker_share_change_{LOOKBACK}"] = ("spot_flow", _change(_spot_taker_share))
+    out[f"spot_taker_share_position_{LOOKBACK}"] = ("spot_flow", _position(_spot_taker_share))
     return out
 
 
@@ -1503,10 +1508,12 @@ def main(argv: list[str] | None = None) -> int:
     real, random = grid(market, chosen), grid(market, controls())
     against = chance(random["cells"])
     before = chance(earlier_control_cells(random["cells"]))
+    before_shapes = chance(earlier_control_cells(random["cells"], CONTROLS_BEFORE_SHAPES))
     print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
                       "span": [d.isoformat() for d in SPAN], "last_day_read": last_day(market).isoformat(),
                       "before_costs": True, "judgement": None, "only": args.only,
-                      "chance": against, "chance_before_spot_flow": before, "excess": excess(real["cells"], against),
+                      "chance": against, "chance_before_spot_flow": before, "chance_before_shapes": before_shapes,
+                      "excess": excess(real["cells"], against),
                       "candidates": candidates(real, against), "spread_candidates": spread_candidates(real, against),
                       "dropped": real["dropped"],
                       "variables": real["variables"], "cells": real["cells"],

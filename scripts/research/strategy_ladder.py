@@ -4452,10 +4452,12 @@ def lower_map(market: xsb.Market, names: Mapping[str, tuple[str, lab.Variable]],
     random_cells = lab.grid(market, lab.controls(), span, members=members)
     against = lab.chance(random_cells["cells"])
     before = lab.chance(lab.earlier_control_cells(random_cells["cells"]))
+    before_shapes = lab.chance(lab.earlier_control_cells(random_cells["cells"], lab.CONTROLS_BEFORE_SHAPES))
     leads = lab.candidates(real, against, cap=None)        # every cell that meets the rule: struck ones are named, not counted
     leads["leads"] = [{**c, "no_book": lab.no_book(c["variable"], c["tier"])} for c in leads["leads"]]
     return {"tier": LOWER_NAME, "coverage": coverage, "not_mapped": {n: coverage[n]["stop"] for n in names if n not in kept},
-            "chance": against, "chance_before_spot_flow": before, "excess": lab.excess(real["cells"], against), "candidates": leads,
+            "chance": against, "chance_before_spot_flow": before, "chance_before_shapes": before_shapes,
+            "excess": lab.excess(real["cells"], against), "candidates": leads,
             "spread_candidates": lab.spread_candidates(real, against), "dropped": real["dropped"],
             "variables": real["variables"], "cells": real["cells"]}
 
