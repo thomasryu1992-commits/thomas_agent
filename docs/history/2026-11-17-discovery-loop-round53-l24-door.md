@@ -22,7 +22,8 @@ nothing about how large an effect the filter could have seen. Thomas chose to me
 
 **Result (2026-11-17 12:50Z, recorded in §71.5).** Both gates held: the recorded noise repeats 0–2 replayed exactly,
 and 1 of 50 seeds passed at size 0. No size reached 80% at either count. At ρ 0.10, 17 of 50 seeds passed with five
-planted variables and 6 of 50 with one. The planted variable was still picked in all three years in most seeds (100%
-from ρ 0.05 with five). The registered reading is the third row: round 52's miss says nothing about effects below a
+planted variables and 6 of 50 with one. The "picked in all three years" column has no chance baseline: it counts any planted
+variable among the best configuration's picks, which `weighted` meets by construction and a top-20 pick of five
+meets 95% of the time per year by chance. Only the one-variable rise (28% → 96%) says selection responds to size. The registered reading is the third row: round 52's miss says nothing about effects below a
 rank correlation of 0.10. The single-book translation is a level, not a lift, because the size-0 single book was not
 measured. Door 1 covers the first lake snapshot only, since the judgement fingerprint hashes rules, not data.
