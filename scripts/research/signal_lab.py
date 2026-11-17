@@ -519,6 +519,10 @@ OVERLAP_CANDIDATES: dict[str, tuple[str, Variable, tuple[str, ...]]] = {
     # Section 67: the spot pair's flow beside the perp's own flow and the spot share.
     "spot_taker_share_30": ("spot_flow", _spot_taker_share, ("taker_buy_share_30", "spot_share_30")),
     "spot_trade_size_30": ("spot_flow", _spot_trade_size, ("trade_size_30", "spot_share_30")),
+    # Section 69: the spot taker-buy share's two shapes beside the same shapes of the perp's share and the spot share.
+    "spot_taker_share_change_30": ("spot_flow", _change(_spot_taker_share), ("taker_buy_share_change_30", "spot_share_change_30")),
+    "spot_taker_share_position_30": ("spot_flow", _position(_spot_taker_share),
+                                     ("taker_buy_share_position_30", "spot_share_position_30")),
 }
 
 

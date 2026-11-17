@@ -4395,6 +4395,18 @@ def recorded_family_check(recorded: Mapping[str, Any], again: Mapping[str, Any])
     return out
 
 
+def pick_names(names: Mapping[str, tuple[str, lab.Variable]], requested: str | None) -> dict[str, tuple[str, lab.Variable]]:
+    """Section 69: a sweep builds only the named books of its groups, so a book the registration did not choose is
+    never built (and its return never printed). No list keeps every book; a name the groups do not hold refuses."""
+    if requested is None:
+        return dict(names)
+    wanted = [n for n in requested.split(",") if n]
+    unknown = sorted(set(wanted) - set(names))
+    if not wanted or unknown:
+        raise ValueError(f"--names must list books of the chosen groups; not among them: {unknown or 'empty list'}")
+    return {n: v for n, v in names.items() if n in wanted}
+
+
 def tier_family(tier: str, recorded: Mapping[str, Any], null: Mapping[str, Any], new: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     """A tier's sweep family (section 66.3): the recorded reading's rows as the books, read by that tier's own
     function against its own nulls; they must give the recorded reading back before a new book is added, and a new
@@ -5083,6 +5095,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--new", type=Path, default=None, help="lower-family: the new sweep file")
     parser.add_argument("--check", type=Path, default=None, help="lower-family: the recorded family reading the recorded books must give")
     parser.add_argument("--shape", choices=BAR_SHAPES, default=None, help="bar: the book shape whose null books are read")
+    parser.add_argument("--names", default=None,
+                        help="sweep, tier-sweep, lower-sweep: only these books of the --only groups (comma list)")
     parser.add_argument("--only", default=None,
                         help="sweep, transfer: variable groups (comma list), or `null` for the random books")
     parser.add_argument("--cache", type=Path, default=None, help="default: $RESEARCH_CACHE")
@@ -5317,6 +5331,12 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_USAGE
         if args.command == "lower-map":       # the map shows a group's struck variables too; no lead is taken from them
             names = {n: v for n, v in lab.variables().items() if v[0] in wanted}
+        if args.command == "lower-sweep" and args.names is not None:
+            try:
+                names = pick_names(names, args.names)
+            except ValueError as exc:
+                print(f"refused: {exc}", file=sys.stderr)
+                return EXIT_USAGE
         try:
             if "positioning" in wanted:                   # this tier's own files only (section 63), read alone
                 if wanted != {"positioning"}:
@@ -5422,6 +5442,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command != "tier-gate" and not names and wanted != {"null"}:
             print("refused: --only names no group with a book on this tier (or `null`)", file=sys.stderr)
             return EXIT_USAGE
+        if args.command == "tier-sweep" and args.names is not None:
+            try:
+                names = pick_names(names, args.names)
+            except ValueError as exc:
+                print(f"refused: {exc}", file=sys.stderr)
+                return EXIT_USAGE
         if args.command == "tier-counts" and wanted == {"null"}:
             print("refused: the counts are per variable group", file=sys.stderr)
             return EXIT_USAGE
@@ -5524,6 +5550,12 @@ def main(argv: list[str] | None = None) -> int:
         if not names:
             print("refused: --only names no registered variable group (or `null`)", file=sys.stderr)
             return EXIT_USAGE
+        if args.command == "sweep" and args.names is not None:
+            try:
+                names = pick_names(names, args.names)
+            except ValueError as exc:
+                print(f"refused: {exc}", file=sys.stderr)
+                return EXIT_USAGE
         try:
             market = sweep_market(cache, wanted)
         except ValueError as exc:

@@ -4,6 +4,7 @@ without the year they trade, the placebo scenario, and the two rungs' arithmetic
 from __future__ import annotations
 
 import json
+import statistics
 import random as random_module
 from datetime import date, timedelta
 
@@ -3626,6 +3627,45 @@ def test_the_spot_flow_reads_the_spot_pairs_columns_on_same_asset_days_only(tmp_
     assert {n for n, (g, _) in registered.items() if g == "spot"} == {"spot_share_30", "spot_share_change_30",
                                                                       "spot_share_position_30"}, "the spot group reads what it read"
     assert len({n for n, (g, _) in registered.items() if g == "positioning"}) == 11
+
+
+def test_the_spot_taker_shares_shapes_are_its_change_and_its_position_over_its_own_past():
+    start = date(2021, 1, 1)
+    days = [start + timedelta(days=k) for k in range(240)]
+    share = lambda k: 0.40 + 0.001 * k                   # rises a little every day
+    market = xsb.Market(bars={"A": {d: xsb.Bar(open=1.0, close=1.0, quote_volume=1.0) for d in days}}, funding={})
+    market.spot = {"AS": {d: xsb.Bar(open=1.0, close=1.0, quote_volume=1.0) for d in days}}
+    market.spot_of = {"A": ("AS", 1.0)}
+    market.spot_flow = {"AS": {d: (share(k), 5.0) for k, d in enumerate(days)}}
+    day = days[-1]
+    level = sl.lab.OVERLAP_CANDIDATES["spot_taker_share_30"][1]
+    group, change, kin = sl.lab.OVERLAP_CANDIDATES["spot_taker_share_change_30"]
+    assert group == "spot_flow" and kin == ("taker_buy_share_change_30", "spot_share_change_30")
+    assert change(market, "A", day) == pytest.approx(level(market, "A", day) - level(market, "A", day - timedelta(days=30)))
+    assert change(market, "A", day) == pytest.approx(0.030)
+    group, position, kin = sl.lab.OVERLAP_CANDIDATES["spot_taker_share_position_30"]
+    assert group == "spot_flow" and kin == ("taker_buy_share_position_30", "spot_share_position_30")
+    past = [level(market, "A", day - timedelta(days=30 * k)) for k in range(1, 7)]
+    expected = (level(market, "A", day) - statistics.fmean(past)) / statistics.pstdev(past)
+    assert position(market, "A", day) == pytest.approx(expected) and expected > 0
+    assert position(market, "A", days[100]) is None, "fewer than four of its six past points: no position"
+    registered = sl.lab.variables()
+    assert all(k in registered for k in ("taker_buy_share_change_30", "spot_share_change_30",
+                                         "taker_buy_share_position_30", "spot_share_position_30")), "the kin are registered"
+
+
+def test_a_sweep_builds_only_the_books_it_names():
+    names = {"a": ("g", None), "b": ("g", None), "c": ("g", None)}
+    assert sl.pick_names(names, None) == names, "no list keeps every book"
+    assert sl.pick_names(names, "b") == {"b": ("g", None)}
+    assert list(sl.pick_names(names, "c,a")) == ["a", "c"]
+    with pytest.raises(ValueError):
+        sl.pick_names(names, "a,z")
+    with pytest.raises(ValueError):
+        sl.pick_names(names, ",")
+    for command in ("sweep", "tier-sweep", "lower-sweep"):
+        args = [command, "--only", "spot_flow", "--names", "not_a_book", "--cache", "/nonexistent"]
+        assert sl.main(args) == sl.EXIT_USAGE, command
 
 
 def test_a_tiers_family_reads_its_recorded_rows_again_before_a_new_book_is_added():
