@@ -19,3 +19,7 @@ allows 60. The other two tiers' readings never rounded.
 - *One book, once.* `spot_taker_share_position_30` was left out of the top-30 sweep only for the slot (round 51's
   rule). Round 51 closed the shape's map cells and its other books; this book was never built, so reading it is not a
   re-measure. Nothing else waits: spot trade size's shapes were closed by a sentence in §68.5.
+
+**Result (2026-11-17 13:44Z, §72.5).** The family command re-read the recorded 58 books under the exact compare and
+got the record back. The new book: Sharpe 0.996 (19.43% a year), 47 of 600 nulls at or above it (p 0.0799), below
+the entry rule. The family of 59 keeps its one recorded survivor. Closed; not read again under any other setting.
