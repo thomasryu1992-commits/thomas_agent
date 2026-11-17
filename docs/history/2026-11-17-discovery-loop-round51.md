@@ -18,3 +18,14 @@ round 50 closed the other spot flow lead and left these.
   pinned 60 is the cap, or the null books grow by name, is left as the next list's row.
 - *A shape's lead passes through a weight overlap before anything else.* Round 50 showed a value overlap under 0.8
   can still be the same book at 0.5 in weights.
+
+## Result (2026-11-17 02:41Z)
+
+Both shapes passed the overlap (0.32 and 0.23) and were registered (59 variables, 114 controls). The position shape's
+31–100 coverage printed 0.8 at three places; the counts now print the denominator, and the exact share is 0.8003, so
+both were read there. No map lead on any tier, no sweep survivor; the recorded survivors stand as the registration
+computed. The two shapes are closed as read, nothing (§69.7).
+
+Next: the design `docs/proposals/SEARCH_THEN_PRUNE_V0.1.md` (DRAFT), from Thomas's word the same day — a combination
+logic (L8) whose components are chosen on the years before each scored year, filtered first by running the same
+search end to end on the control variables 200 times. The real search waits for its five questions.
