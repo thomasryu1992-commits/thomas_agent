@@ -77,6 +77,26 @@ def test_the_generated_preflight_runs_offline_on_a_real_draft(vault):
     assert set(found["variety"]) == {"FAIL", "WARN"}
 
 
+AFF_DRAFT = ('---\ntitle: "업소용냉동고, 모델 하나로 칸 수 정하기"\nplatform: naver\naffiliate: 쇼핑커넥트\nstatus: draft\nform: 판정형\n'
+             'created: {created}\n---\n# 업소용냉동고\n\n이 포스팅은 네이버 쇼핑 커넥트 활동의 일환으로, 판매 발생 시 수수료를 제공받습니다.\n\n'
+             '## 칸 수\n\n{line}\n')
+
+
+@pytest.mark.parametrize("created, line, fails, absent", [
+    # Thomas 2026-11-17: affiliate drafts created from 11-17 are model analyses; the AI link is one scene paragraph
+    # anywhere in the body (V12), the old scene/run-result check (V13) is off, and first-hand wording fails (V17).
+    ("2026-11-18", "AI로 발주 목록을 나누면 칸 수가 나온다.", set(), {"V12", "V13", "V17"}),
+    ("2026-11-18", "직접 써 보니 칸이 넉넉했다.", {"V12", "V17"}, set()),
+    # a draft created before 11-17 keeps the old rule: an AI word in the title or an H2
+    ("2026-11-10", "AI로 발주 목록을 나누면 칸 수가 나온다.", {"V12"}, {"V17"}),
+])
+def test_the_generated_variety_judges_affiliate_drafts_by_their_creation_date(vault, created, line, fails, absent):
+    rel, _ = _write(vault, "aff.md", AFF_DRAFT.format(created=created, line=line))
+    found = bv.check_draft(vault, vault / rel)["variety"]
+    assert fails <= set(found["FAIL"])
+    assert not absent & (set(found["FAIL"]) | set(found["WARN"]))
+
+
 @pytest.mark.parametrize("rel", ["../outside.md", "content/../x.md", "/etc/passwd", "content/naver/../../x.md",
                                  "ops/blog-runs/x.md", 3, None])
 def test_a_path_from_a_report_cannot_leave_the_vaults_content(vault, rel):
