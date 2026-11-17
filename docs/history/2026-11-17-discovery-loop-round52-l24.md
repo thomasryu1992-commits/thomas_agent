@@ -24,3 +24,10 @@ Every single-variable book stayed under the entry rule; the loop had no logic th
 - *The name.* L8 already names the risk-matched book, so the logic is L24.
 - *The real search is locked in code* (`REAL_SEARCH_DECIDED`, a recorded noise run of the same tier, size and
   material).
+
+## Result (2026-11-17 05:29Z)
+
+The noise searches (200 per tier, fresh variables) put the best of the 18 configurations at a mean of 0.766, a 95th
+percentile of 1.250 and a maximum of 1.75. The real search's best was the top tier's |t| ≥ 2 configuration at an
+annual Sharpe of 1.066; 38 of the 200 noise bests reach it, so p = 0.194 and L24 is closed by its first rule. The
+other two tiers were negative in every configuration. Shown and not gates: deflated Sharpe 0.033, PBO 0.7 / 0.6 / 0.3.
