@@ -20,3 +20,8 @@ spot_flow` already runs exactly the four.
   §44 (no other logic for what failed the sweep) disagree, so a pass is a question to Thomas with the default "not
   raised". A pass whose kin already split the same way in the 642 is not counted as separate evidence (§51.6).
 - *An old test that enters the BH list only because new tests are small is named, not counted as a clue.*
+
+**Result (2026-11-17 17:26Z, §74.5).** Both doors held: the recorded spot group's 36 count rows came back equal on
+the same lake snapshot (`20261117T171701Z`) as the measured run. The 48 new tests joined the recorded 642: no test
+survives Benjamini–Hochberg in the family of 690; two new tests are under 0.05 (chance 2.4), the smallest 0.0332 at
+rank 29 against a threshold of 0.0042. The four variables' axis check is closed.
