@@ -583,16 +583,18 @@ def sweep_reading(real: Mapping[str, Mapping[str, Any]], null: Mapping[str, Mapp
     """Each real book beside the null books: its p is the share of null books at or above it. The books that count
     are the ones that survive Benjamini–Hochberg at ``q``; the number under 0.05 is shown beside what chance gives."""
     nulls = sorted(v["annual_sharpe"] for v in null.values() if v.get("annual_sharpe") is not None)
-    rows = []
+    rows, exact = [], {}
     for name, body in real.items():
         sharpe = body.get("annual_sharpe")
         if sharpe is None or not nulls:
             continue
-        p = (1 + sum(1 for v in nulls if v >= sharpe)) / (1 + len(nulls))
+        exact[name] = (1 + sum(1 for v in nulls if v >= sharpe)) / (1 + len(nulls))
         rows.append({"variable": name, **{k: body[k] for k in ("group", "long", "annual_sharpe", "total_position_annual_pct",
-                                                               "clears_entry", "negative_years")}, "p": round(p, 4)})
-    rows.sort(key=lambda r: (r["p"], -r["annual_sharpe"], r["variable"]))
-    cutoff = max((i for i, r in enumerate(rows, start=1) if r["p"] <= q * i / len(rows)), default=0)
+                                                               "clears_entry", "negative_years")}, "p": round(exact[name], 4)})
+    # Section 72: the comparison is on the p before rounding; the printed p stays at four places. Rounding had capped
+    # the top-30 family at 58 books where the test's inequality allows 60, and had moved no recorded verdict.
+    rows.sort(key=lambda r: (r["p"], -r["annual_sharpe"], r["variable"]))   # same order: 1/(nulls + 1) > 0.0001
+    cutoff = max((i for i, r in enumerate(rows, start=1) if exact[r["variable"]] <= q * i / len(rows)), default=0)
     return {"books": len(rows), "null_books": len(nulls),
             "null": {"mean": round(statistics.fmean(nulls), 3), "p95": nulls[int(0.95 * (len(nulls) - 1))], "max": nulls[-1],
                      "share_clearing_sharpe_1": round(sum(1 for v in nulls if v >= bs.ENTRY_SHARPE) / len(nulls), 4)} if nulls else None,

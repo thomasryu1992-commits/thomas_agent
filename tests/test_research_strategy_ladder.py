@@ -492,6 +492,25 @@ def test_the_sweep_reads_each_book_beside_the_null_books_and_corrects_for_how_ma
     assert out["p_under_0.05"] == 2 and out["null"]["max"] == 1.0 and out["null"]["share_clearing_sharpe_1"] == pytest.approx(1 / 300, abs=1e-4)
 
 
+def test_the_sweep_reading_compares_the_p_before_rounding_in_both_directions():
+    """Section 72: Benjamini-Hochberg reads the exact p; only the printed p is rounded. One book against 600 nulls:
+    beating all of them is 1/601 = 0.001664 (printed 0.0017), beating all but one is 2/601 = 0.003328 (printed 0.0033)."""
+    null = {f"n{i}": {"annual_sharpe": i / 1000} for i in range(600)}
+    row = {"group": "g", "long": "high", "total_position_annual_pct": 1.0, "clears_entry": False, "negative_years": 0}
+    top = {"a": dict(row, annual_sharpe=1.0)}
+    second = {"a": dict(row, annual_sharpe=0.5985)}
+    assert sl.sweep_reading(top, null)["all"][0]["p"] == 0.0017 and sl.sweep_reading(second, null)["all"][0]["p"] == 0.0033
+    # Exact passes where the rounded p would fail: 1/601 <= 0.00168 < 0.0017.
+    assert [r["variable"] for r in sl.sweep_reading(top, null, q=0.00168)["survive_benjamini_hochberg"]] == ["a"]
+    # Exact fails where the rounded p would pass: 0.0033 <= 0.00331 < 2/601.
+    assert sl.sweep_reading(second, null, q=0.00331)["survive_benjamini_hochberg"] == []
+    # The top-30 family: 59 books with the best beating every null keeps it, as the test's inequality allows to 60.
+    books = {f"b{i:02d}": dict(row, annual_sharpe=1.0 if i == 0 else -1.0) for i in range(59)}
+    assert [r["variable"] for r in sl.sweep_reading(books, null)["survive_benjamini_hochberg"]] == ["b00"]
+    books["b59"], books["b60"] = dict(row, annual_sharpe=-1.0), dict(row, annual_sharpe=-1.0)
+    assert sl.sweep_reading(books, null)["survive_benjamini_hochberg"] == []
+
+
 def test_the_sweep_command_takes_groups_or_the_null_and_loads_what_they_read(monkeypatch, capsys):
     asked = []
 
