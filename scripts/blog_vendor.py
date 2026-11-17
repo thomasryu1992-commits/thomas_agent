@@ -145,7 +145,7 @@ SCRIPT_SOURCES = {"affiliate_clips": "affiliate-clips.py", "affiliate_place": "b
 SCRIPT_KEEP = {
     "affiliate_clips": {"VAULT", "KW_DIR", "CLIP_DIR", "NAVER_SECTION", "MODEL", "WON", "FIELD_HINTS",
                         "front_matter", "note_targets", "products", "parse_clip"},
-    "affiliate_place": {"VAULT", "NAVER", "AFF", "ASSETS", "SLOT", "AI_TERM_RX", "V13_SCENE_RX", "V13_RUN_RX",
+    "affiliate_place": {"VAULT", "NAVER", "AFF", "ASSETS", "SLOT", "AI_TERM_RX", "V13_SCENE_RX", "V13_RUN_RX", "MODEL_FROM", "FIRSTHAND_RX",
                         "has_ai_story", "stock_key", "stock_files", "OK_CLUSTER", "OFF_STOCK", "NAVER_ME", "_norm",
                         "AFFILIATE_POLICY_VERSION", "HOLD_F", "editorial_holds", "context", "readiness"},
     "watch_rules": {"UTC", "KST", "ROUTINE_MAX_H", "ROUTINES", "DAILY_DEADLINE", "WEEKLY_DEADLINE", "RUN_HEADER",
