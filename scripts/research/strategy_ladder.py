@@ -559,11 +559,13 @@ def null_variables(count: int = SWEEP_NULLS) -> dict[str, tuple[str, lab.Variabl
 
 
 def sweep(market: xsb.Market, names: Mapping[str, tuple[str, lab.Variable]], span: tuple[date, date] = SPAN,
-          *, simulate: Callable[..., Any] | None = None, accounting: str = SWEEP_ACCOUNTING) -> dict[str, Any]:
+          *, simulate: Callable[..., Any] | None = None, accounting: str = SWEEP_ACCOUNTING,
+          legs: bool = False) -> dict[str, Any]:
     """Every variable in ``names`` built into the same book. The side it is long is the sign of its own mean rank
     correlation with the following week on the span — the same rule for a real variable and for a random one, so a
     random book gets the same benefit of picking its better-looking side. ``accounting`` holds the same book another
-    way (round 64: ``held``, decided every week); the default is the recorded sweep's."""
+    way (round 64: ``held``, decided every week); the default is the recorded sweep's. ``legs`` adds each book's
+    split into price, funding and cost (:func:`book_legs`, round 65); the other fields are what they always were."""
     simulate = simulate or ACCOUNTING[accounting]
     monthly = monthly_members(market, span)
     out: dict[str, Any] = {}
@@ -574,12 +576,21 @@ def sweep(market: xsb.Market, names: Mapping[str, tuple[str, lab.Variable]], spa
             continue
         mean = statistics.fmean(ics.values())
         way = 1 if mean > 0 else -1
-        report = measure(market, BOOKS[SWEEP_LOGIC](read, lambda _day, way=way: way), span, simulate=simulate)
+        seen: dict[str, Any] = {}
+
+        def kept(*a: Any, _simulate: Callable[..., Any] = simulate, _seen: dict[str, Any] = seen, **k: Any) -> Any:
+            _seen["sim"] = _simulate(*a, **k)
+            return _seen["sim"]
+
+        report = measure(market, BOOKS[SWEEP_LOGIC](read, lambda _day, way=way: way), span,
+                         simulate=kept if legs else simulate)
         out[name] = {"group": group, "long": "high" if way > 0 else "low", "mean_rank_correlation": round(mean, 4),
                      "decisions_ranked": len(ics), "annual_sharpe": report["annual_sharpe"],
                      "total_position_annual_pct": report["total_position_annual_pct"],
                      "clears_entry": report["clears_entry"], "negative_years": report["stability"]["negative_years"],
                      "funding_pct": report["funding_pct"]}
+        if legs:
+            out[name]["legs"] = book_legs(seen["sim"]["daily"], span)
     return out
 
 
@@ -4054,6 +4065,144 @@ def top_sens_reading(chunks: Sequence[Mapping[str, Any]], *, books: int = TOP_SE
             "bracket": sens_bracket(leads), "bracket_with_entry": sens_bracket(with_entry)}
 
 
+# --- round 65: what the two nulls' gap is made of --------------------------------------------------------------------
+# The top-30 sweep's null held four weeks (sweep3, mean 0.32) stands about 0.3 annual Sharpe above the same 600 books
+# held weekly (topsens64, mean 0.008). The split below is exact: a book's annual Sharpe is (price + funding - cost) / σ
+# x √12 on the complete months, so its three terms add up to it, and a gap between means splits with no order chosen.
+NULL_LEGS = ("price", "funding", "cost")
+NULL_LEGS_ACCOUNTINGS = ("held4", "held")             # the recorded sweep's, then round 64's
+NULL_LEGS_RECORDED = ("long", "mean_rank_correlation", "annual_sharpe", "total_position_annual_pct", "funding_pct")
+NULL_LEGS_SUM_TOL = 0.002        # the three terms against the book's annual Sharpe (printed to 3 places)
+NULL_LEGS_PCT_TOL = 0.01         # price + funding - cost against net, and net against the recorded yearly return
+NULL_LEGS_CARRIER = 0.5          # a leg carries a gap when it is at least half of it ...
+NULL_LEGS_AGAINST = 0.25         # ... and the legs pulling the other way are together at most a quarter of it
+NULL_LEGS_TAIL = 0.95            # each null's own books at or above its p95 (the sweep reading's p95)
+
+
+def book_legs(daily: Mapping[date, Mapping[str, float]], span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """One book's net split into price (``gross``), funding and cost on the same complete months its annual Sharpe
+    is read on (``measure``'s own ``funding_pct`` and ``cost_pct`` sum every simulated day; this does not). The three
+    Sharpe terms are each leg's monthly mean over the monthly σ of net, x √12, cost counted against: they add up to
+    the book's annual Sharpe. The yearly rates are on total position, as the entry rule reads them."""
+    months = bs._complete_months(*span)
+    sums = {leg: dict.fromkeys(months, 0.0) for leg in (*NULL_LEGS, "net")}
+    for day, row in daily.items():
+        key = day.strftime("%Y-%m")
+        if key in sums["net"]:
+            sums["price"][key] += row["gross"]
+            sums["funding"][key] += row["funding"]
+            sums["cost"][key] += row["cost"]
+            sums["net"][key] += row["net"]
+    n = len(months)
+    sigma = statistics.stdev(sums["net"].values()) if n >= 2 else 0.0
+    mean = {leg: statistics.fmean(v.values()) if n else 0.0 for leg, v in sums.items()}
+    sign = {"price": 1, "funding": 1, "cost": -1}
+    return {"months": n, "monthly_net_sigma": round(sigma, 8),
+            "sharpe_terms": None if sigma == 0 else {leg: round(sign[leg] * mean[leg] / sigma * math.sqrt(12), 6)
+                                                     for leg in NULL_LEGS},
+            "annual_pct": {leg: round(sum(sums[leg].values()) * 100 / bs.POSITION_TOTAL / (n / 12), 4) if n else None
+                           for leg in (*NULL_LEGS, "net")}}
+
+
+def _legs_carrier(parts: Mapping[str, float]) -> str:
+    """The leg that carries a gap made of ``parts`` (each leg's contribution, cost already counted against), or
+    ``mixed`` when none is half of it or the legs pulling the other way are more than a quarter of it."""
+    gap = sum(parts.values())
+    if gap == 0:
+        return "mixed"
+    shares = {k: v / gap for k, v in parts.items()}
+    against = -sum(s for s in shares.values() if s < 0)
+    best = max(shares, key=lambda k: shares[k])
+    return best if shares[best] >= NULL_LEGS_CARRIER and against <= NULL_LEGS_AGAINST else "mixed"
+
+
+def _legs_summary(books: Mapping[str, Mapping[str, Any]], names: Iterable[str]) -> dict[str, Any]:
+    rows = [books[n] for n in names]
+
+    def mean(read: Callable[[Mapping[str, Any]], float]) -> float:
+        return round(statistics.fmean(read(r) for r in rows), 4)
+
+    return {"books": len(rows), "mean_annual_sharpe": mean(lambda r: r["annual_sharpe"]),
+            "mean_sharpe_terms": {leg: mean(lambda r, leg=leg: r["legs"]["sharpe_terms"][leg]) for leg in NULL_LEGS},
+            "mean_annual_pct": {leg: mean(lambda r, leg=leg: r["legs"]["annual_pct"][leg]) for leg in (*NULL_LEGS, "net")},
+            "mean_monthly_net_sigma_pct": mean(lambda r: r["legs"]["monthly_net_sigma"] * 100)}
+
+
+def _legs_gap(four: Mapping[str, Any], weekly: Mapping[str, Any]) -> dict[str, Any]:
+    """Four-week minus weekly: the Sharpe gap by term, the yearly-return gap by leg (cost against), and the reading."""
+    sharpe = {leg: round(four["mean_sharpe_terms"][leg] - weekly["mean_sharpe_terms"][leg], 4) for leg in NULL_LEGS}
+    pct = {leg: round(four["mean_annual_pct"][leg] - weekly["mean_annual_pct"][leg], 4) for leg in ("price", "funding")}
+    pct["cost"] = round(weekly["mean_annual_pct"]["cost"] - four["mean_annual_pct"]["cost"], 4)
+    by_sharpe, by_pct = _legs_carrier(sharpe), _legs_carrier(pct)
+    if sum(sharpe.values()) * sum(pct.values()) <= 0:
+        carrier = "sigma"            # the yearly return and the Sharpe move apart: the gap is in σ, no leg's
+    elif "mixed" in (by_sharpe, by_pct):
+        carrier = "mixed"
+    else:
+        carrier = by_sharpe if by_sharpe == by_pct else "sigma"
+    return {"sharpe_gap": round(four["mean_annual_sharpe"] - weekly["mean_annual_sharpe"], 4), "sharpe_by_term": sharpe,
+            "annual_pct_gap": round(four["mean_annual_pct"]["net"] - weekly["mean_annual_pct"]["net"], 4),
+            "annual_pct_by_leg": pct, "carrier_by_sharpe": by_sharpe, "carrier_by_pct": by_pct, "carrier": carrier}
+
+
+def null_legs_reading(four: Mapping[str, Any], weekly: Mapping[str, Any], recorded_four: Mapping[str, Any],
+                      recorded_weekly: Mapping[str, Any]) -> dict[str, Any]:
+    """Round 65 (section 83). The doors first: the two new null files are the recorded ones built again, field for
+    field, book for book, and every book's legs add up. Only when every door passes does the reading carry a leg:
+    per half (redrawn weekly, fixed per coin) the means under each accounting and the gap's carrier, the pooled
+    figure beside them (not judged), and each null's own tail (its books at or above its p95, not paired)."""
+    files = {"four": four, "weekly": weekly, "recorded_four": recorded_four, "recorded_weekly": recorded_weekly}
+    want = {"four": "held4", "weekly": "held", "recorded_four": "held4", "recorded_weekly": "held"}
+    doors: dict[str, Any] = {}
+    doors["1_accounting_and_logic"] = all(f.get("accounting") == want[k] and f.get("logic") == SWEEP_LOGIC
+                                          for k, f in files.items())
+    names = sorted(four.get("books", {}))
+    doors["2_same_600_names"] = len(names) == SWEEP_NULLS and all(sorted(f.get("books", {})) == names for f in files.values())
+    if not (doors["1_accounting_and_logic"] and doors["2_same_600_names"]):
+        return {"doors": doors, "doors_pass": False}
+    differ = {pair: sorted(n for n in names for k in NULL_LEGS_RECORDED
+                           if files[pair]["books"][n].get(k) != files[f"recorded_{pair}"]["books"][n].get(k))
+              for pair in ("four", "weekly")}
+    doors["3_recorded_books_again"] = {pair: len(set(v)) for pair, v in differ.items()}
+    doors["4_same_side"] = sum(1 for n in names if four["books"][n]["long"] != weekly["books"][n]["long"])
+    bad, months = [], set()
+    for pair in ("four", "weekly"):
+        for n in names:
+            book = files[pair]["books"][n]
+            legs = book.get("legs") or {}
+            terms, pct = legs.get("sharpe_terms"), legs.get("annual_pct") or {}
+            months.add(legs.get("months"))
+            if (terms is None or book.get("annual_sharpe") is None or None in pct.values() or len(pct) != 4
+                    or abs(sum(terms.values()) - book["annual_sharpe"]) > NULL_LEGS_SUM_TOL
+                    or abs(pct["price"] + pct["funding"] - pct["cost"] - pct["net"]) > NULL_LEGS_PCT_TOL
+                    or abs(pct["net"] - book["total_position_annual_pct"]) > NULL_LEGS_PCT_TOL):
+                bad.append(f"{pair}:{n}")
+    doors["5_legs_add_up"] = {"books_failing": len(bad), "months": sorted(m for m in months if m is not None)}
+    passed = (not any(doors["3_recorded_books_again"].values()) and doors["4_same_side"] == 0 and not bad
+              and len(months) == 1 and None not in months)
+    if not passed:
+        return {"doors": doors, "doors_pass": False}
+    halves = {"week": [n for n in names if n.startswith("null_week_")], "fixed": [n for n in names if n.startswith("null_fixed_")]}
+    halves["all"] = names
+    out: dict[str, Any] = {}
+    for half, members in halves.items():
+        a, b = _legs_summary(four["books"], members), _legs_summary(weekly["books"], members)
+        out[half] = {"four": a, "weekly": b, "gap": _legs_gap(a, b)}
+    tails = {}
+    for pair in ("four", "weekly"):
+        sharpes = sorted(files[pair]["books"][n]["annual_sharpe"] for n in names)
+        line = sharpes[int(NULL_LEGS_TAIL * (len(sharpes) - 1))]
+        members = [n for n in names if files[pair]["books"][n]["annual_sharpe"] >= line]
+        tails[pair] = {"p95": line, "names_in_week_half": sum(1 for n in members if n.startswith("null_week_")),
+                       **_legs_summary(files[pair]["books"], members), "members": members}
+    tail_gap = _legs_gap(tails["four"], tails["weekly"])
+    return {"doors": doors, "doors_pass": True, "halves": out, "judged_on": ["week", "fixed"],
+            "tails": {"four": {k: v for k, v in tails["four"].items() if k != "members"},
+                      "weekly": {k: v for k, v in tails["weekly"].items() if k != "members"},
+                      "in_both": len(set(tails["four"]["members"]) & set(tails["weekly"]["members"])),
+                      "gap_not_paired": tail_gap}}
+
+
 def sens_run(market: xsb.Market, family: str, null: Mapping[str, Mapping[str, Any]], span: tuple[date, date] = SPAN,
              *, sizes: Sequence[float] = SENS_SIZES, seeds: int = SENS_SEEDS) -> dict[str, Any]:
     """Every size and seed through the sweep's book, each beside the stored null books: the shares of seeds that
@@ -5248,7 +5397,7 @@ def main(argv: list[str] | None = None) -> int:
                                             "basis-counts", "basis", "wide-counts", "wide", "mid-counts", "mid",
                                             "tier-gate", "tier-counts", "tier-sweep", "tier-lead", "door-size",
                                             "lower-gate", "lower-counts", "lower-map", "lower-sweep", "lower-overlap",
-                                            "lower-axes", "top-sens", "top-sens-reading",
+                                            "lower-axes", "top-sens", "top-sens-reading", "null-legs-reading",
                                             "ha1-gate", "ha1-counts", "ha1", "sens", "axis-power",
                                             "lower-positioning-plan", "lower-positioning-digest",
                                             "lower-positioning-build", "lower-positioning-seal",
@@ -5265,6 +5414,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check", type=Path, default=None, help="lower-family: the recorded family reading the recorded books "
                         "must give; lower-axes: that group's recorded map on this tier")
     parser.add_argument("--seeds", default=None, help="top-sens: the seeds of this chunk, A:B")
+    parser.add_argument("--legs", action="store_true",
+                        help="sweep --only null: each book's price, funding and cost split (round 65; null books only)")
     parser.add_argument("--accounting", choices=("held4", "held"), default=SWEEP_ACCOUNTING,
                         help="sweep --only null, top-sens: how the top-30 book is held (round 64: held, weekly)")
     parser.add_argument("--shape", choices=BAR_SHAPES, default=None, help="bar: the book shape whose null books are read")
@@ -5462,6 +5613,16 @@ def main(argv: list[str] | None = None) -> int:
                           "tier": LOWER_NAME, "variable": HA1_VARIABLE, "long": "high", "hold_weeks": HA1_EVERY,
                           "command": args.command, **body}, indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or (args.command == "ha1-counts" and body["stop"]) else EXIT_OK
+    if args.command == "null-legs-reading":
+        paths = (args.records or "").split(",")
+        if len(paths) != 4 or "" in paths:
+            print("refused: null-legs-reading needs --records NEW_HELD4,NEW_HELD,RECORDED_HELD4,RECORDED_HELD",
+                  file=sys.stderr)
+            return EXIT_USAGE
+        body = null_legs_reading(*(json.loads(Path(p).read_text(encoding="utf-8")) for p in paths))
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), "spec": SPEC, "command": args.command,
+                          "records": paths, **body}, indent=1, sort_keys=True))
+        return EXIT_OK if body["doors_pass"] else EXIT_BLOCKED
     if args.command == "top-sens-reading":
         if not args.records:
             print("refused: top-sens-reading needs --records, the chunk files", file=sys.stderr)
@@ -5783,6 +5944,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.accounting != SWEEP_ACCOUNTING and (args.command != "sweep" or wanted != {"null"}):
             print("refused: another accounting builds the null books only (round 64)", file=sys.stderr)
             return EXIT_USAGE
+        if args.legs and (args.command != "sweep" or wanted != {"null"}):
+            print("refused: --legs splits the null books only (round 65); no real variable is read", file=sys.stderr)
+            return EXIT_USAGE
         if args.command == "sweep" and args.names is not None:
             try:
                 names = pick_names(names, args.names)
@@ -5797,7 +5961,7 @@ def main(argv: list[str] | None = None) -> int:
         if market is None:
             print("BLOCKED: contract types, the spot symbol list or the attached values are missing from the cache", file=sys.stderr)
             return EXIT_BLOCKED
-        body = ({"books": sweep(market, names, accounting=args.accounting)} if args.command == "sweep" else
+        body = ({"books": sweep(market, names, accounting=args.accounting, legs=args.legs)} if args.command == "sweep" else
                 {"splits": [[[d.isoformat() for d in span] for span in pair] for pair in TRANSFER_SPLITS],
                  "books": transfer(market, names)})
         print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,

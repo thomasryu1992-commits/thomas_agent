@@ -564,6 +564,116 @@ def test_the_top_sens_commands_refuse_what_they_cannot_read(monkeypatch, capsys,
     assert "not the top-30 sweep's 600 null books" in err and "--seeds is A:B" in err and "null books only" in err
 
 
+def test_a_books_legs_add_up_to_its_annual_sharpe_on_the_complete_months_only():
+    span = (date(2020, 1, 1), date(2020, 6, 15))           # June is not complete: its days must not count
+    rng = random_module.Random(7)
+    daily = {}
+    day = span[0]
+    while day <= span[1]:
+        gross, funding, cost = rng.gauss(0.001, 0.01), rng.uniform(0, 0.0004), rng.uniform(0, 0.0006)
+        daily[day] = {"gross": gross, "funding": funding, "cost": cost, "net": gross - cost + funding}
+        day += timedelta(days=1)
+    daily[date(2020, 6, 10)]["gross"] += 5.0                 # would swamp every leg if June were read
+    daily[date(2020, 6, 10)]["net"] += 5.0
+    legs = sl.book_legs(daily, span)
+    sharpe, values = sl.bs.annual_sharpe(daily, *span)
+    assert legs["months"] == 5 == len(values)
+    assert abs(sum(legs["sharpe_terms"].values()) - sharpe) < sl.NULL_LEGS_SUM_TOL
+    assert legs["sharpe_terms"]["cost"] < 0 < legs["sharpe_terms"]["funding"], "cost counts against"
+    pct = legs["annual_pct"]
+    assert abs(pct["price"] + pct["funding"] - pct["cost"] - pct["net"]) < 1e-3
+    assert abs(pct["net"] - sl.bs.total_position_annual_pct(round(sum(values) * 100, 2), 5)) < sl.NULL_LEGS_PCT_TOL
+    assert pct["price"] < 100, "the incomplete month's jump is not in the price leg"
+
+
+def test_the_sweep_adds_legs_only_when_asked_and_its_rows_are_otherwise_unchanged(monkeypatch):
+    monkeypatch.setattr(sl, "monthly_members", lambda market, span=None: {})
+    monkeypatch.setattr(sl, "decision_ics", lambda market, read, monthly, span: read(None, None, None))
+    monkeypatch.setitem(sl.BOOKS, sl.SWEEP_LOGIC, lambda read, direction: (lambda *a, **k: {}))
+    row = {"gross": 0.01, "funding": 0.001, "cost": 0.002, "net": 0.009}
+    span = (date(2020, 1, 1), date(2020, 3, 31))
+    daily = {date(2020, 1, 1) + timedelta(days=k): dict(row, gross=0.01 * (k % 5 - 2), net=0.01 * (k % 5 - 2) - 0.001)
+             for k in range(91)}
+
+    def measure(market, weigher, span, *, simulate):
+        simulate(market, "w", {}, start=span[0], end=span[1], weigher=weigher)
+        return {"annual_sharpe": 0.5, "total_position_annual_pct": 5.0, "clears_entry": False, "funding_pct": 0.0,
+                "stability": {"negative_years": 1}}
+
+    monkeypatch.setattr(sl, "measure", measure)
+    days = [date(2020, 1, 5) + timedelta(days=7 * k) for k in range(40)]
+    names = {"up": ("g", lambda m, s, d: {x: 0.1 for x in days})}
+    plain = sl.sweep(xsb.Market(), names, span, simulate=lambda *a, **k: {"daily": daily})
+    split = sl.sweep(xsb.Market(), names, span, simulate=lambda *a, **k: {"daily": daily}, legs=True)
+    assert set(plain["up"]) == {"group", "long", "mean_rank_correlation", "decisions_ranked", "annual_sharpe",
+                                "total_position_annual_pct", "clears_entry", "negative_years", "funding_pct"}
+    assert {k: v for k, v in split["up"].items() if k != "legs"} == plain["up"]
+    assert split["up"]["legs"] == sl.book_legs(daily, span) and "daily" not in split["up"]["legs"]
+
+
+def _legs_file(accounting, *, legs, price=0.0, cost=0.0, tweak=None):
+    books = {}
+    for name in sl.null_variables():
+        week = name.startswith("null_week_")
+        k = int(name[-3:])
+        p, f, c = price + 0.01 * (k % 7), 0.5, cost * (2 if week else 1)
+        terms = {"price": round(p, 6), "funding": round(f / 10, 6), "cost": round(-c / 10, 6)}
+        sharpe = round(sum(terms.values()), 3)
+        pct = {"price": p * 10, "funding": f, "cost": c, "net": round(p * 10 + f - c, 4)}
+        book = {"long": "high" if k % 2 else "low", "mean_rank_correlation": 0.001 * k, "annual_sharpe": sharpe,
+                "total_position_annual_pct": round(pct["net"], 2), "funding_pct": 1.0}
+        if legs:
+            book["legs"] = {"months": 60, "monthly_net_sigma": 0.02, "sharpe_terms": terms, "annual_pct": pct}
+        books[name] = book
+    if tweak:
+        tweak(books)
+    return {"accounting": accounting, "logic": sl.SWEEP_LOGIC, "books": books}
+
+
+def test_the_null_legs_reading_carries_a_leg_only_after_every_door_and_names_the_carrier_per_half():
+    four, weekly = _legs_file("held4", legs=True, cost=1.0), _legs_file("held", legs=True, cost=3.0)
+    rec4, rec1 = _legs_file("held4", legs=False, cost=1.0), _legs_file("held", legs=False, cost=3.0)
+    out = sl.null_legs_reading(four, weekly, rec4, rec1)
+    assert out["doors_pass"] and out["judged_on"] == ["week", "fixed"]
+    for half in ("week", "fixed"):
+        gap = out["halves"][half]["gap"]
+        assert gap["carrier"] == "cost" and gap["sharpe_by_term"]["price"] == 0 and gap["annual_pct_by_leg"]["cost"] > 0
+    assert out["halves"]["week"]["gap"]["sharpe_gap"] > out["halves"]["fixed"]["gap"]["sharpe_gap"]
+    assert "members" not in out["tails"]["four"] and out["tails"]["in_both"] >= 0
+    moved = _legs_file("held4", legs=False, cost=1.0,
+                       tweak=lambda b: b["null_fixed_007"].update(annual_sharpe=b["null_fixed_007"]["annual_sharpe"] + 0.001))
+    stopped = sl.null_legs_reading(four, weekly, moved, rec1)
+    assert not stopped["doors_pass"] and stopped["doors"]["3_recorded_books_again"] == {"four": 1, "weekly": 0}
+    assert set(stopped) == {"doors", "doors_pass"}, "no leg is read when a recorded book does not build again"
+    flipped = _legs_file("held", legs=True, cost=3.0, tweak=lambda b: b["null_week_001"].update(long="low"))
+    assert sl.null_legs_reading(four, flipped, rec4, _legs_file("held", legs=False, cost=3.0, tweak=lambda b:
+                                b["null_week_001"].update(long="low")))["doors"]["4_same_side"] == 1
+    assert not sl.null_legs_reading(four, weekly, rec4, rec4)["doors_pass"], "the recorded weekly file is held"
+    assert not sl.null_legs_reading(four, rec1, rec4, rec1)["doors_pass"], "a file without legs does not pass"
+
+
+def test_a_gap_has_a_carrier_only_when_one_leg_is_half_of_it_and_little_pulls_the_other_way():
+    assert sl._legs_carrier({"price": 0.1, "funding": 0.1, "cost": 0.4}) == "cost"
+    assert sl._legs_carrier({"price": 0.2, "funding": 0.2, "cost": 0.2}) == "mixed", "no leg is half"
+    assert sl._legs_carrier({"price": -0.3, "funding": 0.2, "cost": 0.6}) == "mixed", "0.3 of 0.5 pulls the other way"
+    assert sl._legs_carrier({"price": 0.0, "funding": 0.0, "cost": 0.0}) == "mixed"
+    a = {"mean_annual_sharpe": 0.3, "mean_sharpe_terms": {"price": 0.3, "funding": 0.1, "cost": -0.1},
+         "mean_annual_pct": {"price": 1.0, "funding": 1.0, "cost": 2.0, "net": 0.0}}
+    b = {"mean_annual_sharpe": 0.0, "mean_sharpe_terms": {"price": 0.0, "funding": 0.1, "cost": -0.1},
+         "mean_annual_pct": {"price": 1.0, "funding": 1.0, "cost": 1.0, "net": 1.0}}
+    assert sl._legs_gap(a, b)["carrier"] == "sigma", "the Sharpe rose while the yearly return fell"
+
+
+def test_legs_are_refused_for_real_variables_and_the_reading_needs_four_files(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setenv("RESEARCH_CACHE", str(tmp_path))
+    assert sl.main(["sweep", "--only", "price_volume", "--legs"]) == sl.EXIT_USAGE
+    assert sl.main(["transfer", "--only", "null", "--legs"]) == sl.EXIT_USAGE
+    assert sl.main(["null-legs-reading", "--records", "a.json,b.json"]) == sl.EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "null books only (round 65)" in err and "needs --records" in err
+
+
 def test_a_swept_book_is_long_the_side_its_own_rank_correlation_points_to(monkeypatch):
     asked = {}
     monkeypatch.setattr(sl, "monthly_members", lambda market, span=None: {})
