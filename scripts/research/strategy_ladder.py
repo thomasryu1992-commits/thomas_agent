@@ -4484,13 +4484,16 @@ def lower_axes(market: xsb.Market, names: Mapping[str, tuple[str, lab.Variable]]
     coverage = lower_coverage(market, names, span,
                               tier=TierSweep(market, span, members=members[LOWER_NAME], name=LOWER_NAME))
     kept = {n: v for n, v in names.items() if not coverage[n]["stop"]}
-    mapped = sorted({c["variable"] for c in recorded.get("cells", ())})
+    # Round 59 (section 77): ``names`` may be some of the group's variables (``--names``); the door is then the map's
+    # cells of those variables, and a named variable the map did not read refuses.
+    cells = [c for c in recorded.get("cells", ()) if c["variable"] in names]
+    mapped = sorted({c["variable"] for c in cells})
     if recorded.get("tier") != LOWER_NAME or not kept or sorted(kept) != mapped:
         return {"refused": "the variables read here are not the recorded map's", "read": sorted(kept), "mapped": mapped}
     days, series = lab.ic_series(market, kept, span, members=members)
     labels = lab.scenario_labels(market, lab.tier_members(market, span)["top30"], days, span)
     rebuilt = lab.weekly_cells(days, series, labels)
-    differ = lab.weekly_cells_differ(rebuilt, recorded["cells"])
+    differ = lab.weekly_cells_differ(rebuilt, cells)
     if differ:
         return {"refused": "the weekly series do not give the recorded map's one-week cells", "differ": differ[:20],
                 "cells_differ": len(differ)}
@@ -5137,7 +5140,8 @@ def main(argv: list[str] | None = None) -> int:
                         "must give; lower-axes: that group's recorded map on this tier")
     parser.add_argument("--shape", choices=BAR_SHAPES, default=None, help="bar: the book shape whose null books are read")
     parser.add_argument("--names", default=None,
-                        help="sweep, tier-sweep, lower-sweep: only these books of the --only groups (comma list)")
+                        help="sweep, tier-sweep, lower-sweep: only these books of the --only groups (comma list); "
+                             "lower-axes: only these variables")
     parser.add_argument("--only", default=None,
                         help="sweep, transfer: variable groups (comma list), or `null` for the random books")
     parser.add_argument("--cache", type=Path, default=None, help="default: $RESEARCH_CACHE")
@@ -5381,7 +5385,7 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_USAGE
         if args.command in ("lower-map", "lower-axes"):    # a group's struck variables are read too; no lead is taken from them
             names = {n: v for n, v in lab.variables().items() if v[0] in wanted}
-        if args.command == "lower-sweep" and args.names is not None:
+        if args.command in ("lower-sweep", "lower-axes") and args.names is not None:
             try:
                 names = pick_names(names, args.names)
             except ValueError as exc:

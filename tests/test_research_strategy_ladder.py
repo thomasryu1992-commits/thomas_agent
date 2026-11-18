@@ -2936,6 +2936,15 @@ def test_the_lower_axis_check_counts_only_once_the_weekly_series_give_the_record
     assert sl.lower_axes(market, {}, {"tier": sl.LOWER_NAME, "cells": []}, MID_TEST_SPAN)["refused"].startswith("the variables"), \
         "nothing read is no door"
     assert "refused" in sl.lower_axes(market, names, {**recorded, "tier": "rank31_100"}, MID_TEST_SPAN)
+    # Round 59 (section 77): some of the group's variables, door on their own cells; the rest of the record is not read.
+    two = {n: names[n] for n in ("momentum_7", "vol_30")}
+    part = sl.lower_axes(market, two, recorded, MID_TEST_SPAN)
+    assert "refused" not in part and part["door"]["one_week_cells_equal"] == 8
+    assert part["counts"] == [row for row in out["counts"] if row[0] in two], "a test's counts do not depend on the others run"
+    other = {n: v for n, v in recorded.items()} | {"cells": [c for c in recorded["cells"] if c["variable"] != "vol_30"]}
+    assert sl.lower_axes(market, two, other, MID_TEST_SPAN)["refused"].startswith("the variables"), "a name the map lacks"
+    shifted = [{**c, "decisions": c["decisions"] + 1} if c["variable"] == "momentum_30" else c for c in recorded["cells"]]
+    assert "refused" not in sl.lower_axes(market, two, {**recorded, "cells": shifted}, MID_TEST_SPAN), "an unnamed variable's cells are not its door"
 
 
 def test_the_lower_axis_command_needs_the_groups_recorded_map(monkeypatch, capsys, tmp_path):
@@ -2947,6 +2956,10 @@ def test_the_lower_axis_command_needs_the_groups_recorded_map(monkeypatch, capsy
     assert sl.main(["lower-axes", "--only", "funding", "--check", str(other)]) == sl.EXIT_USAGE
     err = capsys.readouterr().err
     assert "needs --check" in err and "not this group's lower-map file" in err
+    flow = tmp_path / "flow.json"
+    flow.write_text(json.dumps({"command": "lower-map", "only": ["spot_flow"]}), encoding="utf-8")
+    assert sl.main(["lower-axes", "--only", "spot_flow", "--check", str(flow), "--names", "spot_taker_share_7,not_a_variable"]) == sl.EXIT_USAGE
+    assert "--names must list" in capsys.readouterr().err, "round 59: the names reach pick_names before anything loads"
 
 
 def test_the_lower_commands_refuse_struck_groups(monkeypatch, capsys, tmp_path):
