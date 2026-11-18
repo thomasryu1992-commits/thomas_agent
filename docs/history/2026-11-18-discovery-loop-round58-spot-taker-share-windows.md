@@ -21,3 +21,10 @@
 - *The refactor's door is the record.* The 30-day reading now goes through a window parameter; the maps reprint the
   recorded four spot-flow variables' cells, which must equal round 51's files, and the three earlier control lines
   must equal theirs, before any new cell is read.
+
+**Result (03:48Z, §76.6).** All three windows cleared coverage on both tiers (0.837 – 0.840 and 0.956). Both map doors
+held (480 recorded cells, three earlier lines). No new cell met either map rule; on the upper tiers 27 of 72 28-day
+cells show |t| > 2, all positive and on the side each variable's all-weeks cell leans, none at the line. No new book
+survives: 31 – 100's family of 43 keeps its two recorded survivors (smallest new p 0.082, the 90-day), 101+'s family of
+41 has none. The three windows are closed. Next: the lower tier's axis check gains them (needs `--names` in
+`lower-axes`).
