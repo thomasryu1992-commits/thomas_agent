@@ -480,7 +480,7 @@ def test_the_top_sens_run_counts_nothing_unless_the_stored_null_books_build_agai
               for kind in ("week", "fixed") for k in range(300)}
     built = []
 
-    def fake_sweep(market, names, span=sl.SPAN, *, simulate=None):
+    def fake_sweep(market, names, span=sl.SPAN, *, simulate=None, accounting=sl.SWEEP_ACCOUNTING):
         out = {}
         for name, (_, read) in names.items():
             if name == "plant":
@@ -532,6 +532,20 @@ def test_the_top_sens_reading_counts_leads_by_the_first_threshold_and_checks_its
         sl.top_sens_reading([chunks[0], chunks[0]])
 
 
+def test_the_false_alarm_range_comes_from_the_nulls_fixed_half_and_chunks_keep_one_accounting():
+    null = {f"null_week_{k:03d}": {"annual_sharpe": 0.0} for k in range(300)}
+    null.update({f"null_fixed_{k:03d}": {"annual_sharpe": 2.0 + k / 100 if k < 25 else 0.0} for k in range(300)})
+    assert sl.top_sens_false_alarm_range(null) == (3, 14) == sl.TOP_SENS_FALSE_ALARM, "25 of 300: round 63's range"
+    none = {n: {"annual_sharpe": 0.0} for n in null}
+    assert sl.top_sens_false_alarm_range(none) == (0, 0), "no fixed book under 0.05: no false alarm is expected"
+    rows = [{"seed": seed, "size": size, "long": "high", "mean_rank_correlation": size, "annual_sharpe": 0.2,
+             "clears_entry": False, "p": 0.04 if size == 0.0 and seed < 5 else 0.5} for seed in range(100) for size in sl.SENS_SIZES]
+    out = sl.top_sens_reading([{"rows": rows, "accounting": "held"}], alarms_range=(4, 9))
+    assert out["accounting"] == "held" and out["false_alarms_range"] == [4, 9] and out["false_alarms_within"]
+    with pytest.raises(ValueError, match="accountings"):
+        sl.top_sens_reading([{"rows": rows[:550], "accounting": "held"}, {"rows": rows[550:], "accounting": "held4"}])
+
+
 def test_the_top_sens_commands_refuse_what_they_cannot_read(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
     monkeypatch.setenv("RESEARCH_CACHE", str(tmp_path))
@@ -539,11 +553,15 @@ def test_the_top_sens_commands_refuse_what_they_cannot_read(monkeypatch, capsys,
     other = tmp_path / "null.json"
     other.write_text(json.dumps({"logic": "L22", "books": {}}), encoding="utf-8")
     assert sl.main(["top-sens", "--null", str(other), "--seeds", "0:10"]) == sl.EXIT_USAGE
-    other.write_text(json.dumps({"logic": "L9T", "books": {f"n{k}": {} for k in range(600)}}), encoding="utf-8")
+    other.write_text(json.dumps({"logic": "L9T", "accounting": "held4", "books": {f"n{k}": {} for k in range(600)}}),
+                     encoding="utf-8")
     assert sl.main(["top-sens", "--null", str(other), "--seeds", "90:101"]) == sl.EXIT_USAGE
     assert sl.main(["top-sens-reading"]) == sl.EXIT_USAGE
+    assert sl.main(["top-sens", "--null", str(other), "--seeds", "0:10", "--accounting", "held"]) == sl.EXIT_USAGE, \
+        "a held4 null file is not the weekly book's null"
+    assert sl.main(["sweep", "--only", "price_volume", "--accounting", "held"]) == sl.EXIT_USAGE, "round 64 builds nulls only"
     err = capsys.readouterr().err
-    assert "not the top-30 sweep's 600 null books" in err and "--seeds is A:B" in err
+    assert "not the top-30 sweep's 600 null books" in err and "--seeds is A:B" in err and "null books only" in err
 
 
 def test_a_swept_book_is_long_the_side_its_own_rank_correlation_points_to(monkeypatch):
@@ -564,6 +582,13 @@ def test_a_swept_book_is_long_the_side_its_own_rank_correlation_points_to(monkey
     out = sl.sweep(xsb.Market(), names)
     assert seen == [1, -1] and out["up"]["long"] == "high" and out["down"]["long"] == "low"
     assert out["thin"] == {"group": "g", "skipped": "ranked at too few decisions"}
+    # Round 64: the same book held another way is the accounting's simulation; the default is the recorded sweep's.
+    held = []
+    monkeypatch.setattr(sl, "measure", lambda market, weigher, span, *, simulate: held.append(simulate) or measure(
+        market, weigher, span, simulate=simulate))
+    sl.sweep(xsb.Market(), {"up": names["up"]})
+    sl.sweep(xsb.Market(), {"up": names["up"]}, accounting="held")
+    assert held == [sl.ACCOUNTING[sl.SWEEP_ACCOUNTING], sl.ACCOUNTING["held"]] and sl.SWEEP_ACCOUNTING == "held4"
 
 
 def test_the_sweep_reads_each_book_beside_the_null_books_and_corrects_for_how_many_there_are():

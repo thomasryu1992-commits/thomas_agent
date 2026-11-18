@@ -559,11 +559,12 @@ def null_variables(count: int = SWEEP_NULLS) -> dict[str, tuple[str, lab.Variabl
 
 
 def sweep(market: xsb.Market, names: Mapping[str, tuple[str, lab.Variable]], span: tuple[date, date] = SPAN,
-          *, simulate: Callable[..., Any] | None = None) -> dict[str, Any]:
+          *, simulate: Callable[..., Any] | None = None, accounting: str = SWEEP_ACCOUNTING) -> dict[str, Any]:
     """Every variable in ``names`` built into the same book. The side it is long is the sign of its own mean rank
     correlation with the following week on the span — the same rule for a real variable and for a random one, so a
-    random book gets the same benefit of picking its better-looking side."""
-    simulate = simulate or ACCOUNTING[SWEEP_ACCOUNTING]
+    random book gets the same benefit of picking its better-looking side. ``accounting`` holds the same book another
+    way (round 64: ``held``, decided every week); the default is the recorded sweep's."""
+    simulate = simulate or ACCOUNTING[accounting]
     monthly = monthly_members(market, span)
     out: dict[str, Any] = {}
     for name, (group, read) in names.items():
@@ -3963,21 +3964,21 @@ def top_planted(market: xsb.Market, monthly: Mapping[date, Sequence[str]], rho: 
 
 
 def top_sens_null_check(market: xsb.Market, null: Mapping[str, Mapping[str, Any]], span: tuple[date, date] = SPAN,
-                        *, books: int = SENS_NULL_CHECK) -> list[str]:
+                        *, books: int = SENS_NULL_CHECK, accounting: str = SWEEP_ACCOUNTING) -> list[str]:
     """The first stored null books of each kind built again here; the names whose rows differ (empty: the file holds)."""
     nulls = null_variables()
     names = [f"null_week_{k:03d}" for k in range(books)] + [f"null_fixed_{k:03d}" for k in range(books)]
-    again = sweep(market, {n: nulls[n] for n in names}, span)
+    again = sweep(market, {n: nulls[n] for n in names}, span, accounting=accounting)
     return [n for n in names if any(again[n].get(f) != null.get(n, {}).get(f) for f in TOP_SENS_NULL_FIELDS)]
 
 
 def top_sens_run(market: xsb.Market, null: Mapping[str, Mapping[str, Any]], seeds: range, span: tuple[date, date] = SPAN,
-                 *, sizes: Sequence[float] = SENS_SIZES) -> dict[str, Any]:
+                 *, sizes: Sequence[float] = SENS_SIZES, accounting: str = SWEEP_ACCOUNTING) -> dict[str, Any]:
     """Seeds ``seeds`` at every size through the top-30 sweep's own book, each beside the stored null books. Nothing
     is counted unless the first stored null books are built again unchanged."""
     if seeds.start < 0 or seeds.stop > SENS_SEEDS:
         raise ValueError(f"seeds run 0 .. {SENS_SEEDS - 1}")
-    differ = top_sens_null_check(market, null, span)
+    differ = top_sens_null_check(market, null, span, accounting=accounting)
     if differ:
         return {"refused": f"stored null books differ when built again: {differ}"}
     monthly = monthly_members(market, span)
@@ -3985,22 +3986,43 @@ def top_sens_run(market: xsb.Market, null: Mapping[str, Mapping[str, Any]], seed
     rows = []
     for seed in seeds:
         for size in sizes:
-            book = sweep(market, {"plant": ("plant", top_planted(market, monthly, size, seed))}, span)["plant"]
+            book = sweep(market, {"plant": ("plant", top_planted(market, monthly, size, seed))}, span,
+                         accounting=accounting)["plant"]
             sharpe = book.get("annual_sharpe")
             p = None if sharpe is None else (1 + sum(1 for v in nulls if v >= sharpe)) / (1 + len(nulls))
             rows.append({"seed": seed, "size": size, **{k: book.get(k) for k in ("long", "mean_rank_correlation",
                          "annual_sharpe", "total_position_annual_pct", "clears_entry", "negative_years", "skipped")}, "p": p})
-    return {"seeds": [seeds.start, seeds.stop], "null_books": len(nulls), "null_checked": 2 * SENS_NULL_CHECK, "rows": rows}
+    return {"seeds": [seeds.start, seeds.stop], "null_books": len(nulls), "null_checked": 2 * SENS_NULL_CHECK,
+            "accounting": accounting, "rows": rows}
+
+
+TOP_SENS_TAIL = 0.02                       # each side's binomial tail outside the false-alarm range (round 64)
+
+
+def top_sens_false_alarm_range(null: Mapping[str, Mapping[str, Any]], *, seeds: int = SENS_SEEDS,
+                               tail: float = TOP_SENS_TAIL) -> tuple[int, int]:
+    """Round 64 (section 82): the size-0 range from the null file itself. At size 0 the planted variable is of the
+    null's fixed-per-coin class, so the rate is the share of the fixed books whose p against the whole null is under
+    0.05; the range keeps each binomial tail at or under ``tail``. On round 63's null it is round 63's 3 .. 14."""
+    pooled = sorted(b["annual_sharpe"] for b in null.values() if b.get("annual_sharpe") is not None)
+    fixed = [b["annual_sharpe"] for n, b in null.items() if n.startswith("null_fixed_") and b.get("annual_sharpe") is not None]
+    rate = sum(1 for v in fixed if (1 + sum(1 for w in pooled if w >= v)) / (1 + len(pooled)) < 0.05) / len(fixed)
+    mass = [math.comb(seeds, k) * rate ** k * (1 - rate) ** (seeds - k) for k in range(seeds + 1)]
+    low = max(k for k in range(seeds + 1) if sum(mass[:k]) <= tail)
+    high = min(k for k in range(seeds + 1) if sum(mass[k + 1:]) <= tail)
+    return low, high
 
 
 def top_sens_reading(chunks: Sequence[Mapping[str, Any]], *, books: int = TOP_SENS_BOOKS, q: float = SENS_Q,
-                     sizes: Sequence[float] = SENS_SIZES) -> dict[str, Any]:
+                     sizes: Sequence[float] = SENS_SIZES, alarms_range: tuple[int, int] = TOP_SENS_FALSE_ALARM) -> dict[str, Any]:
     """The chunks together (every seed once, every size): per size the seeds that are leads by the top tier's own rule
     (p at or under q / books, Benjamini-Hochberg's first threshold, section 44), the leads that also clear the entry
     rule (section 60's form), those that clear the entry rule, and those under 0.05; the false alarms at size 0; whether
     the plant took (the median rank correlation near each size, the high side from :data:`TOP_SENS_SIDE_FROM`); and
     the bracket around :data:`SENS_SHARE` for both lead counts."""
     rows = [r for c in chunks for r in c["rows"]]
+    if len({c.get("accounting", SWEEP_ACCOUNTING) for c in chunks}) != 1:
+        raise ValueError("the chunks were held under different accountings")
     seeds = sorted({r["seed"] for r in rows})
     if seeds != list(range(SENS_SEEDS)) or len(rows) != SENS_SEEDS * len(sizes):
         raise ValueError(f"the chunks must hold seeds 0 .. {SENS_SEEDS - 1} once each at every size")
@@ -4024,9 +4046,10 @@ def top_sens_reading(chunks: Sequence[Mapping[str, Any]], *, books: int = TOP_SE
                             "median_sharpe": sharpes[len(sharpes) // 2] if sharpes else None,
                             "median_rank_correlation": round(median_ic, 4), "long_high": high}
     alarms = out[f"{0.0:g}"]["p_under_0.05"]
-    within = TOP_SENS_FALSE_ALARM[0] <= alarms <= TOP_SENS_FALSE_ALARM[1]
+    within = alarms_range[0] <= alarms <= alarms_range[1]
     return {"books": books, "first_threshold": q / books, "seeds": SENS_SEEDS, "sizes": out,
-            "false_alarms": alarms, "false_alarms_range": list(TOP_SENS_FALSE_ALARM), "false_alarms_within": within,
+            "accounting": chunks[0].get("accounting", SWEEP_ACCOUNTING),
+            "false_alarms": alarms, "false_alarms_range": list(alarms_range), "false_alarms_within": within,
             "plant_took": took, "doors_pass": within and took,
             "bracket": sens_bracket(leads), "bracket_with_entry": sens_bracket(with_entry)}
 
@@ -5242,6 +5265,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check", type=Path, default=None, help="lower-family: the recorded family reading the recorded books "
                         "must give; lower-axes: that group's recorded map on this tier")
     parser.add_argument("--seeds", default=None, help="top-sens: the seeds of this chunk, A:B")
+    parser.add_argument("--accounting", choices=("held4", "held"), default=SWEEP_ACCOUNTING,
+                        help="sweep --only null, top-sens: how the top-30 book is held (round 64: held, weekly)")
     parser.add_argument("--shape", choices=BAR_SHAPES, default=None, help="bar: the book shape whose null books are read")
     parser.add_argument("--names", default=None,
                         help="sweep, tier-sweep, lower-sweep: only these books of the --only groups (comma list); "
@@ -5442,7 +5467,10 @@ def main(argv: list[str] | None = None) -> int:
             print("refused: top-sens-reading needs --records, the chunk files", file=sys.stderr)
             return EXIT_USAGE
         try:
-            body = top_sens_reading([json.loads(Path(f).read_text(encoding="utf-8")) for f in args.records.split(",")])
+            alarms_range = (top_sens_false_alarm_range(json.loads(args.null.read_text(encoding="utf-8"))["books"])
+                            if args.null is not None else TOP_SENS_FALSE_ALARM)
+            body = top_sens_reading([json.loads(Path(f).read_text(encoding="utf-8")) for f in args.records.split(",")],
+                                    alarms_range=alarms_range)
         except ValueError as exc:
             print(f"refused: {exc}", file=sys.stderr)
             return EXIT_USAGE
@@ -5454,8 +5482,9 @@ def main(argv: list[str] | None = None) -> int:
             print("refused: top-sens needs --null (the top-30 sweep's null file) and --seeds A:B", file=sys.stderr)
             return EXIT_USAGE
         stored = json.loads(args.null.read_text(encoding="utf-8"))
-        if stored.get("logic") != SWEEP_LOGIC or len(stored.get("books", {})) != SWEEP_NULLS:
-            print("refused: --null is not the top-30 sweep's 600 null books", file=sys.stderr)
+        if (stored.get("logic") != SWEEP_LOGIC or len(stored.get("books", {})) != SWEEP_NULLS
+                or stored.get("accounting") != args.accounting):
+            print("refused: --null is not the top-30 sweep's 600 null books under --accounting", file=sys.stderr)
             return EXIT_USAGE
         try:
             first, last = (int(x) for x in args.seeds.split(":"))
@@ -5472,7 +5501,7 @@ def main(argv: list[str] | None = None) -> int:
         if lab.last_day(market) > SPAN[1]:
             print("refused: the market reaches past the search span", file=sys.stderr)
             return EXIT_USAGE
-        body = top_sens_run(market, stored["books"], seeds)
+        body = top_sens_run(market, stored["books"], seeds, accounting=args.accounting)
         print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
                           "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
                           "command": args.command, "logic": SWEEP_LOGIC, "planted": "reads the next week by construction",
@@ -5751,6 +5780,9 @@ def main(argv: list[str] | None = None) -> int:
         if not names:
             print("refused: --only names no registered variable group (or `null`)", file=sys.stderr)
             return EXIT_USAGE
+        if args.accounting != SWEEP_ACCOUNTING and (args.command != "sweep" or wanted != {"null"}):
+            print("refused: another accounting builds the null books only (round 64)", file=sys.stderr)
+            return EXIT_USAGE
         if args.command == "sweep" and args.names is not None:
             try:
                 names = pick_names(names, args.names)
@@ -5765,12 +5797,12 @@ def main(argv: list[str] | None = None) -> int:
         if market is None:
             print("BLOCKED: contract types, the spot symbol list or the attached values are missing from the cache", file=sys.stderr)
             return EXIT_BLOCKED
-        body = ({"books": sweep(market, names)} if args.command == "sweep" else
+        body = ({"books": sweep(market, names, accounting=args.accounting)} if args.command == "sweep" else
                 {"splits": [[[d.isoformat() for d in span] for span in pair] for pair in TRANSFER_SPLITS],
                  "books": transfer(market, names)})
         print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
                           "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
-                          "logic": SWEEP_LOGIC, "accounting": SWEEP_ACCOUNTING, "only": sorted(wanted), "command": args.command,
+                          "logic": SWEEP_LOGIC, "accounting": args.accounting, "only": sorted(wanted), "command": args.command,
                           **body}, indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_OK
     groups = {lab.variables()[c["variable"]][0] for c in CANDIDATES.values() if c["round"] == (args.round or latest_round())}
