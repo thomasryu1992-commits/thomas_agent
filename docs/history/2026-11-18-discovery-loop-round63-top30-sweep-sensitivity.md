@@ -25,3 +25,9 @@ next. §73.1's table of measured doors has no row for the top-30 sweep: §60 mea
 - *Written before the result: no outcome reopens the combined-logic question.* If the sweep catches map-size effects,
   a combined logic would add only bundles of smaller ones, whose books did not separate from no effect (§79.3); if it
   does not, the book is the gap and the next row is a book with another holding period and its own null.
+
+**Result (06:10Z, §81.5).** All doors held (ten stored nulls rebuilt in every chunk, 5 false alarms in 3 – 14, the
+plant took at every size). The top-30 sweep's lead rule caught no planted effect up to ρ 0.10 (0 of 100 seeds at each
+size) and 2, 5 and 8 of 100 at 0.13, 0.16 and 0.20; it never reached 80% on the grid, where the 31 – 100 sweep reached
+81% at 0.05. At ρ 0.10 the book's median Sharpe is 0.598. The four-week top-30 book is the binding piece under the
+sweep's own rule too; the next row registers a top-30 book with another holding period and its own null.
