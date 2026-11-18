@@ -28,3 +28,11 @@ round 56. Its own family, never mixed with the upper tiers' 690.
   36 count rows again.
 - *A broken chain re-runs whole when code changes.* No counts file is opened until all eight exit 0. If a door fails
   and the fix is code, all eight run again on the new commit.
+
+**Result (03:03Z, §75.5).** Door 1 held (36 rows equal) and all eight runs rebuilt their recorded map cells
+(1,120 one-week cells) on one snapshot. In the family of 336 no test survives Benjamini – Hochberg; 14 are under 0.05
+against 16.8 by chance; the smallest p is 67/7,200 (spot share × funding level). The 240 non-struck tests alone give
+the same: none. The lower tier's axis check is closed. With it the per-variable axis check is done on the map's six axes for the
+variables each tier's map read; the depth three were tested on ranks 1 – 30 only (no depth files below), and the
+thirteen off-map axes were left out by §47.2. The lower tier's own family still has room for the spot taker share's
+other windows (354 tests, first bar 0.000282); the two upper tiers' family does not (744 > 720).
