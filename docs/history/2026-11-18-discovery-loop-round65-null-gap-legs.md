@@ -22,3 +22,9 @@ weekly, and the null files carry no cost or price share, so why the four-week do
   printed but not judged. Each null's own tail (at or above its p95) is read unpaired.
 - *Null books only.* `--legs` refuses any real variable and `transfer` under every accounting. "Price" is a bundle
   (side picked on the whole span, drift of held weights, net exposure) that this round does not split.
+
+**Result (§83.5).** Every door passed: all 600 recorded books in both nulls built again field for field, and every
+book's terms added up. The weekly-redrawn half reads "σ" (in Sharpe terms cost is 71% of the 0.37 gap, in yearly
+return price is 52% of 6.7 points); the fixed half reads "price" (82% and 67%); each null's own tail reads "price".
+The four-week books earn 3.5 – 4.7 points a year more price and swing more (monthly σ 11.4% against 7.6%); funding is
+under 5% of every gap. No verdict moves; the loop goes to the dated rows.
