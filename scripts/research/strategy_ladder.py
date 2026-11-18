@@ -543,6 +543,9 @@ def confirm(market: xsb.Market, entry: Mapping[str, Any], *, simulate: Callable[
 
 SWEEP_LOGIC, SWEEP_ACCOUNTING = "L9T", "held4"       # the logic and accounting of the best book so far (C010)
 SWEEP_NULLS = 600                          # random-variable books: enough for a p under what the correction asks of 60
+# Section 76: the registry passed 60, so the cap is held where a family is read, not by the registry's size. A family
+# of more books than this could not pass a book that beat every null (1 / 601 >= 0.10 / 61).
+FAMILY_MAX = 60
 SWEEP_NULLS_ROUND_6 = 300                  # the sweep of round 6 read these; they are the same books, by name, among the 400
 
 
@@ -4421,6 +4424,8 @@ def tier_family(tier: str, recorded: Mapping[str, Any], null: Mapping[str, Any],
     clash = sorted(set(new) & set(books))
     if differ or clash:
         return {"blocked": True, "differ": differ, "clash": clash}
+    if len(books) + len(new) > FAMILY_MAX:
+        return {"blocked": True, "over": f"{len(books)} recorded + {len(new)} new books pass the family's cap of {FAMILY_MAX}"}
     return {"blocked": False, "recorded_books": len(books), "new": sorted(new), "reading": reader({**books, **new}, null)}
 
 
@@ -4438,6 +4443,8 @@ def lower_sweep_family(recorded: Sequence[Mapping[str, Mapping[str, Any]]],
         if name in family and not family[name].get("skipped"):
             raise ValueError(f"{name}: a recorded book is never replaced")
         family[name] = body
+    if len(family) > FAMILY_MAX:
+        raise ValueError(f"{len(family)} books pass the family's cap of {FAMILY_MAX}")
     return family
 
 
@@ -4456,11 +4463,12 @@ def lower_map(market: xsb.Market, names: Mapping[str, tuple[str, lab.Variable]],
     against = lab.chance(random_cells["cells"])
     before = lab.chance(lab.earlier_control_cells(random_cells["cells"]))
     before_shapes = lab.chance(lab.earlier_control_cells(random_cells["cells"], lab.CONTROLS_BEFORE_SHAPES))
+    before_windows = lab.chance(lab.earlier_control_cells(random_cells["cells"], lab.CONTROLS_BEFORE_WINDOWS))
     leads = lab.candidates(real, against, cap=None)        # every cell that meets the rule: struck ones are named, not counted
     leads["leads"] = [{**c, "no_book": lab.no_book(c["variable"], c["tier"])} for c in leads["leads"]]
     return {"tier": LOWER_NAME, "coverage": coverage, "not_mapped": {n: coverage[n]["stop"] for n in names if n not in kept},
             "chance": against, "chance_before_spot_flow": before, "chance_before_shapes": before_shapes,
-            "excess": lab.excess(real["cells"], against), "candidates": leads,
+            "chance_before_windows": before_windows, "excess": lab.excess(real["cells"], against), "candidates": leads,
             "spread_candidates": lab.spread_candidates(real, against), "dropped": real["dropped"],
             "variables": real["variables"], "cells": real["cells"]}
 

@@ -65,10 +65,11 @@ MIN_DECISIONS = 20                         # decisions a cell needs before it sh
 MIN_SPELLS = 4                             # separate stretches a scenario cell needs: one long bull run is one sample
 REFERENCE_DECISIONS = 52                   # trailing decisions a scenario's own median is taken over
 REFERENCE_MIN = 26
-CONTROLS_WEEKLY = 57                       # random variables redrawn at every decision (25, 28, 32, 42, 44, 47, 50, 53, 55 as the registry grew)
-CONTROLS_FIXED = 57                        # random variables fixed per coin, like a slow characteristic
+CONTROLS_WEEKLY = 60                       # random variables redrawn at every decision (25, 28, 32, 42, 44, 47, 50, 53, 55, 57 as the registry grew)
+CONTROLS_FIXED = 60                        # random variables fixed per coin, like a slow characteristic
 CONTROLS_BEFORE_SPOT_FLOW = 53                # each kind's count before section 67 added two variables: the old lines' set
 CONTROLS_BEFORE_SHAPES = 55                   # each kind's count before section 69 added two more: round 49's lines' set
+CONTROLS_BEFORE_WINDOWS = 57                  # each kind's count before section 76 added three: round 51's lines' set
 EXTREME_MOVE = 0.30                        # a daily close-to-close move this large is an extreme day
 WILD_MOVE = 0.50                           # a coin whose largest daily move in the lookback reached this is wild
 AGE_CAP_DAYS = 1000                        # listing age is read up to here; older coins are alike
@@ -141,6 +142,12 @@ CHANGE_OF = {"ls_change": "ls_level", "top_change": "top_level", "taker_change":
 
 
 SPREAD_LOOKBACKS = (7, 14, 90)             # section 3.1's fourth shape for the two late levels (the name is the first's)
+# Section 76: the spot taker-buy share at the same other lookbacks. Sixty-two variables pass what the two upper tiers'
+# per-variable axis family can correct for (7,200 placebos reach 60 x 2 x 6), so these three stay out of it by name;
+# every sweep family is capped at 60 in code (strategy_ladder.FAMILY_MAX).
+SPOT_TAKER_LOOKBACKS = SPREAD_LOOKBACKS
+AXIS_FAMILY_OUT = {f"spot_taker_share_{lookback}": "no room in the two upper tiers' axis family: 62 x 2 x 6 = 744 > 720 (section 76)"
+                   for lookback in SPOT_TAKER_LOOKBACKS}
 LATE_LEVELS = ("spread", "premium")        # levels registered after the shape rounds; each gets its change and position
 HISTORY_POINTS = 6                         # a level's own history: its value at each of the six lookbacks before
 HISTORY_MIN = 4                            # of those points must be there, or the coin has no position that day
@@ -305,6 +312,11 @@ def variables() -> dict[str, tuple[str, Variable]]:
     # and 0.23 with the perp's own shapes, under 0.8). The trade size's shapes are not added (section 68.5).
     out[f"spot_taker_share_change_{LOOKBACK}"] = ("spot_flow", _change(_spot_taker_share))
     out[f"spot_taker_share_position_{LOOKBACK}"] = ("spot_flow", _position(_spot_taker_share))
+    # Added 2026-11-18 (section 76): the spot taker-buy share at the other lookbacks. No closed reading strikes them
+    # (section 37.2's rule; section 73.4); its rank persistence (0.89) is not the slow trade size's 0.98. Levels at
+    # another window, so no shape (section 42).
+    for lookback in SPOT_TAKER_LOOKBACKS:
+        out[f"spot_taker_share_{lookback}"] = ("spot_flow", _with_lookback(_spot_taker_share_over, lookback))
     return out
 
 
@@ -469,7 +481,7 @@ def attach_spot_flow(held: xsb.Market, roots: Sequence[Path], end: date) -> xsb.
     return held
 
 
-def _spot_flow_window(market: xsb.Market, symbol: str, day: date) -> list[tuple[float, float]] | None:
+def _spot_flow_window(market: xsb.Market, symbol: str, day: date, lookback: int = LOOKBACK) -> list[tuple[float, float]] | None:
     """The spot pair's flow values over the lookback, on the days S01 counts as the same asset (both closes there,
     the perp's within ``spot_share_search.PRICE_BAND`` of the spot's); None under the usual share of days."""
     link = getattr(market, "spot_of", {}).get(symbol)
@@ -480,19 +492,23 @@ def _spot_flow_window(market: xsb.Market, symbol: str, day: date) -> list[tuple[
     spot = (getattr(market, "spot", {}) or {}).get(pair) or {}
     flow = (getattr(market, "spot_flow", {}) or {}).get(pair) or {}
     kept = []
-    for k in range(LOOKBACK):
+    for k in range(lookback):
         d = day - timedelta(days=k)
         a, b, f = perp.get(d), spot.get(d), flow.get(d)
         if a is None or b is None or f is None or a.close <= 0 or b.close <= 0:
             continue
         if abs(a.close / (multiple * b.close) - 1) <= sp.PRICE_BAND:
             kept.append(f)
-    return kept if len(kept) >= math.ceil(LOOKBACK * bs.MIN_SHARE) else None
+    return kept if len(kept) >= math.ceil(lookback * bs.MIN_SHARE) else None
+
+
+def _spot_taker_share_over(market: xsb.Market, symbol: str, day: date, lookback: int) -> float | None:
+    values = _spot_flow_window(market, symbol, day, lookback)
+    return None if values is None else statistics.fmean(v[0] for v in values)
 
 
 def _spot_taker_share(market: xsb.Market, symbol: str, day: date) -> float | None:
-    values = _spot_flow_window(market, symbol, day)
-    return None if values is None else statistics.fmean(v[0] for v in values)
+    return _spot_taker_share_over(market, symbol, day, LOOKBACK)
 
 
 def _spot_trade_size(market: xsb.Market, symbol: str, day: date) -> float | None:
@@ -1534,7 +1550,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "axes-by-variable":
         print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
                           "span": [d.isoformat() for d in SPAN], "last_day_read": last_day(market).isoformat(),
-                          "judgement": None, "only": args.only, **axis_by_variable(market, chosen)},
+                          "judgement": None, "only": args.only, "left_out": {n: AXIS_FAMILY_OUT[n] for n in chosen if n in AXIS_FAMILY_OUT},
+                          **axis_by_variable(market, {n: v for n, v in chosen.items() if n not in AXIS_FAMILY_OUT})},
                          indent=1, sort_keys=True))
         return EXIT_OK
     if args.command == "axes":
@@ -1546,11 +1563,12 @@ def main(argv: list[str] | None = None) -> int:
     against = chance(random["cells"])
     before = chance(earlier_control_cells(random["cells"]))
     before_shapes = chance(earlier_control_cells(random["cells"], CONTROLS_BEFORE_SHAPES))
+    before_windows = chance(earlier_control_cells(random["cells"], CONTROLS_BEFORE_WINDOWS))
     print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
                       "span": [d.isoformat() for d in SPAN], "last_day_read": last_day(market).isoformat(),
                       "before_costs": True, "judgement": None, "only": args.only,
                       "chance": against, "chance_before_spot_flow": before, "chance_before_shapes": before_shapes,
-                      "excess": excess(real["cells"], against),
+                      "chance_before_windows": before_windows, "excess": excess(real["cells"], against),
                       "candidates": candidates(real, against), "spread_candidates": spread_candidates(real, against),
                       "dropped": real["dropped"],
                       "variables": real["variables"], "cells": real["cells"],

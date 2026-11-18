@@ -211,7 +211,8 @@ def test_material_strikes_what_the_record_forbids_on_each_tier():
     assert {"funding_30", "taker_buy_share_30", "momentum_30", "oi_growth_30"}.isdisjoint(mid)
     assert {"momentum_7", "funding_30", "ls_level_30"}.isdisjoint(lower)
     assert {"momentum_30", "funding_30", "ls_level_30"} <= set(top)
-    assert (len(top), len(mid), len(lower)) == (47, 38, 40)
+    assert (len(top), len(mid), len(lower)) == (47, 38, 40), "L24's material as measured: the later windows add nothing"
+    assert all(sp.struck(f"spot_taker_share_{w}", tier) for w in (7, 14, 90) for tier in sp.TIERS)
 
 
 def test_ranks_101_on_use_only_material_at_the_coverage_floor():

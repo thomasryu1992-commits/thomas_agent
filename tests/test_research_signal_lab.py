@@ -708,8 +708,8 @@ def test_leverage_is_open_interest_in_quote_terms_over_volume_and_has_no_label_w
 
 def test_the_registry_stays_inside_what_its_controls_and_the_sweeps_null_can_correct_for():
     from scripts.research import strategy_ladder as sl
-    assert len(lab.variables()) == 59
-    assert len(lab.controls()) == 114 >= 2 * len(lab.variables()) - 4, "the random variables grow with the real ones"
+    assert len(lab.variables()) == 62
+    assert len(lab.controls()) == 120 >= 2 * len(lab.variables()) - 4, "the random variables grow with the real ones"
     first = {f"control_{kind}_{k:02d}" for kind in ("week", "fixed") for k in range(lab.CONTROLS_BEFORE_SPOT_FLOW)}
     assert len(first) == 106 and first <= set(lab.controls()), "section 67 added controls after the first 106, by name"
     second = {f"control_{kind}_{k:02d}" for kind in ("week", "fixed") for k in range(lab.CONTROLS_BEFORE_SHAPES)}
@@ -717,8 +717,12 @@ def test_the_registry_stays_inside_what_its_controls_and_the_sweeps_null_can_cor
     cells = [{"variable": name} for name in lab.controls()]
     assert {c["variable"] for c in lab.earlier_control_cells(cells)} == first
     assert {c["variable"] for c in lab.earlier_control_cells(cells, lab.CONTROLS_BEFORE_SHAPES)} == second
-    assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / len(lab.variables()), "the sweep's null can correct for every variable"
-    assert not 1 / (sl.SWEEP_NULLS_ROUND_6 + 1) < 0.10 / len(lab.variables()), "300 null books could not: thirty was their most"
+    third = {f"control_{kind}_{k:02d}" for kind in ("week", "fixed") for k in range(lab.CONTROLS_BEFORE_WINDOWS)}
+    assert len(third) == 114 and second < third < set(lab.controls()), "section 76 added controls after the first 114"
+    assert {c["variable"] for c in lab.earlier_control_cells(cells, lab.CONTROLS_BEFORE_WINDOWS)} == third
+    # Section 76: the registry passed sixty; the cap now sits on each family as it is read (strategy_ladder.FAMILY_MAX).
+    assert len(lab.variables()) > sl.FAMILY_MAX and 1 / (sl.SWEEP_NULLS + 1) < 0.10 / sl.FAMILY_MAX
+    assert not 1 / (sl.SWEEP_NULLS_ROUND_6 + 1) < 0.10 / sl.FAMILY_MAX, "300 null books could not: thirty was their most"
     assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / 60 and not 1 / (sl.SWEEP_NULLS + 1) < 0.10 / 61, "600 reach sixty variables"
 
 
@@ -822,12 +826,26 @@ def test_a_run_of_the_spot_group_loads_the_spot_bars_alone(monkeypatch, tmp_path
 def test_the_by_variable_check_has_enough_placebos_for_a_real_effect_to_pass_the_correction():
     """The smallest p a test can show is one over the placebos plus one. It has to be under what Benjamini–Hochberg
     asks of the best of a few hundred tests, or nothing could ever pass (the first run, 2026-11-13: 200 placebos)."""
-    tests, q = len(lab.variables()) * len(lab.TIERS) * len(lab.AXES), 0.10
-    assert tests == 59 * 2 * 6
+    checked = [n for n in lab.variables() if n not in lab.AXIS_FAMILY_OUT]
+    tests, q = len(checked) * len(lab.TIERS) * len(lab.AXES), 0.10
+    assert tests == 59 * 2 * 6 and set(lab.AXIS_FAMILY_OUT) == {"spot_taker_share_7", "spot_taker_share_14", "spot_taker_share_90"}
+    assert not 1 / (lab.PLACEBO_AXES_BY_VARIABLE + 1) < q / (len(lab.variables()) * 2 * 6), "62 variables would not fit"
     assert 1 / (lab.PLACEBO_AXES_BY_VARIABLE + 1) < q / tests
     assert lab.PLACEBO_AXES_BY_VARIABLE == 7200 and 1 / (7200 + 1) < q / (60 * 2 * 6), "enough for sixty variables"
     assert not 1 / (5000 + 1) < q / tests, "the earlier 5000 no longer were"
     assert not 1 / (200 + 1) < q / tests
+
+
+def test_the_upper_axis_check_reads_the_spot_flow_group_it_recorded_and_names_the_windows_it_leaves_out(monkeypatch, capsys):
+    seen = []
+    market = xsb.Market(bars={"A": {date(2024, 12, 31): xsb.Bar(open=1.0, close=1.0, quote_volume=1.0)}}, funding={})
+    monkeypatch.setattr(lab.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(lab, "hold_spot_flow", lambda cache: market)
+    monkeypatch.setattr(lab, "axis_by_variable", lambda m, names: seen.append(sorted(names)) or {"counts": []})
+    assert lab.main(["axes-by-variable", "--only", "spot_flow"]) == lab.EXIT_OK
+    assert seen == [["spot_taker_share_30", "spot_taker_share_change_30", "spot_taker_share_position_30", "spot_trade_size_30"]], \
+        "the four the recorded family holds (section 74)"
+    assert sorted(json.loads(capsys.readouterr().out)["left_out"]) == ["spot_taker_share_14", "spot_taker_share_7", "spot_taker_share_90"]
 
 
 # --- D7: the universe's character by month ----------------------------------------------------------------------------

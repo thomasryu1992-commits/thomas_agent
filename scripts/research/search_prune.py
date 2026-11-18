@@ -46,6 +46,8 @@ SPEC = "SEARCH_THEN_PRUNE_V0.1"
 LOGIC = "L24"
 SPAN = lab.SPAN
 TOP, MID, LOWER = "top30", sl.MID_TIER, sl.LOWER_NAME
+# Registered after L24 was measured (section 76). Its material stays what it was measured on.
+AFTER_L24 = frozenset(f"spot_taker_share_{lookback}" for lookback in lab.SPOT_TAKER_LOOKBACKS)
 TIERS = (TOP, MID, LOWER)
 # (rule, size): the t's top k by size, every |t| of at least two, or every eligible weighted by its mean correlation.
 CONFIGS: tuple[tuple[str, int | None], ...] = (("top", 3), ("top", 5), ("top", 10), ("top", 20), ("t2", None),
@@ -73,6 +75,8 @@ def struck(name: str, tier: str) -> str | None:
     registered = lab.variables()
     if registered[name][0] == "depth":
         return "the depth group has no loader of its own (strategy_ladder.sweep_market)"
+    if name in AFTER_L24:
+        return "registered after L24 was measured (section 76): L24 is closed and never rerun on other material (S5)"
     if tier == MID and name in sl.TIER_SWEEP_OUT:
         return sl.TIER_SWEEP_OUT[name]
     return lab.no_book(name, tier)

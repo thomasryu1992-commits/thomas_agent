@@ -456,7 +456,7 @@ def test_the_sweeps_null_variables_are_their_own_and_enough_for_the_correction()
     market, day = xsb.Market(), date(2021, 1, 3)
     assert nulls["null_week_000"][1](market, "AUSDT", day) != sl.lab.controls()["control_week_00"][1](market, "AUSDT", day)
     assert nulls["null_fixed_000"][1](market, "AUSDT", day) == nulls["null_fixed_000"][1](market, "AUSDT", day + timedelta(days=7))
-    assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / len(sl.lab.variables()), "a real effect can pass Benjamini–Hochberg over every variable"
+    assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / sl.FAMILY_MAX, "a real effect can pass Benjamini–Hochberg over the largest family read"
 
 
 def test_a_swept_book_is_long_the_side_its_own_rank_correlation_points_to(monkeypatch):
@@ -2345,7 +2345,7 @@ def test_the_tier_sweep_builds_no_book_the_record_forbids_and_names_why():
     assert {"spread_change_30", "trade_size_position_30"} <= set(sl.TIER_SWEEP_OUT), "the top tier's lead and its runner-up"
     assert {"momentum_change_30", "momentum_position_30", "residual_momentum_30", "ls_change_30"} <= set(names), "shapes are kin, not the closed book"
     assert not [n for n, (group, _) in names.items() if group == "depth"], "no depth files on this tier"
-    assert all(sl.TIER_SWEEP_OUT.values()) and len(names) == len(registered) - len(sl.TIER_SWEEP_OUT) == 42
+    assert all(sl.TIER_SWEEP_OUT.values()) and len(names) == len(registered) - len(sl.TIER_SWEEP_OUT) == 45
     assert sl.TIER_SWEEP_NULLS == 600 and 0.10 / len(names) > 1 / (sl.TIER_SWEEP_NULLS + 1), "a book above every null can survive"
 
 
@@ -2811,7 +2811,7 @@ def test_the_lower_tier_strikes_by_name_what_the_record_forbids_there_and_both_r
     assert {"funding_change_30", "funding_position_30", "momentum_change_30", "residual_momentum_30", "listing_age",
             "taker_buy_share_30", "premium_30", "spot_share_30"} <= set(names), "kin, built and named on the form"
     assert all(out[n] == sl.lab.no_book(n, sl.LOWER_NAME) for n in out), "the map's no_book and the sweep's list are one"
-    assert sl.lower_refused_groups() == {"depth"} and len(names) == 40
+    assert sl.lower_refused_groups() == {"depth"} and len(names) == 43
     assert sl.lab.LOWER_TIER_NAME not in sl.lab.TIERS, "the mapped tiers are untouched"
 
 
@@ -3687,7 +3687,9 @@ def test_the_spot_flow_reads_the_spot_pairs_columns_on_same_asset_days_only(tmp_
     registered = sl.lab.variables()
     assert {n for n, (g, _) in registered.items() if g == "spot_flow"} == {"spot_taker_share_30", "spot_trade_size_30",
                                                                           "spot_taker_share_change_30",
-                                                                          "spot_taker_share_position_30"}
+                                                                          "spot_taker_share_position_30",
+                                                                          "spot_taker_share_7", "spot_taker_share_14",
+                                                                          "spot_taker_share_90"}
     assert {n for n, (g, _) in registered.items() if g == "spot"} == {"spot_share_30", "spot_share_change_30",
                                                                       "spot_share_position_30"}, "the spot group reads what it read"
     assert len({n for n, (g, _) in registered.items() if g == "positioning"}) == 11
@@ -3744,6 +3746,43 @@ def test_a_tiers_family_reads_its_recorded_rows_again_before_a_new_book_is_added
     moved = json.loads(json.dumps(recorded))
     moved["all"][0]["annual_sharpe"] = 9.9
     assert sl.tier_family("top30", moved, null, new)["blocked"], "a record the rows no longer give back stops the read"
+    # Section 76: the cap is held where a family is read. Sixty books may be read; the sixty-first stops it.
+    many = {f"x{k:02d}": dict(row, annual_sharpe=0.2) for k in range(sl.FAMILY_MAX - 2)}
+    assert not sl.tier_family("top30", recorded, null, many)["blocked"]
+    over = sl.tier_family("top30", recorded, null, {**many, "y": row})
+    assert over["blocked"] and "cap of 60" in over["over"] and "reading" not in over
+    assert len(sl.lower_sweep_family([{"a": row}], {f"x{k:02d}": row for k in range(sl.FAMILY_MAX - 1)})) == sl.FAMILY_MAX
+    with pytest.raises(ValueError, match="cap of 60"):
+        sl.lower_sweep_family([{"a": row}], {f"x{k:02d}": row for k in range(sl.FAMILY_MAX)})
+    assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / sl.FAMILY_MAX and not 1 / (sl.SWEEP_NULLS + 1) < 0.10 / (sl.FAMILY_MAX + 1)
+
+
+def test_the_spot_taker_share_at_another_lookback_is_the_same_reading_over_fewer_or_more_days():
+    start = date(2021, 1, 1)
+    days = [start + timedelta(days=k) for k in range(120)]
+    share = lambda k: 0.40 + 0.001 * k
+    market = xsb.Market(bars={"A": {d: xsb.Bar(open=1.0, close=1.0, quote_volume=1.0) for d in days}}, funding={})
+    market.spot = {"AS": {d: xsb.Bar(open=1.0, close=1.0, quote_volume=1.0) for d in days}}
+    market.spot_of = {"A": ("AS", 1.0)}
+    market.spot_flow = {"AS": {d: (share(k), 5.0) for k, d in enumerate(days)}}
+    registered, day = sl.lab.variables(), days[-1]
+    level = registered["spot_taker_share_30"][1]
+    assert level(market, "A", day) == sl.lab.OVERLAP_CANDIDATES["spot_taker_share_30"][1](market, "A", day), "the 30-day reading is unchanged"
+    for lookback in (7, 14, 90):
+        group, read = registered[f"spot_taker_share_{lookback}"]
+        assert group == "spot_flow"
+        assert read(market, "A", day) == pytest.approx(statistics.fmean(share(119 - k) for k in range(lookback)))
+    assert registered["spot_taker_share_30"][1](market, "A", day) == pytest.approx(statistics.fmean(share(119 - k) for k in range(30)))
+    seven = registered["spot_taker_share_7"][1]
+    later = xsb.Market(bars=market.bars, funding={})
+    later.spot, later.spot_of = market.spot, market.spot_of
+    later.spot_flow = {"AS": {**market.spot_flow["AS"], day + timedelta(days=1): (0.99, 5.0)}}
+    assert seven(later, "A", day) == seven(market, "A", day), "nothing after the decision day"
+    for k in range(3):                                   # three of seven days gone: under the usual share of days
+        del market.spot_flow["AS"][day - timedelta(days=k)]
+    assert seven(market, "A", day) is None and registered["spot_taker_share_90"][1](market, "A", day) is not None
+    assert not [n for n in registered if n.startswith(("spot_taker_share_change_", "spot_taker_share_position_"))
+                and not n.endswith("_30")], "levels at another window get no shape (section 42)"
 
 
 def test_the_ranks_101_spot_flow_commands_stop_until_the_spot_fetch_is_sealed(monkeypatch, tmp_path, capsys):
