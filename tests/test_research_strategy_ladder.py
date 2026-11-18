@@ -2907,6 +2907,48 @@ def test_the_lower_tier_counts_carry_no_return(monkeypatch):
     assert "sharpe" not in flat and "_pct" not in flat
 
 
+def test_the_lower_axis_check_counts_only_once_the_weekly_series_give_the_recorded_maps_cells(monkeypatch):
+    """Round 57 (section 75): no axis check was recorded on ranks 101 and after, so the map is the door. The run
+    counts nothing until its weekly series give back every one-week cell of the group's recorded map; a struck
+    variable is read and named."""
+    class Liquid:                                     # every smaller coin passes the floor: the tier is the sixteen
+        def __init__(self, market): pass
+        def liquid(self, symbol, day): return True
+    monkeypatch.setattr(sl, "ListingPools", Liquid)
+    monkeypatch.setattr(sl, "LOWER_TIER_FROM", 30)
+    monkeypatch.setattr(sl.lab, "PLACEBO_AXES_BY_VARIABLE", 30)
+    market, mids = _mid_world()
+    names = {n: sl.lab.variables()[n] for n in ("momentum_30", "momentum_7", "vol_30")}
+    tier = sl.LowerTier(market, MID_TEST_SPAN)
+    assert set(tier.at(MID_DAY)[0]) == set(mids)
+    members = {sl.LOWER_NAME: lambda day: tier.at(day)[0]}
+    recorded = {"tier": sl.LOWER_NAME, "cells": sl.lab.grid(market, names, MID_TEST_SPAN, members=members)["cells"]}
+    out = sl.lower_axes(market, names, recorded, MID_TEST_SPAN)
+    assert "refused" not in out and out["door"]["one_week_cells_equal"] == 12 and out["placebos_per_test"] == 30
+    assert out == {**out, **sl.lab.axis_by_variable(market, names, MID_TEST_SPAN, members=members)}
+    assert set(out["struck"]) == set(names), "struck here, read and named"
+    moved = [{**c, "decisions": c["decisions"] + 1} if c["scenario"] != "all" and c["horizon_days"] == 7 else c
+             for c in recorded["cells"]]
+    refused = sl.lower_axes(market, names, {**recorded, "cells": moved}, MID_TEST_SPAN)
+    assert refused["refused"].startswith("the weekly series") and "counts" not in refused and refused["cells_differ"] == 9
+    fewer = [c for c in recorded["cells"] if c["variable"] != "vol_30"]
+    assert sl.lower_axes(market, names, {**recorded, "cells": fewer}, MID_TEST_SPAN)["refused"].startswith("the variables")
+    assert sl.lower_axes(market, {}, {"tier": sl.LOWER_NAME, "cells": []}, MID_TEST_SPAN)["refused"].startswith("the variables"), \
+        "nothing read is no door"
+    assert "refused" in sl.lower_axes(market, names, {**recorded, "tier": "rank31_100"}, MID_TEST_SPAN)
+
+
+def test_the_lower_axis_command_needs_the_groups_recorded_map(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setenv("RESEARCH_CACHE", str(tmp_path))
+    assert sl.main(["lower-axes", "--only", "funding"]) == sl.EXIT_USAGE
+    other = tmp_path / "map.json"
+    other.write_text(json.dumps({"command": "lower-map", "only": ["premium"]}), encoding="utf-8")
+    assert sl.main(["lower-axes", "--only", "funding", "--check", str(other)]) == sl.EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "needs --check" in err and "not this group's lower-map file" in err
+
+
 def test_the_lower_commands_refuse_struck_groups(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
     monkeypatch.setenv("RESEARCH_CACHE", str(tmp_path))

@@ -841,15 +841,20 @@ PLACEBO_AXES_BY_VARIABLE = 7200            # 5000 until 41 variables, 6000 until
 PLACEBO_AXES_BY_VARIABLE_ROUND_4 = 5000    # what round 4's reading used; the counts at that point are kept beside the full ones
 
 
-def ic_series(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tuple[date, date] = SPAN
+def ic_series(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tuple[date, date] = SPAN,
+              *, members: Mapping[str, Callable[[date], Sequence[str]]] | None = None
               ) -> tuple[list[date], dict[tuple[str, str], dict[date, float]]]:
-    """The weekly decisions and, per variable and tier, its rank correlation with the following week at each."""
-    tiers = tier_members(market, span)
+    """The weekly decisions and, per variable and tier, its rank correlation with the following week at each.
+    ``members`` replaces :data:`TIERS` with tiers whose members are given per decision day, as in :func:`grid`."""
+    by_day: dict[str, Callable[[date], Sequence[str]]] = (
+        dict(members) if members is not None else
+        {tier: (lambda day, monthly=monthly: monthly.get(date(day.year, day.month, 1), ()))
+         for tier, monthly in tier_members(market, span).items()})
     days = decisions(span, HORIZONS[0])
     out: dict[tuple[str, str], dict[date, float]] = {}
-    for tier, monthly in tiers.items():
+    for tier, members_at in by_day.items():
         for day in days:
-            returns = {s: r for s in monthly.get(date(day.year, day.month, 1), ())
+            returns = {s: r for s in members_at(day)
                        if (r := forward_return(market, s, day, HORIZONS[0])) is not None}
             for name, (_, read) in names.items():
                 pairs = [(v, returns[s]) for s in returns if (v := read(market, s, day)) is not None]
@@ -945,12 +950,14 @@ def axis_check(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], sp
 
 
 def axis_by_variable(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tuple[date, date] = SPAN,
-                     *, q: float = 0.10) -> dict[str, Any]:
+                     *, q: float = 0.10, members: Mapping[str, Callable[[date], Sequence[str]]] | None = None
+                     ) -> dict[str, Any]:
     """The axis check one variable at a time. An average over every variable hides an axis that matters for two of
     them, so each (variable, tier, axis) gets its own separation beside its own placebos; the share of placebos at
     or above it is its p. With hundreds of such tests some will look good by chance, so the list that counts is the
-    one that survives Benjamini–Hochberg at ``q`` — and the count under 0.05 is shown beside what chance gives."""
-    days, series = ic_series(market, names, span)
+    one that survives Benjamini–Hochberg at ``q`` — and the count under 0.05 is shown beside what chance gives.
+    ``members`` reads tiers given per decision day (round 57: ranks 101 and after); the labels stay the top thirty's."""
+    days, series = ic_series(market, names, span) if members is None else ic_series(market, names, span, members=members)
     labels = scenario_labels(market, tier_members(market, span)["top30"], days, span)
     tests = []
     counts: list[list[Any]] = []             # [variable, tier, axis, above, counted, above and counted at round 4's 5000]
@@ -991,6 +998,36 @@ def axis_by_variable(market: xsb.Market, names: Mapping[str, tuple[str, Variable
             "expected_under_0.05_by_chance": round(0.05 * len(tests), 1), "q": q,
             "placebos_per_test": PLACEBO_AXES_BY_VARIABLE, "survive_benjamini_hochberg": ordered[:cutoff], "smallest_p": ordered[:10],
             "all_tests": [[t["variable"], t["tier"], t["axis"], t["p"]] for t in ordered], "counts": counts, "dropped": dropped}
+
+
+def weekly_cells(days: Sequence[date], series: Mapping[tuple[str, str], Mapping[date, float]],
+                 labels: Mapping[date, Mapping[str, str]]) -> dict[tuple[str, str, str], dict[str, Any]]:
+    """What :func:`grid` shows at the one-week horizon, rebuilt from the weekly series the axis check reads: per
+    variable, tier and scenario key the decisions, and for the whole span its mean rank correlation and t. A run that
+    gives a recorded map's cells back reads the map's members, values and labels (round 57's door)."""
+    out: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for (name, tier), values in series.items():
+        groups: dict[str, list[float]] = {}
+        for day in days:
+            if day in values:
+                for key in scenario_keys(labels[day]):
+                    groups.setdefault(key, []).append(values[day])
+        for key, ics in groups.items():
+            entry: dict[str, Any] = {"decisions": len(ics)}
+            if key == "all" and len(ics) >= MIN_DECISIONS:
+                sd = statistics.stdev(ics)
+                entry.update(mean_rank_correlation=round(statistics.fmean(ics), 4),
+                             t=round(statistics.fmean(ics) / (sd / math.sqrt(len(ics))), 2) if sd > 0 else None)
+            out[(name, tier, key)] = entry
+    return out
+
+
+def weekly_cells_differ(mine: Mapping[tuple[str, str, str], Mapping[str, Any]],
+                        recorded: Sequence[Mapping[str, Any]]) -> list[list[str]]:
+    """The one-week cells where the rebuilt and the recorded disagree, or that only one of them has."""
+    at = {(c["variable"], c["tier"], c["scenario"]): c for c in recorded if c["horizon_days"] == HORIZONS[0]}
+    return [list(key) for key in sorted(set(at) | set(mine))
+            if key not in at or key not in mine or any(at[key].get(f) != v for f, v in mine[key].items())]
 
 
 def round4_matches(counts: Sequence[Sequence[Any]], recorded: Sequence[Sequence[Any]]) -> dict[str, Any]:

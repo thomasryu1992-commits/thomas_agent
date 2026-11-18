@@ -430,6 +430,31 @@ def test_the_axis_check_by_variable_finds_the_one_an_axis_moves_and_counts_what_
         ["moved", "top30", "heat"], ["still", "top30", "heat"]], "a run with no count at that point matches nothing"
 
 
+def test_tiers_given_per_day_read_what_the_mapped_tiers_read_and_the_weekly_cells_are_the_maps(tiers, monkeypatch):
+    """Round 57: the axis check takes tiers given per decision day, as the map does. Given the mapped tiers it is the
+    default run to the count; and the weekly series give back the map's one-week cells, which is the door on a tier
+    whose axis check has no record."""
+    market = lab.cut_market(_market(SPAN[1]), SPAN)
+    monkeypatch.setattr(lab, "PLACEBO_AXES_BY_VARIABLE", 30)
+    given = {t: (lambda d, m=m: m.get(date(d.year, d.month, 1), ())) for t, m in lab.tier_members(market, SPAN).items()}
+    assert lab.ic_series(market, NAMES, SPAN, members=given) == lab.ic_series(market, NAMES, SPAN)
+    default = lab.axis_by_variable(market, NAMES, SPAN)
+    assert lab.axis_by_variable(market, NAMES, SPAN, members=given) == default and default["counts"], "the same counts"
+    alone = lab.axis_by_variable(market, NAMES, SPAN, members={"rank31_100": given["rank31_100"]})
+    assert alone["counts"] == [row for row in default["counts"] if row[1] == "rank31_100"], "a tier's tests do not depend on the other"
+    days, series = lab.ic_series(market, NAMES, SPAN)
+    labels = lab.scenario_labels(market, lab.tier_members(market, SPAN)["top30"], days, SPAN)
+    cells = lab.grid(market, NAMES, SPAN)["cells"]
+    rebuilt = lab.weekly_cells(days, series, labels)
+    assert lab.weekly_cells_differ(rebuilt, cells) == [] and len(rebuilt) == sum(1 for c in cells if c["horizon_days"] == 7)
+    assert any("mean_rank_correlation" in v for v in rebuilt.values()) and any(k[2] != "all" for k in rebuilt)
+    whole = next(c for c in cells if c["horizon_days"] == 7 and c["scenario"] == "all" and not c["too_few"])
+    moved = [{**c, "mean_rank_correlation": c["mean_rank_correlation"] + 0.0001} if c is whole else c for c in cells]
+    assert lab.weekly_cells_differ(rebuilt, moved) == [[whole["variable"], whole["tier"], "all"]]
+    part = next(c for c in cells if c["horizon_days"] == 7 and c["scenario"] != "all")
+    assert lab.weekly_cells_differ(rebuilt, [c for c in cells if c is not part]) == [[part["variable"], part["tier"], part["scenario"]]]
+
+
 def test_the_family_reading_is_made_from_counts_over_every_groups_run(monkeypatch):
     days = [date(2021, 1, 3) + timedelta(days=7 * k) for k in range(120)]
     heat = (["hot"] * 10 + ["cool"] * 10) * 6

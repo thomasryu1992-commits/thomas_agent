@@ -4465,6 +4465,32 @@ def lower_map(market: xsb.Market, names: Mapping[str, tuple[str, lab.Variable]],
             "variables": real["variables"], "cells": real["cells"]}
 
 
+def lower_axes(market: xsb.Market, names: Mapping[str, tuple[str, lab.Variable]], recorded: Mapping[str, Any],
+               span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """The per-variable axis check on this tier (round 57, section 75), for the variables the map read here. No axis
+    check was ever recorded on this tier, so the door is the map: the weekly series must give every one-week cell of
+    ``recorded`` (that group's map file) back, by members, values and the top thirty's labels on this market. Until
+    they do, no count is computed. A struck variable is checked like the rest and named; it gives no book."""
+    lower = LowerTier(market, span)
+    members = {LOWER_NAME: lambda day: lower.at(day)[0]}
+    coverage = lower_coverage(market, names, span,
+                              tier=TierSweep(market, span, members=members[LOWER_NAME], name=LOWER_NAME))
+    kept = {n: v for n, v in names.items() if not coverage[n]["stop"]}
+    mapped = sorted({c["variable"] for c in recorded.get("cells", ())})
+    if recorded.get("tier") != LOWER_NAME or not kept or sorted(kept) != mapped:
+        return {"refused": "the variables read here are not the recorded map's", "read": sorted(kept), "mapped": mapped}
+    days, series = lab.ic_series(market, kept, span, members=members)
+    labels = lab.scenario_labels(market, lab.tier_members(market, span)["top30"], days, span)
+    rebuilt = lab.weekly_cells(days, series, labels)
+    differ = lab.weekly_cells_differ(rebuilt, recorded["cells"])
+    if differ:
+        return {"refused": "the weekly series do not give the recorded map's one-week cells", "differ": differ[:20],
+                "cells_differ": len(differ)}
+    return {"door": {"one_week_cells_equal": len(rebuilt), "recorded_map_measured_at": recorded.get("measured_at")},
+            "struck": {n: reason for n in kept if (reason := lab.no_book(n, LOWER_NAME))},
+            **lab.axis_by_variable(market, kept, span, members=members)}
+
+
 # --- L19: the open-interest flush book (round 15, hypothesis H-O1) -------------------------------------------------------
 
 FLUSH_SPAN = lab.ms.DEV_LONG               # the positioning files begin in 2022 for all but a few coins
@@ -5085,6 +5111,7 @@ def main(argv: list[str] | None = None) -> int:
                                             "basis-counts", "basis", "wide-counts", "wide", "mid-counts", "mid",
                                             "tier-gate", "tier-counts", "tier-sweep", "tier-lead", "door-size",
                                             "lower-gate", "lower-counts", "lower-map", "lower-sweep", "lower-overlap",
+                                            "lower-axes",
                                             "ha1-gate", "ha1-counts", "ha1", "sens", "axis-power",
                                             "lower-positioning-plan", "lower-positioning-digest",
                                             "lower-positioning-build", "lower-positioning-seal",
@@ -5098,7 +5125,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reading", type=Path, default=None, help="family: the tier's recorded reading")
     parser.add_argument("--records", default=None, help="lower-family: the recorded sweep files, comma-separated, in order")
     parser.add_argument("--new", type=Path, default=None, help="lower-family: the new sweep file")
-    parser.add_argument("--check", type=Path, default=None, help="lower-family: the recorded family reading the recorded books must give")
+    parser.add_argument("--check", type=Path, default=None, help="lower-family: the recorded family reading the recorded books "
+                        "must give; lower-axes: that group's recorded map on this tier")
     parser.add_argument("--shape", choices=BAR_SHAPES, default=None, help="bar: the book shape whose null books are read")
     parser.add_argument("--names", default=None,
                         help="sweep, tier-sweep, lower-sweep: only these books of the --only groups (comma list)")
@@ -5324,8 +5352,17 @@ def main(argv: list[str] | None = None) -> int:
                           "tier": LOWER_NAME, "command": args.command, **lower_lead_overlap(market)},
                          indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_OK
-    if args.command in ("lower-gate", "lower-counts", "lower-map", "lower-sweep"):
+    if args.command in ("lower-gate", "lower-counts", "lower-map", "lower-sweep", "lower-axes"):
         wanted = set((args.only or "").split(",")) - {""}
+        recorded_map: dict[str, Any] = {}
+        if args.command == "lower-axes":
+            if args.check is None:
+                print("refused: lower-axes needs --check, the group's recorded map on this tier", file=sys.stderr)
+                return EXIT_USAGE
+            recorded_map = json.loads(args.check.read_text(encoding="utf-8"))
+            if recorded_map.get("command") != "lower-map" or recorded_map.get("only") != sorted(wanted):
+                print("refused: --check is not this group's lower-map file", file=sys.stderr)
+                return EXIT_USAGE
         refused = wanted & lower_refused_groups()
         names = {n: v for n, v in lower_names().items() if v[0] in wanted}
         if refused:
@@ -5334,7 +5371,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command != "lower-gate" and not names and not (args.command == "lower-sweep" and wanted == {"null"}):
             print("refused: --only names no group with a variable read on this tier (or `null` for lower-sweep)", file=sys.stderr)
             return EXIT_USAGE
-        if args.command == "lower-map":       # the map shows a group's struck variables too; no lead is taken from them
+        if args.command in ("lower-map", "lower-axes"):    # a group's struck variables are read too; no lead is taken from them
             names = {n: v for n, v in lab.variables().items() if v[0] in wanted}
         if args.command == "lower-sweep" and args.names is not None:
             try:
@@ -5386,6 +5423,8 @@ def main(argv: list[str] | None = None) -> int:
             body = lower_tier_counts(market, names)
         elif args.command == "lower-map":
             body = lower_map(market, names)
+        elif args.command == "lower-axes":
+            body = lower_axes(market, names, recorded_map)
         elif wanted == {"null"}:
             body = {"null": tier_sweep_null(market, tier=lower_sweep_tier(market))}
         else:
@@ -5394,7 +5433,7 @@ def main(argv: list[str] | None = None) -> int:
                           "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
                           "tier": LOWER_NAME, "logic": MID_NAMES[1], "left_out": lower_out(), "coverage_floor": LOWER_COVERAGE,
                           "only": sorted(wanted), "command": args.command, **body}, indent=1, sort_keys=True, ensure_ascii=False))
-        return EXIT_OK
+        return EXIT_BLOCKED if args.command == "lower-axes" and body.get("refused") else EXIT_OK
     if args.command == "axis-power":
         if args.tier is None:
             print("refused: axis-power needs --tier", file=sys.stderr)
