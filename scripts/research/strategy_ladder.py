@@ -3928,6 +3928,109 @@ def sens_bracket(shares: Mapping[float, float], *, share: float = SENS_SHARE) ->
     return {"under": lower, "at_or_over": upper}
 
 
+# Round 63 (section 81): the top-30 sweep's lead rule against planted variables, which section 60 left out. The book is
+# the sweep's own (``sweep``: side by the sign of the mean weekly rank correlation, L9T held four weeks, the engine's
+# costs, five years with the flat 2020 - 2021); its p is against the stored 600 null books (``sweep3/null.json``).
+TOP_SENS_BOOKS = 59                        # the top-30 family as last read (round 54, cap54/family-top.json)
+# At size 0 the planted variable is fixed per coin, the class of the stored null's fixed half, which sits higher than
+# the weekly half (section 44: mean 0.38 against 0.26): 25 of those 300 books have p < 0.05 against the pooled 600.
+# 100 seeds at 25/300 fall in 3 .. 14 with probability 0.973 [the binomial]; section 60's 1 .. 10 assumed the null's class.
+TOP_SENS_FALSE_ALARM = (3, 14)
+TOP_SENS_TOOK = (0.8, 1.1)                 # the median rank correlation at each size above 0, as a share of the size
+TOP_SENS_SIDE_FROM, TOP_SENS_SIDE_MIN = 0.05, 95   # from this size up, at least this many seeds are long the high side
+TOP_SENS_NULL_FIELDS = ("annual_sharpe", "clears_entry", "decisions_ranked", "long", "mean_rank_correlation",
+                        "negative_years", "total_position_annual_pct")
+
+
+def top_planted(market: xsb.Market, monthly: Mapping[date, Sequence[str]], rho: float, seed: int) -> lab.Variable:
+    """:func:`sens_planted` on the top thirty: ``rho`` times the normal score of the coin's next-week return among the
+    month's members, plus noise drawn once per coin. It reads the future by construction: never registered."""
+    scores: dict[date, dict[str, float]] = {}
+    noise: dict[str, float] = {}
+    keep = math.sqrt(1.0 - rho * rho)
+
+    def read(m: xsb.Market, symbol: str, day: date) -> float | None:
+        if day not in (m.bars.get(symbol) or {}):
+            return None
+        if day not in scores:
+            forward = {s: r for s in monthly.get(date(day.year, day.month, 1), ())
+                       if (r := lab.forward_return(m, s, day, lab.HORIZONS[0])) is not None}
+            scores[day] = _normal_scores(forward) if rho and forward else {}
+        if symbol not in noise:
+            noise[symbol] = random.Random(f"plant:{seed}:{symbol}").gauss(0.0, 1.0)
+        return rho * scores[day].get(symbol, 0.0) + keep * noise[symbol]
+    return read
+
+
+def top_sens_null_check(market: xsb.Market, null: Mapping[str, Mapping[str, Any]], span: tuple[date, date] = SPAN,
+                        *, books: int = SENS_NULL_CHECK) -> list[str]:
+    """The first stored null books of each kind built again here; the names whose rows differ (empty: the file holds)."""
+    nulls = null_variables()
+    names = [f"null_week_{k:03d}" for k in range(books)] + [f"null_fixed_{k:03d}" for k in range(books)]
+    again = sweep(market, {n: nulls[n] for n in names}, span)
+    return [n for n in names if any(again[n].get(f) != null.get(n, {}).get(f) for f in TOP_SENS_NULL_FIELDS)]
+
+
+def top_sens_run(market: xsb.Market, null: Mapping[str, Mapping[str, Any]], seeds: range, span: tuple[date, date] = SPAN,
+                 *, sizes: Sequence[float] = SENS_SIZES) -> dict[str, Any]:
+    """Seeds ``seeds`` at every size through the top-30 sweep's own book, each beside the stored null books. Nothing
+    is counted unless the first stored null books are built again unchanged."""
+    if seeds.start < 0 or seeds.stop > SENS_SEEDS:
+        raise ValueError(f"seeds run 0 .. {SENS_SEEDS - 1}")
+    differ = top_sens_null_check(market, null, span)
+    if differ:
+        return {"refused": f"stored null books differ when built again: {differ}"}
+    monthly = monthly_members(market, span)
+    nulls = sorted(b["annual_sharpe"] for b in null.values() if b.get("annual_sharpe") is not None)
+    rows = []
+    for seed in seeds:
+        for size in sizes:
+            book = sweep(market, {"plant": ("plant", top_planted(market, monthly, size, seed))}, span)["plant"]
+            sharpe = book.get("annual_sharpe")
+            p = None if sharpe is None else (1 + sum(1 for v in nulls if v >= sharpe)) / (1 + len(nulls))
+            rows.append({"seed": seed, "size": size, **{k: book.get(k) for k in ("long", "mean_rank_correlation",
+                         "annual_sharpe", "total_position_annual_pct", "clears_entry", "negative_years", "skipped")}, "p": p})
+    return {"seeds": [seeds.start, seeds.stop], "null_books": len(nulls), "null_checked": 2 * SENS_NULL_CHECK, "rows": rows}
+
+
+def top_sens_reading(chunks: Sequence[Mapping[str, Any]], *, books: int = TOP_SENS_BOOKS, q: float = SENS_Q,
+                     sizes: Sequence[float] = SENS_SIZES) -> dict[str, Any]:
+    """The chunks together (every seed once, every size): per size the seeds that are leads by the top tier's own rule
+    (p at or under q / books, Benjamini-Hochberg's first threshold, section 44), the leads that also clear the entry
+    rule (section 60's form), those that clear the entry rule, and those under 0.05; the false alarms at size 0; whether
+    the plant took (the median rank correlation near each size, the high side from :data:`TOP_SENS_SIDE_FROM`); and
+    the bracket around :data:`SENS_SHARE` for both lead counts."""
+    rows = [r for c in chunks for r in c["rows"]]
+    seeds = sorted({r["seed"] for r in rows})
+    if seeds != list(range(SENS_SEEDS)) or len(rows) != SENS_SEEDS * len(sizes):
+        raise ValueError(f"the chunks must hold seeds 0 .. {SENS_SEEDS - 1} once each at every size")
+    out: dict[str, Any] = {}
+    leads: dict[float, float] = {}
+    with_entry: dict[float, float] = {}
+    took = True
+    for size in sizes:
+        at = [r for r in rows if r["size"] == size]
+        bh = [r for r in at if r["p"] is not None and r["p"] <= q / books]
+        lead = [r for r in bh if r["clears_entry"]]
+        leads[size], with_entry[size] = len(bh) / len(at), len(lead) / len(at)
+        sharpes = sorted(r["annual_sharpe"] for r in at if r["annual_sharpe"] is not None)
+        median_ic = statistics.median(r["mean_rank_correlation"] for r in at if r["mean_rank_correlation"] is not None)
+        high = sum(1 for r in at if r["long"] == "high")
+        if size > 0:
+            took = took and TOP_SENS_TOOK[0] * size <= median_ic <= TOP_SENS_TOOK[1] * size
+            took = took and (size < TOP_SENS_SIDE_FROM or high >= TOP_SENS_SIDE_MIN)
+        out[f"{size:g}"] = {"lead": len(bh), "lead_with_entry": len(lead), "clears_entry": sum(1 for r in at if r["clears_entry"]),
+                            "p_under_0.05": sum(1 for r in at if r["p"] is not None and r["p"] < 0.05),
+                            "median_sharpe": sharpes[len(sharpes) // 2] if sharpes else None,
+                            "median_rank_correlation": round(median_ic, 4), "long_high": high}
+    alarms = out[f"{0.0:g}"]["p_under_0.05"]
+    within = TOP_SENS_FALSE_ALARM[0] <= alarms <= TOP_SENS_FALSE_ALARM[1]
+    return {"books": books, "first_threshold": q / books, "seeds": SENS_SEEDS, "sizes": out,
+            "false_alarms": alarms, "false_alarms_range": list(TOP_SENS_FALSE_ALARM), "false_alarms_within": within,
+            "plant_took": took, "doors_pass": within and took,
+            "bracket": sens_bracket(leads), "bracket_with_entry": sens_bracket(with_entry)}
+
+
 def sens_run(market: xsb.Market, family: str, null: Mapping[str, Mapping[str, Any]], span: tuple[date, date] = SPAN,
              *, sizes: Sequence[float] = SENS_SIZES, seeds: int = SENS_SEEDS) -> dict[str, Any]:
     """Every size and seed through the sweep's book, each beside the stored null books: the shares of seeds that
@@ -5122,7 +5225,7 @@ def main(argv: list[str] | None = None) -> int:
                                             "basis-counts", "basis", "wide-counts", "wide", "mid-counts", "mid",
                                             "tier-gate", "tier-counts", "tier-sweep", "tier-lead", "door-size",
                                             "lower-gate", "lower-counts", "lower-map", "lower-sweep", "lower-overlap",
-                                            "lower-axes",
+                                            "lower-axes", "top-sens", "top-sens-reading",
                                             "ha1-gate", "ha1-counts", "ha1", "sens", "axis-power",
                                             "lower-positioning-plan", "lower-positioning-digest",
                                             "lower-positioning-build", "lower-positioning-seal",
@@ -5138,6 +5241,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--new", type=Path, default=None, help="lower-family: the new sweep file")
     parser.add_argument("--check", type=Path, default=None, help="lower-family: the recorded family reading the recorded books "
                         "must give; lower-axes: that group's recorded map on this tier")
+    parser.add_argument("--seeds", default=None, help="top-sens: the seeds of this chunk, A:B")
     parser.add_argument("--shape", choices=BAR_SHAPES, default=None, help="bar: the book shape whose null books are read")
     parser.add_argument("--names", default=None,
                         help="sweep, tier-sweep, lower-sweep: only these books of the --only groups (comma list); "
@@ -5333,6 +5437,47 @@ def main(argv: list[str] | None = None) -> int:
                           "tier": LOWER_NAME, "variable": HA1_VARIABLE, "long": "high", "hold_weeks": HA1_EVERY,
                           "command": args.command, **body}, indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or (args.command == "ha1-counts" and body["stop"]) else EXIT_OK
+    if args.command == "top-sens-reading":
+        if not args.records:
+            print("refused: top-sens-reading needs --records, the chunk files", file=sys.stderr)
+            return EXIT_USAGE
+        try:
+            body = top_sens_reading([json.loads(Path(f).read_text(encoding="utf-8")) for f in args.records.split(",")])
+        except ValueError as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), "spec": SPEC, "command": args.command, **body},
+                         indent=1, sort_keys=True))
+        return EXIT_OK if body["doors_pass"] else EXIT_BLOCKED
+    if args.command == "top-sens":
+        if args.null is None or args.seeds is None:
+            print("refused: top-sens needs --null (the top-30 sweep's null file) and --seeds A:B", file=sys.stderr)
+            return EXIT_USAGE
+        stored = json.loads(args.null.read_text(encoding="utf-8"))
+        if stored.get("logic") != SWEEP_LOGIC or len(stored.get("books", {})) != SWEEP_NULLS:
+            print("refused: --null is not the top-30 sweep's 600 null books", file=sys.stderr)
+            return EXIT_USAGE
+        try:
+            first, last = (int(x) for x in args.seeds.split(":"))
+            seeds = range(first, last)
+            if seeds.start < 0 or seeds.stop > SENS_SEEDS or not seeds:
+                raise ValueError
+        except ValueError:
+            print(f"refused: --seeds is A:B within 0:{SENS_SEEDS}", file=sys.stderr)
+            return EXIT_USAGE
+        market = lab.hold(cache, attach=False)
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        if lab.last_day(market) > SPAN[1]:
+            print("refused: the market reaches past the search span", file=sys.stderr)
+            return EXIT_USAGE
+        body = top_sens_run(market, stored["books"], seeds)
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
+                          "command": args.command, "logic": SWEEP_LOGIC, "planted": "reads the next week by construction",
+                          "null_file_lake": stored.get("lake_snapshot"), **body}, indent=1, sort_keys=True))
+        return EXIT_BLOCKED if body.get("refused") else EXIT_OK
     if args.command == "sens":
         if args.family is None or args.null is None:
             print("refused: sens needs --family and --null", file=sys.stderr)

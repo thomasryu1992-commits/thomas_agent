@@ -459,6 +459,93 @@ def test_the_sweeps_null_variables_are_their_own_and_enough_for_the_correction()
     assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / sl.FAMILY_MAX, "a real effect can pass Benjamini–Hochberg over the largest family read"
 
 
+def test_the_top_planted_variable_leans_on_next_weeks_return_among_the_months_members_and_is_noise_at_zero():
+    market, mids = _mid_world()
+    day = MID_DAY
+    monthly = {date(day.year, day.month, 1): mids}
+    flat = sl.top_planted(market, monthly, 0.0, 7)
+    assert flat(market, mids[0], day) == flat(market, mids[0], day + timedelta(days=7)), "size 0: a value fixed per coin"
+    assert flat(market, mids[0], day) != sl.top_planted(market, monthly, 0.0, 8)(market, mids[0], day), "seeded"
+    full = sl.top_planted(market, monthly, 1.0, 7)
+    forward = {s: sl.lab.forward_return(market, s, day, 7) for s in mids}
+    order = lambda values: sorted(values, key=values.get)
+    assert order({s: full(market, s, day) for s in mids}) == order(forward), "size 1: the next week's ranks"
+    assert full(market, "BIG00USDT", day) == pytest.approx(0.0), "not a member that month: no lean, and size 1 keeps no noise"
+    assert full(market, mids[0], date(2019, 1, 6)) is None, "no bar, no value"
+
+
+def test_the_top_sens_run_counts_nothing_unless_the_stored_null_books_build_again(monkeypatch):
+    stored = {f"null_{kind}_{k:03d}": {"annual_sharpe": 0.1 * k, "clears_entry": False, "decisions_ranked": 200, "long": "high",
+                                       "mean_rank_correlation": 0.01, "negative_years": 1, "total_position_annual_pct": 1.0}
+              for kind in ("week", "fixed") for k in range(300)}
+    built = []
+
+    def fake_sweep(market, names, span=sl.SPAN, *, simulate=None):
+        out = {}
+        for name, (_, read) in names.items():
+            if name == "plant":
+                built.append(read)
+                out[name] = {"annual_sharpe": 25.05, "clears_entry": True, "long": "high", "mean_rank_correlation": 0.05,
+                             "total_position_annual_pct": 20.0, "negative_years": 0}
+            else:
+                out[name] = dict(stored[name])
+        return out
+    monkeypatch.setattr(sl, "sweep", fake_sweep)
+    monkeypatch.setattr(sl, "monthly_members", lambda market, span=None: {})
+    out = sl.top_sens_run(xsb.Market(), stored, range(0, 2), sizes=(0.0, 0.1))
+    assert out["null_checked"] == 10 and len(out["rows"]) == 4 and len(built) == 4
+    assert out["rows"][0]["p"] == pytest.approx((1 + 2 * 49) / 601), "the share of stored null books at or above it: 49 of each kind"
+    moved = {**stored, "null_fixed_002": {**stored["null_fixed_002"], "annual_sharpe": 9.9}}
+    refused = sl.top_sens_run(xsb.Market(), moved, range(0, 2), sizes=(0.0, 0.1))
+    assert "null_fixed_002" in refused["refused"] and "rows" not in refused
+    with pytest.raises(ValueError):
+        sl.top_sens_run(xsb.Market(), stored, range(95, 101))
+
+
+def test_the_top_sens_reading_counts_leads_by_the_first_threshold_and_checks_its_doors():
+    def rows(seeds, *, ic=lambda size: size, side=lambda seed, size: "high"):
+        out = []
+        for seed in seeds:
+            for size in sl.SENS_SIZES:
+                strong = size >= 0.10 and seed % 10 < 9                     # 90 of 100 seeds from 0.10 up
+                out.append({"seed": seed, "size": size, "long": side(seed, size), "mean_rank_correlation": ic(size),
+                            "annual_sharpe": 1.6 if strong else 0.2, "clears_entry": strong and seed % 10 < 6,
+                            "p": 1 / 601 if strong else (0.04 if size == 0.0 and seed < 4 else 0.5)})
+        return out
+    chunks = [{"rows": rows(range(0, 50))}, {"rows": rows(range(50, 100))}]
+    out = sl.top_sens_reading(chunks)
+    assert out["first_threshold"] == pytest.approx(0.10 / 59) and out["false_alarms"] == 4 and out["false_alarms_within"]
+    assert out["plant_took"] and out["doors_pass"]
+    assert out["sizes"]["0"]["lead"] == 0, "p 0.04 is not under 0.10 / 59"
+    assert out["sizes"]["0.1"]["lead"] == 90 and out["sizes"]["0.1"]["lead_with_entry"] == 60
+    assert out["bracket"] == {"under": 0.08, "at_or_over": 0.1}, "the top tier's own rule: the first threshold alone"
+    assert out["bracket_with_entry"] == {"under": 0.2, "at_or_over": None}
+    flat = sl.top_sens_reading([{"rows": rows(range(0, 100), ic=lambda size: 0.5 * size)}])
+    assert not flat["plant_took"] and not flat["doors_pass"], "a lean that did not take is a broken door, not a finding"
+    lost = sl.top_sens_reading([{"rows": rows(range(0, 100), side=lambda seed, size: "low" if seed < 10 else "high")}])
+    assert not lost["plant_took"], "from 0.05 up nearly every seed is long the high side"
+    few = [{"rows": [dict(r, p=0.5) for r in rows(range(0, 100))]}]
+    assert sl.top_sens_reading(few)["false_alarms"] == 0 and not sl.top_sens_reading(few)["doors_pass"], "under 3 at size 0"
+    with pytest.raises(ValueError):
+        sl.top_sens_reading(chunks[:1])
+    with pytest.raises(ValueError):
+        sl.top_sens_reading([chunks[0], chunks[0]])
+
+
+def test_the_top_sens_commands_refuse_what_they_cannot_read(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setenv("RESEARCH_CACHE", str(tmp_path))
+    assert sl.main(["top-sens"]) == sl.EXIT_USAGE
+    other = tmp_path / "null.json"
+    other.write_text(json.dumps({"logic": "L22", "books": {}}), encoding="utf-8")
+    assert sl.main(["top-sens", "--null", str(other), "--seeds", "0:10"]) == sl.EXIT_USAGE
+    other.write_text(json.dumps({"logic": "L9T", "books": {f"n{k}": {} for k in range(600)}}), encoding="utf-8")
+    assert sl.main(["top-sens", "--null", str(other), "--seeds", "90:101"]) == sl.EXIT_USAGE
+    assert sl.main(["top-sens-reading"]) == sl.EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "not the top-30 sweep's 600 null books" in err and "--seeds is A:B" in err
+
+
 def test_a_swept_book_is_long_the_side_its_own_rank_correlation_points_to(monkeypatch):
     asked = {}
     monkeypatch.setattr(sl, "monthly_members", lambda market, span=None: {})
