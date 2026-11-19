@@ -14,3 +14,14 @@ was written early for the same reason. The next report is due by 2026-12-03.
 
 **Next.** One paper design for new variables (document only). It counts the concepts the registry lacks on each of
 the nine sources on disk. If none clears the threshold, that is the result, and the dated rows follow.
+
+## Round 83 (§101, same day, document only): the empty concepts of the nine sources
+
+- *What it counted.* For each of the nine sources on disk, the concepts the registry lacks. It applied §97.2's
+  threshold plus round 81's line about ratios that move with price activity, and it also required an open slot.
+- *Result: none clears.* Each concept is the material of a registered one (close location and the hourly variance
+  ratio belong to the high–low spread estimate), a kin of a closed one, without a "who pays" line, or without a
+  slot (depth).
+- *The open slots stay empty.*
+- *What could bring new material.* Thomas's §85.5 Q1/Q2 (both unanswered, default no), the monthly rows, a map lead.
+- *Next.* The dated rows: the report by 2026-12-03, the monthly row on 2026-12-14–17, the block clock on 2026-12-17.
