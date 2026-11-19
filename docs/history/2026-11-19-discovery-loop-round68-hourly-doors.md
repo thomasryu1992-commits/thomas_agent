@@ -21,3 +21,8 @@
 - *A correction before any output.* Coverage's second ratio counted the span's last month as "leaving the top 100",
   because the month after it is outside the span; those cells now count on neither side. The first chain was stopped
   while it waited for CI, before the run started.
+
+**Result (§86.4).** Both variables pass all three doors on both tiers: coverage 0.96–1.00 on both ratios; nearest kin
+on the top tier N1's own R² (−0.685; idiosyncratic volatility 0.546) and, for N2, extreme days (0.331); week-ahead
+rank persistence 0.68–0.78. Next: register both (64 variables, 124 random ones), every map and sweep loader
+attaching the hourly values, the 101+ tier left out by name.
