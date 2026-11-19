@@ -4162,3 +4162,59 @@ def test_the_hourly_lead_is_laid_beside_every_struck_book_on_both_upper_tiers_wi
         assert rows["beside"]["vol_30"]["median_cosine"] == 1.0, "low-side lead vs high-side book; the hedge is left out"
         assert rows["beside"]["beta_30"]["median_cosine"] == 0.0 and rows["closed_by"] == ["vol_30"]
         assert rows["beside"]["vol_30"]["decisions"] == len(sl.sundays(span))
+
+
+def _hp1_report(sharpe, total, years, clears, stable):
+    return {"annual_sharpe": sharpe, "total_position_annual_pct": total, "sum_pct": total * 10, "months": 60,
+            "cost_pct": 1.0, "funding_pct": 0.5, "clears_entry": clears, "years_total_position_pct": years,
+            "stability": {"passes": stable, "negative_years": 0}}
+
+
+def test_h_p1_reads_its_four_conditions_on_the_low_side_and_the_later_years_on_earlier_sides(monkeypatch):
+    low = _hp1_report(1.6, 20.0, {"2020": 5.0, "2021": 30.0, "2022": 25.0, "2023": 10.0, "2024": 20.0}, True, True)
+    high = _hp1_report(-1.6, -20.0, {"2022": -25.0, "2023": -10.0, "2024": -20.0}, False, False)
+    seen = []
+
+    def measure(market, weigher, span, *, simulate):
+        way = 1 if weigher(None, (), date(2021, 1, 3), "w").get("A", 0) > 0 else -1
+        seen.append(way)
+        return low if way == -1 else high
+
+    monkeypatch.setitem(sl.BOOKS, sl.SWEEP_LOGIC, lambda read, direction: (lambda *a, **k: {"A": direction(None)}))
+    monkeypatch.setattr(sl, "measure", measure)
+    monkeypatch.setattr(sl, "monthly_members", lambda market, span=None: {})
+    days = {date(2020, 3, 1) + timedelta(days=7 * k): -0.05 for k in range(250)}
+    monkeypatch.setattr(sl, "decision_ics", lambda market, read, monthly, span: days)
+    nulls = {f"n{k}": {"annual_sharpe": k / 600} for k in range(600)}
+    out = sl.hp1(xsb.Market(), nulls)
+    assert sorted(seen) == [-1, 1] and out["long"] == "low" and out["book"]["annual_sharpe"] == 1.6
+    assert out["rungs"]["2b_later_years"]["years"] == {"2022": 25.0, "2023": 10.0, "2024": 20.0}
+    assert all(s["long"] == "low" for s in out["rungs"]["2b_later_years"]["sides"].values())
+    assert out["rungs"]["2c_beside_null_books"]["p"] == round(1 / 601, 4) and out["passes"] and out["reading"] == "candidate"
+    nulls["n0"]["annual_sharpe"] = 5.0
+    for k in range(1, 40):
+        nulls[f"n{k}"]["annual_sharpe"] = 2.0
+    assert not sl.hp1(xsb.Market(), nulls)["passes"], "40 of 600 nulls at or above: p 0.068"
+
+
+def test_h_p1_runs_only_after_its_recorded_row_builds_again_and_enough_weeks_hold_a_book(monkeypatch, capsys, tmp_path):
+    row = {"long": "low", "mean_rank_correlation": -0.076, "annual_sharpe": 0.231, "total_position_annual_pct": 4.13,
+           "clears_entry": False, "negative_years": 2, "funding_pct": 7.33, "decisions_ranked": 243}
+    monkeypatch.setattr(sl, "sweep", lambda market, names, span=None, accounting="held4", **k: {"price_delay_30": dict(row)})
+    assert sl.hp1_gate(xsb.Market(), row) == []
+    assert sl.hp1_gate(xsb.Market(), {**row, "annual_sharpe": 0.232}) == ["annual_sharpe"]
+    monkeypatch.setattr(sl, "monthly_members", lambda market, span=None: {})
+    stand = {2022}
+    monkeypatch.setitem(sl.BOOKS, sl.SWEEP_LOGIC,
+                        lambda read, direction: (lambda market, members, day, signal, seed=None:
+                                                 {"A": -1.0, sl.HEDGE: 1.0} if day.year in stand else {sl.HEDGE: 1.0}))
+    counts = sl.hp1_counts(xsb.Market())
+    assert counts["stop"] and counts["short_years"] == ["2023", "2024"], "a book of the hedge alone does not stand"
+    assert counts["years"]["2022"]["with_a_book"] == counts["years"]["2022"]["decisions"] >= 52
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setenv("RESEARCH_CACHE", str(tmp_path))
+    assert sl.main(["hp1"]) == sl.EXIT_USAGE
+    other = tmp_path / "null.json"
+    other.write_text(json.dumps({"accounting": "held4", "logic": "L9T", "books": {f"n{k}": {} for k in range(600)}}), encoding="utf-8")
+    assert sl.main(["hp1", "--check", str(other), "--null", str(other)]) == sl.EXIT_USAGE
+    assert "not round 64's 600 weekly null books" in capsys.readouterr().err

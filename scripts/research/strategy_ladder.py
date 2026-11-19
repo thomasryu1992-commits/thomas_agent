@@ -3699,6 +3699,79 @@ def hourly_lead_overlap(market: xsb.Market, span: tuple[date, date] = SPAN) -> d
             "leads": out, "returns_computed": False}
 
 
+# --- H-P1 (round 71, section 89; Thomas 2026-11-19 "올림"): the price-delay lead as one book --------------------
+# The lead is the map's 7-day cell on both upper tiers, low side. The ranks 31-100 weekly book was read by the tier
+# sweep (section 87.5); the one book of the lead's horizon never read for this variable is the top tier's weekly
+# book: L9T over the month's top 30, held weekly, the engine's costs, round 64's weekly null beside it.
+HP1 = {"variable": "price_delay_30", "long": "low", "tier": "top30", "logic": SWEEP_LOGIC, "accounting": "held"}
+HP1_GATE_KEYS = ("long", "mean_rank_correlation", "annual_sharpe", "total_position_annual_pct", "clears_entry",
+                 "negative_years", "funding_pct", "decisions_ranked")
+HP1_MIN_DECISIONS_LATER_YEAR = 40          # of about 52 weekly decisions with a book, in each of 2022-2024
+
+
+def hp1_gate(market: xsb.Market, recorded: Mapping[str, Any], span: tuple[date, date] = SPAN) -> list[str]:
+    """The four-week sweep row of the variable built again by the same code must equal round 69's recorded row on
+    :data:`HP1_GATE_KEYS`; the keys that differ, empty when it does."""
+    name = HP1["variable"]
+    again = sweep(market, {name: lab.variables()[name]}, span, accounting=SWEEP_ACCOUNTING)[name]
+    return [k for k in HP1_GATE_KEYS if again.get(k) != recorded.get(k)]
+
+
+def hp1_counts(market: xsb.Market, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """Weights only: per year the weekly decisions and those where the book stands; the stop when one of
+    :data:`LATER_YEARS` has fewer than :data:`HP1_MIN_DECISIONS_LATER_YEAR`."""
+    read = lab.variables()[HP1["variable"]][1]
+    own = BOOKS[SWEEP_LOGIC](read, lambda _d: -1)
+    monthly = monthly_members(market, span)
+    years: dict[str, list[int]] = {}
+    for day in sundays(span):
+        if not span[0] <= day <= span[1]:
+            continue
+        row = years.setdefault(str(day.year), [0, 0])
+        row[0] += 1
+        row[1] += bool({s for s in own(market, monthly.get(date(day.year, day.month, 1), ()), day, bs.CADENCE, seed=None)
+                        if s != HEDGE})
+    short = [y for y in map(str, LATER_YEARS) if years.get(y, [0, 0])[1] < HP1_MIN_DECISIONS_LATER_YEAR]
+    return {"years": {y: {"decisions": v[0], "with_a_book": v[1]} for y, v in sorted(years.items())},
+            "stop": bool(short), "short_years": short}
+
+
+def hp1(market: xsb.Market, null_books: Mapping[str, Mapping[str, Any]], span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """H-P1's four conditions, all to pass: 2(a) the entry rule over the 60 months (months without a book count as
+    zero); 2(b) 2022-2024 each read on the side the weekly rank correlations before it name (:func:`later_years`);
+    2(c) p < 0.05 beside round 64's 600 weekly null books (each on its own mean correlation's side, as the sweep
+    picks); 3 the stability rule."""
+    read = lab.variables()[HP1["variable"]][1]
+    simulate = ACCOUNTING[HP1["accounting"]]
+    reports = {way: measure(market, BOOKS[SWEEP_LOGIC](read, lambda _d, way=way: way), span, simulate=simulate)
+               for way in (1, -1)}
+    own = reports[-1 if HP1["long"] == "low" else 1]
+    ics = decision_ics(market, read, monthly_members(market, span), span)
+    years: dict[str, float] = {}
+    sides: dict[str, Any] = {}
+    for year in LATER_YEARS:
+        before = [ic for day, ic in ics.items() if day.year < year]
+        if len(before) < lab.MIN_DECISIONS:
+            years[str(year)], sides[str(year)] = 0.0, {"decisions_before": len(before), "long": None}
+            continue
+        mean = statistics.fmean(before)
+        way = 1 if mean > 0 else -1
+        years[str(year)] = reports[way]["years_total_position_pct"].get(str(year), 0.0)
+        sides[str(year)] = {"decisions_before": len(before), "mean_rank_correlation_before": round(mean, 4),
+                            "long": "high" if way > 0 else "low"}
+    rungs = {"2a_entry": bool(own["clears_entry"]),
+             "2b_later_years": {**later_years(years), "sides": sides},
+             "2c_beside_null_books": beside_nulls(own["annual_sharpe"], [v.get("annual_sharpe") for v in null_books.values()]),
+             "3_stability": own["stability"]}
+    passes = rungs["2a_entry"] and rungs["2b_later_years"]["passes"] and rungs["2c_beside_null_books"]["passes"] \
+        and rungs["3_stability"]["passes"]
+    return {"hypothesis": "H-P1", **HP1, "book": {k: own[k] for k in ("annual_sharpe", "total_position_annual_pct", "sum_pct",
+                                                                    "months", "cost_pct", "funding_pct",
+                                                                    "years_total_position_pct")},
+            "mean_rank_correlation": round(statistics.fmean(ics.values()), 4) if ics else None,
+            "rungs": rungs, "passes": passes, "reading": "candidate" if passes else "closed"}
+
+
 # Round 41 (section 58): round 40's two map leads, each with the side its cell names. Nothing here is a variant.
 LOWER_LEADS = {"residual_momentum_30": {"long": "low", "horizon_days": 7, "group": "price_volume"},
                "listing_age": {"long": "high", "horizon_days": 28, "group": "coin_character"}}
@@ -5536,7 +5609,7 @@ def main(argv: list[str] | None = None) -> int:
                                             "hot-counts", "hot", "gap-counts", "gap", "flush-counts", "flush",
                                             "basis-counts", "basis", "wide-counts", "wide", "mid-counts", "mid",
                                             "tier-gate", "tier-counts", "tier-sweep", "tier-lead", "door-size",
-                                            "lower-gate", "lower-counts", "lower-map", "lower-sweep", "lower-overlap", "hourly-lead-overlap",
+                                            "lower-gate", "lower-counts", "lower-map", "lower-sweep", "lower-overlap", "hourly-lead-overlap", "hp1",
                                             "lower-axes", "top-sens", "top-sens-reading", "null-legs-reading",
                                             "weekly-top", "weekly-top-family",
                                             "ha1-gate", "ha1-counts", "ha1", "sens", "axis-power",
@@ -5842,6 +5915,36 @@ def main(argv: list[str] | None = None) -> int:
                           "command": args.command, "null_file_lake": stored.get("lake_snapshot"), **body},
                          indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or body["false_alarm"]["stop"] or body["own_start_later"] else EXIT_OK
+    if args.command == "hp1":
+        if args.check is None or args.null is None:
+            print("refused: hp1 needs --check (round 69's top-30 sweep file) and --null (round 64's weekly null)", file=sys.stderr)
+            return EXIT_USAGE
+        null = json.loads(args.null.read_text(encoding="utf-8"))
+        if null.get("accounting") != HP1["accounting"] or null.get("logic") != SWEEP_LOGIC or len(null.get("books", {})) != SWEEP_NULLS:
+            print("refused: --null is not round 64's 600 weekly null books", file=sys.stderr)
+            return EXIT_USAGE
+        recorded = json.loads(args.check.read_text(encoding="utf-8")).get("books", {}).get(HP1["variable"])
+        if not recorded:
+            print("refused: --check holds no recorded row of the variable", file=sys.stderr)
+            return EXIT_USAGE
+        market = lab.hold_hourly(cache)
+        if market is None:
+            print("BLOCKED: contract types or the hourly values are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        head = {"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC, "span": [d.isoformat() for d in SPAN],
+                "last_day_read": lab.last_day(market).isoformat(), "command": args.command}
+        differ = hp1_gate(market, recorded)
+        if differ:
+            print(json.dumps({**head, "refused": "the recorded four-week row does not build again", "differ": differ},
+                             indent=1, sort_keys=True))
+            return EXIT_BLOCKED
+        counts = hp1_counts(market)
+        if counts["stop"]:
+            print(json.dumps({**head, "gate": "passed", "counts": counts}, indent=1, sort_keys=True))
+            return EXIT_BLOCKED
+        print(json.dumps({**head, "gate": "passed", "counts": counts, **hp1(market, null["books"])},
+                         indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_OK
     if args.command == "hourly-lead-overlap":
         market = lab.hold(cache, attach=False, flow=True)
         if market is not None:
