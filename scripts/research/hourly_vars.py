@@ -231,7 +231,9 @@ def reader(name: str):
 def coverage(market: xsb.Market, name: str, tiers: Mapping[str, Mapping[date, Sequence[str]]],
              days: Sequence[date]) -> dict[str, Any]:
     """Section 57.3's two ratios per tier: of the cells a null book ranks (a member with a bar on the day), the
-    share with a value; the same over the members not in the next month's top 100."""
+    share with a value; the same over the members not in the next month's top 100. A cell whose next month lies past
+    the tiers' last month (the span's December) belongs to neither side of the second ratio: whether it leaves is
+    not known."""
     read = reader(name)
     top = {m: set(tiers["top30"].get(m, ())) | set(tiers["rank31_100"].get(m, ())) for m in tiers["top30"]}
     out: dict[str, Any] = {}
@@ -245,7 +247,7 @@ def coverage(market: xsb.Market, name: str, tiers: Mapping[str, Mapping[date, Se
                     continue
                 has = read(market, symbol, day) is not None
                 cells, filled = cells + 1, filled + has
-                if symbol not in top.get(following, set()):
+                if following in top and symbol not in top[following]:
                     out_cells, out_filled = out_cells + 1, out_filled + has
         out[tier] = {"cells": cells, "share": round(filled / cells, 4) if cells else None,
                      "cells_out_next_month": out_cells,

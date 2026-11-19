@@ -18,3 +18,6 @@
 - *A coin hour missing.* The BTC prefix sums count every hour whose seven BTC returns exist; an hour the coin lacks is
   taken back out, so the regression is exactly the one over the rows both have (tested against a direct fit).
 - *Overlap judged as §40 judged it,* on the top tier's median, with N1's own same-window R² among the kin.
+- *A correction before any output.* Coverage's second ratio counted the span's last month as "leaving the top 100",
+  because the month after it is outside the span; those cells now count on neither side. The first chain was stopped
+  while it waited for CI, before the run started.

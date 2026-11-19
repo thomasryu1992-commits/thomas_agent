@@ -143,6 +143,11 @@ def test_coverage_counts_the_ranked_cells_and_the_coins_leaving_the_top_hundred(
     assert out["top30"]["cells"] == 5 and out["top30"]["share"] == 0.8, "February's top tier is A alone"
     assert out["top30"]["cells_out_next_month"] == 2 and out["top30"]["share_out_next_month"] == 0.5
     assert out["rank31_100"]["share"] == 0.5, "D never has a value"
+    march = [date(2021, 3, 1)]                               # the tiers' last month: April is not known
+    values_m = {s: {march[0]: {"price_delay_30": 1.0}} for s in "ABCD"}
+    edge = hv.coverage(_market(values_m, days=march), "price_delay_30", tiers, march)
+    assert edge["top30"]["cells"] == 2
+    assert edge["top30"]["cells_out_next_month"] == 0, "the span's last month: leaving is not known, so not counted"
     no_bar = hv.coverage(_market(values, bars=("A",), days=days), "price_delay_30", tiers, days)
     assert no_bar["top30"]["cells"] == 3 and no_bar["rank31_100"]["cells"] == 0, "a member without a bar is not a cell"
 
