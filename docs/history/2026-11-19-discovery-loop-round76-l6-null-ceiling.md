@@ -20,3 +20,12 @@ side alone, with the market hedged in Bitcoin). §93.6 said the count could be d
   with no beta is hedged at 1 and counted; a door stops the run when that share passes 5%.
 - *Zero cost, run twice per book.* L22 is split by side and L6 by alts and leg. Two doors prove the split: on the first
   five books, both sides add up to the stressed book's net plus cost, and on every book the alts equal the long side.
+
+**Result (§94.6, 2026-11-19 12:55Z).** All five doors passed on both tiers. The registration commit's Ubuntu pytest
+had failed in the CI runner's apt mirror; an empty commit (`bfb8e9eb`) re-fired the checks, and the runs came after it.
+- Ranks 31–100: the null books' L6 ceiling has median 16.35%, and 376 of 600 reach 15% at zero cost. That tier's
+  alts beat beta-hedged Bitcoin in 2021–2024, so the bar is the null's 95th percentile, 24.16%.
+- Ranks 101+: the median is −7.93% and the maximum 5.58%, so the bar stays at 15%.
+- Two-sided null books also reach 15% about 7% of the time, a fact beside §92.1's count. It changes no verdict.
+- Thomas is asked (§94.7, default no) whether to build the 41 unstruck books per tier as L6 once and count their
+  ceilings against those bars.
