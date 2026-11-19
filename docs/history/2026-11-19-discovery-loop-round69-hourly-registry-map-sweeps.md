@@ -19,3 +19,11 @@
   (§85.4's order) and the volume concentration is excluded by name.
 - *The whole registry is not mapped at once.* That was already refused because of the spot-flow group; the hourly
   group is mapped alone too.
+
+**Result (§87.5).** The recorded lines held. The price delay met the map's lead rule on both upper tiers (7-day all
+weeks, t −4.90 and −4.36 against 4.34), with the sign opposite to the one registered: coins that lag BTC more
+trailed the next week. Its books did not survive (ranks 31–100 −0.175, the price leg eaten by cost; top 30 0.231
+on the four-week book). The volume concentration gave neither and is closed. One chain guard (share of decisions
+ranked ≥ 0.9) was wrong for ranks 31–100, whose recorded maximum is 0.815; it was corrected and re-applied to the
+same map file before any new cell was opened. Next: the lead's book-weight overlap with the struck volatility
+books, on inputs; under 0.5 it goes to Thomas with default not raised.
