@@ -22,3 +22,8 @@ sweep on 2026-11-19 ("지금 열어줘"), in place of waiting for the blocked cl
   name; its cost leg and its count among the fixed-noise nulls are printed as facts beside it.
 - *The blocked clock.* This sweep is §4's second restructure pulled forward; per D2 the clock restarts four weeks
   from the day its result is recorded.
+
+**Result (§84.5).** Every door passed: all 50 books, depth included, built four-weekly back to their recorded rows,
+and the weekly null's summary read as recorded. No book passed BH (first threshold 0.002); two were under 0.05
+against 2.5 by chance (both positioning levels, annual Sharpe 0.859 and 0.817); none cleared the entry rule. The
+weekly top-30 book closes and §44.4 stands again; the blocked clock now runs to 2026-12-17.
