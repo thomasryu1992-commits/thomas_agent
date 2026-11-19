@@ -12,3 +12,7 @@ hourly variable (60 × 2 × 6 = 720).
   re-run first and must match its recorded counts on the same lake snapshot.
 - *A pass would not reopen the closed lead.* The price delay's map lead and H-P1 are closed, so a passing test is a
   lead whose route to the form is Thomas's question, default not raised.
+
+**Result (§90.4).** All four doors passed (recorded family, the spot group's 36 rows, one lake snapshot, twelve new
+tests only). In the 702-test family nothing passes Benjamini–Hochberg; none of the twelve new tests is under 0.05
+(smallest 0.136). The price delay's axis check closes, and with it every row of the two hourly variables.
