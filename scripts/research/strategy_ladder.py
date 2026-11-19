@@ -4203,6 +4203,84 @@ def null_legs_reading(four: Mapping[str, Any], weekly: Mapping[str, Any], record
                       "gap_not_paired": tail_gap}}
 
 
+# --- round 66: the top-30 sweep's books held weekly (Thomas 2026-11-19, "지금 열어줘") -----------------------------------
+# Section 44.4 kept a book that failed the top-30 sweep from being measured again under another logic; Thomas opened
+# this one sweep: the recorded family's books, the same logic (L9T) and costs, held weekly (``held``), read against
+# round 64's weekly null. Each group first builds its books four-weekly again and must give the recorded rows back.
+WEEKLY_TOP_ACCOUNTING = "held"
+WEEKLY_TOP_RECORD_KEYS = ("long", "annual_sharpe", "total_position_annual_pct", "clears_entry", "negative_years")
+WEEKLY_TOP_LOADERS = {"depth": "hold_depth"}          # a group the sweep has no loader for, loaded alone here
+WEEKLY_TOP_MAY_LEAVE = frozenset({"depth"})           # the only group the reading may miss (its load or its door)
+WEEKLY_TOP_TIER = "top30"                             # a struck variable (``signal_lab.no_book``) gets no weekly book
+
+
+def weekly_top_names(record: Mapping[str, Any], groups: set[str]) -> dict[str, tuple[str, lab.Variable]]:
+    """The recorded top-30 family's books of ``groups`` that are not struck (section 84: nine of the 59 are, and get
+    no book on any tier), by name, from the registry. Raises ``ValueError`` when the
+    record names a book the registry does not hold or names none of these groups."""
+    registry = lab.variables()
+    rows = [r for r in record["all"] if r["group"] in groups and not lab.no_book(r["variable"], WEEKLY_TOP_TIER)]
+    unknown = sorted(r["variable"] for r in rows if r["variable"] not in registry)
+    if unknown or not rows:
+        raise ValueError(f"the recorded family has no books of {sorted(groups)}" if not rows else f"not registered: {unknown}")
+    return {r["variable"]: registry[r["variable"]] for r in rows}
+
+
+def weekly_top_sweep(market: xsb.Market, names: Mapping[str, tuple[str, lab.Variable]], record: Mapping[str, Any],
+                     span: tuple[date, date] = SPAN, *, simulate4: Callable[..., Any] | None = None,
+                     simulate1: Callable[..., Any] | None = None) -> dict[str, Any]:
+    """Round 66 for one load. The books are built four-weekly first and must give the recorded family's rows back on
+    :data:`WEEKLY_TOP_RECORD_KEYS`; when one does not, nothing weekly is built and only the names are returned. Then
+    the same books are held weekly, with their legs."""
+    recorded = {r["variable"]: r for r in record["all"]}
+    again = sweep(market, names, span, simulate=simulate4, accounting=SWEEP_ACCOUNTING)
+    differ = sorted(n for n in names if again[n].get("skipped") or n not in recorded
+                    or any(again[n].get(k) != recorded[n].get(k) for k in WEEKLY_TOP_RECORD_KEYS))
+    if differ:
+        return {"refused": "recorded books do not build again four-weekly", "differ": differ}
+    return {"door": {"recorded_books_again": len(names)},
+            "books": sweep(market, names, span, simulate=simulate1, accounting=WEEKLY_TOP_ACCOUNTING, legs=True)}
+
+
+def weekly_top_family(runs: Sequence[Mapping[str, Any]], null: Mapping[str, Any], record: Mapping[str, Any],
+                      *, q: float = 0.10) -> dict[str, Any]:
+    """The round-66 family: every book of the runs against the weekly null, read as the top-30 sweep is read
+    (:func:`sweep_reading`). Blocks when a run refused or is held another way, when a book is outside the recorded
+    family, skipped or built twice, when the null is not the weekly book's, or when a recorded book is missing from a
+    group other than :data:`WEEKLY_TOP_MAY_LEAVE`. The family is the books present: the recorded 59 less the struck
+    nine (a struck book present blocks, as one outside the family)."""
+    family_names = {r["variable"]: r["group"] for r in record["all"] if not lab.no_book(r["variable"], WEEKLY_TOP_TIER)}
+    books: dict[str, Mapping[str, Any]] = {}
+    problems = []
+    if null.get("accounting") != WEEKLY_TOP_ACCOUNTING or null.get("logic") != SWEEP_LOGIC or len(null.get("books", {})) != SWEEP_NULLS:
+        problems.append("the null is not the weekly book's 600 null books")
+    for run in runs:
+        if run.get("refused") or run.get("accounting") != WEEKLY_TOP_ACCOUNTING or run.get("command") != "weekly-top":
+            problems.append(f"run {run.get('only')}: refused or not a weekly-top run")
+            continue
+        for name, body in run["books"].items():
+            if name in books or name not in family_names or body.get("skipped") or body.get("annual_sharpe") is None:
+                problems.append(f"book {name}: twice, outside the family, or unread")
+            books[name] = body
+    left = sorted(n for n in family_names if n not in books)
+    if any(family_names[n] not in WEEKLY_TOP_MAY_LEAVE for n in left):
+        problems.append(f"missing books outside {sorted(WEEKLY_TOP_MAY_LEAVE)}: {[n for n in left if family_names[n] not in WEEKLY_TOP_MAY_LEAVE]}")
+    if len(books) > FAMILY_MAX:
+        problems.append(f"{len(books)} books pass the family's cap of {FAMILY_MAX}")
+    if problems:
+        return {"blocked": True, "problems": problems}
+    reading = sweep_reading(books, null["books"], q=q)
+    survivors = sorted(r["variable"] for r in reading["survive_benjamini_hochberg"])
+    fixed = [v["annual_sharpe"] for k, v in null["books"].items() if k.startswith("null_fixed_") and v.get("annual_sharpe") is not None]
+    # Section 84: a fact line per survivor, not a rule. The p runs light for slow variables (section 82.5: 23 of the
+    # 300 fixed-noise books sit under 0.05 against the pooled null), so the fixed half's count is printed beside it.
+    return {"blocked": False, "family": len(books), "left_out": left, "first_threshold": q / len(books),
+            "reading": reading,
+            "survivors": {n: {"legs_annual_pct": books[n]["legs"]["annual_pct"],
+                              "fixed_nulls_at_or_above": sum(1 for v in fixed if v >= books[n]["annual_sharpe"]),
+                              "fixed_nulls": len(fixed)} for n in survivors}}
+
+
 def sens_run(market: xsb.Market, family: str, null: Mapping[str, Mapping[str, Any]], span: tuple[date, date] = SPAN,
              *, sizes: Sequence[float] = SENS_SIZES, seeds: int = SENS_SEEDS) -> dict[str, Any]:
     """Every size and seed through the sweep's book, each beside the stored null books: the shares of seeds that
@@ -5398,6 +5476,7 @@ def main(argv: list[str] | None = None) -> int:
                                             "tier-gate", "tier-counts", "tier-sweep", "tier-lead", "door-size",
                                             "lower-gate", "lower-counts", "lower-map", "lower-sweep", "lower-overlap",
                                             "lower-axes", "top-sens", "top-sens-reading", "null-legs-reading",
+                                            "weekly-top", "weekly-top-family",
                                             "ha1-gate", "ha1-counts", "ha1", "sens", "axis-power",
                                             "lower-positioning-plan", "lower-positioning-digest",
                                             "lower-positioning-build", "lower-positioning-seal",
@@ -5613,6 +5692,18 @@ def main(argv: list[str] | None = None) -> int:
                           "tier": LOWER_NAME, "variable": HA1_VARIABLE, "long": "high", "hold_weeks": HA1_EVERY,
                           "command": args.command, **body}, indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or (args.command == "ha1-counts" and body["stop"]) else EXIT_OK
+    if args.command == "weekly-top-family":
+        paths = [p for p in (args.records or "").split(",") if p]
+        if not paths or args.null is None or args.reading is None:
+            print("refused: weekly-top-family needs --records (the weekly-top runs), --null and --reading", file=sys.stderr)
+            return EXIT_USAGE
+        record = json.loads(args.reading.read_text(encoding="utf-8"))
+        body = weekly_top_family([json.loads(Path(p).read_text(encoding="utf-8")) for p in paths],
+                                 json.loads(args.null.read_text(encoding="utf-8")), record.get("reading", record))
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), "spec": SPEC, "command": args.command, "records": paths,
+                          "logic": SWEEP_LOGIC, "accounting": WEEKLY_TOP_ACCOUNTING, **body},
+                         indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_BLOCKED if body["blocked"] else EXIT_OK
     if args.command == "null-legs-reading":
         paths = (args.records or "").split(",")
         if len(paths) != 4 or "" in paths:
@@ -5935,6 +6026,31 @@ def main(argv: list[str] | None = None) -> int:
                           **(lead_check if args.command == "lead-check" else lead_attribution)(market, args.only)},
                          indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_OK
+    if args.command == "weekly-top":
+        wanted = set((args.only or "").split(",")) - {""}
+        if args.reading is None or not wanted:
+            print("refused: weekly-top needs --only (groups) and --reading (the recorded top-30 family)", file=sys.stderr)
+            return EXIT_USAGE
+        record = json.loads(args.reading.read_text(encoding="utf-8"))
+        record = record.get("reading", record)
+        try:
+            names = weekly_top_names(record, wanted)
+            if len(wanted) == 1 and next(iter(wanted)) in WEEKLY_TOP_LOADERS:
+                market = getattr(lab, WEEKLY_TOP_LOADERS[next(iter(wanted))])(cache)
+            else:
+                market = sweep_market(cache, wanted)
+        except ValueError as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        if market is None:
+            print("BLOCKED: a piece the load needs is missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        body = weekly_top_sweep(market, names, record)
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
+                          "logic": SWEEP_LOGIC, "accounting": WEEKLY_TOP_ACCOUNTING, "only": sorted(wanted),
+                          "command": args.command, **body}, indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_BLOCKED if body.get("refused") else EXIT_OK
     if args.command in ("sweep", "transfer"):
         wanted = set((args.only or "").split(",")) - {""}
         names = null_variables() if wanted == {"null"} else {n: v for n, v in lab.variables().items() if v[0] in wanted}

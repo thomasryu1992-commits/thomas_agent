@@ -4045,3 +4045,87 @@ def test_a_lead_with_its_own_list_is_ruled_on_every_book_in_it(monkeypatch):
     assert out["kin_rule"] == {"beside": ["other", "mirror"], "threshold": 0.5, "kin": True, "rebuilds": ["mirror"]}, \
         "every listed book is read, not the first only; upside down is the same book"
     assert abs(out["position_overlap"]["other"]["median"]) < 0.5 and out["reads_returns"] is False
+
+
+def test_the_weekly_top_sweep_holds_weekly_only_after_the_recorded_books_build_again(monkeypatch):
+    calls = []
+    built = {"held4": {"a": {"long": "high", "annual_sharpe": 0.5, "total_position_annual_pct": 3.0, "clears_entry": False,
+                             "negative_years": 2}},
+             "held": {"a": {"long": "high", "annual_sharpe": 0.9, "legs": {}}}}
+
+    def sweep(market, names, span=None, *, simulate=None, accounting="held4", legs=False):
+        calls.append((accounting, legs))
+        return {n: dict(built[accounting][n]) for n in names}
+
+    monkeypatch.setattr(sl, "sweep", sweep)
+    record = {"all": [{"variable": "a", "group": "g", "p": 0.3, **built["held4"]["a"]}]}
+    out = sl.weekly_top_sweep(xsb.Market(), {"a": ("g", None)}, record)
+    assert calls == [("held4", False), ("held", True)] and out["door"] == {"recorded_books_again": 1}
+    assert out["books"]["a"]["annual_sharpe"] == 0.9
+    calls.clear()
+    record["all"][0]["annual_sharpe"] = 0.501
+    out = sl.weekly_top_sweep(xsb.Market(), {"a": ("g", None)}, record)
+    assert calls == [("held4", False)], "nothing weekly is built when a recorded book does not build again"
+    assert out == {"refused": "recorded books do not build again four-weekly", "differ": ["a"]}
+
+
+def _weekly_family_fixture():
+    record = {"all": [{"variable": f"v{k}", "group": "depth" if k < 2 else "g"} for k in range(6)]}
+    null = {"accounting": "held", "logic": sl.SWEEP_LOGIC,
+            "books": {f"n{k:03d}": {"annual_sharpe": k / 600} for k in range(sl.SWEEP_NULLS)}}
+
+    def book(sharpe):
+        return {"group": "g", "long": "high", "annual_sharpe": sharpe, "total_position_annual_pct": 20.0,
+                "clears_entry": sharpe >= 1.0, "negative_years": 0, "legs": {"annual_pct": {"price": 21.0, "net": 20.0}}}
+
+    runs = [{"command": "weekly-top", "accounting": "held", "only": ["g"],
+             "books": {"v2": book(1.5), "v3": book(0.2), "v4": book(0.1), "v5": book(0.0)}},
+            {"command": "weekly-top", "accounting": "held", "only": ["depth"], "books": {"v0": book(0.3), "v1": book(0.1)}}]
+    return record, null, runs
+
+
+def test_the_weekly_top_family_reads_the_books_present_against_the_weekly_null():
+    record, null, runs = _weekly_family_fixture()
+    out = sl.weekly_top_family(runs, null, record)
+    assert not out["blocked"] and out["family"] == 6 and out["left_out"] == []
+    assert [r["variable"] for r in out["reading"]["survive_benjamini_hochberg"]] == ["v2"]
+    assert out["survivors"] == {"v2": {"legs_annual_pct": {"price": 21.0, "net": 20.0}, "fixed_nulls_at_or_above": 0,
+                                       "fixed_nulls": 0}}, "the fixture's nulls are not named by half"
+    halves = dict(null, books={f"null_fixed_{k:03d}" if k % 2 else f"null_week_{k:03d}": {"annual_sharpe": 2.0 if k == 1 else 0.0}
+                               for k in range(sl.SWEEP_NULLS)})
+    facts = sl.weekly_top_family(runs, halves, record)["survivors"]
+    assert facts["v2"]["fixed_nulls_at_or_above"] == 1 and facts["v2"]["fixed_nulls"] == 300
+    left = sl.weekly_top_family(runs[:1], null, record)
+    assert not left["blocked"] and left["left_out"] == ["v0", "v1"] and left["family"] == 4, "depth alone may be left out"
+    short = [dict(runs[0], books={k: v for k, v in runs[0]["books"].items() if k != "v3"}), runs[1]]
+    assert sl.weekly_top_family(short, null, record)["blocked"], "a book of another group may not be missing"
+    assert sl.weekly_top_family(runs, dict(null, accounting="held4"), record)["blocked"], "the four-week null is not this one"
+    assert sl.weekly_top_family([dict(runs[0], refused="x"), runs[1]], null, record)["blocked"]
+    twice = [runs[0], dict(runs[1], books={**runs[1]["books"], "v2": runs[0]["books"]["v2"]})]
+    assert sl.weekly_top_family(twice, null, record)["blocked"], "a book built twice"
+    outside = [dict(runs[0], books={**runs[0]["books"], "spot_taker_share_7": runs[0]["books"]["v2"]}), runs[1]]
+    assert sl.weekly_top_family(outside, null, record)["blocked"], "a book outside the recorded family"
+    struck = {"all": record["all"] + [{"variable": "vol_30", "group": "g"}]}
+    assert not sl.weekly_top_family(runs, null, struck)["blocked"], "a struck recorded book is not expected"
+    with_struck = [dict(runs[0], books={**runs[0]["books"], "vol_30": runs[0]["books"]["v2"]}), runs[1]]
+    assert sl.weekly_top_family(with_struck, null, struck)["blocked"], "and is refused when present"
+
+
+def test_the_weekly_top_names_come_from_the_recorded_family_and_the_registry(monkeypatch, capsys, tmp_path):
+    registry = sl.lab.variables()
+    first = next(n for n in registry if not sl.lab.no_book(n, "top30"))
+    group = registry[first][0]
+    names = sl.weekly_top_names({"all": [{"variable": first, "group": group}]}, {group})
+    assert list(names) == [first] and names[first][0] == group
+    with pytest.raises(ValueError, match="not registered"):
+        sl.weekly_top_names({"all": [{"variable": "no_such", "group": group}]}, {group})
+    with pytest.raises(ValueError, match="no books"):
+        sl.weekly_top_names({"all": [{"variable": first, "group": group}]}, {"other"})
+    assert "vol_30" not in sl.weekly_top_names({"all": [{"variable": "vol_30", "group": "price_volume"},
+                                                        {"variable": "momentum_30", "group": "price_volume"}]}, {"price_volume"})
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setenv("RESEARCH_CACHE", str(tmp_path))
+    assert sl.main(["weekly-top", "--only", group]) == sl.EXIT_USAGE
+    assert sl.main(["weekly-top-family", "--records", "a.json"]) == sl.EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "weekly-top needs --only" in err and "weekly-top-family needs --records" in err
