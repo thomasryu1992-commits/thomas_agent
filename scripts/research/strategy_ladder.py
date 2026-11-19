@@ -3640,6 +3640,65 @@ def lower_sweep_reading(books: Mapping[str, Mapping[str, Any]], null: Mapping[st
             "closed_at_later_years": [name for name in before if name not in leads]}
 
 
+# Round 70 (section 88): round 69's map lead on the two upper tiers, the side its cells name (7-day, all weeks).
+HOURLY_LEADS = {"price_delay_30": {"long": "low", "horizon_days": 7}}
+HOURLY_OVERLAP_UNLOADED = frozenset({"positioning", "depth", "spot", "premium", "spot_flow", "hourly"})
+
+
+def hourly_overlap_books(tier: str) -> list[str]:
+    """The books the record strikes on ``tier`` that the overlap's market holds values for: the nine struck on every
+    tier on the top tier; on ranks 31 to 100 the tier sweep's list and the map's strikes together (section 88)."""
+    registered = lab.variables()
+    names = {n for n in registered if lab.no_book(n, tier)}
+    if tier == TIER_SWEEP_TIER:
+        names |= set(TIER_SWEEP_OUT)
+    return sorted(n for n in names if registered[n][0] not in HOURLY_OVERLAP_UNLOADED)
+
+
+def hourly_lead_overlap(market: xsb.Market, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """Weights only, no return (section 88): each hourly lead's book on each upper tier, on its cell's side, beside
+    every book the record strikes there (built high), as that tier's sweep builds books (the top tier's L9T over the
+    month's top 30; ranks 31 to 100 through :class:`TierSweep`). Per comparison the cosine of the two books' coin
+    weights at every weekly decision where both stand, hedge left out; a median whose size reaches
+    :data:`LOWER_OVERLAP_CLOSE` re-builds that book, and the lead is closed on that tier."""
+    registered = lab.variables()
+    monthly = monthly_members(market, span)
+    mid = TierSweep(market, span)
+    days = sundays(span)
+    builders = {
+        "top30": lambda read, way: (lambda day: BOOKS[SWEEP_LOGIC](read, lambda _d: way)(
+            market, monthly.get(date(day.year, day.month, 1), ()), day, bs.CADENCE, seed=None)),
+        TIER_SWEEP_TIER: lambda read, way: (lambda day: mid.weigher(read, way)(market, (), day, bs.CADENCE)),
+    }
+    out: dict[str, Any] = {}
+    for lead, spec in HOURLY_LEADS.items():
+        way = 1 if spec["long"] == "high" else -1
+        tiers: dict[str, Any] = {}
+        for tier, build in builders.items():
+            mine = build(registered[lead][1], way)
+            others = {n: build(registered[n][1], 1) for n in hourly_overlap_books(tier)}
+            values: dict[str, list[float]] = {n: [] for n in others}
+            for day in days:
+                weights = {s: w for s, w in mine(day).items() if s != HEDGE}
+                if not weights:
+                    continue
+                for name, other in others.items():
+                    theirs = {s: w for s, w in other(day).items() if s != HEDGE}
+                    if (value := _cosine(weights, theirs)) is not None:
+                        values[name].append(value)
+            rows = {}
+            for name, v in values.items():
+                v = sorted(v)
+                median = statistics.median(v) if v else None
+                rows[name] = {"decisions": len(v), "median_cosine": None if median is None else round(median, 4),
+                              "quartiles": [round(v[len(v) // 4], 4), round(v[(3 * len(v)) // 4], 4)] if v else None,
+                              "closes": median is not None and abs(median) >= LOWER_OVERLAP_CLOSE}
+            tiers[tier] = {"beside": rows, "closed_by": sorted(n for n, r in rows.items() if r["closes"])}
+        out[lead] = {**spec, "tiers": tiers}
+    return {"threshold": LOWER_OVERLAP_CLOSE, "compared": {t: hourly_overlap_books(t) for t in ("top30", TIER_SWEEP_TIER)},
+            "leads": out, "returns_computed": False}
+
+
 # Round 41 (section 58): round 40's two map leads, each with the side its cell names. Nothing here is a variant.
 LOWER_LEADS = {"residual_momentum_30": {"long": "low", "horizon_days": 7, "group": "price_volume"},
                "listing_age": {"long": "high", "horizon_days": 28, "group": "coin_character"}}
@@ -5477,7 +5536,7 @@ def main(argv: list[str] | None = None) -> int:
                                             "hot-counts", "hot", "gap-counts", "gap", "flush-counts", "flush",
                                             "basis-counts", "basis", "wide-counts", "wide", "mid-counts", "mid",
                                             "tier-gate", "tier-counts", "tier-sweep", "tier-lead", "door-size",
-                                            "lower-gate", "lower-counts", "lower-map", "lower-sweep", "lower-overlap",
+                                            "lower-gate", "lower-counts", "lower-map", "lower-sweep", "lower-overlap", "hourly-lead-overlap",
                                             "lower-axes", "top-sens", "top-sens-reading", "null-legs-reading",
                                             "weekly-top", "weekly-top-family",
                                             "ha1-gate", "ha1-counts", "ha1", "sens", "axis-power",
@@ -5783,6 +5842,18 @@ def main(argv: list[str] | None = None) -> int:
                           "command": args.command, "null_file_lake": stored.get("lake_snapshot"), **body},
                          indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or body["false_alarm"]["stop"] or body["own_start_later"] else EXIT_OK
+    if args.command == "hourly-lead-overlap":
+        market = lab.hold(cache, attach=False, flow=True)
+        if market is not None:
+            lab.attach_hourly(market, cache / "archive")
+        if market is None or not market.hourly_values:
+            print("BLOCKED: contract types or the hourly values are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
+                          "command": args.command, **hourly_lead_overlap(market)},
+                         indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_OK
     if args.command == "lower-overlap":
         market = lab.hold(cache, attach=False, flow=True)
         if market is None:

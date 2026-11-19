@@ -4130,3 +4130,35 @@ def test_the_weekly_top_names_come_from_the_recorded_family_and_the_registry(mon
     assert sl.main(["weekly-top-family", "--records", "a.json"]) == sl.EXIT_USAGE
     err = capsys.readouterr().err
     assert "weekly-top needs --only" in err and "weekly-top-family needs --records" in err
+
+
+def test_the_hourly_lead_is_laid_beside_every_struck_book_on_both_upper_tiers_with_no_return(monkeypatch):
+    registered = sl.lab.variables()
+    lead_read = registered["price_delay_30"][1]
+    vol_read = registered["vol_30"][1]
+    monkeypatch.setattr(sl.lab, "variables", lambda: registered)      # one set of readings, so a book knows its own
+
+    def fake_book(read, direction):
+        way = direction(None)
+        def weights(market, members, day, signal, *, seed=None):
+            if read is lead_read:
+                return {"A": 0.5 * way, "B": -0.5 * way, sl.HEDGE: 9.0}
+            if read is vol_read:                       # the struck volatility book holds the same coins, opposite side
+                return {"A": -0.5 * way, "B": 0.5 * way, sl.HEDGE: -9.0}
+            return {"C": 0.5 * way, "D": -0.5 * way}
+        return weights
+
+    monkeypatch.setitem(sl.BOOKS, sl.SWEEP_LOGIC, fake_book)
+    monkeypatch.setattr(sl, "book", fake_book)
+    monkeypatch.setattr(sl, "monthly_members", lambda market, span=None: {})
+    monkeypatch.setattr(sl.lab, "tier_members", lambda market, span: {"top30": {}, "rank31_100": {}})
+    span = (date(2021, 1, 1), date(2021, 2, 28))
+    got = sl.hourly_lead_overlap(xsb.Market(), span)
+    assert got["returns_computed"] is False and got["threshold"] == 0.5
+    assert len(got["compared"]["top30"]) == 9 and "funding_30" in got["compared"][sl.TIER_SWEEP_TIER]
+    assert not set(got["compared"][sl.TIER_SWEEP_TIER]) & {"oi_growth_30", "ls_level_30", "imbalance_1_30"}, "not loaded"
+    for tier in ("top30", sl.TIER_SWEEP_TIER):
+        rows = got["leads"]["price_delay_30"]["tiers"][tier]
+        assert rows["beside"]["vol_30"]["median_cosine"] == 1.0, "low-side lead vs high-side book; the hedge is left out"
+        assert rows["beside"]["beta_30"]["median_cosine"] == 0.0 and rows["closed_by"] == ["vol_30"]
+        assert rows["beside"]["vol_30"]["decisions"] == len(sl.sundays(span))
