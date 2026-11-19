@@ -17,3 +17,9 @@ D12/H-A1, the answer allows one registered book measured once; no confirm read, 
   never zero.
 - *Gate and counts inside the command, before any return.* The four-week row of round 69 must build again on eight
   values, and each of 2022–2024 needs 40 weekly decisions with a book (a hedge-only book does not stand).
+
+**Paused before any read (§89.8).** The chosen book is the top-30 weekly book §84.5 closed that morning (new top-30
+variables are judged on the four-week sweep, which the price delay failed in round 69). Thomas's "올림" named no
+book, unlike D12's question, so whether it opens a closed book is not in the record; by §82.3's rule for records
+that disagree, it is asked (default no: the lead then closes). Condition 3's negative-year limit was also corrected
+to two, as the code reads it.
