@@ -4427,7 +4427,7 @@ def test_the_leverage_stay_reads_the_positioning_days_and_nothing_after_them():
         market.metrics["AUSDT"][d]["oi"] = None
     assert sl.lab.OI_TURNOVER(market, "AUSDT", day) is None
     still = sl.lab.OI_TURNOVER(market, "BUSDT", day)
-    assert still is not None and sl.lab.R1 not in sl.lab.variables(), "a candidate until its doors pass"
+    assert still is not None and sl.lab.R1 not in sl.lab.variables(), "never registered: closed on every tier (section 99.5)"
     for d in window:
         market.bars["BUSDT"][d] = xsb.Bar(open=1.0, close=1.0, quote_volume=0.0)
     assert sl.lab.OI_TURNOVER(market, "BUSDT", day) is None, "no volume, no value"
