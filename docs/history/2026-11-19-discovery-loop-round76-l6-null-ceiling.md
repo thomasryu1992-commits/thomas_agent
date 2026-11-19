@@ -29,3 +29,5 @@ had failed in the CI runner's apt mirror; an empty commit (`bfb8e9eb`) re-fired 
 - Two-sided null books also reach 15% about 7% of the time, a fact beside §92.1's count. It changes no verdict.
 - Thomas is asked (§94.7, default no) whether to build the 41 unstruck books per tier as L6 once and count their
   ceilings against those bars.
+- **Decision (§94.8): Thomas said "하지 않음" (do not build them).** L6 leaves the 2026-12-17 restructure's
+  candidates. With L25 out as well, the restructure goes back to a design row (document only).
