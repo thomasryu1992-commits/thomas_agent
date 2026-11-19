@@ -1299,6 +1299,98 @@ def no_book(variable: str, tier: str) -> str | None:
     return SPREAD_NO_BOOK.get(("*", variable)) or SPREAD_NO_BOOK.get((tier, variable))
 
 
+# --- section 97: the leverage stay (R1), a candidate until its three input-only doors pass -----------------------
+
+R1 = "oi_turnover_30"
+R1_FILLED_DAYS = math.ceil(LOOKBACK * bs.MIN_SHARE)      # days of the window that must carry both values (20)
+R1_EXTRA_KIN = ("illiquidity_30", "volume_growth_30")     # the daily variables its denominator touches
+
+
+def _oi_turnover(market: xsb.Market, symbol: str, day: date, lookback: int) -> float | None:
+    """Open interest held against trading: over the same days the other positioning variables read at ``day``
+    (``day`` and the ``lookback - 1`` before it), the sum of the day's open interest times its close over the sum of
+    the day's perp quote volume. Only days with both count; under :data:`R1_FILLED_DAYS` of them, or no volume, it
+    has no value. Section 38's per-coin quantity, ranked across coins instead of summed into the market's level."""
+    metrics = (getattr(market, "metrics", None) or {}).get(symbol) or {}
+    bars = market.bars.get(symbol) or {}
+    held = traded = 0.0
+    days = 0
+    for k in range(lookback):
+        d = day - timedelta(days=k)
+        oi, bar = (metrics.get(d) or {}).get("oi"), bars.get(d)
+        if oi is None or bar is None:
+            continue
+        held, traded, days = held + oi * bar.close, traded + bar.quote_volume, days + 1
+    if days < math.ceil(lookback * bs.MIN_SHARE) or traded <= 0:
+        return None
+    return held / traded
+
+
+OI_TURNOVER: Variable = _with_lookback(_oi_turnover)
+
+
+def leverage_kin(tier: str) -> tuple[str, ...]:
+    """Section 97.5: R1's kin on ``tier``, built from :data:`SPREAD_NO_BOOK` and never by hand — every name struck
+    there or everywhere, the two closed hourly variables on the upper tiers, and the daily variables its
+    denominator touches."""
+    struck = {name for (where, name) in SPREAD_NO_BOOK if where in ("*", tier)}
+    hourly = set(HOURLY_CANDIDATES) if tier in TIERS else set()
+    return tuple(sorted((struck | hourly | set(R1_EXTRA_KIN)) - {R1}))
+
+
+def first_value_day(market: xsb.Market, column: str = "oi") -> date | None:
+    """The first day any symbol's attached positioning values carry ``column``."""
+    days = [d for rows in (getattr(market, "metrics", None) or {}).values() for d, v in rows.items() if v.get(column) is not None]
+    return min(days) if days else None
+
+
+def tier_overlap(market: xsb.Market, read: Variable, plan: Mapping[str, Sequence[tuple[date, Sequence[str]]]],
+                 kin: Mapping[str, Sequence[str]]) -> dict[str, Any]:
+    """Section 97.5: section 40's overlap read on every tier against that tier's own kin. At each decision the rank
+    correlation of the candidate and a kin over the members with both; the median over decisions. A tier passes when
+    at least one kin was compared over :data:`MIN_DECISIONS` and none of those reaches :data:`OVERLAP_MAX` in size,
+    either sign. Reads no return."""
+    registered = variables()
+    out: dict[str, Any] = {}
+    for tier, rows in plan.items():
+        series: dict[str, list[float]] = {k: [] for k in kin[tier]}
+        ranked = 0
+        for day, members in rows:
+            own = {s: v for s in members if (v := read(market, s, day)) is not None}
+            ranked += len(own) >= MIN_NAMES
+            for k in kin[tier]:
+                pairs = [(own[s], v) for s in own if (v := registered[k][1](market, s, day)) is not None]
+                if len(pairs) >= MIN_NAMES and (rho := rank_correlation(pairs)) is not None:
+                    series[k].append(rho)
+        table = {k: {"decisions": len(v), "median_rank_correlation": round(statistics.median(v), 4) if v else None}
+                 for k, v in series.items()}
+        sized = {k: abs(t["median_rank_correlation"]) for k, t in table.items()
+                 if t["median_rank_correlation"] is not None and t["decisions"] >= MIN_DECISIONS}
+        nearest = max(sized, key=sized.get) if sized else None
+        out[tier] = {"decisions": len(rows), "decisions_ranked": ranked, "kin": table, "nearest_kin": nearest,
+                     "compared": bool(sized), "passes": bool(sized) and sized[nearest] < OVERLAP_MAX}
+    return out
+
+
+def tier_persistence(market: xsb.Market, read: Variable, plan: Mapping[str, Sequence[tuple[date, Sequence[str]]]],
+                     *, lags: Sequence[int] = (1, 2, 4)) -> dict[str, Any]:
+    """How far the order carries, per tier and lag in weekly decisions: the mean over decisions of the rank
+    correlation between the values at a decision and that many decisions later, over the first decision's members
+    with values at both. Not judged (the cost line's ground)."""
+    out: dict[str, Any] = {}
+    for tier, rows in plan.items():
+        out[tier] = {}
+        for lag in lags:
+            rhos = []
+            for i in range(len(rows) - lag):
+                (a, members), (b, _) = rows[i], rows[i + lag]
+                pairs = [(x, y) for s in members if (x := read(market, s, a)) is not None and (y := read(market, s, b)) is not None]
+                if len(pairs) >= MIN_NAMES and (rho := rank_correlation(pairs)) is not None:
+                    rhos.append(rho)
+            out[tier][f"{7 * lag}d"] = {"decisions": len(rhos), "mean_rank_correlation": round(sum(rhos) / len(rhos), 4) if rhos else None}
+    return out
+
+
 def spread_candidates(real: Mapping[str, Any], against: Mapping[str, Any]) -> dict[str, Any]:
     """The cells whose spread stands out: |spread t| above the largest any random variable reached at that horizon,
     a variable that keeps its rank from week to week, the same sign as the variable's all-weeks spread in its tier,

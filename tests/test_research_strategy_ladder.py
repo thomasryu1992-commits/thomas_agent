@@ -4398,3 +4398,114 @@ def test_the_l6_commands_refuse_what_they_cannot_read(monkeypatch, capsys, tmp_p
     err = capsys.readouterr().err
     assert "needs --family and --records" in err and "not this family's l6-null chunks" in err
     assert "must lie in 0:600" in err and "not that sweep's null file" in err
+
+
+# --- section 97: the leverage stay's input-only doors -----------------------------------------------------------
+
+def _r1_market(days=40, symbols=("AUSDT", "BUSDT")):
+    first = date(2021, 3, 1)
+    out = [first + timedelta(days=k) for k in range(days)]
+    bars = {s: {d: xsb.Bar(open=10.0 + i, close=10.0 + i + k * 0.1, quote_volume=1000.0 * (i + 1) + k)
+                for k, d in enumerate(out)} for i, s in enumerate(symbols)}
+    market = xsb.Market(bars=bars, funding={})
+    market.metrics = {s: {d: {"oi": 50.0 * (i + 1) + k} for k, d in enumerate(out)} for i, s in enumerate(symbols)}
+    return market, out
+
+
+def test_the_leverage_stay_reads_the_positioning_days_and_nothing_after_them():
+    market, days = _r1_market()
+    day = days[35]
+    window = [day - timedelta(days=k) for k in range(30)]
+    held = sum(market.metrics["AUSDT"][d]["oi"] * market.bars["AUSDT"][d].close for d in window)
+    traded = sum(market.bars["AUSDT"][d].quote_volume for d in window)
+    assert sl.lab.OI_TURNOVER(market, "AUSDT", day) == pytest.approx(held / traded)
+    for d in days[36:]:                                         # later rows never move the value
+        market.metrics["AUSDT"][d]["oi"] *= 1e6
+        market.bars["AUSDT"][d] = xsb.Bar(open=1.0, close=1e6, quote_volume=1.0)
+    assert sl.lab.OI_TURNOVER(market, "AUSDT", day) == pytest.approx(held / traded)
+    for d in window[:11]:                                       # 19 days with both: under two thirds of 30
+        market.metrics["AUSDT"][d]["oi"] = None
+    assert sl.lab.OI_TURNOVER(market, "AUSDT", day) is None
+    still = sl.lab.OI_TURNOVER(market, "BUSDT", day)
+    assert still is not None and sl.lab.R1 not in sl.lab.variables(), "a candidate until its doors pass"
+    for d in window:
+        market.bars["BUSDT"][d] = xsb.Bar(open=1.0, close=1.0, quote_volume=0.0)
+    assert sl.lab.OI_TURNOVER(market, "BUSDT", day) is None, "no volume, no value"
+
+
+def test_the_leverage_kin_are_each_tiers_struck_names_from_the_one_list():
+    mid, top, lower = (sl.lab.leverage_kin(t) for t in ("rank31_100", "top30", sl.LOWER_NAME))
+    struck_mid = {n for (t, n) in sl.lab.SPREAD_NO_BOOK if t in ("*", "rank31_100")}
+    assert struck_mid <= set(mid) and {"funding_30", "funding_7", "oi_growth_30", "ls_level_30"} <= set(mid)
+    assert not {"funding_30", "oi_growth_30"} & set(top), "struck on ranks 31-100 only"
+    assert {"price_delay_30", "volume_peak_share_30", "illiquidity_30", "volume_growth_30"} <= set(top)
+    assert {"oi_growth_30", "ls_level_30", "imbalance_1_30"} <= set(lower)
+    registered = sl.lab.variables()
+    assert all(k in registered for k in (*mid, *top, *lower)) and sl.lab.R1 not in (*mid, *top, *lower)
+
+
+def test_the_overlap_is_read_per_tier_against_that_tiers_kin(monkeypatch):
+    market, days = _r1_market(days=60, symbols=tuple(f"S{i}USDT" for i in range(10)))
+    plan_days = days[30:]
+    plan = {"top30": [(d, tuple(market.bars)) for d in plan_days], "rank31_100": [(d, tuple(market.bars)) for d in plan_days]}
+    same = lambda m, s, d: sl.lab.OI_TURNOVER(m, s, d)
+    other = lambda m, s, d: int(xsb.random_key("r1-test", d, s)[:8], 16) / 16 ** 8
+    monkeypatch.setattr(sl.lab, "MIN_DECISIONS", 5)
+    monkeypatch.setattr(sl.lab, "variables", lambda: {"twin": ("positioning", same), "noise": ("price_volume", other)})
+    out = sl.lab.tier_overlap(market, sl.lab.OI_TURNOVER, plan, {"top30": ("noise",), "rank31_100": ("noise", "twin")})
+    assert out["top30"]["compared"] and out["top30"]["passes"]
+    assert out["rank31_100"]["nearest_kin"] == "twin" and not out["rank31_100"]["passes"], "a twin on that tier stops it there"
+    none = sl.lab.tier_overlap(market, sl.lab.OI_TURNOVER, {"top30": plan["top30"][:3]}, {"top30": ("noise",)})
+    assert not none["top30"]["compared"] and not none["top30"]["passes"], "nothing compared is not a pass"
+    kept = sl.lab.tier_persistence(market, sl.lab.OI_TURNOVER, {"top30": plan["top30"]})
+    assert set(kept["top30"]) == {"7d", "14d", "28d"}
+
+
+def test_the_hourly_coverage_takes_another_reading():
+    market, days = _r1_market(days=40, symbols=("AUSDT", "BUSDT", "CUSDT"))
+    month = date(2021, 4, 1)
+    tiers = {"top30": {month: ["AUSDT", "BUSDT"]}, "rank31_100": {month: ["CUSDT"]}}
+    april = [d for d in days if d >= month]
+    out = sl.lab.hv.coverage(market, sl.lab.R1, tiers, april, read=sl.lab.OI_TURNOVER)
+    assert out["top30"]["cells"] == 2 * len(april) and out["top30"]["share"] == 1.0
+
+
+def test_the_leverage_doors_command_needs_its_tiers_and_its_files(monkeypatch, tmp_path):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setenv("RESEARCH_CACHE", str(tmp_path))
+    assert sl.main(["leverage-doors"]) == sl.EXIT_USAGE
+    assert sl.main(["leverage-doors", "--tiers", "upper"]) == sl.EXIT_USAGE, "no recorded reading to check against"
+    check = tmp_path / "doors.json"
+    check.write_text("{}", encoding="utf-8")
+    assert sl.main(["leverage-doors", "--tiers", "upper", "--check", str(check)]) == sl.EXIT_BLOCKED
+    assert sl.main(["leverage-doors", "--tiers", "lower", "--check", str(check)]) == sl.EXIT_BLOCKED
+    monkeypatch.setattr(sl.lab, "hold", lambda cache, span=None, attach=False, flow=False: xsb.Market())
+    monkeypatch.setattr(sl.lab.ms, "load_daily", lambda cache: {"AUSDT": {date(2021, 1, 1): {"oi": 1.0}}})
+    monkeypatch.setattr(sl.lab, "attach_hourly", lambda market, archive, span: market)
+    assert sl.leverage_market(tmp_path, "upper") is None, "no hourly value: the upper tiers' kin would be unread"
+
+
+def test_the_leverage_doors_read_r1_only_after_a_recorded_reading_comes_back(monkeypatch):
+    first = date(2021, 1, 1)
+    days = [first + timedelta(days=k) for k in range(150)]
+    syms = [f"S{i}USDT" for i in range(40)]
+    market = xsb.Market(bars={s: {d: xsb.Bar(open=10 + i, close=10 + i + 0.01 * k * ((i % 5) - 2), quote_volume=1e3 * (i + 1) + k)
+                                  for k, d in enumerate(days)} for i, s in enumerate(syms)}, funding={})
+    market.metrics = {s: {d: {"oi": 50 * (i + 1) + k} for k, d in enumerate(days)} for i, s in enumerate(syms)}
+    market.hourly_values = {s: {d: {"price_delay_30": ((i * 7 + k) % 11) / 11} for k, d in enumerate(days)}
+                            for i, s in enumerate(syms)}
+    span = (date(2021, 1, 1), date(2021, 5, 30))
+    monkeypatch.setattr(sl.lab, "MIN_DECISIONS", 3)
+    members, ds = sl.lab.tier_members(market, span), sl.lab.decisions(span, 7)
+    plan = {t: [(d, members[t].get(date(d.year, d.month, 1), ())) for d in ds] for t in sl.lab.TIERS}
+    kin = {t: ("vol_30", "illiquidity_30") for t in sl.lab.TIERS}
+    over = sl.lab.tier_overlap(market, sl.lab.hv.reader("price_delay_30"), plan, kin)
+    recorded = {"first_decision": ds[0].isoformat(), "price_delay_30": {
+        "coverage": sl.lab.hv.coverage(market, "price_delay_30", members, ds),
+        "overlap": {"tiers": {t: {"kin": {**over[t]["kin"], "r2_btc_30": {"decisions": 1}}} for t in sl.lab.TIERS}}}}
+    back = sl.leverage_reproduce(market, "upper", recorded, span)
+    assert back["same"] and back["compared"] > 0, "an unregistered kin (r2_btc_30) is left out, not compared"
+    recorded["price_delay_30"]["coverage"]["top30"]["cells"] += 1
+    moved = sl.leverage_reproduce(market, "upper", recorded, span)
+    assert not moved["same"] and moved["differ"][0][:3] == ["top30", "coverage", "cells"]
+    assert not sl.leverage_reproduce(market, "upper", {}, span)["same"], "nothing compared is not a reproduction"

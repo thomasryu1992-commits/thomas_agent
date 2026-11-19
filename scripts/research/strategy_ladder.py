@@ -4967,6 +4967,98 @@ def lower_positioning_market(cache: Path, span: tuple[date, date] = SPAN) -> xsb
     return held
 
 
+def leverage_market(cache: Path, tiers: str, span: tuple[date, date] = SPAN) -> xsb.Market | None:
+    """Section 97's market for R1's doors. ``upper``: the bars, funding and trade flow, the shared positioning values
+    and the hourly values (the kin of the two upper tiers). ``lower``: ranks 101+'s own sealed positioning values
+    (:func:`lower_positioning_market`, never the shared file) with the trade flow. None when a piece is missing,
+    including no hourly value on ``upper``: an unread kin would look like a passed door."""
+    if tiers == "lower":
+        held = lower_positioning_market(cache, span)
+        return None if held is None else lab.attach_trade_flow(held, cache / "archive", span)
+    held = lab.hold(cache, span, attach=False, flow=True)
+    daily = lab.ms.load_daily(cache)
+    if held is None or not daily:
+        return None
+    held.metrics = {s: {d: v for d, v in days.items() if d <= span[1]} for s, days in daily.items()}
+    lab.attach_hourly(held, cache / "archive", span)
+    return held if getattr(held, "hourly_values", None) else None
+
+
+LEVERAGE_REPRO_NAME = "price_delay_30"      # the upper tiers' check: round 68's doors as recorded (section 86)
+
+
+def leverage_reproduce(market: xsb.Market, tiers: str, recorded: Mapping[str, Any],
+                       span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """Section 97.6's first door: the same code must give a recorded reading before R1 is read. ``upper``: round
+    68's coverage and overlap of the price delay (``hourly68b/doors.json``), every registered kin, both tiers.
+    ``lower``: round 45's coverage of this tier's positioning variables (``pos45/counts.json``)."""
+    differ: list[list[Any]] = []
+    compared = 0
+
+    def same(where: list[Any], was: Any, now: Any) -> None:
+        nonlocal compared
+        compared += 1
+        if was != now:
+            differ.append([*where, was, now])
+    if tiers == "lower":
+        rows = recorded.get("coverage") or {}
+        registered = lab.variables()
+        again = lower_coverage(market, {n: registered[n] for n in rows if n in registered}, span)
+        for name, row in rows.items():
+            for key, was in row.items():
+                same([name, key], was, (again.get(name) or {}).get(key))
+    else:
+        rec = recorded.get(LEVERAGE_REPRO_NAME) or {}
+        days, members = lab.decisions(span, lab.HORIZONS[0]), lab.tier_members(market, span)
+        first = recorded.get("first_decision")
+        cover = lab.hv.coverage(market, LEVERAGE_REPRO_NAME, members,
+                                [d for d in days if first is not None and d >= date.fromisoformat(first)])
+        registered = lab.variables()
+        kin = {t: tuple(k for k in ((rec.get("overlap") or {}).get("tiers") or {}).get(t, {}).get("kin", {}) if k in registered)
+               for t in lab.TIERS}
+        plan = {t: [(d, members[t].get(date(d.year, d.month, 1), ())) for d in days] for t in lab.TIERS}
+        over = lab.tier_overlap(market, lab.hv.reader(LEVERAGE_REPRO_NAME), plan, kin)
+        for t in lab.TIERS:
+            for key, was in ((rec.get("coverage") or {}).get(t) or {}).items():
+                same([t, "coverage", key], was, cover[t].get(key))
+            for k in kin[t]:
+                same([t, k], rec["overlap"]["tiers"][t]["kin"][k], over[t]["kin"][k])
+    return {"same": compared > 0 and not differ, "compared": compared, "differ": differ[:20]}
+
+
+def leverage_doors(market: xsb.Market, tiers: str, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """Section 97's three input-only doors for R1 (``signal_lab.R1``) on the two upper tiers or on ranks 101+:
+    coverage (section 57.3's rule on the upper tiers, from the first decision whose window can hold
+    ``R1_FILLED_DAYS`` days of positioning values; :func:`lower_coverage` on ranks 101+), overlap with each tier's kin
+    read per tier (section 97.5) and rank persistence (not judged). Reads no return."""
+    read, days = lab.OI_TURNOVER, lab.decisions(span, lab.HORIZONS[0])
+    if tiers == "lower":
+        tier = lower_sweep_tier(market, span)
+        cover = lower_coverage(market, {lab.R1: ("positioning", read)}, span, tier=tier)[lab.R1]
+        start = None if cover["start"] is None else date.fromisoformat(cover["start"]) - timedelta(days=7)
+        plan = {LOWER_NAME: [(d, tier.members(d)) for d in days if start is not None and d >= start]}
+        coverage_pass = {LOWER_NAME: cover["stop"] is None}
+        coverage = {LOWER_NAME: cover}
+        head: dict[str, Any] = {"first_decision": plan[LOWER_NAME][0][0].isoformat() if plan[LOWER_NAME] else None}
+    else:
+        first = lab.first_value_day(market)
+        full = [d for d in days if first is not None and d - timedelta(days=lab.R1_FILLED_DAYS - 1) >= first]
+        members = lab.tier_members(market, span)
+        plan = {t: [(d, members[t].get(date(d.year, d.month, 1), ())) for d in full] for t in lab.TIERS}
+        coverage = lab.hv.coverage(market, lab.R1, members, full, read=read)
+        coverage_pass = {t: all(coverage[t][k] is not None and coverage[t][k] >= lab.COVERAGE_MIN
+                                for k in ("share", "share_out_next_month")) for t in lab.TIERS}
+        head = {"first_value_day": None if first is None else first.isoformat(),
+                "first_decision": full[0].isoformat() if full else None}
+    kin = {t: lab.leverage_kin(t) for t in plan}
+    overlap = lab.tier_overlap(market, read, plan, kin)
+    return {"candidate": lab.R1, "tiers_read": tiers, "decisions": len(days), **head,
+            "decisions_read": {t: len(rows) for t, rows in plan.items()}, "coverage": coverage,
+            "coverage_floor": lab.COVERAGE_MIN, "overlap": overlap, "overlap_max": lab.OVERLAP_MAX,
+            "persistence": lab.tier_persistence(market, read, plan),
+            "doors_pass_by_tier": {t: coverage_pass[t] and overlap[t]["passes"] for t in plan}}
+
+
 def lower_metrics_agree(cache: Path, market: xsb.Market) -> dict[str, Any]:
     """Every symbol-day in both the shared daily file and this tier's must carry the same values (one zip, one
     reading). The shared file is read here and nowhere else in this round."""
@@ -5958,9 +6050,11 @@ def main(argv: list[str] | None = None) -> int:
                                             "lower-positioning-plan", "lower-positioning-digest",
                                             "lower-positioning-build", "lower-positioning-seal",
                                             "lower-spot-plan", "lower-spot-digest", "lower-spot-fetch", "lower-spot-seal",
-                                            "lower-family", "top-account-build", "family"))
+                                            "lower-family", "top-account-build", "family", "leverage-doors"))
     parser.add_argument("--family", choices=tuple(SENS_FAMILIES), default=None, help="sens: the sweep whose door is measured")
     parser.add_argument("--tier", choices=("top30", "rank31_100"), default=None, help="axis-power: the map tier read")
+    parser.add_argument("--tiers", choices=("upper", "lower"), default=None,
+                        help="leverage-doors: the two upper tiers or ranks 101+ (section 97)")
     parser.add_argument("--before", type=Path, default=None, help="lower-positioning-seal: the digest taken before the fetch")
     parser.add_argument("--null", type=Path, default=None, help="sens: that sweep's stored null books (JSON)")
     parser.add_argument("--tier-name", default=None, help="family: top30, rank31_100 or rank101_liquid")
@@ -6015,6 +6109,27 @@ def main(argv: list[str] | None = None) -> int:
         print("refused: runs in the research sandbox only (scripts/research/sandbox_run.sh)", file=sys.stderr)
         return EXIT_USAGE
     cache = args.cache or Path(os.environ.get("RESEARCH_CACHE", str(Path.home() / "research" / "cache")))
+    if args.command == "leverage-doors":
+        if args.tiers is None:
+            print("refused: leverage-doors needs --tiers upper|lower", file=sys.stderr)
+            return EXIT_USAGE
+        if args.check is None:
+            print("refused: leverage-doors needs --check (hourly68b/doors.json for upper, pos45/counts.json for lower)",
+                  file=sys.stderr)
+            return EXIT_USAGE
+        market = leverage_market(cache, args.tiers)
+        if market is None:
+            print("BLOCKED: contract types, the positioning values, the sealed ranks 101+ files or the hourly values "
+                  "are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        reproduced = leverage_reproduce(market, args.tiers, json.loads(args.check.read_text(encoding="utf-8")))
+        body = ({"reproduced": reproduced, **leverage_doors(market, args.tiers)} if reproduced["same"] else
+                {"reproduced": reproduced, "refused": "the recorded reading did not come back: R1 is not read"})
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
+                          "command": args.command, "reads_returns": False, "judgement": None,
+                          **body}, indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_OK if body["reproduced"]["same"] else EXIT_BLOCKED
     if args.command == "lower-positioning-plan":
         market = lab.hold(cache, attach=False)
         if market is None:
