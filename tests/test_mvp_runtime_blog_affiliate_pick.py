@@ -102,3 +102,30 @@ def test_a_placement_without_a_pick_to_compare_is_unjudged_and_an_old_report_is_
     assert bi.affiliate_check(_placed("202편-냉장고.md"), None)["unjudged"] == 1
     assert bi.affiliate_check({"drafts": []}, unavailable)["state"] == "not_reported"
     assert bi.affiliate_check({"affiliate_placed": []}, unavailable)["state"] == "none_placed"
+
+
+def test_a_clip_whose_link_is_another_products_issued_link_is_no_evidence_in_the_port(vault):
+    # 2026-11-19 Thomas: an Apple Watch 12 clip carried the SE 3 link. The script compares the clip's link with the
+    # issued link of the same product number (ops/affiliate-link/issued.json); the generated port must do the same.
+    import json
+
+    from runtime.mvp_runtime.blog import affiliate_clips as ac
+
+    (vault / "ops" / "affiliate-link").mkdir(parents=True)
+    (vault / "ops" / "affiliate-link" / "issued.json").write_text(json.dumps({
+        "a": {"link": "https://naver.me/Right12", "shop": "https://smartstore.naver.com/main/products/12"},
+        "b": {"link": "https://naver.me/RightSE3", "shop": "https://smartstore.naver.com/main/products/3"}}), encoding="utf-8")
+    clip = vault / "제휴" / "클립" / "watch12.md"
+    clip.write_text('---\nkeyword: "애플워치"\n"쇼핑 커넥트": "https://naver.me/RightSE3"\n상품명: "애플워치 12"\n가격: "669000"\n'
+                    'source: "https://brand.naver.com/applestore/products/12"\n---\n669,000원\n', encoding="utf-8")
+    ac.configure(vault)
+    parsed = ac.parse_clip(str(clip))
+    assert "상품 12의 발급 링크는 https://naver.me/Right12" in parsed["링크_불일치"]
+    target = {"keyword": "애플워치", "name": "애플워치 SE 3", "connect": "https://naver.me/RightSE3",
+              "url": "https://smartstore.naver.com/main/products/3"}
+    evidence = ac.products([parsed], [target])["https://naver.me/RightSE3"]
+    assert evidence["clips"] == [] and evidence["가격"] is None and evidence["링크_불일치"] == ""
+    # Without an issuance record the port, like the script, cannot compare and says nothing.
+    (vault / "ops" / "affiliate-link" / "issued.json").unlink()
+    ac.configure(vault)
+    assert ac.parse_clip(str(clip))["링크_불일치"] == ""
