@@ -47,7 +47,8 @@ LOGIC = "L24"
 SPAN = lab.SPAN
 TOP, MID, LOWER = "top30", sl.MID_TIER, sl.LOWER_NAME
 # Registered after L24 was measured (section 76). Its material stays what it was measured on.
-AFTER_L24 = frozenset(f"spot_taker_share_{lookback}" for lookback in lab.SPOT_TAKER_LOOKBACKS)
+AFTER_L24 = frozenset({*(f"spot_taker_share_{lookback}" for lookback in lab.SPOT_TAKER_LOOKBACKS),
+                       *lab.HOURLY_CANDIDATES})          # section 87: L24 is never run on other material (S5)
 TIERS = (TOP, MID, LOWER)
 # (rule, size): the t's top k by size, every |t| of at least two, or every eligible weighted by its mean correlation.
 CONFIGS: tuple[tuple[str, int | None], ...] = (("top", 3), ("top", 5), ("top", 10), ("top", 20), ("t2", None),

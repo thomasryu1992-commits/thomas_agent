@@ -621,7 +621,8 @@ def sweep_reading(real: Mapping[str, Mapping[str, Any]], null: Mapping[str, Mapp
 # positioning files on disk that load no longer fits the sandbox, and the premium has a door of its own.
 SWEEP_BARS_GROUPS = frozenset({"price_volume", "funding", "coin_character", "trade_flow"})
 SWEEP_ALONE = {"positioning": "hold_positioning", "spot": "hold_spot", "premium": "hold_premium",
-               "spot_flow": "hold_spot_flow"}      # section 67
+               "spot_flow": "hold_spot_flow",      # section 67
+               "hourly": "hold_hourly"}            # section 87
 SWEEP_ROW_KEYS = ("long", "annual_sharpe", "total_position_annual_pct", "decisions_ranked")
 
 
@@ -4817,11 +4818,13 @@ def lower_map(market: xsb.Market, names: Mapping[str, tuple[str, lab.Variable]],
     before = lab.chance(lab.earlier_control_cells(random_cells["cells"]))
     before_shapes = lab.chance(lab.earlier_control_cells(random_cells["cells"], lab.CONTROLS_BEFORE_SHAPES))
     before_windows = lab.chance(lab.earlier_control_cells(random_cells["cells"], lab.CONTROLS_BEFORE_WINDOWS))
+    before_hourly = lab.chance(lab.earlier_control_cells(random_cells["cells"], lab.CONTROLS_BEFORE_HOURLY))
     leads = lab.candidates(real, against, cap=None)        # every cell that meets the rule: struck ones are named, not counted
     leads["leads"] = [{**c, "no_book": lab.no_book(c["variable"], c["tier"])} for c in leads["leads"]]
     return {"tier": LOWER_NAME, "coverage": coverage, "not_mapped": {n: coverage[n]["stop"] for n in names if n not in kept},
             "chance": against, "chance_before_spot_flow": before, "chance_before_shapes": before_shapes,
-            "chance_before_windows": before_windows, "excess": lab.excess(real["cells"], against), "candidates": leads,
+            "chance_before_windows": before_windows, "chance_before_hourly": before_hourly,
+            "excess": lab.excess(real["cells"], against), "candidates": leads,
             "spread_candidates": lab.spread_candidates(real, against), "dropped": real["dropped"],
             "variables": real["variables"], "cells": real["cells"]}
 

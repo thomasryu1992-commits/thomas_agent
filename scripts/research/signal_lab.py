@@ -66,11 +66,12 @@ MIN_DECISIONS = 20                         # decisions a cell needs before it sh
 MIN_SPELLS = 4                             # separate stretches a scenario cell needs: one long bull run is one sample
 REFERENCE_DECISIONS = 52                   # trailing decisions a scenario's own median is taken over
 REFERENCE_MIN = 26
-CONTROLS_WEEKLY = 60                       # random variables redrawn at every decision (25, 28, 32, 42, 44, 47, 50, 53, 55, 57 as the registry grew)
-CONTROLS_FIXED = 60                        # random variables fixed per coin, like a slow characteristic
+CONTROLS_WEEKLY = 62                       # random variables redrawn at every decision (25, 28, 32, 42, 44, 47, 50, 53, 55, 57, 60 as the registry grew)
+CONTROLS_FIXED = 62                        # random variables fixed per coin, like a slow characteristic
 CONTROLS_BEFORE_SPOT_FLOW = 53                # each kind's count before section 67 added two variables: the old lines' set
 CONTROLS_BEFORE_SHAPES = 55                   # each kind's count before section 69 added two more: round 49's lines' set
 CONTROLS_BEFORE_WINDOWS = 57                  # each kind's count before section 76 added three: round 51's lines' set
+CONTROLS_BEFORE_HOURLY = 60                   # each kind's count before section 87 added two: round 58's lines' set
 EXTREME_MOVE = 0.30                        # a daily close-to-close move this large is an extreme day
 WILD_MOVE = 0.50                           # a coin whose largest daily move in the lookback reached this is wild
 AGE_CAP_DAYS = 1000                        # listing age is read up to here; older coins are alike
@@ -149,6 +150,9 @@ SPREAD_LOOKBACKS = (7, 14, 90)             # section 3.1's fourth shape for the 
 SPOT_TAKER_LOOKBACKS = SPREAD_LOOKBACKS
 AXIS_FAMILY_OUT = {f"spot_taker_share_{lookback}": "no room in the two upper tiers' axis family: 62 x 2 x 6 = 744 > 720 (section 76)"
                    for lookback in SPOT_TAKER_LOOKBACKS}
+# Section 87: the family holds sixty variables (60 x 2 x 6 = 720); one of the two hourly ones fits, the price delay
+# first (section 85.4's order).
+AXIS_FAMILY_OUT["volume_peak_share_30"] = "no room in the two upper tiers' axis family: 61 x 2 x 6 = 732 > 720 (section 87)"
 LATE_LEVELS = ("spread", "premium")        # levels registered after the shape rounds; each gets its change and position
 HISTORY_POINTS = 6                         # a level's own history: its value at each of the six lookbacks before
 HISTORY_MIN = 4                            # of those points must be there, or the coin has no position that day
@@ -318,6 +322,10 @@ def variables() -> dict[str, tuple[str, Variable]]:
     # another window, so no shape (section 42).
     for lookback in SPOT_TAKER_LOOKBACKS:
         out[f"spot_taker_share_{lookback}"] = ("spot_flow", _with_lookback(_spot_taker_share_over, lookback))
+    # Added 2026-11-19 (section 87): the first variables from the hourly bars, after both passed coverage, overlap
+    # and persistence on inputs (section 86.4). Their own group; the values are attached by :func:`hold_hourly`.
+    for name in HOURLY_CANDIDATES:
+        out[name] = ("hourly", hv.reader(name))
     return out
 
 
@@ -588,6 +596,31 @@ def overlap(market: xsb.Market, name: str, span: tuple[date, date] = SPAN) -> di
     nearest = max(top, key=top.get) if top else None
     return {"candidate": name, "tiers": out, "threshold": OVERLAP_MAX, "nearest_kin": nearest,
             "compared": bool(top), "mapped": bool(top) and top[nearest] < OVERLAP_MAX}
+
+
+def attach_hourly(market: xsb.Market, archive: Path, span: tuple[date, date] = SPAN) -> xsb.Market:
+    """The two hourly variables' values (section 87) on ``market`` as ``hourly_values``: built at every weekly
+    rebalance day of the span (the map's decisions and every book's) for the coins in that month's top 100."""
+    tiers = tier_members(market, span)
+    wanted: dict[str, list[date]] = {}
+    for day in xsb.held_days(span[0], span[1]):
+        if not xsb.is_rebalance_day(bs.CADENCE, day):
+            continue
+        for tier in TIERS:
+            for symbol in tiers[tier].get(date(day.year, day.month, 1), ()):
+                wanted.setdefault(symbol, []).append(day)
+    market.hourly_values, _ = hv.build(archive, wanted, span)
+    return market
+
+
+def hold_hourly(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | None:
+    """The market with the hourly variables attached. None when a piece is missing, including no hourly value at
+    all: a group whose values are not attached would map as "too few decisions" and look like a result."""
+    held = hold(cache, span, attach=False)
+    if held is None:
+        return None
+    attach_hourly(held, cache / "archive", span)
+    return held if held.hourly_values else None
 
 
 def hourly_doors(market: xsb.Market, archive: Path, span: tuple[date, date] = SPAN) -> dict[str, Any]:
@@ -1255,6 +1288,10 @@ SPREAD_NO_BOOK: dict[tuple[str, str], str] = {
     # grounds (two years only; the top tier's depth search closed with nothing) do not depend on the tier.
     **{(LOWER_TIER_NAME, name): "this tier's depth files are not on disk; not fetched on D11's grounds (sections 53.7, 62.2, 65.2)"
        for name in ("imbalance_1_30", "imbalance_5_30", "depth_growth_30")},
+    # Section 87: the hourly bars on disk are the month's top 100 only (H-C1's fetch); below it there are none, and
+    # fetching them is asked with default no (section 85.5, Q2).
+    **{(LOWER_TIER_NAME, name): "no hourly bars below rank 100 on disk; the fetch is asked with default no (section 85.5)"
+       for name in ("price_delay_30", "volume_peak_share_30")},
 }
 
 
@@ -1590,8 +1627,10 @@ def main(argv: list[str] | None = None) -> int:
         market = hold_depth(cache)
     elif groups == {"spot_flow"}:
         market = hold_spot_flow(cache)
-    elif "spot_flow" in groups:
-        print("refused: the spot flow group is mapped alone", file=sys.stderr)
+    elif groups == {"hourly"}:
+        market = hold_hourly(cache)
+    elif "spot_flow" in groups or "hourly" in groups:
+        print("refused: the spot flow and hourly groups are mapped alone", file=sys.stderr)
         return EXIT_USAGE
     else:
         market = hold(cache, attach=bool(groups & {"positioning", "depth", "spot"}), flow="trade_flow" in groups)
@@ -1615,11 +1654,13 @@ def main(argv: list[str] | None = None) -> int:
     before = chance(earlier_control_cells(random["cells"]))
     before_shapes = chance(earlier_control_cells(random["cells"], CONTROLS_BEFORE_SHAPES))
     before_windows = chance(earlier_control_cells(random["cells"], CONTROLS_BEFORE_WINDOWS))
+    before_hourly = chance(earlier_control_cells(random["cells"], CONTROLS_BEFORE_HOURLY))
     print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
                       "span": [d.isoformat() for d in SPAN], "last_day_read": last_day(market).isoformat(),
                       "before_costs": True, "judgement": None, "only": args.only,
                       "chance": against, "chance_before_spot_flow": before, "chance_before_shapes": before_shapes,
-                      "chance_before_windows": before_windows, "excess": excess(real["cells"], against),
+                      "chance_before_windows": before_windows, "chance_before_hourly": before_hourly,
+                      "excess": excess(real["cells"], against),
                       "candidates": candidates(real, against), "spread_candidates": spread_candidates(real, against),
                       "dropped": real["dropped"],
                       "variables": real["variables"], "cells": real["cells"],

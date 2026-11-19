@@ -170,10 +170,34 @@ def test_the_hourly_candidates_are_ranked_beside_every_struck_variable():
         assert group == "hourly" and struck <= set(kin)
         assert all(k in lab.variables() or k in lab.OVERLAP_EXTRA_KIN for k in kin)
     assert "r2_btc_30" in lab.OVERLAP_CANDIDATES["price_delay_30"][2]
-    assert not set(lab.HOURLY_CANDIDATES) & set(lab.variables()), "not registered before the doors"
+    registered = lab.variables()
+    assert all(registered[n][0] == "hourly" for n in lab.HOURLY_CANDIDATES), "registered after the doors (section 87)"
 
 
 def test_the_hourly_doors_command_blocks_without_a_market(monkeypatch, tmp_path):
     monkeypatch.setattr(lab.xsb, "_in_sandbox", lambda: True)
     monkeypatch.setenv("RESEARCH_CACHE", str(tmp_path))
     assert lab.main(["hourly-doors"]) == lab.EXIT_BLOCKED
+
+
+def test_the_hourly_group_is_loaded_with_its_values_or_not_at_all(monkeypatch, tmp_path):
+    from scripts.research import search_prune as sp
+    from scripts.research import strategy_ladder as sl
+    monkeypatch.setattr(lab, "hold", lambda cache, span=None, attach=False, flow=False: xsb.Market())
+    assert lab.hold_hourly(tmp_path) is None, "no hourly value attached: blocked, never mapped as too few decisions"
+    built = {}
+
+    def build(archive, wanted, span):
+        built.update(wanted)
+        return {"AUSDT": {date(2021, 1, 3): {"price_delay_30": 0.4}}}, 0
+
+    monkeypatch.setattr(lab, "tier_members", lambda market, span: {"top30": {date(2021, 1, 1): ["AUSDT"]},
+                                                                   "rank31_100": {date(2021, 1, 1): ["BUSDT"]}})
+    monkeypatch.setattr(lab.hv, "build", build)
+    market = lab.hold_hourly(tmp_path, (date(2021, 1, 1), date(2021, 1, 31)))
+    assert lab.variables()["price_delay_30"][1](market, "AUSDT", date(2021, 1, 3)) == 0.4
+    assert set(built) == {"AUSDT", "BUSDT"} and all(lab.xsb.is_rebalance_day(lab.bs.CADENCE, d) for d in built["AUSDT"])
+    assert sl.SWEEP_ALONE["hourly"] == "hold_hourly" and set(lab.HOURLY_CANDIDATES) <= sp.AFTER_L24
+    monkeypatch.setattr(lab.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setenv("RESEARCH_CACHE", str(tmp_path))
+    assert lab.main(["run"]) == lab.EXIT_USAGE, "the whole registry is not mapped at once: hourly is mapped alone"

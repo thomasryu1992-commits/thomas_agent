@@ -210,7 +210,7 @@ def test_it_runs_in_the_sandbox_only(monkeypatch, capsys):
     listed = json.loads(capsys.readouterr().out)
     assert listed["span"] == ["2020-01-01", "2024-12-31"]
     assert listed["controls"] == lab.CONTROLS_WEEKLY + lab.CONTROLS_FIXED >= 2 * len(lab.variables()) - 4
-    assert {"price_volume", "funding", "positioning", "depth", "spot", "coin_character", "trade_flow",
+    assert {"price_volume", "funding", "positioning", "depth", "spot", "coin_character", "trade_flow", "hourly",
             "premium", "spot_flow"} == set(listed["variables"].values())
 
 
@@ -708,8 +708,8 @@ def test_leverage_is_open_interest_in_quote_terms_over_volume_and_has_no_label_w
 
 def test_the_registry_stays_inside_what_its_controls_and_the_sweeps_null_can_correct_for():
     from scripts.research import strategy_ladder as sl
-    assert len(lab.variables()) == 62
-    assert len(lab.controls()) == 120 >= 2 * len(lab.variables()) - 4, "the random variables grow with the real ones"
+    assert len(lab.variables()) == 64
+    assert len(lab.controls()) == 124 >= 2 * len(lab.variables()) - 4, "the random variables grow with the real ones"
     first = {f"control_{kind}_{k:02d}" for kind in ("week", "fixed") for k in range(lab.CONTROLS_BEFORE_SPOT_FLOW)}
     assert len(first) == 106 and first <= set(lab.controls()), "section 67 added controls after the first 106, by name"
     second = {f"control_{kind}_{k:02d}" for kind in ("week", "fixed") for k in range(lab.CONTROLS_BEFORE_SHAPES)}
@@ -720,6 +720,9 @@ def test_the_registry_stays_inside_what_its_controls_and_the_sweeps_null_can_cor
     third = {f"control_{kind}_{k:02d}" for kind in ("week", "fixed") for k in range(lab.CONTROLS_BEFORE_WINDOWS)}
     assert len(third) == 114 and second < third < set(lab.controls()), "section 76 added controls after the first 114"
     assert {c["variable"] for c in lab.earlier_control_cells(cells, lab.CONTROLS_BEFORE_WINDOWS)} == third
+    fourth = {f"control_{kind}_{k:02d}" for kind in ("week", "fixed") for k in range(lab.CONTROLS_BEFORE_HOURLY)}
+    assert len(fourth) == 120 and third < fourth < set(lab.controls()), "section 87 added controls after the first 120"
+    assert {c["variable"] for c in lab.earlier_control_cells(cells, lab.CONTROLS_BEFORE_HOURLY)} == fourth
     # Section 76: the registry passed sixty; the cap now sits on each family as it is read (strategy_ladder.FAMILY_MAX).
     assert len(lab.variables()) > sl.FAMILY_MAX and 1 / (sl.SWEEP_NULLS + 1) < 0.10 / sl.FAMILY_MAX
     assert not 1 / (sl.SWEEP_NULLS_ROUND_6 + 1) < 0.10 / sl.FAMILY_MAX, "300 null books could not: thirty was their most"
@@ -828,7 +831,8 @@ def test_the_by_variable_check_has_enough_placebos_for_a_real_effect_to_pass_the
     asks of the best of a few hundred tests, or nothing could ever pass (the first run, 2026-11-13: 200 placebos)."""
     checked = [n for n in lab.variables() if n not in lab.AXIS_FAMILY_OUT]
     tests, q = len(checked) * len(lab.TIERS) * len(lab.AXES), 0.10
-    assert tests == 59 * 2 * 6 and set(lab.AXIS_FAMILY_OUT) == {"spot_taker_share_7", "spot_taker_share_14", "spot_taker_share_90"}
+    assert tests == 60 * 2 * 6 and set(lab.AXIS_FAMILY_OUT) == {"spot_taker_share_7", "spot_taker_share_14", "spot_taker_share_90",
+                                                                 "volume_peak_share_30"}, "section 87: one hourly variable fits"
     assert not 1 / (lab.PLACEBO_AXES_BY_VARIABLE + 1) < q / (len(lab.variables()) * 2 * 6), "62 variables would not fit"
     assert 1 / (lab.PLACEBO_AXES_BY_VARIABLE + 1) < q / tests
     assert lab.PLACEBO_AXES_BY_VARIABLE == 7200 and 1 / (7200 + 1) < q / (60 * 2 * 6), "enough for sixty variables"
