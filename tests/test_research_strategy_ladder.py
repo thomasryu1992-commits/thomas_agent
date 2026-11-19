@@ -4509,3 +4509,40 @@ def test_the_leverage_doors_read_r1_only_after_a_recorded_reading_comes_back(mon
     moved = sl.leverage_reproduce(market, "upper", recorded, span)
     assert not moved["same"] and moved["differ"][0][:3] == ["top30", "coverage", "cells"]
     assert not sl.leverage_reproduce(market, "upper", {}, span)["same"], "nothing compared is not a reproduction"
+
+
+def test_r1_on_ranks_101_is_closed_by_a_struck_book_it_rebuilds(monkeypatch):
+    market, days = _r1_market(days=60, symbols=tuple(f"S{i}USDT" for i in range(12)))
+    noise = lambda m, s, d: int(xsb.random_key("r1-lower", d, s)[:8], 16) / 16 ** 8
+
+    class Tier:
+        def __init__(self):
+            self.days = days[30:]
+
+        def weigher(self, read, way):
+            def build(m, members, day, signal):
+                values = {s: v for s in m.bars if (v := read(m, s, day)) is not None}
+                mean = sum(values.values()) / len(values) if values else 0.0
+                return {s: way * (v - mean) for s, v in values.items()}
+            return build
+    monkeypatch.setattr(sl, "lower_sweep_tier", lambda market, span=None: Tier())
+    monkeypatch.setattr(sl, "skip_day_return", noise)
+    registry = {"twin": ("positioning", sl.lab.OI_TURNOVER), "far": ("price_volume", noise),
+                "deep": ("depth", noise), "kept": ("price_volume", noise)}
+    monkeypatch.setattr(sl.lab, "variables", lambda: registry)
+    monkeypatch.setattr(sl, "lower_out", lambda: {"twin": "struck", "far": "struck", "deep": "no files"})
+    monkeypatch.setattr(sl, "lower_refused_groups", lambda: set())
+    out = sl.r1_lower_overlap(market)
+    assert out["compared"] == ["H-R1", "far", "twin"], "depth is not loaded; an unstruck variable is not compared"
+    assert out["closed_by"] == ["twin"] and not out["passes"] and out["returns_computed"] is False
+    monkeypatch.setattr(sl, "lower_out", lambda: {"far": "struck"})
+    assert sl.r1_lower_overlap(market)["passes"]
+
+
+def test_the_r1_lower_overlap_command_needs_the_recorded_overlap_and_the_sealed_files(monkeypatch, tmp_path):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setenv("RESEARCH_CACHE", str(tmp_path))
+    assert sl.main(["r1-lower-overlap"]) == sl.EXIT_USAGE
+    check = tmp_path / "overlap.json"
+    check.write_text("{}", encoding="utf-8")
+    assert sl.main(["r1-lower-overlap", "--check", str(check)]) == sl.EXIT_BLOCKED

@@ -3817,24 +3817,53 @@ def lower_lead_overlap(market: xsb.Market, span: tuple[date, date] = SPAN) -> di
     others["H-R1"] = tier.weigher(skip_day_return, -1)
     out: dict[str, Any] = {}
     for lead, spec in LOWER_LEADS.items():
-        mine = tier.weigher(registered[lead][1], 1 if spec["long"] == "high" else -1)
-        values: dict[str, list[float]] = {name: [] for name in others}
-        for day in tier.days:
-            weights = mine(market, (), day, bs.CADENCE)
-            if not weights:
-                continue
-            for name, build in others.items():
-                if (value := _cosine(weights, build(market, (), day, bs.CADENCE))) is not None:
-                    values[name].append(value)
-        rows = {}
-        for name, v in values.items():
-            v = sorted(v)
-            median = statistics.median(v) if v else None
-            rows[name] = {"decisions": len(v), "median_cosine": None if median is None else round(median, 4),
-                          "quartiles": [round(v[len(v) // 4], 4), round(v[(3 * len(v)) // 4], 4)] if v else None,
-                          "closes": median is not None and abs(median) >= LOWER_OVERLAP_CLOSE}
+        rows = _beside(market, tier, tier.weigher(registered[lead][1], 1 if spec["long"] == "high" else -1), others)
         out[lead] = {**spec, "beside": rows, "closed_by": sorted(n for n, r in rows.items() if r["closes"])}
     return {"threshold": LOWER_OVERLAP_CLOSE, "compared": sorted(others), "leads": out, "returns_computed": False}
+
+
+def _beside(market: xsb.Market, tier: TierSweep, mine: Callable[..., dict[str, float]],
+            others: Mapping[str, Callable[..., dict[str, float]]]) -> dict[str, dict[str, Any]]:
+    """Per other book, the cosine of the two books' coin weights at every weekly decision where both stand: the
+    median, the quartiles and whether the median's size reaches :data:`LOWER_OVERLAP_CLOSE`. Weights only."""
+    values: dict[str, list[float]] = {name: [] for name in others}
+    for day in tier.days:
+        weights = mine(market, (), day, bs.CADENCE)
+        if not weights:
+            continue
+        for name, build in others.items():
+            if (value := _cosine(weights, build(market, (), day, bs.CADENCE))) is not None:
+                values[name].append(value)
+    rows = {}
+    for name, v in values.items():
+        v = sorted(v)
+        median = statistics.median(v) if v else None
+        rows[name] = {"decisions": len(v), "median_cosine": None if median is None else round(median, 4),
+                      "quartiles": [round(v[len(v) // 4], 4), round(v[(3 * len(v)) // 4], 4)] if v else None,
+                      "closes": median is not None and abs(median) >= LOWER_OVERLAP_CLOSE}
+    return rows
+
+
+# Section 99: R1 on ranks 101+, before any map or book. Round 45's sealed files carry this tier's positioning now,
+# so only depth (no files, D11) stays unloaded; the two struck positioning books are compared too.
+R1_LOWER_UNLOADED = frozenset({"depth"})
+
+
+def r1_lower_overlap(market: xsb.Market, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """Section 99's door: R1's book on this tier (L22, either side: the size of a cosine does not depend on it)
+    beside every book the record strikes here that has values, and H-R1's closed book. A median of size
+    :data:`LOWER_OVERLAP_CLOSE` or more against any of them closes R1 here (section 97.4). Reads no return."""
+    tier = lower_sweep_tier(market, span)
+    registered = lab.variables()
+    refused = lower_refused_groups() | R1_LOWER_UNLOADED
+    others: dict[str, Callable[..., dict[str, float]]] = {
+        name: tier.weigher(registered[name][1], 1) for name in sorted(lower_out()) if registered[name][0] not in refused}
+    others["H-R1"] = tier.weigher(skip_day_return, -1)
+    rows = _beside(market, tier, tier.weigher(lab.OI_TURNOVER, 1), others)
+    closed = sorted(n for n, r in rows.items() if r["closes"])
+    return {"candidate": lab.R1, "threshold": LOWER_OVERLAP_CLOSE, "compared": sorted(others), "beside": rows,
+            "closed_by": closed, "passes": bool(rows) and all(r["decisions"] > 0 for r in rows.values()) and not closed,
+            "returns_computed": False}
 
 
 # --- H-A1: listing age on ranks 101+, held four weeks (round 41's D12, section 59) ----------------------------------------
@@ -6050,7 +6079,7 @@ def main(argv: list[str] | None = None) -> int:
                                             "lower-positioning-plan", "lower-positioning-digest",
                                             "lower-positioning-build", "lower-positioning-seal",
                                             "lower-spot-plan", "lower-spot-digest", "lower-spot-fetch", "lower-spot-seal",
-                                            "lower-family", "top-account-build", "family", "leverage-doors"))
+                                            "lower-family", "top-account-build", "family", "leverage-doors", "r1-lower-overlap"))
     parser.add_argument("--family", choices=tuple(SENS_FAMILIES), default=None, help="sens: the sweep whose door is measured")
     parser.add_argument("--tier", choices=("top30", "rank31_100"), default=None, help="axis-power: the map tier read")
     parser.add_argument("--tiers", choices=("upper", "lower"), default=None,
@@ -6513,6 +6542,25 @@ def main(argv: list[str] | None = None) -> int:
                           "command": args.command, **hourly_lead_overlap(market)},
                          indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_OK
+    if args.command == "r1-lower-overlap":
+        if args.check is None:
+            print("refused: r1-lower-overlap needs --check (lower41/overlap.json, round 41's recorded overlap)", file=sys.stderr)
+            return EXIT_USAGE
+        market = lower_positioning_market(cache)
+        if market is None:
+            print("BLOCKED: contract types or the sealed ranks 101+ positioning files are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        market = lab.attach_trade_flow(market, cache / "archive", SPAN)
+        recorded = json.loads(args.check.read_text(encoding="utf-8"))
+        again = lower_lead_overlap(market)
+        same = bool(recorded.get("leads")) and again["leads"] == recorded.get("leads") and again["compared"] == recorded.get("compared")
+        body = ({"reproduced": True, **r1_lower_overlap(market)} if same else
+                {"reproduced": False, "refused": "round 41's overlap did not come back: R1 is not read"})
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "last_day_read": lab.last_day(market).isoformat(),
+                          "tier": LOWER_NAME, "command": args.command, "judgement": None, **body},
+                         indent=1, sort_keys=True, ensure_ascii=False))
+        return EXIT_OK if same else EXIT_BLOCKED
     if args.command == "lower-overlap":
         market = lab.hold(cache, attach=False, flow=True)
         if market is None:
