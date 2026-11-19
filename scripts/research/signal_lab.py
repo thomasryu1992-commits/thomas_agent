@@ -47,6 +47,7 @@ from scripts.research import basket_search as bs  # noqa: E402
 from scripts.research import cross_section_basket as xsb  # noqa: E402
 from scripts.research import depth_basket_search as ds  # noqa: E402
 from scripts.research import forward_panel as fp  # noqa: E402
+from scripts.research import hourly_vars as hv  # noqa: E402
 from scripts.research import lake  # noqa: E402
 from scripts.research import metrics_basket_search as ms  # noqa: E402
 from scripts.research import regime_strategies as rg  # noqa: E402
@@ -544,7 +545,20 @@ OVERLAP_CANDIDATES: dict[str, tuple[str, Variable, tuple[str, ...]]] = {
     "spot_taker_share_change_30": ("spot_flow", _change(_spot_taker_share), ("taker_buy_share_change_30", "spot_share_change_30")),
     "spot_taker_share_position_30": ("spot_flow", _position(_spot_taker_share),
                                      ("taker_buy_share_position_30", "spot_share_position_30")),
+    # Section 86: the two hourly variables beside all nine struck variables and the nearest daily ones; the price
+    # delay also beside its own window's R² with BTC (more regressors raise R², so a low R²₀ alone can raise it).
+    "price_delay_30": ("hourly", hv.reader("price_delay_30"),
+                       ("vol_30", "idio_vol_30", "max_30", "skew_30", "range_30", "beta_30", "extreme_days_30",
+                        "spread_change_30", "trade_size_position_30", "illiquidity_30", "momentum_30", "r2_btc_30")),
+    "volume_peak_share_30": ("hourly", hv.reader("volume_peak_share_30"),
+                             ("vol_30", "idio_vol_30", "max_30", "skew_30", "range_30", "beta_30", "extreme_days_30",
+                              "spread_change_30", "trade_size_position_30", "illiquidity_30", "momentum_30",
+                              "volume_growth_30", "trade_size_30")),
 }
+# Kin that are not registered variables (section 86): read only as an overlap's comparison.
+OVERLAP_EXTRA_KIN: dict[str, tuple[str, Variable]] = {"r2_btc_30": ("hourly", hv.reader("r2_btc_30"))}
+HOURLY_CANDIDATES = ("price_delay_30", "volume_peak_share_30")
+COVERAGE_MIN = 0.80                          # section 57.3
 
 
 def overlap(market: xsb.Market, name: str, span: tuple[date, date] = SPAN) -> dict[str, Any]:
@@ -552,7 +566,7 @@ def overlap(market: xsb.Market, name: str, span: tuple[date, date] = SPAN) -> di
     of the two over the coins with both, then the median over decisions. Reads no return. The rule reads the top
     tier: at :data:`OVERLAP_MAX` or more with any kin, either sign, the candidate is not mapped."""
     _, read, kin = OVERLAP_CANDIDATES[name]
-    registered = variables()
+    registered = {**variables(), **OVERLAP_EXTRA_KIN}
     tiers = tier_members(market, span)
     out: dict[str, Any] = {}
     for tier, monthly in tiers.items():
@@ -574,6 +588,33 @@ def overlap(market: xsb.Market, name: str, span: tuple[date, date] = SPAN) -> di
     nearest = max(top, key=top.get) if top else None
     return {"candidate": name, "tiers": out, "threshold": OVERLAP_MAX, "nearest_kin": nearest,
             "compared": bool(top), "mapped": bool(top) and top[nearest] < OVERLAP_MAX}
+
+
+def hourly_doors(market: xsb.Market, archive: Path, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """Section 86's three input-only doors for the two hourly variables: coverage (section 57.3, from the first
+    decision whose window can be full), overlap (section 40's rule) and rank persistence. Builds the values only for
+    the coins in the month's top 100, at the weekly decisions; reads no return."""
+    tiers = tier_members(market, span)
+    days = decisions(span, HORIZONS[0])
+    wanted: dict[str, list[date]] = {}
+    for day in days:
+        for tier in TIERS:
+            for symbol in tiers[tier].get(date(day.year, day.month, 1), ()):
+                wanted.setdefault(symbol, []).append(day)
+    values, first_hour = hv.build(archive, wanted, span)
+    market.hourly_values = values
+    full = [d for d in days if first_hour is not None and hv.window_end(d) - hv.WINDOW - hv.LAGS >= first_hour]
+    out: dict[str, Any] = {"decisions": len(days), "decisions_window_full": len(full),
+                           "first_decision": full[0].isoformat() if full else None, "coins_built": len(values)}
+    for name in HOURLY_CANDIDATES:
+        cover = hv.coverage(market, name, tiers, full)
+        over = overlap(market, name, span)
+        passes = {tier: cover[tier]["share"] is not None and cover[tier]["share"] >= COVERAGE_MIN
+                  and cover[tier]["share_out_next_month"] is not None and cover[tier]["share_out_next_month"] >= COVERAGE_MIN
+                  and over["mapped"] for tier in ("top30", "rank31_100")}
+        out[name] = {"coverage": cover, "overlap": over, "persistence": hv.persistence(market, name, tiers, full, rank_correlation),
+                     "doors_pass_by_tier": passes}
+    return out
 
 
 def _third_split(value: float | None, history: Sequence[float], high: str, low: str) -> str | None:
@@ -1465,7 +1506,7 @@ def hold_spot(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="signal_lab", description=__doc__.splitlines()[0])
     parser.add_argument("command", choices=("list", "run", "axes", "axes-by-variable", "inventory", "universe", "overlap",
-                                            "premium-sources"))
+                                            "premium-sources", "hourly-doors"))
     parser.add_argument("--candidate", default=None, help="overlap: the candidate variable to rank beside its kin")
     parser.add_argument("--only", default=None, help="run: a variable group to map alone, with the random variables")
     parser.add_argument("--cache", type=Path, default=None, help="default: $RESEARCH_CACHE")
@@ -1505,6 +1546,16 @@ def main(argv: list[str] | None = None) -> int:
                           "span": [d.isoformat() for d in SPAN], "last_day_read": last_day(market).isoformat(),
                           "judgement": None, **body}, indent=1, sort_keys=True))
         return EXIT_OK if body["values_equal"] else EXIT_BLOCKED
+    if args.command == "hourly-doors":
+        market = hold(cache, attach=False, flow=True)
+        if market is None:
+            print("BLOCKED: contract types or the trade-flow columns are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "last_day_read": last_day(market).isoformat(),
+                          "reads_returns": False, "judgement": None, **hourly_doors(market, cache / "archive")},
+                         indent=1, sort_keys=True))
+        return EXIT_OK
     if args.command == "overlap":
         if args.candidate not in OVERLAP_CANDIDATES:
             print(f"refused: --candidate is one of {sorted(OVERLAP_CANDIDATES)}", file=sys.stderr)
