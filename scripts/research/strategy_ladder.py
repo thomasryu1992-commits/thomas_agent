@@ -274,7 +274,9 @@ def is_decision(signal: str, day: date, every: int) -> bool:
 def simulate_held(market: xsb.Market, signal: str, monthly: Mapping[date, Sequence[str]], *, start: date, end: date,
                   weigher: Callable[..., dict[str, float]], every: int = 1,
                   unit_of: Callable[[str], float] | None = None,
-                  leg_of: Callable[[str, date], str] | None = None) -> dict[str, Any]:
+                  leg_of: Callable[[str, date], str] | None = None,
+                  blend: float | None = None,
+                  members_of: Callable[[date], Sequence[str]] | None = None) -> dict[str, Any]:
     """Daily net returns of a book whose quantities are fixed at each decision and held to the next.
 
     ``cross_section_basket.simulate`` adds each day's return at the decision's dollar weights, which is a book
@@ -287,7 +289,10 @@ def simulate_held(market: xsb.Market, signal: str, monthly: Mapping[date, Sequen
     cost per unit traded (L12); without it every coin pays the engine's, by the same arithmetic as before.
     ``leg_of`` names the leg a coin belongs to at a decision (section 46); each day's row then carries ``legs``,
     the same net split by leg. A trade is charged to the coin's leg at the new decision, or to the leg it leaves
-    when it is no longer held. Nothing else changes: without ``leg_of`` the rows are what they always were."""
+    when it is no longer held. Nothing else changes: without ``leg_of`` the rows are what they always were.
+    ``blend`` (L25, section 93): at a decision the book moves only part of the way, holding ``blend`` of what it
+    held (coins that left ``members_of`` that day are sold whole) and ``1 - blend`` of the target, each side then
+    scaled to the target's own side total; the first decision enters the target. Without it nothing changes."""
     unit = (xsb.cost.DEFAULT_TAKER_FEE_BPS + xsb.cost.DEFAULT_SLIPPAGE_BPS) / 10_000
     held: dict[str, tuple[float, float]] = {}            # coin -> (weight at entry, entry open)
     legs: dict[str, str] = {}                             # coin -> its leg at the decision it is held from
@@ -300,6 +305,8 @@ def simulate_held(market: xsb.Market, signal: str, monthly: Mapping[date, Sequen
             now = {s: w * bar.open / entry for s, (w, entry) in held.items()
                    if (bar := (market.bars.get(s) or {}).get(day)) is not None}
             enter = {s: w for s, w in target.items() if (market.bars.get(s) or {}).get(day) is not None}
+            if blend is not None and now:
+                enter = _blend(now, enter, blend, members_of(decision) if members_of is not None else None)
             if unit_of is None:
                 trade_cost = sum(abs(enter.get(s, 0.0) - now.get(s, 0.0)) for s in set(now) | set(enter)) * unit
             else:
@@ -345,6 +352,21 @@ def simulate_held(market: xsb.Market, signal: str, monthly: Mapping[date, Sequen
         if leg_of is not None:
             daily[day]["legs"] = by_leg
     return {"daily": daily}
+
+
+def _blend(now: Mapping[str, float], target: Mapping[str, float], blend: float,
+           members: Sequence[str] | None) -> dict[str, float]:
+    """L25's step (section 93): ``blend`` of the held weights (those of coins still in ``members``) and the rest of the
+    target, each side scaled back to the target's own total, so the book's size is L22's."""
+    kept = {s: w for s, w in now.items() if members is None or s in members}
+    mixed = {s: blend * kept.get(s, 0.0) + (1 - blend) * target.get(s, 0.0) for s in set(kept) | set(target)}
+    out: dict[str, float] = {}
+    for sign in (1, -1):
+        want = sum(w for w in target.values() if w * sign > 0)
+        have = sum(w for w in mixed.values() if w * sign > 0)
+        if want and have:
+            out.update({s: w * want / have for s, w in mixed.items() if w * sign > 0})
+    return out
 
 
 ACCOUNTING = {"engine": xsb.simulate, "held": simulate_held, "held4": functools.partial(simulate_held, every=4)}
@@ -2690,11 +2712,14 @@ class TierSweep:
         return out
 
     def monthly_rows(self, read: lab.Variable, way: int, *, every: int = 1,
-                     weigher: Callable[..., dict[str, float]] | None = None) -> dict[str, dict[str, float]]:
+                     weigher: Callable[..., dict[str, float]] | None = None,
+                     blend: float | None = None) -> dict[str, dict[str, float]]:
         """The book over the whole span, summed by calendar month: net, cost and funding. Held, stressed cost.
-        ``every`` holds each decision that many weeks (round 41's H-A1: four); ``weigher`` replaces L1's weights."""
+        ``every`` holds each decision that many weeks (round 41's H-A1: four); ``weigher`` replaces L1's weights;
+        ``blend`` moves the book part of the way at each decision (L25, section 93)."""
         sim = simulate_held(self.market, bs.CADENCE, {}, start=self.span[0], end=self.span[1],
-                            weigher=weigher or self.weigher(read, way), unit_of=listing_unit, every=every)
+                            weigher=weigher or self.weigher(read, way), unit_of=listing_unit, every=every,
+                            blend=blend, members_of=self.members if blend is not None else None)
         out: dict[str, dict[str, float]] = {}
         for day, row in sim["daily"].items():
             month = out.setdefault(_month(day), {"net": 0.0, "cost": 0.0, "funding": 0.0})
@@ -4465,6 +4490,183 @@ def sens_run(market: xsb.Market, family: str, null: Mapping[str, Mapping[str, An
             "brackets": None if false_alarm or late else {key: sens_bracket(v) for key, v in shares.items()}}
 
 
+# --- round 75 (section 93): L25's door — planted effects that turn over, L22 and L25 side by side ------------------
+# Section 92.6: a plant whose noise is drawn once per coin barely trades (rounds 60, 63, 64), so a logic that cuts
+# turnover shows nothing on it. Here the noise is AR(1) week to week, and the effect is planted two ways: from the
+# coming week (it does not persist) and from the coming four weeks (it does). L22 is read against the recorded
+# ranks 31-100 null; L25 against the same null variables built as L25 books.
+L25_BLEND = 0.5
+COST_DOOR_BOOKS = 41                       # the recorded ranks 31-100 family, less its four struck books
+COST_DOOR_SIZES = (0.0, 0.03, 0.05, 0.08, 0.10, 0.13)
+COST_DOOR_PLANTS = ("week", "month")
+COST_DOOR_PHI = 0.8                        # weekly rank persistence about 0.79 with no effect (6/pi asin(phi/2))
+COST_DOOR_MONTH_WEEKS = 4
+COST_DOOR_ALARM_MAX = 10                   # at size 0, seeds with p < 0.05 (the planted books trade more than the nulls)
+COST_DOOR_LOGICS = {"L22": None, "L25": L25_BLEND}
+
+
+def cost_door_noise(tier: TierSweep, seed: int) -> Callable[[str, date], float | None]:
+    """AR(1) noise per coin over the tier's decision days, a function of (seed, coin, day) alone: each coin's series
+    is drawn whole from its own generator the first time it is asked for, so the order of the calls never matters."""
+    days, keep = tier.days, math.sqrt(1.0 - COST_DOOR_PHI ** 2)
+    index = {d: i for i, d in enumerate(days)}
+    series: dict[str, list[float]] = {}
+
+    def value(symbol: str, day: date) -> float | None:
+        if symbol not in series:
+            rng = random.Random(f"cost-door:{seed}:{symbol}")
+            x, out = rng.gauss(0.0, 1.0), []
+            for _ in days:
+                out.append(x)
+                x = COST_DOOR_PHI * x + keep * rng.gauss(0.0, 1.0)
+            series[symbol] = out
+        i = index.get(day)
+        return None if i is None else series[symbol][i]
+    return value
+
+
+def cost_door_planted(tier: TierSweep, rho: float, seed: int, plant: str) -> lab.Variable:
+    """A planted variable whose rank correlation with the coming week is about ``rho``. ``week``: ``rho`` times the
+    normal score of the coming week's return. ``month``: ``2 rho`` times the normal score of the coming four weeks'
+    summed returns (the weeks inside the span), which carries about ``rho`` into each of them and persists. The rest
+    is :func:`cost_door_noise`. It reads the future by construction and is never registered."""
+    noise = cost_door_noise(tier, seed)
+    coef = rho if plant == "week" else min(2 * rho, 0.99)
+    keep = math.sqrt(1.0 - coef * coef)
+    scores: dict[date, dict[str, float]] = {}
+
+    def signal(day: date) -> dict[str, float]:
+        if day not in scores:
+            first = tier.forward(day)
+            if plant == "week" or not first:
+                scores[day] = _normal_scores(first) if rho and first else {}
+            else:
+                total = dict(first)
+                for k in range(1, COST_DOOR_MONTH_WEEKS):
+                    for s, v in tier.forward(day + timedelta(days=7 * k)).items():
+                        if s in total:
+                            total[s] += v
+                scores[day] = _normal_scores(total) if rho else {}
+        return scores[day]
+
+    def read(market: xsb.Market, symbol: str, day: date) -> float | None:
+        if day not in (market.bars.get(symbol) or {}):
+            return None
+        n = noise(symbol, day)
+        if n is None:
+            return None
+        return coef * signal(day).get(symbol, 0.0) + keep * n
+    return read
+
+
+def cost_door_book(tier: TierSweep, read: lab.Variable, start: date, blend: float | None) -> dict[str, Any]:
+    """One planted variable as one logic's book on the family's months: the side its own rank correlation names
+    (the same for both logics), the monthly nets, the entry rule."""
+    months = tier.months(start)
+    ics = tier.ics(read)
+    way, mean = tier_side(ics, start)
+    rows = tier.monthly_rows(read, way, blend=blend)
+    report = tier_reading(rows, months)
+    cost = sum(rows.get(m, {}).get("cost", 0.0) for m in months) * 100
+    return {"long": "high" if way > 0 else "low", "mean_rank_correlation": None if mean is None else round(mean, 4),
+            "annual_sharpe": report["annual_sharpe"], "total_position_annual_pct": report["total_position_annual_pct"],
+            "clears_entry": report["clears_entry"],
+            "cost_annual_pct": bs.total_position_annual_pct(round(cost, 2), report["months"])}
+
+
+def cost_door_null(tier: TierSweep, keys: Sequence[int], start: date) -> dict[str, Any]:
+    """The recorded null variables (``tier:k``) as L25 books: each on the side its own rank correlation names from
+    ``start`` only (the side :func:`_null_sharpes` reads), stored in that file's shape."""
+    out = {}
+    for k in keys:
+        read = tier.fixed(f"tier:{k}")
+        ics = tier.ics(read)
+        way, _mean = tier_side(ics, start)
+        side = "high" if way > 0 else "low"
+        out[f"tier:{k}"] = {"ics": {d.isoformat(): round(ic, 6) for d, ic in ics.items()},
+                            side: {m: round(r["net"], 8) for m, r in tier.monthly_rows(read, way, blend=L25_BLEND).items()},
+                            "blend": L25_BLEND}
+    return out
+
+
+def cost_door_chunk(tier: TierSweep, nulls: Mapping[str, Sequence[float]], seeds: Sequence[int], start: date,
+                    *, sizes: Sequence[float] = COST_DOOR_SIZES) -> list[dict[str, Any]]:
+    """Every plant, size and seed of the chunk through both logics, each beside its own null's Sharpes."""
+    rows = []
+    for plant in COST_DOOR_PLANTS:
+        for rho in sizes:
+            for seed in seeds:
+                read = cost_door_planted(tier, rho, seed, plant)
+                for logic, blend in COST_DOOR_LOGICS.items():
+                    book = cost_door_book(tier, read, start, blend)
+                    sharpe = book["annual_sharpe"]
+                    above = sum(1 for v in nulls[logic] if sharpe is not None and v >= sharpe)
+                    p = (1 + above) / (1 + len(nulls[logic]))
+                    rows.append({"plant": plant, "size": rho, "seed": seed, "logic": logic, **book, "p": p,
+                                 "lead": sharpe is not None and p <= SENS_Q / COST_DOOR_BOOKS})
+    return rows
+
+
+def cost_door_reading(rows: Sequence[Mapping[str, Any]], seeds: int, *, sizes: Sequence[float] = COST_DOOR_SIZES) -> dict[str, Any]:
+    """Section 93.4: per plant and logic, the lead and entry shares by size and the 80% bracket; the doors (every
+    seed once per plant, size and logic; the two logics' rank correlations and sides equal row for row; the plant
+    took; at most :data:`COST_DOOR_ALARM_MAX` false alarms at size 0); and the rule on the month plant."""
+    doors: dict[str, Any] = {}
+    keyed = {(r["plant"], r["size"], r["seed"], r["logic"]): r for r in rows}
+    want = {(pl, s, sd, lg) for pl in COST_DOOR_PLANTS for s in sizes for sd in range(seeds) for lg in COST_DOOR_LOGICS}
+    doors["1_complete"] = set(keyed) == want and len(rows) == len(want)
+    if not doors["1_complete"]:
+        return {"doors": doors, "doors_pass": False}
+    doors["2_paired"] = sum(1 for (pl, s, sd, lg) in want if lg == "L25"
+                            and (keyed[(pl, s, sd, lg)]["mean_rank_correlation"], keyed[(pl, s, sd, lg)]["long"])
+                            != (keyed[(pl, s, sd, "L22")]["mean_rank_correlation"], keyed[(pl, s, sd, "L22")]["long"]))
+    out: dict[str, Any] = {}
+    took, alarms = {}, {}
+    for plant in COST_DOOR_PLANTS:
+        out[plant] = {}
+        for logic in COST_DOOR_LOGICS:
+            shares = {}
+            for rho in sizes:
+                at = [keyed[(plant, rho, sd, logic)] for sd in range(seeds)]
+                ics = sorted(r["mean_rank_correlation"] for r in at if r["mean_rank_correlation"] is not None)
+                median_ic = ics[len(ics) // 2] if ics else 0.0
+                high = sum(1 for r in at if r["long"] == "high")
+                if rho > 0:
+                    ok = TOP_SENS_TOOK[0] * rho <= median_ic <= TOP_SENS_TOOK[1] * rho
+                    ok = ok and (rho < TOP_SENS_SIDE_FROM or high >= TOP_SENS_SIDE_MIN * seeds / SENS_SEEDS)
+                    took[(plant, rho)] = took.get((plant, rho), True) and ok
+                else:
+                    alarms[(plant, logic)] = sum(1 for r in at if r["p"] < 0.05)
+                shares[f"{rho:g}"] = {"lead": sum(r["lead"] for r in at) / seeds,
+                                      "entry": sum(bool(r["clears_entry"]) for r in at) / seeds,
+                                      "median_rank_correlation": round(median_ic, 4), "long_high": high,
+                                      "median_cost_annual_pct": statistics.median(
+                                          [r["cost_annual_pct"] for r in at if r["cost_annual_pct"] is not None] or [0.0])}
+            out[plant][logic] = {"sizes": shares, "bracket": sens_bracket({float(k): v["lead"] for k, v in shares.items()})}
+    doors["3_plant_took"] = all(took.values())
+    doors["4_false_alarms"] = {f"{p}:{l}": n for (p, l), n in alarms.items()}
+    passed = doors["2_paired"] == 0 and doors["3_plant_took"] and all(n <= COST_DOOR_ALARM_MAX for n in alarms.values())
+    if not passed:
+        return {"doors": doors, "doors_pass": False}
+    month = out["month"]
+    gains = [out["month"]["L25"]["sizes"][f"{r:g}"]["lead"] - out["month"]["L22"]["sizes"][f"{r:g}"]["lead"] for r in sizes]
+    neighbours = any(gains[i] >= 0.20 and gains[i + 1] >= 0.20 for i in range(len(gains) - 1))
+    lower = _bracket_upper(month["L25"]["bracket"]), _bracket_upper(month["L22"]["bracket"])
+    step_down = lower[0] is not None and (lower[1] is None or sizes.index(lower[0]) < sizes.index(lower[1]))
+    return {"doors": doors, "doors_pass": True, "plants": out,
+            "rule": {"month_gain_by_size": dict(zip((f"{r:g}" for r in sizes), (round(g, 2) for g in gains))),
+                     "two_neighbours_20pp": neighbours, "bracket_upper": {"L25": lower[0], "L22": lower[1]},
+                     "bracket_one_step_lower": step_down, "ask_thomas": neighbours or step_down}}
+
+
+def _bracket_upper(bracket: Mapping[str, Any] | None) -> float | None:
+    """The smallest size at which the share reaches :data:`SENS_SHARE`, from :func:`sens_bracket`'s reading."""
+    if not bracket:
+        return None
+    upper = bracket.get("at_or_over")
+    return None if upper is None else float(upper)
+
+
 # --- round 45 (section 63): positioning on ranks 101+, from a fetch of its own -------------------------------------------
 
 HOST_COMMANDS = ("lower-positioning-digest", "lower-positioning-build", "lower-positioning-seal",
@@ -5610,6 +5812,7 @@ def main(argv: list[str] | None = None) -> int:
                                             "basis-counts", "basis", "wide-counts", "wide", "mid-counts", "mid",
                                             "tier-gate", "tier-counts", "tier-sweep", "tier-lead", "door-size",
                                             "lower-gate", "lower-counts", "lower-map", "lower-sweep", "lower-overlap", "hourly-lead-overlap", "hp1",
+                                            "cost-null", "cost-door", "cost-door-reading",
                                             "lower-axes", "top-sens", "top-sens-reading", "null-legs-reading",
                                             "weekly-top", "weekly-top-family",
                                             "ha1-gate", "ha1-counts", "ha1", "sens", "axis-power",
@@ -5915,6 +6118,60 @@ def main(argv: list[str] | None = None) -> int:
                           "command": args.command, "null_file_lake": stored.get("lake_snapshot"), **body},
                          indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or body["false_alarm"]["stop"] or body["own_start_later"] else EXIT_OK
+    if args.command == "cost-door-reading":
+        if not args.records:
+            print("refused: cost-door-reading needs --records, the chunk files", file=sys.stderr)
+            return EXIT_USAGE
+        chunks = [json.loads(Path(f).read_text(encoding="utf-8")) for f in args.records.split(",")]
+        seeds = sorted({s for c in chunks for s in c.get("seeds", [])})
+        body = cost_door_reading([r for c in chunks for r in c["rows"]], len(seeds))
+        if seeds != list(range(len(seeds))):
+            body = {"doors": {"seeds": "the chunks do not hold seeds 0 .. n-1 once each"}, "doors_pass": False}
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), "spec": SPEC, "command": args.command, "seeds": len(seeds),
+                          **body}, indent=1, sort_keys=True))
+        return EXIT_OK if body["doors_pass"] else EXIT_BLOCKED
+    if args.command in ("cost-null", "cost-door"):
+        try:
+            lo, hi = (int(x) for x in (args.seeds or "").split(":"))
+        except ValueError:
+            print("refused: --seeds is A:B", file=sys.stderr)
+            return EXIT_USAGE
+        if args.null is None or (args.command == "cost-door" and not args.records):
+            print("refused: needs --null (the recorded ranks 31-100 null) and, for cost-door, --records (the L25 null files)",
+                  file=sys.stderr)
+            return EXIT_USAGE
+        null22 = json.loads(args.null.read_text(encoding="utf-8"))
+        null22 = null22.get("null", null22)
+        limit = SWEEP_NULLS if args.command == "cost-null" else SENS_SEEDS
+        if not 0 <= lo < hi <= limit:
+            print(f"refused: --seeds must lie in 0:{limit}", file=sys.stderr)
+            return EXIT_USAGE
+        market = lab.hold(cache, attach=False)
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        tier = TierSweep(market)
+        head = {"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC, "span": [d.isoformat() for d in SPAN],
+                "last_day_read": lab.last_day(market).isoformat(), "command": args.command, "blend": L25_BLEND}
+        differ = sens_null_check(tier, null22)
+        if differ:
+            print(json.dumps({**head, "refused": f"the recorded null books differ when recomputed: {differ}"}, indent=1, sort_keys=True))
+            return EXIT_BLOCKED
+        start = SENS_FAMILIES["mid"]["start"]
+        if args.command == "cost-null":
+            print(json.dumps({**head, "keys": [lo, hi], "null": cost_door_null(tier, range(lo, hi), start)}, indent=1, sort_keys=True))
+            return EXIT_OK
+        null25: dict[str, Any] = {}
+        for f in args.records.split(","):
+            null25.update(json.loads(Path(f).read_text(encoding="utf-8"))["null"])
+        if sorted(null25) != sorted(f"tier:{k}" for k in range(SWEEP_NULLS)):
+            print("refused: the L25 null files do not hold the 600 null books once each", file=sys.stderr)
+            return EXIT_USAGE
+        months = len(tier.months(start))
+        nulls = {"L22": _null_sharpes(null22, start.isoformat(), months), "L25": _null_sharpes(null25, start.isoformat(), months)}
+        print(json.dumps({**head, "seeds": list(range(lo, hi)), "null_books": {k: len(v) for k, v in nulls.items()},
+                          "rows": cost_door_chunk(tier, nulls, range(lo, hi), start)}, indent=1, sort_keys=True))
+        return EXIT_OK
     if args.command == "hp1":
         if args.check is None or args.null is None:
             print("refused: hp1 needs --check (round 69's top-30 sweep file) and --null (round 64's weekly null)", file=sys.stderr)

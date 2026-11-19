@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import statistics
+import types
 import random as random_module
 from datetime import date, timedelta
 
@@ -4218,3 +4219,84 @@ def test_h_p1_runs_only_after_its_recorded_row_builds_again_and_enough_weeks_hol
     other.write_text(json.dumps({"accounting": "held4", "logic": "L9T", "books": {f"n{k}": {} for k in range(600)}}), encoding="utf-8")
     assert sl.main(["hp1", "--check", str(other), "--null", str(other)]) == sl.EXIT_USAGE
     assert "not round 64's 600 weekly null books" in capsys.readouterr().err
+
+
+def test_l25_moves_half_way_keeps_each_sides_total_and_sells_coins_that_left():
+    now = {"A": 0.4, "B": -0.4, "GONE": 0.2}
+    target = {"A": 0.0, "C": 0.5, "B": -0.5}
+    out = sl._blend(now, target, 0.5, ["A", "B", "C"])
+    assert "GONE" not in out, "a coin that left the tier is sold whole"
+    assert abs(sum(w for w in out.values() if w > 0) - 0.5) < 1e-12 and abs(sum(w for w in out.values() if w < 0) + 0.5) < 1e-12
+    assert out["A"] == pytest.approx(0.5 * 0.2 / (0.2 + 0.25)) and out["C"] == pytest.approx(0.5 * 0.25 / 0.45)
+    assert sl._blend(now, target, 0.5, None)["GONE"] > 0, "without members every held coin is blended"
+
+
+def _blend_market():
+    days = [date(2021, 1, 1) + timedelta(days=k) for k in range(70)]
+    bars = {s: {d: xsb.Bar(open=1.0 + 0.001 * k, close=1.0 + 0.001 * k, quote_volume=1e6) for k, d in enumerate(days)}
+            for s in ("AUSDT", "BUSDT", "CUSDT")}
+    return xsb.Market(bars=bars, funding={}), days
+
+
+def test_l25_trades_less_than_l22_on_a_flipping_target_and_changes_nothing_without_blend():
+    market, days = _blend_market()
+
+    def weigher(market, members, day, signal, seed=None):
+        flip = (day.toordinal() // 7) % 2
+        return {"AUSDT": 0.5, "BUSDT": -0.5} if flip else {"AUSDT": -0.5, "BUSDT": 0.5}
+
+    full = sl.simulate_held(market, sl.bs.CADENCE, {}, start=days[0], end=days[-1], weigher=weigher)
+    again = sl.simulate_held(market, sl.bs.CADENCE, {}, start=days[0], end=days[-1], weigher=weigher, blend=None)
+    half = sl.simulate_held(market, sl.bs.CADENCE, {}, start=days[0], end=days[-1], weigher=weigher, blend=0.5,
+                            members_of=lambda day: ["AUSDT", "BUSDT"])
+    assert full == again, "blend None is the recorded path"
+    cost = lambda sim: sum(r["cost"] for r in sim["daily"].values())      # noqa: E731
+    assert 0 < cost(half) < cost(full)
+
+
+def test_the_cost_door_noise_is_the_same_whatever_order_it_is_asked_in(monkeypatch):
+    tier = types.SimpleNamespace(days=[date(2021, 1, 3) + timedelta(days=7 * k) for k in range(300)])
+    a, b = sl.cost_door_noise(tier, 7), sl.cost_door_noise(tier, 7)
+    first = [a("X", d) for d in tier.days] + [a("Y", d) for d in tier.days]
+    second = [b("Y", d) for d in tier.days]
+    second = [b("X", d) for d in tier.days] + second
+    assert first == second
+    xs = first[:300]
+    lag = statistics.correlation(xs[:-1], xs[1:])
+    assert 0.7 < lag < 0.9, "AR(1) with phi 0.8"
+    assert a("X", date(2020, 1, 1)) is None
+
+
+def test_the_cost_door_reading_checks_its_doors_and_reads_the_rule_on_the_month_plant():
+    rows = []
+    for plant in sl.COST_DOOR_PLANTS:
+        for rho in sl.COST_DOOR_SIZES:
+            for seed in range(100):
+                for logic in sl.COST_DOOR_LOGICS:
+                    lead = rho >= (0.05 if logic == "L25" and plant == "month" else 0.10) and seed < 90
+                    rows.append({"plant": plant, "size": rho, "seed": seed, "logic": logic, "long": "high",
+                                 "mean_rank_correlation": rho, "annual_sharpe": 1.0, "total_position_annual_pct": 10.0,
+                                 "clears_entry": False, "cost_annual_pct": 3.0, "p": 0.5 if rho else (0.01 if seed < 3 else 0.5),
+                                 "lead": lead})
+    out = sl.cost_door_reading(rows, 100)
+    assert out["doors_pass"] and out["doors"]["2_paired"] == 0 and out["doors"]["3_plant_took"]
+    assert out["rule"]["two_neighbours_20pp"] and out["rule"]["ask_thomas"]
+    assert out["rule"]["bracket_upper"] == {"L25": 0.05, "L22": 0.1}
+    broken = [dict(r, mean_rank_correlation=0.5) if r["logic"] == "L25" and r["seed"] == 0 else r for r in rows]
+    assert not sl.cost_door_reading(broken, 100)["doors_pass"], "the two logics read one planted variable"
+    assert not sl.cost_door_reading(rows[:-1], 100)["doors_pass"]
+    alarms = [dict(r, p=0.01) if r["size"] == 0 else r for r in rows]
+    assert not sl.cost_door_reading(alarms, 100)["doors_pass"], "too many false alarms at size 0"
+
+
+def test_the_cost_door_commands_refuse_what_they_cannot_read(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setenv("RESEARCH_CACHE", str(tmp_path))
+    assert sl.main(["cost-door-reading"]) == sl.EXIT_USAGE
+    assert sl.main(["cost-null", "--seeds", "x"]) == sl.EXIT_USAGE
+    null = tmp_path / "null.json"
+    null.write_text(json.dumps({"null": {}}), encoding="utf-8")
+    assert sl.main(["cost-door", "--seeds", "0:10", "--null", str(null)]) == sl.EXIT_USAGE
+    assert sl.main(["cost-null", "--seeds", "0:700", "--null", str(null)]) == sl.EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "needs --records" in err and "--seeds is A:B" in err and "must lie in 0:600" in err
