@@ -26,3 +26,9 @@ to two, as the code reads it.
 
 **Answer (§89.9).** Thomas: "한 번 읽음" — the closed top-30 weekly book is opened for H-P1 alone, read once as
 registered; §84.5's rule for new variables stands. The fact lines to report were written down before the run.
+
+**Result (§89.10).** The gate passed (the four-week row built again on all eight values), then the counts stopped
+the read: weeks with a book were 52, 49 and 38 in 2022–2024 against the registered 40, so no return was computed.
+H-P1 closes as "stopped at the counts, not measured", like H-F2; the 40 is not moved and the book is not reopened,
+and the price-delay map lead closes with it. Why the book stands in about half the weeks of 2020–2021 and 38 of
+2024 was not measured.
