@@ -17,3 +17,9 @@ candidates fall at rung 2), and §78.4's rule is to design it now rather than wa
   "rebuild every lead under a new logic"; so applying L25 to real variables is Thomas's question, asked only if a
   planted-effect door with realistic turnover (AR(1) noise, φ 0.8 ≈ rank persistence 0.79) shows L25 buys at least
   20 points at ρ 0.05 over L22. That door reads no real variable and is the next registration.
+
+**Left open (§92.6).** A planted variable whose effect is redrawn every week cannot measure L25: half of L25's
+position carries last week's effect, so it catches about half by construction and the 20-point line would fail
+because of how the effect was planted, not because of the logic. The next registration adds a planted variable whose
+effect itself persists (e.g. a four-week return score) and fixes beforehand which result the question rests on; it
+also fixes L25's gross exposure and missing-value handling, and attaches each of the five books' recorded disposition.
