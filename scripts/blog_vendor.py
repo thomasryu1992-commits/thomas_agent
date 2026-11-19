@@ -144,7 +144,8 @@ SCRIPT_SOURCES = {"affiliate_clips": "affiliate-clips.py", "affiliate_place": "b
                   "watch_rules": "mac-routine-watch.py"}
 SCRIPT_KEEP = {
     "affiliate_clips": {"VAULT", "KW_DIR", "CLIP_DIR", "NAVER_SECTION", "MODEL", "WON", "FIELD_HINTS",
-                        "front_matter", "note_targets", "products", "parse_clip"},
+                        "front_matter", "note_targets", "products", "parse_clip",
+                        "ISSUED", "_IDX", "issued_index", "link_conflict"},   # 11-19: clip link vs the issued link of the same product
     "affiliate_place": {"VAULT", "NAVER", "AFF", "ASSETS", "SLOT", "AI_TERM_RX", "V13_SCENE_RX", "V13_RUN_RX", "MODEL_FROM", "FIRSTHAND_RX",
                         "has_ai_story", "stock_key", "stock_files", "OK_CLUSTER", "OFF_STOCK", "NAVER_ME", "_norm",
                         "AFFILIATE_POLICY_VERSION", "HOLD_F", "editorial_holds", "context", "readiness"},
@@ -176,10 +177,12 @@ SCRIPT_CONFIGURE = {
 
 def configure(vault_root):
     """Point the clip folders at a vault (generated: replaces the script's import-time BLOG_VAULT lookup)."""
-    global VAULT, KW_DIR, CLIP_DIR
+    global VAULT, KW_DIR, CLIP_DIR, ISSUED, _IDX
     VAULT = str(vault_root)
     KW_DIR = os.path.join(VAULT, "제휴", "키워드")
     CLIP_DIR = os.path.join(VAULT, "제휴", "클립")
+    ISSUED = os.path.join(VAULT, "ops", "affiliate-link", "issued.json")
+    _IDX = None
 ''',
     "affiliate_place": '''
 
