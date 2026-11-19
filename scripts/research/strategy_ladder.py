@@ -4667,6 +4667,145 @@ def _bracket_upper(bracket: Mapping[str, Any] | None) -> float | None:
     return None if upper is None else float(upper)
 
 
+# --- round 76 (section 94): L6's ceiling on the recorded null books ----------------------------------------------------
+
+L6_FLOOR_PCT = 15.0                # a year on total position at zero cost: the floor, as section 92.1 reads a ceiling
+L6_UNUSABLE_PCT = 30.0             # a tier whose null 95th percentile reaches this cannot tell a book from the drift
+L6_BETA_MISSING_MAX = 0.05         # of the long side's weight over a tier's null books, hedged at beta 1: more stops
+L6_TOLERANCE = 1e-9
+L6_LEGS = ("long", "short", "alts", "hedge")
+
+
+def l6_book(tier: TierSweep, read: lab.Variable, way: int, betas: dict[tuple[str, date], float | None]) -> dict[str, Any]:
+    """Section 94: one book at zero cost, twice. L22 split by side (``long`` / ``short``), and L6: L22's long side
+    as it is, with Bitcoin sold against the sum of each long's weight times its 60-day beta (H-F1's leg, ``bs._beta``;
+    a coin with no beta is hedged at 1 and its weight counted). Each leg's price and funding summed by calendar month,
+    and the long weight without a beta beside the long weight in all."""
+    market = tier.market
+    inner = tier.weigher(read, way)
+    targets: dict[date, dict[str, float]] = {}
+    missing = {"without_beta": 0.0, "long_weight": 0.0}
+
+    def l22(market_: xsb.Market, members: Sequence[str], day: date, signal: str, *, seed: str | None = None) -> dict[str, float]:
+        targets[day] = inner(market_, members, day, signal, seed=seed)
+        return targets[day]
+
+    def l6(market_: xsb.Market, members: Sequence[str], day: date, signal: str, *, seed: str | None = None) -> dict[str, float]:
+        weights = inner(market_, members, day, signal, seed=seed)
+        if HEDGE in weights:
+            raise ValueError(f"{HEDGE} is a member of the tier on {day}: it cannot be the hedge too")
+        longs = {s: w for s, w in weights.items() if w > 0}
+        hedge = 0.0
+        for s, w in longs.items():
+            if (s, day) not in betas:
+                betas[(s, day)] = bs._beta(market_, s, day, DEEP_BETA_DAYS)
+            beta = betas[(s, day)]
+            if beta is None:
+                missing["without_beta"] += w
+                beta = 1.0
+            missing["long_weight"] += w
+            hedge -= w * beta
+        return {**longs, HEDGE: hedge} if longs and hedge else longs
+
+    zero = lambda _symbol: 0.0                                              # noqa: E731
+    start, end = tier.span
+    sims = (simulate_held(market, bs.CADENCE, {}, start=start, end=end, weigher=l22, unit_of=zero,
+                          leg_of=lambda s, day: "long" if targets.get(day, {}).get(s, 0.0) > 0 else "short"),
+            simulate_held(market, bs.CADENCE, {}, start=start, end=end, weigher=l6, unit_of=zero,
+                          leg_of=lambda s, day: "hedge" if s == HEDGE else "alts"))
+    monthly: dict[str, dict[str, float]] = {}
+    for sim in sims:
+        for day, row in sim["daily"].items():
+            month = monthly.setdefault(_month(day), dict.fromkeys(L6_LEGS, 0.0))
+            for leg, value in row.get("legs", {}).items():
+                month[leg] += value
+    return {"monthly": monthly, **missing}
+
+
+def l6_hedge_door(market: xsb.Market, span: tuple[date, date] = SPAN) -> str | None:
+    """Why the hedge leg cannot be counted on this market, or None: a bar on every day of the span and funding on file."""
+    bars = market.bars.get(HEDGE) or {}
+    day, gaps = span[0], 0
+    while day <= span[1]:
+        gaps += day not in bars
+        day += timedelta(days=1)
+    if gaps:
+        return f"{HEDGE} has no bar on {gaps} day(s) of the span"
+    if not xsb.funding_on(market, HEDGE, span[0])[1]:
+        return f"{HEDGE} has no funding on file"
+    return None
+
+
+def l6_chunk(tier: TierSweep, keys: Sequence[int], start: date, *, door_books: int = SENS_NULL_CHECK) -> list[dict[str, Any]]:
+    """The recorded null variables (``tier:k``) on the side their own rank correlation names from ``start``, through
+    :func:`l6_book`, each leg as a yearly rate on total position over the family's months. The first ``door_books``
+    are also built at the stressed cost: both sides at zero cost must give that book's net plus cost, month by month.
+    For every book the L6 alts must be the L22 long side, month by month."""
+    months = tier.months(start)
+    years = len(months) / 12
+    betas: dict[tuple[str, date], float | None] = {}
+    rows = []
+    for k in keys:
+        read = tier.fixed(f"tier:{k}")
+        way, _mean = tier_side(tier.ics(read), start)
+        built = l6_book(tier, read, way, betas)
+        monthly = built["monthly"]
+        zero = dict.fromkeys(L6_LEGS, 0.0)
+        alts_is_long = all(abs(monthly[m]["alts"] - monthly[m]["long"]) <= L6_TOLERANCE for m in monthly)
+        sides_add_up = None
+        if k < door_books:
+            stressed = tier.monthly_rows(read, way)
+            sides_add_up = all(abs(monthly.get(m, zero)["long"] + monthly.get(m, zero)["short"]
+                                   - stressed.get(m, {}).get("net", 0.0) - stressed.get(m, {}).get("cost", 0.0)) <= L6_TOLERANCE
+                               for m in set(monthly) | set(stressed))
+        pct = {leg: round(sum(monthly.get(m, zero)[leg] for m in months) * 100 / bs.POSITION_TOTAL / years, 4)
+               for leg in L6_LEGS}
+        rows.append({"key": k, "long": "high" if way > 0 else "low", "annual_pct": pct,
+                     "l22_ceiling_pct": round(pct["long"] + pct["short"], 4),
+                     "l6_ceiling_pct": round(pct["alts"] + pct["hedge"], 4),
+                     "without_beta": round(built["without_beta"], 8), "long_weight": round(built["long_weight"], 8),
+                     "alts_is_long": alts_is_long, "sides_add_up": sides_add_up})
+    return rows
+
+
+def _percentile(values: Sequence[float], share: float) -> float | None:
+    """The value at rank ceil(share x n) of the sorted values (the 570th of 600 for 0.95)."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    return ordered[max(math.ceil(share * len(ordered)), 1) - 1]
+
+
+def l6_reading(rows: Sequence[Mapping[str, Any]], books: int = SWEEP_NULLS) -> dict[str, Any]:
+    """Section 94.3: the doors (every null book once; both sides add up on the door books; the alts are the long side
+    everywhere; the long weight without a beta under :data:`L6_BETA_MISSING_MAX`), the distributions, and the bar a
+    real book's L6 ceiling would have to clear."""
+    doors: dict[str, Any] = {"1_complete": sorted(r["key"] for r in rows) == list(range(books))}
+    if not doors["1_complete"]:
+        return {"doors": doors, "doors_pass": False}
+    checked = [r["sides_add_up"] for r in rows if r["sides_add_up"] is not None]
+    doors["2_sides_add_up"] = {"books": len(checked), "pass": bool(checked) and all(checked)}
+    doors["3_alts_is_long"] = all(r["alts_is_long"] for r in rows)
+    weight = sum(r["long_weight"] for r in rows)
+    doors["4_without_beta_share"] = round(sum(r["without_beta"] for r in rows) / weight, 6) if weight else None
+    passed = (doors["2_sides_add_up"]["pass"] and doors["3_alts_is_long"]
+              and doors["4_without_beta_share"] is not None and doors["4_without_beta_share"] <= L6_BETA_MISSING_MAX)
+    if not passed:
+        return {"doors": doors, "doors_pass": False}
+
+    def spread(values: list[float]) -> dict[str, Any]:
+        return {"median": round(statistics.median(values), 2), "p95": round(_percentile(values, 0.95), 2),
+                "max": round(max(values), 2), "min": round(min(values), 2),
+                "at_or_over_floor": sum(1 for v in values if v >= L6_FLOOR_PCT)}
+
+    l6 = [r["l6_ceiling_pct"] for r in rows]
+    p95 = _percentile(l6, 0.95)
+    return {"doors": doors, "doors_pass": True, "books": len(rows),
+            "l6_ceiling": spread(l6), "l22_ceiling": spread([r["l22_ceiling_pct"] for r in rows]),
+            "legs_median": {leg: round(statistics.median(r["annual_pct"][leg] for r in rows), 2) for leg in L6_LEGS},
+            "rule": {"bar_pct": round(max(L6_FLOOR_PCT, p95), 2), "usable": p95 < L6_UNUSABLE_PCT}}
+
+
 # --- round 45 (section 63): positioning on ranks 101+, from a fetch of its own -------------------------------------------
 
 HOST_COMMANDS = ("lower-positioning-digest", "lower-positioning-build", "lower-positioning-seal",
@@ -5812,7 +5951,7 @@ def main(argv: list[str] | None = None) -> int:
                                             "basis-counts", "basis", "wide-counts", "wide", "mid-counts", "mid",
                                             "tier-gate", "tier-counts", "tier-sweep", "tier-lead", "door-size",
                                             "lower-gate", "lower-counts", "lower-map", "lower-sweep", "lower-overlap", "hourly-lead-overlap", "hp1",
-                                            "cost-null", "cost-door", "cost-door-reading",
+                                            "cost-null", "cost-door", "cost-door-reading", "l6-null", "l6-reading",
                                             "lower-axes", "top-sens", "top-sens-reading", "null-legs-reading",
                                             "weekly-top", "weekly-top-family",
                                             "ha1-gate", "ha1-counts", "ha1", "sens", "axis-power",
@@ -6118,6 +6257,51 @@ def main(argv: list[str] | None = None) -> int:
                           "command": args.command, "null_file_lake": stored.get("lake_snapshot"), **body},
                          indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_BLOCKED if body.get("refused") or body["false_alarm"]["stop"] or body["own_start_later"] else EXIT_OK
+    if args.command == "l6-reading":
+        if args.family is None or not args.records:
+            print("refused: l6-reading needs --family and --records, the chunk files", file=sys.stderr)
+            return EXIT_USAGE
+        chunks = [json.loads(Path(f).read_text(encoding="utf-8")) for f in args.records.split(",")]
+        if any(c.get("command") != "l6-null" or c.get("family") != args.family or c.get("refused") for c in chunks):
+            print("refused: --records are not this family's l6-null chunks", file=sys.stderr)
+            return EXIT_USAGE
+        body = l6_reading([r for c in chunks for r in c["rows"]])
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), "spec": SPEC, "command": args.command, "family": args.family,
+                          "lakes": sorted({c.get("lake_snapshot") for c in chunks}), **body}, indent=1, sort_keys=True))
+        return EXIT_OK if body["doors_pass"] else EXIT_BLOCKED
+    if args.command == "l6-null":
+        try:
+            lo, hi = (int(x) for x in (args.seeds or "").split(":"))
+        except ValueError:
+            print("refused: --seeds is A:B (the null keys of this chunk)", file=sys.stderr)
+            return EXIT_USAGE
+        if args.family is None or args.null is None:
+            print("refused: l6-null needs --family and --null (that sweep's recorded null)", file=sys.stderr)
+            return EXIT_USAGE
+        if not 0 <= lo < hi <= SWEEP_NULLS:
+            print(f"refused: --seeds must lie in 0:{SWEEP_NULLS}", file=sys.stderr)
+            return EXIT_USAGE
+        stored = json.loads(args.null.read_text(encoding="utf-8"))
+        if "null" not in stored or stored.get("tier", SENS_FAMILIES[args.family]["tier"]) != SENS_FAMILIES[args.family]["tier"]:
+            print("refused: --null is not that sweep's null file", file=sys.stderr)
+            return EXIT_USAGE
+        market = lab.hold(cache, attach=False)
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        tier = sens_tier(market, args.family)
+        head = {"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC, "span": [d.isoformat() for d in SPAN],
+                "last_day_read": lab.last_day(market).isoformat(), "command": args.command, "family": args.family,
+                "null_file_lake": stored.get("lake_snapshot")}
+        refused = l6_hedge_door(market)
+        differ = None if refused else sens_null_check(tier, stored["null"])
+        if refused or differ:
+            print(json.dumps({**head, "refused": refused or f"the recorded null books differ when recomputed: {differ}"},
+                             indent=1, sort_keys=True))
+            return EXIT_BLOCKED
+        print(json.dumps({**head, "keys": [lo, hi],
+                          "rows": l6_chunk(tier, range(lo, hi), SENS_FAMILIES[args.family]["start"])}, indent=1, sort_keys=True))
+        return EXIT_OK
     if args.command == "cost-door-reading":
         if not args.records:
             print("refused: cost-door-reading needs --records, the chunk files", file=sys.stderr)

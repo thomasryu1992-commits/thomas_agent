@@ -4300,3 +4300,101 @@ def test_the_cost_door_commands_refuse_what_they_cannot_read(monkeypatch, capsys
     assert sl.main(["cost-null", "--seeds", "0:700", "--null", str(null)]) == sl.EXIT_USAGE
     err = capsys.readouterr().err
     assert "needs --records" in err and "--seeds is A:B" in err and "must lie in 0:600" in err
+
+
+def _l6_market(days=70, drop_btc_day=None):
+    first = date(2021, 1, 1)
+    out = [first + timedelta(days=k) for k in range(days)]
+    rng = random_module.Random(5)
+    bars = {}
+    for s in ("AUSDT", "BUSDT", "CUSDT", sl.HEDGE):
+        price, own = 1.0, {}
+        for d in out:
+            nxt = price * (1 + rng.gauss(0, 0.03))
+            own[d] = xsb.Bar(open=price, close=nxt, quote_volume=1e6)
+            price = nxt
+        bars[s] = own
+    if drop_btc_day is not None:
+        bars[sl.HEDGE].pop(out[drop_btc_day])
+    return xsb.Market(bars=bars, funding={}), out
+
+
+def _l6_tier(market, days, weights):
+    def weigher(read, way):
+        return lambda market_, members, day, signal, seed=None: dict(weights)
+    return types.SimpleNamespace(market=market, span=(days[0], days[-1]), weigher=weigher)
+
+
+def test_l6_splits_l22_by_side_and_hedges_the_long_side_against_its_betas(monkeypatch):
+    market, days = _l6_market()
+    weights = {"AUSDT": 0.6, "CUSDT": 0.4, "BUSDT": -1.0}
+    tier = _l6_tier(market, days, weights)
+    monkeypatch.setattr(sl.bs, "_beta", lambda market_, s, day, lookback: 1.5 if s == "AUSDT" else None)
+    built = sl.l6_book(tier, None, 1, {})
+    monthly = built["monthly"]
+    stressed = sl.simulate_held(market, sl.bs.CADENCE, {}, start=days[0], end=days[-1],
+                                weigher=lambda *a, **k: dict(weights), unit_of=sl.listing_unit)
+    by_month = {}
+    for day, row in stressed["daily"].items():
+        by_month[sl._month(day)] = by_month.get(sl._month(day), 0.0) + row["net"] + row["cost"]
+    assert set(by_month) == set(monthly)
+    for m in monthly:
+        assert monthly[m]["long"] + monthly[m]["short"] == pytest.approx(by_month[m], abs=1e-12), "both sides at zero cost"
+        assert monthly[m]["alts"] == pytest.approx(monthly[m]["long"], abs=1e-12), "L6 holds L22's long side as it is"
+    hedge = sl.simulate_held(market, sl.bs.CADENCE, {}, start=days[0], end=days[-1],
+                             weigher=lambda *a, **k: {sl.HEDGE: -(0.6 * 1.5 + 0.4 * 1.0)}, unit_of=lambda s: 0.0)
+    assert sum(m["hedge"] for m in monthly.values()) == pytest.approx(sum(r["net"] for r in hedge["daily"].values()), abs=1e-12)
+    assert built["without_beta"] == pytest.approx(0.4 / 1.0 * built["long_weight"]), "a coin with no beta is hedged at 1 and counted"
+    with pytest.raises(ValueError):
+        sl.l6_book(_l6_tier(market, days, {sl.HEDGE: 1.0, "BUSDT": -1.0}), None, 1, {})
+
+
+def test_the_l6_hedge_door_needs_every_bar_and_funding_on_file():
+    market, days = _l6_market()
+    span = (days[0], days[-1])
+    assert "no funding" in sl.l6_hedge_door(market, span)
+    funded, _ = _l6_market()
+    funded.funding[sl.HEDGE] = [(int(datetime(2021, 1, 1, 8, tzinfo=timezone.utc).timestamp() * 1000), 0.0001)]
+    assert sl.l6_hedge_door(funded, span) is None
+    holed, _ = _l6_market(drop_btc_day=10)
+    assert "no bar on 1 day" in sl.l6_hedge_door(holed, span)
+
+
+def _l6_rows(n=600, l6=lambda k: k / 20, without=0.0):
+    return [{"key": k, "long": "high", "annual_pct": dict.fromkeys(sl.L6_LEGS, 1.0), "l22_ceiling_pct": 0.5,
+             "l6_ceiling_pct": l6(k), "without_beta": without, "long_weight": 1.0, "alts_is_long": True,
+             "sides_add_up": True if k < 5 else None} for k in range(n)]
+
+
+def test_the_l6_reading_checks_its_doors_and_sets_the_bar_from_the_null():
+    out = sl.l6_reading(_l6_rows())
+    assert out["doors_pass"] and out["doors"]["2_sides_add_up"] == {"books": 5, "pass": True}
+    assert out["l6_ceiling"]["p95"] == pytest.approx(569 / 20) and out["l6_ceiling"]["at_or_over_floor"] == 300
+    assert out["rule"] == {"bar_pct": 28.45, "usable": True}
+    assert not sl.l6_reading(_l6_rows(l6=lambda k: k / 10))["rule"]["usable"], "a null 95th percentile of 56.9% says nothing"
+    assert sl.l6_reading(_l6_rows(l6=lambda k: 0.0))["rule"]["bar_pct"] == 15.0, "the floor when the null is lower"
+    assert not sl.l6_reading(_l6_rows()[:-1])["doors_pass"]
+    assert not sl.l6_reading(_l6_rows(without=0.06))["doors_pass"], "too much of the long side has no beta"
+    broken = _l6_rows()
+    broken[3]["sides_add_up"] = False
+    assert not sl.l6_reading(broken)["doors_pass"]
+    broken = _l6_rows()
+    broken[400]["alts_is_long"] = False
+    assert not sl.l6_reading(broken)["doors_pass"]
+
+
+def test_the_l6_commands_refuse_what_they_cannot_read(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setenv("RESEARCH_CACHE", str(tmp_path))
+    assert sl.main(["l6-reading", "--family", "mid"]) == sl.EXIT_USAGE
+    other = tmp_path / "c.json"
+    other.write_text(json.dumps({"command": "l6-null", "family": "lower", "rows": []}), encoding="utf-8")
+    assert sl.main(["l6-reading", "--family", "mid", "--records", str(other)]) == sl.EXIT_USAGE
+    assert sl.main(["l6-null", "--family", "mid", "--seeds", "x"]) == sl.EXIT_USAGE
+    null = tmp_path / "null.json"
+    null.write_text(json.dumps({"tier": "elsewhere", "null": {}}), encoding="utf-8")
+    assert sl.main(["l6-null", "--family", "mid", "--seeds", "0:700", "--null", str(null)]) == sl.EXIT_USAGE
+    assert sl.main(["l6-null", "--family", "mid", "--seeds", "0:10", "--null", str(null)]) == sl.EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "needs --family and --records" in err and "not this family's l6-null chunks" in err
+    assert "must lie in 0:600" in err and "not that sweep's null file" in err
