@@ -5,7 +5,9 @@ and the status line. No code, no return read.
 
 **Why.** Thomas asked for new variables or hypotheses after round 66 closed the weekly top-30 book. Every registered
 variable comes from daily files; the hourly bars H-C1 fetched (288 symbols, every coin ever in the month's top 100,
-2020–2024) are the one on-disk source never turned into a ranking variable. No new source is called (D1–D3 no).
+2020–2024) are the one unused on-disk source that covers enough coins to rank them (the other folders: 32 BTC-quoted
+pairs, a two-coin volatility index, index and mark prices that restate the registered premium, spreads since
+2026-11-12, six majors). No new source is called (D1–D3 no).
 
 **Choices that are not obvious.**
 
@@ -16,5 +18,5 @@ variable comes from daily files; the hourly bars H-C1 fetched (288 symbols, ever
   reads where in the day trading happens, which daily bars cannot see.
 - *Not raised by default.* A session split (weak payer story; the closed replay device held time-of-day variables),
   a post-shock catch-up book (H-C1 is not re-read), hourly illiquidity or volatility (kin of daily or struck ones).
-- *Input-only doors first.* Coverage per tier-month (0.80), rank overlap with kin (§40's 0.8), and rank persistence
+- *Input-only doors first.* Coverage by §57.3's two ratios (0.80), rank overlap with kin (§40's 0.8), and rank persistence
   decide which of the two reach the map; only then the recorded path (map, sweeps, axis checks).
