@@ -28,3 +28,23 @@ corrected where it reaches and how its kin are built before any value existed.
   split of the market is registered separately.
 - *Two runs, upper then lower.* The two markets load different positioning files, and the lower tier's files are
   never mixed with the shared ones (§63).
+
+## Result (§98.5)
+
+- *The recorded readings came back.* Upper: 30 values compared, 0 differ. Ranks 101+: 63 compared, 0 differ.
+- *R1 passed on ranks 101+ only.* Coverage there is 1.0, and the nearest kin is range_30 at −0.650.
+- *The upper tiers stopped at coverage:* 0.724 on the top 30 and 0.774 on ranks 31–100, against a floor of 0.80.
+  - The cause is in the files. In the shared positioning file, one symbol's open interest starts in 2020-09 and 99
+    start in 2021-12.
+  - The registered rule (§98.1, "the first value of any symbol") therefore began the span on 2020-10-18, about
+    62 decisions before most members have values.
+  - Coverage was not recomputed on a later cut: that would be a new cut after the result.
+  - §97.4's "(2022)" was wrong; the code and §98.1 agree, and the verdict follows them.
+- *Every kin was compared,* except on ranks 101+, where 5 kin have no files: depth (D11) and hourly (§85.5).
+- *The nearest record is the closed volatility cluster,* not OI growth, long-account share or funding level.
+  - Range, vol, idiosyncratic vol and max are at −0.55 to −0.78 on all three tiers.
+  - The top 30 passed the 0.8 overlap rule by 0.022.
+- *One question to Thomas (§98.6, default no):* re-read the upper tiers' coverage once under the ranks 101+
+  own-span rule?
+- *Next (§98.7):* register R1 on ranks 101+ only. Keep it off the upper tiers in code, with a test. Make the
+  returns-free 0.5 weight overlap against that tier's struck books the first door.
