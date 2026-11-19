@@ -22,3 +22,14 @@ map and sweep spends nothing if it closes R1.
   them, and round 45 sealed them.
 - *Prior.* The chance of closing is 70%. L22 weights are linear in rank, so the cosine is close to the rank
   correlation.
+
+## Result (§99.5)
+
+- *Round 41's overlap came back on the new market,* and all 17 compared books had decisions (146–150).
+- *R1 is closed on every tier.* Its book rebuilds four books of the closed volatility cluster, with the sign flipped:
+  range −0.629, idiosyncratic vol −0.612, vol −0.605 and max −0.524, against a line of 0.5.
+- *The positioning pair is far,* at OI growth −0.254 and long-account share 0.300. Funding 30 is at 0.182.
+- *A paper threshold for the next design.* A ratio whose numerator or denominator moves with price activity is
+  first weighed against the volatility cluster on paper.
+- *Next:* the dated row, the one-page report by 2026-11-26. The registry has not changed since §87, so the map
+  is not redrawn.
