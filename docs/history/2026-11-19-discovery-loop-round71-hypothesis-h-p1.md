@@ -23,3 +23,6 @@ variables are judged on the four-week sweep, which the price delay failed in rou
 book, unlike D12's question, so whether it opens a closed book is not in the record; by §82.3's rule for records
 that disagree, it is asked (default no: the lead then closes). Condition 3's negative-year limit was also corrected
 to two, as the code reads it.
+
+**Answer (§89.9).** Thomas: "한 번 읽음" — the closed top-30 weekly book is opened for H-P1 alone, read once as
+registered; §84.5's rule for new variables stands. The fact lines to report were written down before the run.
