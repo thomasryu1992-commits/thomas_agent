@@ -16,3 +16,8 @@ its book re-builds a struck book it closes by rule, before any question to Thoma
 - *Which books.* On the top tier the nine struck on every tier; on ranks 31–100 the tier sweep's list together
   with the map's strikes there, less the groups this market does not load (positioning, depth), as §58 did.
 - *No return is read*; the weights come from inputs only.
+
+**Result (§88.4).** Neither tier closes: the largest median cosine is with idiosyncratic volatility (−0.396 on the
+top tier, −0.383 on ranks 31–100), so the lead's low-delay book leans about 0.4 toward the low-volatility book but
+does not re-build it. By §88.2 the opposite-sign lead goes to Thomas with default not raised; the next row, the
+price delay's axis check, does not wait on the answer.
