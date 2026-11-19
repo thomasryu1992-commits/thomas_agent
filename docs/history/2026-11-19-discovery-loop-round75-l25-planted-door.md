@@ -21,3 +21,14 @@ on (§92.6): an effect redrawn every week is half lost by construction to a book
   so a floor or a ceiling at 0.05 cannot decide it.
 - *Six sizes and a seed rule fixed before measuring:* the run is two logics × two plants; if the first chunk shows the
   run would pass 23:00 UTC, seeds drop to 50.
+
+**Result (§93.5, 2026-11-19 09:25Z): L25 buys nothing.** All five doors passed at 100 seeds.
+- On the `month` plant, L25 minus L22 is +8 points at ρ 0.03 and −1 at 0.05, and both logics reach 80% at 0.05.
+  Neither rule fires, so §92.4 is not asked.
+- L25 pays about 3.3 points a year less cost (9.8% → 6.5%) and leads no more often. Each logic is read against its
+  own null, so the null gets the same saving.
+- On `week`, L25 is slower (25% against 71% at 0.05).
+- L22's share at 0.05 with plants that turn over is 71% (`week`) and 89% (`month`), beside the 81% recorded in §60.5.
+- The lake moved before the last chunk. The recorded L22 null reproduced on both lakes. The L25 null was built only
+  on the first.
+- Next row: L6's ceiling count over recorded files (§93.6). The 2026-12-17 restructure stays open.
