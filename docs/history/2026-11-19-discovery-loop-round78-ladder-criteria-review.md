@@ -22,3 +22,8 @@ and no recorded verdict was re-read. The new counts come from the stored null fi
   seeing results.
 - *Five questions at once, each with a default ("keep").* Any change applies to new measurements only. With all four
   kept, the §95.4 default sentence joins §4.
+
+**Decision (§96.7): Thomas said "기본값대로".**
+- All four criteria stay as they are.
+- §4 gains a line for when its order is spent: record the block without a restructure and keep running the remaining
+  doors. When new material appears, restructure along the row it points to.
