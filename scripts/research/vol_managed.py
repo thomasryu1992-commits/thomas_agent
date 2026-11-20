@@ -40,7 +40,6 @@ if str(ROOT) not in sys.path:
 
 from runtime.mvp_runtime import timeutil  # noqa: E402
 from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE  # noqa: E402
-from runtime.mvp_runtime.crypto import cost  # noqa: E402
 from scripts.research import basket_search as bs  # noqa: E402
 from scripts.research import cross_section_basket as xsb  # noqa: E402
 from scripts.research import momentum_basket_screen as mbs  # noqa: E402
@@ -221,7 +220,7 @@ def counts(table: Mapping[date, dict], span_days: Sequence[date]) -> dict[str, A
     (a drift in σ leaves the expanding median off 1 for whole years: the excess is then a levered or cut market
     for that year, not timing), and the paper cost of trading the excess book (engine fee + slippage on every
     weekly change, no return read)."""
-    unit = (cost.DEFAULT_TAKER_FEE_BPS + cost.DEFAULT_SLIPPAGE_BPS) / 10_000
+    unit = (xsb.cost.DEFAULT_TAKER_FEE_BPS + xsb.cost.DEFAULT_SLIPPAGE_BPS) / 10_000   # the engine's own
     years: dict[str, dict[str, Any]] = {}
     held: dict[str, float] = {}
     paper = 0.0
