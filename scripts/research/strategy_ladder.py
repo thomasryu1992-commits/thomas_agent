@@ -114,6 +114,8 @@ CONFIRM_READS: tuple[dict[str, Any], ...] = (
     # C010 is C007 without its universe's tail. C007's result on this span is known (0.08; 2025 +15.3%, 2026 -11.9%),
     # so this read is a diagnosis of the cause as much as a test of the book.
     {"read": 3, "candidate": "C010", "registered": "2026-11-13", "asked": "D8, Thomas 2026-11-13"},
+    # L31 is not a ladder candidate: its own tool (``scripts/research/composite.py``) reads it, not before 2026-12-13.
+    {"read": 4, "candidate": "L31", "registered": "2026-11-20", "asked": "section 119.5 Q1 and Q4, Thomas 2026-11-20"},
 )
 # read number -> the run that spent it. Filled in the commit that records the result; ``confirm`` refuses a read
 # that is already here.
@@ -6216,6 +6218,10 @@ def main(argv: list[str] | None = None) -> int:
         entry = next_confirm_read()
         if entry is None:
             print("refused: no registered confirm read is open (spent, or the budget is used)", file=sys.stderr)
+            return EXIT_USAGE
+        if entry["candidate"] not in CANDIDATES:
+            print(f"refused: read {entry['read']} is registered for {entry['candidate']}, which is not a ladder "
+                  "candidate: its own tool reads it", file=sys.stderr)
             return EXIT_USAGE
         bs.check_search_span(CONFIRM)
         # Only what the candidate reads is loaded: its variable's group says whether the attached series are needed.

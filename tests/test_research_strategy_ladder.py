@@ -166,6 +166,19 @@ def test_a_read_is_registered_before_it_is_spent_and_cannot_be_spent_twice(monke
     assert sl.next_confirm_read() is None, "the budget is used even when another read is written down"
 
 
+def test_the_ladder_refuses_a_read_registered_for_another_tool(monkeypatch, capsys):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(sl, "CONFIRM_DONE", {r["read"]: "a run" for r in sl.CONFIRM_READS if r["candidate"] in sl.CANDIDATES})
+    entry = sl.next_confirm_read()
+    assert entry is not None and entry["candidate"] == "L31" and entry["candidate"] not in sl.CANDIDATES
+    loaded = []
+    monkeypatch.setattr(sl.lab, "hold", lambda *a, **k: loaded.append(1))
+    for command in ("confirm-counts", "confirm"):
+        assert sl.main([command]) == sl.EXIT_USAGE
+        assert "its own tool reads it" in capsys.readouterr().err
+    assert not loaded, "nothing is loaded for a read the ladder does not own"
+
+
 def test_the_confirm_read_uses_the_registered_directions_and_decides_by_the_bar(monkeypatch):
     days = sl.sundays((sl.SPAN[0], sl.CONFIRM[1]))
     hot_day, cool_day, blank_day = date(2025, 3, 2), date(2025, 3, 9), date(2025, 3, 16)
@@ -936,12 +949,14 @@ def test_the_third_read_is_c010_which_differs_from_the_second_reads_book_only_by
 
 
 def test_three_confirm_reads_are_spent_and_two_are_left(monkeypatch, capsys):
-    """Read 3 was spent on 2026-11-13 (C010: CONFIRM_FAIL, 2026 still negative). Nothing is open."""
+    """Read 3 was spent on 2026-11-13 (C010: CONFIRM_FAIL, 2026 still negative). Read 4 is registered for L31
+    (2026-11-20), which its own tool reads; the ladder opens nothing."""
     assert set(sl.CONFIRM_DONE) == {1, 2, 3} and "C010" in sl.CONFIRM_DONE[3] and "CONFIRM_FAIL" in sl.CONFIRM_DONE[3]
-    assert sl.CONFIRM_BUDGET - len(sl.CONFIRM_DONE) == 2 and sl.next_confirm_read() is None
+    assert sl.CONFIRM_BUDGET - len(sl.CONFIRM_DONE) == 2
+    assert sl.next_confirm_read() == {**sl.CONFIRM_READS[3], "read": 4, "candidate": "L31"}
     assert sl.confirm_bar(len(sl.CONFIRM_DONE) + 1) == 1.483, "the bar the next read is held to"
     monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
-    assert sl.main(["confirm"]) == sl.EXIT_USAGE and "no registered confirm read is open" in capsys.readouterr().err
+    assert sl.main(["confirm"]) == sl.EXIT_USAGE and "its own tool reads it" in capsys.readouterr().err
 
 
 # --- round 7: the transfer check inside the development years ----------------------------------------------------------
