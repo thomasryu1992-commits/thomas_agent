@@ -129,3 +129,25 @@ def test_a_clip_whose_link_is_another_products_issued_link_is_no_evidence_in_the
     (vault / "ops" / "affiliate-link" / "issued.json").unlink()
     ac.configure(vault)
     assert ac.parse_clip(str(clip))["링크_불일치"] == ""
+
+
+def test_the_fridge_price_keyword_waits_on_the_fridge_decision_in_the_port(tmp_path):
+    # 11-20 맥 handoff-1120-photobox: kind('영업용 냉장고 가격')가 '업소용냉장고가격'이라 '영업용냉장고' 계열 보류에서 새어
+    # 대기 1순위로 올랐다. 생성된 사본에서도 보류로 나오고, 다른 대기 키워드는 그대로 대기다.
+    import datetime
+    import importlib
+
+    from runtime.mvp_runtime.blog import kw_pipeline as kp
+
+    (tmp_path / "ops" / "affiliate-link").mkdir(parents=True)
+    kp.configure(tmp_path, cache_dir=tmp_path / "cache", clock=datetime.datetime(2026, 11, 21, 7, 10, tzinfo=kp.KST),
+                 epoch=0.0, has_vol=True, decision_mode="enforce", transport=None)
+    try:
+        stock = {kp.norm(k): {"kw": k, "status": "대기"} for k in ("영업용 냉장고 가격", "영업용냉장고", "포토박스")}
+        live, _ = kp.aff_families(stock)
+        assert stock[kp.norm("영업용 냉장고 가격")]["status"] == "보류"
+        assert stock[kp.norm("영업용냉장고")]["status"] == "보류"
+        assert stock[kp.norm("포토박스")]["status"] == "대기"
+        assert all("냉장고" not in k for ks in live.values() for k in ks)
+    finally:
+        importlib.reload(kp)
