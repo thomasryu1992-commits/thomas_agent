@@ -266,6 +266,17 @@ def test_the_spot_archive_is_listed_and_fetched_from_its_own_prefix_and_holds_no
                     "--start", "2018-01-01", "--end", "2018-02-01", "--dest", "/nonexistent"]) == 2
 
 
+def test_the_premium_index_is_a_monthly_kind_of_perps_only_under_its_own_folder(tmp_path):
+    assert ba.PREMIUM_KIND in ba.MONTHLY_KINDS
+    assert ba.monthly_folder(ba.PREMIUM_KIND, "ANCUSDT") == "data/futures/um/monthly/premiumIndexKlines/ANCUSDT/1d/"
+    assert ba.monthly_local(tmp_path, ba.PREMIUM_KIND, "ANCUSDT", "x.zip") == tmp_path / "premiumIndexKlines-1d" / "ANCUSDT" / "x.zip"
+    with pytest.raises(ValueError):
+        ba.monthly_folder(ba.PREMIUM_KIND, "ANCUSDT", "spot")
+    assert ba.monthly_folder("klines-1d", "BTCUSDT") == "data/futures/um/monthly/klines/BTCUSDT/1d/", "klines are unchanged"
+    assert ba.main(["fetch-monthly", "--market", "spot", "--kind", ba.PREMIUM_KIND, "--symbols", "BTCUSDT",
+                    "--start", "2020-01-01", "--end", "2020-02-01", "--dest", "/nonexistent"]) == 2
+
+
 def test_hourly_klines_are_a_monthly_kind_from_the_same_bucket_under_their_own_folder(tmp_path):
     assert ba.monthly_folder("klines-1h", "BTCUSDT") == "data/futures/um/monthly/klines/BTCUSDT/1h/"
     assert ba.monthly_folder("klines-1d", "BTCUSDT") == "data/futures/um/monthly/klines/BTCUSDT/1d/", "daily is unchanged"

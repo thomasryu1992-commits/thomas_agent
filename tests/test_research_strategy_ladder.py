@@ -4,6 +4,9 @@ without the year they trade, the placebo scenario, and the two rungs' arithmetic
 from __future__ import annotations
 
 import json
+import statistics
+import types
+import random as random_module
 from datetime import date, timedelta
 
 import pytest
@@ -161,6 +164,19 @@ def test_a_read_is_registered_before_it_is_spent_and_cannot_be_spent_twice(monke
     monkeypatch.setattr(sl, "CONFIRM_DONE", {k: "a run" for k in range(1, sl.CONFIRM_BUDGET + 1)})
     monkeypatch.setattr(sl, "CONFIRM_READS", (*sl.CONFIRM_READS, {"read": 9, "candidate": "C002", "signs": {}}))
     assert sl.next_confirm_read() is None, "the budget is used even when another read is written down"
+
+
+def test_the_ladder_refuses_a_read_registered_for_another_tool(monkeypatch, capsys):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(sl, "CONFIRM_DONE", {r["read"]: "a run" for r in sl.CONFIRM_READS if r["candidate"] in sl.CANDIDATES})
+    entry = sl.next_confirm_read()
+    assert entry is not None and entry["candidate"] == "L31" and entry["candidate"] not in sl.CANDIDATES
+    loaded = []
+    monkeypatch.setattr(sl.lab, "hold", lambda *a, **k: loaded.append(1))
+    for command in ("confirm-counts", "confirm"):
+        assert sl.main([command]) == sl.EXIT_USAGE
+        assert "its own tool reads it" in capsys.readouterr().err
+    assert not loaded, "nothing is loaded for a read the ladder does not own"
 
 
 def test_the_confirm_read_uses_the_registered_directions_and_decides_by_the_bar(monkeypatch):
@@ -445,11 +461,231 @@ def test_a_tail_out_book_never_holds_a_tail_coin(monkeypatch):
 
 def test_the_sweeps_null_variables_are_their_own_and_enough_for_the_correction():
     nulls = sl.null_variables()
-    assert len(nulls) == sl.SWEEP_NULLS == 300 and not set(nulls) & set(sl.lab.controls())
+    assert len(nulls) == sl.SWEEP_NULLS == 600 and not set(nulls) & set(sl.lab.controls())
+    earlier = sl.null_variables(sl.SWEEP_NULLS_ROUND_6)
+    market, day = xsb.Market(), date(2021, 1, 3)
+    assert len(earlier) == 300 and set(earlier) <= set(nulls), "round 6's null books are among the 600, by name"
+    assert all(earlier[name][1](market, "AUSDT", day) == nulls[name][1](market, "AUSDT", day) for name in earlier), \
+        "and each is the same random variable"
     market, day = xsb.Market(), date(2021, 1, 3)
     assert nulls["null_week_000"][1](market, "AUSDT", day) != sl.lab.controls()["control_week_00"][1](market, "AUSDT", day)
     assert nulls["null_fixed_000"][1](market, "AUSDT", day) == nulls["null_fixed_000"][1](market, "AUSDT", day + timedelta(days=7))
-    assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / len(sl.lab.variables()), "a real effect can pass Benjamini–Hochberg over every variable"
+    assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / sl.FAMILY_MAX, "a real effect can pass Benjamini–Hochberg over the largest family read"
+
+
+def test_the_top_planted_variable_leans_on_next_weeks_return_among_the_months_members_and_is_noise_at_zero():
+    market, mids = _mid_world()
+    day = MID_DAY
+    monthly = {date(day.year, day.month, 1): mids}
+    flat = sl.top_planted(market, monthly, 0.0, 7)
+    assert flat(market, mids[0], day) == flat(market, mids[0], day + timedelta(days=7)), "size 0: a value fixed per coin"
+    assert flat(market, mids[0], day) != sl.top_planted(market, monthly, 0.0, 8)(market, mids[0], day), "seeded"
+    full = sl.top_planted(market, monthly, 1.0, 7)
+    forward = {s: sl.lab.forward_return(market, s, day, 7) for s in mids}
+    order = lambda values: sorted(values, key=values.get)
+    assert order({s: full(market, s, day) for s in mids}) == order(forward), "size 1: the next week's ranks"
+    assert full(market, "BIG00USDT", day) == pytest.approx(0.0), "not a member that month: no lean, and size 1 keeps no noise"
+    assert full(market, mids[0], date(2019, 1, 6)) is None, "no bar, no value"
+
+
+def test_the_top_sens_run_counts_nothing_unless_the_stored_null_books_build_again(monkeypatch):
+    stored = {f"null_{kind}_{k:03d}": {"annual_sharpe": 0.1 * k, "clears_entry": False, "decisions_ranked": 200, "long": "high",
+                                       "mean_rank_correlation": 0.01, "negative_years": 1, "total_position_annual_pct": 1.0}
+              for kind in ("week", "fixed") for k in range(300)}
+    built = []
+
+    def fake_sweep(market, names, span=sl.SPAN, *, simulate=None, accounting=sl.SWEEP_ACCOUNTING):
+        out = {}
+        for name, (_, read) in names.items():
+            if name == "plant":
+                built.append(read)
+                out[name] = {"annual_sharpe": 25.05, "clears_entry": True, "long": "high", "mean_rank_correlation": 0.05,
+                             "total_position_annual_pct": 20.0, "negative_years": 0}
+            else:
+                out[name] = dict(stored[name])
+        return out
+    monkeypatch.setattr(sl, "sweep", fake_sweep)
+    monkeypatch.setattr(sl, "monthly_members", lambda market, span=None: {})
+    out = sl.top_sens_run(xsb.Market(), stored, range(0, 2), sizes=(0.0, 0.1))
+    assert out["null_checked"] == 10 and len(out["rows"]) == 4 and len(built) == 4
+    assert out["rows"][0]["p"] == pytest.approx((1 + 2 * 49) / 601), "the share of stored null books at or above it: 49 of each kind"
+    moved = {**stored, "null_fixed_002": {**stored["null_fixed_002"], "annual_sharpe": 9.9}}
+    refused = sl.top_sens_run(xsb.Market(), moved, range(0, 2), sizes=(0.0, 0.1))
+    assert "null_fixed_002" in refused["refused"] and "rows" not in refused
+    with pytest.raises(ValueError):
+        sl.top_sens_run(xsb.Market(), stored, range(95, 101))
+
+
+def test_the_top_sens_reading_counts_leads_by_the_first_threshold_and_checks_its_doors():
+    def rows(seeds, *, ic=lambda size: size, side=lambda seed, size: "high"):
+        out = []
+        for seed in seeds:
+            for size in sl.SENS_SIZES:
+                strong = size >= 0.10 and seed % 10 < 9                     # 90 of 100 seeds from 0.10 up
+                out.append({"seed": seed, "size": size, "long": side(seed, size), "mean_rank_correlation": ic(size),
+                            "annual_sharpe": 1.6 if strong else 0.2, "clears_entry": strong and seed % 10 < 6,
+                            "p": 1 / 601 if strong else (0.04 if size == 0.0 and seed < 4 else 0.5)})
+        return out
+    chunks = [{"rows": rows(range(0, 50))}, {"rows": rows(range(50, 100))}]
+    out = sl.top_sens_reading(chunks)
+    assert out["first_threshold"] == pytest.approx(0.10 / 59) and out["false_alarms"] == 4 and out["false_alarms_within"]
+    assert out["plant_took"] and out["doors_pass"]
+    assert out["sizes"]["0"]["lead"] == 0, "p 0.04 is not under 0.10 / 59"
+    assert out["sizes"]["0.1"]["lead"] == 90 and out["sizes"]["0.1"]["lead_with_entry"] == 60
+    assert out["bracket"] == {"under": 0.08, "at_or_over": 0.1}, "the top tier's own rule: the first threshold alone"
+    assert out["bracket_with_entry"] == {"under": 0.2, "at_or_over": None}
+    flat = sl.top_sens_reading([{"rows": rows(range(0, 100), ic=lambda size: 0.5 * size)}])
+    assert not flat["plant_took"] and not flat["doors_pass"], "a lean that did not take is a broken door, not a finding"
+    lost = sl.top_sens_reading([{"rows": rows(range(0, 100), side=lambda seed, size: "low" if seed < 10 else "high")}])
+    assert not lost["plant_took"], "from 0.05 up nearly every seed is long the high side"
+    few = [{"rows": [dict(r, p=0.5) for r in rows(range(0, 100))]}]
+    assert sl.top_sens_reading(few)["false_alarms"] == 0 and not sl.top_sens_reading(few)["doors_pass"], "under 3 at size 0"
+    with pytest.raises(ValueError):
+        sl.top_sens_reading(chunks[:1])
+    with pytest.raises(ValueError):
+        sl.top_sens_reading([chunks[0], chunks[0]])
+
+
+def test_the_false_alarm_range_comes_from_the_nulls_fixed_half_and_chunks_keep_one_accounting():
+    null = {f"null_week_{k:03d}": {"annual_sharpe": 0.0} for k in range(300)}
+    null.update({f"null_fixed_{k:03d}": {"annual_sharpe": 2.0 + k / 100 if k < 25 else 0.0} for k in range(300)})
+    assert sl.top_sens_false_alarm_range(null) == (3, 14) == sl.TOP_SENS_FALSE_ALARM, "25 of 300: round 63's range"
+    none = {n: {"annual_sharpe": 0.0} for n in null}
+    assert sl.top_sens_false_alarm_range(none) == (0, 0), "no fixed book under 0.05: no false alarm is expected"
+    rows = [{"seed": seed, "size": size, "long": "high", "mean_rank_correlation": size, "annual_sharpe": 0.2,
+             "clears_entry": False, "p": 0.04 if size == 0.0 and seed < 5 else 0.5} for seed in range(100) for size in sl.SENS_SIZES]
+    out = sl.top_sens_reading([{"rows": rows, "accounting": "held"}], alarms_range=(4, 9))
+    assert out["accounting"] == "held" and out["false_alarms_range"] == [4, 9] and out["false_alarms_within"]
+    with pytest.raises(ValueError, match="accountings"):
+        sl.top_sens_reading([{"rows": rows[:550], "accounting": "held"}, {"rows": rows[550:], "accounting": "held4"}])
+
+
+def test_the_top_sens_commands_refuse_what_they_cannot_read(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setenv("RESEARCH_CACHE", str(tmp_path))
+    assert sl.main(["top-sens"]) == sl.EXIT_USAGE
+    other = tmp_path / "null.json"
+    other.write_text(json.dumps({"logic": "L22", "books": {}}), encoding="utf-8")
+    assert sl.main(["top-sens", "--null", str(other), "--seeds", "0:10"]) == sl.EXIT_USAGE
+    other.write_text(json.dumps({"logic": "L9T", "accounting": "held4", "books": {f"n{k}": {} for k in range(600)}}),
+                     encoding="utf-8")
+    assert sl.main(["top-sens", "--null", str(other), "--seeds", "90:101"]) == sl.EXIT_USAGE
+    assert sl.main(["top-sens-reading"]) == sl.EXIT_USAGE
+    assert sl.main(["top-sens", "--null", str(other), "--seeds", "0:10", "--accounting", "held"]) == sl.EXIT_USAGE, \
+        "a held4 null file is not the weekly book's null"
+    assert sl.main(["sweep", "--only", "price_volume", "--accounting", "held"]) == sl.EXIT_USAGE, "round 64 builds nulls only"
+    err = capsys.readouterr().err
+    assert "not the top-30 sweep's 600 null books" in err and "--seeds is A:B" in err and "null books only" in err
+
+
+def test_a_books_legs_add_up_to_its_annual_sharpe_on_the_complete_months_only():
+    span = (date(2020, 1, 1), date(2020, 6, 15))           # June is not complete: its days must not count
+    rng = random_module.Random(7)
+    daily = {}
+    day = span[0]
+    while day <= span[1]:
+        gross, funding, cost = rng.gauss(0.001, 0.01), rng.uniform(0, 0.0004), rng.uniform(0, 0.0006)
+        daily[day] = {"gross": gross, "funding": funding, "cost": cost, "net": gross - cost + funding}
+        day += timedelta(days=1)
+    daily[date(2020, 6, 10)]["gross"] += 5.0                 # would swamp every leg if June were read
+    daily[date(2020, 6, 10)]["net"] += 5.0
+    legs = sl.book_legs(daily, span)
+    sharpe, values = sl.bs.annual_sharpe(daily, *span)
+    assert legs["months"] == 5 == len(values)
+    assert abs(sum(legs["sharpe_terms"].values()) - sharpe) < sl.NULL_LEGS_SUM_TOL
+    assert legs["sharpe_terms"]["cost"] < 0 < legs["sharpe_terms"]["funding"], "cost counts against"
+    pct = legs["annual_pct"]
+    assert abs(pct["price"] + pct["funding"] - pct["cost"] - pct["net"]) < 1e-3
+    assert abs(pct["net"] - sl.bs.total_position_annual_pct(round(sum(values) * 100, 2), 5)) < sl.NULL_LEGS_PCT_TOL
+    assert pct["price"] < 100, "the incomplete month's jump is not in the price leg"
+
+
+def test_the_sweep_adds_legs_only_when_asked_and_its_rows_are_otherwise_unchanged(monkeypatch):
+    monkeypatch.setattr(sl, "monthly_members", lambda market, span=None: {})
+    monkeypatch.setattr(sl, "decision_ics", lambda market, read, monthly, span: read(None, None, None))
+    monkeypatch.setitem(sl.BOOKS, sl.SWEEP_LOGIC, lambda read, direction: (lambda *a, **k: {}))
+    row = {"gross": 0.01, "funding": 0.001, "cost": 0.002, "net": 0.009}
+    span = (date(2020, 1, 1), date(2020, 3, 31))
+    daily = {date(2020, 1, 1) + timedelta(days=k): dict(row, gross=0.01 * (k % 5 - 2), net=0.01 * (k % 5 - 2) - 0.001)
+             for k in range(91)}
+
+    def measure(market, weigher, span, *, simulate):
+        simulate(market, "w", {}, start=span[0], end=span[1], weigher=weigher)
+        return {"annual_sharpe": 0.5, "total_position_annual_pct": 5.0, "clears_entry": False, "funding_pct": 0.0,
+                "stability": {"negative_years": 1}}
+
+    monkeypatch.setattr(sl, "measure", measure)
+    days = [date(2020, 1, 5) + timedelta(days=7 * k) for k in range(40)]
+    names = {"up": ("g", lambda m, s, d: {x: 0.1 for x in days})}
+    plain = sl.sweep(xsb.Market(), names, span, simulate=lambda *a, **k: {"daily": daily})
+    split = sl.sweep(xsb.Market(), names, span, simulate=lambda *a, **k: {"daily": daily}, legs=True)
+    assert set(plain["up"]) == {"group", "long", "mean_rank_correlation", "decisions_ranked", "annual_sharpe",
+                                "total_position_annual_pct", "clears_entry", "negative_years", "funding_pct"}
+    assert {k: v for k, v in split["up"].items() if k != "legs"} == plain["up"]
+    assert split["up"]["legs"] == sl.book_legs(daily, span) and "daily" not in split["up"]["legs"]
+
+
+def _legs_file(accounting, *, legs, price=0.0, cost=0.0, tweak=None):
+    books = {}
+    for name in sl.null_variables():
+        week = name.startswith("null_week_")
+        k = int(name[-3:])
+        p, f, c = price + 0.01 * (k % 7), 0.5, cost * (2 if week else 1)
+        terms = {"price": round(p, 6), "funding": round(f / 10, 6), "cost": round(-c / 10, 6)}
+        sharpe = round(sum(terms.values()), 3)
+        pct = {"price": p * 10, "funding": f, "cost": c, "net": round(p * 10 + f - c, 4)}
+        book = {"long": "high" if k % 2 else "low", "mean_rank_correlation": 0.001 * k, "annual_sharpe": sharpe,
+                "total_position_annual_pct": round(pct["net"], 2), "funding_pct": 1.0}
+        if legs:
+            book["legs"] = {"months": 60, "monthly_net_sigma": 0.02, "sharpe_terms": terms, "annual_pct": pct}
+        books[name] = book
+    if tweak:
+        tweak(books)
+    return {"accounting": accounting, "logic": sl.SWEEP_LOGIC, "books": books}
+
+
+def test_the_null_legs_reading_carries_a_leg_only_after_every_door_and_names_the_carrier_per_half():
+    four, weekly = _legs_file("held4", legs=True, cost=1.0), _legs_file("held", legs=True, cost=3.0)
+    rec4, rec1 = _legs_file("held4", legs=False, cost=1.0), _legs_file("held", legs=False, cost=3.0)
+    out = sl.null_legs_reading(four, weekly, rec4, rec1)
+    assert out["doors_pass"] and out["judged_on"] == ["week", "fixed"]
+    for half in ("week", "fixed"):
+        gap = out["halves"][half]["gap"]
+        assert gap["carrier"] == "cost" and gap["sharpe_by_term"]["price"] == 0 and gap["annual_pct_by_leg"]["cost"] > 0
+    assert out["halves"]["week"]["gap"]["sharpe_gap"] > out["halves"]["fixed"]["gap"]["sharpe_gap"]
+    assert "members" not in out["tails"]["four"] and out["tails"]["in_both"] >= 0
+    moved = _legs_file("held4", legs=False, cost=1.0,
+                       tweak=lambda b: b["null_fixed_007"].update(annual_sharpe=b["null_fixed_007"]["annual_sharpe"] + 0.001))
+    stopped = sl.null_legs_reading(four, weekly, moved, rec1)
+    assert not stopped["doors_pass"] and stopped["doors"]["3_recorded_books_again"] == {"four": 1, "weekly": 0}
+    assert set(stopped) == {"doors", "doors_pass"}, "no leg is read when a recorded book does not build again"
+    flipped = _legs_file("held", legs=True, cost=3.0, tweak=lambda b: b["null_week_001"].update(long="low"))
+    assert sl.null_legs_reading(four, flipped, rec4, _legs_file("held", legs=False, cost=3.0, tweak=lambda b:
+                                b["null_week_001"].update(long="low")))["doors"]["4_same_side"] == 1
+    assert not sl.null_legs_reading(four, weekly, rec4, rec4)["doors_pass"], "the recorded weekly file is held"
+    assert not sl.null_legs_reading(four, rec1, rec4, rec1)["doors_pass"], "a file without legs does not pass"
+
+
+def test_a_gap_has_a_carrier_only_when_one_leg_is_half_of_it_and_little_pulls_the_other_way():
+    assert sl._legs_carrier({"price": 0.1, "funding": 0.1, "cost": 0.4}) == "cost"
+    assert sl._legs_carrier({"price": 0.2, "funding": 0.2, "cost": 0.2}) == "mixed", "no leg is half"
+    assert sl._legs_carrier({"price": -0.3, "funding": 0.2, "cost": 0.6}) == "mixed", "0.3 of 0.5 pulls the other way"
+    assert sl._legs_carrier({"price": 0.0, "funding": 0.0, "cost": 0.0}) == "mixed"
+    a = {"mean_annual_sharpe": 0.3, "mean_sharpe_terms": {"price": 0.3, "funding": 0.1, "cost": -0.1},
+         "mean_annual_pct": {"price": 1.0, "funding": 1.0, "cost": 2.0, "net": 0.0}}
+    b = {"mean_annual_sharpe": 0.0, "mean_sharpe_terms": {"price": 0.0, "funding": 0.1, "cost": -0.1},
+         "mean_annual_pct": {"price": 1.0, "funding": 1.0, "cost": 1.0, "net": 1.0}}
+    assert sl._legs_gap(a, b)["carrier"] == "sigma", "the Sharpe rose while the yearly return fell"
+
+
+def test_legs_are_refused_for_real_variables_and_the_reading_needs_four_files(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setenv("RESEARCH_CACHE", str(tmp_path))
+    assert sl.main(["sweep", "--only", "price_volume", "--legs"]) == sl.EXIT_USAGE
+    assert sl.main(["transfer", "--only", "null", "--legs"]) == sl.EXIT_USAGE
+    assert sl.main(["null-legs-reading", "--records", "a.json,b.json"]) == sl.EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "null books only (round 65)" in err and "needs --records" in err
 
 
 def test_a_swept_book_is_long_the_side_its_own_rank_correlation_points_to(monkeypatch):
@@ -470,6 +706,13 @@ def test_a_swept_book_is_long_the_side_its_own_rank_correlation_points_to(monkey
     out = sl.sweep(xsb.Market(), names)
     assert seen == [1, -1] and out["up"]["long"] == "high" and out["down"]["long"] == "low"
     assert out["thin"] == {"group": "g", "skipped": "ranked at too few decisions"}
+    # Round 64: the same book held another way is the accounting's simulation; the default is the recorded sweep's.
+    held = []
+    monkeypatch.setattr(sl, "measure", lambda market, weigher, span, *, simulate: held.append(simulate) or measure(
+        market, weigher, span, simulate=simulate))
+    sl.sweep(xsb.Market(), {"up": names["up"]})
+    sl.sweep(xsb.Market(), {"up": names["up"]}, accounting="held")
+    assert held == [sl.ACCOUNTING[sl.SWEEP_ACCOUNTING], sl.ACCOUNTING["held"]] and sl.SWEEP_ACCOUNTING == "held4"
 
 
 def test_the_sweep_reads_each_book_beside_the_null_books_and_corrects_for_how_many_there_are():
@@ -485,6 +728,25 @@ def test_the_sweep_reads_each_book_beside_the_null_books_and_corrects_for_how_ma
     assert out["p_under_0.05"] == 2 and out["null"]["max"] == 1.0 and out["null"]["share_clearing_sharpe_1"] == pytest.approx(1 / 300, abs=1e-4)
 
 
+def test_the_sweep_reading_compares_the_p_before_rounding_in_both_directions():
+    """Section 72: Benjamini-Hochberg reads the exact p; only the printed p is rounded. One book against 600 nulls:
+    beating all of them is 1/601 = 0.001664 (printed 0.0017), beating all but one is 2/601 = 0.003328 (printed 0.0033)."""
+    null = {f"n{i}": {"annual_sharpe": i / 1000} for i in range(600)}
+    row = {"group": "g", "long": "high", "total_position_annual_pct": 1.0, "clears_entry": False, "negative_years": 0}
+    top = {"a": dict(row, annual_sharpe=1.0)}
+    second = {"a": dict(row, annual_sharpe=0.5985)}
+    assert sl.sweep_reading(top, null)["all"][0]["p"] == 0.0017 and sl.sweep_reading(second, null)["all"][0]["p"] == 0.0033
+    # Exact passes where the rounded p would fail: 1/601 <= 0.00168 < 0.0017.
+    assert [r["variable"] for r in sl.sweep_reading(top, null, q=0.00168)["survive_benjamini_hochberg"]] == ["a"]
+    # Exact fails where the rounded p would pass: 0.0033 <= 0.00331 < 2/601.
+    assert sl.sweep_reading(second, null, q=0.00331)["survive_benjamini_hochberg"] == []
+    # The top-30 family: 59 books with the best beating every null keeps it, as the test's inequality allows to 60.
+    books = {f"b{i:02d}": dict(row, annual_sharpe=1.0 if i == 0 else -1.0) for i in range(59)}
+    assert [r["variable"] for r in sl.sweep_reading(books, null)["survive_benjamini_hochberg"]] == ["b00"]
+    books["b59"], books["b60"] = dict(row, annual_sharpe=-1.0), dict(row, annual_sharpe=-1.0)
+    assert sl.sweep_reading(books, null)["survive_benjamini_hochberg"] == []
+
+
 def test_the_sweep_command_takes_groups_or_the_null_and_loads_what_they_read(monkeypatch, capsys):
     asked = []
 
@@ -496,9 +758,181 @@ def test_the_sweep_command_takes_groups_or_the_null_and_loads_what_they_read(mon
     monkeypatch.setattr(sl.lab, "hold", hold)
     assert sl.main(["sweep"]) == sl.EXIT_USAGE and sl.main(["sweep", "--only", "nothing"]) == sl.EXIT_USAGE
     capsys.readouterr()
-    for only in ("null", "price_volume,funding,coin_character", "trade_flow", "positioning,depth,spot"):
+    for only in ("null", "price_volume,funding,coin_character", "trade_flow"):
         assert sl.main(["sweep", "--only", only]) == sl.EXIT_BLOCKED
-    assert asked == [(False, False), (False, False), (False, True), (True, False)]
+    assert asked == [(False, False), (False, False), (False, True)]
+    # A group whose series are attached is swept alone, through its own door (section 44): round 6's combined load
+    # no longer fits, and a premium sweep through the plain door would rank nothing and still exit 0.
+    doors = []
+    for name in ("hold_positioning", "hold_spot", "hold_premium"):
+        monkeypatch.setattr(sl.lab, name, lambda cache, name=name: doors.append(name))
+    for only in ("positioning", "spot", "premium"):
+        assert sl.main(["sweep", "--only", only]) == sl.EXIT_BLOCKED
+    assert doors == ["hold_positioning", "hold_spot", "hold_premium"] and len(asked) == 3, "the plain door was not used"
+    capsys.readouterr()
+    for only in ("positioning,depth,spot", "depth", "premium,funding", "positioning,spot"):
+        assert sl.main(["sweep", "--only", only]) == sl.EXIT_USAGE, only
+        assert "no loader for" in capsys.readouterr().err
+    assert len(asked) == 3 and len(doors) == 3, "a refused set loads nothing"
+
+
+def test_the_family_reading_puts_every_book_beside_one_null_and_refuses_a_rerun_that_moved():
+    def book(sharpe, *, ranked=200, long="low"):
+        return {"group": "g", "long": long, "annual_sharpe": sharpe, "total_position_annual_pct": 10.0,
+                "clears_entry": sharpe >= 1.0, "negative_years": 0, "decisions_ranked": ranked, "funding_pct": 1.0}
+
+    null = {f"n{i}": {"annual_sharpe": -1.0 + 2.0 * i / 599} for i in range(600)}          # -1 .. +1, evenly
+    earlier = {"old_strong": book(1.5), "old_plain": book(0.0), "old_only": book(0.2)}
+    later = {"old_strong": book(1.5), "old_plain": book(0.0), "new_edge": book(0.99, ranked=90), "new_plain": book(0.1),
+             "new_thin": {"group": "g", "skipped": "ranked at too few decisions"}}
+    out = sl.sweep_family(earlier, later, null)
+    assert out["books"] == 5 and out["null_books"] == 600 and out["new_books"] == 2 and out["skipped"] == ["new_thin"]
+    by = {r["variable"]: r for r in out["all"]}
+    assert by["old_strong"]["p"] == pytest.approx(1 / 601, abs=1e-4), "an old book is read beside the same 600 as a new one"
+    assert by["old_strong"]["p"] <= 0.10 / 55, "and one in 601 is small enough to pass the correction over 55 books"
+    assert by["new_edge"]["new"] is True and by["old_only"]["new"] is False and by["new_edge"]["decisions_ranked"] == 90
+    assert [r["variable"] for r in out["survive_benjamini_hochberg"]] == ["old_strong", "new_edge"]
+    assert out["new_survivors"] == ["new_edge"] and out["new_p_under_0.05"] == 1
+    moved = sl.sweep_family(earlier, {**later, "old_plain": book(0.01)}, null)
+    assert moved == {"refused": "a re-run book differs from its record", "differ": ["old_plain"]}, "nothing is read"
+    assert sl.sweep_matches(earlier, {"old_strong": book(1.5, long="high")}) == ["old_strong"]
+    assert sl.sweep_matches(earlier, {"old_strong": book(1.5, ranked=199)}) == ["old_strong"]
+    assert sl.sweep_matches(earlier, later) == [] and sl.sweep_matches({}, later) == []
+
+
+# --- round 31: what a lead's book holds, with no return read ------------------------------------------------------------
+
+def test_the_lead_check_counts_ties_and_lays_the_positions_beside_other_books_without_a_return(monkeypatch, capsys):
+    members = [f"C{i:02d}" for i in range(1, 42)]
+    lead = {**{f"C{i:02d}": float(i - 16) for i in range(1, 16)}, **{f"C{i:02d}": 0.0 for i in range(16, 27)},
+            **{f"C{i:02d}": float(i - 26) for i in range(27, 42)}}          # fifteen falls, eleven exact zeros, fifteen rises
+    shuffled = {s: float((17 * int(s[1:])) % 41) for s in members}          # a fixed order unrelated to the lead's
+    registry = {"lead": ("g", lambda m, s, d: lead.get(s)), "same": ("g", lambda m, s, d: lead.get(s) + 0.01 * int(s[1:])),
+                "mirror": ("g", lambda m, s, d: -(lead.get(s) + 0.01 * int(s[1:]))), "other": ("g", lambda m, s, d: shuffled[s])}
+    monkeypatch.setattr(sl.lab, "variables", lambda: registry)
+    monkeypatch.setattr(sl, "LEADS", {"lead": {"long": "low", "group": "price_volume"}})
+    monkeypatch.setattr(sl, "LEAD_KIN", ("same", "mirror", "other"))
+    monkeypatch.setattr(sl, "monthly_members", lambda market, span=None: {date(2021, m, 1): members for m in range(1, 7)})
+    monkeypatch.setattr(sl, "without_tail", lambda market, members, day: list(members))
+    monkeypatch.setitem(sl.BOOKS, sl.SWEEP_LOGIC, sl.book)
+
+    def never(*args, **kwargs):
+        raise AssertionError("the lead check reads no return")
+    for owner, name in ((sl, "measure"), (sl, "decision_ics"), (sl.lab, "forward_return"), (sl, "simulate_held")):
+        monkeypatch.setattr(owner, name, never)
+    span = (date(2021, 1, 1), date(2021, 6, 30))
+    out = sl.lead_check(xsb.Market(), "lead", span)
+    held = [d - timedelta(days=1) for d in xsb.held_days(*span) if sl.is_decision(sl.bs.CADENCE, d - timedelta(days=1), 4)]
+    assert out["decisions_with_a_book"] == len(held) >= 5 and out["reads_returns"] is False and out["long"] == "low"
+    assert out["medians"]["zero_share"] == out["medians"]["tied_share"] == pytest.approx(11 / 41, abs=1e-4)
+    assert out["medians"]["tied_weight_share"] == pytest.approx(30 / 420, abs=1e-3), \
+        "the tied coins sit in the middle, eleven of 41 coins and 7% of the weight (distances 5..0..5 of 420)"
+    assert out["medians"]["coins_held"] == 40, "the middle coin of 41 has no weight"
+    kin = out["position_overlap"]
+    assert kin["same"]["median"] > 0.95 and kin["mirror"]["median"] < -0.95 and abs(kin["other"]["median"]) < 0.5
+    assert kin["same"]["decisions"] == len(held) and kin["mirror"]["share_positive"] == 0.0
+    assert out["kin_rule"] == {"beside": "same", "threshold": 0.5, "kin": True}
+    monkeypatch.setattr(sl, "LEAD_KIN", ("mirror", "other"))
+    assert sl.lead_check(xsb.Market(), "lead", span)["kin_rule"]["kin"] is True, "the same book upside down is the same book"
+    monkeypatch.setattr(sl, "LEAD_KIN", ("other", "same"))
+    assert sl.lead_check(xsb.Market(), "lead", span)["kin_rule"]["kin"] is False, "the rule reads the first book only"
+    # A tie is broken by the coin's name: with every value equal the book is the alphabet, and the check says so.
+    registry["lead"] = ("g", lambda m, s, d: 0.0)
+    flat = sl.lead_check(xsb.Market(), "lead", span)
+    assert flat["medians"]["tied_share"] == 1.0 and flat["medians"]["tied_weight_share"] == pytest.approx(1.0)
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    assert sl.main(["lead-check", "--only", "nothing"]) == sl.EXIT_USAGE and "names a lead" in capsys.readouterr().err
+    monkeypatch.setattr(sl, "sweep_market", lambda cache, wanted: None)
+    assert sl.main(["lead-check", "--only", "lead"]) == sl.EXIT_BLOCKED
+
+
+def test_the_held_accounting_splits_the_same_net_by_leg_and_changes_nothing_without_it():
+    """UP is in leg "a" at the first decision and "b" at the second; FLAT is held once and then dropped."""
+    market, sunday = _two_coin_market([0.10, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.05, 0.0])
+    second = sunday + timedelta(days=7)
+    wednesday = sunday + timedelta(days=3)                       # UP's longs pay funding once, midweek
+    market.funding = {"UPUSDT": [(int((wednesday - date(1970, 1, 1)).total_seconds() * 1000) + 3600 * 1000, 0.002)]}
+    target = {sunday: {"UPUSDT": 1.0, "FLATUSDT": -1.0}, second: {"UPUSDT": 0.5}}
+    weigher = lambda m, members, day, signal, seed=None: dict(target.get(day, {}))      # noqa: E731
+    monthly = {date(2021, 1, 1): ["UPUSDT", "FLATUSDT"]}
+    span = dict(start=sunday + timedelta(days=1), end=sunday + timedelta(days=10))
+    leg_of = lambda symbol, decision: "flat" if symbol == "FLATUSDT" else ("a" if decision == sunday else "b")  # noqa: E731
+    plain = sl.simulate_held(market, sl.bs.CADENCE, monthly, weigher=weigher, **span)["daily"]
+    split = sl.simulate_held(market, sl.bs.CADENCE, monthly, weigher=weigher, leg_of=leg_of, **span)["daily"]
+    assert all("legs" not in row for row in plain.values()), "nothing is added unless a leg is asked for"
+    assert {d: {k: v for k, v in row.items() if k != "legs"} for d, row in split.items()} == plain
+    assert all(sum(row["legs"].values()) == pytest.approx(row["net"], abs=1e-12) for row in split.values())
+    unit = (xsb.cost.DEFAULT_TAKER_FEE_BPS + xsb.cost.DEFAULT_SLIPPAGE_BPS) / 1e4
+    first, later = sunday + timedelta(days=1), second + timedelta(days=1)
+    assert split[first]["legs"] == pytest.approx({"a": 0.10 - unit, "flat": -unit}), "entry costs and Monday's move"
+    # At the second decision UP is worth 1.1 and the target is 0.5: that trade is leg b's, the coin's new leg.
+    # FLAT is no longer held: closing it is charged to the leg it leaves.
+    assert split[later]["legs"]["b"] == pytest.approx(-0.6 * unit + 0.5 * -0.05, abs=1e-9)
+    assert split[later]["legs"]["flat"] == pytest.approx(-unit) and "a" not in split[later]["legs"]
+    assert plain[wednesday]["funding"] == pytest.approx(-1.1 * 0.002), "a long worth 1.1 pays the rate"
+    assert split[wednesday]["legs"] == pytest.approx({"a": -1.1 * 0.002, "flat": 0.0}), "and the payment is its leg's"
+
+
+def test_the_leads_return_is_split_between_tied_coins_untied_coins_and_the_hedge(monkeypatch):
+    members = [f"C{i:02d}" for i in range(1, 42)]
+    lead = {**{f"C{i:02d}": float(i - 16) for i in range(1, 16)}, **{f"C{i:02d}": 0.0 for i in range(16, 27)},
+            **{f"C{i:02d}": float(i - 26) for i in range(27, 42)}}          # eleven coins tied at zero
+    start = date(2020, 12, 1)
+    bars = {}
+    for i, s in enumerate(members + [sl.HEDGE]):
+        price, out = 100.0, {}
+        for k in range(240):
+            day = start + timedelta(days=k)
+            # The hedge coin climbs; the coins with a low value climb, those with a high value sink, the tied ones wobble.
+            drift = 0.004 if s == sl.HEDGE else (0.002 if lead.get(s, 0) < 0 else -0.002 if lead.get(s, 0) > 0 else 0.001 * (i % 3 - 1))
+            opened, price = price, price * (1 + drift)
+            out[day] = xsb.Bar(open=opened, close=price, quote_volume=1.0)
+        bars[s] = out
+    market = xsb.Market(bars=bars)
+    monkeypatch.setattr(sl.lab, "variables", lambda: {"lead": ("g", lambda m, s, d: lead.get(s))})
+    monkeypatch.setattr(sl, "LEADS", {"lead": {"long": "low", "group": "price_volume"}})
+    monkeypatch.setattr(sl, "monthly_members", lambda market, span=None: {date(2021, m, 1): members for m in range(1, 7)})
+    monkeypatch.setattr(sl, "without_tail", lambda market, members, day: list(members))
+
+    def hedged(read, direction):
+        inner = sl.book(read, direction)
+        return lambda market, members, day, signal, seed=None: {**inner(market, members, day, signal), sl.HEDGE: -0.3}
+    monkeypatch.setitem(sl.BOOKS, sl.SWEEP_LOGIC, hedged)
+    span = (date(2021, 1, 1), date(2021, 6, 30))
+    out = sl.lead_attribution(market, "lead", span)
+    assert out["largest_gap"] < 1e-9 and set(out["legs"]) == set(sl.LEAD_LEGS) and out["decisions_named"] >= 5
+    parts = sum(out["legs"][leg]["total_pct"] for leg in sl.LEAD_LEGS)
+    assert parts == pytest.approx(out["book_total_pct"], abs=0.02), "the three legs are the book"
+    assert out["legs"]["untied"]["total_pct"] > 0, "the low side was bought and it climbed; the high side was sold and it sank"
+    assert out["legs"]["hedge"]["total_pct"] < 0, "short a hedge coin that rose"
+    assert abs(out["legs"]["tied"]["total_pct"]) < out["legs"]["untied"]["total_pct"]
+    whole = sl.measure(market, hedged(lambda m, s, d: lead.get(s), lambda _d: -1), span, simulate=sl.ACCOUNTING[sl.SWEEP_ACCOUNTING])
+    assert out["annual_sharpe"] == whole["annual_sharpe"] and out["total_position_annual_pct"] == whole["total_position_annual_pct"], \
+        "the split book is the measured book"
+    share = out["legs"]["untied"]["total_pct"] / out["book_total_pct"]
+    assert out["rule"] == {"untied_share_of_net": pytest.approx(share, abs=1e-3), "threshold": 0.5,
+                           "about_the_variable": share >= 0.5}
+    assert sl.LEAD_UNTIED_SHARE == 0.5
+    # A split that does not add up is refused, never read.
+    def broken(market, signal, monthly, **kwargs):
+        sim = sl.simulate_held(market, signal, monthly, every=4, **kwargs)
+        for row in sim["daily"].values():
+            row["legs"]["untied"] = row["legs"].get("untied", 0.0) + 0.01
+        return sim
+    monkeypatch.setitem(sl.ACCOUNTING, sl.SWEEP_ACCOUNTING, broken)
+    refused = sl.lead_attribution(market, "lead", span)
+    assert set(refused) == {"refused", "largest_gap"} and refused["largest_gap"] == pytest.approx(0.01)
+
+
+def test_the_one_lead_on_record_is_the_swept_book_and_nothing_else():
+    assert sl.LEADS["spread_change_30"] == {"long": "low", "group": "price_volume"}
+    lead = sl.LEADS["spot_trade_size_30"]
+    assert lead["long"] == "high" and lead["group"] == "spot_flow"
+    assert set(lead["kin"]) == {"vol_30", "idio_vol_30", "max_30", "skew_30", "range_30", "beta_30", "extreme_days_30",
+                                "spread_change_30", "trade_size_position_30", "trade_size_30"}, "section 68's list"
+    assert sl.LEAD_KIN[0] == "idio_vol_30" and sl.LEAD_KIN_MAX == 0.5, "the rule reads the closed cluster's book"
+    assert set(sl.LEAD_KIN) | set(sl.LEADS) | set(lead["kin"]) <= set(sl.lab.variables())
+    assert {sl.lab.variables()[k][0] for k in sl.LEAD_KIN} == {"price_volume"}, "all read from bars: one load"
 
 
 # --- confirm read 3: the tail-out book ---------------------------------------------------------------------------------
@@ -515,12 +949,14 @@ def test_the_third_read_is_c010_which_differs_from_the_second_reads_book_only_by
 
 
 def test_three_confirm_reads_are_spent_and_two_are_left(monkeypatch, capsys):
-    """Read 3 was spent on 2026-11-13 (C010: CONFIRM_FAIL, 2026 still negative). Nothing is open."""
+    """Read 3 was spent on 2026-11-13 (C010: CONFIRM_FAIL, 2026 still negative). Read 4 is registered for L31
+    (2026-11-20), which its own tool reads; the ladder opens nothing."""
     assert set(sl.CONFIRM_DONE) == {1, 2, 3} and "C010" in sl.CONFIRM_DONE[3] and "CONFIRM_FAIL" in sl.CONFIRM_DONE[3]
-    assert sl.CONFIRM_BUDGET - len(sl.CONFIRM_DONE) == 2 and sl.next_confirm_read() is None
+    assert sl.CONFIRM_BUDGET - len(sl.CONFIRM_DONE) == 2
+    assert sl.next_confirm_read() == {**sl.CONFIRM_READS[3], "read": 4, "candidate": "L31"}
     assert sl.confirm_bar(len(sl.CONFIRM_DONE) + 1) == 1.483, "the bar the next read is held to"
     monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
-    assert sl.main(["confirm"]) == sl.EXIT_USAGE and "no registered confirm read is open" in capsys.readouterr().err
+    assert sl.main(["confirm"]) == sl.EXIT_USAGE and "its own tool reads it" in capsys.readouterr().err
 
 
 # --- round 7: the transfer check inside the development years ----------------------------------------------------------
@@ -1830,3 +2266,2298 @@ def test_the_basis_commands_hang_the_spot_bars_and_nothing_after_the_development
         assert not (market.funding_day("AUSDT") or {}), "the 2025 settlement is cut too"
         assert market.spot_of["AUSDT"] == ("AUSDT", 1.0)
     capsys.readouterr()
+
+
+# --- round 17: M04's score on the next tier --------------------------------------------------------------------------
+
+WIDE_TEST_SPAN = (date(2022, 1, 1), date(2022, 12, 31))
+WIDE_DAY = date(2022, 3, 6)                      # a Sunday decision
+MIDS = [f"MID{i:02d}USDT" for i in range(12)]
+
+
+def _wide_world(hole: bool = False):
+    """Thirty large coins and twelve smaller ones from mid-2021. MID00 has the slowest open-interest growth and the
+    lowest long share and rises fastest; each next one grows faster, is more crowded and does worse. MID11 has no
+    positioning in February 2022 and the archive is known not to serve those days. ``hole`` also removes two of
+    MID10's days that the archive was never asked for."""
+    start, end = date(2021, 6, 1), date(2022, 12, 31)
+    days = [start + timedelta(days=k) for k in range((end - start).days + 1)]
+
+    def bars(move, volume):
+        out, price = {}, 100.0
+        for day in days:
+            out[day] = xsb.Bar(open=price, close=price * (1 + move), quote_volume=volume)
+            price *= 1 + move
+        return out
+
+    names = {f"BIG{i:02d}USDT": bars(0.0, 1e9 - i) for i in range(30)}
+    names.update({s: bars((5.5 - i) * 0.0004, 1e7 - i * 1e4) for i, s in enumerate(MIDS)})
+    market = xsb.Market(bars=names, funding={s: [] for s in names})
+    market.metrics = {s: {day: {"oi": 1000.0 * (1 + 0.001 * (i + 1)) ** k, "ls": 0.40 + 0.02 * i, "top": None, "taker": None}
+                          for k, day in enumerate(days)} for i, s in enumerate(MIDS)}
+    february = [date(2022, 2, 1) + timedelta(days=k) for k in range(28)]
+    for day in february:
+        market.metrics["MID11USDT"].pop(day)
+    market.metrics_unserved = {"MID11USDT": set(february)}
+    if hole:
+        for day in (date(2022, 6, 1), date(2022, 6, 2)):
+            market.metrics["MID10USDT"].pop(day)
+    return market
+
+
+def test_the_wide_book_is_m04s_own_score_and_basket_rule_on_the_coins_outside_the_months_top_thirty():
+    ms = sl.lab.ms
+    market = _wide_world()
+    tier = sl.WideTier(market, WIDE_TEST_SPAN)
+    members = tier.members(WIDE_DAY)
+    assert set(members) == set(MIDS), "ranks 31 on: none of the month's top thirty"
+    assert tier.candidate is ms.CANDIDATES["M04"] and tier.candidate.as_dict()["features"] == [["oi_growth", 1.0], ["ls_level", 1.0]]
+    weights = tier.book()(market, ("BIG00USDT", "BIG01USDT"), WIDE_DAY, "x")
+    assert weights == sl.bs.weigher(ms.CANDIDATES["M04"], ms.FEATURES)(market, members, WIDE_DAY, "x"), \
+        "M04's weigher on these members, whatever members the caller hands in"
+    assert weights == {"MID00USDT": 0.5, "MID01USDT": 0.5, "MID10USDT": -0.5, "MID09USDT": -0.5}, \
+        "the least crowded fifth bought, the most crowded sold; MID11 has no score in the window"
+    assert "MID11USDT" not in tier.ranked(WIDE_DAY) and len(tier.ranked(WIDE_DAY)) == 11
+    assert tier.why_unranked("MID11USDT", WIDE_DAY) == sl.UNSERVED
+    assert list(ms.CANDIDATES) == ["M01", "M02", "M03", "M04"] and ms.FINAL == "M04" and ms.BUDGET == 5, \
+        "M04's own protocol is as it was: nothing is added to its attempts"
+
+
+def test_a_wide_null_book_has_the_books_shape_ranks_the_same_coins_and_changes_as_slowly_as_a_trailing_score():
+    market = _wide_world()
+    tier = sl.WideTier(market, WIDE_TEST_SPAN)
+    null = tier.null("wide:0")
+    weights = null(market, (), WIDE_DAY, "x")
+    assert sorted(weights.values()) == [-0.5, -0.5, 0.5, 0.5] and set(weights) <= tier.ranked(WIDE_DAY)
+    assert sl.WideTier(_wide_world(), WIDE_TEST_SPAN).null("wide:0")(market, (), WIDE_DAY, "x") == weights, "a seed is a book"
+    picks = {k: tuple(sorted(tier.null(f"wide:{k}")(market, (), WIDE_DAY, "x").items())) for k in range(6)}
+    assert len(set(picks.values())) > 1, "another seed is another book"
+    held = {s for k in range(30) for s in tier.null(f"wide:{k}")(market, (), WIDE_DAY, "x")}
+    assert held == tier.ranked(WIDE_DAY), "thirty null books between them hold every ranked coin and never the unranked one"
+    cand = sl.bs.Candidate(why="redrawn", features=tier.candidate.features, long_low=True)
+    inner = sl.bs.weigher(cand, sl.lab.ms.FEATURES)
+
+    def redrawn(seed):
+        return lambda market, members, day, signal, seed_=seed: inner(market, tier.members(day), day, signal, seed=seed_)
+
+    slow = [tier.turnover(tier.null(f"wide:{k}")) for k in range(5)]
+    fast = [tier.turnover(redrawn(f"r{k}")) for k in range(5)]
+    assert sum(slow) < 0.6 * sum(fast), "a score redrawn every week trades far more than one averaged over thirty days"
+    assert tier.turnover(tier.book()) < min(slow), "this world's real score never changes its order"
+
+
+def test_the_wide_counts_name_why_a_member_is_unranked_carry_nothing_earned_and_stop_on_an_unexplained_gap(monkeypatch):
+    counts = sl.wide_counts(_wide_world(), WIDE_TEST_SPAN)
+    year = counts["by_year"]["2022"]
+    assert counts["stop"] == [] and (counts["tier"], counts["score"]) == ("rank31_100", "M04")
+    assert year["members_median"] == 12 and year["side_median"] == 2 and year["active_decisions"] == year["decisions"]
+    assert set(year["unranked"]) == {sl.UNSERVED} and year["ranked_share"] > 0.9
+    turnover = counts["turnover"]
+    assert turnover["null_books"] == sl.WIDE_TURNOVER_NULLS and turnover["book"] < turnover["null_books_mean"]
+    assert turnover["alike"] is False, "this book never trades: its p would say so, not that it picks better"
+    flat = json.dumps(counts)
+    assert counts["returns_computed"] is False and "sharpe" not in flat and "pct" not in flat
+    holed = sl.wide_counts(_wide_world(hole=True), WIDE_TEST_SPAN)
+    assert "MID10USDT" in sl.WideTier(_wide_world(hole=True), WIDE_TEST_SPAN).ranked(date(2022, 6, 5)), \
+        "the score tolerates two missing days: the coin is still ranked"
+    assert holed["by_year"]["2022"]["days_read_without_a_file_or_a_cause"] > 0 and year["days_read_without_a_file_or_a_cause"] == 0
+    assert holed["stop"][0].endswith("have no file and no named cause: fetch or build is incomplete"), \
+        "a hole in a ranked member's window stops the book too"
+    assert sl.wide_run(_wide_world(hole=True), WIDE_TEST_SPAN)["refused"] == holed["stop"], "a stopped book is not measured"
+    monkeypatch.setattr(sl, "WIDE_MIN_ACTIVE", 60)
+    monkeypatch.setattr(sl, "WIDE_MIN_RANKED", 0.99)
+    assert sl.wide_counts(_wide_world(), WIDE_TEST_SPAN)["stop"] == [
+        "the score ranks too few of the tier's coins in 2022", "the book stands at too few decisions in 2022"]
+
+
+def test_the_wide_run_is_judged_held_at_stressed_cost_and_prints_m04s_own_accounting_beside_it(monkeypatch):
+    monkeypatch.setattr(sl, "SPAN", WIDE_TEST_SPAN)
+    run = sl.wide_run(_wide_world(), WIDE_TEST_SPAN, nulls=3)
+    assert (run["hypothesis"], run["logic"]) == ("H-M1", "L21")
+    assert run["sum_pct"] > 0 and run["legs"]["price_pct"] > 0 and run["funding_carried_it"] is False, \
+        "the uncrowded coins rise and the crowded ones fall"
+    assert set(run["rungs"]) == {"2a_entry", "2b_later_years", "2c_beside_null_books", "3_stability"}
+    assert run["rungs"]["2c_beside_null_books"]["null_books"] == 3 and run["null_net_total_position_annual_pct_mean"] < run["total_position_annual_pct"]
+    assert run["passes"] is False and run["reading"] == "closed", "one year of three: the later years are not there"
+    theirs = run["as_m04_was_measured"]
+    assert set(theirs) == {"annual_sharpe", "total_position_annual_pct", "years_total_position_pct", "cost_pct", "funding_pct"}
+    assert theirs["cost_pct"] < run["cost_pct"], "the engine's cost is under the stressed one"
+    tier = sl.WideTier(_wide_world(), WIDE_TEST_SPAN)
+    at_engine = sl.measure(tier.market, tier.book(), WIDE_TEST_SPAN, simulate=sl.simulate_held)["cost_pct"]
+    assert run["cost_pct"] == pytest.approx(at_engine * 26 / 8, abs=0.02) and at_engine > 0, "judged at 5 + 21 bps on every coin"
+    assert set(run["held_at_engine_cost"]) == {"annual_sharpe", "total_position_annual_pct"}
+    assert set(run["years_total_position_pct"]) == {"2022"}
+    monkeypatch.setattr(sl, "later_years", lambda years: {"passes": True})
+    monkeypatch.setattr(sl, "stability", lambda years: {"passes": True})
+    monkeypatch.setattr(sl, "beside_nulls", lambda value, nulls, **more: {"passes": True})
+    monkeypatch.setattr(sl.bs, "clears_entry", lambda report: True)
+    assert sl.wide_run(_wide_world(), WIDE_TEST_SPAN, nulls=1)["reading"] == "passes_beside_null_books_that_trade_differently", \
+        "a pass whose null books trade more than the book is labelled"
+
+
+def test_the_wide_commands_hang_the_positioning_values_and_nothing_after_their_span_reaches_the_book(monkeypatch, capsys, tmp_path):
+    assert sl.WIDE_SPAN == (date(2022, 1, 1), date(2024, 12, 31))
+    late = date(2025, 1, 2)
+    bar = xsb.Bar(open=1.0, close=1.0, quote_volume=1.0)
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(sl.xsb, "read_contract_types", lambda path: ({}, "snapshot"))
+    monkeypatch.setattr(sl.xsb, "load_market", lambda path, funding=True: xsb.Market(bars={"AUSDT": {date(2024, 12, 30): bar, late: bar}}))
+    seen = []
+    monkeypatch.setattr(sl, "wide_counts", lambda market: seen.append(market) or {"stop": []})
+    monkeypatch.setattr(sl, "wide_run", lambda market: seen.append(market) or {})
+    assert sl.main(["wide-counts", "--cache", str(tmp_path)]) == sl.EXIT_BLOCKED and seen == [], "no derived values: blocked"
+    folder = tmp_path / "derived" / "metrics-daily"
+    folder.mkdir(parents=True)
+    (folder / "AUSDT.jsonl").write_text('["2024-12-30", 5.0, 0.5, null, null]\n["2025-01-02", 6.0, 0.6, null, null]\n', encoding="utf-8")
+    (tmp_path / "archive-metrics").mkdir()
+    (tmp_path / "archive-metrics" / sl.lab.ba.MISSING_FILENAME).write_text(json.dumps(
+        {"AUSDT": ["AUSDT-metrics-2024-12-29.zip", "AUSDT-metrics-2025-01-03.zip", "not-a-day.zip"]}), encoding="utf-8")
+    assert sl.main(["wide-counts", "--cache", str(tmp_path)]) == sl.EXIT_OK and sl.main(["wide", "--cache", str(tmp_path)]) == sl.EXIT_OK
+    assert len(seen) == 2
+    for market in seen:
+        assert set(market.bars["AUSDT"]) == {date(2024, 12, 30)}
+        assert market.metrics["AUSDT"] == {date(2024, 12, 30): {"oi": 5.0, "ls": 0.5, "top": None, "taker": None}}
+        assert market.metrics_unserved == {"AUSDT": {date(2024, 12, 29)}}
+    assert '"span": [\n  "2022-01-01",\n  "2024-12-31"\n ]' in capsys.readouterr().out
+
+
+def test_the_value_printed_as_m04_was_measured_is_what_m04s_own_protocol_gives_on_the_tiers_members(monkeypatch):
+    ms = sl.lab.ms
+    market = _wide_world()
+    tier = sl.WideTier(market, WIDE_TEST_SPAN)
+    printed = sl.wide_run(market, WIDE_TEST_SPAN, nulls=1)["as_m04_was_measured"]      # beside the verdict
+    ours = sl.measure(market, tier.book(), WIDE_TEST_SPAN)
+    monkeypatch.setattr(sl.bs.xsb, "universes", lambda market, **kw: dict(tier.monthly))   # M04's path, on the tier
+    theirs = sl.bs.measure(market, ms.CANDIDATES["M04"], WIDE_TEST_SPAN, ms.FEATURES)
+    for key in ("annual_sharpe", "sum_pct", "cost_pct", "funding_pct", "months"):
+        assert ours[key] == theirs[key], key
+    for key in ("annual_sharpe", "cost_pct", "funding_pct"):
+        assert printed[key] == theirs[key], key
+    assert printed["total_position_annual_pct"] == sl.bs.total_position_annual_pct(theirs["sum_pct"], theirs["months"])
+    assert ours["sum_pct"] != 0 and theirs["weeks"] > 40
+
+
+# --- round 34: the month's reversal on the next tier (H-R2) -----------------------------------------------------------
+
+MID_TEST_SPAN = (date(2022, 1, 1), date(2022, 12, 31))
+MID_DAY = date(2022, 6, 5)                       # a Sunday decision
+
+
+def _mid_world(*, funded: bool = True):
+    """Thirty large flat coins and sixteen smaller ones from mid-2021. Each smaller coin swings on its own 60-day
+    cycle, offset from the others, so its 30-day return keeps changing sign and rank; a coin that fell over the
+    last month rises over the next."""
+    start, end = date(2021, 6, 1), date(2022, 12, 31)
+    days = [start + timedelta(days=k) for k in range((end - start).days + 1)]
+    mids = [f"MID{i:02d}USDT" for i in range(16)]
+
+    def swing(i):
+        out, price = {}, 100.0
+        for k, day in enumerate(days):
+            up = ((k + 4 * i) // 30) % 2 == 0
+            move = (0.004 if up else -0.004) * (1 + i / 40)
+            out[day] = xsb.Bar(open=price, close=price * (1 + move), quote_volume=1e7 - i * 1e4)
+            price *= 1 + move
+        return out
+
+    names = {f"BIG{i:02d}USDT": {d: xsb.Bar(open=100.0, close=100.0, quote_volume=1e9 - i) for d in days} for i in range(30)}
+    names.update({s: swing(i) for i, s in enumerate(mids)})
+    row = [(int((start - date(1970, 1, 1)).total_seconds() * 1000) + 3600 * 1000, 0.0)]     # on file, and nothing paid
+    funding = {s: list(row) for s in names if funded or not s.startswith("MID0")}
+    return xsb.Market(bars=names, funding=funding), mids
+
+
+def test_the_mid_book_stands_on_the_maps_own_tier_and_variable_and_buys_what_fell():
+    market, mids = _mid_world()
+    tier = sl.MidTier(market, MID_TEST_SPAN)
+    assert set(tier.members(MID_DAY)) == set(mids) == set(sl.lab.tier_members(market, MID_TEST_SPAN)["rank31_100"][date(2022, 6, 1)])
+    mapped = sl.lab.variables()["momentum_30"][1]
+    assert (sl.MID_TIER, sl.MID_VARIABLE) == ("rank31_100", "momentum_30")
+    assert all(tier.read(market, s, MID_DAY) == mapped(market, s, MID_DAY) == sl.xsb.trailing_return(market, s, MID_DAY, 30)
+               for s in mids), "the mapped variable itself: thirty days to the decision day's close, no day skipped"
+    assert tier.ranked(MID_DAY) == frozenset(mids), "nothing is filtered: the coins the cell was read on"
+    weights = tier.book()(market, (), MID_DAY, "x")
+    month = {s: sl.xsb.trailing_return(market, s, MID_DAY, 30) for s in mids}
+    longs, shorts = [s for s, w in weights.items() if w > 0], [s for s, w in weights.items() if w < 0]
+    assert max(month[s] for s in longs) < min(month[s] for s in shorts), "long what fell over the month, short what rose"
+    assert sum(w for w in weights.values() if w > 0) == pytest.approx(1.0) and sum(weights.values()) == pytest.approx(0.0)
+    assert not set(weights) & {f"BIG{i:02d}USDT" for i in range(30)}, "no coin of the month's top thirty"
+    assert weights == sl.book(tier.read, lambda _d: -1)(market, list(mids), MID_DAY, "x"), "L1's rank weights, nothing else"
+
+
+def test_a_mid_null_book_ranks_the_same_coins_and_changes_as_slowly_as_a_months_return():
+    market, mids = _mid_world()
+    tier = sl.MidTier(market, MID_TEST_SPAN)
+    null = tier.null("mid:0")
+    weights = null(market, (), MID_DAY, "x")
+    assert set(weights) <= tier.ranked(MID_DAY) and sum(weights.values()) == pytest.approx(0.0)
+    assert sl.MidTier(_mid_world()[0], MID_TEST_SPAN).null("mid:0")(market, (), MID_DAY, "x") == weights, "a seed is a book"
+    assert tier.null("mid:1")(market, (), MID_DAY, "x") != weights, "another seed is another book"
+    later = sl.MidTier(market, MID_TEST_SPAN).null("mid:0")
+    later(market, (), MID_DAY + timedelta(days=70), "x")
+    assert later(market, (), MID_DAY, "x") == weights, "a value does not depend on which day was asked first"
+    weekly = tier._weigher(lambda m, s, d: sl.lab._control("week", 7)(m, s, d))
+    slow = [tier.turnover(tier.null(f"mid:{k}")) for k in range(5)]
+    assert max(slow) < 0.7 * tier.turnover(weekly), "noise summed over thirty days trades far less than noise redrawn weekly"
+
+
+def test_the_mid_counts_carry_nothing_earned_and_stop_on_missing_funding_or_a_thin_year(monkeypatch):
+    market, mids = _mid_world()
+
+    def never(*args, **kwargs):
+        raise AssertionError("the counts read no return")
+    for name in ("measure", "simulate_held"):
+        monkeypatch.setattr(sl, name, never)
+    monkeypatch.setattr(sl, "LATER_YEARS", (2022,))
+    counts = sl.mid_counts(market, MID_TEST_SPAN)
+    year = counts["by_year"]["2022"]
+    assert counts["stop"] == [] and (counts["tier"], counts["variable"]) == ("rank31_100", "momentum_30")
+    assert year["members_median"] == 16 == year["ranked_median"] and year["active_decisions"] == year["decisions"] >= 50
+    assert counts["funding_known_share"] == 1.0 and counts["returns_computed"] is False
+    turnover = counts["turnover"]
+    assert turnover["null_books"] == sl.MID_TURNOVER_NULLS and 0 < turnover["book"] < 2 and turnover["ratio"] == pytest.approx(
+        turnover["book"] / turnover["null_books_mean"], abs=2e-3)
+    assert turnover["alike"] == (0.8 <= turnover["ratio"] <= 1.25)
+    assert counts["cost_from_turnover_total_position_annual_pct"] == pytest.approx(turnover["book"] * 2 * 0.0026 * 52 / 2 * 100, abs=0.01)
+    flat = json.dumps(counts)
+    assert "sharpe" not in flat and "sum_pct" not in flat
+    unfunded = sl.mid_counts(_mid_world(funded=False)[0], MID_TEST_SPAN)
+    assert unfunded["funding_known_share"] == pytest.approx(6 / 16) and unfunded["stop"] == ["too many of the ranked coins have no funding on file"]
+    monkeypatch.setattr(sl, "MID_MIN_ACTIVE", 60)
+    assert sl.mid_counts(market, MID_TEST_SPAN)["stop"] == ["the book stands at too few decisions in 2022"]
+
+
+def test_the_mid_run_is_judged_held_at_stressed_cost_beside_slow_null_books(monkeypatch, capsys):
+    monkeypatch.setattr(sl, "LATER_YEARS", (2022,))
+    market, mids = _mid_world()
+    run = sl.mid_run(market, MID_TEST_SPAN, nulls=4)
+    assert (run["hypothesis"], run["logic"]) == ("H-R2", "L22") and "refused" not in run
+    assert run["legs"]["price_pct"] > 0, "in this world a coin that fell over the month rises over the next"
+    assert set(run["rungs"]) == {"2a_entry", "2b_later_years", "2c_beside_null_books", "3_stability"}
+    assert run["rungs"]["2c_beside_null_books"]["null_books"] == 4
+    tier = sl.MidTier(market, MID_TEST_SPAN)
+    at_engine = sl.measure(market, tier.book(), MID_TEST_SPAN, simulate=sl.simulate_held)
+    assert run["cost_pct"] == pytest.approx(at_engine["cost_pct"] * 26 / 8, abs=0.05) and at_engine["cost_pct"] > 0, \
+        "judged at 5 + 21 bps on every coin"
+    assert run["held_at_engine_cost"]["annual_sharpe"] == at_engine["annual_sharpe"]
+    assert set(run["years_total_position_pct"]) == {"2022"}
+    assert sl.mid_run(_mid_world(funded=False)[0], MID_TEST_SPAN)["refused"] == ["too many of the ranked coins have no funding on file"]
+    # The reading table: a ladder pass beside null books that trade alike, one beside null books that do not, a book
+    # that only clears at the engine's cost, and everything else.
+    alike = {"alike": True}
+    counts = sl.mid_counts(market, MID_TEST_SPAN)
+    monkeypatch.setattr(sl, "later_years", lambda years: {"passes": True})
+    monkeypatch.setattr(sl, "stability", lambda years: {"passes": True})
+    monkeypatch.setattr(sl, "beside_nulls", lambda value, nulls, **more: {"passes": True})
+    monkeypatch.setattr(sl.bs, "clears_entry", lambda report: True)
+    monkeypatch.setattr(sl, "mid_counts", lambda market, span, tier=None: {**counts, "turnover": {**counts["turnover"], **alike}})
+    assert sl.mid_run(market, MID_TEST_SPAN, nulls=1)["reading"] == "passes"
+    alike["alike"] = False
+    assert sl.mid_run(market, MID_TEST_SPAN, nulls=1)["reading"] == "passes_beside_null_books_that_trade_differently"
+    stressed_fails = iter([False, True] * 10)
+    monkeypatch.setattr(sl.bs, "clears_entry", lambda report: next(stressed_fails))
+    assert sl.mid_run(market, MID_TEST_SPAN, nulls=0)["reading"] == "cost_dependent_lead", "clears only at the engine's cost"
+    stressed_fails = iter([False, True] * 10)
+    monkeypatch.setattr(sl, "beside_nulls", lambda value, nulls, **more: {"passes": False})
+    assert sl.mid_run(market, MID_TEST_SPAN, nulls=0)["reading"] == "closed", "clearing at the engine's cost is no lead without the p"
+    monkeypatch.setattr(sl, "beside_nulls", lambda value, nulls, **more: {"passes": True})
+    monkeypatch.setattr(sl.bs, "clears_entry", lambda report: False)
+    assert sl.mid_run(market, MID_TEST_SPAN, nulls=1)["reading"] == "closed"
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(sl.lab, "hold", lambda cache, span=None, *, attach=True, flow=False: None)
+    assert sl.main(["mid-counts"]) == sl.EXIT_BLOCKED and sl.main(["mid"]) == sl.EXIT_BLOCKED
+
+
+# --- round 36: the sweep on the map's second tier ----------------------------------------------------------------------
+
+def _late(read, first: date):
+    return lambda market, symbol, day: None if day < first else read(market, symbol, day)
+
+
+def test_the_tier_sweep_builds_no_book_the_record_forbids_and_names_why():
+    names = sl.tier_sweep_names()
+    registered = sl.lab.variables()
+    assert set(names) | set(sl.TIER_SWEEP_OUT) == set(registered) and not set(names) & set(sl.TIER_SWEEP_OUT)
+    assert {"vol_30", "idio_vol_30", "max_30", "skew_30", "range_30", "beta_30", "extreme_days_30"} <= set(sl.TIER_SWEEP_OUT)
+    assert {"oi_growth_30", "ls_level_30", "momentum_30", "momentum_7", "momentum_90"} <= set(sl.TIER_SWEEP_OUT)
+    assert {"spread_change_30", "trade_size_position_30"} <= set(sl.TIER_SWEEP_OUT), "the top tier's lead and its runner-up"
+    assert {"momentum_change_30", "momentum_position_30", "residual_momentum_30", "ls_change_30"} <= set(names), "shapes are kin, not the closed book"
+    assert not [n for n, (group, _) in names.items() if group == "depth"], "no depth files on this tier"
+    assert all(sl.TIER_SWEEP_OUT.values()) and len(names) == len(registered) - len(sl.TIER_SWEEP_OUT) == 47
+    assert sl.TIER_SWEEP_NULLS == 600 and 0.10 / len(names) > 1 / (sl.TIER_SWEEP_NULLS + 1), "a book above every null can survive"
+
+
+def test_the_tier_book_is_h_r2s_book_for_any_variable_and_the_gate_reads_h_r2s_numbers():
+    market, mids = _mid_world()
+    tier, mid = sl.TierSweep(market, MID_TEST_SPAN), sl.MidTier(market, MID_TEST_SPAN)
+    read = sl.lab.variables()["momentum_30"][1]
+    assert sl.TIER_SWEEP_TIER == sl.MID_TIER and set(tier.members(MID_DAY)) == set(mids)
+    assert tier.weigher(read, -1)(market, (), MID_DAY, "x") == mid.book()(market, (), MID_DAY, "x")
+    high = tier.weigher(read, 1)(market, (), MID_DAY, "x")
+    assert high == {s: -w for s, w in mid.book()(market, (), MID_DAY, "x").items()}, "the other side is the same book reversed"
+    stressed = sl.functools.partial(sl.simulate_held, unit_of=sl.listing_unit)
+    record = sl.measure(market, mid.book(), MID_TEST_SPAN, simulate=stressed)        # how H-R2 was read
+    gate = sl.tier_sweep_gate(market, MID_TEST_SPAN)
+    for key in ("annual_sharpe", "sum_pct", "months", "total_position_annual_pct", "clears_entry", "cost_pct", "funding_pct"):
+        assert gate[key] == record[key], key
+    assert gate["years_total_position_pct"] == record["years_total_position_pct"] and gate["sum_pct"] != 0
+    assert set(sl.TIER_GATE_KEYS) <= set(gate)
+
+
+def test_a_tier_null_is_one_fixed_draw_per_coin_and_trades_less_than_a_months_return():
+    market, mids = _mid_world()
+    tier = sl.TierSweep(market, MID_TEST_SPAN)
+    fixed = tier.fixed("tier:0")
+    values = {s: fixed(market, s, MID_DAY) for s in mids}
+    assert len(set(values.values())) == len(mids) and all(v is not None for v in values.values())
+    assert {s: fixed(market, s, MID_DAY + timedelta(days=77)) for s in mids} == values, "it never changes"
+    assert fixed(market, mids[0], date(2021, 1, 1)) is None, "no value where the coin has no bar"
+    other = tier.fixed("tier:1")
+    assert {s: other(market, s, MID_DAY) for s in mids} != values, "another seed is another variable"
+    again = sl.TierSweep(_mid_world()[0], MID_TEST_SPAN).fixed("tier:0")
+    assert {s: again(market, s, MID_DAY) for s in mids} == values, "a seed is a book"
+    assert {s: fixed(market, s, MID_DAY) for s in mids} == values, "asking for another seed in between changes nothing"
+    assert tier.turnover(fixed) == 0.0 < tier.turnover(sl.lab.variables()["momentum_30"][1]), "members do not change in this world"
+
+
+def test_a_tier_book_is_read_on_its_own_span_and_a_short_one_is_named_and_not_built(monkeypatch):
+    market, mids = _mid_world()
+    tier = sl.TierSweep(market, MID_TEST_SPAN)
+    read = sl.lab.variables()["momentum_30"][1]
+    assert tier.first_decision(read) == date(2022, 1, 2), "the span's first weekly decision"
+    assert tier.start(read) == date(2022, 2, 1) and len(tier.months(tier.start(read))) == 11, "the month of the entry is not read"
+    late = _late(read, date(2022, 6, 10))
+    assert tier.first_decision(late) == date(2022, 6, 12) and tier.start(late) == date(2022, 7, 1)
+    assert tier.months(tier.start(late)) == [f"2022-{m:02d}" for m in range(7, 13)]
+    assert tier.start(_late(read, date(2022, 12, 20))) == date(2023, 1, 1), "December rolls into the next year"
+    assert tier.start(lambda m, s, d: None) is None and tier.months(None) == []
+    names = {"whole": ("g", read), "late": ("g", late), "never": ("g", lambda m, s, d: None)}
+    monkeypatch.setattr(sl, "TIER_SWEEP_MIN_MONTHS", 8)
+    books = sl.tier_sweep(market, names, MID_TEST_SPAN)
+    assert books["late"] == {"group": "g", "skipped": "its own span is 6 complete months, under 8"}
+    assert books["never"]["skipped"].startswith("its own span is 0 complete months")
+    assert books["whole"]["months"] == 11 and books["whole"]["start"] == "2022-02-01"
+    monkeypatch.setattr(sl, "TIER_SWEEP_MIN_MONTHS", 6)
+    monkeypatch.setattr(sl.lab, "MIN_DECISIONS", 10)
+    late_book = sl.tier_sweep(market, names, MID_TEST_SPAN)["late"]
+    assert (late_book["start"], late_book["months"]) == ("2022-07-01", 6) and set(late_book["years_total_position_pct"]) == {"2022"}
+    whole = tier.monthly_rows(late, -1 if late_book["long"] == "low" else 1)
+    assert late_book["sum_pct"] == pytest.approx(sum(whole[m]["net"] for m in tier.months(date(2022, 7, 1))) * 100, abs=0.01)
+    assert whole["2022-06"]["cost"] > 0, "the entry is paid in the month before its own span and is not read"
+    monkeypatch.setattr(sl.lab, "MIN_DECISIONS", 40)
+    assert sl.tier_sweep(market, names, MID_TEST_SPAN)["late"]["skipped"] == "ranked at too few decisions"
+
+
+def test_a_tier_book_is_long_the_side_its_own_rank_correlation_names_on_its_own_span(monkeypatch):
+    monkeypatch.setattr(sl, "TIER_SWEEP_MIN_MONTHS", 8)
+    market, mids = _mid_world()
+    read = sl.lab.variables()["momentum_30"][1]
+    names = {"fell_rises": ("g", read), "negated": ("g", lambda m, s, d: None if (v := read(m, s, d)) is None else -v)}
+    books = sl.tier_sweep(market, names, MID_TEST_SPAN)
+    assert books["fell_rises"]["long"] == "low" and books["fell_rises"]["mean_rank_correlation"] < 0
+    assert books["negated"]["long"] == "high" and books["negated"]["mean_rank_correlation"] == -books["fell_rises"]["mean_rank_correlation"]
+    for key in ("annual_sharpe", "sum_pct", "cost_pct", "funding_pct", "price_pct", "total_position_annual_pct"):
+        assert books["negated"][key] == pytest.approx(books["fell_rises"][key], abs=0.02), key
+    book = books["fell_rises"]
+    assert book["price_pct"] > 0 and book["cost_pct"] > 0
+    assert book["sum_pct"] == pytest.approx(book["price_pct"] + book["funding_pct"] - book["cost_pct"], abs=0.02)
+    tier = sl.TierSweep(market, MID_TEST_SPAN)
+    rows, months = tier.monthly_rows(read, -1), [f"2022-{m:02d}" for m in range(2, 13)]
+    assert book["months"] == 11 and book["decisions_ranked"] == sum(1 for d in tier.ics(read) if d >= date(2022, 2, 1))
+    assert book["annual_sharpe"] == sl.tier_reading(rows, months)["annual_sharpe"] is not None
+    assert book["cost_pct"] == pytest.approx(sum(rows[m]["cost"] for m in months) * 100, abs=0.01), "every coin at 5 + 21 bps, its own months"
+    assert book["total_position_annual_pct"] == sl.bs.total_position_annual_pct(book["sum_pct"], 11)
+    assert book["clears_entry"] == sl.bs.clears_entry(book)
+    assert sl.tier_side({date(2022, 1, 2): 0.5, date(2022, 6, 5): -0.1, date(2022, 6, 12): -0.1}, date(2022, 6, 1)) == (-1, pytest.approx(-0.1))
+    assert sl.tier_side({date(2022, 1, 2): 0.5, date(2022, 6, 5): -0.1}, date(2022, 1, 1))[0] == 1
+    assert sl.tier_side({date(2022, 1, 2): 0.5}, date(2022, 6, 1)) == (-1, None)
+
+
+def test_the_tier_counts_carry_nothing_earned_and_show_ties_dated_names_dead_bars_and_missing_funding(monkeypatch):
+    market, mids = _mid_world(funded=False)
+    dated, dead = "MID15USDT_221230", mids[14]
+    market.bars[dated] = market.bars.pop(mids[15])
+    for day in list(market.bars[dead]):
+        if day >= date(2022, 6, 1):
+            bar = market.bars[dead][day]
+            market.bars[dead][day] = xsb.Bar(open=bar.open, close=bar.close, quote_volume=0.0 if day >= date(2022, 7, 1) else bar.quote_volume)
+
+    def never(*args, **kwargs):
+        raise AssertionError("the counts read no return")
+    for name in ("measure", "simulate_held"):
+        monkeypatch.setattr(sl, name, never)
+    monkeypatch.setattr(sl.lab, "forward_return", never)
+    read = sl.lab.variables()["momentum_30"][1]
+    half = lambda m, s, d: 0.0 if s in mids[:8] else read(m, s, d)                     # noqa: E731
+    monkeypatch.setattr(sl, "TIER_SWEEP_MIN_MONTHS", 8)
+    counts = sl.tier_sweep_counts(market, {"month": ("g", read), "half_tied": ("g", half),
+                                           "late": ("g", _late(read, date(2022, 6, 10)))}, MID_TEST_SPAN)
+    assert counts["returns_computed"] is False and counts["tier"] == "rank31_100" and counts["null_turnover_books"] == sl.TIER_SWEEP_TURNOVER_NULLS
+    month, tied, late = (counts["books"][k] for k in ("month", "half_tied", "late"))
+    assert (month["first_decision"], month["start"], month["months"]) == ("2022-01-02", "2022-02-01", 11) and "skipped" not in month
+    assert month["ranked_median"] == 16 and month["ranked_cells"] == 16 * month["decisions_with_a_book"]
+    assert month["tied_share"] == 0.0 and tied["tied_share"] == 0.5, "eight of sixteen stand at one value"
+    assert month["dated_cells"] == month["decisions_with_a_book"], "the dated contract is ranked at every decision"
+    assert 0 < month["zero_volume_cells"] < month["decisions_with_a_book"], "a bar with no volume, from July"
+    assert month["unfunded_share"] == pytest.approx(11 / 16, abs=0.001), "ten without a file here, and the dated contract has none"
+    assert month["turnover"] > 0 and counts["null_turnover_mean"] is not None
+    assert month["ranked_beside_null"] == 1.0 and month["months_without_a_book"] == 0
+    thin = lambda m, s, d: None if s in mids[:4] or (d.month == 9 and d.year == 2022) else read(m, s, d)   # noqa: E731
+    gaps = sl.tier_sweep_counts(market, {"thin": ("g", thin)}, MID_TEST_SPAN)["books"]["thin"]
+    assert gaps["ranked_beside_null"] == 0.75, "twelve of the sixteen a null book ranks"
+    assert gaps["ranked_cells"] == 0.75 * gaps["cells_beside_null"] == 528, "the share's two counts are printed"
+    assert gaps["months_without_a_book"] == 1, "September stands inside its span with no book"
+    assert late["skipped"] == "its own span is 6 complete months, under 8" and late["months"] == 6
+    flat = json.dumps(counts)
+    assert "sharpe" not in flat and "sum_pct" not in flat and "rank_correlation" not in flat
+
+
+def test_the_tier_null_books_are_kept_whole_and_cut_to_each_books_own_months():
+    market, mids = _mid_world()
+    null = sl.tier_sweep_null(market, MID_TEST_SPAN, nulls=3)
+    assert set(null) == {"tier:0", "tier:1", "tier:2"}
+    body = null["tier:0"]
+    assert set(body) == {"ics", "high", "low"} and len(body["high"]) == 12 == len(body["low"]) and len(body["ics"]) > 40
+    assert all(body["high"][m] < 0 or body["low"][m] < 0 for m in body["high"]), "the two sides are one book reversed, both pay costs"
+    # the family reading, on made-up books: a null whose better side changes with the span it is cut to
+    months = [f"2022-{m:02d}" for m in range(1, 13)]
+    wave = {m: (0.02 if i % 2 else 0.01) for i, m in enumerate(months)}
+    other = {m: (0.05 if i % 2 else 0.01) for i, m in enumerate(months)}          # the low side's months: another shape
+    made = {f"n{k}": {"ics": {"2022-01-09": 0.9, "2022-08-07": -0.2, "2022-09-04": -0.2},
+                      "high": {m: v * (k + 1) / 10 for m, v in wave.items()},
+                      "low": {m: (other[m] if m >= "2022-07" else -v) * (k + 1) / 10 for m, v in wave.items()}} for k in range(9)}
+    whole = sl.tier_reading({m: {"net": v} for m, v in wave.items()}, months)["annual_sharpe"]
+    half = sl.tier_reading({m: {"net": other[m]} for m in months[6:]}, months[6:])["annual_sharpe"]
+    assert whole is not None and half is not None and half != sl.tier_reading({m: {"net": wave[m]} for m in months[6:]}, months[6:])["annual_sharpe"]
+    book = {"group": "g", "long": "high", "total_position_annual_pct": 20.0}
+    books = {"strong": {**book, "start": "2022-01-01", "months": 12, "annual_sharpe": whole + 5, "clears_entry": True},
+             "strong_thin": {**book, "start": "2022-01-01", "months": 12, "annual_sharpe": whole + 4, "clears_entry": False},
+             "weak": {**book, "start": "2022-01-01", "months": 12, "annual_sharpe": whole - 5, "clears_entry": False},
+             "late_weak": {**book, "start": "2022-07-01", "months": 6, "annual_sharpe": half - 5, "clears_entry": False},
+             "short": {"group": "g", "skipped": "its own span is 3 complete months, under 24"}}
+    reading = sl.tier_sweep_reading(books, made, q=0.5)
+    rows = {r["variable"]: r for r in reading["all"]}
+    assert reading["books"] == 4 and reading["skipped"] == {"short": "its own span is 3 complete months, under 24"}
+    assert rows["strong"]["null_books"] == 9 and rows["strong"]["p"] == pytest.approx(1 / 10) and rows["weak"]["p"] == 1.0
+    assert rows["strong"]["null_max"] == whole, "on the whole year every null is long its high side: the first-half rank correlation wins"
+    assert rows["late_weak"]["null_max"] == half and rows["late_weak"]["null_books"] == 9, \
+        "cut to the second half the null picks its low side and is read on those six months only"
+    assert reading["survive_benjamini_hochberg"] == ["strong", "strong_thin"]
+    assert reading["leads"] == ["strong"], "a lead survives the correction AND clears the entry rule"
+    assert reading["survivors_under_the_entry_rule"] == ["strong_thin"], "named, and nothing is built from it"
+    assert reading["clear_entry"] == ["strong"] and reading["first_threshold"] == pytest.approx(0.5 / 4)
+    strict = sl.tier_sweep_reading(books, made, q=0.10)
+    assert strict["survive_benjamini_hochberg"] == [] == strict["leads"], "one in ten is over a tenth of a quarter"
+
+
+def test_the_tier_commands_refuse_what_has_no_book_and_print_what_was_left_out(monkeypatch, capsys):
+    market, mids = _mid_world()
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(sl, "SPAN", MID_TEST_SPAN)
+    monkeypatch.setattr(sl.lab, "hold", lambda cache, span=None, *, attach=True, flow=False: market)
+    monkeypatch.setattr(sl, "TIER_SWEEP_MIN_MONTHS", 8)
+    assert sl.main(["tier-sweep", "--only", "depth"]) == sl.EXIT_USAGE, "depth has no book on this tier"
+    assert sl.main(["tier-counts", "--only", "null"]) == sl.EXIT_USAGE and sl.main(["tier-sweep"]) == sl.EXIT_USAGE
+    capsys.readouterr()
+    monkeypatch.setattr(sl, "tier_sweep_gate", lambda m, span=None: {"annual_sharpe": 1.0})
+    assert sl.main(["tier-gate"]) == sl.EXIT_OK
+    gate = json.loads(capsys.readouterr().out)
+    assert gate["book"] == {"annual_sharpe": 1.0} and (gate["variable"], gate["long"], gate["tier"], gate["logic"]) == ("momentum_30", "low", "rank31_100", "L22")
+    assert gate["left_out"] == sl.TIER_SWEEP_OUT
+    seen = {}
+    monkeypatch.setattr(sl, "tier_sweep", lambda m, names: seen.setdefault("books", sorted(names)) and {})
+    monkeypatch.setattr(sl, "tier_sweep_null", lambda m: seen.setdefault("null", True) and {})
+    assert sl.main(["tier-sweep", "--only", "coin_character"]) == sl.EXIT_OK and seen["books"] == ["listing_age"]
+    assert sl.main(["tier-sweep", "--only", "null"]) == sl.EXIT_OK and seen["null"] is True
+    monkeypatch.setattr(sl.lab, "hold", lambda cache, span=None, *, attach=True, flow=False: None)
+    assert sl.main(["tier-gate"]) == sl.EXIT_BLOCKED and sl.main(["tier-counts", "--only", "funding"]) == sl.EXIT_BLOCKED
+
+
+# --- round 37: the tier sweep's lead, before any form -------------------------------------------------------------------
+
+LEAD_TEST_SPAN = (date(2022, 1, 1), date(2023, 12, 31))
+
+
+def _funded_world():
+    """Thirty large flat coins and sixteen smaller ones. Each smaller coin pays or receives a funding rate of its own,
+    fixed for the whole span (the lowest is deep under H-F1's threshold, the highest over H-F2's), swings on a 60-day
+    cycle of its own, and drifts up the more the lower its funding."""
+    start, end = date(2021, 6, 1), date(2023, 12, 31)
+    days = [start + timedelta(days=k) for k in range((end - start).days + 1)]
+    mids = [f"MID{i:02d}USDT" for i in range(16)]
+    epoch = date(1970, 1, 1)
+
+    def swing(i):
+        out, price = {}, 100.0
+        for k, day in enumerate(days):
+            up = ((k + 4 * i) // 30) % 2 == 0
+            move = (0.004 if up else -0.004) + (7.5 - i) * 0.0003
+            out[day] = xsb.Bar(open=price, close=price * (1 + move), quote_volume=1e7 - i * 1e4)
+            price *= 1 + move
+        return out
+
+    names = {f"BIG{i:02d}USDT": {d: xsb.Bar(open=100.0, close=100.0, quote_volume=1e9 - i) for d in days} for i in range(30)}
+    names.update({s: swing(i) for i, s in enumerate(mids)})
+    stamp = lambda day: int((day - epoch).total_seconds() * 1000) + 8 * 3600 * 1000      # noqa: E731
+    funding = {s: [(stamp(d), 0.0) for d in days[:1]] for s in names if s.startswith("BIG")}
+    funding.update({s: [(stamp(d), -0.001 + i * 0.0002) for d in days] for i, s in enumerate(mids)})
+    return xsb.Market(bars=names, funding=funding), mids
+
+
+def test_the_tier_lead_check_reproduces_the_sweeps_row_and_its_parts_add_up(monkeypatch):
+    monkeypatch.setattr(sl, "TIER_SWEEP_MIN_MONTHS", 8)
+    market, mids = _funded_world()
+    registered = sl.lab.variables()
+    swept = sl.tier_sweep(market, {"funding_30": registered["funding_30"]}, LEAD_TEST_SPAN)["funding_30"]
+    assert swept["long"] == "low" == sl.TIER_LEADS["funding_30"]["long"], "in this world the coins paid to hold also rise"
+    check = sl.tier_lead_check(market, "funding_30", LEAD_TEST_SPAN)
+    for key in sl.TIER_LEAD_ROW_KEYS:
+        assert check["row"][key] == swept[key], key
+    assert round(check["annual_sharpe_unrounded"], 3) == swept["annual_sharpe"] and check["annual_sharpe_unrounded"] != swept["annual_sharpe"]
+    legs = check["legs_by_year_total_position_pct"]
+    for year, whole in legs["book"].items():
+        for key in ("price", "funding", "cost", "net"):
+            assert legs["long"][year][key] + legs["short"][year][key] == pytest.approx(whole[key], abs=0.03), (year, key)
+        assert whole["net"] == pytest.approx(whole["price"] + whole["funding"] - whole["cost"], abs=0.03)
+    assert all(legs[side][year]["funding"] > 0 for side in ("long", "short") for year in legs["book"]), \
+        "the long side is paid by its coins' shorts and the short side by its coins' longs"
+    assert set(check["row"]["years_total_position_pct"]) == set(legs["book"]) == {"2022", "2023"}
+    assert check["row"]["years_total_position_pct"]["2023"] == legs["book"]["2023"]["net"]
+    total = sum(v["net"] for v in legs["book"].values())
+    coins = check["coins"]
+    assert coins["net_total_position_pct"] == pytest.approx(total, abs=0.05) and coins["held"] == 16
+    assert coins["gainers"] + coins["losers"] <= 16 and len(coins["top"]) == sl.TIER_LEAD_TOP == len(coins["bottom"])
+    assert coins["top"][0][1] >= coins["top"][1][1] >= coins["bottom"][-1][1]
+    assert coins["top_share_of_net"]["1"] == pytest.approx(coins["top"][0][1] / coins["net_total_position_pct"], abs=0.01)
+    months = check["months"]
+    assert months["of"] == check["row"]["months"] and months["top"][0][1] >= months["bottom"][-1][1]
+    assert months["top_share_of_net"]["3"] == pytest.approx(sum(v for _, v in months["top"][:3]) / total, abs=0.01)
+    before = sum(v["price"] + v["funding"] for v in legs["book"].values())
+    received = sum(v["funding"] for v in legs["book"].values())
+    assert check["funding_share_of_return_before_costs"] == pytest.approx(received / before, abs=0.002)
+    assert check["carry_rule"] == {"share": 0.5, "funding_carried_it": received >= 0.5 * before}
+
+
+def test_the_tier_lead_check_reads_each_later_year_on_the_side_its_earlier_years_name(monkeypatch):
+    monkeypatch.setattr(sl, "TIER_SWEEP_MIN_MONTHS", 8)
+    monkeypatch.setattr(sl, "LATER_YEARS", (2022, 2023))
+    market, mids = _funded_world()
+    check = sl.tier_lead_check(market, "funding_30", LEAD_TEST_SPAN)
+    years = check["transfer"]["years"]
+    assert years["2022"] == {"decisions_before": 0, "long": None, "total_position_pct": None}, "nothing before the book's first year"
+    assert years["2023"]["long"] == "low" and years["2023"]["same_side_as_the_lead"] is True and years["2023"]["rank_correlation_before"] < 0
+    assert years["2023"]["total_position_pct"] == check["row"]["years_total_position_pct"]["2023"]
+    tier = sl.TierSweep(market, LEAD_TEST_SPAN)
+    read = sl.lab.variables()["funding_30"][1]
+    counted = [d for d in tier.ics(read) if d >= date(2022, 2, 1) and d + timedelta(days=8) <= date(2023, 1, 1)]
+    assert years["2023"]["decisions_before"] == len(counted) > 40, "only weeks that ended before the year began"
+    assert check["transfer"]["later_years"]["passes"] is False, "a year with no earlier years to name its side does not pass"
+    monkeypatch.setattr(sl, "LATER_YEARS", (2023,))
+    passing = sl.tier_lead_check(market, "funding_30", LEAD_TEST_SPAN)["transfer"]["later_years"]
+    assert passing["years"] == {"2023": years["2023"]["total_position_pct"]}
+    assert passing["passes"] == (years["2023"]["total_position_pct"] >= passing["floor_pct"])
+    # a lead registered on the side the earlier years do not name: the year is read on the side they do name
+    monkeypatch.setattr(sl, "TIER_LEADS", {"funding_30": {"long": "high"}})
+    wrong = sl.tier_lead_check(market, "funding_30", LEAD_TEST_SPAN)
+    flipped = wrong["transfer"]["years"]["2023"]
+    assert flipped["long"] == "low" and flipped["same_side_as_the_lead"] is False
+    assert flipped["total_position_pct"] == years["2023"]["total_position_pct"], "the other side's book, that year"
+    assert wrong["row"]["years_total_position_pct"]["2023"] != flipped["total_position_pct"]
+
+
+def test_the_tier_lead_check_lays_the_book_beside_the_closed_book_and_the_closed_funding_tails(monkeypatch):
+    monkeypatch.setattr(sl, "TIER_SWEEP_MIN_MONTHS", 8)
+    market, mids = _funded_world()
+    check = sl.tier_lead_check(market, "funding_30", LEAD_TEST_SPAN)
+    assert set(check["positions_beside"]) == {"momentum_30", "funding_7"} and check["closed_book"]["name"] == "momentum_30"
+    assert check["positions_beside"]["funding_7"]["median_cosine"] == pytest.approx(1.0), "a fixed rate ranks the same over 7 and 30 days"
+    assert abs(check["positions_beside"]["momentum_30"]["median_cosine"]) < 0.5 and check["closed_book"]["is_the_closed_book_again"] is False
+    assert check["positions_beside"]["momentum_30"]["decisions"] == check["decisions_with_a_book"] > 90
+    tails = check["closed_funding_tails"]
+    assert (tails["deep_threshold"], tails["hot_threshold"], tails["window_days"]) == (-0.005, 0.01, 7)
+    tier = sl.TierSweep(market, LEAD_TEST_SPAN)
+    weights = tier.weigher(sl.lab.variables()["funding_30"][1], -1)(market, (), date(2023, 6, 4), "x")
+    deep = sum(w for s, w in weights.items() if w > 0 and int(s[3:5]) <= 1)       # -0.7% and -0.56% a week
+    hot = sum(-w for s, w in weights.items() if w < 0 and int(s[3:5]) >= 13)      # 1.12%, 1.26% and 1.4% a week
+    assert tails["long_weight_in_deep_coins_median"] == pytest.approx(deep, abs=1e-4) and 0 < deep < 1
+    assert tails["short_weight_in_hot_coins_median"] == pytest.approx(hot, abs=1e-4) and 0 < hot < 1
+    assert check["on_bars_with_no_volume_total_position_pct"].keys() == {"traded"}
+    # the closed book itself, registered as a lead, is the closed book again
+    monkeypatch.setattr(sl, "TIER_LEADS", {"momentum_30": {"long": "low"}})
+    again = sl.tier_lead_check(market, "momentum_30", LEAD_TEST_SPAN)
+    assert again["positions_beside"]["momentum_30"]["median_cosine"] == pytest.approx(1.0) and again["closed_book"]["is_the_closed_book_again"] is True
+    # a coin whose bars stop trading: what the book makes on it from then is set apart
+    for day in list(market.bars[mids[0]]):
+        if day >= date(2023, 3, 1):
+            bar = market.bars[mids[0]][day]
+            market.bars[mids[0]][day] = xsb.Bar(open=bar.open, close=bar.close, quote_volume=0.0)
+    monkeypatch.setattr(sl, "TIER_LEADS", {"funding_30": {"long": "low"}})
+    apart = sl.tier_lead_check(market, "funding_30", LEAD_TEST_SPAN)["on_bars_with_no_volume_total_position_pct"]
+    assert set(apart) == {"no_volume", "traded"} and apart["no_volume"] != 0
+
+
+def test_the_tier_lead_command_takes_only_a_registered_lead(monkeypatch, capsys):
+    market, mids = _funded_world()
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(sl.lab, "hold", lambda cache, span=None, *, attach=True, flow=False: market)
+    assert sl.TIER_LEADS == {"funding_30": {"long": "low"}}, "the book the tier sweep read, and no variant of it"
+    assert sl.main(["tier-lead", "--only", "funding_7"]) == sl.EXIT_USAGE and sl.main(["tier-lead"]) == sl.EXIT_USAGE
+    capsys.readouterr()
+    monkeypatch.setattr(sl, "tier_lead_check", lambda m, name: {"lead": name})
+    assert sl.main(["tier-lead", "--only", "funding_30"]) == sl.EXIT_OK
+    out = json.loads(capsys.readouterr().out)
+    assert out["lead"] == "funding_30" and out["command"] == "tier-lead"
+    monkeypatch.setattr(sl.lab, "hold", lambda cache, span=None, *, attach=True, flow=False: None)
+    assert sl.main(["tier-lead", "--only", "funding_30"]) == sl.EXIT_BLOCKED
+
+
+# --- round 39: how large an effect the map's two doors can see --------------------------------------------------------
+
+def _door_frames(decisions=60, coins=20, *, offset=0):
+    """Made-up decisions: each coin's forward return is its own fixed draw plus a weekly one."""
+    rng = random_module.Random("door-test")
+    base = {f"C{i:02d}USDT": rng.gauss(0, 0.01) for i in range(coins + offset)}
+    frames = []
+    for k in range(decisions):
+        day = date(2022, 1, 2) + timedelta(days=7 * k)
+        frames.append((day, {s: b + rng.gauss(0, 0.05) for s, b in list(base.items())[offset:]}))
+    return {("top30", 7): frames}
+
+
+DOOR_LINES = {"7": {"largest_abs_t": 4.0, "largest_abs_spread_t": 3.5}, "28": {"largest_abs_t": 5.0, "largest_abs_spread_t": 4.0}}
+
+
+def test_a_planted_variable_is_its_size_of_the_forward_return_and_never_a_registered_variable():
+    returns = {"A": 0.10, "B": -0.20, "C": 0.0, "D": 0.05}
+    noise = {"A": 0.3, "B": -1.0, "C": 0.7, "D": 0.0}
+    assert sl.planted(returns, "rank", 0.0, noise) == noise, "size 0 is the noise alone"
+    full = sl.planted(returns, "rank", 1.0, noise)
+    assert sorted(full, key=full.get) == sorted(returns, key=returns.get), "size 1 orders coins as the return does"
+    assert sum(full.values()) == pytest.approx(0.0) and full["B"] == -max(full.values())
+    raw = sl.planted(returns, "raw", 1.0, noise)
+    assert raw["A"] - raw["C"] == pytest.approx(2 * (raw["D"] - raw["C"])), "the raw shape keeps the returns' spacing"
+    half = sl.planted(returns, "raw", 0.6, noise)
+    assert half["A"] == pytest.approx(0.6 * raw["A"] + 0.8 * noise["A"])
+    assert sl.planted({"A": 0.1, "B": 0.1}, "raw", 0.5, noise) == {}, "no spread in the returns, no signal"
+    registered = set(sl.lab.variables()) | set(sl.lab.controls())
+    assert not {n for n in registered if "door" in n or "plant" in n}
+    assert not any(row.startswith("door") for row in sl.TIER_SWEEP_OUT) and set(sl.DOOR_SHAPES) == {"rank", "raw"}
+
+
+def test_door_noise_is_redrawn_weekly_or_fixed_per_coin_and_a_seed_is_a_draw():
+    frames = _door_frames(decisions=5, coins=10)[("top30", 7)]
+    week = sl._door_noise("week", 0, frames, "t")
+    fixed = sl._door_noise("fixed", 0, frames, "t")
+    assert week[0] != week[1] and fixed[0] == fixed[1] == fixed[4]
+    assert sl._door_noise("week", 0, frames, "t") == week and sl._door_noise("week", 1, frames, "t") != week
+    assert sl._door_noise("fixed", 1, frames, "t") != fixed
+    later = _door_frames(decisions=5, coins=10, offset=3)[("top30", 7)]
+    moved = sl._door_noise("fixed", 0, later, "t")
+    assert all(moved[0][s] == fixed[0][s] for s in moved[0] if s in fixed[0]), "a coin keeps its draw whatever else is listed"
+
+
+def test_the_doors_see_a_large_planted_effect_and_not_a_planted_nothing():
+    frames = _door_frames()
+    out = sl.door_size(None, DOOR_LINES, sizes=(0.0, 0.05, 0.6), seeds=12, frames=frames)
+    rows = {(r["noise"], r["shape"], r["size"]): r for r in out["rows"]}
+    assert len(out["rows"]) == 2 * 2 * 3 and out["lines"]["7"] == {"largest_abs_t": 4.0, "largest_abs_spread_t": 3.5}
+    for kind in sl.DOOR_NOISE:
+        for shape in sl.DOOR_SHAPES:
+            nothing, big = rows[(kind, shape, 0.0)], rows[(kind, shape, 0.6)]
+            assert nothing["seeds"] == 12 and nothing["seen_either"] == 0.0
+            assert big["seen_ic"] == 1.0 and big["mean_rank_correlation"] > 0.3 and big["rank_book_gross_total_position_annual_pct"] > 0
+            assert abs(nothing["mean_rank_correlation"]) < 0.02
+    assert rows[("fixed", "rank", 0.0)]["median_persistence"] > 0.9 > 0.2 > abs(rows[("week", "rank", 0.0)]["median_persistence"])
+    assert rows[("week", "rank", 0.6)]["seen_rule"] == 0.0, "noise redrawn weekly never keeps its rank: the full rule cannot pass"
+    assert rows[("fixed", "rank", 0.0)]["seen_rule"] == 0.0
+    reading = out["reading"]
+    assert reading["planting_broken"] is False and reading["false_alarms"] == []
+    apart = sl.door_size(None, {**DOOR_LINES, "7": {"largest_abs_t": 100.0, "largest_abs_spread_t": 0.0}}, sizes=(0.6,), seeds=3, frames=frames)
+    assert all(r["seen_ic"] == 0.0 and r["seen_spread"] == 1.0 == r["seen_either"] for r in apart["rows"]), "each door reads its own line"
+    bracket = next(b for b in reading["brackets"] if (b["noise"], b["shape"]) == ("week", "rank"))
+    assert bracket["ic"]["seen"]["size"] == 0.6 and bracket["ic"]["below"]["size"] == 0.05
+    # the cell is the map's own, and the gross is L1's rank book on the planted values
+    noise = sl._door_noise("week", 0, frames[("top30", 7)], "top30:7")
+    day, returns = frames[("top30", 7)][3]
+    values = sl.planted(returns, "rank", 0.6, noise[3])
+    weights = sl.rank_weights(values, long_high=True)
+    assert sl._gross(values, returns) == pytest.approx(sum(w * returns[s] for s, w in weights.items()))
+
+
+def test_the_door_reading_brackets_each_door_and_stops_on_false_alarms():
+    def row(size, ic, spread=0.0, rule=0.0, either=None, seeds=100):
+        return {"tier": "top30", "horizon_days": 7, "noise": "fixed", "shape": "rank", "size": size, "seeds": seeds,
+                "seen_ic": ic, "seen_spread": spread, "seen_rule": rule, "seen_either": max(ic, spread) if either is None else either,
+                "mean_rank_correlation": size / 2, "tercile_spread_bps": size * 1000, "rank_book_gross_total_position_annual_pct": size * 100}
+    rows = [row(0.0, 0.0), row(0.03, 0.4), row(0.05, 0.79, 0.1), row(0.08, 0.8, 0.5, 0.8), row(0.1, 1.0, 0.95, 1.0)]
+    reading = sl.door_reading(rows)
+    b = reading["brackets"][0]
+    assert (b["ic"]["below"]["size"], b["ic"]["seen"]["size"]) == (0.05, 0.08), "0.79 is under the share, 0.8 is at it"
+    assert (b["spread"]["below"]["size"], b["spread"]["seen"]["size"]) == (0.08, 0.1)
+    assert b["ic"]["seen"]["rank_book_gross_total_position_annual_pct"] == 8.0
+    assert reading["planting_broken"] is False
+    never = sl.door_reading([row(0.0, 0.0), row(0.1, 0.5)])["brackets"][0]
+    assert never["ic"]["seen"] is None and never["ic"]["below"]["size"] == 0.1, "never seen: the largest size is the floor"
+    alarm = sl.door_reading([row(0.0, 0.04), row(0.1, 1.0)])
+    assert alarm["planting_broken"] is True and alarm["false_alarms"] == [["top30", 7, "fixed", "rank", 0.04]]
+    assert sl.door_reading([row(0.0, 0.03), row(0.1, 1.0)])["planting_broken"] is False, "three of a hundred is allowed"
+
+
+def test_the_door_frames_are_the_maps_decisions_and_refuse_a_market_past_the_span(monkeypatch):
+    market, mids = _mid_world()
+    frames = sl.door_frames(market, MID_TEST_SPAN)
+    assert set(frames) == {(t, h) for t in ("top30", "rank31_100") for h in (7, 28)}
+    days = [d for d, _ in frames[("rank31_100", 7)]]
+    assert days == [d for d in sl.lab.decisions(MID_TEST_SPAN, 7)], "every map decision on this tier has its sixteen coins"
+    day, returns = frames[("rank31_100", 7)][10]
+    assert set(returns) == set(mids) and returns[mids[0]] == sl.lab.forward_return(market, mids[0], day, 7)
+    assert [d for d, _ in frames[("rank31_100", 28)]] == sl.lab.decisions(MID_TEST_SPAN, 28)
+    with pytest.raises(ValueError, match="past the span"):
+        sl.door_frames(market, (date(2022, 1, 1), date(2022, 6, 30)))
+
+
+def test_the_door_command_reads_the_random_variables_lines_from_the_same_run(monkeypatch, capsys):
+    market, mids = _mid_world()
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setattr(sl.lab, "hold", lambda cache, span=None, *, attach=True, flow=False: market)
+    seen = {}
+    monkeypatch.setattr(sl.lab, "grid", lambda m, names: seen.setdefault("names", sorted(names)) and {"cells": []})
+    monkeypatch.setattr(sl.lab, "chance", lambda cells: DOOR_LINES)
+    monkeypatch.setattr(sl, "door_size", lambda m, lines: {"lines": lines, "rows": []})
+    assert sl.main(["door-size"]) == sl.EXIT_OK
+    out = json.loads(capsys.readouterr().out)
+    assert seen["names"] == sorted(sl.lab.controls()) and out["lines"] == DOOR_LINES and "calibration" in out["planted"]
+    monkeypatch.setattr(sl.lab, "hold", lambda cache, span=None, *, attach=True, flow=False: None)
+    assert sl.main(["door-size"]) == sl.EXIT_BLOCKED
+
+
+# --- round 40: ranks 101 and after, read by the map and by the tier sweep --------------------------------------------
+
+LOWER_TEST_SPAN = (date(2020, 1, 1), date(2021, 6, 30))
+
+
+def test_the_lower_tier_strikes_by_name_what_the_record_forbids_there_and_both_readers_use_one_list():
+    out, names = sl.lower_out(), sl.lower_names()
+    registered = sl.lab.variables()
+    assert set(out) | set(names) == set(registered) and not set(out) & set(names)
+    assert {"momentum_7", "momentum_30", "momentum_90", "funding_7", "funding_30"} <= set(out), "H-R1, H-R2, round 37's closed lead"
+    assert {n for n, (g, _) in registered.items() if g == "depth"} <= set(out)
+    positioning = {n for n, (g, _) in registered.items() if g == "positioning"}
+    assert positioning & set(out) == {"oi_growth_30", "ls_level_30"}, "H-M1's two stay struck (section 63)"
+    assert len(positioning - set(out)) == 9, "the other nine are read from this tier's own files"
+    assert {"vol_30", "beta_30", "spread_change_30", "trade_size_position_30"} <= set(out), "every tier's strikes hold here"
+    assert {"funding_change_30", "funding_position_30", "momentum_change_30", "residual_momentum_30", "listing_age",
+            "taker_buy_share_30", "premium_30", "spot_share_30"} <= set(names), "kin, built and named on the form"
+    assert all(out[n] == sl.lab.no_book(n, sl.LOWER_NAME) for n in out), "the map's no_book and the sweep's list are one"
+    assert sl.lower_refused_groups() == {"depth", "hourly"} and len(names) == 43, "no hourly bars below rank 100"
+    assert sl.lab.LOWER_TIER_NAME not in sl.lab.TIERS, "the mapped tiers are untouched"
+
+
+def test_the_lower_sweep_tier_holds_lower_tiers_coins_and_the_gate_reads_h_r1s_numbers(monkeypatch):
+    monkeypatch.setattr(sl, "LOWER_TIER_FROM", 4)
+    monkeypatch.setattr(sl, "LOWER_MIN_ACTIVE", 0)
+    market = _lower_market({f"LOW{i}USDT": (i - 4) / 1000 for i in range(9)})
+    tier = sl.lower_sweep_tier(market, LOWER_TEST_SPAN)
+    day = date(2021, 3, 7)
+    assert tier.members(day) == sl.LowerTier(market, LOWER_TEST_SPAN).at(day)[0] and tier.name == sl.LOWER_NAME
+    lower = sl.LowerTier(market, LOWER_TEST_SPAN)
+    assert tier.weigher(sl.skip_day_return, -1)(market, (), day, "x") == sl.lower_book(lower, sl.skip_day_return, -1)(market, (), day, "x")
+    record = sl.lower_run(market, LOWER_TEST_SPAN, nulls=1)                     # how H-R1 was read
+    gate = sl.lower_gate(market, LOWER_TEST_SPAN)
+    for key in ("annual_sharpe", "sum_pct", "months", "total_position_annual_pct", "clears_entry", "cost_pct", "funding_pct"):
+        assert gate[key] == record[key], key
+    assert gate["years_total_position_pct"] == record["years_total_position_pct"] and gate["sum_pct"] != 0
+
+
+def test_the_default_tier_sweep_and_grid_are_the_mapped_tiers():
+    market, mids = _mid_world()
+    assert set(sl.TierSweep(market, MID_TEST_SPAN).members(MID_DAY)) == set(mids)
+    names = {"momentum_30": sl.lab.variables()["momentum_30"]}
+    whole = sl.lab.grid(market, names, MID_TEST_SPAN)
+    tiers = sl.lab.tier_members(market, MID_TEST_SPAN)
+    given = {t: (lambda d, m=m: m.get(date(d.year, d.month, 1), ())) for t, m in tiers.items()}
+    assert sl.lab.grid(market, names, MID_TEST_SPAN, members=given) == whole, "passing the tiers changes nothing"
+    alone = sl.lab.grid(market, names, MID_TEST_SPAN, members={"rank31_100": given["rank31_100"]})
+    assert {c["tier"] for c in alone["cells"]} == {"rank31_100"}
+    assert [c for c in whole["cells"] if c["tier"] == "rank31_100"] == alone["cells"], "a tier's cells do not depend on the others"
+
+
+def test_coverage_stops_a_variable_that_has_values_mostly_on_coins_about_to_join_the_higher_tier(monkeypatch):
+    monkeypatch.setattr(sl, "LOWER_TIER_FROM", 4)
+    market = _lower_market()
+    tier = sl.lower_sweep_tier(market, LOWER_TEST_SPAN)
+    everywhere = lambda m, s, d: 1.0 if s.startswith("LOW") else None
+    rising = lambda m, s, d: 1.0 if s in ("LOW0USDT", "LOW1USDT") else None
+    monkeypatch.setattr(sl.xsb, "universes", lambda market, *, top_n, start, end, named=(): {
+        date(2020, m, 1) if m <= 12 else date(2021, m - 12, 1): ["BTCUSDT", "BIG0USDT", "BIG1USDT", "LOW0USDT"]
+        for m in range(1, 19)})
+    cover = sl.lower_coverage(market, {"all": ("g", everywhere), "rising": ("g", rising)}, LOWER_TEST_SPAN, tier=tier)
+    assert cover["all"]["stop"] is None and cover["all"]["share"] == 1.0 and cover["all"]["share_not_top_next_month"] == 1.0
+    assert cover["rising"]["share"] is None and "None" in cover["rising"]["stop"], "never ranks eight coins: no span, stopped"
+    monkeypatch.setattr(sl.xsb, "universes", lambda market, *, top_n, start, end, named=(): {
+        date(2020, m, 1) if m <= 12 else date(2021, m - 12, 1): ["BTCUSDT", "LOW0USDT", "LOW1USDT", "LOW2USDT"]
+        for m in range(1, 19)})
+    late = lambda m, s, d: 1.0 if d < date(2021, 1, 1) or s in ("LOW0USDT", "LOW1USDT", "LOW2USDT", "LOW3USDT", "LOW4USDT") else None
+    cover = sl.lower_coverage(market, {"late": ("g", late)}, LOWER_TEST_SPAN, tier=tier)["late"]
+    assert cover["share"] >= sl.LOWER_COVERAGE > cover["share_not_top_next_month"], cover
+    assert "not in the first" in cover["stop"], "the second share stops it on its own"
+
+
+def test_the_later_years_rule_names_each_side_from_the_years_before_and_never_drops_a_year(monkeypatch):
+    monkeypatch.setattr(sl, "LATER_YEARS", (2022, 2023, 2024))
+
+    class Stub:
+        def ics(self, read):
+            out = {date(2021, 9, 5) + timedelta(days=7 * k): -0.1 for k in range(10)}        # ten before 2022
+            out.update({date(2022, 1, 2) + timedelta(days=7 * k): 0.2 for k in range(52)})   # 2022 names "high"
+            return out
+
+        def monthly_rows(self, read, way, every=1):
+            assert every == 1
+            return {f"{y}-06": {"net": (0.2 if way > 0 else -0.2) * sl.bs.POSITION_TOTAL / 100 * 10}
+                    for y in (2022, 2023, 2024)}
+    months = [f"{y}-{m:02d}" for y in (2022, 2023, 2024) for m in range(1, 13)]
+    got = sl.tier_later(Stub(), None, months)
+    assert got["sides"]["2022"] == {"decisions_before": 10, "long": None} and got["years"]["2022"] == 0.0, "too few: zero, kept"
+    assert got["sides"]["2023"]["long"] == "high" and got["years"]["2023"] == pytest.approx(2.0)
+    assert set(got["years"]) == {"2022", "2023", "2024"} and got["passes"] is False, "mean 1.33 under the floor"
+
+
+def test_the_lower_reading_closes_a_survivor_that_fails_the_later_years():
+    null = {f"n{k}": {"ics": {"2021-10-03": 0.01}, "high": {"2021-10": -0.01, "2021-11": 0.0, "2021-12": -0.02},
+                      "low": {"2021-10": -0.01, "2021-11": -0.03, "2021-12": 0.0}} for k in range(30)}
+    body = {"group": "g", "start": "2021-10-01", "months": 3, "long": "high", "annual_sharpe": 5.0,
+            "total_position_annual_pct": 40.0, "clears_entry": True}
+    books = {"a": {**body, "later_years": {"passes": True}}, "b": {**body, "later_years": {"passes": False}}}
+    reading = sl.lower_sweep_reading(books, null)
+    assert reading["leads_before_later_years"] == ["a", "b"] and reading["leads"] == ["a"]
+    assert reading["closed_at_later_years"] == ["b"]
+
+
+def test_the_lower_tier_counts_carry_no_return(monkeypatch):
+    monkeypatch.setattr(sl, "LOWER_TIER_FROM", 4)
+    market = _lower_market()
+    names = {"momentum_change_30": sl.lab.variables()["momentum_change_30"]}
+    counts = sl.lower_tier_counts(market, names, LOWER_TEST_SPAN)
+    assert counts["returns_computed"] is False and counts["unfunded_share"] == pytest.approx(0.1)
+    assert set(counts["sweep"]["books"]["momentum_change_30"]["ranked_decisions_before"]) == {"2022", "2023", "2024"}
+    flat = json.dumps(counts)
+    assert "sharpe" not in flat and "_pct" not in flat
+
+
+def test_the_lower_axis_check_counts_only_once_the_weekly_series_give_the_recorded_maps_cells(monkeypatch):
+    """Round 57 (section 75): no axis check was recorded on ranks 101 and after, so the map is the door. The run
+    counts nothing until its weekly series give back every one-week cell of the group's recorded map; a struck
+    variable is read and named."""
+    class Liquid:                                     # every smaller coin passes the floor: the tier is the sixteen
+        def __init__(self, market): pass
+        def liquid(self, symbol, day): return True
+    monkeypatch.setattr(sl, "ListingPools", Liquid)
+    monkeypatch.setattr(sl, "LOWER_TIER_FROM", 30)
+    monkeypatch.setattr(sl.lab, "PLACEBO_AXES_BY_VARIABLE", 30)
+    market, mids = _mid_world()
+    names = {n: sl.lab.variables()[n] for n in ("momentum_30", "momentum_7", "vol_30")}
+    tier = sl.LowerTier(market, MID_TEST_SPAN)
+    assert set(tier.at(MID_DAY)[0]) == set(mids)
+    members = {sl.LOWER_NAME: lambda day: tier.at(day)[0]}
+    recorded = {"tier": sl.LOWER_NAME, "cells": sl.lab.grid(market, names, MID_TEST_SPAN, members=members)["cells"]}
+    out = sl.lower_axes(market, names, recorded, MID_TEST_SPAN)
+    assert "refused" not in out and out["door"]["one_week_cells_equal"] == 12 and out["placebos_per_test"] == 30
+    assert out == {**out, **sl.lab.axis_by_variable(market, names, MID_TEST_SPAN, members=members)}
+    assert set(out["struck"]) == set(names), "struck here, read and named"
+    moved = [{**c, "decisions": c["decisions"] + 1} if c["scenario"] != "all" and c["horizon_days"] == 7 else c
+             for c in recorded["cells"]]
+    refused = sl.lower_axes(market, names, {**recorded, "cells": moved}, MID_TEST_SPAN)
+    assert refused["refused"].startswith("the weekly series") and "counts" not in refused and refused["cells_differ"] == 9
+    fewer = [c for c in recorded["cells"] if c["variable"] != "vol_30"]
+    assert sl.lower_axes(market, names, {**recorded, "cells": fewer}, MID_TEST_SPAN)["refused"].startswith("the variables")
+    assert sl.lower_axes(market, {}, {"tier": sl.LOWER_NAME, "cells": []}, MID_TEST_SPAN)["refused"].startswith("the variables"), \
+        "nothing read is no door"
+    assert "refused" in sl.lower_axes(market, names, {**recorded, "tier": "rank31_100"}, MID_TEST_SPAN)
+    # Round 59 (section 77): some of the group's variables, door on their own cells; the rest of the record is not read.
+    two = {n: names[n] for n in ("momentum_7", "vol_30")}
+    part = sl.lower_axes(market, two, recorded, MID_TEST_SPAN)
+    assert "refused" not in part and part["door"]["one_week_cells_equal"] == 8
+    assert part["counts"] == [row for row in out["counts"] if row[0] in two], "a test's counts do not depend on the others run"
+    other = {n: v for n, v in recorded.items()} | {"cells": [c for c in recorded["cells"] if c["variable"] != "vol_30"]}
+    assert sl.lower_axes(market, two, other, MID_TEST_SPAN)["refused"].startswith("the variables"), "a name the map lacks"
+    shifted = [{**c, "decisions": c["decisions"] + 1} if c["variable"] == "momentum_30" else c for c in recorded["cells"]]
+    assert "refused" not in sl.lower_axes(market, two, {**recorded, "cells": shifted}, MID_TEST_SPAN), "an unnamed variable's cells are not its door"
+
+
+def test_the_lower_axis_command_needs_the_groups_recorded_map(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setenv("RESEARCH_CACHE", str(tmp_path))
+    assert sl.main(["lower-axes", "--only", "funding"]) == sl.EXIT_USAGE
+    other = tmp_path / "map.json"
+    other.write_text(json.dumps({"command": "lower-map", "only": ["premium"]}), encoding="utf-8")
+    assert sl.main(["lower-axes", "--only", "funding", "--check", str(other)]) == sl.EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "needs --check" in err and "not this group's lower-map file" in err
+    flow = tmp_path / "flow.json"
+    flow.write_text(json.dumps({"command": "lower-map", "only": ["spot_flow"]}), encoding="utf-8")
+    assert sl.main(["lower-axes", "--only", "spot_flow", "--check", str(flow), "--names", "spot_taker_share_7,not_a_variable"]) == sl.EXIT_USAGE
+    assert "--names must list" in capsys.readouterr().err, "round 59: the names reach pick_names before anything loads"
+
+
+def test_the_lower_commands_refuse_struck_groups(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setenv("RESEARCH_CACHE", str(tmp_path))
+    for command in ("lower-counts", "lower-map", "lower-sweep", "lower-gate"):
+        assert sl.main([command, "--only", "positioning"]) == sl.EXIT_BLOCKED, "no sealed fetch: nothing is read"
+        assert sl.main([command, "--only", "depth"]) == sl.EXIT_USAGE
+    assert sl.main(["lower-sweep", "--only", "positioning,funding"]) == sl.EXIT_USAGE, "positioning is read alone"
+    err = capsys.readouterr().err
+    assert "not sealed" in err and "struck on this tier" in err
+    assert sl.main(["lower-counts", "--only", "null"]) == sl.EXIT_USAGE
+
+
+# --- round 41: the two map leads' overlap with what the record strikes there ----------------------------------------
+
+def test_the_lead_overlap_lays_each_lead_beside_every_struck_book_with_values_and_h_r1(monkeypatch):
+    monkeypatch.setattr(sl, "LOWER_TIER_FROM", 4)
+    moves = {f"LOW{i}USDT": (i - 4) / 1000 for i in range(9)}
+    market = _lower_market(moves)
+    registered = sl.lab.variables()
+    # The beta-netted month needs a moving reference coin; this market's is flat, so the lead reads the plain month.
+    monkeypatch.setattr(sl.lab, "variables", lambda: {**registered, "residual_momentum_30": registered["momentum_30"]})
+    got = sl.lower_lead_overlap(market, LOWER_TEST_SPAN)
+    assert got["returns_computed"] is False and got["threshold"] == 0.5
+    struck = {n for n, (g, _) in sl.lab.variables().items()
+              if n in sl.lower_out() and g not in ("positioning", "depth", "hourly")}     # no values on this tier
+    assert set(got["compared"]) == struck | {"H-R1"} and {"vol_30", "momentum_30", "funding_30", "extreme_days_30"} <= struck
+    res = got["leads"]["residual_momentum_30"]
+    assert res["long"] == "low" and res["beside"]["momentum_30"]["decisions"] > 0
+    # Every coin drifts at its own steady rate, so the month's return and the reversal rank the coins alike:
+    # long the low month is long the low week, which is H-R1's side, and is momentum_30's high side reversed.
+    assert res["beside"]["H-R1"]["median_cosine"] > 0.5 and "H-R1" in res["closed_by"]
+    assert res["beside"]["momentum_30"]["median_cosine"] < -0.5 and "momentum_30" in res["closed_by"], "the size is read, not the sign"
+    assert set(got["leads"]) == {"residual_momentum_30", "listing_age"} and got["leads"]["listing_age"]["long"] == "high"
+
+
+# --- H-A1: listing age on ranks 101+, held four weeks ------------------------------------------------------------------
+
+def test_the_no_name_twin_gives_tied_coins_their_groups_mean_weight():
+    values = {"A": 18.5, "B": 18.5, "C": 18.5, **{f"X{k:02d}": float(k) for k in range(25)}}
+    weights = sl.rank_weights(values, long_high=True)
+    assert weights["C"] > weights["B"] > weights["A"], "L1 puts tied coins in name order"
+    twin = sl.tie_mean(weights, values)
+    assert twin["A"] == twin["B"] == twin["C"] == pytest.approx((weights["A"] + weights["B"] + weights["C"]) / 3)
+    assert twin["X24"] == weights["X24"] and sum(twin.values()) == pytest.approx(sum(weights.values()))
+
+
+def test_a_four_week_book_trades_only_on_the_maps_28_day_decisions(monkeypatch):
+    monkeypatch.setattr(sl, "LOWER_TIER_FROM", 4)
+    market = _lower_market({f"LOW{i}USDT": (i - 4) / 1000 for i in range(9)})
+    tier = sl.lower_sweep_tier(market, LOWER_TEST_SPAN)
+    read = sl.lab.variables()["momentum_30"][1]
+    sim = sl.simulate_held(market, sl.bs.CADENCE, {}, start=LOWER_TEST_SPAN[0], end=LOWER_TEST_SPAN[1],
+                           weigher=tier.weigher(read, 1), unit_of=sl.listing_unit, every=sl.HA1_EVERY)
+    traded = {d - timedelta(days=1) for d, row in sim["daily"].items() if row.get("cost") and d < LOWER_TEST_SPAN[1]}
+    assert traded and traded <= set(sl.lab.decisions(LOWER_TEST_SPAN, 28)) | set(sl.ha1_days(tier))
+    assert all(sl.is_decision(sl.bs.CADENCE, d, 4) for d in traded)
+    assert {d for d in sl.lab.decisions(LOWER_TEST_SPAN, 28) if d in set(tier.days)} <= set(sl.ha1_days(tier))
+    assert all(sl.is_decision(sl.bs.CADENCE, d, 4) for d in sl.ha1_days(tier)), "the map's 28-day calendar"
+    weekly = tier.monthly_rows(read, 1)
+    assert tier.monthly_rows(read, 1, every=1) == weekly != tier.monthly_rows(read, 1, every=4)
+
+
+def test_the_ha1_counts_carry_no_return_and_stop_without_the_later_years(monkeypatch):
+    monkeypatch.setattr(sl, "LOWER_TIER_FROM", 4)
+    market = _lower_market()
+    counts = sl.ha1_counts(market, LOWER_TEST_SPAN)
+    assert counts["returns_computed"] is False and counts["stop"] and "2022, 2023, 2024" in counts["stop"][0]
+    year = counts["by_year"]["2021"]
+    assert year["decisions_with_a_book"] > 0 and year["tied_share_mean"] == 1.0, "every coin starts at the archive's first day"
+    assert year["long_weight_on_tied_mean"] == 1.0
+    flat = json.dumps(counts)
+    assert "sharpe" not in flat and "_pct" not in flat
+    assert sl.ha1_run(market, LOWER_TEST_SPAN, nulls=1)["refused"] == counts["stop"]
+
+
+def test_the_ha1_run_reads_four_rungs_and_the_twin_over_the_whole_span(monkeypatch):
+    monkeypatch.setattr(sl, "LOWER_TIER_FROM", 4)
+    monkeypatch.setattr(sl, "HA1_MIN_ACTIVE", 0)
+    monkeypatch.setattr(sl, "LATER_YEARS", (2021,))
+    market = _lower_market({f"LOW{i}USDT": (i - 4) / 1000 for i in range(9)})
+    for i in range(9):                                   # give the coins different listing days
+        bars = market.bars[f"LOW{i}USDT"]
+        for d in [d for d in bars if d < date(2020, 1, 1) + timedelta(days=10 * i)]:
+            del bars[d]
+    run = sl.ha1_run(market, LOWER_TEST_SPAN, nulls=3)
+    assert set(run["rungs"]) == {"2a_entry", "2b_later_years", "2c_beside_null_books", "3_stability", "no_name_twin_entry"}
+    assert run["months"] == 18 and set(run["years_total_position_pct"]) == {"2020", "2021"}, "every month of the span"
+    assert run["rungs"]["2c_beside_null_books"]["null_books"] == 3 and sum(run["null_sides"].values()) == 3
+    assert run["rungs"]["2b_later_years"]["sides"]["2021"]["decisions_before"] >= 0
+    assert run["twin"]["annual_sharpe"] is not None and run["hypothesis"] == "H-A1" and run["reading"] in ("passes", "closed")
+
+
+def test_ha1_passes_only_with_every_rung_and_the_twin():
+    good = {"2a_entry": True, "2b_later_years": {"passes": True}, "2c_beside_null_books": {"passes": True},
+            "3_stability": {"passes": True}, "no_name_twin_entry": True}
+    assert sl.ha1_passes(good)
+    for key in good:
+        bad = dict(good)
+        bad[key] = False if isinstance(good[key], bool) else {"passes": False}
+        assert not sl.ha1_passes(bad), key
+
+
+# --- round 42: the sweep's sensitivity --------------------------------------------------------------------------------
+
+def test_a_planted_sweep_variable_is_its_size_of_next_weeks_rank_and_noise_fixed_per_coin(monkeypatch):
+    market, mids = _mid_world()
+    tier = sl.TierSweep(market, MID_TEST_SPAN)
+    nothing = sl.sens_planted(tier, 0.0, 0)
+    values = {s: nothing(market, s, MID_DAY) for s in mids}
+    assert {s: nothing(market, s, MID_DAY + timedelta(days=21)) for s in mids} == values, "size 0 is the noise, fixed per coin"
+    fixed = tier.fixed("tier:0")
+    assert values != {s: fixed(market, s, MID_DAY) for s in mids}, "its noise is not a stored null book's"
+    assert {s: sl.sens_planted(tier, 0.0, 1)(market, s, MID_DAY) for s in mids} != values, "a seed is a draw"
+    assert nothing(market, mids[0], date(2021, 1, 1)) is None, "no value where the coin has no bar"
+    whole = sl.sens_planted(tier, 1.0, 0)
+    ics = tier.ics(whole)
+    assert ics and all(ic == pytest.approx(1.0) for ic in ics.values()), "size 1 is next week's rank itself"
+    assert all(abs(ic) < 0.9 for ic in tier.ics(nothing).values())
+    lone = tier.forward(MID_DAY)
+    some = dict(list(lone.items())[:5])
+    monkeypatch.setattr(tier, "forward", lambda day: some)
+    half = sl.sens_planted(tier, 0.6, 0)
+    missing = next(s for s in mids if s not in some)
+    assert half(market, missing, MID_DAY) == pytest.approx(0.8 * sl.random.Random(f"plant:0:{missing}").gauss(0.0, 1.0)), \
+        "a coin with no next-week return is its noise alone"
+    assert set(sl.lab.variables()).isdisjoint({"planted", "plant"}), "never registered"
+
+
+def test_the_sensitivity_lead_is_the_sweeps_rule_for_one_book_in_its_registered_family():
+    mid, lower = sl.SENS_FAMILIES["mid"], sl.SENS_FAMILIES["lower"]
+    assert (mid["books"], mid["start"], mid["later_years"]) == (36, date(2021, 1, 1), False)
+    assert (lower["books"], lower["start"], lower["later_years"]) == (24, date(2021, 9, 1), True)
+    assert mid["tier"] == sl.TIER_SWEEP_TIER and lower["tier"] == sl.LOWER_NAME
+    book = {"clears_entry": True}
+    assert sl.sens_lead(book, 1 / 601, mid) and not sl.sens_lead(book, 2 / 601, mid), "ranks 31-100: above every null"
+    passed = {"clears_entry": True, "later_years": {"passes": True}}
+    assert sl.sens_lead(passed, 2 / 601, lower) and not sl.sens_lead(passed, 3 / 601, lower), "ranks 101+: one null may stand above"
+    assert not sl.sens_lead({"clears_entry": True, "later_years": {"passes": False}}, 1 / 601, lower)
+    assert not sl.sens_lead({"clears_entry": True}, 1 / 601, lower), "the later-years rule is read there"
+    assert not sl.sens_lead({"clears_entry": False}, 1 / 601, mid)
+    assert sl.sens_bracket({0.0: 0.0, 0.05: 0.5, 0.08: 0.8, 0.1: 1.0}) == {"under": 0.05, "at_or_over": 0.08}
+    assert sl.sens_bracket({0.0: 0.0, 0.05: 0.79}) == {"under": 0.05, "at_or_over": None}
+    assert sl.sens_bracket({0.0: 0.9, 0.05: 1.0}) == {"under": None, "at_or_over": 0.0}
+
+
+def test_the_sensitivity_run_checks_the_stored_nulls_and_stops_on_false_alarms(monkeypatch):
+    market, mids = _mid_world()
+    tier = sl.TierSweep(market, MID_TEST_SPAN)
+    null = sl.tier_sweep_null(market, MID_TEST_SPAN, nulls=10)
+    assert sl.sens_null_check(tier, null) == []
+    broken = json.loads(json.dumps(null))
+    broken["tier:2"]["high"]["2022-03"] += 0.01
+    assert sl.sens_null_check(tier, broken) == ["tier:2"]
+    family = {**sl.SENS_FAMILIES["mid"], "books": 1, "start": date(2022, 2, 1)}
+    monkeypatch.setattr(sl, "SENS_FAMILIES", {"mid": family})
+    assert sl.sens_run(market, "mid", broken, MID_TEST_SPAN, sizes=(0.0,), seeds=1)["refused"].startswith("stored null books differ")
+    run = sl.sens_run(market, "mid", null, MID_TEST_SPAN, sizes=(0.0, 1.0), seeds=3)
+    assert run["months"] == 11 and run["null_books"] == 10 and run["threshold"] == pytest.approx(0.1)
+    whole = run["sizes"]["1.0"]
+    assert whole["entry_share"] == 1.0 == whole["lead_share"] and whole["median"]["mean_rank_correlation"] == pytest.approx(1.0)
+    assert len(whole["turnover"]) == 3 and run["own_start_later"] == []
+    assert run["false_alarm"]["p_under_0.05_at_zero"] == 0 and run["false_alarm"]["stop"] and run["brackets"] is None, \
+        "with ten nulls no p is under 0.05: the gate cannot be met, so nothing is bracketed"
+    monkeypatch.setattr(sl, "SENS_FALSE_ALARM", (0, 10))
+    again = sl.sens_run(market, "mid", null, MID_TEST_SPAN, sizes=(0.0, 1.0), seeds=3)
+    assert again["brackets"]["lead_share"]["at_or_over"] == 1.0
+    flat = json.dumps(again)
+    assert "momentum" not in flat and "funding_30" not in flat, "no real variable is read"
+
+
+def test_the_sensitivity_command_takes_a_family_and_its_own_null_file(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    assert sl.main(["sens"]) == sl.EXIT_USAGE
+    wrong = tmp_path / "null.json"
+    wrong.write_text(json.dumps({"tier": sl.LOWER_NAME, "null": {}}), encoding="utf-8")
+    assert sl.main(["sens", "--family", "mid", "--null", str(wrong)]) == sl.EXIT_USAGE, "another tier's nulls"
+    monkeypatch.setattr(sl.lab, "hold", lambda cache, span=None, *, attach=True, flow=False: None)
+    assert sl.main(["sens", "--family", "lower", "--null", str(wrong)]) == sl.EXIT_BLOCKED
+
+
+# --- round 43: a scenario effect, read by the scenario cells and by the axis check ---------------------------------------
+
+def test_the_split_share_is_the_axis_checks_separation_and_its_sums_path_is_the_same_number():
+    rng = random_module.Random("split")
+    days = [date(2022, 1, 2) + timedelta(days=7 * k) for k in range(90)]
+    labels = [None] * 10 + [("a" if (k // 7) % 3 == 0 else "b" if (k // 7) % 3 == 1 else "c") for k in range(80)]
+    x = [rng.gauss(0, 0.1) for _ in days]
+    groups = [[i for i, s in enumerate(labels) if s == st] for st in ("a", "b", "c")]
+    exact = sl.lab.separation({("v", "t"): dict(zip(days, x))}, dict(zip(days, labels)))
+    assert sl.split_share(x, groups) == pytest.approx(exact, rel=1e-12)
+    labelled = [x[i] for g in groups for i in g]
+    whole = (sum(labelled), sum(v * v for v in labelled), len(labelled))
+    assert sl._split_share_full(x.__getitem__, groups, whole) == pytest.approx(exact, rel=1e-9)
+    holes = list(x)
+    holes[12] = holes[40] = None
+    with_holes = sl.lab.separation({("v", "t"): {d: v for d, v in zip(days, holes) if v is not None}}, dict(zip(days, labels)))
+    assert sl.split_share(holes, groups) == pytest.approx(with_holes, rel=1e-12)
+    thin = [g[:5] if i == 2 else g for i, g in enumerate(groups)]
+    assert sl.split_share(x, thin) == pytest.approx(sl.split_share(x, groups[:2]), rel=1e-12), "a thin state is left out"
+
+
+def test_the_axis_placebos_are_the_checks_own_and_a_test_reads_them_the_same_way_fast_or_slow():
+    real = [None] * 5 + ["hi"] * 8 + ["lo"] * 9 + ["hi"] * 7 + ["lo"] * 12 + ["hi"] * 9 + ["lo"] * 10
+    placebos = sl.axis_placebos(real, "vol", 30)
+    for k in (0, 7, 29):
+        shuffled = sl.lab.shuffled_spells(real, f"{sl.lab.SPEC}|axis|vol|{k}")
+        assert [list(g) for g in placebos[k]] == [[i for i, s in enumerate(shuffled) if s == st] for st in ("hi", "lo")]
+    assert all(len(p[0]) == real.count("hi") and len(p[1]) == real.count("lo") for p in placebos)
+    assert sl.axis_carrier(real) == "hi" and sl.axis_carrier([None, "b", "a"]) == "a" and sl.axis_carrier([None]) is None
+    assert sl.axis_planted_size("hi", "hi", "flip", 0.1) == 0.1 and sl.axis_planted_size("lo", "hi", "flip", 0.1) == -0.1
+    assert sl.axis_planted_size("lo", "hi", "one", 0.1) == 0.0 and sl.axis_planted_size(None, "hi", "flip", 0.1) == 0.0
+    rng = random_module.Random("axis-test")
+    x = [rng.gauss(0.3 if s == "hi" else 0.0, 0.1) for s in real]
+    fast = sl.axis_test(x, real, placebos)
+    assert fast["counted"] == 30 and fast["p"] == pytest.approx(1 / 31), "a large state difference beats every placebo"
+    groups = [[i for i, s in enumerate(real) if s == st] for st in ("hi", "lo")]
+    actual = sl.split_share(x, groups)
+    slow_above = sum(1 for p in placebos if sl.split_share(x, p) >= actual - 1e-12)
+    assert fast["p"] == (1 + slow_above) / 31
+    x[3] = None                                         # an unlabelled decision: still the fast path
+    x[8] = None                                         # a labelled one missing: the slow path, same rule
+    slow = sl.axis_test(x, real, placebos)
+    assert slow["counted"] == 30 and slow["p"] == pytest.approx(1 / 31)
+
+
+def _axis_world(monkeypatch, decisions=80):
+    frames = _door_frames(decisions=decisions, coins=20)[("top30", 7)]
+    days = [d for d, _ in frames]
+    labels = {d: ({} if k < 10 else {"vol": "high" if ((k - 10) // 7) % 2 == 0 or k >= decisions - 4 else "low"}) for k, d in enumerate(days)}
+    monkeypatch.setattr(sl.lab, "decisions", lambda span, horizon: days)
+    monkeypatch.setattr(sl.lab, "tier_members", lambda market, span: {"top30": {}})
+    monkeypatch.setattr(sl.lab, "scenario_labels", lambda market, monthly, ds, span: {d: labels[d] for d in ds})
+    return frames
+
+
+def test_the_axis_power_reads_a_scenario_effect_by_the_cells_and_by_the_axis_check(monkeypatch):
+    frames = _axis_world(monkeypatch)
+    out = sl.axis_power(None, "top30", DOOR_LINES, sizes=(0.0, 0.6), seeds=4, axes=("vol",), placebos=50, frames=frames)
+    rows = {(r["shape"], r["size"]): r for r in out["rows"]}
+    assert out["carriers"] == {"vol": "low"} and out["states"]["vol"] == {"None": 10, "high": 39, "low": 31}
+    assert out["threshold"] == pytest.approx(0.10 / 642) and out["placebos_per_test"] == 50
+    for shape in sl.AXIS_POWER_SHAPES:
+        assert rows[(shape, 0.0)]["cell_rule_share"] == 0.0 and rows[(shape, 0.0)]["wake_share"] == 0.0
+        assert rows[(shape, 0.6)]["cell_rule_share"] == 1.0 and rows[(shape, 0.6)]["median_carrier_ic"] > 0.3
+        assert rows[(shape, 0.6)]["wake_share"] == 0.0, "fifty placebos cannot reach the family's first threshold"
+    assert rows[("one", 0.0)]["median_separation"] == rows[("flip", 0.0)]["median_separation"], "size 0 is one series"
+    monkeypatch.setattr(sl, "AXIS_POWER_FAMILY", 1)
+    loose = sl.axis_power(None, "top30", DOOR_LINES, sizes=(0.0, 0.6), seeds=4, axes=("vol",), placebos=50, frames=frames)
+    flip = next(r for r in loose["rows"] if (r["shape"], r["size"]) == ("flip", 0.6))
+    assert flip["wake_share"] == 1.0, "a large flip beats every placebo"
+    bracket = next(b for b in loose["reading"]["brackets"] if b["shape"] == "flip")
+    assert bracket["wake_share"] == {"under": 0.0, "at_or_over": 0.6} and bracket["order"] == "same"
+
+
+def test_the_axis_power_reading_orders_the_two_brackets_and_stops_on_false_alarms():
+    def row(axis, size, wake, rule, p05=5):
+        return {"axis": axis, "shape": "one", "size": size, "wake_share": wake, "cell_rule_share": rule,
+                "cell_t_alone_share": rule, "p_under_0.05": p05}
+    rows = [row("vol", 0.0, 0.0, 0.0), row("vol", 0.05, 0.3, 0.8), row("vol", 0.1, 0.9, 1.0),
+            row("heat", 0.0, 0.0, 0.0), row("heat", 0.05, 0.85, 0.2), row("heat", 0.1, 1.0, 0.5)]
+    reading = sl.axis_power_reading(rows)
+    by = {b["axis"]: b for b in reading["brackets"]}
+    assert by["vol"]["order"] == "cells_first" and by["vol"]["cell_rule_share"] == {"under": 0.0, "at_or_over": 0.05}
+    assert by["heat"]["order"] == "axis_only" and by["heat"]["cell_rule_share"] == {"under": 0.1, "at_or_over": None}
+    assert reading["stop"] is False
+    alarm = sl.axis_power_reading([row("vol", 0.0, 0.0, 0.0, p05=13), row("vol", 0.1, 1.0, 1.0)])
+    assert alarm["stop"] and alarm["false_alarm_axes"] == ["vol"] and alarm["brackets"] is None
+    assert sl.axis_power_reading([row("vol", 0.0, 0.0, 0.0, p05=12)])["stop"] is False
+
+
+def test_the_axis_power_command_takes_a_tier_and_holds_the_maps_line_to_the_record(monkeypatch, capsys):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    assert sl.main(["axis-power"]) == sl.EXIT_USAGE
+    market, mids = _mid_world()
+    monkeypatch.setattr(sl, "SPAN", MID_TEST_SPAN)
+    monkeypatch.setattr(sl.lab, "hold", lambda cache, span=None, *, attach=True, flow=False: market)
+    monkeypatch.setattr(sl.lab, "grid", lambda market, names, span=None, **kw: {"cells": []})
+    monkeypatch.setattr(sl.lab, "chance", lambda cells: {"7": {"largest_abs_t": 4.1}, "28": {"largest_abs_t": 5.0}})
+    called = []
+    monkeypatch.setattr(sl, "axis_power", lambda *a, **k: called.append(1))
+    assert sl.main(["axis-power", "--tier", "top30"]) == sl.EXIT_BLOCKED and not called, "another line: nothing is read"
+    assert "not the record" in capsys.readouterr().out
+
+
+def test_a_scenario_cell_meets_the_lead_rule_only_over_the_line_steady_and_with_its_all_weeks_sign():
+    cells = {"up": {"t": 5.0, "mean_rank_correlation": 0.08}, "down": {"t": -4.5, "mean_rank_correlation": -0.06},
+             "thin": {"decisions": 12, "spells": 2, "too_few": True}}
+    shown, over, rule = sl.axis_cell_rule(cells, {"mean_rank_correlation": -0.01, "t": -0.3}, 0.9, 4.30)
+    assert set(shown) == {"up", "down"} and over == {"up", "down"}
+    assert rule == {"down"}, "the up state's sign is not its all-weeks cell's"
+    assert sl.axis_cell_rule(cells, {"mean_rank_correlation": 0.01}, 0.9, 4.30)[2] == {"up"}
+    assert sl.axis_cell_rule(cells, {"mean_rank_correlation": 0.01}, 0.4, 4.30)[2] == set(), "a rank that does not keep"
+    assert sl.axis_cell_rule(cells, {"mean_rank_correlation": 0.01}, None, 4.30)[2] == set()
+    assert sl.axis_cell_rule(cells, {"too_few": True}, 0.9, 4.30)[2] == set()
+    assert sl.axis_cell_rule(cells, {"mean_rank_correlation": 0.01}, 0.9, 4.6)[1] == {"up"}, "|t| strictly over the line"
+
+
+def test_an_axis_test_on_a_tier_with_missing_decisions_takes_the_sums_path_and_gives_the_slow_paths_p():
+    real = [None] * 5 + (["hi"] * 6 + ["lo"] * 6) * 8
+    placebos = sl.axis_placebos(real, "heat", 40)
+    rng = random_module.Random("cut")
+    x = [rng.gauss(0.05 if s == "hi" else 0.0, 0.1) for s in real]
+    for i in range(5, 30):                          # the tier's first labelled decisions have no value
+        x[i] = None
+    base = {i for i, v in enumerate(x) if v is not None}
+    cut = (frozenset(i for i in base if real[i] is not None),
+           [[[i for i in g if i in base] for g in p] for p in placebos])
+    fast = sl.axis_test(x, real, placebos, cut=cut)
+    slow = sl.axis_test(x, real, placebos)
+    assert fast["counted"] == slow["counted"] == 40 and fast["p"] == slow["p"]
+    assert fast["separation"] == pytest.approx(slow["separation"], rel=1e-9)
+    calls = []
+    original = sl.split_share
+    monkey = lambda xs, gs: calls.append(1) or original(xs, gs)        # noqa: E731
+    sl.split_share, saved = monkey, sl.split_share
+    try:
+        sl.axis_test(x, real, placebos, cut=cut)
+        thin_free = sum(1 for p in cut[1] if all(len(g) >= sl.lab.MIN_DECISIONS for g in p))
+        assert len(calls) == 1 + (40 - thin_free), "the real axis once, then only the placebos with a thin state"
+        calls.clear()
+        other = list(x)
+        other[40] = None                            # a series with values elsewhere than the cut: the slow path
+        sl.axis_test(other, real, placebos, cut=cut)
+        assert len(calls) == 41
+    finally:
+        sl.split_share = saved
+
+
+def test_a_placebo_left_with_a_thin_state_after_the_cut_is_read_as_the_slow_path_reads_it():
+    real = [None] * 5 + (["hi"] * 3 + ["lo"] * 7) * 9
+    placebos = sl.axis_placebos(real, "breadth", 200)
+    rng = random_module.Random("thin")
+    x = [rng.gauss(0.04 if s == "hi" else 0.0, 0.1) for s in real]
+    for i in range(5, 20):
+        x[i] = None
+    base = {i for i, v in enumerate(x) if v is not None}
+    cut = (frozenset(i for i in base if real[i] is not None),
+           [[[i for i in g if i in base] for g in p] for p in placebos])
+    thin = sum(1 for p in cut[1] if any(len(g) < sl.lab.MIN_DECISIONS for g in p))
+    assert 0 < thin < 200, "some placebos keep under twenty of a state after the cut"
+    fast, slow = sl.axis_test(x, real, placebos, cut=cut), sl.axis_test(x, real, placebos)
+    assert fast["counted"] == slow["counted"] and fast["p"] == slow["p"]
+
+
+# --- round 45: positioning on ranks 101+, from a fetch of its own -------------------------------------------------------
+
+def _metrics_zip(path, day, ls=1.0, oi=100.0):
+    """A day's metrics file with every five-minute row filled."""
+    import zipfile as zf
+    rows = ["create_time,symbol,sum_open_interest,sum_open_interest_value,count_toptrader_long_short_ratio,"
+            "sum_toptrader_long_short_ratio,count_long_short_ratio,sum_taker_long_short_vol_ratio"]
+    for k in range(288):
+        stamp = f"{day.isoformat()} {k // 12:02d}:{(k % 12) * 5:02d}:00"
+        rows.append(f"{stamp},X,{oi},1,1,{ls},{ls},{ls}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zf.ZipFile(path, "w") as archive:
+        archive.writestr(path.stem + ".csv", "\n".join(rows) + "\n")
+
+
+def test_the_lower_metrics_plan_asks_for_every_held_coins_window_not_already_in_the_shared_root(monkeypatch, tmp_path):
+    monkeypatch.setattr(sl, "LOWER_TIER_FROM", 4)
+    monkeypatch.setattr(sl, "METRICS_FIRST_DAY", date(2020, 3, 1))
+    market = _lower_market()
+    shared = tmp_path / "archive-metrics"
+    have = sl.lab.ba.daily_name("LOW0USDT", "metrics", date(2021, 6, 1))
+    _metrics_zip(shared / "metrics" / "LOW0USDT" / have, date(2021, 6, 1))
+    gone = sl.lab.ba.daily_name("LOW1USDT", "metrics", date(2021, 6, 2))
+    (shared / "missing.json").write_text(json.dumps({"LOW1USDT": [gone]}))
+    plan = sl.lower_metrics_plan(market, shared, LOWER_TEST_SPAN)
+    assert set(plan["held_symbols"]) == {f"LOW{i}USDT" for i in range(9)}, "no funding or too thin: never held"
+    assert plan["in_shared_root"] == 1 and plan["absent_in_shared_root"] == 1
+    assert plan["to_fetch"] == plan["symbol_days"] - 2
+    asked = {(s, f, l) for s, f, l in plan["spans"]}
+    assert all(f[:7] == l[:7] and f <= l for _, f, l in asked), "a span never crosses a month"
+    days = {(s, date.fromisoformat(f) + timedelta(days=k)) for s, f, l in plan["spans"]
+            for k in range((date.fromisoformat(l) - date.fromisoformat(f)).days + 1)}
+    assert ("LOW0USDT", date(2021, 6, 1)) not in days and ("LOW1USDT", date(2021, 6, 2)) not in days
+    assert min(d for _, d in days) == date(2020, 3, 1), "from the archive's first metrics day"
+    assert max(d for _, d in days) == date(2021, 6, 27), "the span's last decision"
+    first_decision = date.fromisoformat(plan["first_decision"])
+    tier = sl.LowerTier(market, LOWER_TEST_SPAN)
+    held_day = next(d for d in sl.sundays(LOWER_TEST_SPAN) if tier.at(d)[0] and d >= date(2020, 12, 1))
+    assert all(("LOW2USDT", held_day - timedelta(days=k)) in days for k in range(sl.LOWER_METRICS_WINDOW + 1))
+    assert first_decision <= held_day and plan["window_days"] == 210
+
+
+def test_the_positioning_variables_read_nothing_older_than_the_planned_window():
+    day = date(2021, 6, 6)
+    read: set[date] = set()
+
+    class Recording(dict):
+        def get(self, key, default=None):
+            read.add(key)
+            return super().get(key, default)
+
+        def __getitem__(self, key):
+            read.add(key)
+            return super().__getitem__(key)
+    values = {"oi": 100.0, "ls": 0.5, "top": 0.5, "taker": 0.5}
+    start = date(2020, 1, 1)
+    bars = {start + timedelta(days=k): xsb.Bar(open=1.0, close=1.0, quote_volume=1.0) for k in range(560)}
+    market = xsb.Market(bars={"A": bars}, funding={})
+    registered = sl.lab.variables()
+    nine = [n for n, (g, _) in registered.items() if g == "positioning" and n not in ("oi_growth_30", "ls_level_30")]
+    assert len(nine) == 9
+    for name in nine + ["oi_growth_30", "ls_level_30"]:
+        market.metrics = {"A": Recording({d: dict(values) for d in bars})}
+        read.clear()
+        registered[name][1](market, "A", day)
+        assert read and min(read) >= day - timedelta(days=sl.LOWER_METRICS_WINDOW), name
+        assert max(read) <= day, name
+
+
+def test_the_lower_daily_file_reads_both_roots_and_the_seal_holds_the_shared_root_still(tmp_path):
+    cache = tmp_path
+    root = cache / sl.LOWER_METRICS_ROOT
+    shared = cache / "archive-metrics"
+    d1, d2, d3 = date(2022, 3, 1), date(2022, 3, 2), date(2022, 3, 3)
+    _metrics_zip(shared / "metrics" / "LOW0USDT" / sl.lab.ba.daily_name("LOW0USDT", "metrics", d1), d1, ls=1.0)
+    _metrics_zip(root / "metrics" / "LOW0USDT" / sl.lab.ba.daily_name("LOW0USDT", "metrics", d2), d2, ls=3.0)
+    (cache / "derived" / "metrics-daily").mkdir(parents=True)
+    (cache / "derived" / "metrics-daily" / "LOW0USDT.jsonl").write_text(json.dumps([d1.isoformat(), 100.0, 0.5, 0.5, 0.5]) + "\n")
+    plan = {"held_symbols": ["LOW0USDT"], "spans": [["LOW0USDT", d2.isoformat(), d3.isoformat()]]}
+    (root / sl.LOWER_METRICS_PLAN).write_text(json.dumps(plan))
+    before = sl.shared_metrics_digest(cache)
+    assert sl.lower_metrics_build(cache, say=lambda _: None) == 2
+    built = [json.loads(line) for line in (cache / "derived" / sl.LOWER_METRICS_DAILY / "LOW0USDT.jsonl").read_text().splitlines()]
+    assert [row[0] for row in built] == [d1.isoformat(), d2.isoformat()] and built[1][2] == pytest.approx(0.75)
+    report = sl.lower_metrics_seal(cache, before)
+    assert report["open_days"] == 1 and report["problems"] and not (root / sl.LOWER_METRICS_COMPLETE).exists()
+    assert sl.lower_positioning_market(cache) is None, "not sealed: nothing is read"
+    (root / "missing.json").write_text(json.dumps({"LOW0USDT": [sl.lab.ba.daily_name("LOW0USDT", "metrics", d3)]}))
+    assert sl.lower_metrics_seal(cache, before)["problems"] == [] and (root / sl.LOWER_METRICS_COMPLETE).exists()
+    (shared / "missing.json").write_text("{}")                  # the shared root moved
+    moved = sl.lower_metrics_seal(cache, before)
+    assert moved["problems"] == ["archive-metrics changed since the fetch began"]
+    assert not (root / sl.LOWER_METRICS_COMPLETE).exists(), "a failed seal removes the marker"
+
+
+def test_the_lower_positioning_market_attaches_this_tiers_file_alone_and_agrees_with_the_shared_one(monkeypatch, tmp_path):
+    cache = tmp_path
+    root = cache / sl.LOWER_METRICS_ROOT
+    root.mkdir(parents=True)
+    (root / sl.LOWER_METRICS_COMPLETE).write_text("{}")
+    lower = cache / "derived" / sl.LOWER_METRICS_DAILY
+    lower.mkdir(parents=True)
+    (lower / "LOW0USDT.jsonl").write_text(json.dumps(["2021-01-01", 1.0, 0.5, 0.5, 0.5]) + "\n"
+                                          + json.dumps(["2025-01-01", 1.0, 0.5, 0.5, 0.5]) + "\n")
+    (cache / "derived" / "metrics-daily").mkdir(parents=True)
+    (cache / "derived" / "metrics-daily" / "LOW0USDT.jsonl").write_text(json.dumps(["2021-01-01", 1.0, 0.5, 0.5, 0.6]) + "\n")
+    (cache / "derived" / "metrics-daily" / "BIG0USDT.jsonl").write_text(json.dumps(["2021-01-01", 9.0, 0.5, 0.5, 0.5]) + "\n")
+    market = _lower_market()
+    monkeypatch.setattr(sl.lab, "hold", lambda c, span=None, *, attach=True, flow=False: market)
+    got = sl.lower_positioning_market(cache, LOWER_TEST_SPAN)
+    assert set(got.metrics) == {"LOW0USDT"}, "the shared file is never attached"
+    assert set(got.metrics["LOW0USDT"]) == {date(2021, 1, 1)}, "nothing after the span"
+    assert sl.lower_metrics_agree(cache, got) == {"shared_symbol_days": 1, "differ": 1}
+
+
+def test_only_the_named_host_commands_run_outside_the_sandbox(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: False)
+    assert set(sl.HOST_COMMANDS) == {"lower-positioning-digest", "lower-positioning-build", "lower-positioning-seal",
+                                     "lower-spot-digest", "lower-spot-fetch", "lower-spot-seal", "top-account-build"}
+    assert sl.main(["lower-positioning-digest", "--cache", str(tmp_path)]) == sl.EXIT_OK
+    assert json.loads(capsys.readouterr().out)["archive-metrics"]["files"] == 0
+    assert sl.main(["lower-positioning-seal", "--cache", str(tmp_path)]) == sl.EXIT_USAGE
+    assert sl.main(["lower-spot-digest", "--cache", str(tmp_path)]) == sl.EXIT_OK
+    assert json.loads(capsys.readouterr().out)["archive-spot"]["files"] == 0
+    assert sl.main(["lower-spot-seal", "--cache", str(tmp_path)]) == sl.EXIT_USAGE
+    for command in ("lower-positioning-plan", "lower-spot-plan", "lower-family", "lower-sweep", "sens", "axis-power"):
+        assert sl.main([command, "--cache", str(tmp_path)]) == sl.EXIT_USAGE, command
+
+
+# --- round 46: the spot group on ranks 101+, from a fetch of its own ----------------------------------------------------
+
+def _spot_zip(root, pair, month, days, close=100.0, volume=1.0):
+    """A month's spot 1d klines for ``days`` (dates) under ``root``'s klines folder."""
+    import zipfile as zf
+    folder = root / "klines-1d" / pair
+    folder.mkdir(parents=True, exist_ok=True)
+    ms = lambda d: int((d - date(1970, 1, 1)).total_seconds() * 1000)
+    rows = "".join(f"{ms(d)},{close},{close},{close},{close},1,0,{volume},1,0,0,0\n" for d in days)
+    with zf.ZipFile(folder / f"{pair}-1d-{month}.zip", "w") as archive:
+        archive.writestr("x.csv", "open_time,open,high,low,close,volume,close_time,quote_volume,count,tbv,tbqv,ignore\n" + rows)
+
+
+def test_the_lower_spot_plan_asks_for_every_held_coins_window_months_not_in_the_shared_root(monkeypatch, tmp_path):
+    monkeypatch.setattr(sl, "LOWER_TIER_FROM", 4)
+    market = _lower_market()
+    listing = {f"LOW{i}USDT" for i in range(8)}                 # LOW8 has no spot pair
+    _spot_zip(tmp_path / "archive-spot", "LOW0USDT", "2021-05", [date(2021, 5, 1)])
+    plan = sl.lower_spot_plan(market, tmp_path, listing, LOWER_TEST_SPAN)
+    assert plan["no_pair_symbols"] == ["LOW8USDT"] and "LOW8USDT" in plan["held_symbols"]
+    assert "LOW8USDT" not in plan["pairs"] and set(plan["pairs"]) == listing
+    low0 = plan["pairs"]["LOW0USDT"]
+    assert "2021-05" in low0["months"] and "2021-05" not in low0["to_ask"], "a shared-root month is not asked again"
+    assert plan["in_shared_root"] == 1 and plan["to_ask"] == plan["pair_months"] - 1
+    tier = sl.LowerTier(market, LOWER_TEST_SPAN)
+    held_day = next(d for d in sl.sundays(LOWER_TEST_SPAN) if "LOW2USDT" in tier.at(d)[0] and d >= date(2020, 12, 1))
+    window = {f"{held_day - timedelta(days=k):%Y-%m}" for k in range(sl.LOWER_METRICS_WINDOW + 1)}
+    assert window <= set(plan["pairs"]["LOW2USDT"]["months"])
+    assert min(plan["pairs"]["LOW2USDT"]["months"]) == "2020-01", "from the coin's first bar"
+    assert max(m for b in plan["pairs"].values() for m in b["months"]) <= "2021-06"
+
+
+def test_the_spot_variables_read_nothing_older_than_the_planned_window():
+    day = date(2021, 6, 6)
+    read: set[date] = set()
+
+    class Recording(dict):
+        def get(self, key, default=None):
+            read.add(key)
+            return super().get(key, default)
+    start = date(2020, 1, 1)
+    days = [start + timedelta(days=k) for k in range(560)]
+    market = xsb.Market(bars={"AUSDT": {d: xsb.Bar(open=1.0, close=1.0, quote_volume=1.0) for d in days}}, funding={})
+    names = [n for n, (g, _) in sl.lab.variables().items() if g == "spot"]
+    assert len(names) == 3
+    for name in names:
+        market.spot = {"AUSDT": Recording({d: xsb.Bar(open=1.0, close=1.0, quote_volume=1.0 + (k * 7919) % 13)
+                                           for k, d in enumerate(days)})}
+        market.spot_of = {"AUSDT": ("AUSDT", 1.0)}
+        read.clear()
+        assert sl.lab.variables()[name][1](market, "AUSDT", day) is not None, name
+        assert read and min(read) >= day - timedelta(days=sl.LOWER_METRICS_WINDOW) and max(read) <= day, name
+
+
+def test_the_lower_spot_fetch_writes_the_listing_first_and_stops_in_the_quiet_window(tmp_path):
+    root = tmp_path / sl.LOWER_SPOT_ROOT
+    root.mkdir()
+    plan = {"pairs": {"AUSDT": {"months": ["2021-01", "2021-03"], "to_ask": ["2021-01", "2021-03"]},
+                      "BUSDT": {"months": ["2021-02"], "to_ask": []}}}
+    (root / sl.LOWER_SPOT_PLAN).write_text(json.dumps(plan))
+    asked = []
+
+    def fetcher(dest, *, kind, symbols, start, end, market):
+        asked.append((dest, kind, tuple(symbols), start, end, market))
+        return {symbols[0]: {"kept": 2, "present": 0, "missing": 0}}
+    lister = lambda prefix: ([], [f"{prefix}AUSDT-1d-2021-01.zip", f"{prefix}AUSDT-1d-2021-01.zip.CHECKSUM",
+                                  f"{prefix}AUSDT-1d-2021-03.zip"])
+    assert sl.lower_spot_fetch(tmp_path, fetcher=fetcher, lister=lister, quiet=lambda: False, say=lambda _: None) == sl.EXIT_OK
+    assert asked == [(root, "klines-1d", ("AUSDT",), date(2021, 1, 1), date(2021, 3, 31), "spot")], "only pairs with months to ask"
+    assert json.loads((root / sl.LOWER_SPOT_SERVED).read_text()) == {"AUSDT": ["2021-01", "2021-03"]}
+    assert sl.lower_spot_fetch(tmp_path, fetcher=fetcher, lister=lister, quiet=lambda: True, say=lambda _: None) == sl.EXIT_BLOCKED
+
+    def broken(prefix):
+        raise sl.lab.ba.ArchiveError("listing: the bucket answered 404")
+    (root / sl.LOWER_SPOT_SERVED).unlink()
+    with pytest.raises(sl.lab.ba.ArchiveError):
+        sl.lower_spot_fetch(tmp_path, fetcher=fetcher, lister=broken, quiet=lambda: False, say=lambda _: None)
+    assert json.loads((root / sl.LOWER_SPOT_SERVED).read_text() if (root / sl.LOWER_SPOT_SERVED).exists() else "{}") == {}, \
+        "a failed listing is never written as a pair the archive does not serve"
+
+
+def test_the_lower_spot_seal_counts_asked_months_and_holds_the_shared_root_still(tmp_path):
+    cache = tmp_path
+    root, shared = cache / sl.LOWER_SPOT_ROOT, cache / "archive-spot"
+    _spot_zip(shared, "AUSDT", "2021-01", [date(2021, 1, 1)])
+    _spot_zip(root, "AUSDT", "2021-02", [date(2021, 2, 1)])
+    plan = {"pairs": {"AUSDT": {"months": ["2021-01", "2021-02", "2021-03", "2021-04"],
+                                "to_ask": ["2021-02", "2021-03", "2021-04"]}}}
+    (root / sl.LOWER_SPOT_PLAN).write_text(json.dumps(plan))
+    before = sl.shared_spot_digest(cache)
+    report = sl.lower_spot_seal(cache, before)
+    assert report["unlisted"] == ["AUSDT"] and report["problems"] and not (root / sl.LOWER_SPOT_COMPLETE).exists()
+    assert sl.lower_spot_market(cache) is None, "not sealed: nothing is read"
+    (root / sl.LOWER_SPOT_SERVED).write_text(json.dumps({"AUSDT": ["2021-01", "2021-02", "2021-03"]}))
+    report = sl.lower_spot_seal(cache, before)
+    assert report["open_months"] == 1 and report["not_served"] == 1, "March served and missing; April not served"
+    _spot_zip(root, "AUSDT", "2021-03", [date(2021, 3, 1)])
+    assert sl.lower_spot_seal(cache, before)["problems"] == [] and (root / sl.LOWER_SPOT_COMPLETE).exists()
+    plan["pairs"]["AUSDT"]["to_ask"].append("2021-01")      # asked, but held in the shared root: on disk
+    (root / sl.LOWER_SPOT_PLAN).write_text(json.dumps(plan))
+    assert sl.lower_spot_seal(cache, before)["problems"] == []
+    derived = cache / "derived" / "spot-share"
+    derived.mkdir(parents=True)
+    (derived / "served.json").write_text(json.dumps({"AUSDT": ["2020-12", "2021-01"]}))   # the shared list moved
+    moved = sl.lower_spot_seal(cache, before)
+    assert "derived/spot-share changed since the fetch began" in moved["problems"]
+    assert "1 pair(s) whose listing lacks a month the shared served list holds" in moved["problems"]
+    assert not (root / sl.LOWER_SPOT_COMPLETE).exists(), "a failed seal removes the marker"
+
+
+def test_the_lower_spot_market_reads_both_roots_and_agrees_where_they_overlap(monkeypatch, tmp_path):
+    cache = tmp_path
+    root, shared = cache / sl.LOWER_SPOT_ROOT, cache / "archive-spot"
+    _spot_zip(shared, "LOW0USDT", "2021-01", [date(2021, 1, 1), date(2021, 1, 2)], close=100.0)
+    _spot_zip(root, "LOW0USDT", "2021-01", [date(2021, 1, 1), date(2021, 1, 2)], close=100.0)
+    _spot_zip(root, "LOW0USDT", "2021-02", [date(2021, 2, 1)], close=100.0)
+    _spot_zip(root, "LOW1USDT", "2021-01", [date(2021, 1, 1)], close=50.0)
+    _spot_zip(shared, "LOW0USDT", "2020-12", [date(2020, 12, 31)], close=100.0)
+    (shared / "symbols.json").write_text(json.dumps(["LOW0USDT", "LOW1USDT"]))
+    market = _lower_market()
+    monkeypatch.setattr(sl.lab, "hold", lambda c, span=None, *, attach=True, flow=False: market)
+    (root / sl.LOWER_SPOT_COMPLETE).write_text("{}")
+    got = sl.lower_spot_market(cache, LOWER_TEST_SPAN)
+    assert set(got.spot["LOW0USDT"]) == {date(2020, 12, 31), date(2021, 1, 1), date(2021, 1, 2), date(2021, 2, 1)}
+    assert got.spot_of["LOW0USDT"] == ("LOW0USDT", 1.0)
+    assert got.spot_files["LOW0USDT"] == {"2020-12", "2021-01", "2021-02"}
+    assert sl.lower_spot_agree(cache) == {"shared_pair_days": 2, "differ": 0}
+    _spot_zip(shared, "LOW0USDT", "2021-01", [date(2021, 1, 1), date(2021, 1, 2)], close=101.0)
+    assert sl.lower_spot_agree(cache) == {"shared_pair_days": 2, "differ": 2}
+
+
+def test_the_ranks_101_spot_commands_stop_until_the_fetch_is_sealed(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    for command in ("lower-gate", "lower-counts", "lower-map", "lower-sweep"):
+        assert sl.main([command, "--only", "spot", "--cache", str(tmp_path)]) == sl.EXIT_BLOCKED, command
+        assert "spot fetch is not sealed" in capsys.readouterr().err
+    assert sl.main(["lower-sweep", "--only", "spot,funding", "--cache", str(tmp_path)]) == sl.EXIT_USAGE
+
+
+def test_the_ranks_101_family_keeps_every_recorded_book_and_fills_only_skipped_rows(tmp_path, capsys):
+    read = {"start": "2021-09-01", "months": 40, "long": "high", "annual_sharpe": 0.1, "group": "g",
+            "total_position_annual_pct": 1.0, "clears_entry": False}
+    first = {"a": read, "s": {"skipped": "under 0.8"}}
+    second = {"b": read}
+    family = sl.lower_sweep_family([first, second], {"s": dict(read, group="spot")})
+    assert list(family) == ["a", "s", "b"] and family["s"]["group"] == "spot"
+    with pytest.raises(ValueError, match="never replaced"):
+        sl.lower_sweep_family([first, second], {"a": read})
+    with pytest.raises(ValueError, match="recorded twice"):
+        sl.lower_sweep_family([first, {"a": read}], {})
+    monkeypatch_null = {f"tier:{k}": {"ics": {"2021-09-05": 0.01}, "high": {"2021-09": 0.0}, "low": {"2021-09": 0.0}} for k in range(2)}
+    paths = {}
+    for name, body in (("r1", {"books": first}), ("r2", {"books": second}), ("new", {"books": {"s": dict(read, group="spot")}}),
+                       ("null", {"null": monkeypatch_null})):
+        paths[name] = tmp_path / f"{name}.json"
+        paths[name].write_text(json.dumps(body))
+    saved = sl.xsb._in_sandbox
+    sl.xsb._in_sandbox = lambda: True
+    try:
+        args = ["lower-family", "--records", f"{paths['r1']},{paths['r2']}", "--new", str(paths["new"]),
+                "--null", str(paths["null"]), "--cache", str(tmp_path)]
+        assert sl.main(args) == sl.EXIT_OK
+        out = json.loads(capsys.readouterr().out)
+        assert out["family"] == ["a", "b", "s"] and "s" in out["recorded_reading"]["skipped"]
+        paths["check"] = tmp_path / "check.json"
+        paths["check"].write_text(json.dumps({"reading": out["recorded_reading"]}))
+        assert sl.main(args + ["--check", str(paths["check"])]) == sl.EXIT_OK
+        capsys.readouterr()
+        paths["check"].write_text(json.dumps({"reading": {**out["recorded_reading"], "books": 99}}))
+        assert sl.main(args + ["--check", str(paths["check"])]) == sl.EXIT_BLOCKED
+    finally:
+        sl.xsb._in_sandbox = saved
+
+
+# --- round 48: the top-trader accounts ratio, built from the files on disk ------------------------------------------
+
+def _accounts_zip(path, day, accounts=1.0, top=3.0):
+    """A day's metrics file whose accounts ratio and positions ratio differ, so a test can tell which was read."""
+    import zipfile as zf
+    rows = ["create_time,symbol,sum_open_interest,sum_open_interest_value,count_toptrader_long_short_ratio,"
+            "sum_toptrader_long_short_ratio,count_long_short_ratio,sum_taker_long_short_vol_ratio"]
+    for k in range(288):
+        rows.append(f"{day.isoformat()} {k // 12:02d}:{(k % 12) * 5:02d}:00,X,100,1,{accounts},{top},1,1")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zf.ZipFile(path, "w") as archive:
+        archive.writestr(path.stem + ".csv", "\n".join(rows) + "\n")
+
+
+def test_the_accounts_value_reads_the_accounts_column_by_the_daily_rule():
+    day = date(2022, 3, 1)
+    rows = [{"create_time": f"{day.isoformat()} 00:{k:02d}:00", sl.lab.ACCOUNTS_COLUMN: "3.0",
+             "sum_toptrader_long_short_ratio": "1.0"} for k in range(sl.lab.ms.MIN_ROWS)]
+    assert sl.lab.accounts_value(rows, day) == pytest.approx(0.75), "ratio 3 is a long share of three quarters"
+    assert sl.lab.accounts_value(rows[:-1], day) is None, "under the minimum rows"
+    other = [dict(r, create_time="2022-03-02 00:00:00") for r in rows]
+    assert sl.lab.accounts_value(other, day) is None, "another day's rows are not this day's"
+
+
+def test_the_accounts_build_reads_both_roots_for_the_lower_tier_and_moves_no_sealed_root(tmp_path):
+    cache = tmp_path
+    d1, d2 = date(2022, 3, 1), date(2022, 3, 2)
+    shared, lower = cache / "archive-metrics" / "metrics", cache / sl.LOWER_METRICS_ROOT / "metrics"
+    _accounts_zip(shared / "BIGUSDT" / sl.lab.ba.daily_name("BIGUSDT", "metrics", d1), d1, accounts=1.0)
+    _accounts_zip(shared / "LOWUSDT" / sl.lab.ba.daily_name("LOWUSDT", "metrics", d1), d1, accounts=3.0)
+    _accounts_zip(lower / "LOWUSDT" / sl.lab.ba.daily_name("LOWUSDT", "metrics", d2), d2, accounts=1.0)
+    (cache / sl.LOWER_METRICS_ROOT / sl.LOWER_METRICS_PLAN).write_text(json.dumps({"held_symbols": ["LOWUSDT"]}))
+    report = sl.top_account_build(cache, say=lambda _: None)
+    assert report["moved"] == [] and report["written"][sl.lab.ACCOUNTS_DAILY] == {"coins": 2, "symbol_days": 2}
+    top = sl.lab.load_accounts(cache)
+    assert top == {"BIGUSDT": {d1: pytest.approx(0.5)}, "LOWUSDT": {d1: pytest.approx(0.75)}}, "the shared root alone"
+    low = sl.lab.load_accounts(cache, sl.lab.ACCOUNTS_DAILY_LOWER)
+    assert low == {"LOWUSDT": {d1: pytest.approx(0.75), d2: pytest.approx(0.5)}}, "both roots, held coins only"
+
+
+def test_the_accounts_values_sit_beside_the_positioning_values_and_the_kin_still_read_theirs():
+    d1, d2 = date(2022, 3, 1), date(2022, 3, 2)
+    metrics = {"A": {d1: {"oi": 1.0, "ls": 0.5, "top": 0.6, "taker": 0.5}}}
+    merged = sl.lab.with_accounts(metrics, {"A": {d1: 0.7, d2: 0.8}, "B": {d1: 0.4}}, d1)
+    assert merged == {"A": {d1: {"oi": 1.0, "ls": 0.5, "top": 0.6, "taker": 0.5, "top_account": 0.7}},
+                      "B": {d1: {"top_account": 0.4}}}, "nothing after the end; the positioning values unchanged"
+    assert metrics["A"][d1] == {"oi": 1.0, "ls": 0.5, "top": 0.6, "taker": 0.5}, "the input is not changed"
+
+
+def test_the_accounts_candidates_read_the_accounts_ratio_and_not_the_positions_ratio():
+    import statistics
+    start, day = date(2020, 1, 1), date(2021, 6, 6)
+    days = [start + timedelta(days=k) for k in range(560)]
+    market = xsb.Market(bars={"A": {d: xsb.Bar(open=1.0, close=1.0, quote_volume=1.0) for d in days}}, funding={})
+    market.metrics = {"A": {d: {"top": 0.9, "ls": 0.5, "top_account": 0.55 + (k % 7) / 100} for k, d in enumerate(days)}}
+    group, read, kin = sl.lab.OVERLAP_CANDIDATES["top_account_30"]
+    assert group == "top_account" and "top_level_30" in kin
+    assert read(market, "A", day) == pytest.approx(statistics.fmean(0.55 + (k % 7) / 100 for k, d in enumerate(days)
+                                                                       if day - timedelta(days=29) <= d <= day))
+    for name in ("top_account_change_30", "top_account_position_30"):
+        assert sl.lab.OVERLAP_CANDIDATES[name][1](market, "A", day) is not None, name
+    assert not any(n.startswith("top_account") for n in sl.lab.variables()), "registered only after the overlap reads"
+
+
+
+# --- round 49: the spot pair's trade flow ---------------------------------------------------------------------------
+
+def test_the_spot_flow_reads_the_spot_pairs_columns_on_same_asset_days_only(tmp_path):
+    import zipfile as zf
+    start, day = date(2021, 1, 1), date(2021, 1, 30)
+    days = [start + timedelta(days=k) for k in range(30)]
+    folder = tmp_path / "archive-spot" / "klines-1d" / "AUSDT"
+    folder.mkdir(parents=True)
+    ms = lambda d: int((d - date(1970, 1, 1)).total_seconds() * 1000)
+    rows = "".join(f"{ms(d)},1,1,1,1,1,0,100.0,{10 if k < 25 else 50},0,{60.0 if k < 25 else 20.0},0\n" for k, d in enumerate(days))
+    with zf.ZipFile(folder / "AUSDT-1d-2021-01.zip", "w") as archive:
+        archive.writestr("x.csv", rows)
+    market = xsb.Market(bars={"AUSDT": {d: xsb.Bar(open=1.0, close=1.0 if k < 25 else 2.0, quote_volume=1.0)
+                                        for k, d in enumerate(days)}}, funding={})
+    market.spot = {"AUSDT": {d: xsb.Bar(open=1.0, close=1.0, quote_volume=100.0) for d in days}}
+    market.spot_of = {"AUSDT": ("AUSDT", 1.0)}
+    sl.lab.attach_spot_flow(market, [tmp_path / "archive-spot"], day)
+    assert market.spot_flow["AUSDT"][days[0]] == (0.6, 10.0)
+    share, size = sl.lab.OVERLAP_CANDIDATES["spot_taker_share_30"][1], sl.lab.OVERLAP_CANDIDATES["spot_trade_size_30"][1]
+    assert share(market, "AUSDT", day) == pytest.approx(0.6), "the last five days are another asset (price band)"
+    assert size(market, "AUSDT", day) == pytest.approx(10.0)
+    market.spot_of = {}
+    assert share(market, "AUSDT", day) is None, "no pair, no value"
+    assert sl.lab.OVERLAP_CANDIDATES["spot_taker_share_30"][0] == "spot_flow"
+    registered = sl.lab.variables()
+    assert {n for n, (g, _) in registered.items() if g == "spot_flow"} == {"spot_taker_share_30", "spot_trade_size_30",
+                                                                          "spot_taker_share_change_30",
+                                                                          "spot_taker_share_position_30",
+                                                                          "spot_taker_share_7", "spot_taker_share_14",
+                                                                          "spot_taker_share_90"}
+    assert {n for n, (g, _) in registered.items() if g == "spot"} == {"spot_share_30", "spot_share_change_30",
+                                                                      "spot_share_position_30"}, "the spot group reads what it read"
+    assert len({n for n, (g, _) in registered.items() if g == "positioning"}) == 11
+
+
+def test_the_spot_taker_shares_shapes_are_its_change_and_its_position_over_its_own_past():
+    start = date(2021, 1, 1)
+    days = [start + timedelta(days=k) for k in range(240)]
+    share = lambda k: 0.40 + 0.001 * k                   # rises a little every day
+    market = xsb.Market(bars={"A": {d: xsb.Bar(open=1.0, close=1.0, quote_volume=1.0) for d in days}}, funding={})
+    market.spot = {"AS": {d: xsb.Bar(open=1.0, close=1.0, quote_volume=1.0) for d in days}}
+    market.spot_of = {"A": ("AS", 1.0)}
+    market.spot_flow = {"AS": {d: (share(k), 5.0) for k, d in enumerate(days)}}
+    day = days[-1]
+    level = sl.lab.OVERLAP_CANDIDATES["spot_taker_share_30"][1]
+    group, change, kin = sl.lab.OVERLAP_CANDIDATES["spot_taker_share_change_30"]
+    assert group == "spot_flow" and kin == ("taker_buy_share_change_30", "spot_share_change_30")
+    assert change(market, "A", day) == pytest.approx(level(market, "A", day) - level(market, "A", day - timedelta(days=30)))
+    assert change(market, "A", day) == pytest.approx(0.030)
+    group, position, kin = sl.lab.OVERLAP_CANDIDATES["spot_taker_share_position_30"]
+    assert group == "spot_flow" and kin == ("taker_buy_share_position_30", "spot_share_position_30")
+    past = [level(market, "A", day - timedelta(days=30 * k)) for k in range(1, 7)]
+    expected = (level(market, "A", day) - statistics.fmean(past)) / statistics.pstdev(past)
+    assert position(market, "A", day) == pytest.approx(expected) and expected > 0
+    assert position(market, "A", days[100]) is None, "fewer than four of its six past points: no position"
+    registered = sl.lab.variables()
+    assert all(k in registered for k in ("taker_buy_share_change_30", "spot_share_change_30",
+                                         "taker_buy_share_position_30", "spot_share_position_30")), "the kin are registered"
+
+
+def test_a_sweep_builds_only_the_books_it_names():
+    names = {"a": ("g", None), "b": ("g", None), "c": ("g", None)}
+    assert sl.pick_names(names, None) == names, "no list keeps every book"
+    assert sl.pick_names(names, "b") == {"b": ("g", None)}
+    assert list(sl.pick_names(names, "c,a")) == ["a", "c"]
+    with pytest.raises(ValueError):
+        sl.pick_names(names, "a,z")
+    with pytest.raises(ValueError):
+        sl.pick_names(names, ",")
+    for command in ("sweep", "tier-sweep", "lower-sweep"):
+        args = [command, "--only", "spot_flow", "--names", "not_a_book", "--cache", "/nonexistent"]
+        assert sl.main(args) == sl.EXIT_USAGE, command
+
+
+def test_a_tiers_family_reads_its_recorded_rows_again_before_a_new_book_is_added():
+    null = {f"n{k}": {"annual_sharpe": -1.0 + k / 10} for k in range(20)}
+    row = {"group": "g", "long": "high", "annual_sharpe": 0.5, "total_position_annual_pct": 1.0, "clears_entry": False,
+           "negative_years": 1}
+    recorded = sl.sweep_reading({"a": row, "b": dict(row, annual_sharpe=0.1)}, null)
+    new = {"c": dict(row, annual_sharpe=3.0, group="spot_flow")}
+    out = sl.tier_family("top30", recorded, null, new)
+    assert not out["blocked"] and out["recorded_books"] == 2 and out["reading"]["books"] == 3
+    assert sl.tier_family("top30", recorded, null, {"a": row})["clash"] == ["a"], "a new book never takes a recorded name"
+    moved = json.loads(json.dumps(recorded))
+    moved["all"][0]["annual_sharpe"] = 9.9
+    assert sl.tier_family("top30", moved, null, new)["blocked"], "a record the rows no longer give back stops the read"
+    # Section 76: the cap is held where a family is read. Sixty books may be read; the sixty-first stops it.
+    many = {f"x{k:02d}": dict(row, annual_sharpe=0.2) for k in range(sl.FAMILY_MAX - 2)}
+    assert not sl.tier_family("top30", recorded, null, many)["blocked"]
+    over = sl.tier_family("top30", recorded, null, {**many, "y": row})
+    assert over["blocked"] and "cap of 60" in over["over"] and "reading" not in over
+    assert len(sl.lower_sweep_family([{"a": row}], {f"x{k:02d}": row for k in range(sl.FAMILY_MAX - 1)})) == sl.FAMILY_MAX
+    with pytest.raises(ValueError, match="cap of 60"):
+        sl.lower_sweep_family([{"a": row}], {f"x{k:02d}": row for k in range(sl.FAMILY_MAX)})
+    assert 1 / (sl.SWEEP_NULLS + 1) < 0.10 / sl.FAMILY_MAX and not 1 / (sl.SWEEP_NULLS + 1) < 0.10 / (sl.FAMILY_MAX + 1)
+
+
+def test_the_spot_taker_share_at_another_lookback_is_the_same_reading_over_fewer_or_more_days():
+    start = date(2021, 1, 1)
+    days = [start + timedelta(days=k) for k in range(120)]
+    share = lambda k: 0.40 + 0.001 * k
+    market = xsb.Market(bars={"A": {d: xsb.Bar(open=1.0, close=1.0, quote_volume=1.0) for d in days}}, funding={})
+    market.spot = {"AS": {d: xsb.Bar(open=1.0, close=1.0, quote_volume=1.0) for d in days}}
+    market.spot_of = {"A": ("AS", 1.0)}
+    market.spot_flow = {"AS": {d: (share(k), 5.0) for k, d in enumerate(days)}}
+    registered, day = sl.lab.variables(), days[-1]
+    level = registered["spot_taker_share_30"][1]
+    assert level(market, "A", day) == sl.lab.OVERLAP_CANDIDATES["spot_taker_share_30"][1](market, "A", day), "the 30-day reading is unchanged"
+    for lookback in (7, 14, 90):
+        group, read = registered[f"spot_taker_share_{lookback}"]
+        assert group == "spot_flow"
+        assert read(market, "A", day) == pytest.approx(statistics.fmean(share(119 - k) for k in range(lookback)))
+    assert registered["spot_taker_share_30"][1](market, "A", day) == pytest.approx(statistics.fmean(share(119 - k) for k in range(30)))
+    seven = registered["spot_taker_share_7"][1]
+    later = xsb.Market(bars=market.bars, funding={})
+    later.spot, later.spot_of = market.spot, market.spot_of
+    later.spot_flow = {"AS": {**market.spot_flow["AS"], day + timedelta(days=1): (0.99, 5.0)}}
+    assert seven(later, "A", day) == seven(market, "A", day), "nothing after the decision day"
+    for k in range(3):                                   # three of seven days gone: under the usual share of days
+        del market.spot_flow["AS"][day - timedelta(days=k)]
+    assert seven(market, "A", day) is None and registered["spot_taker_share_90"][1](market, "A", day) is not None
+    assert not [n for n in registered if n.startswith(("spot_taker_share_change_", "spot_taker_share_position_"))
+                and not n.endswith("_30")], "levels at another window get no shape (section 42)"
+
+
+def test_the_ranks_101_spot_flow_commands_stop_until_the_spot_fetch_is_sealed(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    for command in ("lower-counts", "lower-map", "lower-sweep"):
+        assert sl.main([command, "--only", "spot_flow", "--cache", str(tmp_path)]) == sl.EXIT_BLOCKED, command
+        assert "spot fetch is not sealed" in capsys.readouterr().err
+    assert sl.main(["lower-sweep", "--only", "spot_flow,spot", "--cache", str(tmp_path)]) == sl.EXIT_USAGE
+    assert sl.SWEEP_ALONE["spot_flow"] == "hold_spot_flow"
+
+
+def test_a_lead_with_its_own_list_is_ruled_on_every_book_in_it(monkeypatch):
+    members = [f"C{i:02d}" for i in range(1, 42)]
+    lead = {f"C{i:02d}": float(i - 21) for i in range(1, 42)}
+    shuffled = {s: float((17 * int(s[1:])) % 41) for s in members}
+    registry = {"lead": ("g", lambda m, s, d: lead.get(s)), "mirror": ("g", lambda m, s, d: -lead.get(s)),
+                "other": ("g", lambda m, s, d: shuffled[s])}
+    monkeypatch.setattr(sl.lab, "variables", lambda: registry)
+    monkeypatch.setattr(sl, "LEADS", {"lead": {"long": "high", "group": "price_volume", "kin": ("other", "mirror")}})
+    monkeypatch.setattr(sl, "monthly_members", lambda market, span=None: {date(2021, m, 1): members for m in range(1, 7)})
+    monkeypatch.setattr(sl, "without_tail", lambda market, members, day: list(members))
+    monkeypatch.setitem(sl.BOOKS, sl.SWEEP_LOGIC, sl.book)
+    span = (date(2021, 1, 1), date(2021, 6, 30))
+    out = sl.lead_check(xsb.Market(), "lead", span)
+    assert out["kin_rule"] == {"beside": ["other", "mirror"], "threshold": 0.5, "kin": True, "rebuilds": ["mirror"]}, \
+        "every listed book is read, not the first only; upside down is the same book"
+    assert abs(out["position_overlap"]["other"]["median"]) < 0.5 and out["reads_returns"] is False
+
+
+def test_the_weekly_top_sweep_holds_weekly_only_after_the_recorded_books_build_again(monkeypatch):
+    calls = []
+    built = {"held4": {"a": {"long": "high", "annual_sharpe": 0.5, "total_position_annual_pct": 3.0, "clears_entry": False,
+                             "negative_years": 2}},
+             "held": {"a": {"long": "high", "annual_sharpe": 0.9, "legs": {}}}}
+
+    def sweep(market, names, span=None, *, simulate=None, accounting="held4", legs=False):
+        calls.append((accounting, legs))
+        return {n: dict(built[accounting][n]) for n in names}
+
+    monkeypatch.setattr(sl, "sweep", sweep)
+    record = {"all": [{"variable": "a", "group": "g", "p": 0.3, **built["held4"]["a"]}]}
+    out = sl.weekly_top_sweep(xsb.Market(), {"a": ("g", None)}, record)
+    assert calls == [("held4", False), ("held", True)] and out["door"] == {"recorded_books_again": 1}
+    assert out["books"]["a"]["annual_sharpe"] == 0.9
+    calls.clear()
+    record["all"][0]["annual_sharpe"] = 0.501
+    out = sl.weekly_top_sweep(xsb.Market(), {"a": ("g", None)}, record)
+    assert calls == [("held4", False)], "nothing weekly is built when a recorded book does not build again"
+    assert out == {"refused": "recorded books do not build again four-weekly", "differ": ["a"]}
+
+
+def _weekly_family_fixture():
+    record = {"all": [{"variable": f"v{k}", "group": "depth" if k < 2 else "g"} for k in range(6)]}
+    null = {"accounting": "held", "logic": sl.SWEEP_LOGIC,
+            "books": {f"n{k:03d}": {"annual_sharpe": k / 600} for k in range(sl.SWEEP_NULLS)}}
+
+    def book(sharpe):
+        return {"group": "g", "long": "high", "annual_sharpe": sharpe, "total_position_annual_pct": 20.0,
+                "clears_entry": sharpe >= 1.0, "negative_years": 0, "legs": {"annual_pct": {"price": 21.0, "net": 20.0}}}
+
+    runs = [{"command": "weekly-top", "accounting": "held", "only": ["g"],
+             "books": {"v2": book(1.5), "v3": book(0.2), "v4": book(0.1), "v5": book(0.0)}},
+            {"command": "weekly-top", "accounting": "held", "only": ["depth"], "books": {"v0": book(0.3), "v1": book(0.1)}}]
+    return record, null, runs
+
+
+def test_the_weekly_top_family_reads_the_books_present_against_the_weekly_null():
+    record, null, runs = _weekly_family_fixture()
+    out = sl.weekly_top_family(runs, null, record)
+    assert not out["blocked"] and out["family"] == 6 and out["left_out"] == []
+    assert [r["variable"] for r in out["reading"]["survive_benjamini_hochberg"]] == ["v2"]
+    assert out["survivors"] == {"v2": {"legs_annual_pct": {"price": 21.0, "net": 20.0}, "fixed_nulls_at_or_above": 0,
+                                       "fixed_nulls": 0}}, "the fixture's nulls are not named by half"
+    halves = dict(null, books={f"null_fixed_{k:03d}" if k % 2 else f"null_week_{k:03d}": {"annual_sharpe": 2.0 if k == 1 else 0.0}
+                               for k in range(sl.SWEEP_NULLS)})
+    facts = sl.weekly_top_family(runs, halves, record)["survivors"]
+    assert facts["v2"]["fixed_nulls_at_or_above"] == 1 and facts["v2"]["fixed_nulls"] == 300
+    left = sl.weekly_top_family(runs[:1], null, record)
+    assert not left["blocked"] and left["left_out"] == ["v0", "v1"] and left["family"] == 4, "depth alone may be left out"
+    short = [dict(runs[0], books={k: v for k, v in runs[0]["books"].items() if k != "v3"}), runs[1]]
+    assert sl.weekly_top_family(short, null, record)["blocked"], "a book of another group may not be missing"
+    assert sl.weekly_top_family(runs, dict(null, accounting="held4"), record)["blocked"], "the four-week null is not this one"
+    assert sl.weekly_top_family([dict(runs[0], refused="x"), runs[1]], null, record)["blocked"]
+    twice = [runs[0], dict(runs[1], books={**runs[1]["books"], "v2": runs[0]["books"]["v2"]})]
+    assert sl.weekly_top_family(twice, null, record)["blocked"], "a book built twice"
+    outside = [dict(runs[0], books={**runs[0]["books"], "spot_taker_share_7": runs[0]["books"]["v2"]}), runs[1]]
+    assert sl.weekly_top_family(outside, null, record)["blocked"], "a book outside the recorded family"
+    struck = {"all": record["all"] + [{"variable": "vol_30", "group": "g"}]}
+    assert not sl.weekly_top_family(runs, null, struck)["blocked"], "a struck recorded book is not expected"
+    with_struck = [dict(runs[0], books={**runs[0]["books"], "vol_30": runs[0]["books"]["v2"]}), runs[1]]
+    assert sl.weekly_top_family(with_struck, null, struck)["blocked"], "and is refused when present"
+
+
+def test_the_weekly_top_names_come_from_the_recorded_family_and_the_registry(monkeypatch, capsys, tmp_path):
+    registry = sl.lab.variables()
+    first = next(n for n in registry if not sl.lab.no_book(n, "top30"))
+    group = registry[first][0]
+    names = sl.weekly_top_names({"all": [{"variable": first, "group": group}]}, {group})
+    assert list(names) == [first] and names[first][0] == group
+    with pytest.raises(ValueError, match="not registered"):
+        sl.weekly_top_names({"all": [{"variable": "no_such", "group": group}]}, {group})
+    with pytest.raises(ValueError, match="no books"):
+        sl.weekly_top_names({"all": [{"variable": first, "group": group}]}, {"other"})
+    assert "vol_30" not in sl.weekly_top_names({"all": [{"variable": "vol_30", "group": "price_volume"},
+                                                        {"variable": "momentum_30", "group": "price_volume"}]}, {"price_volume"})
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setenv("RESEARCH_CACHE", str(tmp_path))
+    assert sl.main(["weekly-top", "--only", group]) == sl.EXIT_USAGE
+    assert sl.main(["weekly-top-family", "--records", "a.json"]) == sl.EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "weekly-top needs --only" in err and "weekly-top-family needs --records" in err
+
+
+def test_the_hourly_lead_is_laid_beside_every_struck_book_on_both_upper_tiers_with_no_return(monkeypatch):
+    registered = sl.lab.variables()
+    lead_read = registered["price_delay_30"][1]
+    vol_read = registered["vol_30"][1]
+    monkeypatch.setattr(sl.lab, "variables", lambda: registered)      # one set of readings, so a book knows its own
+
+    def fake_book(read, direction):
+        way = direction(None)
+        def weights(market, members, day, signal, *, seed=None):
+            if read is lead_read:
+                return {"A": 0.5 * way, "B": -0.5 * way, sl.HEDGE: 9.0}
+            if read is vol_read:                       # the struck volatility book holds the same coins, opposite side
+                return {"A": -0.5 * way, "B": 0.5 * way, sl.HEDGE: -9.0}
+            return {"C": 0.5 * way, "D": -0.5 * way}
+        return weights
+
+    monkeypatch.setitem(sl.BOOKS, sl.SWEEP_LOGIC, fake_book)
+    monkeypatch.setattr(sl, "book", fake_book)
+    monkeypatch.setattr(sl, "monthly_members", lambda market, span=None: {})
+    monkeypatch.setattr(sl.lab, "tier_members", lambda market, span: {"top30": {}, "rank31_100": {}})
+    span = (date(2021, 1, 1), date(2021, 2, 28))
+    got = sl.hourly_lead_overlap(xsb.Market(), span)
+    assert got["returns_computed"] is False and got["threshold"] == 0.5
+    assert len(got["compared"]["top30"]) == 9 and "funding_30" in got["compared"][sl.TIER_SWEEP_TIER]
+    assert not set(got["compared"][sl.TIER_SWEEP_TIER]) & {"oi_growth_30", "ls_level_30", "imbalance_1_30"}, "not loaded"
+    for tier in ("top30", sl.TIER_SWEEP_TIER):
+        rows = got["leads"]["price_delay_30"]["tiers"][tier]
+        assert rows["beside"]["vol_30"]["median_cosine"] == 1.0, "low-side lead vs high-side book; the hedge is left out"
+        assert rows["beside"]["beta_30"]["median_cosine"] == 0.0 and rows["closed_by"] == ["vol_30"]
+        assert rows["beside"]["vol_30"]["decisions"] == len(sl.sundays(span))
+
+
+def _hp1_report(sharpe, total, years, clears, stable):
+    return {"annual_sharpe": sharpe, "total_position_annual_pct": total, "sum_pct": total * 10, "months": 60,
+            "cost_pct": 1.0, "funding_pct": 0.5, "clears_entry": clears, "years_total_position_pct": years,
+            "stability": {"passes": stable, "negative_years": 0}}
+
+
+def test_h_p1_reads_its_four_conditions_on_the_low_side_and_the_later_years_on_earlier_sides(monkeypatch):
+    low = _hp1_report(1.6, 20.0, {"2020": 5.0, "2021": 30.0, "2022": 25.0, "2023": 10.0, "2024": 20.0}, True, True)
+    high = _hp1_report(-1.6, -20.0, {"2022": -25.0, "2023": -10.0, "2024": -20.0}, False, False)
+    seen = []
+
+    def measure(market, weigher, span, *, simulate):
+        way = 1 if weigher(None, (), date(2021, 1, 3), "w").get("A", 0) > 0 else -1
+        seen.append(way)
+        return low if way == -1 else high
+
+    monkeypatch.setitem(sl.BOOKS, sl.SWEEP_LOGIC, lambda read, direction: (lambda *a, **k: {"A": direction(None)}))
+    monkeypatch.setattr(sl, "measure", measure)
+    monkeypatch.setattr(sl, "monthly_members", lambda market, span=None: {})
+    days = {date(2020, 3, 1) + timedelta(days=7 * k): -0.05 for k in range(250)}
+    monkeypatch.setattr(sl, "decision_ics", lambda market, read, monthly, span: days)
+    nulls = {f"n{k}": {"annual_sharpe": k / 600} for k in range(600)}
+    out = sl.hp1(xsb.Market(), nulls)
+    assert sorted(seen) == [-1, 1] and out["long"] == "low" and out["book"]["annual_sharpe"] == 1.6
+    assert out["rungs"]["2b_later_years"]["years"] == {"2022": 25.0, "2023": 10.0, "2024": 20.0}
+    assert all(s["long"] == "low" for s in out["rungs"]["2b_later_years"]["sides"].values())
+    assert out["rungs"]["2c_beside_null_books"]["p"] == round(1 / 601, 4) and out["passes"] and out["reading"] == "candidate"
+    nulls["n0"]["annual_sharpe"] = 5.0
+    for k in range(1, 40):
+        nulls[f"n{k}"]["annual_sharpe"] = 2.0
+    assert not sl.hp1(xsb.Market(), nulls)["passes"], "40 of 600 nulls at or above: p 0.068"
+
+
+def test_h_p1_runs_only_after_its_recorded_row_builds_again_and_enough_weeks_hold_a_book(monkeypatch, capsys, tmp_path):
+    row = {"long": "low", "mean_rank_correlation": -0.076, "annual_sharpe": 0.231, "total_position_annual_pct": 4.13,
+           "clears_entry": False, "negative_years": 2, "funding_pct": 7.33, "decisions_ranked": 243}
+    monkeypatch.setattr(sl, "sweep", lambda market, names, span=None, accounting="held4", **k: {"price_delay_30": dict(row)})
+    assert sl.hp1_gate(xsb.Market(), row) == []
+    assert sl.hp1_gate(xsb.Market(), {**row, "annual_sharpe": 0.232}) == ["annual_sharpe"]
+    monkeypatch.setattr(sl, "monthly_members", lambda market, span=None: {})
+    stand = {2022}
+    monkeypatch.setitem(sl.BOOKS, sl.SWEEP_LOGIC,
+                        lambda read, direction: (lambda market, members, day, signal, seed=None:
+                                                 {"A": -1.0, sl.HEDGE: 1.0} if day.year in stand else {sl.HEDGE: 1.0}))
+    counts = sl.hp1_counts(xsb.Market())
+    assert counts["stop"] and counts["short_years"] == ["2023", "2024"], "a book of the hedge alone does not stand"
+    assert counts["years"]["2022"]["with_a_book"] == counts["years"]["2022"]["decisions"] >= 52
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setenv("RESEARCH_CACHE", str(tmp_path))
+    assert sl.main(["hp1"]) == sl.EXIT_USAGE
+    other = tmp_path / "null.json"
+    other.write_text(json.dumps({"accounting": "held4", "logic": "L9T", "books": {f"n{k}": {} for k in range(600)}}), encoding="utf-8")
+    assert sl.main(["hp1", "--check", str(other), "--null", str(other)]) == sl.EXIT_USAGE
+    assert "not round 64's 600 weekly null books" in capsys.readouterr().err
+
+
+def test_l25_moves_half_way_keeps_each_sides_total_and_sells_coins_that_left():
+    now = {"A": 0.4, "B": -0.4, "GONE": 0.2}
+    target = {"A": 0.0, "C": 0.5, "B": -0.5}
+    out = sl._blend(now, target, 0.5, ["A", "B", "C"])
+    assert "GONE" not in out, "a coin that left the tier is sold whole"
+    assert abs(sum(w for w in out.values() if w > 0) - 0.5) < 1e-12 and abs(sum(w for w in out.values() if w < 0) + 0.5) < 1e-12
+    assert out["A"] == pytest.approx(0.5 * 0.2 / (0.2 + 0.25)) and out["C"] == pytest.approx(0.5 * 0.25 / 0.45)
+    assert sl._blend(now, target, 0.5, None)["GONE"] > 0, "without members every held coin is blended"
+
+
+def _blend_market():
+    days = [date(2021, 1, 1) + timedelta(days=k) for k in range(70)]
+    bars = {s: {d: xsb.Bar(open=1.0 + 0.001 * k, close=1.0 + 0.001 * k, quote_volume=1e6) for k, d in enumerate(days)}
+            for s in ("AUSDT", "BUSDT", "CUSDT")}
+    return xsb.Market(bars=bars, funding={}), days
+
+
+def test_l25_trades_less_than_l22_on_a_flipping_target_and_changes_nothing_without_blend():
+    market, days = _blend_market()
+
+    def weigher(market, members, day, signal, seed=None):
+        flip = (day.toordinal() // 7) % 2
+        return {"AUSDT": 0.5, "BUSDT": -0.5} if flip else {"AUSDT": -0.5, "BUSDT": 0.5}
+
+    full = sl.simulate_held(market, sl.bs.CADENCE, {}, start=days[0], end=days[-1], weigher=weigher)
+    again = sl.simulate_held(market, sl.bs.CADENCE, {}, start=days[0], end=days[-1], weigher=weigher, blend=None)
+    half = sl.simulate_held(market, sl.bs.CADENCE, {}, start=days[0], end=days[-1], weigher=weigher, blend=0.5,
+                            members_of=lambda day: ["AUSDT", "BUSDT"])
+    assert full == again, "blend None is the recorded path"
+    cost = lambda sim: sum(r["cost"] for r in sim["daily"].values())      # noqa: E731
+    assert 0 < cost(half) < cost(full)
+
+
+def test_the_cost_door_noise_is_the_same_whatever_order_it_is_asked_in(monkeypatch):
+    tier = types.SimpleNamespace(days=[date(2021, 1, 3) + timedelta(days=7 * k) for k in range(300)])
+    a, b = sl.cost_door_noise(tier, 7), sl.cost_door_noise(tier, 7)
+    first = [a("X", d) for d in tier.days] + [a("Y", d) for d in tier.days]
+    second = [b("Y", d) for d in tier.days]
+    second = [b("X", d) for d in tier.days] + second
+    assert first == second
+    xs = first[:300]
+    lag = statistics.correlation(xs[:-1], xs[1:])
+    assert 0.7 < lag < 0.9, "AR(1) with phi 0.8"
+    assert a("X", date(2020, 1, 1)) is None
+
+
+def test_the_cost_door_reading_checks_its_doors_and_reads_the_rule_on_the_month_plant():
+    rows = []
+    for plant in sl.COST_DOOR_PLANTS:
+        for rho in sl.COST_DOOR_SIZES:
+            for seed in range(100):
+                for logic in sl.COST_DOOR_LOGICS:
+                    lead = rho >= (0.05 if logic == "L25" and plant == "month" else 0.10) and seed < 90
+                    rows.append({"plant": plant, "size": rho, "seed": seed, "logic": logic, "long": "high",
+                                 "mean_rank_correlation": rho, "annual_sharpe": 1.0, "total_position_annual_pct": 10.0,
+                                 "clears_entry": False, "cost_annual_pct": 3.0, "p": 0.5 if rho else (0.01 if seed < 3 else 0.5),
+                                 "lead": lead})
+    out = sl.cost_door_reading(rows, 100)
+    assert out["doors_pass"] and out["doors"]["2_paired"] == 0 and out["doors"]["3_plant_took"]
+    assert out["rule"]["two_neighbours_20pp"] and out["rule"]["ask_thomas"]
+    assert out["rule"]["bracket_upper"] == {"L25": 0.05, "L22": 0.1}
+    broken = [dict(r, mean_rank_correlation=0.5) if r["logic"] == "L25" and r["seed"] == 0 else r for r in rows]
+    assert not sl.cost_door_reading(broken, 100)["doors_pass"], "the two logics read one planted variable"
+    assert not sl.cost_door_reading(rows[:-1], 100)["doors_pass"]
+    alarms = [dict(r, p=0.01) if r["size"] == 0 else r for r in rows]
+    assert not sl.cost_door_reading(alarms, 100)["doors_pass"], "too many false alarms at size 0"
+
+
+def test_the_cost_door_commands_refuse_what_they_cannot_read(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setenv("RESEARCH_CACHE", str(tmp_path))
+    assert sl.main(["cost-door-reading"]) == sl.EXIT_USAGE
+    assert sl.main(["cost-null", "--seeds", "x"]) == sl.EXIT_USAGE
+    null = tmp_path / "null.json"
+    null.write_text(json.dumps({"null": {}}), encoding="utf-8")
+    assert sl.main(["cost-door", "--seeds", "0:10", "--null", str(null)]) == sl.EXIT_USAGE
+    assert sl.main(["cost-null", "--seeds", "0:700", "--null", str(null)]) == sl.EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "needs --records" in err and "--seeds is A:B" in err and "must lie in 0:600" in err
+
+
+def _l6_market(days=70, drop_btc_day=None):
+    first = date(2021, 1, 1)
+    out = [first + timedelta(days=k) for k in range(days)]
+    rng = random_module.Random(5)
+    bars = {}
+    for s in ("AUSDT", "BUSDT", "CUSDT", sl.HEDGE):
+        price, own = 1.0, {}
+        for d in out:
+            nxt = price * (1 + rng.gauss(0, 0.03))
+            own[d] = xsb.Bar(open=price, close=nxt, quote_volume=1e6)
+            price = nxt
+        bars[s] = own
+    if drop_btc_day is not None:
+        bars[sl.HEDGE].pop(out[drop_btc_day])
+    return xsb.Market(bars=bars, funding={}), out
+
+
+def _l6_tier(market, days, weights):
+    def weigher(read, way):
+        return lambda market_, members, day, signal, seed=None: dict(weights)
+    return types.SimpleNamespace(market=market, span=(days[0], days[-1]), weigher=weigher)
+
+
+def test_l6_splits_l22_by_side_and_hedges_the_long_side_against_its_betas(monkeypatch):
+    market, days = _l6_market()
+    weights = {"AUSDT": 0.6, "CUSDT": 0.4, "BUSDT": -1.0}
+    tier = _l6_tier(market, days, weights)
+    monkeypatch.setattr(sl.bs, "_beta", lambda market_, s, day, lookback: 1.5 if s == "AUSDT" else None)
+    built = sl.l6_book(tier, None, 1, {})
+    monthly = built["monthly"]
+    stressed = sl.simulate_held(market, sl.bs.CADENCE, {}, start=days[0], end=days[-1],
+                                weigher=lambda *a, **k: dict(weights), unit_of=sl.listing_unit)
+    by_month = {}
+    for day, row in stressed["daily"].items():
+        by_month[sl._month(day)] = by_month.get(sl._month(day), 0.0) + row["net"] + row["cost"]
+    assert set(by_month) == set(monthly)
+    for m in monthly:
+        assert monthly[m]["long"] + monthly[m]["short"] == pytest.approx(by_month[m], abs=1e-12), "both sides at zero cost"
+        assert monthly[m]["alts"] == pytest.approx(monthly[m]["long"], abs=1e-12), "L6 holds L22's long side as it is"
+    hedge = sl.simulate_held(market, sl.bs.CADENCE, {}, start=days[0], end=days[-1],
+                             weigher=lambda *a, **k: {sl.HEDGE: -(0.6 * 1.5 + 0.4 * 1.0)}, unit_of=lambda s: 0.0)
+    assert sum(m["hedge"] for m in monthly.values()) == pytest.approx(sum(r["net"] for r in hedge["daily"].values()), abs=1e-12)
+    assert built["without_beta"] == pytest.approx(0.4 / 1.0 * built["long_weight"]), "a coin with no beta is hedged at 1 and counted"
+    with pytest.raises(ValueError):
+        sl.l6_book(_l6_tier(market, days, {sl.HEDGE: 1.0, "BUSDT": -1.0}), None, 1, {})
+
+
+def test_the_l6_hedge_door_needs_every_bar_and_funding_on_file():
+    market, days = _l6_market()
+    span = (days[0], days[-1])
+    assert "no funding" in sl.l6_hedge_door(market, span)
+    funded, _ = _l6_market()
+    funded.funding[sl.HEDGE] = [(int(datetime(2021, 1, 1, 8, tzinfo=timezone.utc).timestamp() * 1000), 0.0001)]
+    assert sl.l6_hedge_door(funded, span) is None
+    holed, _ = _l6_market(drop_btc_day=10)
+    assert "no bar on 1 day" in sl.l6_hedge_door(holed, span)
+
+
+def _l6_rows(n=600, l6=lambda k: k / 20, without=0.0):
+    return [{"key": k, "long": "high", "annual_pct": dict.fromkeys(sl.L6_LEGS, 1.0), "l22_ceiling_pct": 0.5,
+             "l6_ceiling_pct": l6(k), "without_beta": without, "long_weight": 1.0, "alts_is_long": True,
+             "sides_add_up": True if k < 5 else None} for k in range(n)]
+
+
+def test_the_l6_reading_checks_its_doors_and_sets_the_bar_from_the_null():
+    out = sl.l6_reading(_l6_rows())
+    assert out["doors_pass"] and out["doors"]["2_sides_add_up"] == {"books": 5, "pass": True}
+    assert out["l6_ceiling"]["p95"] == pytest.approx(569 / 20) and out["l6_ceiling"]["at_or_over_floor"] == 300
+    assert out["rule"] == {"bar_pct": 28.45, "usable": True}
+    assert not sl.l6_reading(_l6_rows(l6=lambda k: k / 10))["rule"]["usable"], "a null 95th percentile of 56.9% says nothing"
+    assert sl.l6_reading(_l6_rows(l6=lambda k: 0.0))["rule"]["bar_pct"] == 15.0, "the floor when the null is lower"
+    assert not sl.l6_reading(_l6_rows()[:-1])["doors_pass"]
+    assert not sl.l6_reading(_l6_rows(without=0.06))["doors_pass"], "too much of the long side has no beta"
+    broken = _l6_rows()
+    broken[3]["sides_add_up"] = False
+    assert not sl.l6_reading(broken)["doors_pass"]
+    broken = _l6_rows()
+    broken[400]["alts_is_long"] = False
+    assert not sl.l6_reading(broken)["doors_pass"]
+
+
+def test_the_l6_commands_refuse_what_they_cannot_read(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setenv("RESEARCH_CACHE", str(tmp_path))
+    assert sl.main(["l6-reading", "--family", "mid"]) == sl.EXIT_USAGE
+    other = tmp_path / "c.json"
+    other.write_text(json.dumps({"command": "l6-null", "family": "lower", "rows": []}), encoding="utf-8")
+    assert sl.main(["l6-reading", "--family", "mid", "--records", str(other)]) == sl.EXIT_USAGE
+    assert sl.main(["l6-null", "--family", "mid", "--seeds", "x"]) == sl.EXIT_USAGE
+    null = tmp_path / "null.json"
+    null.write_text(json.dumps({"tier": "elsewhere", "null": {}}), encoding="utf-8")
+    assert sl.main(["l6-null", "--family", "mid", "--seeds", "0:700", "--null", str(null)]) == sl.EXIT_USAGE
+    assert sl.main(["l6-null", "--family", "mid", "--seeds", "0:10", "--null", str(null)]) == sl.EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "needs --family and --records" in err and "not this family's l6-null chunks" in err
+    assert "must lie in 0:600" in err and "not that sweep's null file" in err
+
+
+# --- section 97: the leverage stay's input-only doors -----------------------------------------------------------
+
+def _r1_market(days=40, symbols=("AUSDT", "BUSDT")):
+    first = date(2021, 3, 1)
+    out = [first + timedelta(days=k) for k in range(days)]
+    bars = {s: {d: xsb.Bar(open=10.0 + i, close=10.0 + i + k * 0.1, quote_volume=1000.0 * (i + 1) + k)
+                for k, d in enumerate(out)} for i, s in enumerate(symbols)}
+    market = xsb.Market(bars=bars, funding={})
+    market.metrics = {s: {d: {"oi": 50.0 * (i + 1) + k} for k, d in enumerate(out)} for i, s in enumerate(symbols)}
+    return market, out
+
+
+def test_the_leverage_stay_reads_the_positioning_days_and_nothing_after_them():
+    market, days = _r1_market()
+    day = days[35]
+    window = [day - timedelta(days=k) for k in range(30)]
+    held = sum(market.metrics["AUSDT"][d]["oi"] * market.bars["AUSDT"][d].close for d in window)
+    traded = sum(market.bars["AUSDT"][d].quote_volume for d in window)
+    assert sl.lab.OI_TURNOVER(market, "AUSDT", day) == pytest.approx(held / traded)
+    for d in days[36:]:                                         # later rows never move the value
+        market.metrics["AUSDT"][d]["oi"] *= 1e6
+        market.bars["AUSDT"][d] = xsb.Bar(open=1.0, close=1e6, quote_volume=1.0)
+    assert sl.lab.OI_TURNOVER(market, "AUSDT", day) == pytest.approx(held / traded)
+    for d in window[:11]:                                       # 19 days with both: under two thirds of 30
+        market.metrics["AUSDT"][d]["oi"] = None
+    assert sl.lab.OI_TURNOVER(market, "AUSDT", day) is None
+    still = sl.lab.OI_TURNOVER(market, "BUSDT", day)
+    assert still is not None and sl.lab.R1 not in sl.lab.variables(), "never registered: closed on every tier (section 99.5)"
+    for d in window:
+        market.bars["BUSDT"][d] = xsb.Bar(open=1.0, close=1.0, quote_volume=0.0)
+    assert sl.lab.OI_TURNOVER(market, "BUSDT", day) is None, "no volume, no value"
+
+
+def test_the_leverage_kin_are_each_tiers_struck_names_from_the_one_list():
+    mid, top, lower = (sl.lab.leverage_kin(t) for t in ("rank31_100", "top30", sl.LOWER_NAME))
+    struck_mid = {n for (t, n) in sl.lab.SPREAD_NO_BOOK if t in ("*", "rank31_100")}
+    assert struck_mid <= set(mid) and {"funding_30", "funding_7", "oi_growth_30", "ls_level_30"} <= set(mid)
+    assert not {"funding_30", "oi_growth_30"} & set(top), "struck on ranks 31-100 only"
+    assert {"price_delay_30", "volume_peak_share_30", "illiquidity_30", "volume_growth_30"} <= set(top)
+    assert {"oi_growth_30", "ls_level_30", "imbalance_1_30"} <= set(lower)
+    registered = sl.lab.variables()
+    assert all(k in registered for k in (*mid, *top, *lower)) and sl.lab.R1 not in (*mid, *top, *lower)
+
+
+def test_the_overlap_is_read_per_tier_against_that_tiers_kin(monkeypatch):
+    market, days = _r1_market(days=60, symbols=tuple(f"S{i}USDT" for i in range(10)))
+    plan_days = days[30:]
+    plan = {"top30": [(d, tuple(market.bars)) for d in plan_days], "rank31_100": [(d, tuple(market.bars)) for d in plan_days]}
+    same = lambda m, s, d: sl.lab.OI_TURNOVER(m, s, d)
+    other = lambda m, s, d: int(xsb.random_key("r1-test", d, s)[:8], 16) / 16 ** 8
+    monkeypatch.setattr(sl.lab, "MIN_DECISIONS", 5)
+    monkeypatch.setattr(sl.lab, "variables", lambda: {"twin": ("positioning", same), "noise": ("price_volume", other)})
+    out = sl.lab.tier_overlap(market, sl.lab.OI_TURNOVER, plan, {"top30": ("noise",), "rank31_100": ("noise", "twin")})
+    assert out["top30"]["compared"] and out["top30"]["passes"]
+    assert out["rank31_100"]["nearest_kin"] == "twin" and not out["rank31_100"]["passes"], "a twin on that tier stops it there"
+    none = sl.lab.tier_overlap(market, sl.lab.OI_TURNOVER, {"top30": plan["top30"][:3]}, {"top30": ("noise",)})
+    assert not none["top30"]["compared"] and not none["top30"]["passes"], "nothing compared is not a pass"
+    kept = sl.lab.tier_persistence(market, sl.lab.OI_TURNOVER, {"top30": plan["top30"]})
+    assert set(kept["top30"]) == {"7d", "14d", "28d"}
+
+
+def test_the_hourly_coverage_takes_another_reading():
+    market, days = _r1_market(days=40, symbols=("AUSDT", "BUSDT", "CUSDT"))
+    month = date(2021, 4, 1)
+    tiers = {"top30": {month: ["AUSDT", "BUSDT"]}, "rank31_100": {month: ["CUSDT"]}}
+    april = [d for d in days if d >= month]
+    out = sl.lab.hv.coverage(market, sl.lab.R1, tiers, april, read=sl.lab.OI_TURNOVER)
+    assert out["top30"]["cells"] == 2 * len(april) and out["top30"]["share"] == 1.0
+
+
+def test_the_leverage_doors_command_needs_its_tiers_and_its_files(monkeypatch, tmp_path):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setenv("RESEARCH_CACHE", str(tmp_path))
+    assert sl.main(["leverage-doors"]) == sl.EXIT_USAGE
+    assert sl.main(["leverage-doors", "--tiers", "upper"]) == sl.EXIT_USAGE, "no recorded reading to check against"
+    check = tmp_path / "doors.json"
+    check.write_text("{}", encoding="utf-8")
+    assert sl.main(["leverage-doors", "--tiers", "upper", "--check", str(check)]) == sl.EXIT_BLOCKED
+    assert sl.main(["leverage-doors", "--tiers", "lower", "--check", str(check)]) == sl.EXIT_BLOCKED
+    monkeypatch.setattr(sl.lab, "hold", lambda cache, span=None, attach=False, flow=False: xsb.Market())
+    monkeypatch.setattr(sl.lab.ms, "load_daily", lambda cache: {"AUSDT": {date(2021, 1, 1): {"oi": 1.0}}})
+    monkeypatch.setattr(sl.lab, "attach_hourly", lambda market, archive, span: market)
+    assert sl.leverage_market(tmp_path, "upper") is None, "no hourly value: the upper tiers' kin would be unread"
+
+
+def test_the_leverage_doors_read_r1_only_after_a_recorded_reading_comes_back(monkeypatch):
+    first = date(2021, 1, 1)
+    days = [first + timedelta(days=k) for k in range(150)]
+    syms = [f"S{i}USDT" for i in range(40)]
+    market = xsb.Market(bars={s: {d: xsb.Bar(open=10 + i, close=10 + i + 0.01 * k * ((i % 5) - 2), quote_volume=1e3 * (i + 1) + k)
+                                  for k, d in enumerate(days)} for i, s in enumerate(syms)}, funding={})
+    market.metrics = {s: {d: {"oi": 50 * (i + 1) + k} for k, d in enumerate(days)} for i, s in enumerate(syms)}
+    market.hourly_values = {s: {d: {"price_delay_30": ((i * 7 + k) % 11) / 11} for k, d in enumerate(days)}
+                            for i, s in enumerate(syms)}
+    span = (date(2021, 1, 1), date(2021, 5, 30))
+    monkeypatch.setattr(sl.lab, "MIN_DECISIONS", 3)
+    members, ds = sl.lab.tier_members(market, span), sl.lab.decisions(span, 7)
+    plan = {t: [(d, members[t].get(date(d.year, d.month, 1), ())) for d in ds] for t in sl.lab.TIERS}
+    kin = {t: ("vol_30", "illiquidity_30") for t in sl.lab.TIERS}
+    over = sl.lab.tier_overlap(market, sl.lab.hv.reader("price_delay_30"), plan, kin)
+    recorded = {"first_decision": ds[0].isoformat(), "price_delay_30": {
+        "coverage": sl.lab.hv.coverage(market, "price_delay_30", members, ds),
+        "overlap": {"tiers": {t: {"kin": {**over[t]["kin"], "r2_btc_30": {"decisions": 1}}} for t in sl.lab.TIERS}}}}
+    back = sl.leverage_reproduce(market, "upper", recorded, span)
+    assert back["same"] and back["compared"] > 0, "an unregistered kin (r2_btc_30) is left out, not compared"
+    recorded["price_delay_30"]["coverage"]["top30"]["cells"] += 1
+    moved = sl.leverage_reproduce(market, "upper", recorded, span)
+    assert not moved["same"] and moved["differ"][0][:3] == ["top30", "coverage", "cells"]
+    assert not sl.leverage_reproduce(market, "upper", {}, span)["same"], "nothing compared is not a reproduction"
+
+
+def test_r1_on_ranks_101_is_closed_by_a_struck_book_it_rebuilds(monkeypatch):
+    market, days = _r1_market(days=60, symbols=tuple(f"S{i}USDT" for i in range(12)))
+    noise = lambda m, s, d: int(xsb.random_key("r1-lower", d, s)[:8], 16) / 16 ** 8
+
+    class Tier:
+        def __init__(self):
+            self.days = days[30:]
+
+        def weigher(self, read, way):
+            def build(m, members, day, signal):
+                values = {s: v for s in m.bars if (v := read(m, s, day)) is not None}
+                mean = sum(values.values()) / len(values) if values else 0.0
+                return {s: way * (v - mean) for s, v in values.items()}
+            return build
+    monkeypatch.setattr(sl, "lower_sweep_tier", lambda market, span=None: Tier())
+    monkeypatch.setattr(sl, "skip_day_return", noise)
+    registry = {"twin": ("positioning", sl.lab.OI_TURNOVER), "far": ("price_volume", noise),
+                "deep": ("depth", noise), "kept": ("price_volume", noise)}
+    monkeypatch.setattr(sl.lab, "variables", lambda: registry)
+    monkeypatch.setattr(sl, "lower_out", lambda: {"twin": "struck", "far": "struck", "deep": "no files"})
+    monkeypatch.setattr(sl, "lower_refused_groups", lambda: set())
+    out = sl.r1_lower_overlap(market)
+    assert out["compared"] == ["H-R1", "far", "twin"], "depth is not loaded; an unstruck variable is not compared"
+    assert out["closed_by"] == ["twin"] and not out["passes"] and out["returns_computed"] is False
+    monkeypatch.setattr(sl, "lower_out", lambda: {"far": "struck"})
+    assert sl.r1_lower_overlap(market)["passes"]
+
+
+def test_the_r1_lower_overlap_command_needs_the_recorded_overlap_and_the_sealed_files(monkeypatch, tmp_path):
+    monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
+    monkeypatch.setenv("RESEARCH_CACHE", str(tmp_path))
+    assert sl.main(["r1-lower-overlap"]) == sl.EXIT_USAGE
+    check = tmp_path / "overlap.json"
+    check.write_text("{}", encoding="utf-8")
+    assert sl.main(["r1-lower-overlap", "--check", str(check)]) == sl.EXIT_BLOCKED

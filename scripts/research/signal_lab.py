@@ -34,7 +34,7 @@ import statistics
 import sys
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -47,6 +47,8 @@ from scripts.research import basket_search as bs  # noqa: E402
 from scripts.research import cross_section_basket as xsb  # noqa: E402
 from scripts.research import depth_basket_search as ds  # noqa: E402
 from scripts.research import forward_panel as fp  # noqa: E402
+from scripts.research import hourly_vars as hv  # noqa: E402
+from scripts.research import lake  # noqa: E402
 from scripts.research import metrics_basket_search as ms  # noqa: E402
 from scripts.research import regime_strategies as rg  # noqa: E402
 from scripts.research import spot_share_search as sp  # noqa: E402
@@ -55,14 +57,21 @@ SPEC = "STRATEGY_RESEARCH_REBUILD_V0.1"
 SPAN = bs.DEV                              # 2020-01-01 .. 2024-12-31; nothing later is read
 HORIZONS = (7, 28)                         # days held; 28 is read on every fourth decision so windows do not overlap
 TIERS = {"top30": (0, 30), "rank31_100": (30, 100)}    # by the month's trailing volume, highest first
+# Round 40 (section 57): H-R1's tier, read by its own runs only. Its members come per decision day from
+# ``strategy_ladder.LowerTier``; it is never one of TIERS, so the existing tiers' cells and lines cannot move.
+LOWER_TIER_NAME = "rank101_liquid"
 LOOKBACK = 30
 MIN_NAMES = 8                              # coins a decision needs before its cross-section is ranked
 MIN_DECISIONS = 20                         # decisions a cell needs before it shows a number
 MIN_SPELLS = 4                             # separate stretches a scenario cell needs: one long bull run is one sample
 REFERENCE_DECISIONS = 52                   # trailing decisions a scenario's own median is taken over
 REFERENCE_MIN = 26
-CONTROLS_WEEKLY = 25                       # random variables redrawn at every decision
-CONTROLS_FIXED = 25                        # random variables fixed per coin, like a slow characteristic
+CONTROLS_WEEKLY = 62                       # random variables redrawn at every decision (25, 28, 32, 42, 44, 47, 50, 53, 55, 57, 60 as the registry grew)
+CONTROLS_FIXED = 62                        # random variables fixed per coin, like a slow characteristic
+CONTROLS_BEFORE_SPOT_FLOW = 53                # each kind's count before section 67 added two variables: the old lines' set
+CONTROLS_BEFORE_SHAPES = 55                   # each kind's count before section 69 added two more: round 49's lines' set
+CONTROLS_BEFORE_WINDOWS = 57                  # each kind's count before section 76 added three: round 51's lines' set
+CONTROLS_BEFORE_HOURLY = 60                   # each kind's count before section 87 added two: round 58's lines' set
 EXTREME_MOVE = 0.30                        # a daily close-to-close move this large is an extreme day
 WILD_MOVE = 0.50                           # a coin whose largest daily move in the lookback reached this is wild
 AGE_CAP_DAYS = 1000                        # listing age is read up to here; older coins are alike
@@ -70,7 +79,37 @@ CANDIDATE_CAP = 3
 MIN_PERSISTENCE = 0.5                      # week-to-week rank correlation a lead needs: one-day reversal died on cost
 # Axes at rest (STRATEGY_DISCOVERY_LOOP_V0.1 section 18): two checks in a row, none beat its placebos. Their cells
 # are still mapped and shown; a cell on a resting axis is not a lead.
-RESTING_AXES = frozenset({"trend", "vol", "dispersion", "heat", "universe"})
+# "breadth" (section 34, 2026-11-14) is born at rest: a new axis has to beat its own placebo axes before any of its
+# cells may be a lead.
+RESTING_AXES = frozenset({"trend", "vol", "dispersion", "heat", "universe", "breadth"})
+AXES = ("trend", "vol", "dispersion", "heat", "universe", "breadth")       # the order cells and checks list them in
+# Axes under check (section 36): labelled and checked beside their placebos, never mapped. One that beats its
+# placebos at its own level may join AXES in a later round. Leverage (section 38) has a label only where the
+# positioning values are attached, so it is checked in a run that loads them.
+CANDIDATE_AXES = ("dominance", "volume", "correlation", "drawdown", "month", "leverage")
+AXIS_ALPHA = 0.05                          # an axis is held to this over its place in the order axes were checked in
+# The map's six axes cut finer (section 39): the five that split at their own median are cut at their own thirds,
+# and a trend state is cut into a spell's first decisions and the rest. Checked beside placebos, never mapped.
+FINER_OF = {"trend_fine": "trend", "vol_fine": "vol", "dispersion_fine": "dispersion", "heat_fine": "heat",
+            "universe_fine": "universe", "breadth_fine": "breadth"}
+FINER_AXES = tuple(FINER_OF)
+EARLY_DECISIONS = 4                        # a trend spell's first four weekly decisions are "early": a month
+# Section 40: how far apart the top tier's coins' funding stands. Checked like the finer axes, never mapped.
+LATE_AXES = ("funding_spread",)
+# breadth was the first new axis; each later one meets a stricter level
+AXIS_ORDER = ("breadth",) + CANDIDATE_AXES + FINER_AXES + LATE_AXES
+# Section 40: a variable with a file and no record is first ranked beside its nearest registered kin, on inputs
+# alone. One that orders the top tier's coins as a kin does (this rank correlation or more, either sign) is that
+# kin read again, and is not mapped.
+OVERLAP_MAX = 0.8
+DRAWDOWN_DAYS = 365                        # the reference coin's high is looked for over these days
+MONTH_START_DAYS = 7                       # a decision in the month's first week is "start"
+
+
+def axis_level(axis: str) -> float | None:
+    """The share of placebo axes a new axis must beat: :data:`AXIS_ALPHA` over its place in :data:`AXIS_ORDER`.
+    Checking several axes at one level each wakes one by chance; the first five axes have no level (they rest)."""
+    return AXIS_ALPHA / (AXIS_ORDER.index(axis) + 1) if axis in AXIS_ORDER else None
 REFERENCE = bs.REFERENCE
 
 Variable = Callable[[xsb.Market, str, date], "float | None"]
@@ -85,6 +124,68 @@ def _control(kind: str, k: int) -> Variable:
         stamp = day if kind == "week" else date(2000, 1, 1)
         return int(xsb.random_key(f"{SPEC}|{kind}|{k}", stamp, symbol)[:12], 16) / 16 ** 12
     return value
+
+
+def _change(level: Variable) -> Variable:
+    """A registered level at the decision day less the same level one :data:`LOOKBACK` earlier (section 3.1's first
+    shape: the change against the period before). Both readings are of that day and earlier."""
+    def value(market: xsb.Market, symbol: str, day: date) -> float | None:
+        now, before = level(market, symbol, day), level(market, symbol, day - timedelta(days=LOOKBACK))
+        return None if now is None or before is None else now - before
+    return value
+
+
+# The positioning levels whose 30-day change is registered (STRATEGY_DISCOVERY_LOOP_V0.1 section 33). Open interest
+# is already a change; the divergence is the difference of two of these and its change adds no reading of its own.
+CHANGE_OF = {"ls_change": "ls_level", "top_change": "top_level", "taker_change": "taker_level",
+             # Section 35: the rest of the change shape, after the strikes written there.
+             "momentum_change": "momentum", "funding_change": "funding", "spot_share_change": "spot_share",
+             "taker_buy_share_change": "taker_buy_share"}
+
+
+SPREAD_LOOKBACKS = (7, 14, 90)             # section 3.1's fourth shape for the two late levels (the name is the first's)
+# Section 76: the spot taker-buy share at the same other lookbacks. Sixty-two variables pass what the two upper tiers'
+# per-variable axis family can correct for (7,200 placebos reach 60 x 2 x 6), so these three stay out of it by name;
+# every sweep family is capped at 60 in code (strategy_ladder.FAMILY_MAX).
+SPOT_TAKER_LOOKBACKS = SPREAD_LOOKBACKS
+AXIS_FAMILY_OUT = {f"spot_taker_share_{lookback}": "no room in the two upper tiers' axis family: 62 x 2 x 6 = 744 > 720 (section 76)"
+                   for lookback in SPOT_TAKER_LOOKBACKS}
+# Section 87: the family holds sixty variables (60 x 2 x 6 = 720); one of the two hourly ones fits, the price delay
+# first (section 85.4's order).
+AXIS_FAMILY_OUT["volume_peak_share_30"] = "no room in the two upper tiers' axis family: 61 x 2 x 6 = 732 > 720 (section 87)"
+LATE_LEVELS = ("spread", "premium")        # levels registered after the shape rounds; each gets its change and position
+HISTORY_POINTS = 6                         # a level's own history: its value at each of the six lookbacks before
+HISTORY_MIN = 4                            # of those points must be there, or the coin has no position that day
+
+
+def _position(level: Variable) -> Variable:
+    """Where a registered level stands against the coin's own recent past (section 3.1's second shape): the level
+    at the decision day less the mean of the same level at the :data:`HISTORY_POINTS` earlier lookbacks, over their
+    spread. Unlike a number taken off every coin alike, this is centred coin by coin, so it changes the ranks.
+    Every reading is of the decision day or earlier."""
+    def value(market: xsb.Market, symbol: str, day: date) -> float | None:
+        now = level(market, symbol, day)
+        past = [v for v in (level(market, symbol, day - timedelta(days=LOOKBACK * k)) for k in range(1, HISTORY_POINTS + 1))
+                if v is not None]
+        if now is None or len(past) < HISTORY_MIN:
+            return None
+        spread = statistics.pstdev(past)
+        return (now - statistics.fmean(past)) / spread if spread > 0 else None
+    return value
+
+
+# The levels whose own-history position is registered (section 37, after the strikes written there).
+POSITION_OF = {"momentum_position": "momentum", "funding_position": "funding", "ls_position": "ls_level",
+               "top_position": "top_level", "taker_position": "taker_level", "spot_share_position": "spot_share",
+               "taker_buy_share_position": "taker_buy_share", "trade_size_position": "trade_size"}
+
+
+def _residual_momentum(market: xsb.Market, symbol: str, day: date) -> float | None:
+    """The coin's month less its beta times the reference coin's month (section 3.1's third shape). Taking the
+    market's move off every coin alike would change no rank; the beta is the coin's own, so this does."""
+    own, market_move = xsb.trailing_return(market, symbol, day, LOOKBACK), xsb.trailing_return(market, REFERENCE, day, LOOKBACK)
+    beta = bs._beta(market, symbol, day, LOOKBACK)
+    return None if own is None or market_move is None or beta is None else own - beta * market_move
 
 
 def _daily_moves(market: xsb.Market, symbol: str, day: date, lookback: int) -> list[float] | None:
@@ -183,7 +284,56 @@ def variables() -> dict[str, tuple[str, Variable]]:
     out[f"taker_buy_share_{LOOKBACK}"] = ("trade_flow", _taker_buy_share)
     out[f"trade_size_{LOOKBACK}"] = ("trade_flow", _trade_size)
     out[f"trade_size_growth_{LOOKBACK}"] = ("trade_flow", _trade_size_growth)
+    # Added 2026-11-14 (section 33): "the change of positioning", which the first inventory listed as there and unread.
+    for name, base in CHANGE_OF.items():
+        group, level = out[f"{base}_{LOOKBACK}"]
+        out[f"{name}_{LOOKBACK}"] = (group, _change(level))
+    # Added 2026-11-14 (section 37): the second and third shapes. The fourth (other lookbacks) left no survivor.
+    for name, base in POSITION_OF.items():
+        group, level = out[f"{base}_{LOOKBACK}"]
+        out[f"{name}_{LOOKBACK}"] = (group, _position(level))
+    out[f"residual_momentum_{LOOKBACK}"] = ("price_volume", _residual_momentum)
+    # Added 2026-11-14 (section 40): two readings with a file and no record. Each was first ranked beside its kin on
+    # inputs alone (0.13 and 0.72 on the top tier, under the 0.8 that would have made it that kin read again).
+    out[f"spread_{LOOKBACK}"] = ("price_volume", _spread)
+    out[f"premium_{LOOKBACK}"] = ("premium", _premium)
+    # Added 2026-11-14 (section 41): the two new levels' shapes. No strike written in sections 33 or 37 covers them.
+    for base in LATE_LEVELS:
+        group, level = out[f"{base}_{LOOKBACK}"]
+        out[f"{base}_change_{LOOKBACK}"] = (group, _change(level))
+        out[f"{base}_position_{LOOKBACK}"] = (group, _position(level))
+    # Added 2026-11-14 (section 42): the spread at the other lookbacks. No closed reading strikes them (section 37.2's
+    # rule); the premium's are struck there. They are levels at another window and get no shape.
+    for lookback in SPREAD_LOOKBACKS:
+        out[f"spread_{lookback}"] = ("price_volume", _with_lookback(_spread, lookback))
+    # Added 2026-11-14 (section 43): the premium's too. Section 40 struck them on grounds that did not stand.
+    for lookback in SPREAD_LOOKBACKS:
+        out[f"premium_{lookback}"] = ("premium", _with_lookback(_premium, lookback))
+    # Added 2026-11-16 (section 67): the spot pair's trade flow, after both passed the overlap on inputs (0.34 and
+    # 0.72 with the perp's own, under 0.8). Its own group, so the spot and trade-flow groups read what they read.
+    out[f"spot_taker_share_{LOOKBACK}"] = ("spot_flow", _spot_taker_share)
+    out[f"spot_trade_size_{LOOKBACK}"] = ("spot_flow", _spot_trade_size)
+    # Added 2026-11-17 (section 69): the taker-buy share's two shapes, after both passed the overlap on inputs (0.32
+    # and 0.23 with the perp's own shapes, under 0.8). The trade size's shapes are not added (section 68.5).
+    out[f"spot_taker_share_change_{LOOKBACK}"] = ("spot_flow", _change(_spot_taker_share))
+    out[f"spot_taker_share_position_{LOOKBACK}"] = ("spot_flow", _position(_spot_taker_share))
+    # Added 2026-11-18 (section 76): the spot taker-buy share at the other lookbacks. No closed reading strikes them
+    # (section 37.2's rule; section 73.4); its rank persistence (0.89) is not the slow trade size's 0.98. Levels at
+    # another window, so no shape (section 42).
+    for lookback in SPOT_TAKER_LOOKBACKS:
+        out[f"spot_taker_share_{lookback}"] = ("spot_flow", _with_lookback(_spot_taker_share_over, lookback))
+    # Added 2026-11-19 (section 87): the first variables from the hourly bars, after both passed coverage, overlap
+    # and persistence on inputs (section 86.4). Their own group; the values are attached by :func:`hold_hourly`.
+    for name in HOURLY_CANDIDATES:
+        out[name] = ("hourly", hv.reader(name))
     return out
+
+
+def earlier_control_cells(cells: Sequence[Mapping[str, Any]], count: int = CONTROLS_BEFORE_SPOT_FLOW) -> list[Mapping[str, Any]]:
+    """The cells of the first ``count`` random variables of each kind: the set the lines were drawn from before
+    section 67, so a run can show the old lines again before a new one is read."""
+    keep = {f"control_{kind}_{k:02d}" for kind in ("week", "fixed") for k in range(count)}
+    return [c for c in cells if c["variable"] in keep]
 
 
 def controls() -> dict[str, tuple[str, Variable]]:
@@ -197,7 +347,7 @@ def controls() -> dict[str, tuple[str, Variable]]:
 def cut_market(market: xsb.Market, span: tuple[date, date] = SPAN) -> xsb.Market:
     """``market`` with no bar, settlement or attached series after the span's last day."""
     held = bs.cut(market, span[1])
-    for name in ("metrics", "depth", "spot", "trade_flow"):
+    for name in ("metrics", "depth", "spot", "trade_flow", "spot_flow"):
         series = getattr(market, name, None)
         if series is not None:
             setattr(held, name, {s: {d: v for d, v in days.items() if d <= span[1]} for s, days in series.items()})
@@ -239,6 +389,276 @@ def _median_split(value: float | None, history: Sequence[float], high: str, low:
     return high if value > statistics.median(history) else low
 
 
+def _spread(market: xsb.Market, symbol: str, day: date, lookback: int = LOOKBACK) -> float | None:
+    """A spread estimated from daily highs, lows and closes over the lookback: with ``c`` the log close and ``m`` the
+    middle of the log high and log low, the root of the mean of ``4 (c_t - m_t)(c_t - m_{t+1})`` over the day pairs
+    that end by ``day``, and zero where that mean is negative. A close far from both days' middles is a wide spread."""
+    bars = market.bars.get(symbol) or {}
+    terms = []
+    for k in range(lookback):
+        now, after = bars.get(day - timedelta(days=k + 1)), bars.get(day - timedelta(days=k))
+        if any(b is None or b.high is None or b.low is None or min(b.high, b.low, b.close) <= 0 for b in (now, after)):
+            continue
+        middle = lambda b: (math.log(b.high) + math.log(b.low)) / 2          # noqa: E731
+        terms.append(4 * (math.log(now.close) - middle(now)) * (math.log(now.close) - middle(after)))
+    if len(terms) < math.ceil(lookback * bs.MIN_SHARE):
+        return None
+    return math.sqrt(max(0.0, statistics.fmean(terms)))
+
+
+def _premium(market: xsb.Market, symbol: str, day: date, lookback: int = LOOKBACK) -> float | None:
+    """The mean of the premium index's daily close over the lookback: how far the perp has stood from its index."""
+    series = (getattr(market, "premium", None) or {}).get(symbol) or {}
+    values = [series[d] for d in (day - timedelta(days=k) for k in range(lookback)) if d in series]
+    return statistics.fmean(values) if len(values) >= math.ceil(lookback * bs.MIN_SHARE) else None
+
+
+# Section 66: the metrics files' top-trader ACCOUNTS ratio, which no variable read (section 65.3). The registered
+# positioning levels read the top traders' POSITIONS ratio ("top"), all accounts ("ls") and the taker ratio.
+ACCOUNTS_COLUMN = "count_toptrader_long_short_ratio"
+ACCOUNTS_DAILY = "metrics-accounts-daily"               # from the shared root alone, as the top tiers' positioning is
+ACCOUNTS_DAILY_LOWER = "metrics-accounts-daily-lower"   # ranks 101+: both roots, as round 45's daily file is
+
+
+def accounts_value(rows: Iterable[Mapping[str, str]], day: date) -> float | None:
+    """One UTC day's top-trader accounts long share, by ``metrics_basket_search.daily_values``'s own rule: the mean of
+    ratio / (1 + ratio) over the day's own rows, None under ``MIN_ROWS``."""
+    seen = []
+    for row in rows:
+        if str(row.get("create_time"))[:10] != day.isoformat():
+            continue
+        try:
+            value = float(row.get(ACCOUNTS_COLUMN) or "")
+        except ValueError:
+            continue
+        if math.isfinite(value) and value > 0:
+            seen.append(value / (1 + value))
+    return statistics.fmean(seen) if len(seen) >= ms.MIN_ROWS else None
+
+
+def load_accounts(cache: Path, folder: str = ACCOUNTS_DAILY) -> dict[str, dict[date, float | None]]:
+    out: dict[str, dict[date, float | None]] = {}
+    for path in sorted((cache / "derived" / folder).glob("*.jsonl")) if (cache / "derived" / folder).exists() else []:
+        days = {}
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                row = json.loads(line)
+                days[date.fromisoformat(row[0])] = row[1]
+        out[path.stem] = days
+    return out
+
+
+def with_accounts(metrics: Mapping[str, Mapping[date, Mapping[str, Any]]], accounts: Mapping[str, Mapping[date, float | None]],
+                  end: date) -> dict[str, dict[date, dict[str, Any]]]:
+    """The positioning values with ``top_account`` beside them, day by day, up to ``end``. A day the accounts file has
+    and the positioning file lacks carries the accounts value alone."""
+    out: dict[str, dict[date, dict[str, Any]]] = {}
+    for symbol in set(metrics) | set(accounts):
+        days: dict[date, dict[str, Any]] = {d: dict(v) for d, v in (metrics.get(symbol) or {}).items() if d <= end}
+        for d, v in (accounts.get(symbol) or {}).items():
+            if d <= end:
+                days.setdefault(d, {})["top_account"] = v
+        out[symbol] = days
+    return out
+
+
+def hold_top_account(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | None:
+    """The top tiers' market with the shared positioning values and the accounts values attached (the kin read the
+    first, the new readings the second). None when either derived file is missing."""
+    held = hold(cache, span, attach=False)
+    daily, accounts = ms.load_daily(cache), load_accounts(cache)
+    if held is None or not daily or not accounts:
+        return None
+    held.metrics = with_accounts(daily, accounts, span[1])
+    return held
+
+
+_top_account_level = _with_lookback(ms._level("top_account"))
+
+
+# Section 67: the spot klines' trade count and taker-buy columns, which no variable read (section 65.3). The perp's
+# own columns are read by the trade-flow group; these are the same columns of the coin's spot pair.
+def attach_spot_flow(held: xsb.Market, roots: Sequence[Path], end: date) -> xsb.Market:
+    """Hang each spot pair's ``{day: (taker-buy share of quote volume, quote volume per trade)}`` from the monthly
+    zips under ``roots`` (by :func:`read_trade_flow`, the perp's reader), cut at ``end``."""
+    flow: dict[str, dict[date, tuple[float, float]]] = {}
+    for root in roots:
+        folder = root / sp.KLINES
+        for pair in sorted(p for p in folder.iterdir() if p.is_dir()) if folder.exists() else []:
+            flow.setdefault(pair.name, {}).update({d: v for d, v in read_trade_flow(pair).items() if d <= end})
+    held.spot_flow = flow
+    return held
+
+
+def _spot_flow_window(market: xsb.Market, symbol: str, day: date, lookback: int = LOOKBACK) -> list[tuple[float, float]] | None:
+    """The spot pair's flow values over the lookback, on the days S01 counts as the same asset (both closes there,
+    the perp's within ``spot_share_search.PRICE_BAND`` of the spot's); None under the usual share of days."""
+    link = getattr(market, "spot_of", {}).get(symbol)
+    if link is None:
+        return None
+    pair, multiple = link
+    perp = market.bars.get(symbol) or {}
+    spot = (getattr(market, "spot", {}) or {}).get(pair) or {}
+    flow = (getattr(market, "spot_flow", {}) or {}).get(pair) or {}
+    kept = []
+    for k in range(lookback):
+        d = day - timedelta(days=k)
+        a, b, f = perp.get(d), spot.get(d), flow.get(d)
+        if a is None or b is None or f is None or a.close <= 0 or b.close <= 0:
+            continue
+        if abs(a.close / (multiple * b.close) - 1) <= sp.PRICE_BAND:
+            kept.append(f)
+    return kept if len(kept) >= math.ceil(lookback * bs.MIN_SHARE) else None
+
+
+def _spot_taker_share_over(market: xsb.Market, symbol: str, day: date, lookback: int) -> float | None:
+    values = _spot_flow_window(market, symbol, day, lookback)
+    return None if values is None else statistics.fmean(v[0] for v in values)
+
+
+def _spot_taker_share(market: xsb.Market, symbol: str, day: date) -> float | None:
+    return _spot_taker_share_over(market, symbol, day, LOOKBACK)
+
+
+def _spot_trade_size(market: xsb.Market, symbol: str, day: date) -> float | None:
+    values = _spot_flow_window(market, symbol, day)
+    return None if values is None else statistics.fmean(v[1] for v in values)
+
+
+def hold_spot_flow(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | None:
+    """The top tiers' market with the perp's trade flow (the kin read it), the spot bars and pairs (the spot share
+    and the same-asset rule read them) and the spot pairs' flow attached. None when a piece is missing."""
+    held = hold(cache, span, attach=False, flow=True)
+    try:
+        listing = set(json.loads((cache / sp.SPOT_DIR / ba.SYMBOLS_FILENAME).read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        listing = set()
+    if held is None or not listing:
+        return None
+    held = sp.attach(held, xsb.load_market(cache / sp.SPOT_DIR, funding=False), listing, span[1], sp.months_on_disk(cache))
+    return attach_spot_flow(held, [cache / sp.SPOT_DIR], span[1])
+
+# name: (the group whose data it reads, the reading, the registered kin it is ranked beside)
+OVERLAP_CANDIDATES: dict[str, tuple[str, Variable, tuple[str, ...]]] = {
+    "spread_30": ("price_volume", _spread, ("range_30", "illiquidity_30", "vol_30")),
+    "premium_30": ("premium", _premium, ("funding_7", "funding_30")),
+    # Section 66: each shape beside the same shape of the positioning levels it could repeat.
+    "top_account_30": ("top_account", _top_account_level, ("top_level_30", "ls_level_30", "divergence_30")),
+    "top_account_change_30": ("top_account", _change(_top_account_level), ("top_change_30", "ls_change_30")),
+    "top_account_position_30": ("top_account", _position(_top_account_level), ("top_position_30", "ls_position_30")),
+    # Section 67: the spot pair's flow beside the perp's own flow and the spot share.
+    "spot_taker_share_30": ("spot_flow", _spot_taker_share, ("taker_buy_share_30", "spot_share_30")),
+    "spot_trade_size_30": ("spot_flow", _spot_trade_size, ("trade_size_30", "spot_share_30")),
+    # Section 69: the spot taker-buy share's two shapes beside the same shapes of the perp's share and the spot share.
+    "spot_taker_share_change_30": ("spot_flow", _change(_spot_taker_share), ("taker_buy_share_change_30", "spot_share_change_30")),
+    "spot_taker_share_position_30": ("spot_flow", _position(_spot_taker_share),
+                                     ("taker_buy_share_position_30", "spot_share_position_30")),
+    # Section 86: the two hourly variables beside all nine struck variables and the nearest daily ones; the price
+    # delay also beside its own window's R² with BTC (more regressors raise R², so a low R²₀ alone can raise it).
+    "price_delay_30": ("hourly", hv.reader("price_delay_30"),
+                       ("vol_30", "idio_vol_30", "max_30", "skew_30", "range_30", "beta_30", "extreme_days_30",
+                        "spread_change_30", "trade_size_position_30", "illiquidity_30", "momentum_30", "r2_btc_30")),
+    "volume_peak_share_30": ("hourly", hv.reader("volume_peak_share_30"),
+                             ("vol_30", "idio_vol_30", "max_30", "skew_30", "range_30", "beta_30", "extreme_days_30",
+                              "spread_change_30", "trade_size_position_30", "illiquidity_30", "momentum_30",
+                              "volume_growth_30", "trade_size_30")),
+}
+# Kin that are not registered variables (section 86): read only as an overlap's comparison.
+OVERLAP_EXTRA_KIN: dict[str, tuple[str, Variable]] = {"r2_btc_30": ("hourly", hv.reader("r2_btc_30"))}
+HOURLY_CANDIDATES = ("price_delay_30", "volume_peak_share_30")
+COVERAGE_MIN = 0.80                          # section 57.3
+
+
+def overlap(market: xsb.Market, name: str, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """How alike a candidate and each of its kin order a tier's coins: at every weekly decision the rank correlation
+    of the two over the coins with both, then the median over decisions. Reads no return. The rule reads the top
+    tier: at :data:`OVERLAP_MAX` or more with any kin, either sign, the candidate is not mapped."""
+    _, read, kin = OVERLAP_CANDIDATES[name]
+    registered = {**variables(), **OVERLAP_EXTRA_KIN}
+    tiers = tier_members(market, span)
+    out: dict[str, Any] = {}
+    for tier, monthly in tiers.items():
+        rows: dict[str, list[float]] = {k: [] for k in kin}
+        ranked = values = zeros = 0
+        for day in decisions(span, HORIZONS[0]):
+            own = {s: v for s in monthly.get(date(day.year, day.month, 1), ()) if (v := read(market, s, day)) is not None}
+            ranked += len(own) >= MIN_NAMES
+            values, zeros = values + len(own), zeros + sum(1 for v in own.values() if v == 0)
+            for k in kin:
+                pairs = [(own[s], v) for s in own if (v := registered[k][1](market, s, day)) is not None]
+                if len(pairs) >= MIN_NAMES and (rho := rank_correlation(pairs)) is not None:
+                    rows[k].append(rho)
+        out[tier] = {"decisions_ranked": ranked, "share_at_zero": round(zeros / values, 4) if values else None,
+                     "kin": {k: {"decisions": len(v), "median_rank_correlation": round(statistics.median(v), 4) if v else None}
+                             for k, v in rows.items()}}
+    top = {k: abs(v["median_rank_correlation"]) for k, v in out["top30"]["kin"].items()
+           if v["median_rank_correlation"] is not None and v["decisions"] >= MIN_DECISIONS}
+    nearest = max(top, key=top.get) if top else None
+    return {"candidate": name, "tiers": out, "threshold": OVERLAP_MAX, "nearest_kin": nearest,
+            "compared": bool(top), "mapped": bool(top) and top[nearest] < OVERLAP_MAX}
+
+
+def attach_hourly(market: xsb.Market, archive: Path, span: tuple[date, date] = SPAN) -> xsb.Market:
+    """The two hourly variables' values (section 87) on ``market`` as ``hourly_values``: built at every weekly
+    rebalance day of the span (the map's decisions and every book's) for the coins in that month's top 100."""
+    tiers = tier_members(market, span)
+    wanted: dict[str, list[date]] = {}
+    for day in xsb.held_days(span[0], span[1]):
+        if not xsb.is_rebalance_day(bs.CADENCE, day):
+            continue
+        for tier in TIERS:
+            for symbol in tiers[tier].get(date(day.year, day.month, 1), ()):
+                wanted.setdefault(symbol, []).append(day)
+    market.hourly_values, _ = hv.build(archive, wanted, span)
+    return market
+
+
+def hold_hourly(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | None:
+    """The market with the hourly variables attached. None when a piece is missing, including no hourly value at
+    all: a group whose values are not attached would map as "too few decisions" and look like a result."""
+    held = hold(cache, span, attach=False)
+    if held is None:
+        return None
+    attach_hourly(held, cache / "archive", span)
+    return held if held.hourly_values else None
+
+
+def hourly_doors(market: xsb.Market, archive: Path, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """Section 86's three input-only doors for the two hourly variables: coverage (section 57.3, from the first
+    decision whose window can be full), overlap (section 40's rule) and rank persistence. Builds the values only for
+    the coins in the month's top 100, at the weekly decisions; reads no return."""
+    tiers = tier_members(market, span)
+    days = decisions(span, HORIZONS[0])
+    wanted: dict[str, list[date]] = {}
+    for day in days:
+        for tier in TIERS:
+            for symbol in tiers[tier].get(date(day.year, day.month, 1), ()):
+                wanted.setdefault(symbol, []).append(day)
+    values, first_hour = hv.build(archive, wanted, span)
+    market.hourly_values = values
+    full = [d for d in days if first_hour is not None and hv.window_end(d) - hv.WINDOW - hv.LAGS >= first_hour]
+    out: dict[str, Any] = {"decisions": len(days), "decisions_window_full": len(full),
+                           "first_decision": full[0].isoformat() if full else None, "coins_built": len(values)}
+    for name in HOURLY_CANDIDATES:
+        cover = hv.coverage(market, name, tiers, full)
+        over = overlap(market, name, span)
+        passes = {tier: cover[tier]["share"] is not None and cover[tier]["share"] >= COVERAGE_MIN
+                  and cover[tier]["share_out_next_month"] is not None and cover[tier]["share_out_next_month"] >= COVERAGE_MIN
+                  and over["mapped"] for tier in ("top30", "rank31_100")}
+        out[name] = {"coverage": cover, "overlap": over, "persistence": hv.persistence(market, name, tiers, full, rank_correlation),
+                     "doors_pass_by_tier": passes}
+    return out
+
+
+def _third_split(value: float | None, history: Sequence[float], high: str, low: str) -> str | None:
+    """Where the value stands among its own earlier values: two thirds or more of them under it is ``high``, fewer
+    than a third is ``low``, and between is ``mid``. A ``high`` here is a ``high`` of :func:`_median_split` too."""
+    if value is None or len(history) < REFERENCE_MIN:
+        return None
+    under = sum(1 for h in history if h < value)
+    return high if 3 * under >= 2 * len(history) else low if 3 * under < len(history) else "mid"
+
+
 def scenario_labels(market: xsb.Market, monthly: Mapping[date, Sequence[str]], days: Sequence[date],
                     span: tuple[date, date] = SPAN) -> dict[date, dict[str, str]]:
     """``{decision: {axis: label}}``, each label read from that day and earlier. ``monthly`` is the top tier."""
@@ -267,28 +687,106 @@ def scenario_labels(market: xsb.Market, monthly: Mapping[date, Sequence[str]], d
         moves = [m for m in (_daily_moves(market, s, day, LOOKBACK) for s in members(day)) if m is not None]
         return sum(1 for m in moves if max(m) >= WILD_MOVE) / len(moves) if len(moves) >= MIN_NAMES else None
 
+    def funding_spread(day: date) -> float | None:
+        """How far apart the top tier's coins' week of funding stands: the spread of what :func:`heat` takes the middle of."""
+        values = [v for v in (xsb.trailing_funding(market, s, day, 7) for s in members(day)) if v is not None]
+        return statistics.pstdev(values) if len(values) >= MIN_NAMES else None
+
+    def breadth(day: date) -> float | None:
+        """The share of the top tier's coins that are up over the last seven days."""
+        values = [v for v in (xsb.trailing_return(market, s, day, 7) for s in members(day)) if v is not None]
+        return sum(1 for v in values if v > 0) / len(values) if len(values) >= MIN_NAMES else None
+
+    def dominance(day: date) -> float | None:
+        """The reference coin's month against the median of the top tier's other coins: who led."""
+        own = xsb.trailing_return(market, REFERENCE, day, LOOKBACK)
+        others = [v for v in (xsb.trailing_return(market, s, day, LOOKBACK) for s in members(day) if s != REFERENCE)
+                  if v is not None]
+        return None if own is None or len(others) < MIN_NAMES else own - statistics.median(others)
+
+    def volume(day: date) -> float | None:
+        """The top tier's quote volume over the last seven days, summed over the coins with all seven."""
+        totals = []
+        for symbol in members(day):
+            bars = market.bars.get(symbol) or {}
+            week = [bars[d].quote_volume for d in (day - timedelta(days=k) for k in range(7)) if d in bars]
+            if len(week) == 7:
+                totals.append(sum(week))
+        return sum(totals) if len(totals) >= MIN_NAMES else None
+
+    def correlation(day: date) -> float | None:
+        """The mean correlation between pairs of the top tier's coins, on a month of daily moves."""
+        series = []
+        for symbol in members(day):
+            bars = market.bars.get(symbol) or {}
+            closes = [bars.get(day - timedelta(days=k)) for k in range(LOOKBACK + 1)]
+            if all(b is not None and b.close > 0 for b in closes):
+                moves = [closes[k].close / closes[k + 1].close - 1 for k in range(LOOKBACK)]
+                if len(set(moves)) > 1:
+                    series.append(moves)
+        if len(series) < MIN_NAMES:
+            return None
+        return statistics.fmean(statistics.correlation(a, b) for i, a in enumerate(series) for b in series[i + 1:])
+
+    def leverage(day: date) -> float | None:
+        """The top tier's open interest against its trading: per coin, the week's open interest in quote terms (the
+        positioning files give contracts, so each day's is multiplied by that day's close) over the week's quote
+        volume; then the median over the coins with all seven days of both. None without positioning values."""
+        metrics = getattr(market, "metrics", None) or {}
+        ratios = []
+        for symbol in members(day):
+            bars, values = market.bars.get(symbol) or {}, metrics.get(symbol) or {}
+            held = traded = 0.0
+            for d in (day - timedelta(days=k) for k in range(7)):
+                bar, oi = bars.get(d), (values.get(d) or {}).get("oi")
+                if bar is None or oi is None or bar.quote_volume <= 0:
+                    break
+                held, traded = held + oi * bar.close, traded + bar.quote_volume
+            else:
+                ratios.append(held / traded)
+        return statistics.median(ratios) if len(ratios) >= MIN_NAMES else None
+
+    def drawdown(day: date) -> float | None:
+        """The reference coin's close against its highest close of the last :data:`DRAWDOWN_DAYS` days (0 at a high)."""
+        closes = [b.close for d in (day - timedelta(days=k) for k in range(DRAWDOWN_DAYS)) if (b := btc.get(d)) is not None]
+        return None if btc.get(day) is None or len(closes) < DRAWDOWN_DAYS // 2 else btc[day].close / max(closes) - 1
+
     # Each axis is compared with its own values at the earlier weekly decisions, never with a later one.
     weekly = [d for d in xsb.held_days(span[0], span[1]) if xsb.is_rebalance_day(bs.CADENCE, d)]
     axes = {"vol": (btc_vol, "high", "low"), "dispersion": (dispersion, "wide", "narrow"), "heat": (heat, "hot", "cool"),
-            "universe": (wild_share, "wild", "calm")}
+            "universe": (wild_share, "wild", "calm"), "breadth": (breadth, "broad", "thin"),
+            "dominance": (dominance, "btc_led", "alt_led"), "volume": (volume, "busy", "quiet"),
+            "correlation": (correlation, "tight", "loose"), "drawdown": (drawdown, "shallow", "deep"),
+            "leverage": (leverage, "levered", "light"), "funding_spread": (funding_spread, "apart", "together")}
     series = {axis: {d: read(d) for d in weekly} for axis, (read, _, _) in axes.items()}
+    # How many weekly decisions in a row, this one included, have carried the same trend label.
+    age: dict[date, int] = {}
+    previous, run = None, 0
+    for d in weekly:
+        state = trend.get(d)
+        run = 0 if state is None else run + 1 if state == previous else 1
+        previous, age[d] = state, run
     out: dict[date, dict[str, str]] = {}
     for day in days:
         labels: dict[str, str] = {}
         if trend.get(day) is not None:
             labels["trend"] = str(trend[day]).lower()
+            if age.get(day):
+                labels["trend_fine"] = f"{labels['trend']}_{'early' if age[day] <= EARLY_DECISIONS else 'late'}"
         for axis, (_, high, low) in axes.items():
             earlier = [series[axis][d] for d in weekly if d < day and series[axis][d] is not None][-REFERENCE_DECISIONS:]
             label = _median_split(series[axis].get(day), earlier, high, low)
             if label is not None:
                 labels[axis] = label
+            if f"{axis}_fine" in FINER_OF and (fine := _third_split(series[axis].get(day), earlier, high, low)):
+                labels[f"{axis}_fine"] = fine
+        labels["month"] = "start" if day.day <= MONTH_START_DAYS else "rest"      # the calendar: no history needed
         out[day] = labels
     return out
 
 
 def scenario_keys(labels: Mapping[str, str]) -> list[str]:
-    keys = ["all"] + [f"{axis}={labels[axis]}" for axis in ("trend", "vol", "dispersion", "heat", "universe")
-                      if axis in labels]
+    keys = ["all"] + [f"{axis}={labels[axis]}" for axis in AXES if axis in labels]
     if "trend" in labels and "vol" in labels:
         keys.append(f"trend={labels['trend']}|vol={labels['vol']}")
     return keys
@@ -338,13 +836,17 @@ def cell(samples: Sequence[tuple[int, float, float]], *, scenario: str) -> dict[
     if n < MIN_DECISIONS or (scenario != "all" and runs < MIN_SPELLS):
         return {"decisions": n, "spells": runs, "too_few": True}
     ics = [s[1] for s in samples]
-    spread = statistics.fmean(s[2] for s in samples)
-    sd = statistics.stdev(ics)
+    spreads = [s[2] for s in samples]
+    spread = statistics.fmean(spreads)
+    sd, spread_sd = statistics.stdev(ics), statistics.stdev(spreads)
+    # ``spread_t`` (round 38): the rank correlation says which way the ranks lean, the spread's own t says whether
+    # the mean a rank book earns stands apart from zero. On the second tier the two often point opposite ways.
     return {"decisions": n, "spells": runs, "too_few": False,
             "mean_rank_correlation": round(statistics.fmean(ics), 4),
             "t": round(statistics.fmean(ics) / (sd / math.sqrt(n)), 2) if sd > 0 else None,
             "positive_share": round(sum(1 for v in ics if v > 0) / n, 3),
-            "tercile_spread_bps": round(spread * 10_000, 1)}
+            "tercile_spread_bps": round(spread * 10_000, 1),
+            "spread_t": round(spread / (spread_sd / math.sqrt(n)), 2) if spread_sd > 0 else None}
 
 
 # --- the grid ----------------------------------------------------------------------------------------------------
@@ -357,13 +859,18 @@ def tier_members(market: xsb.Market, span: tuple[date, date]) -> dict[str, dict[
             for tier, (lo, hi) in TIERS.items()}
 
 
-def grid(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tuple[date, date] = SPAN) -> dict[str, Any]:
+def grid(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tuple[date, date] = SPAN,
+         *, members: Mapping[str, Callable[[date], Sequence[str]]] | None = None) -> dict[str, Any]:
     """Every cell of ``names`` over the span, with coverage, week-to-week rank persistence and what was dropped.
-    ``market`` must already be cut at the span's last day."""
+    ``market`` must already be cut at the span's last day. ``members`` replaces :data:`TIERS` with tiers whose
+    members are given per decision day (round 40); the scenario labels stay the top thirty's either way."""
     latest = last_day(market)
     if latest is not None and latest > span[1]:
         raise ValueError(f"the market reaches {latest}, past the span's last day {span[1]}; cut it first")
     tiers = tier_members(market, span)
+    by_day: dict[str, Callable[[date], Sequence[str]]] = (
+        dict(members) if members is not None else
+        {tier: (lambda day, monthly=monthly: monthly.get(date(day.year, day.month, 1), ())) for tier, monthly in tiers.items()})
     samples: dict[tuple[str, str, int, str], list[tuple[int, float, float]]] = {}
     coverage: dict[tuple[str, str], list[int]] = {}
     persistence: dict[tuple[str, str], list[float]] = {}
@@ -371,12 +878,11 @@ def grid(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tu
     for horizon in HORIZONS:
         days = decisions(span, horizon)
         labels = scenario_labels(market, tiers["top30"], days, span)
-        for tier, monthly in tiers.items():
+        for tier, members_at in by_day.items():
             previous: dict[str, dict[str, float]] = {}
             for position, day in enumerate(days):
-                members = monthly.get(date(day.year, day.month, 1), ())
                 returns = {}
-                for symbol in members:
+                for symbol in members_at(day):
                     dropped["returns_asked"] += 1
                     value = forward_return(market, symbol, day, horizon)
                     if value is None:
@@ -417,21 +923,28 @@ def grid(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tu
 # --- is a scenario axis worth having? (the monthly check) --------------------------------------------------------
 
 PLACEBO_AXES = 200                         # shuffled-spell copies each axis is compared with
+FINER_PLACEBOS = 400                       # the axes that stand 8th and later: 0.05 / 11 already lies under one in 201
 # One variable at a time there are a few hundred tests, and the smallest p a test can show is one over the number
 # of placebos plus one. With 200 that floor (0.005) sits above anything Benjamini-Hochberg could pass at q 0.10
 # over 230 tests (0.0004) — the first run could not have passed anything. 5,000 puts the floor at 0.0002.
-PLACEBO_AXES_BY_VARIABLE = 5000
+PLACEBO_AXES_BY_VARIABLE = 7200            # 5000 until 41 variables, 6000 until 50: the earlier ones are the same placebos
+PLACEBO_AXES_BY_VARIABLE_ROUND_4 = 5000    # what round 4's reading used; the counts at that point are kept beside the full ones
 
 
-def ic_series(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tuple[date, date] = SPAN
+def ic_series(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tuple[date, date] = SPAN,
+              *, members: Mapping[str, Callable[[date], Sequence[str]]] | None = None
               ) -> tuple[list[date], dict[tuple[str, str], dict[date, float]]]:
-    """The weekly decisions and, per variable and tier, its rank correlation with the following week at each."""
-    tiers = tier_members(market, span)
+    """The weekly decisions and, per variable and tier, its rank correlation with the following week at each.
+    ``members`` replaces :data:`TIERS` with tiers whose members are given per decision day, as in :func:`grid`."""
+    by_day: dict[str, Callable[[date], Sequence[str]]] = (
+        dict(members) if members is not None else
+        {tier: (lambda day, monthly=monthly: monthly.get(date(day.year, day.month, 1), ()))
+         for tier, monthly in tier_members(market, span).items()})
     days = decisions(span, HORIZONS[0])
     out: dict[tuple[str, str], dict[date, float]] = {}
-    for tier, monthly in tiers.items():
+    for tier, members_at in by_day.items():
         for day in days:
-            returns = {s: r for s in monthly.get(date(day.year, day.month, 1), ())
+            returns = {s: r for s in members_at(day)
                        if (r := forward_return(market, s, day, HORIZONS[0])) is not None}
             for name, (_, read) in names.items():
                 pairs = [(v, returns[s]) for s in returns if (v := read(market, s, day)) is not None]
@@ -480,42 +993,72 @@ def shuffled_spells(labels: Sequence[str | None], seed: str) -> list[str | None]
     return [None if label is None else next(moved) for label in labels]
 
 
+def finer_gate(axis: str, labels: Sequence[str | None]) -> tuple[list[str | None], dict[str, Any]]:
+    """A state is cut finer only where every part has :data:`MIN_DECISIONS` decisions in :data:`MIN_SPELLS` spells
+    (section 3.2: "모자라면 나누지 않는다"). A trend state with a thin part goes back to the whole state; one of the
+    other axes, cut in three, is cut whole or not at all. Reads labels only."""
+    whole = (lambda label: label.rsplit("_", 1)[0]) if axis == "trend_fine" else (lambda label: FINER_OF[axis])
+    places: dict[str, list[int]] = {}
+    for i, label in enumerate(labels):
+        if label is not None:
+            places.setdefault(label, []).append(i)
+    parts = {label: {"decisions": len(at), "spells": spells(at)} for label, at in sorted(places.items())}
+    thin = {whole(label) for label, n in parts.items() if n["decisions"] < MIN_DECISIONS or n["spells"] < MIN_SPELLS}
+    kept = [None if label is None else whole(label) if whole(label) in thin else label for label in labels]
+    return kept, {"parts": parts, "merged": sorted(thin), "split": sorted({whole(label) for label in places} - thin)}
+
+
 def axis_check(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tuple[date, date] = SPAN) -> dict[str, Any]:
     """Each axis's separation beside what :data:`PLACEBO_AXES` shuffled copies of it reach. An axis no better than
-    its placebos is a candidate to rest; this decides nothing by itself."""
+    its placebos is a candidate to rest; this decides nothing by itself. A finer axis is first passed through
+    :func:`finer_gate`, and stands beside :data:`FINER_PLACEBOS` copies of what the gate left."""
     days, series = ic_series(market, names, span)
     labels = scenario_labels(market, tier_members(market, span)["top30"], days, span)
     out = {}
-    for axis in ("trend", "vol", "dispersion", "heat", "universe"):
-        real = [labels[d].get(axis) for d in days]
-        actual = separation(series, dict(zip(days, real)))
+    for axis in AXES + CANDIDATE_AXES + FINER_AXES + LATE_AXES:
+        real, gate = [labels[d].get(axis) for d in days], None
+        if axis in FINER_OF:
+            real, gate = finer_gate(axis, real)
+        checked = gate is None or bool(gate["split"])          # nothing cut finer: nothing to check
+        actual = separation(series, dict(zip(days, real))) if checked else None
         fake = [separation(series, dict(zip(days, shuffled_spells(real, f"{SPEC}|axis|{axis}|{k}"))))
-                for k in range(PLACEBO_AXES)]
+                for k in range((PLACEBO_AXES if axis in AXES + CANDIDATE_AXES else FINER_PLACEBOS) if checked else 0)]
         fake = sorted(v for v in fake if v is not None)
-        out[axis] = {"states": dict(sorted({str(k): real.count(k) for k in set(real)}.items())),
+        out[axis] = {**(gate or {}),
+                     "states": dict(sorted({str(k): real.count(k) for k in set(real)}.items())),
                      "separation": round(actual, 5) if actual is not None else None,
                      "placebo_mean": round(statistics.fmean(fake), 5) if fake else None,
                      "placebo_p95": round(fake[int(0.95 * (len(fake) - 1))], 5) if fake else None,
                      "placebos_at_or_above": sum(1 for v in fake if actual is not None and v >= actual),
                      "placebos": len(fake)}
+        level = axis_level(axis)
+        if level is not None:
+            share = (1 + out[axis]["placebos_at_or_above"]) / (1 + len(fake)) if fake and actual is not None else None
+            out[axis].update(level=round(level, 5), p=None if share is None else round(share, 5),
+                             beats_its_placebos=share is not None and share < level)
     return {"axes": out, "variables": len({name for name, _ in series}), "decisions": len(days)}
 
 
 def axis_by_variable(market: xsb.Market, names: Mapping[str, tuple[str, Variable]], span: tuple[date, date] = SPAN,
-                     *, q: float = 0.10) -> dict[str, Any]:
+                     *, q: float = 0.10, members: Mapping[str, Callable[[date], Sequence[str]]] | None = None
+                     ) -> dict[str, Any]:
     """The axis check one variable at a time. An average over every variable hides an axis that matters for two of
     them, so each (variable, tier, axis) gets its own separation beside its own placebos; the share of placebos at
     or above it is its p. With hundreds of such tests some will look good by chance, so the list that counts is the
-    one that survives Benjamini–Hochberg at ``q`` — and the count under 0.05 is shown beside what chance gives."""
-    days, series = ic_series(market, names, span)
+    one that survives Benjamini–Hochberg at ``q`` — and the count under 0.05 is shown beside what chance gives.
+    ``members`` reads tiers given per decision day (round 57: ranks 101 and after); the labels stay the top thirty's."""
+    days, series = ic_series(market, names, span) if members is None else ic_series(market, names, span, members=members)
     labels = scenario_labels(market, tier_members(market, span)["top30"], days, span)
     tests = []
-    for axis in ("trend", "vol", "dispersion", "heat", "universe"):
+    counts: list[list[Any]] = []             # [variable, tier, axis, above, counted, above and counted at round 4's 5000]
+    dropped: list[list[str]] = []            # a test whose placebos mostly had no separation: named, never silently gone
+    for axis in AXES:
         real = [labels[d].get(axis) for d in days]
         actual_labels = dict(zip(days, real))
         actual = {key: separation({key: values}, actual_labels) for key, values in series.items()}
         actual = {key: value for key, value in actual.items() if value is not None}
         above, counted = dict.fromkeys(actual, 0), dict.fromkeys(actual, 0)
+        early: tuple[dict, dict] | None = None
         for k in range(PLACEBO_AXES_BY_VARIABLE):                # one placebo at a time: none is kept
             fake = dict(zip(days, shuffled_spells(real, f"{SPEC}|axis|{axis}|{k}")))
             for key, value in actual.items():
@@ -523,8 +1066,13 @@ def axis_by_variable(market: xsb.Market, names: Mapping[str, tuple[str, Variable
                 if placebo is not None:
                     counted[key] += 1
                     above[key] += placebo >= value
+            if k + 1 == PLACEBO_AXES_BY_VARIABLE_ROUND_4:        # the same placebos round 4 read, in the same order
+                early = (dict(above), dict(counted))
         for key in sorted(actual):
+            counts.append([key[0], key[1], axis, above[key], counted[key],
+                           *((early[0][key], early[1][key]) if early is not None else (None, None))])
             if counted[key] < PLACEBO_AXES_BY_VARIABLE // 2:
+                dropped.append([key[0], key[1], axis])
                 continue
             states: dict[str, list[float]] = {}
             for day, ic in series[key].items():
@@ -539,7 +1087,84 @@ def axis_by_variable(market: xsb.Market, names: Mapping[str, tuple[str, Variable
     return {"tests": len(tests), "p_under_0.05": sum(1 for t in tests if t["p"] < 0.05),
             "expected_under_0.05_by_chance": round(0.05 * len(tests), 1), "q": q,
             "placebos_per_test": PLACEBO_AXES_BY_VARIABLE, "survive_benjamini_hochberg": ordered[:cutoff], "smallest_p": ordered[:10],
-            "all_tests": [[t["variable"], t["tier"], t["axis"], t["p"]] for t in ordered]}
+            "all_tests": [[t["variable"], t["tier"], t["axis"], t["p"]] for t in ordered], "counts": counts, "dropped": dropped}
+
+
+def weekly_cells(days: Sequence[date], series: Mapping[tuple[str, str], Mapping[date, float]],
+                 labels: Mapping[date, Mapping[str, str]]) -> dict[tuple[str, str, str], dict[str, Any]]:
+    """What :func:`grid` shows at the one-week horizon, rebuilt from the weekly series the axis check reads: per
+    variable, tier and scenario key the decisions, and for the whole span its mean rank correlation and t. A run that
+    gives a recorded map's cells back reads the map's members, values and labels (round 57's door)."""
+    out: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for (name, tier), values in series.items():
+        groups: dict[str, list[float]] = {}
+        for day in days:
+            if day in values:
+                for key in scenario_keys(labels[day]):
+                    groups.setdefault(key, []).append(values[day])
+        for key, ics in groups.items():
+            entry: dict[str, Any] = {"decisions": len(ics)}
+            if key == "all" and len(ics) >= MIN_DECISIONS:
+                sd = statistics.stdev(ics)
+                entry.update(mean_rank_correlation=round(statistics.fmean(ics), 4),
+                             t=round(statistics.fmean(ics) / (sd / math.sqrt(len(ics))), 2) if sd > 0 else None)
+            out[(name, tier, key)] = entry
+    return out
+
+
+def weekly_cells_differ(mine: Mapping[tuple[str, str, str], Mapping[str, Any]],
+                        recorded: Sequence[Mapping[str, Any]]) -> list[list[str]]:
+    """The one-week cells where the rebuilt and the recorded disagree, or that only one of them has."""
+    at = {(c["variable"], c["tier"], c["scenario"]): c for c in recorded if c["horizon_days"] == HORIZONS[0]}
+    return [list(key) for key in sorted(set(at) | set(mine))
+            if key not in at or key not in mine or any(at[key].get(f) != v for f, v in mine[key].items())]
+
+
+def round4_matches(counts: Sequence[Sequence[Any]], recorded: Sequence[Sequence[Any]]) -> dict[str, Any]:
+    """A run's counts at round 4's 5,000 placebos beside round 4's recorded p, for every test both hold. The placebos
+    are drawn in the same order from the same seeds, so the two must agree to the recorded five places."""
+    at = {(row[0], row[1], row[2]): (row[5], row[6]) for row in counts}
+    shared, differ = 0, []
+    for variable, tier, axis, p in recorded:
+        if (variable, tier, axis) not in at:
+            continue
+        shared += 1
+        above, counted = at[(variable, tier, axis)]
+        if above is None or round((1 + above) / (1 + counted), 5) != p:
+            differ.append([variable, tier, axis])
+    return {"shared": shared, "differ": differ}
+
+
+def axes_family(runs: Sequence[Mapping[str, Any]], *, q: float = 0.10) -> dict[str, Any]:
+    """The per-variable axis check over every group's run as ONE family, from the counts and not from any run's
+    printed p (rounded) or its own survivor list (a correction over that group alone). Refuses runs with different
+    placebo counts and a test that appears twice."""
+    sizes = {run["placebos_per_test"] for run in runs}
+    if len(sizes) != 1:
+        return {"refused": "the runs used different numbers of placebos", "placebos_per_test": sorted(sizes)}
+    size = sizes.pop()
+    rows: dict[tuple[str, str, str], dict[str, Any]] = {}
+    dropped = []
+    for run in runs:
+        for variable, tier, axis, above, counted, *_ in run["counts"]:
+            key = (variable, tier, axis)
+            if key in rows or [variable, tier, axis] in dropped:
+                return {"refused": "a test appears in two runs", "test": list(key)}
+            if counted < size // 2:
+                dropped.append([variable, tier, axis])
+                continue
+            rows[key] = {"variable": variable, "tier": tier, "axis": axis, "above": above, "counted": counted,
+                         "p": (1 + above) / (1 + counted)}
+    ordered = sorted(rows.values(), key=lambda r: (r["p"], r["variable"], r["tier"], r["axis"]))
+    cutoff = max((i for i, r in enumerate(ordered, start=1) if r["p"] <= q * i / len(ordered)), default=0)
+    by_axis: dict[str, int] = {}
+    for r in ordered:
+        by_axis[r["axis"]] = by_axis.get(r["axis"], 0) + 1
+    return {"tests": len(ordered), "placebos_per_test": size, "q": q, "tests_by_axis": dict(sorted(by_axis.items())),
+            "variables": len({r["variable"] for r in ordered}), "dropped": sorted(dropped),
+            "p_under_0.05": sum(1 for r in ordered if r["p"] < 0.05), "expected_under_0.05_by_chance": round(0.05 * len(ordered), 1),
+            "first_threshold": q / len(ordered) if ordered else None, "smallest_possible_p": 1 / (1 + size),
+            "survive_benjamini_hochberg": ordered[:cutoff], "smallest_p": ordered[:10]}
 
 
 # --- what kind of universe is it, month by month (D7) ------------------------------------------------------------
@@ -628,10 +1253,171 @@ def chance(control_cells: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         out[str(horizon)] = {"cells": len(ts), "largest_abs_t": ts[-1] if ts else None,
                              "p95_abs_t": ts[int(0.95 * (len(ts) - 1))] if ts else None,
                              "share_abs_t_over_2": round(sum(1 for t in ts if t > 2) / len(ts), 4) if ts else None}
+        spreads = sorted(abs(c["spread_t"]) for c in _shown(control_cells)
+                         if c["horizon_days"] == horizon and c.get("spread_t") is not None)
+        out[str(horizon)].update({"spread_cells": len(spreads), "largest_abs_spread_t": spreads[-1] if spreads else None,
+                                  "p95_abs_spread_t": spreads[int(0.95 * (len(spreads) - 1))] if spreads else None,
+                                  "share_abs_spread_t_over_2": (round(sum(1 for t in spreads if t > 2) / len(spreads), 4)
+                                                                if spreads else None)})
     return out
 
 
-def candidates(real: Mapping[str, Any], against: Mapping[str, Any]) -> dict[str, Any]:
+# Round 38: a second lead rule on the same cells, read on the spread's own t. A cell that meets it is a lead for the
+# hypothesis form, never a book: these variables give no book on the named tier ("*" is every tier) whatever it says.
+SPREAD_NO_BOOK: dict[tuple[str, str], str] = {
+    **{("*", name): "the closed volatility cluster and its kin: no more books from it (sections 20, 33.1)"
+       for name in ("vol_30", "idio_vol_30", "max_30", "skew_30", "range_30", "beta_30", "extreme_days_30")},
+    **{("rank31_100", name): "H-R2's book and its other windows (section 49)" for name in ("momentum_30", "momentum_7", "momentum_90")},
+    **{("rank31_100", name): "H-M1's variables on this tier (section 32.2)" for name in ("oi_growth_30", "ls_level_30")},
+    **{("rank31_100", name): "the tier sweep's lead, closed, and its other window (section 53.6)" for name in ("funding_30", "funding_7")},
+    **{("rank31_100", name): "the tier sweep's second and third books: left alone (section 52.8)"
+       for name in ("taker_level_30", "taker_buy_share_30")},
+    ("*", "spread_change_30"): "the top tier's lead, not put on the ladder (D10): never read again (section 46)",
+    ("*", "trade_size_position_30"): "the top tier's runner-up: left alone (section 45)",
+    # Round 40 (section 57): H-R1's tier, ranks 101 and after. One list for the map and the tier sweep there.
+    (LOWER_TIER_NAME, "momentum_7"): "H-R1 without its skip day: the week's return on this tier is H-R1's variable (section 23.2)",
+    **{(LOWER_TIER_NAME, name): "H-R2's record: never measured below rank 100, nor at another window (section 49)"
+       for name in ("momentum_30", "momentum_90")},
+    **{(LOWER_TIER_NAME, name): "the tier sweep's closed lead: never on another tier, never at another window (section 53.6)"
+       for name in ("funding_30", "funding_7")},
+    # Round 45 (section 63) fetched this tier's own positioning files, so the other nine are read here from them
+    # (``strategy_ladder.lower_positioning_market``); before that they were struck as a sample chosen by next month's rank.
+    **{(LOWER_TIER_NAME, name): "H-M1's variables: closed with 'the tier boundary is not changed' (section 31)"
+       for name in ("oi_growth_30", "ls_level_30")},
+    # Section 65.2: the archive serves this tier's depth files from 2023-01-01; the disk does not hold them, and D11's
+    # grounds (two years only; the top tier's depth search closed with nothing) do not depend on the tier.
+    **{(LOWER_TIER_NAME, name): "this tier's depth files are not on disk; not fetched on D11's grounds (sections 53.7, 62.2, 65.2)"
+       for name in ("imbalance_1_30", "imbalance_5_30", "depth_growth_30")},
+    # Section 87: the hourly bars on disk are the month's top 100 only (H-C1's fetch); below it there are none, and
+    # fetching them is asked with default no (section 85.5, Q2).
+    **{(LOWER_TIER_NAME, name): "no hourly bars below rank 100 on disk; the fetch is asked with default no (section 85.5)"
+       for name in ("price_delay_30", "volume_peak_share_30")},
+}
+
+
+def no_book(variable: str, tier: str) -> str | None:
+    return SPREAD_NO_BOOK.get(("*", variable)) or SPREAD_NO_BOOK.get((tier, variable))
+
+
+# --- section 97: the leverage stay (R1), a candidate until its three input-only doors pass -----------------------
+
+R1 = "oi_turnover_30"
+R1_FILLED_DAYS = math.ceil(LOOKBACK * bs.MIN_SHARE)      # days of the window that must carry both values (20)
+R1_EXTRA_KIN = ("illiquidity_30", "volume_growth_30")     # the daily variables its denominator touches
+
+
+def _oi_turnover(market: xsb.Market, symbol: str, day: date, lookback: int) -> float | None:
+    """Open interest held against trading: over the same days the other positioning variables read at ``day``
+    (``day`` and the ``lookback - 1`` before it), the sum of the day's open interest times its close over the sum of
+    the day's perp quote volume. Only days with both count; under :data:`R1_FILLED_DAYS` of them, or no volume, it
+    has no value. Section 38's per-coin quantity, ranked across coins instead of summed into the market's level."""
+    metrics = (getattr(market, "metrics", None) or {}).get(symbol) or {}
+    bars = market.bars.get(symbol) or {}
+    held = traded = 0.0
+    days = 0
+    for k in range(lookback):
+        d = day - timedelta(days=k)
+        oi, bar = (metrics.get(d) or {}).get("oi"), bars.get(d)
+        if oi is None or bar is None:
+            continue
+        held, traded, days = held + oi * bar.close, traded + bar.quote_volume, days + 1
+    if days < math.ceil(lookback * bs.MIN_SHARE) or traded <= 0:
+        return None
+    return held / traded
+
+
+OI_TURNOVER: Variable = _with_lookback(_oi_turnover)
+
+
+def leverage_kin(tier: str) -> tuple[str, ...]:
+    """Section 97.5: R1's kin on ``tier``, built from :data:`SPREAD_NO_BOOK` and never by hand — every name struck
+    there or everywhere, the two closed hourly variables on the upper tiers, and the daily variables its
+    denominator touches."""
+    struck = {name for (where, name) in SPREAD_NO_BOOK if where in ("*", tier)}
+    hourly = set(HOURLY_CANDIDATES) if tier in TIERS else set()
+    return tuple(sorted((struck | hourly | set(R1_EXTRA_KIN)) - {R1}))
+
+
+def first_value_day(market: xsb.Market, column: str = "oi") -> date | None:
+    """The first day any symbol's attached positioning values carry ``column``."""
+    days = [d for rows in (getattr(market, "metrics", None) or {}).values() for d, v in rows.items() if v.get(column) is not None]
+    return min(days) if days else None
+
+
+def tier_overlap(market: xsb.Market, read: Variable, plan: Mapping[str, Sequence[tuple[date, Sequence[str]]]],
+                 kin: Mapping[str, Sequence[str]]) -> dict[str, Any]:
+    """Section 97.5: section 40's overlap read on every tier against that tier's own kin. At each decision the rank
+    correlation of the candidate and a kin over the members with both; the median over decisions. A tier passes when
+    at least one kin was compared over :data:`MIN_DECISIONS` and none of those reaches :data:`OVERLAP_MAX` in size,
+    either sign. Reads no return."""
+    registered = variables()
+    out: dict[str, Any] = {}
+    for tier, rows in plan.items():
+        series: dict[str, list[float]] = {k: [] for k in kin[tier]}
+        ranked = 0
+        for day, members in rows:
+            own = {s: v for s in members if (v := read(market, s, day)) is not None}
+            ranked += len(own) >= MIN_NAMES
+            for k in kin[tier]:
+                pairs = [(own[s], v) for s in own if (v := registered[k][1](market, s, day)) is not None]
+                if len(pairs) >= MIN_NAMES and (rho := rank_correlation(pairs)) is not None:
+                    series[k].append(rho)
+        table = {k: {"decisions": len(v), "median_rank_correlation": round(statistics.median(v), 4) if v else None}
+                 for k, v in series.items()}
+        sized = {k: abs(t["median_rank_correlation"]) for k, t in table.items()
+                 if t["median_rank_correlation"] is not None and t["decisions"] >= MIN_DECISIONS}
+        nearest = max(sized, key=sized.get) if sized else None
+        out[tier] = {"decisions": len(rows), "decisions_ranked": ranked, "kin": table, "nearest_kin": nearest,
+                     "compared": bool(sized), "passes": bool(sized) and sized[nearest] < OVERLAP_MAX}
+    return out
+
+
+def tier_persistence(market: xsb.Market, read: Variable, plan: Mapping[str, Sequence[tuple[date, Sequence[str]]]],
+                     *, lags: Sequence[int] = (1, 2, 4)) -> dict[str, Any]:
+    """How far the order carries, per tier and lag in weekly decisions: the mean over decisions of the rank
+    correlation between the values at a decision and that many decisions later, over the first decision's members
+    with values at both. Not judged (the cost line's ground)."""
+    out: dict[str, Any] = {}
+    for tier, rows in plan.items():
+        out[tier] = {}
+        for lag in lags:
+            rhos = []
+            for i in range(len(rows) - lag):
+                (a, members), (b, _) = rows[i], rows[i + lag]
+                pairs = [(x, y) for s in members if (x := read(market, s, a)) is not None and (y := read(market, s, b)) is not None]
+                if len(pairs) >= MIN_NAMES and (rho := rank_correlation(pairs)) is not None:
+                    rhos.append(rho)
+            out[tier][f"{7 * lag}d"] = {"decisions": len(rhos), "mean_rank_correlation": round(sum(rhos) / len(rhos), 4) if rhos else None}
+    return out
+
+
+def spread_candidates(real: Mapping[str, Any], against: Mapping[str, Any]) -> dict[str, Any]:
+    """The cells whose spread stands out: |spread t| above the largest any random variable reached at that horizon,
+    a variable that keeps its rank from week to week, the same sign as the variable's all-weeks spread in its tier,
+    and not on a resting axis. Every such cell is listed (no cap), each with whether the rank correlation agrees in
+    sign and whether a record forbids a book of that variable there."""
+    shown = [c for c in _shown(real["cells"]) if c.get("spread_t") is not None]
+    whole = {(c["variable"], c["tier"], c["horizon_days"]): c for c in shown if c["scenario"] == "all"}
+    found = []
+    for c in shown:
+        if any(part.split("=")[0] in RESTING_AXES for part in c["scenario"].split("|") if "=" in part):
+            continue
+        bar = against[str(c["horizon_days"])].get("largest_abs_spread_t")
+        steady = real["variables"].get(f"{c['variable']}|{c['tier']}", {}).get("rank_persistence")
+        base = whole.get((c["variable"], c["tier"], c["horizon_days"]))
+        if bar is None or abs(c["spread_t"]) <= bar or steady is None or steady < MIN_PERSISTENCE:
+            continue
+        if base is None or (base["spread_t"] > 0) != (c["spread_t"] > 0):
+            continue
+        found.append({**c, "rank_correlation_agrees": (c["t"] > 0) == (c["spread_t"] > 0),
+                      "no_book": no_book(c["variable"], c["tier"])})
+    found.sort(key=lambda c: (-abs(c["spread_t"]), c["variable"], c["tier"], c["scenario"]))
+    return {"rule": "abs(spread t) above the random variables' largest at that horizon; rank persistence at least "
+                    f"{MIN_PERSISTENCE}; same sign as the variable's all-weeks spread in its tier; not on a resting axis",
+            "met_the_rule": len(found), "leads": found}
+
+
+def candidates(real: Mapping[str, Any], against: Mapping[str, Any], *, cap: int | None = CANDIDATE_CAP) -> dict[str, Any]:
     """The leads, by the rule fixed before the run: a shown cell whose |t| is above the largest any random variable
     reached at that horizon, whose variable keeps its rank from week to week, and whose sign agrees with the same
     variable's all-weeks cell in its tier. At most :data:`CANDIDATE_CAP`, largest |t| first."""
@@ -652,7 +1438,7 @@ def candidates(real: Mapping[str, Any], against: Mapping[str, Any]) -> dict[str,
     return {"rule": "abs(t) above the random variables' largest at that horizon; rank persistence at least "
                     f"{MIN_PERSISTENCE}; same sign as the variable's all-weeks cell in its tier; not on a resting axis",
             "resting_axes": sorted(RESTING_AXES),
-            "cap": CANDIDATE_CAP, "met_the_rule": len(found), "leads": found[:CANDIDATE_CAP]}
+            "cap": cap, "met_the_rule": len(found), "leads": found if cap is None else found[:cap]}
 
 
 def excess(real_cells: Sequence[Mapping[str, Any]], against: Mapping[str, Any]) -> dict[str, Any]:
@@ -722,9 +1508,135 @@ def hold(cache: Path, span: tuple[date, date] = SPAN, *, attach: bool = True, fl
     return attach_trade_flow(held, archive, span) if flow else held
 
 
+def hold_positioning(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | None:
+    """The market cut at the span's last day with the positioning values alone attached: all a run of that group
+    reads. Depth and spot are most of the attached memory, and once the positioning files of both tiers were on
+    disk the three no longer fitted the sandbox together (the first run of 2026-11-14 was killed while loading).
+    None when the contract types or the derived positioning values are missing."""
+    held = hold(cache, span, attach=False)
+    daily = ms.load_daily(cache)
+    if held is None or not daily:
+        return None
+    held.metrics = {s: {d: v for d, v in days.items() if d <= span[1]} for s, days in daily.items()}
+    return held
+
+
+def read_premium_api(cache: Path, symbols: Sequence[str], last: date) -> dict[str, dict[date, float]]:
+    """The premium index's daily close from the venue API's files, up to ``last``. These exist only for the symbols
+    an earlier search asked for (section 50), so nothing ranks coins on them any more; :func:`premium_sources`
+    lays them beside the archive's."""
+    out: dict[str, dict[date, float]] = {}
+    for symbol in symbols:
+        days: dict[date, float] = {}
+        for row in lake.read_rows(lake.derivative_path(cache, "premium", symbol, "1d")):
+            try:
+                day, close = xsb._utc_day(float(row[0])), float(row[4])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if day <= last:
+                days[day] = close
+        if days:
+            out[symbol] = days
+    return out
+
+
+def read_premium(cache: Path, symbols: Sequence[str], last: date) -> dict[str, dict[date, float]]:
+    """``{symbol: {day: the premium index's daily close}}`` from the archive's monthly files, up to ``last`` and no
+    further. One source and the same rule for every coin: a day the archive lacks is not filled from elsewhere."""
+    out: dict[str, dict[date, float]] = {}
+    for symbol in symbols:
+        folder = cache / "archive" / ba.PREMIUM_KIND / symbol
+        days: dict[date, float] = {}
+        for path in sorted(folder.glob("*.zip")) if folder.exists() else []:
+            for row in xsb._rows(path):
+                try:
+                    day, close = xsb._utc_day(float(row[0])), float(row[4])
+                except (TypeError, ValueError, IndexError):
+                    continue          # the header row
+                if day <= last:
+                    days[day] = close
+        if days:
+            out[symbol] = days
+    return out
+
+
+def premium_sources(market: xsb.Market, cache: Path, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+    """The archive's premium beside the venue API's, with no return in it: where both have a day the closes must be
+    equal; which days each has that the other lacks; and how many of each tier's members have a premium at all,
+    under each source."""
+    symbols = sorted(market.bars)
+    archive, api = read_premium(cache, symbols, span[1]), read_premium_api(cache, symbols, span[1])
+    compared = differ = only_api = only_archive = 0
+    worst: list[list[Any]] = []
+    for symbol in sorted(set(archive) & set(api)):
+        a, b = archive[symbol], api[symbol]
+        for day in set(a) & set(b):
+            compared += 1
+            if a[day] != b[day]:
+                differ += 1
+                if len(worst) < 10:
+                    worst.append([symbol, day.isoformat()])
+        first = max(min(a), min(b))                      # count gaps only where both series have begun
+        only_api += sum(1 for d in b if d not in a and d >= first)
+        only_archive += sum(1 for d in a if d not in b and d >= first)
+    tiers = {}
+    for tier, monthly in tier_members(market, span).items():
+        rows = {"member_months": 0, "with_archive_premium": 0, "with_api_premium": 0}
+        without: set[str] = set()
+        for month, members in monthly.items():
+            if not span[0] <= month <= span[1]:
+                continue
+            for symbol in members:
+                rows["member_months"] += 1
+                rows["with_archive_premium"] += symbol in archive
+                rows["with_api_premium"] += symbol in api
+                if symbol not in archive:
+                    without.add(symbol)
+        tiers[tier] = {**rows, "members_without_archive_premium": sorted(without)}
+    return {"symbols": len(symbols), "archive_symbols": len(archive), "api_symbols": len(api),
+            "in_both": len(set(archive) & set(api)), "days_compared": compared, "days_differ": differ,
+            "first_differences": worst, "days_only_in_api": only_api, "days_only_in_archive": only_archive,
+            "tiers": tiers, "values_equal": compared > 0 and differ == 0, "reads_returns": False}
+
+
+def hold_premium(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | None:
+    """The market cut at the span's last day with the premium index attached. None when a piece is missing."""
+    held = hold(cache, span, attach=False)
+    if held is None:
+        return None
+    held.premium = read_premium(cache, sorted(held.bars), span[1])
+    return held if held.premium else None
+
+
+def hold_depth(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | None:
+    """The market cut at the span's last day with the depth values alone attached. The combined load (positioning,
+    depth and spot together) no longer fits the sandbox. None when a piece is missing."""
+    held = hold(cache, span, attach=False)
+    daily = ds.load_daily(cache)
+    if held is None or not daily:
+        return None
+    held.depth = {s: {d: v for d, v in days.items() if d <= span[1]} for s, days in daily.items()}
+    return held
+
+
+def hold_spot(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | None:
+    """The market cut at the span's last day with the spot bars alone attached: all a run of the spot group reads.
+    None when the contract types or the spot listing are missing."""
+    held = hold(cache, span, attach=False)
+    try:
+        listing = set(json.loads((cache / sp.SPOT_DIR / ba.SYMBOLS_FILENAME).read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        listing = set()
+    if held is None or not listing:
+        return None
+    return sp.attach(held, xsb.load_market(cache / sp.SPOT_DIR, funding=False), listing, span[1], sp.months_on_disk(cache))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="signal_lab", description=__doc__.splitlines()[0])
-    parser.add_argument("command", choices=("list", "run", "axes", "axes-by-variable", "inventory", "universe"))
+    parser.add_argument("command", choices=("list", "run", "axes", "axes-by-variable", "inventory", "universe", "overlap",
+                                            "premium-sources", "hourly-doors"))
+    parser.add_argument("--candidate", default=None, help="overlap: the candidate variable to rank beside its kin")
     parser.add_argument("--only", default=None, help="run: a variable group to map alone, with the random variables")
     parser.add_argument("--cache", type=Path, default=None, help="default: $RESEARCH_CACHE")
     args = parser.parse_args(argv)
@@ -753,20 +1665,75 @@ def main(argv: list[str] | None = None) -> int:
                           "judgement": None, **universe_character(market, span)}, indent=1, sort_keys=True))
         return EXIT_OK
     bs.check_development_span(SPAN)
+    if args.command == "premium-sources":
+        market = hold(cache, attach=False)
+        if market is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        body = premium_sources(market, cache)
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "last_day_read": last_day(market).isoformat(),
+                          "judgement": None, **body}, indent=1, sort_keys=True))
+        return EXIT_OK if body["values_equal"] else EXIT_BLOCKED
+    if args.command == "hourly-doors":
+        market = hold(cache, attach=False, flow=True)
+        if market is None:
+            print("BLOCKED: contract types or the trade-flow columns are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "last_day_read": last_day(market).isoformat(),
+                          "reads_returns": False, "judgement": None, **hourly_doors(market, cache / "archive")},
+                         indent=1, sort_keys=True))
+        return EXIT_OK
+    if args.command == "overlap":
+        if args.candidate not in OVERLAP_CANDIDATES:
+            print(f"refused: --candidate is one of {sorted(OVERLAP_CANDIDATES)}", file=sys.stderr)
+            return EXIT_USAGE
+        kind = OVERLAP_CANDIDATES[args.candidate][0]
+        market = (hold_premium(cache) if kind == "premium" else hold_top_account(cache) if kind == "top_account"
+                  else hold_spot_flow(cache) if kind == "spot_flow" else hold(cache, attach=False))
+        if market is None:
+            print("BLOCKED: contract types or the premium files are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
+                          "span": [d.isoformat() for d in SPAN], "last_day_read": last_day(market).isoformat(),
+                          "reads_returns": False, "judgement": None,
+                          **({"premium_symbols": len(market.premium),
+                              "premium_last_day": max(max(days) for days in market.premium.values()).isoformat()}
+                             if getattr(market, "premium", None) else {}),
+                          **overlap(market, args.candidate)}, indent=1, sort_keys=True))
+        return EXIT_OK
     chosen = {n: v for n, v in variables().items() if args.only is None or v[0] == args.only}
     if not chosen:
         print(f"refused: no registered variable is in group {args.only!r}", file=sys.stderr)
         return EXIT_USAGE
     groups = {group for group, _ in chosen.values()}
     # Load what the chosen variables read and nothing else: the attached series are most of the memory.
-    market = hold(cache, attach=bool(groups & {"positioning", "depth", "spot"}), flow="trade_flow" in groups)
+    if groups == {"positioning"}:
+        market = hold_positioning(cache)
+    elif groups == {"spot"}:
+        market = hold_spot(cache)
+    elif groups == {"premium"}:
+        market = hold_premium(cache)
+    elif groups == {"depth"}:
+        market = hold_depth(cache)
+    elif groups == {"spot_flow"}:
+        market = hold_spot_flow(cache)
+    elif groups == {"hourly"}:
+        market = hold_hourly(cache)
+    elif "spot_flow" in groups or "hourly" in groups:
+        print("refused: the spot flow and hourly groups are mapped alone", file=sys.stderr)
+        return EXIT_USAGE
+    else:
+        market = hold(cache, attach=bool(groups & {"positioning", "depth", "spot"}), flow="trade_flow" in groups)
     if market is None:
-        print("BLOCKED: contract types or the spot symbol list is missing from the cache", file=sys.stderr)
+        print("BLOCKED: contract types, the spot symbol list or the derived values are missing from the cache", file=sys.stderr)
         return EXIT_BLOCKED
     if args.command == "axes-by-variable":
         print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
                           "span": [d.isoformat() for d in SPAN], "last_day_read": last_day(market).isoformat(),
-                          "judgement": None, "only": args.only, **axis_by_variable(market, chosen)},
+                          "judgement": None, "only": args.only, "left_out": {n: AXIS_FAMILY_OUT[n] for n in chosen if n in AXIS_FAMILY_OUT},
+                          **axis_by_variable(market, {n: v for n, v in chosen.items() if n not in AXIS_FAMILY_OUT})},
                          indent=1, sort_keys=True))
         return EXIT_OK
     if args.command == "axes":
@@ -776,11 +1743,18 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_OK
     real, random = grid(market, chosen), grid(market, controls())
     against = chance(random["cells"])
+    before = chance(earlier_control_cells(random["cells"]))
+    before_shapes = chance(earlier_control_cells(random["cells"], CONTROLS_BEFORE_SHAPES))
+    before_windows = chance(earlier_control_cells(random["cells"], CONTROLS_BEFORE_WINDOWS))
+    before_hourly = chance(earlier_control_cells(random["cells"], CONTROLS_BEFORE_HOURLY))
     print(json.dumps({"measured_at": timeutil.utc_now_iso(), **xsb.provenance(), "spec": SPEC,
                       "span": [d.isoformat() for d in SPAN], "last_day_read": last_day(market).isoformat(),
                       "before_costs": True, "judgement": None, "only": args.only,
-                      "chance": against, "excess": excess(real["cells"], against),
-                      "candidates": candidates(real, against), "dropped": real["dropped"],
+                      "chance": against, "chance_before_spot_flow": before, "chance_before_shapes": before_shapes,
+                      "chance_before_windows": before_windows, "chance_before_hourly": before_hourly,
+                      "excess": excess(real["cells"], against),
+                      "candidates": candidates(real, against), "spread_candidates": spread_candidates(real, against),
+                      "dropped": real["dropped"],
                       "variables": real["variables"], "cells": real["cells"],
                       **({"baseline_pool": pool(market)} if args.only is None else {})},
                      indent=1, sort_keys=True, ensure_ascii=False))
