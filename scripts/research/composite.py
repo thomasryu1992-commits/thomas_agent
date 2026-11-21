@@ -18,6 +18,13 @@ Commands in the registered order:
 - ``composite-overlap --ranks FILES --counts F``: the search-span composite book's weights beside every struck book
   on the tier and H-R2's; a median of size 0.5 or more closes L31. No return.
 - ``composite-read --ranks FILES --counts F --overlap F``: the one read.
+
+Section 121 (Thomas 2026-11-21 "채우고 세기"): before the counts, the confirm span's empty caches were filled once from
+the same archive. Ranks 31-100's positioning on that span lives in a root of its own (:data:`CONFIRM_METRICS_ROOT`,
+``composite-positioning-plan|digest|build|seal``, round 45's machinery), so the shared root that M04's screen and the
+forward panel read is never written. The confirm loads of the trade flow, the spot flow and the hourly bars read only
+the days the confirm decisions reach (:data:`FLOW_DAYS`, :data:`HOURLY_DAYS`): the whole history did not fit the
+sandbox, and the values are the same (the tests drop the earlier days and compare).
 """
 from __future__ import annotations
 
@@ -25,7 +32,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -37,7 +44,9 @@ from runtime.mvp_runtime import timeutil  # noqa: E402
 from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE  # noqa: E402
 from scripts.research import basket_search as bs  # noqa: E402
 from scripts.research import cross_section_basket as xsb  # noqa: E402
+from scripts.research import hourly_vars as hv  # noqa: E402
 from scripts.research import signal_lab as lab  # noqa: E402
+from scripts.research import spot_share_search as sp  # noqa: E402
 from scripts.research import strategy_ladder as sl  # noqa: E402
 
 SPEC = "STRATEGY_DISCOVERY_LOOP_V0.1 section 119 (L31)"
@@ -50,6 +59,15 @@ READ_NOT_BEFORE = date(2026, 12, 13)                # one month after the third 
 MIN_COVERAGE = 0.8
 OVERLAP_CLOSE = sl.LOWER_OVERLAP_CLOSE               # 0.5, on the median's size
 SOURCE = "~/research/discovery/hourly69/family-mid.json"   # the latest 31-100 sweep family (45 books)
+# Section 121: the confirm span's own pair beside the shared root (M04's screen and the forward panel) and round 45's.
+CONFIRM_METRICS_ROOT = "archive-metrics-confirm"
+CONFIRM_METRICS_DAILY = "metrics-daily-confirm"
+# The oldest day a flow variable reads: a position takes the 30-day level at six lookbacks back, 6 * 30 + 29 = 209 days
+# before the decision (the test drops the days before the floor and finds every value unchanged; at 200 days three
+# positions move). 240 days before the span's first day leaves a month of room.
+FLOW_DAYS = lab.LOOKBACK * (lab.HISTORY_POINTS + 2)
+# An hourly value reads the 720 hours before the decision's close and six earlier hours of BTC: 60 days is room.
+HOURLY_DAYS = 2 * lab.LOOKBACK
 
 # The recorded side of every unstruck variable with a recorded 31-100 sweep book, copied from SOURCE at registration.
 COMPONENTS: dict[str, str] = {
@@ -85,6 +103,59 @@ def market_for(cache: Path, load: str, span: tuple[date, date]) -> xsb.Market | 
     if load == "bars":
         return lab.hold(cache, span, attach=False, flow=True)
     return getattr(lab, sl.SWEEP_ALONE[load])(cache, span)
+
+
+def confirm_wanted(market: xsb.Market) -> dict[str, list[date]]:
+    """Each coin the tier ranks on the confirm span, with the decisions it is a member at."""
+    tier = sl.TierSweep(market, CONFIRM)
+    out: dict[str, list[date]] = {}
+    for day in tier.days:
+        for symbol in tier.members(day):
+            out.setdefault(symbol, []).append(day)
+    return out
+
+
+def trimmed(series: Mapping[date, Any], floor: date, end: date) -> dict[date, Any]:
+    return {d: v for d, v in series.items() if floor <= d <= end}
+
+
+def confirm_market_for(cache: Path, load: str) -> xsb.Market | None:
+    """Section 121: the confirm span's loader. Bars and funding whole (a listing age reads the first bar); the
+    positioning values from the confirm span's own sealed pair, None until it is sealed; the trade flow, the spot flow
+    and the hourly bars only from the days the confirm decisions reach, for the coins the tier ranks there. The
+    premium and the spot bars load as recorded."""
+    if load == "positioning":
+        return sl.lower_positioning_market(cache, WHOLE, root=CONFIRM_METRICS_ROOT, daily=CONFIRM_METRICS_DAILY)
+    if load not in ("bars", "spot_flow", "hourly"):
+        return market_for(cache, load, WHOLE)
+    held = lab.hold(cache, WHOLE, attach=False)
+    if held is None:
+        return None
+    wanted = confirm_wanted(held)
+    end = WHOLE[1]
+    if load == "hourly":
+        after = hv.hour_of(CONFIRM[0] - timedelta(days=HOURLY_DAYS))
+        held.hourly_values, _ = hv.build(cache / "archive", wanted, WHOLE, after=after)
+        return held if held.hourly_values else None
+    floor = CONFIRM[0] - timedelta(days=FLOW_DAYS)
+    if load == "bars":
+        held.trade_flow = {s: trimmed(lab.read_trade_flow(cache / "archive" / xsb.KLINES_KIND / s), floor, end)
+                           for s in sorted(wanted)}
+        return held
+    # The spot-flow components read the spot pair's flow and bars and the perp's bars, never the perp's own flow (the
+    # record's load hangs it for the kin, which the confirm ranks do not read), and only the pairs of ranked coins.
+    try:
+        listing = set(json.loads((cache / sp.SPOT_DIR / lab.ba.SYMBOLS_FILENAME).read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return None
+    if not listing:
+        return None
+    held = sp.attach(held, xsb.load_market(cache / sp.SPOT_DIR, funding=False), listing, end, sp.months_on_disk(cache))
+    pairs = sorted({link[0] for s in wanted if (link := held.spot_of.get(s)) is not None})
+    held.spot = {pair: held.spot[pair] for pair in pairs if pair in held.spot}
+    held.spot_flow = {pair: trimmed(lab.read_trade_flow(cache / sp.SPOT_DIR / sp.KLINES / pair), floor, end)
+                      for pair in pairs}
+    return held
 
 
 # --- the ranks -----------------------------------------------------------------------------------------------------
@@ -209,6 +280,36 @@ def read_once(market: xsb.Market, tables, kept: Sequence[str]) -> dict[str, Any]
             "components": len(kept), **report}
 
 
+# --- section 121: the confirm span's positioning, in a root of its own ---------------------------------------------
+
+HOST_COMMANDS = ("composite-positioning-digest", "composite-positioning-build", "composite-positioning-seal")
+POSITIONING_COMMANDS = ("composite-positioning-plan", *HOST_COMMANDS)
+
+
+def positioning_plan(market: xsb.Market, cache: Path) -> dict[str, Any]:
+    """Round 45's plan on this tier and span: every confirm decision's ranks 31-100 members, the 210 days before it,
+    less the days the shared root holds or answered absent. Reads file names and bars only."""
+    tier = sl.TierSweep(market, CONFIRM)
+    return sl.lower_metrics_plan(market, cache / "archive-metrics", CONFIRM, members=tier.members)
+
+
+def host_command(args: argparse.Namespace) -> int:
+    cache = args.cache or Path(os.environ.get("RESEARCH_CACHE", str(Path.home() / "research" / "cache")))
+    if args.command == "composite-positioning-digest":
+        print(json.dumps(sl.shared_metrics_digest(cache), indent=1, sort_keys=True))
+        return EXIT_OK
+    if args.command == "composite-positioning-build":
+        sl.lower_metrics_build(cache, root=CONFIRM_METRICS_ROOT, daily=CONFIRM_METRICS_DAILY, last=CONFIRM[1])
+        return EXIT_OK
+    if args.before is None:
+        print("refused: composite-positioning-seal needs --before", file=sys.stderr)
+        return EXIT_USAGE
+    report = sl.lower_metrics_seal(cache, json.loads(args.before.read_text()), root_name=CONFIRM_METRICS_ROOT,
+                                   daily=CONFIRM_METRICS_DAILY)
+    print(json.dumps(report, indent=1, sort_keys=True))
+    return EXIT_BLOCKED if report["problems"] else EXIT_OK
+
+
 # --- the command ---------------------------------------------------------------------------------------------------
 
 def _load_json(paths: str | None) -> list[dict[str, Any]]:
@@ -217,14 +318,18 @@ def _load_json(paths: str | None) -> list[dict[str, Any]]:
 
 def main(argv: list[str] | None = None, *, today: date | None = None) -> int:
     parser = argparse.ArgumentParser(prog="composite", description=__doc__.splitlines()[0])
-    parser.add_argument("command", choices=("composite-ranks", "composite-counts", "composite-overlap", "composite-read"))
+    parser.add_argument("command", choices=("composite-ranks", "composite-counts", "composite-overlap", "composite-read",
+                                            *POSITIONING_COMMANDS))
     parser.add_argument("--load", choices=sorted(LOADS), default=None)
     parser.add_argument("--span", choices=("search", "confirm"), default=None)
     parser.add_argument("--ranks", default=None, help="ranks files, comma-separated")
     parser.add_argument("--counts", default=None)
     parser.add_argument("--overlap", default=None)
     parser.add_argument("--cache", type=Path, default=None, help="default: $RESEARCH_CACHE")
+    parser.add_argument("--before", type=Path, default=None, help="composite-positioning-seal: the digest taken before the fetch")
     args = parser.parse_args(argv)
+    if args.command in HOST_COMMANDS:             # host: file digests and values from zips, never a return
+        return host_command(args)
     if not xsb._in_sandbox():
         print("refused: runs in the research sandbox only (scripts/research/sandbox_run.sh)", file=sys.stderr)
         return EXIT_USAGE
@@ -263,8 +368,18 @@ def main(argv: list[str] | None = None, *, today: date | None = None) -> int:
         print(json.dumps({**head, **body}, indent=1, sort_keys=True, ensure_ascii=False))
         return EXIT_OK
     cache = args.cache or Path(os.environ.get("RESEARCH_CACHE", str(Path.home() / "research" / "cache")))
+    if cmd == "composite-positioning-plan":
+        held = lab.hold(cache, WHOLE, attach=False)
+        if held is None:
+            print("BLOCKED: contract types are missing from the cache", file=sys.stderr)
+            return EXIT_BLOCKED
+        print(json.dumps({**head, "tier": TIER, **positioning_plan(held, cache)}, indent=1, sort_keys=True))
+        return EXIT_OK
     span = SEARCH if (cmd == "composite-overlap" or args.span == "search") else WHOLE
-    market = market_for(cache, args.load or "bars", span)
+    if cmd == "composite-ranks":
+        market = market_for(cache, args.load, SEARCH) if args.span == "search" else confirm_market_for(cache, args.load)
+    else:              # the overlap and the read weigh tables and trade bars and funding: no attached series (section 121)
+        market = lab.hold(cache, span, attach=False)
     if market is None:
         print("BLOCKED: contract types or the attached values are missing from the cache", file=sys.stderr)
         return EXIT_BLOCKED

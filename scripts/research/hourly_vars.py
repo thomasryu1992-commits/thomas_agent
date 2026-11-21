@@ -64,8 +64,9 @@ class Series:
         return math.log(b / a) if a > 0 and b > 0 else math.nan
 
 
-def read_symbol(folder: Path, *, before: int) -> dict[int, tuple[float, float]]:
-    """``{hour: (open, quote volume)}`` from one symbol's monthly 1h zips; nothing at or after hour ``before``."""
+def read_symbol(folder: Path, *, before: int, after: int | None = None) -> dict[int, tuple[float, float]]:
+    """``{hour: (open, quote volume)}`` from one symbol's monthly 1h zips; nothing at or after hour ``before``, and
+    with ``after`` nothing before that hour (a load that asks only for late decisions, round 121)."""
     out: dict[int, tuple[float, float]] = {}
     for path in sorted(folder.glob("*.zip")) if folder.exists() else []:
         for row in xsb._rows(path):
@@ -76,7 +77,7 @@ def read_symbol(folder: Path, *, before: int) -> dict[int, tuple[float, float]]:
             if stamp > 1e14:      # microseconds
                 stamp /= 1000
             hour = int(stamp // HOUR_MS)
-            if price > 0 and hour < before:
+            if price > 0 and hour < before and (after is None or hour >= after):
                 out[hour] = (price, quote)
     return out
 
@@ -189,11 +190,12 @@ def peak_share(coin: Series, end: int) -> float | None:
 
 
 def build(archive: Path, wanted: Mapping[str, Iterable[date]],
-          span: tuple[date, date]) -> tuple[dict[str, dict[date, dict[str, float]]], int | None]:
+          span: tuple[date, date], *, after: int | None = None) -> tuple[dict[str, dict[date, dict[str, float]]], int | None]:
     """``({symbol: {day: {"price_delay_30", "r2_btc_30", "volume_peak_share_30"}}}, BTC's first hour)`` at the days
-    asked for each symbol, one symbol read at a time, every file cut at the span's end."""
+    asked for each symbol, one symbol read at a time, every file cut at the span's end. ``after`` leaves out every
+    hour before it, BTC's too: for days whose window and lags all lie after it, the values are the same."""
     before = window_end(span[1])
-    btc = Series(read_symbol(archive / HOURLY_KIND / REFERENCE, before=before))
+    btc = Series(read_symbol(archive / HOURLY_KIND / REFERENCE, before=before, after=after))
     if not len(btc.opens):
         return {}, None
     ref = Reference(btc, btc.first, before - 1)
@@ -202,7 +204,7 @@ def build(archive: Path, wanted: Mapping[str, Iterable[date]],
         days = sorted(set(wanted[symbol]))
         if symbol == REFERENCE or not days:
             continue
-        coin = Series(read_symbol(archive / HOURLY_KIND / symbol, before=before))
+        coin = Series(read_symbol(archive / HOURLY_KIND / symbol, before=before, after=after))
         values: dict[date, dict[str, float]] = {}
         for day in days:
             end = window_end(day)

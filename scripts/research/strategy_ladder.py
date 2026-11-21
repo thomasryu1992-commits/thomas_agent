@@ -4849,16 +4849,20 @@ LOWER_METRICS_WINDOW = 210                       # days before a decision a posi
 METRICS_FIRST_DAY = date(2020, 9, 27)            # the archive's first metrics day on disk (the shared root's file names)
 
 
-def lower_metrics_plan(market: xsb.Market, shared: Path, span: tuple[date, date] = SPAN) -> dict[str, Any]:
+def lower_metrics_plan(market: xsb.Market, shared: Path, span: tuple[date, date] = SPAN, *,
+                       members: Callable[[date], Sequence[str]] | None = None) -> dict[str, Any]:
     """The metrics days the positioning variables read on ranks 101+: for every weekly decision of the span, every
     coin the tier holds, the :data:`LOWER_METRICS_WINDOW` days before it, from the archive's first metrics day and
     the coin's first bar on. Days already in the shared root, or answered absent there, are not asked again. Spans
-    are cut at calendar months so a fetch can stop between them. Reads file names and bars only."""
-    tier = LowerTier(market, span)
+    are cut at calendar months so a fetch can stop between them. Reads file names and bars only.
+
+    ``members`` gives another tier's members per decision day (round 121: ranks 31-100 on the confirm span)."""
+    if members is None:
+        members = lambda day, _tier=LowerTier(market, span): _tier.at(day)[0]   # noqa: E731
     decisions = [d for d in sundays(span) if span[0] <= d <= span[1]]
     need: dict[str, set[date]] = {}
     for day in decisions:
-        for symbol in tier.at(day)[0]:
+        for symbol in members(day):
             first = max(METRICS_FIRST_DAY, min(market.bars[symbol]))
             for k in range(LOWER_METRICS_WINDOW + 1):
                 d = day - timedelta(days=k)
@@ -4896,17 +4900,21 @@ def lower_metrics_plan(market: xsb.Market, shared: Path, span: tuple[date, date]
             "held_symbols": sorted(need), **counts, "spans": spans}
 
 
-def lower_metrics_build(cache: Path, *, say: Callable[[str], None] = print) -> int:
+def lower_metrics_build(cache: Path, *, say: Callable[[str], None] = print, root: str = LOWER_METRICS_ROOT,
+                        daily: str = LOWER_METRICS_DAILY, last: date | None = None) -> int:
     """Host only, values and no returns: each held coin's daily positioning values from the zips of both roots (the
-    shared one read, never written), into :data:`LOWER_METRICS_DAILY`. One file per coin the plan names."""
-    plan = json.loads((cache / LOWER_METRICS_ROOT / LOWER_METRICS_PLAN).read_text())
-    out_dir = cache / "derived" / LOWER_METRICS_DAILY
+    shared one read, never written), into :data:`LOWER_METRICS_DAILY`. One file per coin the plan names.
+
+    ``root`` and ``daily`` name another tier's own pair (round 121); ``last`` leaves out every day after it, so a
+    file of the shared root past a span's end (the reserved span from 2026-10-01) is never read into a value."""
+    plan = json.loads((cache / root / LOWER_METRICS_PLAN).read_text())
+    out_dir = cache / "derived" / daily
     out_dir.mkdir(parents=True, exist_ok=True)
     written = 0
     for symbol in plan["held_symbols"]:
         paths: dict[str, Path] = {}
-        for root in (cache / "archive-metrics", cache / LOWER_METRICS_ROOT):
-            folder = root / lab.ba.METRICS / symbol
+        for tree in (cache / "archive-metrics", cache / root):
+            folder = tree / lab.ba.METRICS / symbol
             for path in sorted(folder.glob("*.zip")) if folder.exists() else []:
                 paths.setdefault(path.name, path)
         lines = []
@@ -4914,6 +4922,8 @@ def lower_metrics_build(cache: Path, *, say: Callable[[str], None] = print) -> i
             try:
                 day = date.fromisoformat(Path(name).stem[-10:])
             except ValueError:
+                continue
+            if last is not None and day > last:
                 continue
             values = lab.ms.daily_values(lab.ba.read_metrics_zip(paths[name]), day)
             lines.append(json.dumps([day.isoformat(), *(values[c] for c in lab.ms.COLUMNS)]))
@@ -4940,11 +4950,13 @@ def shared_metrics_digest(cache: Path) -> dict[str, Any]:
             "derived/metrics-daily": tree_digest(cache / "derived" / "metrics-daily")}
 
 
-def lower_metrics_seal(cache: Path, before: Mapping[str, Any]) -> dict[str, Any]:
+def lower_metrics_seal(cache: Path, before: Mapping[str, Any], *, root_name: str = LOWER_METRICS_ROOT,
+                       daily: str = LOWER_METRICS_DAILY) -> dict[str, Any]:
     """Host only. The fetch is complete when every planned day is on disk in either root or answered absent, the
     shared root and the shared daily file are byte-identical to ``before``, and every held coin has a daily file.
-    Only then is :data:`LOWER_METRICS_COMPLETE` written; without it no command reads positioning on this tier."""
-    root = cache / LOWER_METRICS_ROOT
+    Only then is :data:`LOWER_METRICS_COMPLETE` written; without it no command reads positioning on this tier.
+    ``root_name`` and ``daily`` name another tier's own pair (round 121)."""
+    root = cache / root_name
     plan = json.loads((root / LOWER_METRICS_PLAN).read_text())
     absent: set[str] = set()
     for missing in (root / lab.ba.MISSING_FILENAME, cache / "archive-metrics" / lab.ba.MISSING_FILENAME):
@@ -4961,7 +4973,7 @@ def lower_metrics_seal(cache: Path, before: Mapping[str, Any]) -> dict[str, Any]
                 open_days += 1
             d += timedelta(days=1)
     now = shared_metrics_digest(cache)
-    unbuilt = [s for s in plan["held_symbols"] if not (cache / "derived" / LOWER_METRICS_DAILY / f"{s}.jsonl").exists()]
+    unbuilt = [s for s in plan["held_symbols"] if not (cache / "derived" / daily / f"{s}.jsonl").exists()]
     problems = ([f"{open_days} planned day(s) neither on disk nor answered absent"] if open_days else []) + \
         [f"{k} changed since the fetch began" for k in now if now[k] != before.get(k)] + \
         ([f"{len(unbuilt)} held coin(s) without a daily file"] if unbuilt else [])
@@ -4974,16 +4986,17 @@ def lower_metrics_seal(cache: Path, before: Mapping[str, Any]) -> dict[str, Any]
     return report
 
 
-def lower_positioning_market(cache: Path, span: tuple[date, date] = SPAN) -> xsb.Market | None:
+def lower_positioning_market(cache: Path, span: tuple[date, date] = SPAN, *, root: str = LOWER_METRICS_ROOT,
+                             daily: str = LOWER_METRICS_DAILY) -> xsb.Market | None:
     """The market cut at the span's end with ranks 101+'s own positioning values attached, and nothing else: None
     unless the fetch was sealed. The shared daily file is never attached here, so a coin's values never depend on
-    whether it was about to join the top hundred."""
-    if not (cache / LOWER_METRICS_ROOT / LOWER_METRICS_COMPLETE).exists():
+    whether it was about to join the top hundred. ``root`` and ``daily`` name another tier's own pair (round 121)."""
+    if not (cache / root / LOWER_METRICS_COMPLETE).exists():
         return None
     held = lab.hold(cache, span, attach=False)
     if held is None:
         return None
-    folder = cache / "derived" / LOWER_METRICS_DAILY
+    folder = cache / "derived" / daily
     metrics: dict[str, dict[date, dict[str, float | None]]] = {}
     for path in sorted(folder.glob("*.jsonl")):
         days = {}
