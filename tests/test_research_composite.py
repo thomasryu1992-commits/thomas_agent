@@ -81,11 +81,15 @@ def test_the_read_refuses_out_of_order_before_its_date_and_unregistered(monkeypa
     assert cp.main(["composite-read", "--counts", ok, "--overlap", closed]) == cp.EXIT_BLOCKED
     assert cp.main(["composite-read", "--counts", ok, "--overlap", passed], today=date(2026, 12, 12)) == cp.EXIT_USAGE
     registered = sl.CONFIRM_READS
-    assert registered[3] == {**registered[3], "read": 4, "candidate": "L31"}, "read 4 is registered for L31"
+    assert registered[3] == {**registered[3], "read": 4, "candidate": "L31"} and registered[3]["released"], \
+        "read 4 was registered for L31 and released when the overlap closed it (section 124)"
+    assert cp.main(["composite-read", "--counts", ok, "--overlap", passed], today=date(2026, 12, 13)) == cp.EXIT_USAGE, \
+        "a released line opens no read, whatever overlap file is handed in"
+    live = (*registered[:3], {k: v for k, v in registered[3].items() if k != "released"})      # the line as registered
     monkeypatch.setattr(sl, "CONFIRM_READS", registered[:3])
     assert cp.main(["composite-read", "--counts", ok, "--overlap", passed], today=date(2026, 12, 13)) == cp.EXIT_USAGE, \
         "read 4 must be registered for L31 in CONFIRM_READS first"
-    monkeypatch.setattr(sl, "CONFIRM_READS", registered)
+    monkeypatch.setattr(sl, "CONFIRM_READS", live)
     monkeypatch.setattr(sl, "CONFIRM_DONE", {**sl.CONFIRM_DONE, 4: "a run"})
     assert cp.main(["composite-read", "--counts", ok, "--overlap", passed], today=date(2026, 12, 13)) == cp.EXIT_USAGE, \
         "a spent read 4 is refused"

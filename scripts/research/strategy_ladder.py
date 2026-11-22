@@ -104,7 +104,9 @@ CONFIRM = bs.CONFIRM                       # 2025-01-01 .. 2026-09-30; the days 
 CONFIRM_BUDGET = 5                         # reads in all; at most one a month
 CONFIRM_ALPHA = 0.10                       # the k-th read is held to alpha / k
 # The reads, in order. A candidate is written here BEFORE its read, with everything the read fixes, and is never
-# removed. C002's directions are the ones every leave-one-year-out fold learned on the development years.
+# removed. C002's directions are the ones every leave-one-year-out fold learned on the development years. A line whose
+# candidate closed before its read carries ``released``: it stays as the record, opens nothing, and its number is free
+# for a later line.
 CONFIRM_READS: tuple[dict[str, Any], ...] = (
     {"read": 1, "candidate": "C002", "signs": {"cool": 1, "hot": -1}, "registered": "2026-11-13",
      "asked": "D5, Thomas 2026-11-13"},
@@ -114,8 +116,10 @@ CONFIRM_READS: tuple[dict[str, Any], ...] = (
     # C010 is C007 without its universe's tail. C007's result on this span is known (0.08; 2025 +15.3%, 2026 -11.9%),
     # so this read is a diagnosis of the cause as much as a test of the book.
     {"read": 3, "candidate": "C010", "registered": "2026-11-13", "asked": "D8, Thomas 2026-11-13"},
-    # L31 is not a ladder candidate: its own tool (``scripts/research/composite.py``) reads it, not before 2026-12-13.
-    {"read": 4, "candidate": "L31", "registered": "2026-11-20", "asked": "section 119.5 Q1 and Q4, Thomas 2026-11-20"},
+    # L31 is not a ladder candidate: its own tool (``scripts/research/composite.py``) was to read it, not before
+    # 2026-12-13. The overlap door closed L31 before that (section 124), so read 4 is unspent and unassigned.
+    {"read": 4, "candidate": "L31", "registered": "2026-11-20", "asked": "section 119.5 Q1 and Q4, Thomas 2026-11-20",
+     "released": "2026-11-22: L31 closed at the overlap door, no read (section 124; Thomas 2026-11-22)"},
 )
 # read number -> the run that spent it. Filled in the commit that records the result; ``confirm`` refuses a read
 # that is already here.
@@ -474,8 +478,8 @@ def confirm_bar(read: int, span: tuple[date, date] = CONFIRM) -> float:
 
 
 def next_confirm_read() -> dict[str, Any] | None:
-    """The registered read that has not been spent, or None when there is none or the budget is used."""
-    open_reads = [r for r in CONFIRM_READS if r["read"] not in CONFIRM_DONE]
+    """The registered read that has not been spent or released, or None when there is none or the budget is used."""
+    open_reads = [r for r in CONFIRM_READS if r["read"] not in CONFIRM_DONE and not r.get("released")]
     if not open_reads or len(CONFIRM_DONE) >= CONFIRM_BUDGET:
         return None
     return open_reads[0]
