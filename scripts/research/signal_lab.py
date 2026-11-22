@@ -1479,20 +1479,40 @@ def pool(market: xsb.Market, span: tuple[date, date] = SPAN, *, simulate: Callab
 
 # --- the host side -----------------------------------------------------------------------------------------------
 
+def load_until(archive: Path, end: date) -> xsb.Market:
+    """The perp bars and funding on disk with nothing after ``end``, each symbol cut as it is read.
+
+    The same market as ``basket_search.cut(xsb.load_market(archive, funding=True), end)``, key order included, without
+    the moment when the whole load and its cut copy are both alive: that copy was the memory peak of every load that
+    reads bars and funding alone (section 122.3). A symbol whose bars all lie after ``end`` keeps its empty entry, as
+    the copy kept it."""
+    limit_ms = (end.toordinal() - date(1970, 1, 1).toordinal() + 1) * 86_400_000
+    market = xsb.Market()
+    klines = archive / xsb.KLINES_KIND
+    for folder in sorted(klines.iterdir()) if klines.exists() else []:
+        bars = xsb.read_klines(folder)
+        if bars:
+            market.bars[folder.name] = {d: b for d, b in bars.items() if d <= end}
+    for symbol in market.bars:
+        rows = xsb.read_funding(archive / xsb.FUNDING_KIND / symbol)
+        market.funding[symbol] = [(t, r) for t, r in rows if (t / 1000 if t > 1e14 else t) < limit_ms]
+    return market
+
+
 def hold(cache: Path, span: tuple[date, date] = SPAN, *, attach: bool = True, flow: bool = False) -> xsb.Market | None:
     """The market cut at the span's last day with positioning, depth and spot attached, or None when a piece is missing.
 
     ``attach=False`` loads the perp bars and funding alone, for a book whose variable and scenario read nothing
     else: the attached series are most of the memory, and a span that runs to 2026 does not fit the sandbox with
-    them. ``flow`` also hangs the trade-flow columns (:func:`attach_trade_flow`)."""
+    them. That load is cut while it is read (:func:`load_until`). ``flow`` also hangs the trade-flow columns
+    (:func:`attach_trade_flow`)."""
     archive = cache / "archive"
     snapshot = xsb.read_contract_types(archive)
     if not attach:
         if snapshot is None:
             return None
-        market = xsb.load_market(archive, funding=True)
-        market.contract_types = snapshot[0]
-        held = cut_market(market, span)
+        held = load_until(archive, span[1])
+        held.contract_types = snapshot[0]
         return attach_trade_flow(held, archive, span) if flow else held
     try:
         listing = set(json.loads((cache / sp.SPOT_DIR / ba.SYMBOLS_FILENAME).read_text(encoding="utf-8")))

@@ -219,7 +219,7 @@ def test_a_book_that_reads_bars_and_funding_alone_loads_nothing_else(monkeypatch
     variable does not read them, and is still cut at the span's last day."""
     span = (date(2020, 1, 1), date(2021, 6, 30))
     monkeypatch.setattr(lab.xsb, "read_contract_types", lambda archive: ({"BTCUSDT": "PERPETUAL"}, None))
-    monkeypatch.setattr(lab.xsb, "load_market", lambda archive, funding=True: _market(date(2021, 12, 31)))
+    _perp_archive(tmp_path, _market(date(2021, 12, 31)))
 
     def never(*args, **kwargs):
         raise AssertionError("an attached series was loaded")
@@ -353,6 +353,67 @@ def _kline_zip(folder, name, rows):
 
 def _ms(day):
     return int((day - date(1970, 1, 1)).total_seconds() * 1000)
+
+
+def _funding_zip(folder, name, rows):
+    folder.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(folder / name, "w") as z:
+        z.writestr("x.csv", "calc_time,funding_interval_hours,last_funding_rate\n"
+                   + "".join(f"{stamp},8,{rate}\n" for stamp, rate in rows))
+
+
+def _perp_archive(cache, market):
+    """``market``'s bars and settlements as the archive's zips under ``cache``: what the base load reads from disk.
+    Half of each day's volume is taker buys, ten trades a day."""
+    for symbol, bars in market.bars.items():
+        _kline_zip(cache / "archive" / xsb.KLINES_KIND / symbol, f"{symbol}-1d-2000-01.zip", [
+            [_ms(d), b.open, b.open if b.high is None else b.high, b.open if b.low is None else b.low, b.close, 0, 0,
+             b.quote_volume, 10, 0, b.quote_volume / 2, 0] for d, b in bars.items()])
+    for symbol, rows in market.funding.items():
+        _funding_zip(cache / "archive" / xsb.FUNDING_KIND / symbol, f"{symbol}-fundingRate-2000-01.zip", rows)
+
+
+def test_the_base_load_cut_as_it_is_read_is_the_whole_load_cut_afterwards(tiers, tmp_path):
+    """Section 122.6: the load of bars and funding alone cuts each symbol as it reads it, so the whole load and its
+    cut copy are never alive together. It hands back the market the whole load cut afterwards handed back, symbols
+    and days in the same order: with a symbol listed only after the span, a settlement on either side of the span's
+    last midnight, and stamps in microseconds."""
+    span = (date(2020, 1, 1), date(2021, 6, 30))
+    end, after = span[1], span[1] + timedelta(days=1)
+    source, edge = _market(date(2021, 12, 31)), SYMBOLS[0]
+    source.funding[edge] = source.funding[edge] + [(_ms(after) - 1, 0.5), (_ms(after), 0.7)]
+    bar = xsb.Bar(open=2.0, close=3.0, quote_volume=50.0, high=3.5, low=1.5)
+    source.bars["AAALATEUSDT"] = {after: bar, after + timedelta(days=1): bar}
+    source.funding["AAALATEUSDT"] = [(_ms(end) + 8 * 3_600_000, 0.1), (_ms(after) + 8 * 3_600_000, 0.2)]
+    _perp_archive(tmp_path, source)
+    archive = tmp_path / "archive"
+    _kline_zip(archive / xsb.KLINES_KIND / "MICROUSDT", "MICROUSDT-1d-2021-06.zip", [
+        [_ms(end) * 1000, 1, 2, 0.5, 1.5, 10, 0, 200.0, 40, 5, 120.0, 0],
+        [_ms(after) * 1000, 1, 2, 0.5, 1.5, 10, 0, 200.0, 40, 5, 120.0, 0]])
+    _funding_zip(archive / xsb.FUNDING_KIND / "MICROUSDT", "MICROUSDT-fundingRate-2021-06.zip",
+                 [((_ms(after) - 1) * 1000, 0.3), (_ms(after) * 1000, 0.4)])
+    _kline_zip(archive / xsb.KLINES_KIND / "ZEROUSDT", "ZEROUSDT-1d-2021-06.zip", [[_ms(end), 0, 0, 0, 0, 0, 0, 0.0, 0, 0, 0.0, 0]])
+    (archive / xsb.CONTRACT_TYPES_FILENAME).write_text(
+        json.dumps({"contract_types": {edge: "PERPETUAL"}, "fetched_at": "2021-12-31T00:00:00Z"}), encoding="utf-8")
+
+    def laid(market):
+        return ([(s, list(days.items())) for s, days in market.bars.items()], list(market.funding.items()),
+                market.contract_types, sorted(vars(market)))
+
+    whole = xsb.load_market(archive, funding=True)                  # the load as it was: everything, then a cut copy
+    whole.contract_types = xsb.read_contract_types(archive)[0]
+    before = lab.cut_market(whole, span)
+    held = lab.hold(tmp_path, span, attach=False)
+    assert laid(held) == laid(before) and len(held.bars) == len(SYMBOLS) + 2
+    assert held.bars["AAALATEUSDT"] == {} and held.funding["AAALATEUSDT"] == [(_ms(end) + 8 * 3_600_000, 0.1)], \
+        "a symbol listed after the span keeps its empty entry and its earlier settlement"
+    assert [rate for stamp, rate in held.funding[edge] if stamp >= _ms(after) - 1] == [0.5], "the last millisecond is in"
+    assert list(held.bars["MICROUSDT"]) == [end] and held.funding["MICROUSDT"] == [((_ms(after) - 1) * 1000, 0.3)]
+    assert "ZEROUSDT" not in held.bars and lab.last_day(held) == end
+    flow = lab.hold(tmp_path, span, attach=False, flow=True)
+    flow_before = lab.attach_trade_flow(before, archive, span)
+    assert flow.trade_flow and list(flow.trade_flow.items()) == list(flow_before.trade_flow.items())
+    assert laid(flow)[:3] == laid(before)[:3]
 
 
 def test_the_trade_flow_reader_keeps_the_taker_share_and_the_size_of_a_trade(tmp_path):
@@ -1128,7 +1189,7 @@ def test_the_funding_spread_axis_reads_how_far_apart_the_weeks_funding_stands():
 def test_a_run_of_the_premium_group_loads_the_premium_cut_at_the_span_and_nothing_else(monkeypatch, tmp_path, capsys):
     span = (date(2020, 1, 1), date(2021, 6, 30))
     monkeypatch.setattr(lab.xsb, "read_contract_types", lambda archive: ({"BTCUSDT": "PERPETUAL"}, None))
-    monkeypatch.setattr(lab.xsb, "load_market", lambda archive, funding=True: _market(date(2021, 12, 31)))
+    _perp_archive(tmp_path, _market(date(2021, 12, 31)))
     assert lab.hold_premium(tmp_path, span) is None, "no premium file: blocked, not an empty map"
     days = [date(2021, 6, 1) + timedelta(days=k) for k in range(60)]
     _premium_api(tmp_path, "C02USDT", [(d, 0.5) for d in days])

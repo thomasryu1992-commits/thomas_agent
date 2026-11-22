@@ -2240,6 +2240,19 @@ def test_the_pair_run_is_read_through_the_ladder_beside_other_coins_pairs_and_it
     assert set(run["years_total_position_pct"]) == {"2020", "2021"}
 
 
+def _perp_archive(cache, market):
+    """``market``'s bars and settlements as the archive's zips under ``cache``: what the base load reads from disk."""
+    epoch = date(1970, 1, 1)
+    for kind, symbol, lines in (
+            *((xsb.KLINES_KIND, s, [f"{(d - epoch).days * 86_400_000},{b.open},{b.open},{b.open},{b.close},0,0,{b.quote_volume}"
+                                    for d, b in bars.items()]) for s, bars in market.bars.items()),
+            *((xsb.FUNDING_KIND, s, [f"{stamp},8,{rate}" for stamp, rate in rows]) for s, rows in market.funding.items())):
+        folder = cache / "archive" / kind / symbol
+        folder.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(folder / f"{symbol}-2000-01.zip", "w") as z:
+            z.writestr("x.csv", "".join(line + "\n" for line in lines))
+
+
 def test_the_basis_commands_hang_the_spot_bars_and_nothing_after_the_development_span_reaches_the_book(monkeypatch, capsys, tmp_path):
     late = date(2025, 1, 2)
     assert sl.SPAN[1] < date(2025, 1, 1)
@@ -2255,7 +2268,8 @@ def test_the_basis_commands_hang_the_spot_bars_and_nothing_after_the_development
     seen = []
     monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
     monkeypatch.setattr(sl.xsb, "read_contract_types", lambda path: ({}, "snapshot"))
-    monkeypatch.setattr(sl.xsb, "load_market", archive)
+    monkeypatch.setattr(sl.xsb, "load_market", archive)                # the spot bars
+    _perp_archive(tmp_path, archive(None))                             # the perp bars and funding, read from disk
     monkeypatch.setattr(sl, "basis_counts", lambda market: seen.append(market) or {"stop": []})
     monkeypatch.setattr(sl, "basis_run", lambda market: seen.append(market) or {})
     assert sl.main(["basis-counts", "--cache", str(tmp_path)]) == sl.EXIT_OK
@@ -2401,7 +2415,7 @@ def test_the_wide_commands_hang_the_positioning_values_and_nothing_after_their_s
     bar = xsb.Bar(open=1.0, close=1.0, quote_volume=1.0)
     monkeypatch.setattr(sl.xsb, "_in_sandbox", lambda: True)
     monkeypatch.setattr(sl.xsb, "read_contract_types", lambda path: ({}, "snapshot"))
-    monkeypatch.setattr(sl.xsb, "load_market", lambda path, funding=True: xsb.Market(bars={"AUSDT": {date(2024, 12, 30): bar, late: bar}}))
+    _perp_archive(tmp_path, xsb.Market(bars={"AUSDT": {date(2024, 12, 30): bar, late: bar}}))
     seen = []
     monkeypatch.setattr(sl, "wide_counts", lambda market: seen.append(market) or {"stop": []})
     monkeypatch.setattr(sl, "wide_run", lambda market: seen.append(market) or {})
