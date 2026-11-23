@@ -4,9 +4,9 @@
 
 날짜는 결정일이다. `DRAFT`와 `RECORD`는 작성일이고, 결정 기록을 찾지 못한 것은 구현·가동일이다(요약에 그렇게 적는다).
 
-제안서 **136**건: `DRAFT` 3 · `PARTIALLY DECIDED` 11 · `DECIDED` 36 · `IMPLEMENTED` 75 · `SUPERSEDED` 4 · `RECORD` 7
+제안서 **137**건: `DRAFT` 4 · `PARTIALLY DECIDED` 11 · `DECIDED` 36 · `IMPLEMENTED` 75 · `SUPERSEDED` 4 · `RECORD` 7
 
-## Thomas 결정 대기 (14)
+## Thomas 결정 대기 (15)
 
 결정이 하나라도 남은 제안서. 오래 기다린 것부터 적는다.
 
@@ -26,6 +26,7 @@
 | [SAME_SYMBOL_NETTING_AND_RISK_BUDGET_V0.1.md](SAME_SYMBOL_NETTING_AND_RISK_BUDGET_V0.1.md) | `DRAFT` | 2026-11-12 | Thomas 2026-11-12: 설계 문서를 지금 쓴다("기본값대로", `MANY_STRATEGIES_V0.1` M2, 설계만). 이 문서는 설계의 뼈대와 아직 풀지 못한 문제를 적는다. 0단계의 측정은 따로 제안해 돌렸고(N1, `POOL_OVERLAP_MEASUREMENT_V0.1`) 결과를 §10에 적었다. 그 밖에는 아무것도 짓지 않았다. 다음 단계(페이퍼 합산 장부)는 따로 제안하고 따로 승인받는다. 그 제안서는 11-14의 판독과 F6 PR 뒤에 쓰기로 했다가(Thomas 2026-11-12, "기본값대로") 2026-11-13에 판독을 기다리지 않고 썼고, 같은 날 승인받아 한 번 계산했다: `NETTING_STAGE1_DERIVED_BOOK_V0.1`(IMPLEMENTED, 결과는 §11). 나누기 규칙은 고르지 않았다(§11). |
 | [SPOT_SHARE_SEARCH_V0.1.md](SPOT_SHARE_SEARCH_V0.1.md) | `PARTIALLY DECIDED` | 2026-11-12 | Thomas 2026-11-12: 현물 비중을 한 번, M04와의 겹침 조건을 걸고 잰다("기본값대로", `SEARCH_CANDIDATE_SURVEY_V0.1` V1). **결과: 넘지 못했다.** S01(현물 비중이 높은 쪽을 산다)의 연 샤프는 0.455이고 포지션 총액 대비 연 12.25%다(기준 1.0과 15%). 예산 한 번을 써서 닫았고 forward 선별에 올릴 것은 없다. **남은 질문:** 탐색 전에 Claude가 고정한 세부인 §5의 Q1 – Q3(창과 구간, 겹침 한도, 같은 자산 확인)은 기본값으로 진행했고 Thomas의 답을 기다린다. |
 | [CRYPTO_DESIGN_REVIEW_V0.1.md](CRYPTO_DESIGN_REVIEW_V0.1.md) | `PARTIALLY DECIDED` | 2026-11-13 | Thomas: 해결 방안을 권한 순서대로 진행한다("해결방안을 순서대로 진행하고 검증까지 진행해서 보고해"). 같은 날 결과: 방안 3(`POSITIONING_DIVERGENCE_V0.1`)은 ENTRY_FAIL, 방안 5(`VARIANCE_PREMIUM_V0.1`)는 PROXY_FAIL로 둘 다 닫았다(§4). 방안 1의 문서 정정은 이 문서와 함께 병합됐고, read door는 별도 PR(#1420)이며, 알림은 Thomas의 root `at` 작업으로 남아 있다. Q2는 2026-11-11에 답을 받았다: 새 후보의 진입 조건에 포지션 총액 대비 연 순수익 15%를 더한다("순서대로 전부", §5). **Q1은 답이 있다(Thomas 2026-11-12, 2026-11-13에 기록): factory를 2027-03-22까지 그대로 두지 않는다. 좋은 방향이 있으면 고친다(§5 Q1).** 남은 질문은 하나다: Q3은 2단계 확인 규칙 쪽이 `SCREEN_STAGE2_V0.1`로 정해졌고(2026-11-11, 첫 선별 판정 전에 정한다) 현물 실행 경로를 언제 정하는지만 남았다. 이 문서가 바꾸는 코드, 판정 규칙, 일정은 없다. |
+| [UNLOCK_SCHEDULE_DATA_V0.1.md](UNLOCK_SCHEDULE_DATA_V0.1.md) | `DRAFT` | 2026-11-23 | Thomas의 결정을 기다린다(§7의 Q1 – Q5). 아무것도 재지 않았고, 수집 코드는 짓지 않았다. |
 
 ## 결정됨 — 구현 남음 (36)
 
