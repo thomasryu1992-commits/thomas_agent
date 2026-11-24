@@ -92,6 +92,9 @@ core thin while lanes grow, stated as rules:
     waits for 2027-03-22, and its other conditions stand (`MULTI_ASSET_EXPANSION_V0.1.md` §5). D5 now reads:
     no LIVE_AUTONOMOUS until the first FORWARD_CONFIRMED lineage exists, and its questions are asked then
     (`RISK_BREAKER_UNIT_RESTATEMENT_V0.1.md`). Neither approves a climb, an order path or a gate reopening.
+  - P3's research stage alone (paper design on past data) no longer waits for a crypto FORWARD_CONFIRMED
+    (Thomas 2026-11-24, `MULTI_ASSET_EXPANSION_V0.1.md`, "결정 (Thomas 2026-11-24)"). The other five stages keep every
+    P3 condition. It opens no data source, no `stocks/` package, no order adapter, and no holdings-lane read.
 
   The IV–RV measurement (Thomas 2026-10-06) no longer needs its exemption. D-A6 was answered on 2026-11-10
   (`RESEARCH_DATA_SOURCES_V0.1.md` Q1–Q2): Deribit's public data is read by the research sandbox's keyless
