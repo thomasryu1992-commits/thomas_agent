@@ -229,13 +229,16 @@ DAY_TYPE_VALUES = frozenset({"WEEKDAY", "WEEKEND"})
 MAX_SESSION_BAR_MINUTES = 4 * 60
 
 # --- price structure: swings, breaks through them, three-bar gaps -----------------------------
-# EVIDENCE ONLY, every column (Thomas 2026-11-25; docs/history/2026-11-25-structure-columns.md).
-# None of them is in `template_space.NUMERIC_FEATURES` or `CATEGORICAL_FEATURES`, so no template,
-# no generated spec and no proposed trial can read one: they ride on the row and change nothing
-# the factory mints or judges. Admitting them is a separate, later decision.
+# EVIDENCE ONLY, every column (Thomas 2026-11-25). None of them is in
+# `template_space.NUMERIC_FEATURES` or `CATEGORICAL_FEATURES`, so nothing the factory makes can
+# read one — no template, generated spec, fusion child or proposed trial passes the validator
+# naming it. They ride on the row and change nothing the factory mints or judges. (A spec an
+# operator imports is not validated and the evaluator reads whatever a spec names, which is true
+# of every evidence column on the row.) Admitting them is a separate, later decision.
 #
-# The definitions are fixed in `STRATEGY_DISCOVERY_LOOP_V0.1.md` §185, and so are the two rules
-# every column here keeps, each pinned by a test:
+# The definitions, the three constants and why each is what it is are written out in
+# `docs/history/2026-11-25-structure-columns.md`. Two rules hold for every column here, each
+# pinned by a test:
 #
 # - **End-cut:** the value at bar t depends on bars <= t only. A swing at bar s is known when
 #   bar s + STRUCTURE_SWING_BARS closes, and appears in no column before that.
@@ -246,7 +249,7 @@ MAX_SESSION_BAR_MINUTES = 4 * 60
 #   needs — a confirmed swing on that side, both sides and one break for the state and the
 #   labels, the band life for a touch — and from then on it equals the full-history value.
 #
-# The three constants were written down before any result (§187.5) and do not move afterwards:
+# The three constants were written down before any result and do not move afterwards:
 # changing one changes what every spec that ever reads these columns was mined on.
 STRUCTURE_SWING_BARS = 2    # bars on EACH side of a swing: the middle of five
 FVG_BAND_LIFE_BARS = 48     # an untouched band is dropped after this many bars
@@ -1330,7 +1333,7 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             # Positioning: who is HOLDING, from the store the runtime accumulates itself. The
             # only columns here that OHLCV cannot reproduce — see `_positioning_columns`.
             **{col: positioning[col][i] for col in POSITIONING_COLUMNS},
-            # Price structure — evidence only, readable by no spec (see STRUCTURE_COLUMNS).
+            # Price structure — evidence only, outside both mintable vocabularies (see STRUCTURE_COLUMNS).
             **{col: structure[col][i] for col in STRUCTURE_COLUMNS},
         }
         row["market_regime"] = classify_market_regime(row)

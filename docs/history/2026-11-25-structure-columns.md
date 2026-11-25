@@ -8,8 +8,26 @@ combination) and named indicators the factory has no column for: breaks of struc
 gaps (FVG). The record is `docs/proposals/STRATEGY_DISCOVERY_LOOP_V0.1.md` §183 – §187 (on the research branch,
 PR #1474). The definitions are fixed in §185, the outside evidence was surveyed in §186 (none found after costs
 in the searched scope), and Thomas decided to put them in anyway (2026-11-25, "그래도 넣어 봄"). §187.5 splits
-that into two PRs. This is the first: the columns are computed and carried on the row, and **nothing can read
-them**. Admitting them to the vocabulary and adding template families is the second PR, with its own questions.
+that into two PRs. This is the first: the columns are computed and carried on the row, and **nothing the factory
+makes can read them**. Admitting them to the vocabulary and adding template families is the second PR, with its
+own questions.
+
+Those sections are on a research branch that is not merged, so this file carries what the code rests on.
+
+**The definitions** (closed bars only; H, L, C are a bar's high, low, close):
+
+| | Definition | Known when |
+|---|---|---|
+| Swing high | bar s's high is strictly above the highs of the two bars before and the two after; a tie is no swing | bar s + 2 closes |
+| Swing low | the mirror, on lows | the same |
+| Live level | the high (low) of the most recent confirmed swing high (low); a new swing replaces it; a close through it removes it until the next swing confirms | as the swing |
+| Break | a close above the live high level, or below the live low level. Wicks do not count | that bar's close |
+| State | the direction of the last break | the same |
+| BOS / CHoCH | a break with the state is BOS, against it CHoCH (and the state flips). They are one event; only the state before differs | the same |
+| FVG | this bar's low above the high two bars back (up), or its high below that low (down). The band runs between them | that bar's close |
+| Touch | a later bar reaches the band's near edge (the top of an up band, the bottom of a down band); the band is then gone. If a bar reaches several, the most recently formed one is reported | that bar's close |
+
+A live low level always sits below a live high level, so one bar cannot break both.
 
 **What a row now carries** (nine columns, each also as `prev_*`):
 
@@ -25,10 +43,17 @@ them**. Admitting them to the vocabulary and adding template families is the sec
 **Choices that are not obvious.**
 
 - *Evidence only is the whole point of this PR.* The columns are in neither `template_space.NUMERIC_FEATURES`
-  nor `CATEGORICAL_FEATURES`, so no template, generated spec or proposed trial can name one: the validator
-  answers `BLOCK_UNKNOWN_FEATURE`, and a test asks it. The mint, the judgement fingerprint, the economic-family
-  table and the live path are untouched. The precedent is raw `open_interest` and `xs_dispersion`.
-- *Three constants, written before any result and not to be moved* (§187.5): a swing is the middle of five bars
+  nor `CATEGORICAL_FEATURES`, so no template, generated spec, fusion child or proposed trial can name one: the
+  validator they all pass through answers `BLOCK_UNKNOWN_FEATURE`, and a test asks it. The proposal prompt does
+  not list them (tested; the prompt is byte-identical to `origin/main`'s). The judgement fingerprint computed on
+  this branch equals `origin/main`'s. The economic-family table and the live path are untouched. The precedent
+  is raw `open_interest` and `xs_dispersion`.
+- *What "evidence only" does not cover.* A spec an operator imports (`scripts/import_crypto_history.py`,
+  `scripts/promote_strategy_candidates.py`) is not validated, and the evaluator reads whatever column a spec
+  names. That is true of every evidence column already on the row; it is not new here, and it is not closed here.
+- *Who reads a whole row.* Nothing found: the evaluator, the distribution gate, the entry plan and the size
+  multiplier each read named keys. No crypto record serialises the row (searched `runtime/mvp_runtime/crypto/`).
+- *Three constants, written before any result and not to be moved:* a swing is the middle of five bars
   (`STRUCTURE_SWING_BARS = 2`), an untouched band lives 48 bars (`FVG_BAND_LIFE_BARS`), and a band is touched at
   its near edge. Changing one later changes what every spec that reads these columns was mined on, the
   `ROC_FAST` hazard.
@@ -65,10 +90,16 @@ tests run on synthetic bars and hand-built bars. Order blocks and Fibonacci retr
 sheet yet (§187.5: after this PR merges). The hypothesis form for this family has line 1 half filled and lines
 2 – 3 empty (§186.3); that is recorded, and it is the reason the second PR is a separate decision.
 
-**What it costs.** On a factory-depth 1h frame (24,000 mock bars) `build_feature_rows` went from 3.50 s to 3.73 s on
-this host. The pass itself is 0.05 s; the rest is eighteen more keys on every row (the nine and their `prev_*`).
+**What it costs.** For one leg of a factory-depth 1h frame (24,000 mock bars, candles only) `build_feature_rows`
+went from 3.50 s to 3.73 s on this host and its peak memory from 282 MB to 298 MB. The pass itself is 0.05 s; the
+rest is eighteen more keys on every row (152 to 170: the nine and their `prev_*`). The higher-timeframe and
+reference legs build rows of their own, so a full frame pays this more than once.
 
-**Checked.** 20 tests of their own, and the point-in-time contract on 15m, 1h and 4h frames. The full suite and the
+**Not known.** How often real bars tie at a peak. A peak that falls exactly on a bar boundary gives two bars the
+same high, and by the tie rule that is no swing; the mock collector does this at every peak. Nothing was counted
+on market data.
+
+**Checked.** 21 tests of their own, and the point-in-time contract on 15m, 1h and 4h frames. The full suite and the
 release gate ran green locally (12,366 passed). Four deliberate breaks of the rules were tried against them and each fails at least one
 test: the ATR used a bar early, a state set with only one side confirmed, a swing used one bar before it is
 confirmed, a touch reported before the frame covers the band life.

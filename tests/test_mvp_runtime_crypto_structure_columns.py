@@ -1,9 +1,10 @@
 """The price-structure columns: swings, the breaks through them, three-bar gaps (evidence only).
 
-``STRATEGY_DISCOVERY_LOOP_V0.1.md`` §185 fixes the definitions and §187.5 the three constants.
+``docs/history/2026-11-25-structure-columns.md`` carries the definitions and the three constants.
 These tests pin what the columns DO: a swing is known only after it is confirmed, the value at a
 bar never depends on later bars, a frame that starts later says the same thing or nothing, a hole
-in the candles restarts the run, and no spec can read any of them. All bars here are synthetic."""
+in the candles restarts the run, and nothing the factory makes can read any of them. All bars here
+are synthetic."""
 
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from runtime.mvp_runtime.crypto import features, generator, template_space
+from runtime.mvp_runtime.crypto import features, generator, proposer, template_space
 from runtime.mvp_runtime.crypto.strategy import StrategySpec
 
 K = features.STRUCTURE_SWING_BARS
@@ -223,9 +224,11 @@ def test_the_labels_stay_inside_their_closed_vocabularies():
 
 # --- evidence only ----------------------------------------------------------------------------
 
-def test_no_spec_can_read_a_structure_column():
-    """They ride on the row and nothing more: absent from both mintable vocabularies, so a spec that
-    names one is refused as an unknown feature, as a condition's feature and as its ``value_from``."""
+def test_nothing_the_factory_makes_can_read_a_structure_column():
+    """They ride on the row and nothing more: absent from both mintable vocabularies, so the validator
+    every generated spec, fusion child and proposed trial passes through refuses one that names a
+    structure column, as a condition's feature and as its ``value_from``. (An operator-imported spec
+    is not validated; that is true of every evidence column and is not what this pins.)"""
     for column in COLUMNS:
         assert column not in template_space.NUMERIC_FEATURES, column
         assert column not in template_space.CATEGORICAL_FEATURES, column
@@ -240,6 +243,13 @@ def test_no_spec_can_read_a_structure_column():
         spec = StrategySpec.from_dict({**raw, "entry_rules": {"operator": "AND", "conditions": [condition]}})
         verdict = template_space.validate_strategy(spec)
         assert not verdict["approved_for_backtest"] and "BLOCK_UNKNOWN_FEATURE" in verdict["block_reasons"], condition
+
+
+def test_the_proposal_prompt_does_not_offer_a_structure_column():
+    """The model proposer is told the vocabulary it may use. It is not told about these."""
+    prompt = proposer.build_proposal_prompt(existing_families=[t.family for t in template_space.TEMPLATES])
+    assert "rsi" in prompt                       # the prompt does list the vocabulary
+    assert not [column for column in COLUMNS if column in prompt]
 
 
 def test_every_row_carries_the_columns_and_their_previous_bar():
