@@ -228,6 +228,44 @@ DAY_TYPE_VALUES = frozenset({"WEEKDAY", "WEEKEND"})
 # hazard, so the column goes None instead: no session, no session-conditioned entry.
 MAX_SESSION_BAR_MINUTES = 4 * 60
 
+# --- price structure: swings, breaks through them, three-bar gaps -----------------------------
+# EVIDENCE ONLY, every column (Thomas 2026-11-25). None of them is in
+# `template_space.NUMERIC_FEATURES` or `CATEGORICAL_FEATURES`, so nothing the factory makes can
+# read one — no template, generated spec, fusion child or proposed trial passes the validator
+# naming it. They ride on the row and change nothing the factory mints or judges. (A spec an
+# operator imports is not validated and the evaluator reads whatever a spec names, which is true
+# of every evidence column on the row.) Admitting them is a separate, later decision.
+#
+# The definitions, the three constants and why each is what it is are written out in
+# `docs/history/2026-11-25-structure-columns.md`. Two rules hold for every column here, each
+# pinned by a test:
+#
+# - **End-cut:** the value at bar t depends on bars <= t only. A swing at bar s is known when
+#   bar s + STRUCTURE_SWING_BARS closes, and appears in no column before that.
+# - **Start-cut: equal or empty.** The live level and the state lean on the past, so a frame
+#   that starts later could say something else about the same bar. The live cycle reads 120 bars
+#   and the replay reads the factory depth; a column that differed between the two would make
+#   the replay say nothing about live. So a value is None until the frame ITSELF holds what it
+#   needs — a confirmed swing on that side, both sides and one break for the state and the
+#   labels, the band life for a touch — and from then on it equals the full-history value.
+#
+# The three constants were written down before any result and do not move afterwards:
+# changing one changes what every spec that ever reads these columns was mined on.
+STRUCTURE_SWING_BARS = 2    # bars on EACH side of a swing: the middle of five
+FVG_BAND_LIFE_BARS = 48     # an untouched band is dropped after this many bars
+# A band is touched when a later bar reaches its NEAR edge (the top of an up band from above,
+# the bottom of a down band from below). That is the third constant; it has no number.
+STRUCTURE_STATE_VALUES = frozenset({"UP", "DOWN"})
+STRUCTURE_BREAK_VALUES = frozenset({"NONE", "BOS_UP", "BOS_DOWN", "CHOCH_UP", "CHOCH_DOWN"})
+FVG_TOUCH_VALUES = frozenset({"NONE", "UP_BAND", "DOWN_BAND"})
+STRUCTURE_EVIDENCE_COLUMNS = (
+    "swing_high_distance_atr", "swing_low_distance_atr",
+    "structure_state", "structure_break", "structure_break_atr",
+    "fvg_size_atr", "fvg_touch", "fvg_touch_size_atr", "fvg_touch_age_bars",
+)
+STRUCTURE_COLUMNS = STRUCTURE_EVIDENCE_COLUMNS
+
+
 
 def _period_seconds(period: Any) -> int | None:
     """``"15m"`` / ``"1h"`` / ``"1d"`` as seconds, or None. The interval grammar, not a table: the venue's
@@ -916,6 +954,109 @@ def _htf_columns(bar_times: list[str], htf_candles: list[dict[str, Any]]) -> dic
     return columns
 
 
+def _structure_columns(
+    highs: list[Any], lows: list[Any], closes: list[Any], atr: list[Any], *,
+    swing_bars: int = STRUCTURE_SWING_BARS, band_life: int = FVG_BAND_LIFE_BARS,
+) -> dict[str, list]:
+    """Swings, the breaks through them and three-bar gaps, point-in-time (see the constants).
+
+    One forward pass. Sizes are in ATR, signed by direction: a raw price level means nothing
+    against a threshold, the raw-`open_interest` rule.
+
+    - **Swing high at s:** its high is strictly above the ``swing_bars`` highs on each side (a
+      tie is no swing); known at ``s + swing_bars``. The LIVE level is the most recent confirmed
+      one; a close through it removes it until the next swing confirms. Lows mirror.
+    - **Break:** a close above the live high level (or below the live low level). The STATE is
+      the last break's direction. A break with the state is ``BOS_*``, against it ``CHOCH_*``
+      and the state flips. Both at once cannot happen: a live low level always sits below a live
+      high level.
+    - **Gap (FVG):** this bar's low above the high two bars back (up), or its high below that
+      low (down). The band between them lives ``band_life`` bars and is dropped when a later bar
+      reaches its near edge; that bar carries the touch, of the most recently formed band if it
+      reached several.
+
+    A bar without a numeric high, low or close restarts everything after it: the run that
+    follows is a frame of its own, never one stitched across the hole.
+    """
+    n = len(closes)
+    out: dict[str, list] = {col: [None] * n for col in STRUCTURE_COLUMNS}
+    start = 0                                   # first bar of the current run of usable bars
+    high_level: float | None = None
+    low_level: float | None = None
+    high_seen = low_seen = False                # a swing on that side confirmed inside this run
+    state: str | None = None                    # known only after both sides and one break
+    bands: list[tuple[int, str, float, float, float | None]] = []   # formed, side, bottom, top, size
+    for t in range(n):
+        high, low, close = highs[t], lows[t], closes[t]
+        if not (indicators._is_num(high) and indicators._is_num(low) and indicators._is_num(close)):
+            start, high_level, low_level, high_seen, low_seen, state, bands = t + 1, None, None, False, False, None, []
+            continue
+        # The ATR's first value in a run averages a first true range that has no previous close,
+        # so it is not the full-history value yet. One bar later it is.
+        scale = atr[t] if (t - start >= ATR_PERIOD and indicators._is_num(atr[t]) and atr[t] > 0) else None
+
+        s = t - swing_bars
+        if s - swing_bars >= start:
+            around = [j for j in range(s - swing_bars, s + swing_bars + 1) if j != s]
+            if all(highs[s] > highs[j] for j in around):
+                high_level, high_seen = highs[s], True
+            if all(lows[s] < lows[j] for j in around):
+                low_level, low_seen = lows[s], True
+
+        if high_level is not None and scale is not None:
+            out["swing_high_distance_atr"][t] = (close - high_level) / scale
+        if low_level is not None and scale is not None:
+            out["swing_low_distance_atr"][t] = (close - low_level) / scale
+
+        broke: str | None = None
+        size = 0.0
+        if high_level is not None and close > high_level:
+            broke, size, high_level = "UP", close - high_level, None
+        elif low_level is not None and close < low_level:
+            broke, size, low_level = "DOWN", close - low_level, None
+        if high_seen and low_seen:
+            if broke is None:
+                out["structure_break_atr"][t] = 0.0
+                out["structure_break"][t] = "NONE" if state is not None else None
+            else:
+                out["structure_break_atr"][t] = size / scale if scale is not None else None
+                if state is not None:
+                    out["structure_break"][t] = ("BOS_" if state == broke else "CHOCH_") + broke
+                state = broke
+            out["structure_state"][t] = state
+
+        bands = [band for band in bands if t - band[0] <= band_life]
+        touched = [band for band in bands
+                   if (band[1] == "UP" and low <= band[3]) or (band[1] == "DOWN" and high >= band[2])]
+        if touched:
+            bands = [band for band in bands if band not in touched]
+        if t - start >= band_life + 2:          # every band that could still live formed in this run
+            if touched:
+                formed, side, _bottom, _top, band_size = max(touched, key=lambda band: band[0])
+                out["fvg_touch"][t] = f"{side}_BAND"
+                out["fvg_touch_size_atr"][t] = band_size
+                out["fvg_touch_age_bars"][t] = float(t - formed)
+            else:
+                out["fvg_touch"][t] = "NONE"
+                out["fvg_touch_size_atr"][t] = 0.0
+                out["fvg_touch_age_bars"][t] = 0.0
+
+        if t - start >= 2:
+            gap: tuple[str, float, float] | None = None
+            if low > highs[t - 2]:
+                gap = ("UP", highs[t - 2], low)
+            elif high < lows[t - 2]:
+                gap = ("DOWN", high, lows[t - 2])
+            signed = None
+            if gap is not None and scale is not None:
+                signed = (gap[2] - gap[1]) / scale * (1.0 if gap[0] == "UP" else -1.0)
+            if gap is not None:
+                bands.append((t, gap[0], gap[1], gap[2], signed))
+            if scale is not None:
+                out["fvg_size_atr"][t] = signed if gap is not None else 0.0
+    return out
+
+
 def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     """Compute one feature row per candle from a C2 snapshot dict.
 
@@ -1100,6 +1241,8 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     # level of peer fetching to worry about.
     cross_section = _cross_section_columns(bar_times, roc_4, snapshot)
     positioning = _positioning_columns(bar_times, snapshot)
+    # Price structure: a pure function of the candles, evidence only (see STRUCTURE_COLUMNS).
+    structure = _structure_columns(highs, lows, closes, atr)
 
     rows: list[dict[str, Any]] = []
     for i, candle in enumerate(candles):
@@ -1190,6 +1333,8 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             # Positioning: who is HOLDING, from the store the runtime accumulates itself. The
             # only columns here that OHLCV cannot reproduce — see `_positioning_columns`.
             **{col: positioning[col][i] for col in POSITIONING_COLUMNS},
+            # Price structure — evidence only, outside both mintable vocabularies (see STRUCTURE_COLUMNS).
+            **{col: structure[col][i] for col in STRUCTURE_COLUMNS},
         }
         row["market_regime"] = classify_market_regime(row)
         row["data_quality_status"] = (

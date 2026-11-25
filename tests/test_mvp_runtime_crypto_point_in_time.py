@@ -43,12 +43,22 @@ TF_HOURS = {"4h": 4, "1h": 1, "15m": 0.25}
 BARS = {"4h": 600, "1h": 1200, "15m": 2400}
 
 
+def _untied(candles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The mock's highs and lows, moved apart by a hair. The mock sets every high to 1.005 x the larger of
+    open and close and a bar opens at the previous close, so the two bars around every peak share one high
+    (lows likewise). A tie is no swing (`features._structure_columns`), so on the mock's own bars the
+    structure columns would stay empty and a leak in them would compare None with None. The high only
+    moves up and the low only down, so each bar still contains its open and close."""
+    return [{**c, "high": c["high"] * (1 + 0.0004 * (1 + math.sin(1.3 * i))),
+             "low": c["low"] * (1 - 0.0004 * (1 + math.cos(1.7 * i)))} for i, c in enumerate(candles)]
+
+
 def _full_snapshot(timeframe: str = "4h") -> dict[str, Any]:
     """Every leg the factory attaches, on one frame, with values that move on every reading."""
     bars = BARS[timeframe]
     higher = HIGHER_TIMEFRAME[timeframe]
     htf_bars = int(bars * TF_HOURS[timeframe] / {"1d": 24, "4h": 4, "1h": 1}[higher]) + 60
-    candles = _candles("ETHUSDT", timeframe, bars)
+    candles = _untied(_candles("ETHUSDT", timeframe, bars))
     first, last = candles[0]["open_time"], candles[-1]["close_time"]
     days = []
     day = timeutil.parse_iso(first[:10] + "T00:00:00Z")
@@ -203,13 +213,22 @@ def test_every_series_the_features_read_declares_when_its_rows_are_known():
     assert UNVERIFIED <= recorder.asked, "an UNVERIFIED key is no longer read; drop it from the list"
 
 
+NO_LIVE_LEVEL = frozenset(
+    f"{prefix}{column}" for column in ("swing_high_distance_atr", "swing_low_distance_atr")
+    for prefix in ("", features.PREVIOUS_BAR_PREFIX))
+
+
 @pytest.mark.parametrize("timeframe", sorted(BARS))
 def test_no_feature_row_depends_on_anything_known_after_its_close(timeframe):
     snapshot = _full_snapshot(timeframe)
     # The contract is only as strong as the columns it sees filled: every leg must carry values late in
     # the frame, or a leak there would compare None with None and pass.
-    late = features.build_feature_rows(snapshot)[-5]
-    empty = sorted(k for k, v in late.items() if v is None)
+    rows = features.build_feature_rows(snapshot)
+    late = rows[-5]
+    empty = sorted(k for k, v in late.items() if v is None and k not in NO_LIVE_LEVEL)
+    # A swing distance is empty on any bar with no live level on that side (broken, the next swing not
+    # confirmed yet), about a fifth of these bars, so one row cannot stand for it: the last thirty do.
+    empty += sorted(k for k in NO_LIVE_LEVEL if all(row[k] is None for row in rows[-30:]))
     assert not empty, f"columns the fixture leaves empty: {empty}"
     leaks = _leaks(snapshot, cuts={"4h": 20, "1h": 12, "15m": 8}[timeframe])
     assert not leaks, "look-ahead:\n" + "\n".join(leaks[:20])
@@ -222,3 +241,19 @@ def test_the_contract_catches_a_daily_vendor_series_aligned_on_its_label(monkeyp
     leaks = _leaks(_full_snapshot())
     prefix = "open_interest" if constant.startswith("OI") else "liquidation"
     assert any(prefix in leak.split()[2] for leak in leaks), leaks[:5]   # "bar <t> <column>: ..."
+
+
+def test_the_contract_catches_a_structure_column_read_one_bar_early(monkeypatch):
+    """The price-structure columns are pure functions of the candles, so their only way to leak is to use a
+    bar before it has closed. Put that back (every value handed to the bar before it) and it must show."""
+    honest = features._structure_columns
+
+    def early(*args: Any, **kwargs: Any) -> dict[str, list]:
+        return {column: values[1:] + [None] for column, values in honest(*args, **kwargs).items()}
+
+    monkeypatch.setattr(features, "_structure_columns", early)
+    leaks = _leaks(_full_snapshot())
+    leaked = {leak.split()[2].rstrip(":") for leak in leaks}
+    assert leaked and leaked <= {f"{prefix}{column}" for column in features.STRUCTURE_COLUMNS
+                                 for prefix in ("", features.PREVIOUS_BAR_PREFIX)}, sorted(leaked)[:8]
+    assert {"structure_break_atr", "swing_high_distance_atr", "fvg_size_atr"} <= leaked
