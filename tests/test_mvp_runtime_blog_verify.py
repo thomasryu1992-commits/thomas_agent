@@ -97,6 +97,37 @@ def test_the_generated_variety_judges_affiliate_drafts_by_their_creation_date(va
     assert not absent & (set(found["FAIL"]) | set(found["WARN"]))
 
 
+FAQ_DRAFT = ('---\ntitle: "퇴직금 중간정산 서류, 사유가 먼저입니다"\nplatform: naver\nstatus: draft\nform: {form}\n{extra}created: {created}\n---\n'
+             '# 퇴직금 중간정산 서류\n\n도입.\n\n---\n\n## 1. 사유\n\n| 칸 | 값 |\n|---|---|\n| 가 | 나 |\n\n{faq}---\n\n'
+             '**결론 한 문장.**\n\n- 판정: ________\n\n어느 쪽인가요?\n\n함께 보면 좋은 글\n\n- 가\n\n참고 자료\n\n- 나\n')
+FAQ = "---\n\n## 2. 다시 묻는 것\n\n**Q. 서류는 몇 년 보관하나요?**\n\n네. 5년입니다.\n\n**Q. 구두 요구도 되나요?**\n\n아니요. 서면입니다.\n\n"
+
+
+@pytest.mark.parametrize("created, form, extra, faq, fails", [
+    # Thomas 2026-11-25: a general Naver draft written from 11-29 needs a closing FAQ of 2-4 questions (Q2). Drafts written
+    # before that are not judged, the myth-check form has no FAQ by design, and affiliate drafts are out of scope.
+    ("2026-11-29", "판정형", "", "", True),
+    ("2026-11-29", "판정형", "", FAQ, False),
+    ("2026-11-28", "판정형", "", "", False),
+    ("2026-11-29", "통설검증형", "", "", False),
+    ("2026-11-29", "판정형", "affiliate: 쇼핑커넥트\n", "", False),
+])
+def test_the_generated_preflight_asks_for_a_faq_only_from_the_cutover_date(vault, created, form, extra, faq, fails):
+    rel, _ = _write(vault, "faq.md", FAQ_DRAFT.format(created=created, form=form, extra=extra, faq=faq))
+    found = bv.check_draft(vault, vault / rel)["preflight"]
+    assert ("Q2" in found["FAIL"]) is fails
+    assert "Q2" not in found["WARN"]
+
+
+def test_the_generated_variety_reads_the_closing_after_the_last_separator_from_the_cutover_date():
+    from runtime.mvp_runtime.blog import variety
+
+    body = FAQ_DRAFT.format(created="2026-11-29", form="판정형", extra="", faq=FAQ).split("---\n", 2)[2]
+    # the closing holds the blank line; the last numbered section before the FAQ holds a table
+    assert variety.closing_mold(body, "2026-11-29") == "빈칸 판정"
+    assert variety.closing_mold(body, "2026-11-28") == variety.closing_mold(body) == "빈칸 계산표"
+
+
 @pytest.mark.parametrize("rel", ["../outside.md", "content/../x.md", "/etc/passwd", "content/naver/../../x.md",
                                  "ops/blog-runs/x.md", 3, None])
 def test_a_path_from_a_report_cannot_leave_the_vaults_content(vault, rel):
