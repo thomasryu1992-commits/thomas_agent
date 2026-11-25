@@ -246,14 +246,28 @@ def test_the_generated_queue_keeps_only_its_rules():
     assert "print(" not in source and '"w"' not in source
 
 
+def _day_cap():
+    """How many new Tistory-only posts the queue puts on one day today (the caps move: 3 from 10-21, 1 from 11-21)."""
+    return min(tq.NEW_PER_DAY, tq.ONLY_PER_DAY)
+
+
 def test_a_slot_the_queue_would_give_passes_every_check(vault):
-    _post(vault, "160-before.md", "scheduled", scheduled=_at("2026-11-10", "13:30", "160-before.md"))
-    reported = _at("2026-11-10", "16:30", "170-a.md")
+    # the day before is full or not, it does not matter; this day holds as many earlier posts as the cap leaves room for,
+    # so the draft is the last one the queue would still place there
+    _post(vault, "159-eve.md", "scheduled", scheduled=_at("2026-11-09", "13:30", "159-eve.md"))
+    earlier = tq.OLD_SLOTS[:-1][:_day_cap() - 1]
+    for i, slot in enumerate(earlier):
+        _post(vault, f"16{i}-before.md", "scheduled", scheduled=_at("2026-11-10", slot, f"16{i}-before.md"))
+    reported = _at("2026-11-10", tq.OLD_SLOTS[len(earlier)], "170-a.md")
     rel = _post(vault, "170-a.md", "draft", scheduled=reported)
     found = _check(vault, rel, reported)
     assert found["state"] == "checked" and found["agree"] is True and found["number"] == 170
     assert found["checks"] == {"minute": True, "unique": True, "only_cap": True, "new_cap": True, "after_run": True}
     assert found["moved"] is False
+    # one more new post on that day is one too many, whatever the cap is
+    free = next(slot for slot in tq.SLOTS if slot not in tq.OLD_SLOTS[:len(earlier) + 1])
+    _post(vault, "169-extra.md", "scheduled", scheduled=_at("2026-11-10", free, "169-extra.md"))
+    assert _check(vault, rel, reported)["checks"]["new_cap"] is (tq.NEW_PER_DAY > len(earlier) + 1)
 
 
 def test_an_unjittered_minute_and_a_taken_slot_are_caught(vault):
@@ -393,15 +407,17 @@ def _fast_post(vault, name, scheduled):
 
 def test_a_fast_tistory_post_is_outside_the_regular_caps_and_has_its_own(vault):
     day = "2026-11-20"
-    for i, s in enumerate(tq.NEW_SLOTS):
+    regs = tq.NEW_SLOTS[:_day_cap()]              # the regular posts fill the day exactly to its cap
+    for i, s in enumerate(regs):
         _post(vault, f"16{i}-r.md", "scheduled", scheduled=_at(day, s, f"16{i}-r.md"))
     reported = _at(day, tq.FAST_SLOT, "170-fast.md")
     rel = _fast_post(vault, "170-fast.md", reported)
     checks = _check(vault, rel, reported)["checks"]
     assert checks["minute"] and checks["unique"] and checks["only_cap"] is True and checks["new_cap"] is None
-    regular = _check(vault, "content/tistory/162-r.md", _at(day, tq.NEW_SLOTS[2], "162-r.md"),
+    last = len(regs) - 1
+    regular = _check(vault, f"content/tistory/16{last}-r.md", _at(day, regs[last], f"16{last}-r.md"),
                      siblings=("content/tistory/170-fast.md",))["checks"]
-    assert regular["only_cap"] is True and regular["new_cap"] is True        # the fast post is not counted
+    assert regular["only_cap"] is True and regular["new_cap"] is True        # at the cap: a counted fast post would break it
     _post(vault, "171-fast.md", "scheduled", scheduled=_at(day, "19:30", "171-fast.md"))
     p = vault / "content/tistory/171-fast.md"
     p.write_text(p.read_text(encoding="utf-8").replace("status: scheduled", "status: scheduled\nfast: true", 1), encoding="utf-8")

@@ -151,3 +151,15 @@ def test_the_fridge_price_keyword_waits_on_the_fridge_decision_in_the_port(tmp_p
         assert all("냉장고" not in k for ks in live.values() for k in ks)
     finally:
         importlib.reload(kp)
+
+
+@pytest.mark.parametrize("keyword, kind", [
+    # Thomas 2026-11-21 (handoff-1121-mic-kind): where a microphone is used and how it is bundled do not make a new kind,
+    # so the same product is not issued twice. A pin microphone stays its own kind, and "세트" is dropped for microphones only.
+    ("노래방무선마이크", "마이크"), ("무선마이크세트", "마이크"), ("강의용무선마이크", "마이크"), ("유선마이크", "마이크"),
+    ("무선핀마이크", "핀마이크"), ("공구세트", "공구세트"),
+])
+def test_the_generated_link_kind_folds_microphone_variants_into_one(keyword, kind):
+    from runtime.mvp_runtime.blog import affiliate_link
+
+    assert affiliate_link.kind(keyword) == kind
