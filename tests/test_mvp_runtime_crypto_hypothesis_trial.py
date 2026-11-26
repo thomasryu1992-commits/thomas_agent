@@ -15,7 +15,7 @@ import pytest
 
 from runtime.mvp_runtime import scheduler as scheduler_mod
 from runtime.mvp_runtime.control import ControlStore
-from runtime.mvp_runtime.crypto import factory, generator, pool, proposer
+from runtime.mvp_runtime.crypto import factory, generator, pool, proposer, template_space
 from runtime.mvp_runtime.crypto.factory import run_factory
 from runtime.mvp_runtime.crypto.strategy import StrategySpec
 from runtime.mvp_runtime.scheduler import KIND_FACTORY, ScheduleStore, build_schedule, run_due
@@ -474,4 +474,14 @@ def test_a_cohort_fire_stores_a_trial_row_that_carries_the_form_beside_its_rotat
     (trial,) = [r for r in stored if factory.is_trial(r)]
     assert trial["trial_source"]["hypothesis"] == form
     assert record["trial"]["minted"][0]["hypothesis"] == form
-    assert sum(1 for r in stored if not factory.is_trial(r)) == record["accepted_count"] > 0
+    # Every rotation row the fire accepted is stored, less the ones whose family reads a column the
+    # MOCK's bars cannot feed: the mock ties its highs at every peak, a tie is no swing, so every
+    # swing-fed column is empty on it. Which families the fire draws moves with the library's size;
+    # that a row is lost only for that reason does not.
+    unfed = [x for x in record["rejected"] if "never supplies" in x.get("reason", "")]
+    swing_fed = {"structure_break", "structure_break_atr", "order_block_touch_size_atr"}
+    for x in unfed:
+        template = next(t for t in template_space.TEMPLATES if t.family == x["strategy_family"])
+        assert template_space.template_features(template) & swing_fed, x
+    rotation_rows = sum(1 for r in stored if not factory.is_trial(r))
+    assert rotation_rows == record["accepted_count"] - len(unfed) and rotation_rows > 0

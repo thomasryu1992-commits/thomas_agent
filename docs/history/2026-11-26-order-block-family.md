@@ -72,8 +72,10 @@ previous close, the merged columns; no market data was read):
 from 34 to 36 at 1d (32 to 34); 15m is unchanged. Each context's rotation position shifts once, as it did with the
 structure pairs. `judgement_fingerprint()` is `f50dfce1c444`, unchanged.
 
-**Tests that were tied to the library's size, and what was done with each.** Four tests in
-`test_mvp_runtime_crypto_factory.py` failed, none because a rule had changed:
+**Tests that were tied to the library's size, and what was done with each.** Six tests failed, none because a
+rule had changed: four in `test_mvp_runtime_crypto_factory.py`, one in `test_mvp_runtime_crypto_ablation.py` and
+one in `test_mvp_runtime_crypto_hypothesis_trial.py`. Each had a fixture whose first fire drew a different slice
+once the library grew:
 
 - The strided-walk test's starvation half had nothing to show on ETHUSDT 1h at 52 families, where
   `gcd(15 × 4, 52)` is the slice width. It now asserts the cursor on four libraries and requires the starvation to
@@ -86,6 +88,11 @@ structure pairs. `judgement_fingerprint()` is `f50dfce1c444`, unchanged.
   to redraw the batch's own slice it fails.
 - The multiple-of-eight test named BTCUSDT 1h, now 50 families. It takes whichever mined context has a multiple
   of eight today (BTCUSDT 15m, 40).
+- The ablation test needs a fire that mints through the lattice, and the first fire's slice had become four
+  one-condition families, which the lattice has nothing to ablate in. It now walks the context forward, for at
+  most one pass of its library, to the first fire that does.
+- The cohort trial test counted stored rotation rows against the accepted count on mock bars, and lost the same
+  swing-fed specs as the scheduled mock fire. It is restated the same way.
 
 **Not known.** Everything about market bars: how large touched blocks are there, how often this pair and
 `fvg_return_*` share a bar, how often real bars tie at a peak, and whether any timeframe's holdout is judgeable.
