@@ -2,12 +2,12 @@
 how they meet.
 
 `structure_follow_bos_*`, `structure_follow_choch_*`, `structure_fade_*`, `fvg_return_*` and (since
-2026-11-26, "예, 선례대로") `order_block_return_*` read four of the thirteen structure columns
+2026-11-26, "예, 선례대로") `order_block_return_*` read four of the fifteen structure columns
 (`features._structure_columns`). Pinned here, each by calling the thing:
 
 - **where:** in the rotation at 1h, 4h and 1d and at no other timeframe, appended after every earlier
   family;
-- **what:** exactly four structure columns are mintable and the other nine stay evidence only;
+- **what:** exactly four structure columns are mintable and the other eleven stay evidence only;
 - **zero is not an event:** the size columns are a real 0.0 on a quiet bar, so no draw of any of the
   ten may match a bar on which nothing happened, and none may match on an absent column;
 - **the pairs:** long and short of one pair never share a row; follow and fade DO, by decision, and
@@ -149,7 +149,7 @@ def test_every_draw_of_every_family_passes_the_validator(family):
         assert verdict["approved_for_backtest"], (family, verdict["block_reasons"])
 
 
-def test_the_proposal_prompt_offers_the_mintable_four_and_not_the_other_nine():
+def test_the_proposal_prompt_offers_the_mintable_four_and_not_the_other_eleven():
     prompt = proposer.build_proposal_prompt(existing_families=[])
     named = set(re.findall(r"[a-z0-9_]+", prompt))        # whole names: `fvg_touch` is inside `fvg_touch_size_atr`
     assert set(MINTABLE) <= named

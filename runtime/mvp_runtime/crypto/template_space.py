@@ -175,7 +175,7 @@ NUMERIC_FEATURES = frozenset({
     # gate decides what gets built.
     *features.POSITIONING_NUMERIC_COLUMNS,
     # Price structure (see features.STRUCTURE_COLUMNS; Thomas 2026-11-25 and 2026-11-26). Three of
-    # the thirteen: the size of a break through a swing level, the size of the three-bar gap a bar
+    # the fifteen: the size of a break through a swing level, the size of the three-bar gap a bar
     # came back to and the size of the order block a bar came back to,
     # all in ATR and signed by direction — the normalized-only rule, so a mined threshold means
     # the same on every symbol and timeframe. Only what `STRUCTURE_FAMILIES` read is admitted; the

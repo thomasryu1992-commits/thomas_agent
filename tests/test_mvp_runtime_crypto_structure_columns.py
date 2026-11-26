@@ -228,8 +228,9 @@ def test_the_labels_stay_inside_their_closed_vocabularies():
 # --- evidence only: the columns no family reads ----------------------------------------------
 # Three columns became mintable with the structure families (Thomas 2026-11-25); those are pinned in
 # `test_mvp_runtime_crypto_structure_families.py`, and a fourth with the order-block pair (2026-11-26).
-# What stays true here is the other nine: the six below and three order-block columns, whose own
-# refusals are pinned in `test_mvp_runtime_crypto_order_block_columns.py`.
+# What stays true here is the other eleven: the six below, three order-block columns and the two
+# retracement columns (2026-11-26), whose own refusals are pinned in
+# `test_mvp_runtime_crypto_order_block_columns.py` and `test_mvp_runtime_crypto_fib_touch_columns.py`.
 
 EVIDENCE = features.STRUCTURE_EVIDENCE_COLUMNS
 
@@ -241,7 +242,7 @@ def test_nothing_the_factory_makes_can_read_an_evidence_only_structure_column():
     validated; that is true of every evidence column and is not what this pins.)"""
     assert set(EVIDENCE) == {"swing_high_distance_atr", "swing_low_distance_atr", "structure_state",
                              "fvg_size_atr", "fvg_touch", "fvg_touch_age_bars", "order_block_size_atr",
-                             "order_block_touch", "order_block_touch_age_bars"}
+                             "order_block_touch", "order_block_touch_age_bars", *features.FIB_COLUMNS}
     for column in EVIDENCE:
         assert column not in template_space.NUMERIC_FEATURES, column
         assert column not in template_space.CATEGORICAL_FEATURES, column
@@ -262,7 +263,7 @@ def test_nothing_the_factory_makes_can_read_an_evidence_only_structure_column():
 
 
 def test_the_proposal_prompt_does_not_offer_an_evidence_only_structure_column():
-    """The model proposer is told the vocabulary it may use. It is not told about these nine."""
+    """The model proposer is told the vocabulary it may use. It is not told about these eleven."""
     prompt = proposer.build_proposal_prompt(existing_families=[])
     named = set(re.findall(r"[a-z0-9_]+", prompt))        # whole names: `fvg_touch` is inside `fvg_touch_size_atr`
     assert "rsi" in named                        # the prompt does list the vocabulary

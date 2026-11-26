@@ -206,10 +206,10 @@ def _lists(bars: list[Bar]) -> tuple[list, list, list, list, list]:
     return opens, highs, lows, closes, atr
 
 
-def test_an_open_that_cannot_be_read_stops_the_search_and_leaves_the_other_nine_columns_alone():
+def test_an_open_that_cannot_be_read_stops_the_search_and_leaves_every_other_column_alone():
     """The search walks back from the bar before the break. A bar whose open is not a number may have been
     the last opposite bar, so the search ends there with no zone. An unreadable open the search never
-    reaches changes nothing. The nine columns that do not read the open are the same either way."""
+    reaches changes nothing. Every structure column that does not read the open is the same either way."""
     up_bar: Bar = (101.0, 101.6, 100.95, 101.4)                                 # sits between DOWN_BAR and the break
     bars, at = _scene(lead=(DOWN_BAR, up_bar), tail=(_dip(101.0),))
     opens, highs, lows, closes, atr = _lists(bars)
@@ -225,9 +225,9 @@ def test_an_open_that_cannot_be_read_stops_the_search_and_leaves_the_other_nine_
     far[at["break"] - 3] = None                                                 # behind DOWN_BAR: never reached
     assert features._structure_columns(far, highs, lows, closes, atr) == whole
 
-    nine = [column for column in features.STRUCTURE_COLUMNS if column not in COLUMNS]
-    assert len(nine) == 9
-    for column in nine:
+    others = [column for column in features.STRUCTURE_COLUMNS if column not in COLUMNS]
+    assert len(others) >= 9 and "structure_break_atr" in others       # only the order-block columns read the open
+    for column in others:
         assert out[column] == whole[column], column
 
 

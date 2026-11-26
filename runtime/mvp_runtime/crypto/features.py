@@ -228,21 +228,23 @@ DAY_TYPE_VALUES = frozenset({"WEEKDAY", "WEEKEND"})
 # hazard, so the column goes None instead: no session, no session-conditioned entry.
 MAX_SESSION_BAR_MINUTES = 4 * 60
 
-# --- price structure: swings, breaks through them, three-bar gaps, order blocks ----------------
-# Four of the thirteen columns are mintable (the families that read them are in `template_space`,
+# --- price structure: swings, breaks through them, three-bar gaps, order blocks, retracements ---
+# Four of the fifteen columns are mintable (the families that read them are in `template_space`,
 # see `STRUCTURE_FAMILIES` there): the break label, the break's size and the touched band's size
 # since Thomas's 2026-11-25 decisions, the touched order block's size since 2026-11-26 —
-# `STRUCTURE_MINTABLE_NUMERIC_COLUMNS` and `STRUCTURE_MINTABLE_LABELS` below. The other nine stay EVIDENCE ONLY: on the row, in neither
+# `STRUCTURE_MINTABLE_NUMERIC_COLUMNS` and `STRUCTURE_MINTABLE_LABELS` below. The other eleven stay EVIDENCE ONLY: on the row, in neither
 # mintable vocabulary, so no template, generated spec, fusion child or proposed trial passes the
 # validator naming one. (A spec an operator imports is not validated and the evaluator reads
 # whatever a spec names, which is true of every evidence column on the row.) Admitting a column
-# is a decision of its own; no family reads those nine, so nothing asked for them. Three of the
-# nine are order-block columns (Thomas 2026-11-26, "예, 가까운 봉으로"; the fourth was admitted the
-# same day with the `order_block_return_*` pair, "예, 선례대로").
+# is a decision of its own; no family reads those eleven, so nothing asked for them. Three of
+# them are order-block columns (Thomas 2026-11-26, "예, 가까운 봉으로"; the fourth was admitted the
+# same day with the `order_block_return_*` pair, "예, 선례대로"), and two are the retracement
+# columns (Thomas 2026-11-26, "예, 구조 구간에 꼴 가로": evidence only).
 #
 # The definitions, the three constants and why each is what it is are written out in
 # `docs/history/2026-11-25-structure-columns.md`; the order block's in
-# `docs/history/2026-11-26-order-block-columns.md`. Two rules hold for every column here, each
+# `docs/history/2026-11-26-order-block-columns.md`; the retracement's in
+# `docs/history/2026-11-26-fib-touch-columns.md`. Two rules hold for every column here, each
 # pinned by a test:
 #
 # - **End-cut:** the value at bar t depends on bars <= t only. A swing at bar s is known when
@@ -256,7 +258,10 @@ MAX_SESSION_BAR_MINUTES = 4 * 60
 #   An order block's touch waits longer than a gap's: a gap needs three bars, so the band life
 #   counted from the frame's first bar is enough, but a block is born at a break, and a frame
 #   knows every break only once it has confirmed a swing on BOTH sides. Its touch is None until
-#   the band life has passed since that bar.
+#   the band life has passed since that bar. The retracement columns wait for something else
+#   again: the leg's origin is searched from the previous TURN of the state, so they are None
+#   until the frame has seen the state turn twice. The bar a frame first learns a state on is
+#   not a turn; counting it as one makes a frame that starts later disagree.
 #
 # The three constants were written down before any result and do not move afterwards:
 # changing one changes what every spec that ever reads these columns was mined on.
@@ -275,12 +280,21 @@ ORDER_BLOCK_TOUCH_VALUES = frozenset({"NONE", "UP_BLOCK", "DOWN_BLOCK"})
 ORDER_BLOCK_COLUMNS = (
     "order_block_size_atr", "order_block_touch", "order_block_touch_size_atr", "order_block_touch_age_bars",
 )
+# The retracement of the structure leg (Thomas 2026-11-26). The leg runs from the extreme of the
+# span the opposite state lasted (turn to turn) to the running extreme since, so its end is never
+# waited for. A bar that comes back to 0.382, 0.5 or 0.618 of the leg for the first time since
+# the leg's end last moved carries the deepest of the levels it newly reached. The three ratios
+# are the indicator's own and were fixed before any result. Nothing here compares them with other
+# ratios, so nothing built on these columns can show that they are special.
+FIB_RETRACE_LEVELS = (0.382, 0.5, 0.618)
+FIB_COLUMNS = ("structure_leg_size_atr", "fib_touch_ratio")
 # Every structure column, in the order the row carries them.
 STRUCTURE_COLUMNS = (
     "swing_high_distance_atr", "swing_low_distance_atr",
     "structure_state", "structure_break", "structure_break_atr",
     "fvg_size_atr", "fvg_touch", "fvg_touch_size_atr", "fvg_touch_age_bars",
     *ORDER_BLOCK_COLUMNS,
+    *FIB_COLUMNS,
 )
 # The mintable four. The three sizes are in ATR and signed by direction, and each is a real 0.0
 # on a bar with no event — so a threshold on any of them must stay strictly away from zero (the
@@ -985,7 +999,7 @@ def _structure_columns(
     opens: list[Any], highs: list[Any], lows: list[Any], closes: list[Any], atr: list[Any], *,
     swing_bars: int = STRUCTURE_SWING_BARS, band_life: int = FVG_BAND_LIFE_BARS,
 ) -> dict[str, list]:
-    """Swings, the breaks through them, three-bar gaps and order blocks, point-in-time.
+    """Swings, the breaks through them, three-bar gaps, order blocks and retracements, point-in-time.
 
     One forward pass. Sizes are in ATR, signed by direction: a raw price level means nothing
     against a threshold, the raw-`open_interest` rule.
@@ -1008,6 +1022,13 @@ def _structure_columns(
       search stops, with no zone, at a bar whose open cannot be read. A zone lives and is
       touched as a band is, from the bar AFTER the break. Down mirrors. Only this part reads
       ``opens``.
+    - **Retracement:** when the state TURNS up (a break against a known state), the leg's origin
+      is the lowest low from the previous turn to this one (the later bar on a tie) and its end
+      is the highest high since, taken bar by bar. A later bar's depth is (the end as of the bar
+      before − its low) ÷ (that end − the origin); the bar carries the deepest of the levels its
+      depth reached for the first time since the end last moved. The turn bar itself carries
+      none, a bar that retraces and also makes a new end is read retracement first, and a depth
+      beyond the origin counts as the deepest level. Down mirrors.
 
     A bar without a numeric high, low or close restarts everything after it: the run that
     follows is a frame of its own, never one stitched across the hole.
@@ -1023,11 +1044,15 @@ def _structure_columns(
     high_bar = low_bar = 0                      # the bar of the swing behind each live level
     both_at: int | None = None                  # the bar this run first held a confirmed swing on both sides
     blocks: list[tuple[int, str, float, float, float | None]] = []  # formed, side, bottom, top, size
+    turn_bars: list[int] = []                   # the last two bars the state TURNED on, in this run
+    leg: tuple[float, float, float] | None = None   # side (+1 up, -1 down), origin, end
+    leg_depth = 0.0                             # the deepest retracement since the leg's end last moved
     for t in range(n):
         high, low, close = highs[t], lows[t], closes[t]
         if not (indicators._is_num(high) and indicators._is_num(low) and indicators._is_num(close)):
             start, high_level, low_level, high_seen, low_seen, state, bands = t + 1, None, None, False, False, None, []
             both_at, blocks = None, []
+            turn_bars, leg, leg_depth = [], None, 0.0
             continue
         # The ATR's first value in a run averages a first true range that has no previous close,
         # so it is not the full-history value yet. One bar later it is.
@@ -1056,6 +1081,7 @@ def _structure_columns(
             broke, size, high_level = "UP", close - high_level, None
         elif low_level is not None and close < low_level:
             broke, size, low_level = "DOWN", close - low_level, None
+        turned = False                          # a break against a KNOWN state; first sight is not one
         if high_seen and low_seen:
             if broke is None:
                 out["structure_break_atr"][t] = 0.0
@@ -1064,6 +1090,7 @@ def _structure_columns(
                 out["structure_break_atr"][t] = size / scale if scale is not None else None
                 if state is not None:
                     out["structure_break"][t] = ("BOS_" if state == broke else "CHOCH_") + broke
+                    turned = state != broke
                 state = broke
             out["structure_state"][t] = state
 
@@ -1132,6 +1159,39 @@ def _structure_columns(
                     blocks.append((t, broke, bottom, top, born))
         if high_seen and low_seen and scale is not None:
             out["order_block_size_atr"][t] = born
+
+        # The structure leg and its retracement. A turn starts a new leg once the turn before it
+        # is known too: the origin is searched from that turn, never from where the frame began.
+        if turned:
+            turn_bars = [*turn_bars[-1:], t]
+            if len(turn_bars) == 2:
+                span = range(turn_bars[0], t + 1)
+                if broke == "UP":
+                    origin = min(lows[j] for j in span)
+                    origin_bar = max(j for j in span if lows[j] == origin)
+                    leg = (1.0, origin, max(highs[j] for j in range(origin_bar, t + 1)))
+                else:
+                    origin = max(highs[j] for j in span)
+                    origin_bar = max(j for j in span if highs[j] == origin)
+                    leg = (-1.0, origin, min(lows[j] for j in range(origin_bar, t + 1)))
+                leg_depth = 0.0
+        if leg is not None:
+            side, origin, end = leg
+            touch = 0.0
+            if not turned and (end - origin) * side > 0:
+                depth = (end - (low if side > 0 else high)) * side / ((end - origin) * side)
+                if depth > leg_depth:
+                    reached = [level for level in FIB_RETRACE_LEVELS if leg_depth < level <= depth]
+                    leg_depth = depth
+                    if reached:
+                        touch = max(reached) * side
+            out["fib_touch_ratio"][t] = touch
+            extreme = high if side > 0 else low
+            if not turned and (extreme - end) * side > 0:
+                end, leg_depth = extreme, 0.0   # the end moved: what was retraced before no longer counts
+                leg = (side, origin, end)
+            if scale is not None:
+                out["structure_leg_size_atr"][t] = (end - origin) / scale
     return out
 
 
@@ -1411,7 +1471,7 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             # Positioning: who is HOLDING, from the store the runtime accumulates itself. The
             # only columns here that OHLCV cannot reproduce — see `_positioning_columns`.
             **{col: positioning[col][i] for col in POSITIONING_COLUMNS},
-            # Price structure — four mintable, nine evidence only (see STRUCTURE_COLUMNS).
+            # Price structure — four mintable, eleven evidence only (see STRUCTURE_COLUMNS).
             **{col: structure[col][i] for col in STRUCTURE_COLUMNS},
         }
         row["market_regime"] = classify_market_regime(row)
