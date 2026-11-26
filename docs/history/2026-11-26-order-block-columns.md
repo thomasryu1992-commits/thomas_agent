@@ -92,15 +92,31 @@ that case built by hand. `order_block_size_atr` does not wait: a break's own spa
   a hole is a frame of its own.
 - `judgement_fingerprint()` is `f50dfce1c444`, as before.
 
-**What it costs, and it is more than the first nine columns did.** For one leg of a factory-depth 1h frame
-(24,000 synthetic bars, candles only) `build_feature_rows` went from 3.33 s to 3.49 s on this host and its peak
-memory from 267 MB to 349 MB. The first PR added eighteen keys for 16 MB; this one adds eight keys for 82 MB. The
-reason is the row itself: a row was 170 keys, exactly what a Python dict's table holds before it doubles, and the
-171st key takes each row from 3,328 to 6,576 bytes. Any one new column would have paid this. The next doubling is
-at the 342nd key. Frames scale with their bars: about 20 MB more for a 4h frame (6,000 bars) and, by the same
-arithmetic and not measured, about 330 MB more for a 15m frame (96,000 bars; 15m is off the factory rotation).
-The higher-timeframe and reference legs build rows of their own. The scheduler container has no memory limit in
-`docker-compose.yml`; the host has 3.8 GB.
+**What it costs, and it is more than the first nine columns did.** For one frame of factory depth at 1h (24,000
+synthetic bars, candles only) `build_feature_rows` went from 3.33 s to 3.49 s on this host and its peak memory
+from 267 MB to 349 MB: about 3.4 KB more per row. The first PR's note gave 16 MB for eighteen keys; that was
+another harness (mock bars; it read 282 MB where this one reads 267 MB), so the two are not one series, but the
+size of the step is real and has a cause. A row was 170 keys, exactly what a Python dict's table holds before it
+doubles, and the 171st key takes each row dict from 3,328 to 6,576 bytes (`sys.getsizeof` on the host's Python
+3.14; the container runs 3.12 and was not measured). Any one new column would have paid this. The next doubling
+is at the 342nd key.
+
+What that means for a fire depends on how many frames are alive at once, and that is not one:
+
+- The factory builds one frame per leg and keeps them for the whole fire. At 4h and 1d a fire mints across its
+  cohort (`factory.POOLED_TIMEFRAMES`), so it holds one frame per symbol: about 20 MB more per 4h leg (6,000
+  bars) and about 7 MB more per 1d leg (2,000 bars).
+- At 1h the factory's own mints hold one frame (about 82 MB more), but a fire that screens a proposed trial
+  builds the frames of every cohort leg at 1h too.
+- How many symbols a cohort has is per-machine schedule state and was not read. A comment in `scheduler.py` says
+  five symbols are mined. If it is five, a 4h fire holds about 100 MB more and a 1h fire that screens a trial
+  about 410 MB more (on roughly 1.3 GB by the same arithmetic). Neither figure was measured.
+- Whether any schedule on this machine mines 15m was not read either. A 15m frame is 96,000 bars: about 330 MB
+  more per frame by the same arithmetic.
+- The higher-timeframe and reference legs build rows of their own while a frame is built.
+
+The factory runs in the maintenance lane (`scheduler-maint`). Neither scheduler container has a memory limit in
+`docker-compose.yml` (only `operator` and `pipeline-worker` do); the host has 3.8 GB of memory and 8 GB of swap.
 
 **Not known.** Everything about market bars: how often a zone is born, how often it is touched, how much those
 bars coincide with the bars `fvg_return_*` and `structure_fade_*` already enter on (on synthetic bars the share
