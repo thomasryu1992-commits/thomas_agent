@@ -63,6 +63,10 @@ and stays there); base index 0, which the draw does not read; the marker `("fib_
 - `fib_level_index` is the second unordered parameter in the library. The test that pinned `session_index` as the
   only one now names both, and says a third is a decision to record.
 - No row key was added.
+- The draw is even on the path that mints, not only in the draw function: over 1,350 draws a side through
+  `generator.generate_batch` (three symbols, 1h and 4h) the three levels came up 35% / 30% / 35% on the long side
+  and 34% / 32% / 34% on the short side. `session_trend_long`, the precedent, came up 31% / 34% / 35% on the same
+  fires. No route writes the base index without drawing.
 
 **Known before the build, on synthetic bars only** (20 seeds × 3,000 bars, bars that open away from the previous
 close, the merged columns; no market data was read). Long-side matches for one symbol:
@@ -83,7 +87,9 @@ comes back to more than one of the three; `paper.route_entries` takes one primar
 and settles the rest behind it, so nothing stacks. On synthetic bars 45 – 59% of touches shared a bar and side
 with one of `fvg_return_*`, `order_block_return_*` or `trend_pullback` at its base draw, moving with the arbitrary
 wick size, so the figure says nothing either way. A touch never falls on a bar that breaks the structure the other
-way (that bar is a turn and carries none), so it does not meet `structure_fade_*`.
+way (that bar is a turn and carries none), so it never shares a side with `structure_fade_*`. On a bar that breaks
+WITH the leg while its low reaches a level, the touch and the fade sit on opposite sides; that is rare and falls
+under the existing direction-conflict rule.
 
 **What changes on deploy.** The library goes from 54 to 56: 1h and 4h 52 → 54 (50 → 52 for the reference symbol),
 1d 36 → 38 (34 → 36); 15m is unchanged. Each context's rotation position shifts once.
