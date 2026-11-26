@@ -319,3 +319,28 @@ def _model_mock():
 
 
 ModelMock = _model_mock()
+
+
+def _venue_shaped_collector():
+    import dataclasses
+
+    from runtime.mvp_runtime.crypto.market_data import MockMarketDataCollector
+
+    class VenueShapedCollector(MockMarketDataCollector):
+        """The mock's deterministic bars, marked the way a venue's are (``is_synthetic=False``).
+
+        A scheduled factory fire refuses bars that are not known to be real (2026-11-26), and the
+        default collector is the mock. A test of what a fire does AFTER that door (the spawn, the
+        child, the ledger line, fusion, trials) therefore runs on this. Nothing else about the mock
+        changes, including no network. Only a test asks for it, through ``venue_shaped_bars``."""
+
+        source = "test.venue_shaped"
+
+        def collect(self, symbol, timeframe, *, limit, timeout_seconds):
+            snapshot = super().collect(symbol, timeframe, limit=limit, timeout_seconds=timeout_seconds)
+            return dataclasses.replace(snapshot, is_synthetic=False, source=self.source)
+
+    return VenueShapedCollector
+
+
+VenueShapedCollector = _venue_shaped_collector()

@@ -1562,6 +1562,7 @@ def _fire_and_collect(store, ledger, tmp_path, *, spawn_at, collect_at):
                    ledger=ledger, repo_root=tmp_path)
 
 
+@pytest.mark.usefixtures("venue_shaped_bars")
 def test_scheduler_factory_fire_appends_candidates_and_ledgers(tmp_path):
     schedule = build_schedule(kind=KIND_FACTORY, request="", interval_seconds=86400,
                               created_by="op", now="2026-07-22T10:00:00Z")
@@ -1579,7 +1580,8 @@ def test_scheduler_factory_fire_appends_candidates_and_ledgers(tmp_path):
     # seeded, because the FIRST fire has no durable parents and so mints nothing fused. Four
     # here — the number this asserted before the shortfall draw existed — is now the reading
     # that would mean the fusion half of the budget had been discarded.
-    # (mock collector data is fine for MINING, not for trading)
+    # (the bars are the mock's, served as a venue's: a fire on bars marked synthetic mines
+    # nothing, which the block below this test pins)
     assert summary["results"][0]["status"].startswith("generated=8/8 fused=0 topup=4 tilted=")
     # What ablation did rides the same line: the lattice spends replays with no cadence
     # change, and the status line is where that spend and its yield are legible per fire.
@@ -1602,6 +1604,132 @@ def test_scheduler_factory_fire_appends_candidates_and_ledgers(tmp_path):
     assert candidates and len(candidates) == 8 - len(unfed)
 
 
+# --- a scheduled fire mines only on bars known to be real (Thomas 2026-11-26) -----------------
+#
+# The default collector is the mock: it is what the selection hands a machine whose market-data
+# opt-in is unset. A candidate record carries no data-source field and no promotion or cohort
+# gate asks, so a candidate mined on those bars would enter the store looking like any other.
+# The fire is the last place that knows, and it leaves before reading a single feed.
+
+def _factory_fire_setup(tmp_path, request=""):
+    store = ScheduleStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.add(build_schedule(kind=KIND_FACTORY, request=request, interval_seconds=86400,
+                             created_by="op", now="2026-07-22T10:00:00Z"))
+    return store, LedgerStore(tmp_path / LEDGER_REL)
+
+
+def _assert_nothing_was_mined(tmp_path, summary):
+    assert summary["fired"] == 1 and summary["spawned"] == 0 and summary["failed"] == 0, summary
+    assert summary["results"][0]["status"] == "skipped_market_data_synthetic"
+    assert not scheduler_mod.factory_child_busy()
+    spool = tmp_path / scheduler_mod.FACTORY_SPOOL_REL
+    assert not spool.exists() or not list(spool.iterdir())
+    assert pool.read_candidates(tmp_path) == []
+    records = tmp_path / LEDGER_REL / RECORDS_FILE
+    rows = ([json.loads(line) for line in records.read_text(encoding="utf-8").splitlines()]
+            if records.exists() else [])
+    assert not any(r["kind"] == "crypto_factory" for r in rows)
+
+
+def _refuse_everything_after_the_bars(monkeypatch):
+    """Past the skip nothing may run: no leg attached (so no feed read, no vendor row kept),
+    no child spawned."""
+    from runtime.mvp_runtime.crypto import feed_assembly
+
+    def _must_not_run(*args, **kwargs):
+        raise AssertionError("a fire on bars not known to be real went past the skip")
+
+    monkeypatch.setattr(feed_assembly, "attach_mining_legs", _must_not_run)
+    monkeypatch.setattr(scheduler_mod, "_spawn_factory_child", _must_not_run)
+
+
+@pytest.mark.parametrize("request_text", ["", "BTCUSDT,ETHUSDT 1d"])
+def test_a_scheduled_factory_fire_on_the_default_collector_mines_nothing(tmp_path, monkeypatch, request_text):
+    """Single-symbol and cohort alike, on the selection exactly as an un-opted-in machine gets it."""
+    _refuse_everything_after_the_bars(monkeypatch)
+    store, ledger = _factory_fire_setup(tmp_path, request_text)
+    first = run_due(store, now="2026-07-23T11:00:00Z", control_store=ControlStore(tmp_path),
+                    ledger=ledger, repo_root=tmp_path)
+    _assert_nothing_was_mined(tmp_path, first)
+    # The occurrence is closed, not left open: the next day's fire is claimed and answers again.
+    second = run_due(store, now="2026-07-24T11:00:00Z", control_store=ControlStore(tmp_path),
+                     ledger=ledger, repo_root=tmp_path)
+    _assert_nothing_was_mined(tmp_path, second)
+    assert [x.last_status for x in store.list()] == ["skipped_market_data_synthetic"]
+
+
+def test_the_skip_reads_what_the_bars_say_not_which_collector_served_them(tmp_path, monkeypatch):
+    """A collector that is not the mock class but says its bars are synthetic is skipped too. The
+    other direction (mock-shaped bars marked as a venue's DO fire) is every `venue_shaped_bars`
+    test in the suite, the one above this block first."""
+    import dataclasses
+
+    from tests._helpers import VenueShapedCollector
+
+    class _ForeignSynthetic:
+        def __init__(self):
+            self._inner = VenueShapedCollector()
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        def collect(self, symbol, timeframe, *, limit, timeout_seconds):
+            snapshot = self._inner.collect(symbol, timeframe, limit=limit, timeout_seconds=timeout_seconds)
+            return dataclasses.replace(snapshot, is_synthetic=True)
+
+    assert not isinstance(_ForeignSynthetic(), market_data.MockMarketDataCollector)
+    monkeypatch.setattr(market_data, "select_market_data_collector", lambda **_: _ForeignSynthetic())
+    _refuse_everything_after_the_bars(monkeypatch)
+    store, ledger = _factory_fire_setup(tmp_path)
+    _assert_nothing_was_mined(tmp_path, run_due(
+        store, now="2026-07-23T11:00:00Z", control_store=ControlStore(tmp_path),
+        ledger=ledger, repo_root=tmp_path))
+
+
+def test_one_synthetic_cohort_leg_skips_the_whole_fire(tmp_path, monkeypatch):
+    """The primary leg is real and is attached; the second leg's bars are not, and the fire leaves
+    without it rather than mining a smaller cohort."""
+    import dataclasses
+
+    from tests._helpers import VenueShapedCollector
+
+    class _SecondLegSynthetic(VenueShapedCollector):
+        def collect(self, symbol, timeframe, *, limit, timeout_seconds):
+            snapshot = super().collect(symbol, timeframe, limit=limit, timeout_seconds=timeout_seconds)
+            return dataclasses.replace(snapshot, is_synthetic=symbol == "ETHUSDT")
+
+    monkeypatch.setattr(market_data, "select_market_data_collector", lambda **_: _SecondLegSynthetic())
+
+    def _must_not_spawn(*args, **kwargs):
+        raise AssertionError("a cohort with a synthetic leg spawned a child")
+
+    monkeypatch.setattr(scheduler_mod, "_spawn_factory_child", _must_not_spawn)
+    store, ledger = _factory_fire_setup(tmp_path, "BTCUSDT,ETHUSDT 1d")
+    _assert_nothing_was_mined(tmp_path, run_due(
+        store, now="2026-07-23T11:00:00Z", control_store=ControlStore(tmp_path),
+        ledger=ledger, repo_root=tmp_path))
+
+
+def test_bars_that_do_not_say_whether_they_are_real_are_not_mined(tmp_path, monkeypatch, venue_shaped_bars):
+    """Fail-closed on the flag itself: a snapshot with no `is_synthetic` at all skips, on the same
+    venue-shaped bars that fire when the flag is there and False."""
+    real_collect = market_data.collect_market_data
+
+    def _collect_without_the_flag(*args, **kwargs):
+        snapshot, record = real_collect(*args, **kwargs)
+        assert snapshot["is_synthetic"] is False
+        return {k: v for k, v in snapshot.items() if k != "is_synthetic"}, record
+
+    monkeypatch.setattr(market_data, "collect_market_data", _collect_without_the_flag)
+    _refuse_everything_after_the_bars(monkeypatch)
+    store, ledger = _factory_fire_setup(tmp_path)
+    _assert_nothing_was_mined(tmp_path, run_due(
+        store, now="2026-07-23T11:00:00Z", control_store=ControlStore(tmp_path),
+        ledger=ledger, repo_root=tmp_path))
+
+
+@pytest.mark.usefixtures("venue_shaped_bars")
 def test_scheduled_factory_fire_attempts_fusion_over_durable_parents(tmp_path, monkeypatch):
     """The scheduler passes a non-zero ``fusion_pairs``, so the SECOND fire — with the
     first fire's candidates durable as parents — must actually attempt crossover.

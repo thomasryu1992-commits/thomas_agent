@@ -948,6 +948,7 @@ def test_a_decided_gate_still_needs_the_coverage(monkeypatch):
     assert positioning_store.mint_eligible(None, symbols=["BTCUSDT"]) is False
 
 
+@pytest.mark.usefixtures("venue_shaped_bars")
 def test_a_factory_fire_over_a_covered_store_mints_no_positioning_family(tmp_path, monkeypatch):
     """The path the decision is about: the scheduler's factory fire. With the store reporting full
     coverage, what reaches the factory is still `positioning_eligible=False`."""
