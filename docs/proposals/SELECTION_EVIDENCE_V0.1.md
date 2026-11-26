@@ -158,6 +158,7 @@ docker exec -u 10001 thomas-scheduler python -m scripts.selection_evidence verdi
 - **H2 → 예.** §4.2의 1–6이 1차 cohort 마감(2027-03-22) 판정 규칙이다.
   - S2가 에포크 경계로 미룬 쌍둥이 기준 판정의 규칙을, 경계 전에 정해 둔 것이다.
   - 경제 family 분류는 `scripts/selection_evidence.py`의 `ECONOMIC_FAMILY_MARKERS`로 고정한다. 바꾸려면 다음 에포크 경계 전에 Thomas가 따로 결정한다.
+    - **바꾼 기록 (Thomas 2026-11-25, 경계 전):** 표지 셋을 표의 끝에 더했다. `structure_follow` → structure(follow), `structure_fade` → structure(fade), `fvg_` → gap(fvg). 가격 구조 계열 네 쌍이 서는 칸이다. 끝에 더했으므로 이미 표가 잡던 이름의 칸은 바뀌지 않는다. 시험의 해시도 이 결정과 함께 옮겼다(`docs/history/2026-11-26-structure-families.md`).
   - 판정을 내는 코드는 마감 전에 따로 짓는다. 그때까지 `selection_evidence families`는 표시만 하고, 어떤 문·보드·순위도 읽지 않는다.
 - **바뀌지 않은 것:** 판정 규칙, 문, 보드, 순위, 상수, factory 스케줄, mint 비중. D3는 그대로다.
 

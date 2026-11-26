@@ -16,6 +16,8 @@ that used it would report the reference leg as broken and be wrong.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from runtime.mvp_runtime.crypto import template_space
@@ -55,6 +57,16 @@ def _bare(timeframe="1h"):
     return snapshot, collector
 
 
+def _untied(candles):
+    """The mock's highs and lows, moved apart by a hair. The mock sets every high to 1.005 x the larger of
+    open and close and a bar opens at the previous close, so the two bars around every peak share one high
+    (lows likewise) and no swing ever forms (`features._structure_columns`: a tie is no swing). That is a
+    property of the mock's bars, not of the legs, so the fixture is fixed rather than the column excused:
+    the high only moves up and the low only down, and every bar still contains its open and close."""
+    return [{**c, "high": c["high"] * (1 + 0.0004 * (1 + math.sin(1.3 * i))),
+             "low": c["low"] * (1 - 0.0004 * (1 + math.cos(1.7 * i)))} for i, c in enumerate(candles)]
+
+
 def _supplied(snapshot):
     return {name for name, value in latest_feature_row(snapshot).items() if value is not None}
 
@@ -83,9 +95,19 @@ def test_attach_mining_legs_supplies_every_reachable_mintable_column():
     row can supply. Asserted over the whole mintable vocabulary rather than a sample, so a
     future column needing a sixth leg fails here instead of silently scoring zero trades."""
     snapshot, collector = _bare()
+    snapshot["candles"] = _untied(snapshot["candles"])
     attach_mining_legs(snapshot, collector=collector, timeframe="1h", now=NOW)
     missing = (set(template_space.NUMERIC_FEATURES) - _supplied(snapshot)) - _UNREACHABLE_WITH_A_MOCK
     assert not missing, f"mining frame cannot supply mintable columns: {sorted(missing)}"
+
+
+def test_on_the_mocks_own_bars_the_break_column_is_empty_rather_than_invented():
+    """Why the test above unties the bars, pinned as the fact it is: the mock's highs tie at every peak, a
+    tie is no swing, so with no level to break `structure_break_atr` is None and a structure family simply
+    does not enter on mock data — the posture of every column a feed cannot supply, never a made-up 0.0."""
+    snapshot, collector = _bare()
+    attach_mining_legs(snapshot, collector=collector, timeframe="1h", now=NOW)
+    assert latest_feature_row(snapshot)["structure_break_atr"] is None
 
 
 def test_each_leg_is_load_bearing():

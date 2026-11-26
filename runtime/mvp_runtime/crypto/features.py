@@ -229,12 +229,14 @@ DAY_TYPE_VALUES = frozenset({"WEEKDAY", "WEEKEND"})
 MAX_SESSION_BAR_MINUTES = 4 * 60
 
 # --- price structure: swings, breaks through them, three-bar gaps -----------------------------
-# EVIDENCE ONLY, every column (Thomas 2026-11-25). None of them is in
-# `template_space.NUMERIC_FEATURES` or `CATEGORICAL_FEATURES`, so nothing the factory makes can
-# read one — no template, generated spec, fusion child or proposed trial passes the validator
-# naming it. They ride on the row and change nothing the factory mints or judges. (A spec an
-# operator imports is not validated and the evaluator reads whatever a spec names, which is true
-# of every evidence column on the row.) Admitting them is a separate, later decision.
+# Three of the nine columns are mintable since Thomas's 2026-11-25 decisions (the families that
+# read them are in `template_space`, see `STRUCTURE_FAMILIES` there): the break label, the break's
+# size and the touched band's size — `STRUCTURE_MINTABLE_NUMERIC_COLUMNS` and
+# `STRUCTURE_MINTABLE_LABELS` below. The other six stay EVIDENCE ONLY: on the row, in neither
+# mintable vocabulary, so no template, generated spec, fusion child or proposed trial passes the
+# validator naming one. (A spec an operator imports is not validated and the evaluator reads
+# whatever a spec names, which is true of every evidence column on the row.) Admitting a column
+# is a decision of its own; no family reads those six, so nothing asked for them.
 #
 # The definitions, the three constants and why each is what it is are written out in
 # `docs/history/2026-11-25-structure-columns.md`. Two rules hold for every column here, each
@@ -258,12 +260,21 @@ FVG_BAND_LIFE_BARS = 48     # an untouched band is dropped after this many bars
 STRUCTURE_STATE_VALUES = frozenset({"UP", "DOWN"})
 STRUCTURE_BREAK_VALUES = frozenset({"NONE", "BOS_UP", "BOS_DOWN", "CHOCH_UP", "CHOCH_DOWN"})
 FVG_TOUCH_VALUES = frozenset({"NONE", "UP_BAND", "DOWN_BAND"})
-STRUCTURE_EVIDENCE_COLUMNS = (
+# Every structure column, in the order the row carries them.
+STRUCTURE_COLUMNS = (
     "swing_high_distance_atr", "swing_low_distance_atr",
     "structure_state", "structure_break", "structure_break_atr",
     "fvg_size_atr", "fvg_touch", "fvg_touch_size_atr", "fvg_touch_age_bars",
 )
-STRUCTURE_COLUMNS = STRUCTURE_EVIDENCE_COLUMNS
+# The mintable three. Both sizes are in ATR and signed by direction, and both are a real 0.0 on
+# a bar with no event — so a threshold on either must stay strictly away from zero (the
+# `ParamSpec` floors in `template_space` do, and a test holds them to it).
+STRUCTURE_MINTABLE_NUMERIC_COLUMNS = ("structure_break_atr", "fvg_touch_size_atr")
+STRUCTURE_MINTABLE_LABELS = {"structure_break": STRUCTURE_BREAK_VALUES}
+STRUCTURE_EVIDENCE_COLUMNS = tuple(
+    column for column in STRUCTURE_COLUMNS
+    if column not in STRUCTURE_MINTABLE_NUMERIC_COLUMNS and column not in STRUCTURE_MINTABLE_LABELS
+)
 
 
 
@@ -1241,7 +1252,7 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     # level of peer fetching to worry about.
     cross_section = _cross_section_columns(bar_times, roc_4, snapshot)
     positioning = _positioning_columns(bar_times, snapshot)
-    # Price structure: a pure function of the candles, evidence only (see STRUCTURE_COLUMNS).
+    # Price structure: a pure function of the candles (see STRUCTURE_COLUMNS).
     structure = _structure_columns(highs, lows, closes, atr)
 
     rows: list[dict[str, Any]] = []
@@ -1333,7 +1344,7 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             # Positioning: who is HOLDING, from the store the runtime accumulates itself. The
             # only columns here that OHLCV cannot reproduce — see `_positioning_columns`.
             **{col: positioning[col][i] for col in POSITIONING_COLUMNS},
-            # Price structure — evidence only, outside both mintable vocabularies (see STRUCTURE_COLUMNS).
+            # Price structure — three mintable, six evidence only (see STRUCTURE_COLUMNS).
             **{col: structure[col][i] for col in STRUCTURE_COLUMNS},
         }
         row["market_regime"] = classify_market_regime(row)

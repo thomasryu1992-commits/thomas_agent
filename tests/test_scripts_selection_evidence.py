@@ -151,7 +151,38 @@ def test_the_families_command_pools_the_cohorts_pairs_by_economic_family(tmp_pat
 def test_the_family_grouping_is_frozen_until_thomas_changes_it():
     # H2 (Thomas 2026-10-07): the judgement's grouping is ECONOMIC_FAMILY_MARKERS as decided. A change
     # is a Thomas decision before the next epoch boundary; record it, then move this hash.
-    assert se.family_markers_sha256() == "5c73cbd93306061a72ad066e60934ae7c65accc299239d8868674beeebb2dcb8"
+    #
+    # Moved once, Thomas 2026-11-25 (before the 2027-03-22 boundary): three markers appended for the
+    # price-structure families — structure(follow), structure(fade), gap(fvg). Recorded in
+    # docs/history/2026-11-26-structure-families.md and SELECTION_EVIDENCE_V0.1. Was 5c73cbd9…b2dcb8.
+    assert se.family_markers_sha256() == "16cadabf10fe45229e35e4470b80d1a7ab362bdfdebed115e8ac7259e7bc4202"
+
+
+def test_the_structure_markers_added_three_cells_and_moved_no_earlier_label():
+    """The 2026-11-25 change is an APPEND. First match wins, so appended markers can only catch a label
+    no earlier marker did — every label the table already placed stays where it was. Asserted by
+    calling the classifier with and without the three, over every family the library has ever held."""
+    from runtime.mvp_runtime.crypto import template_space
+
+    added = (("structure_follow", "structure(follow)"), ("structure_fade", "structure(fade)"),
+             ("fvg_", "gap(fvg)"))
+    assert se.ECONOMIC_FAMILY_MARKERS[-3:] == added
+    before = se.ECONOMIC_FAMILY_MARKERS[:-3]
+
+    def classified_before(label):
+        return next((family for marker, family in before if marker in label), "other:" + label)
+
+    names = sorted({t.family for t in template_space.TEMPLATES} | set(template_space.RETIRED_FAMILIES))
+    moved = {name for name in names if se.economic_family(name) != classified_before(name)}
+    assert moved == set(template_space.STRUCTURE_FAMILIES)
+    assert {name: se.economic_family(name) for name in sorted(moved)} == {
+        "fvg_return_long": "gap(fvg)", "fvg_return_short": "gap(fvg)",
+        "structure_fade_long": "structure(fade)", "structure_fade_short": "structure(fade)",
+        "structure_follow_bos_long": "structure(follow)", "structure_follow_bos_short": "structure(follow)",
+        "structure_follow_choch_long": "structure(follow)", "structure_follow_choch_short": "structure(follow)",
+    }
+    # a fused or mined label is decided before the table is read, as it was
+    assert se.economic_family("breakout+structure_fade_long") == se.FUSED
 
 
 def test_holm_steps_down_and_stops_at_the_first_miss():

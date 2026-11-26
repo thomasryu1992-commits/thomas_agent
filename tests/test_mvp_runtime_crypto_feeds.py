@@ -19,7 +19,7 @@ from tests._helpers import FakeResp as _FakeResp, make_gate_authorization
 
 from runtime.mvp_runtime import safety_gate
 from runtime.mvp_runtime.crypto.cycle import attach_feeds, run_crypto_cycle
-from runtime.mvp_runtime.crypto.factory import generate_batch, validate_strategy
+from runtime.mvp_runtime.crypto.factory import generate_batch, templates_for_timeframe, validate_strategy
 from runtime.mvp_runtime.crypto.market_data import (
     COINALYZE,
     LIQUIDATION_FEED_ENV,
@@ -221,8 +221,12 @@ def test_funding_fade_templates_generate_and_validate():
     reaches ~1,067 (`market_data.funding_history_days`), so `factory._funding_feed_reaches`
     refuses the family there. Keeping the old assertion would be asserting that a family may be
     mined over a window its feed covers half of."""
+    # A full pass is ceil(library / batch) consecutive generations. Counted from the library rather than
+    # written as a literal: six covered where funding_fade sat among 42 families and not among 50.
+    first = generate_batch("GEN-000", seed=5, timeframe="4h")["specs"]
+    passes = -(-len(templates_for_timeframe("4h")) // len(first))
     specs = []
-    for n in range(6):
+    for n in range(passes):
         specs.extend(generate_batch(f"GEN-{n:03d}", seed=5, timeframe="4h")["specs"])
     families = {s["strategy_family"] for s in specs}
     assert {"funding_fade_long", "funding_fade_short"} <= families
