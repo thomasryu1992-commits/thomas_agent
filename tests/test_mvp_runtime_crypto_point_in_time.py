@@ -256,4 +256,4 @@ def test_the_contract_catches_a_structure_column_read_one_bar_early(monkeypatch)
     leaked = {leak.split()[2].rstrip(":") for leak in leaks}
     assert leaked and leaked <= {f"{prefix}{column}" for column in features.STRUCTURE_COLUMNS
                                  for prefix in ("", features.PREVIOUS_BAR_PREFIX)}, sorted(leaked)[:8]
-    assert {"structure_break_atr", "swing_high_distance_atr", "fvg_size_atr"} <= leaked
+    assert {"structure_break_atr", "swing_high_distance_atr", "fvg_size_atr", "order_block_touch"} <= leaked

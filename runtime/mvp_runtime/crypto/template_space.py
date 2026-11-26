@@ -174,7 +174,7 @@ NUMERIC_FEATURES = frozenset({
     # until the store's coverage says so. Membership gates what a spec MAY reference; the family
     # gate decides what gets built.
     *features.POSITIONING_NUMERIC_COLUMNS,
-    # Price structure (see features.STRUCTURE_COLUMNS; Thomas 2026-11-25). Two of the nine: the
+    # Price structure (see features.STRUCTURE_COLUMNS; Thomas 2026-11-25). Two of the thirteen: the
     # size of a break through a swing level and the size of the three-bar gap a bar came back to,
     # both in ATR and signed by direction — the normalized-only rule, so a mined threshold means
     # the same on every symbol and timeframe. Only what `STRUCTURE_FAMILIES` read is admitted; the

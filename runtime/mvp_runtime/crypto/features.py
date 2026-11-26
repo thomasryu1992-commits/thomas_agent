@@ -228,18 +228,20 @@ DAY_TYPE_VALUES = frozenset({"WEEKDAY", "WEEKEND"})
 # hazard, so the column goes None instead: no session, no session-conditioned entry.
 MAX_SESSION_BAR_MINUTES = 4 * 60
 
-# --- price structure: swings, breaks through them, three-bar gaps -----------------------------
-# Three of the nine columns are mintable since Thomas's 2026-11-25 decisions (the families that
-# read them are in `template_space`, see `STRUCTURE_FAMILIES` there): the break label, the break's
-# size and the touched band's size — `STRUCTURE_MINTABLE_NUMERIC_COLUMNS` and
-# `STRUCTURE_MINTABLE_LABELS` below. The other six stay EVIDENCE ONLY: on the row, in neither
+# --- price structure: swings, breaks through them, three-bar gaps, order blocks ----------------
+# Three of the thirteen columns are mintable since Thomas's 2026-11-25 decisions (the families
+# that read them are in `template_space`, see `STRUCTURE_FAMILIES` there): the break label, the
+# break's size and the touched band's size — `STRUCTURE_MINTABLE_NUMERIC_COLUMNS` and
+# `STRUCTURE_MINTABLE_LABELS` below. The other ten stay EVIDENCE ONLY: on the row, in neither
 # mintable vocabulary, so no template, generated spec, fusion child or proposed trial passes the
 # validator naming one. (A spec an operator imports is not validated and the evaluator reads
 # whatever a spec names, which is true of every evidence column on the row.) Admitting a column
-# is a decision of its own; no family reads those six, so nothing asked for them.
+# is a decision of its own; no family reads those ten, so nothing asked for them. Four of the
+# ten are the order-block columns (Thomas 2026-11-26, "예, 가까운 봉으로": evidence only).
 #
 # The definitions, the three constants and why each is what it is are written out in
-# `docs/history/2026-11-25-structure-columns.md`. Two rules hold for every column here, each
+# `docs/history/2026-11-25-structure-columns.md`; the order block's in
+# `docs/history/2026-11-26-order-block-columns.md`. Two rules hold for every column here, each
 # pinned by a test:
 #
 # - **End-cut:** the value at bar t depends on bars <= t only. A swing at bar s is known when
@@ -250,6 +252,10 @@ MAX_SESSION_BAR_MINUTES = 4 * 60
 #   the replay say nothing about live. So a value is None until the frame ITSELF holds what it
 #   needs — a confirmed swing on that side, both sides and one break for the state and the
 #   labels, the band life for a touch — and from then on it equals the full-history value.
+#   An order block's touch waits longer than a gap's: a gap needs three bars, so the band life
+#   counted from the frame's first bar is enough, but a block is born at a break, and a frame
+#   knows every break only once it has confirmed a swing on BOTH sides. Its touch is None until
+#   the band life has passed since that bar.
 #
 # The three constants were written down before any result and do not move afterwards:
 # changing one changes what every spec that ever reads these columns was mined on.
@@ -260,11 +266,20 @@ FVG_BAND_LIFE_BARS = 48     # an untouched band is dropped after this many bars
 STRUCTURE_STATE_VALUES = frozenset({"UP", "DOWN"})
 STRUCTURE_BREAK_VALUES = frozenset({"NONE", "BOS_UP", "BOS_DOWN", "CHOCH_UP", "CHOCH_DOWN"})
 FVG_TOUCH_VALUES = frozenset({"NONE", "UP_BAND", "DOWN_BAND"})
+# The order block (Thomas 2026-11-26): the last OPPOSITE-close bar before a break, searched from
+# the bar before the break back to the bar of the swing that was broken. Its zone is that bar's
+# whole range. No number of its own: the zone lives `FVG_BAND_LIFE_BARS` and is touched at its
+# near edge, the gap's two constants, because no other value was named when it was decided.
+ORDER_BLOCK_TOUCH_VALUES = frozenset({"NONE", "UP_BLOCK", "DOWN_BLOCK"})
+ORDER_BLOCK_COLUMNS = (
+    "order_block_size_atr", "order_block_touch", "order_block_touch_size_atr", "order_block_touch_age_bars",
+)
 # Every structure column, in the order the row carries them.
 STRUCTURE_COLUMNS = (
     "swing_high_distance_atr", "swing_low_distance_atr",
     "structure_state", "structure_break", "structure_break_atr",
     "fvg_size_atr", "fvg_touch", "fvg_touch_size_atr", "fvg_touch_age_bars",
+    *ORDER_BLOCK_COLUMNS,
 )
 # The mintable three. Both sizes are in ATR and signed by direction, and both are a real 0.0 on
 # a bar with no event — so a threshold on either must stay strictly away from zero (the
@@ -966,10 +981,10 @@ def _htf_columns(bar_times: list[str], htf_candles: list[dict[str, Any]]) -> dic
 
 
 def _structure_columns(
-    highs: list[Any], lows: list[Any], closes: list[Any], atr: list[Any], *,
+    opens: list[Any], highs: list[Any], lows: list[Any], closes: list[Any], atr: list[Any], *,
     swing_bars: int = STRUCTURE_SWING_BARS, band_life: int = FVG_BAND_LIFE_BARS,
 ) -> dict[str, list]:
-    """Swings, the breaks through them and three-bar gaps, point-in-time (see the constants).
+    """Swings, the breaks through them, three-bar gaps and order blocks, point-in-time.
 
     One forward pass. Sizes are in ATR, signed by direction: a raw price level means nothing
     against a threshold, the raw-`open_interest` rule.
@@ -985,6 +1000,13 @@ def _structure_columns(
       low (down). The band between them lives ``band_life`` bars and is dropped when a later bar
       reaches its near edge; that bar carries the touch, of the most recently formed band if it
       reached several.
+    - **Order block:** at an up break, the last bar that closed BELOW its open (an equal close
+      is not one), searched from the bar before the break back to the bar of the broken swing.
+      Its range is the zone, born when the break bar closes. No such bar, no zone; a zone whose
+      top is not below the break bar's close is no zone either (price never left it); and the
+      search stops, with no zone, at a bar whose open cannot be read. A zone lives and is
+      touched as a band is, from the bar AFTER the break. Down mirrors. Only this part reads
+      ``opens``.
 
     A bar without a numeric high, low or close restarts everything after it: the run that
     follows is a frame of its own, never one stitched across the hole.
@@ -997,10 +1019,14 @@ def _structure_columns(
     high_seen = low_seen = False                # a swing on that side confirmed inside this run
     state: str | None = None                    # known only after both sides and one break
     bands: list[tuple[int, str, float, float, float | None]] = []   # formed, side, bottom, top, size
+    high_bar = low_bar = 0                      # the bar of the swing behind each live level
+    both_at: int | None = None                  # the bar this run first held a confirmed swing on both sides
+    blocks: list[tuple[int, str, float, float, float | None]] = []  # formed, side, bottom, top, size
     for t in range(n):
         high, low, close = highs[t], lows[t], closes[t]
         if not (indicators._is_num(high) and indicators._is_num(low) and indicators._is_num(close)):
             start, high_level, low_level, high_seen, low_seen, state, bands = t + 1, None, None, False, False, None, []
+            both_at, blocks = None, []
             continue
         # The ATR's first value in a run averages a first true range that has no previous close,
         # so it is not the full-history value yet. One bar later it is.
@@ -1011,8 +1037,12 @@ def _structure_columns(
             around = [j for j in range(s - swing_bars, s + swing_bars + 1) if j != s]
             if all(highs[s] > highs[j] for j in around):
                 high_level, high_seen = highs[s], True
+                high_bar = s
             if all(lows[s] < lows[j] for j in around):
                 low_level, low_seen = lows[s], True
+                low_bar = s
+            if both_at is None and high_seen and low_seen:
+                both_at = t
 
         if high_level is not None and scale is not None:
             out["swing_high_distance_atr"][t] = (close - high_level) / scale
@@ -1065,6 +1095,42 @@ def _structure_columns(
                 bands.append((t, gap[0], gap[1], gap[2], signed))
             if scale is not None:
                 out["fvg_size_atr"][t] = signed if gap is not None else 0.0
+
+        # Order blocks. Touches first: a zone born on this bar is appended below, so the break
+        # bar itself, which has usually just travelled through the zone, never touches it.
+        blocks = [block for block in blocks if t - block[0] <= band_life]
+        reached = [block for block in blocks
+                   if (block[1] == "UP" and low <= block[3]) or (block[1] == "DOWN" and high >= block[2])]
+        if reached:
+            blocks = [block for block in blocks if block not in reached]
+        if both_at is not None and t - both_at >= band_life:    # every zone that could still live was born in this run
+            if reached:
+                formed, side, _bottom, _top, block_size = max(reached, key=lambda block: block[0])
+                out["order_block_touch"][t] = f"{side}_BLOCK"
+                out["order_block_touch_size_atr"][t] = block_size
+                out["order_block_touch_age_bars"][t] = float(t - formed)
+            else:
+                out["order_block_touch"][t] = "NONE"
+                out["order_block_touch_size_atr"][t] = 0.0
+                out["order_block_touch_age_bars"][t] = 0.0
+        born: float | None = 0.0
+        if broke is not None:
+            origin: int | None = None
+            for j in range(t - 1, (high_bar if broke == "UP" else low_bar) - 1, -1):
+                if not indicators._is_num(opens[j]):
+                    break                       # it may have been the last opposite bar: no zone
+                if (closes[j] < opens[j]) if broke == "UP" else (closes[j] > opens[j]):
+                    origin = j
+                    break
+            if origin is not None:
+                bottom, top = lows[origin], highs[origin]
+                if (top < close) if broke == "UP" else (bottom > close):
+                    born = None
+                    if scale is not None:
+                        born = (top - bottom) / scale * (1.0 if broke == "UP" else -1.0)
+                    blocks.append((t, broke, bottom, top, born))
+        if high_seen and low_seen and scale is not None:
+            out["order_block_size_atr"][t] = born
     return out
 
 
@@ -1253,7 +1319,7 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     cross_section = _cross_section_columns(bar_times, roc_4, snapshot)
     positioning = _positioning_columns(bar_times, snapshot)
     # Price structure: a pure function of the candles (see STRUCTURE_COLUMNS).
-    structure = _structure_columns(highs, lows, closes, atr)
+    structure = _structure_columns(opens, highs, lows, closes, atr)
 
     rows: list[dict[str, Any]] = []
     for i, candle in enumerate(candles):
@@ -1344,7 +1410,7 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             # Positioning: who is HOLDING, from the store the runtime accumulates itself. The
             # only columns here that OHLCV cannot reproduce — see `_positioning_columns`.
             **{col: positioning[col][i] for col in POSITIONING_COLUMNS},
-            # Price structure — three mintable, six evidence only (see STRUCTURE_COLUMNS).
+            # Price structure — three mintable, ten evidence only (see STRUCTURE_COLUMNS).
             **{col: structure[col][i] for col in STRUCTURE_COLUMNS},
         }
         row["market_regime"] = classify_market_regime(row)

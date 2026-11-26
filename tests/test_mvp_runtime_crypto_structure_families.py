@@ -1,11 +1,11 @@
 """The four price-structure pairs (Thomas 2026-11-25): what they read, where they mint, how they meet.
 
 `structure_follow_bos_*`, `structure_follow_choch_*`, `structure_fade_*` and `fvg_return_*` read three
-of the nine structure columns (`features._structure_columns`). Pinned here, each by calling the thing:
+of the thirteen structure columns (`features._structure_columns`). Pinned here, each by calling the thing:
 
 - **where:** in the rotation at 1h, 4h and 1d and at no other timeframe, appended after every earlier
   family;
-- **what:** exactly three structure columns are mintable and six stay evidence only;
+- **what:** exactly three structure columns are mintable and the other ten stay evidence only;
 - **zero is not an event:** both size columns are a real 0.0 on a quiet bar, so no draw of any of the
   eight may match a bar on which nothing happened, and none may match on an absent column;
 - **the pairs:** long and short of one pair never share a row; follow and fade DO, by decision, and
