@@ -324,12 +324,14 @@ def _fire(tmp_path, request, *, proposals=()):
 # 1h pooling rule itself is pinned above, on `run_factory`, by
 # `test_a_1h_cohort_fire_pools_the_trial_but_not_its_own_mints`.
 
+@pytest.mark.usefixtures("venue_shaped_bars")
 def test_a_single_symbol_fire_is_not_asked_and_its_line_is_unchanged(tmp_path):
     status, record = _fire(tmp_path, "BTCUSDT 1d")
     assert "trial=" not in status
     assert "trial" not in record
 
 
+@pytest.mark.usefixtures("venue_shaped_bars")
 def test_a_cohort_fire_reads_the_queue_from_the_ledger_and_says_what_it_did(tmp_path):
     """The fixture frame is deterministic, so the outcome is pinned: an assertion that accepts
     either `minted` or `refused` passes whether or not the queue reached the factory at all."""
@@ -461,6 +463,7 @@ def test_the_queue_and_the_trial_row_carry_the_hypothesis_form_when_there_is_one
     assert "hypothesis" not in row["trial_source"]
 
 
+@pytest.mark.usefixtures("venue_shaped_bars")
 def test_a_cohort_fire_stores_a_trial_row_that_carries_the_form_beside_its_rotation_rows(tmp_path):
     """The whole path with the new row shape: ledger acceptance -> queue -> factory child -> the
     append-only store. A row the store refused would take nothing with it only if this passes

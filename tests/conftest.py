@@ -313,3 +313,18 @@ def _tests_never_touch_the_real_state_dir():
         "settle which it is.",
         pytrace=False,
     )
+
+
+@pytest.fixture
+def venue_shaped_bars(monkeypatch):
+    """The collector selection hands out mock bars marked as a venue's (see ``VenueShapedCollector``).
+
+    Asked for by name, never autouse: the default selection stays the mock for every other test,
+    and the test that a scheduled factory fire SKIPS on the mock's bars runs on that default. The
+    selection function is replaced, not the opt-in env var, so no gate is opened by a test."""
+    from tests._helpers import VenueShapedCollector
+
+    monkeypatch.setattr(
+        "runtime.mvp_runtime.crypto.market_data.select_market_data_collector",
+        lambda **_: VenueShapedCollector(),
+    )

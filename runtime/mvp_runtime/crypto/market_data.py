@@ -611,6 +611,11 @@ class MockMarketDataCollector:
     ``is_synthetic=True`` so downstream health checks treat it as non-trade-eligible
     (the source system's synthetic-collector contract).
 
+    **A pipeline may run on these bars; a scheduled factory fire does not mine on them**
+    (2026-11-26). The mark stops trading at the data-health guard and stops the candle archive,
+    but a candidate record has no data-source field, so the factory fire reads the mark itself and
+    skips (``skipped_market_data_synthetic`` in ``scheduler``).
+
     **Each bar's wicks are its own** (2026-11-26). The high is the larger of open and close
     times 1.005 to 1.007, the low the smaller times 0.993 to 0.995, the exact factor drawn
     from the bar's own hash. Until then both factors were constants, and since a bar opens at

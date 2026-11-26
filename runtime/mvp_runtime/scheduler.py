@@ -1799,7 +1799,10 @@ def _execute(
         # window, append them to the candidates store. ALLOW-tier record creation —
         # the factory can never touch the active pool (promotion is the operator
         # door). A degraded backend simply skips the run: candidates mined from no
-        # data would be evidence-free noise.
+        # data would be evidence-free noise. So would candidates mined from bars nobody
+        # traded (Thomas 2026-11-26): a machine without the market-data opt-in is handed the
+        # mock collector, a candidate record carries no data-source field, and no promotion
+        # or cohort gate asks. The fire is the one place that still knows.
         from .crypto import feed_assembly as crypto_feed_assembly
         from .crypto import pool as crypto_pool
         from .crypto import positioning_store
@@ -1826,8 +1829,19 @@ def _execute(
         # and dropped when the fire ends, so no later fire can be served a stale bar.
         candle_cache = PeerCandleCache(collector)
 
+        def _not_known_real(leg: Mapping[str, Any]) -> bool:
+            # Anything but an explicit False skips: a snapshot that does not say is not real.
+            return leg.get("is_synthetic") is not False
+
         def _mining_snapshot(for_symbol: str):
-            """One fully-attached leg. Returns None when the venue is degraded for it."""
+            """One fully-attached leg. Returns None when the venue is degraded for it.
+
+            A leg whose bars are not known to be real comes back BARE: the caller skips the
+            fire, and that leg's feeds are never read nor its vendor rows kept. One collector
+            serves every leg, so in practice a skipped fire reads no feed at all; a cohort that
+            mixed real and synthetic legs would have attached the real ones before it reached
+            the synthetic one.
+            """
             try:
                 built, _ = collect_market_data(
                     for_symbol, timeframe, collector=collector, now=now,
@@ -1837,6 +1851,8 @@ def _execute(
                 if exc.reason_code == "TOOL_ERROR":
                     return None
                 raise
+            if _not_known_real(built):
+                return built
             # C9: the factory backtests on the same feed-enriched frame the router evaluates —
             # one feature source for backtest and live (the source rule). All five legs go
             # through `attach_mining_legs`, which is where that rule lives.
@@ -1852,6 +1868,8 @@ def _execute(
         snapshot = _mining_snapshot(symbol)
         if snapshot is None:
             return "skipped_market_data_degraded"
+        if _not_known_real(snapshot):
+            return "skipped_market_data_synthetic"
         # **A leg that cannot be fetched cancels the pooled fire rather than shrinking it.** A
         # four-leg pool reporting `symbols: 5` is the wrong-number failure this file's guards
         # exist for, and a cohort that silently changes size between fires is not one context.
@@ -1860,6 +1878,8 @@ def _execute(
             leg = _mining_snapshot(other)
             if leg is None:
                 return f"skipped_cohort_leg_degraded:{other}"
+            if _not_known_real(leg):
+                return "skipped_market_data_synthetic"
             cohort.append(leg)
         # The store's own answer to "can you cover the window the factory replays". Read here
         # rather than inside the factory because `run_factory` is pure. A store that cannot be

@@ -73,6 +73,7 @@ def _tiny_factory(snapshot, **kwargs):
     return _tiny_result()
 
 
+@pytest.mark.usefixtures("venue_shaped_bars")
 def test_a_spawn_pass_leaves_the_bracket_open_and_a_collect_pass_closes_it(tmp_path, monkeypatch):
     monkeypatch.setattr(factory, "run_factory", _tiny_factory)
     store = _factory_store(tmp_path)
@@ -106,6 +107,7 @@ def test_a_spawn_pass_leaves_the_bracket_open_and_a_collect_pass_closes_it(tmp_p
     assert any(json.loads(r)["kind"] == "crypto_factory" for r in rows)
 
 
+@pytest.mark.usefixtures("venue_shaped_bars")
 def test_a_second_due_factory_fire_defers_unclaimed_while_a_child_runs(tmp_path, monkeypatch):
     monkeypatch.setattr(factory, "run_factory", _tiny_factory)
     store = _factory_store(tmp_path, count=2)
@@ -126,6 +128,7 @@ def test_a_second_due_factory_fire_defers_unclaimed_while_a_child_runs(tmp_path,
     assert second["fired"] == 1 and second["spawned"] == 1
 
 
+@pytest.mark.usefixtures("venue_shaped_bars")
 def test_a_child_that_raises_is_a_terminal_failed_with_no_candidates(tmp_path, monkeypatch):
     def _boom(snapshot, **kwargs):
         raise ValueError("lattice exploded")
@@ -267,6 +270,7 @@ _FAKE = "FAKE-SECRET-7f3a"
 _FAKE_PATH = "/root/fake-state/holdings/x.json"
 
 
+@pytest.mark.usefixtures("venue_shaped_bars")
 def test_a_child_failure_message_reaches_only_the_diagnostics_file(tmp_path, monkeypatch):
     def _boom(snapshot, **kwargs):
         raise FileNotFoundError(f"{_FAKE_PATH} token={_FAKE}")
@@ -358,6 +362,7 @@ def _fail_one_child(tmp_path, monkeypatch, *, notifier=None):
     return store, summary
 
 
+@pytest.mark.usefixtures("venue_shaped_bars")
 @pytest.mark.parametrize("raised", [OSError(f"disk full at {_FAKE_PATH}"),
                                     UnicodeEncodeError("utf-8", "\udcff", 0, 1, _FAKE),
                                     RuntimeError(f"{_FAKE}\nTraceback (most recent call last):")])
