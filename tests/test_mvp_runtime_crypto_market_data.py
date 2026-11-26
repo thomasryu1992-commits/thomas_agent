@@ -9,6 +9,7 @@ Authorization and a fully mocked urlopen (no real network)."""
 from __future__ import annotations
 
 import json
+import math
 import time
 import urllib.error
 import urllib.parse
@@ -222,7 +223,13 @@ def test_the_factory_mines_the_venue_the_snapshot_came_from():
 
     If this fails again on a family whose leg is missing rather than on the venue, the rotation
     has moved once more: attach that leg too rather than pinning the block, which would make
-    this test stop covering the families it happens to skip."""
+    this test stop covering the families it happens to skip.
+
+    **It moved again on 2026-11-26** (the library went to 56), onto the structure families, and
+    what they lacked was not a leg: the mock sets every high to 1.005 x the larger of open and
+    close, so the two bars around every peak tie, a tie is no swing, and every swing-fed column
+    is empty on the mock's own bars. The highs and lows are moved apart by a hair, as the
+    mining-frame test does, which is the shape of bars production mines."""
     class HyperliquidLike(MockMarketDataCollector):
         provider_id = market_data.HYPERLIQUID
         source = "hyperliquid_public"
@@ -231,6 +238,11 @@ def test_the_factory_mines_the_venue_the_snapshot_came_from():
     snapshot, _ = collect_market_data(
         "BTCUSDT", "1h", collector=collector, now=NOW, limit=400
     )
+    snapshot["candles"] = [
+        {**c, "high": c["high"] * (1 + 0.0004 * (1 + math.sin(1.3 * i))),
+         "low": c["low"] * (1 - 0.0004 * (1 + math.cos(1.7 * i)))}
+        for i, c in enumerate(snapshot["candles"])
+    ]
     assert cycle.attach_htf(snapshot, collector=collector, now=NOW) is None, (
         "the higher-timeframe leg degraded, so this test would be asserting on a snapshot "
         "thinner than the one the scheduler mines"

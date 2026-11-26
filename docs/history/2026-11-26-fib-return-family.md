@@ -89,6 +89,13 @@ way (that bar is a turn and carries none), so it does not meet `structure_fade_*
 1d 36 → 38 (34 → 36); 15m is unchanged. Each context's rotation position shifts once.
 `judgement_fingerprint()` is `f50dfce1c444`, unchanged.
 
+**One test moved with the library's size.** `test_the_factory_mines_the_venue_the_snapshot_came_from` mints from
+whichever slice the rotation lands on, by design, and at 52 families (BTCUSDT 1h) that slice became the four
+`structure_follow_*` templates. The mock collector's bars tie at every peak, a tie is no swing, so those specs were
+refused as unsuppliable and nothing minted. No rule had changed. The fixture's highs and lows are now moved apart
+by a hair, as the mining-frame test already does, and the test's own docstring records why. The six tests restated
+for the order-block pair did not move again.
+
 **Not known.** Everything about market bars: how often the state turns, how often a level is touched, how often
 this pair shares a bar with the other two return pairs, how often real bars tie at a peak. Which timeframes this
 machine's schedules mine and whether they name cohorts were not read. Whether any stored label already contains
