@@ -230,10 +230,12 @@ def test_funding_fade_templates_generate_and_validate():
         specs.extend(generate_batch(f"GEN-{n:03d}", seed=5, timeframe="4h")["specs"])
     families = {s["strategy_family"] for s in specs}
     assert {"funding_fade_long", "funding_fade_short"} <= families
-    # And the gate is what moved it: 1d cannot mint them however many passes are taken.
+    # And the gate is what moved it: 1d cannot mint them however many passes are taken. A full 1d pass,
+    # counted from the 1d library for the reason above — a literal 6 was never the whole of it.
+    daily_passes = -(-len(templates_for_timeframe("1d")) // len(first))
     assert not any(
         f.startswith("funding_fade")
-        for n in range(6)
+        for n in range(daily_passes)
         for f in (s["strategy_family"] for s in generate_batch(
             f"GEN-{n:03d}", seed=5, timeframe="1d")["specs"])
     )
