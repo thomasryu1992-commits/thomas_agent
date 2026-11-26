@@ -174,6 +174,17 @@ NUMERIC_FEATURES = frozenset({
     # until the store's coverage says so. Membership gates what a spec MAY reference; the family
     # gate decides what gets built.
     *features.POSITIONING_NUMERIC_COLUMNS,
+    # Price structure (see features.STRUCTURE_COLUMNS; Thomas 2026-11-25). Two of the nine: the
+    # size of a break through a swing level and the size of the three-bar gap a bar came back to,
+    # both in ATR and signed by direction — the normalized-only rule, so a mined threshold means
+    # the same on every symbol and timeframe. Only what `STRUCTURE_FAMILIES` read is admitted; the
+    # other columns stay evidence on the row, which is the open-interest and positioning split.
+    #
+    # **Both are a real 0.0 on a bar with no event**, not None. That is a measurement and not the
+    # `liquidation_spike_ratio` fabrication, but it has the same edge: a threshold AT zero matches
+    # every quiet bar. The families' `ParamSpec` floors sit strictly above zero for that reason.
+    # Absent inputs (a frame too short, a hole in the candles) leave them None — never matches.
+    *features.STRUCTURE_MINTABLE_NUMERIC_COLUMNS,
 })
 _REGIME_VALUES = frozenset({"TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOLATILITY",
                             "LOW_VOLATILITY", "UNCLEAR"})
@@ -189,6 +200,10 @@ CATEGORICAL_FEATURES: dict[str, frozenset[str]] = {
     "day_type": features.DAY_TYPE_VALUES,
     # The market proxy's regime, from the same classifier — so the same closed vocabulary.
     "ref_market_regime": _REGIME_VALUES,
+    # What this bar's close broke, if anything: with the structure's state (BOS_*) or against it
+    # (CHOCH_*). The one structure label a family reads — it is the only thing that tells the two
+    # kinds of break apart, which the signed size cannot.
+    **features.STRUCTURE_MINTABLE_LABELS,
 }
 _NUMERIC_COMPARISONS = frozenset({">", ">=", "<", "<=", "==", "!="})
 _CATEGORICAL_COMPARISONS = frozenset({"==", "!="})
@@ -1054,6 +1069,122 @@ def _volatility_squeeze_short_entry(p: dict) -> list[dict]:
     ]
 
 
+# --- price structure --------------------------------------------------------------------------
+#
+# Four pairs on the structure columns (`features._structure_columns`), every choice Thomas's of
+# 2026-11-25 and recorded in `docs/history/2026-11-26-structure-families.md`:
+#
+# - `structure_follow_bos_*`   — a close through the live swing level WITH the structure's state;
+# - `structure_follow_choch_*` — the same close AGAINST the state (the first break the other way);
+# - `structure_fade_*`         — any such close, taken the other way;
+# - `fvg_return_*`             — a bar coming back to an untouched three-bar gap, entered in the
+#                                gap's direction.
+#
+# **No measured edge stands behind any of them.** The survey found no after-cost evidence for
+# these concepts (history file); they are in because Thomas chose to put them in front of the
+# factory's own yardstick — coin-flip twin, holdout, forward cohort — rather than argue it on
+# paper. Nothing here predicts they pass.
+#
+# **Follow and fade OVERLAP, on purpose.** A break up of at least `break_atr_min` matches
+# `structure_follow_*_long` and `structure_fade_short` on the same row. That is the point: the
+# evidence on whether a break continues or reverses is mixed, so both readings of the SAME event
+# are minted and each is judged against its own twin. It is `funding_momentum_*` beside
+# `funding_fade_*` (overlapping, opposite sides, 2026-08-08), and it is NOT what retired
+# `xs_momentum_*` on 2026-08-04 — that pair fired on the identical condition as `xs_reversion_*`
+# at every draw. The cost is known and accepted: where both sides of one context are in the 1h
+# pool, a bar they split on is `BLOCK_STRATEGY_DIRECTION_CONFLICT` until one side has positive
+# realized evidence (`paper.route_entries`), and at 4h/1d the pool does not admit a direction
+# split in one context at all (`pool_admission`). Each strategy's own forward stream settles
+# regardless, so the factory's judgement of either side is untouched.
+#
+# `break_atr_min` is ONE range and base for all three break pairs, the `funding_z_min` argument:
+# at the same draw, fade is the mirror of the two follow families together, so a difference in
+# outcome is not a difference in threshold. Two things do differ and are stated rather than
+# hidden. The fade pair mints from the fade exit space and the follow pairs from the trend
+# space, like every fade and continuation family here, so a gap between them is direction AND
+# geometry. And fade reads the signed size alone: it also takes the first break of a frame,
+# which carries a size but no label yet because the state it would be judged against is not
+# known (`features`, the start-cut rule) — one bar per unbroken run of candles.
+#
+# Within a pair the long and the short cannot share a row: the labels are different values of
+# one column and the sizes have opposite signs.
+#
+# No lag anywhere: every condition is an EVENT, true on the bar it happens and on no other, so
+# there is no state to re-fire on (`strategy.PREVIOUS_BAR_PREFIX`).
+def _structure_follow_bos_long_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "structure_break", "comparison": "==", "value": "BOS_UP"},
+        {"feature": "structure_break_atr", "comparison": ">=", "value": p["break_atr_min"]},
+    ]
+
+
+def _structure_follow_bos_short_entry(p: dict) -> list[dict]:
+    # The sign on the VALUE, not on the comparison's range — one `ParamSpec` describes both legs.
+    return [
+        {"feature": "structure_break", "comparison": "==", "value": "BOS_DOWN"},
+        {"feature": "structure_break_atr", "comparison": "<=", "value": -p["break_atr_min"]},
+    ]
+
+
+def _structure_follow_choch_long_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "structure_break", "comparison": "==", "value": "CHOCH_UP"},
+        {"feature": "structure_break_atr", "comparison": ">=", "value": p["break_atr_min"]},
+    ]
+
+
+def _structure_follow_choch_short_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "structure_break", "comparison": "==", "value": "CHOCH_DOWN"},
+        {"feature": "structure_break_atr", "comparison": "<=", "value": -p["break_atr_min"]},
+    ]
+
+
+def _structure_fade_long_entry(p: dict) -> list[dict]:
+    # A close DOWN through the live swing low, bought. One condition is the whole claim: the size
+    # is 0.0 on a bar with no break and the floor of `break_atr_min` is above zero, so the sign
+    # alone says a level was broken and which one.
+    return [
+        {"feature": "structure_break_atr", "comparison": "<=", "value": -p["break_atr_min"]},
+    ]
+
+
+def _structure_fade_short_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "structure_break_atr", "comparison": ">=", "value": p["break_atr_min"]},
+    ]
+
+
+def _fvg_return_long_entry(p: dict) -> list[dict]:
+    # This bar came back down to the near edge of an untouched UP gap at least `fvg_atr_min` wide
+    # (in ATR, at the bar the gap formed). One condition for the reason above: an up band's size
+    # is positive, a down band's negative, no touch is 0.0 — the label would say nothing more.
+    #
+    # Trend exit space, the `trend_pullback` / `htf_pullback` precedent: the entry is a pullback
+    # and the claim is that the move the gap was part of resumes.
+    return [
+        {"feature": "fvg_touch_size_atr", "comparison": ">=", "value": p["fvg_atr_min"]},
+    ]
+
+
+def _fvg_return_short_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "fvg_touch_size_atr", "comparison": "<=", "value": -p["fvg_atr_min"]},
+    ]
+
+
+# One threshold space for the three break pairs and one for the gap pair, each floored strictly
+# above zero (see the vocabulary note: both sizes are 0.0 on a bar with no event, so a threshold
+# at zero is every quiet bar). 0.05 ATR is that floor and not a finding. The ceiling of one ATR
+# and the base of 0.3 were written before any bar was read and are not tuned to one: a break or
+# a gap wider than the bar's own typical range is rare by construction, and where on [0.05, 1]
+# the events thin out past judging is for the search to find.
+_STRUCTURE_BREAK_SPACE = {"break_atr_min": ParamSpec(0.05, 1.0)}
+_STRUCTURE_BREAK_BASE = {"break_atr_min": 0.3}
+_FVG_RETURN_SPACE = {"fvg_atr_min": ParamSpec(0.05, 1.0)}
+_FVG_RETURN_BASE = {"fvg_atr_min": 0.3}
+
+
 TEMPLATES: tuple[StrategyTemplate, ...] = (
     # The crossover pairs lead, so a reader meets the one structural addition first.
     StrategyTemplate("ma_cross_up", "long", "1h",
@@ -1298,6 +1429,33 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
     # `volatility_squeeze_long` / `_short` are RETIRED from the rotation — 2026-08-02. Their
     # builders are kept below and re-listing them here is the whole of re-enabling; see
     # RETIRED_FAMILIES for the measurement and for what would justify it.
+    #
+    # Price structure (Thomas 2026-11-25) — appended, so every earlier family keeps its place in
+    # the rotation. Minted at 1h, 4h and 1d only: see STRUCTURE_FAMILIES.
+    StrategyTemplate("structure_follow_bos_long", "long", "1h",
+                     {**_STRUCTURE_BREAK_SPACE, **_EXIT_PARAMS},
+                     {**_STRUCTURE_BREAK_BASE, **_EXIT_BASE}, _structure_follow_bos_long_entry),
+    StrategyTemplate("structure_follow_bos_short", "short", "1h",
+                     {**_STRUCTURE_BREAK_SPACE, **_EXIT_PARAMS},
+                     {**_STRUCTURE_BREAK_BASE, **_EXIT_BASE}, _structure_follow_bos_short_entry),
+    StrategyTemplate("structure_follow_choch_long", "long", "1h",
+                     {**_STRUCTURE_BREAK_SPACE, **_EXIT_PARAMS},
+                     {**_STRUCTURE_BREAK_BASE, **_EXIT_BASE}, _structure_follow_choch_long_entry),
+    StrategyTemplate("structure_follow_choch_short", "short", "1h",
+                     {**_STRUCTURE_BREAK_SPACE, **_EXIT_PARAMS},
+                     {**_STRUCTURE_BREAK_BASE, **_EXIT_BASE}, _structure_follow_choch_short_entry),
+    StrategyTemplate("structure_fade_long", "long", "1h",
+                     {**_STRUCTURE_BREAK_SPACE, **_FADE_EXIT_PARAMS},
+                     {**_STRUCTURE_BREAK_BASE, **_FADE_EXIT_BASE}, _structure_fade_long_entry),
+    StrategyTemplate("structure_fade_short", "short", "1h",
+                     {**_STRUCTURE_BREAK_SPACE, **_FADE_EXIT_PARAMS},
+                     {**_STRUCTURE_BREAK_BASE, **_FADE_EXIT_BASE}, _structure_fade_short_entry),
+    StrategyTemplate("fvg_return_long", "long", "1h",
+                     {**_FVG_RETURN_SPACE, **_EXIT_PARAMS},
+                     {**_FVG_RETURN_BASE, **_EXIT_BASE}, _fvg_return_long_entry),
+    StrategyTemplate("fvg_return_short", "short", "1h",
+                     {**_FVG_RETURN_SPACE, **_EXIT_PARAMS},
+                     {**_FVG_RETURN_BASE, **_EXIT_BASE}, _fvg_return_short_entry),
 )
 
 # Families whose builders exist and which are deliberately NOT minted.
@@ -1456,6 +1614,20 @@ CROSS_SECTION_FAMILIES = frozenset({"xs_reversion_long", "xs_reversion_short"})
 # minting a new family is research the review-D3 pause holds until 2027-03-22. The factory now gets
 # `positioning_store.mint_eligible`, which is coverage AND `positioning_store.MINTING_DECIDED`.
 POSITIONING_FAMILIES = frozenset({"positioning_divergence_long", "positioning_divergence_short"})
+
+# Families whose entry rules read the price-structure columns — minted at the three timeframes
+# Thomas named (2026-11-25: 1h, 4h and 1d) and at no other. The columns themselves exist at every
+# timeframe; this is a statement of what was decided, not of what the data can supply. 15m is
+# authorable (`strategy.ALLOWED_TIMEFRAMES`) and was not asked for, and it is the rung where
+# friction eats the largest share of 1R (the `_GENERATION_SPACES` note), so widening this set is
+# a decision to record here rather than a default to inherit.
+STRUCTURE_FAMILIES = frozenset({
+    "structure_follow_bos_long", "structure_follow_bos_short",
+    "structure_follow_choch_long", "structure_follow_choch_short",
+    "structure_fade_long", "structure_fade_short",
+    "fvg_return_long", "fvg_return_short",
+})
+STRUCTURE_TIMEFRAMES = frozenset({"1h", "4h", "1d"})
 
 
 def template_features(template: StrategyTemplate) -> frozenset[str]:
@@ -1659,6 +1831,9 @@ def templates_for_timeframe(
     - the oi_* families need a derivative feed whose history reaches the replay window, which
       is pure arithmetic here rather than a parameter — see ``_oi_feed_reaches``.
 
+    The structure_* and fvg_* families are narrowed for a different reason: they are minted at
+    the timeframes Thomas named and nowhere else — see ``STRUCTURE_FAMILIES``.
+
     ``symbol=None`` keeps the reference families: a caller that does not say which symbol it
     is mining is asking for the library, not for a mintable set, and narrowing on a guess
     would silently hide families from whoever asked. The cross-sectional gate needs no such
@@ -1720,6 +1895,8 @@ def templates_for_timeframe(
             return False
         if template.family in FUNDING_FAMILIES and not has_funding_history:
             return False
+        if template.family in STRUCTURE_FAMILIES and timeframe not in STRUCTURE_TIMEFRAMES:
+            return False
         # Whole-family, not per-condition: a template is one premise, and one it can state
         # only half of is a different premise nobody chose to mine.
         if not template_features(template) <= mintable:
@@ -1776,6 +1953,8 @@ _FEATURE_FEED: dict[str, str] = {
         # than swept in from `CATEGORICAL_FEATURES`, because a future categorical need not be
         # candle-derived — a funding or positioning REGIME would be a label over a feed.
         "market_regime", "htf_market_regime", "ref_market_regime", "session", "day_type",
+        # Swings, breaks and three-bar gaps: a pure function of this symbol's own candles.
+        "structure_break", "structure_break_atr", "fvg_touch_size_atr",
     )},
     "funding_rate": market_data.FEED_FUNDING,
     "funding_zscore": market_data.FEED_FUNDING,

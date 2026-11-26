@@ -11,6 +11,7 @@ from __future__ import annotations
 import functools
 import math
 import random
+import re
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -222,34 +223,45 @@ def test_the_labels_stay_inside_their_closed_vocabularies():
     assert {"BOS_UP", "BOS_DOWN", "CHOCH_UP", "CHOCH_DOWN", "NONE"} <= breaks       # the walk exercises all five
 
 
-# --- evidence only ----------------------------------------------------------------------------
+# --- evidence only: the six columns no family reads ------------------------------------------
+# Three columns became mintable with the structure families (Thomas 2026-11-25); those are pinned in
+# `test_mvp_runtime_crypto_structure_families.py`. What stays true here is the other six.
 
-def test_nothing_the_factory_makes_can_read_a_structure_column():
+EVIDENCE = features.STRUCTURE_EVIDENCE_COLUMNS
+
+
+def test_nothing_the_factory_makes_can_read_an_evidence_only_structure_column():
     """They ride on the row and nothing more: absent from both mintable vocabularies, so the validator
-    every generated spec, fusion child and proposed trial passes through refuses one that names a
-    structure column, as a condition's feature and as its ``value_from``. (An operator-imported spec
-    is not validated; that is true of every evidence column and is not what this pins.)"""
-    for column in COLUMNS:
+    every generated spec, fusion child and proposed trial passes through refuses one that names such a
+    column, as a condition's feature and as its ``value_from``. (An operator-imported spec is not
+    validated; that is true of every evidence column and is not what this pins.)"""
+    assert set(EVIDENCE) == {"swing_high_distance_atr", "swing_low_distance_atr", "structure_state",
+                             "fvg_size_atr", "fvg_touch", "fvg_touch_age_bars"}
+    for column in EVIDENCE:
         assert column not in template_space.NUMERIC_FEATURES, column
         assert column not in template_space.CATEGORICAL_FEATURES, column
     template = template_space.TEMPLATES[0]
     raw = generator.build_spec_dict(template, dict(template.base_params), strategy_id="strategy_test",
                                     generation_id="generation_test")
     for condition in (
-        {"feature": "structure_break_atr", "comparison": ">", "value": 0.5},
-        {"feature": "structure_break", "comparison": "==", "value": "BOS_UP"},
+        {"feature": "fvg_size_atr", "comparison": ">", "value": 0.5},
+        {"feature": "structure_state", "comparison": "==", "value": "UP"},
+        {"feature": "fvg_touch", "comparison": "==", "value": "UP_BAND"},
+        {"feature": "fvg_touch_age_bars", "comparison": ">=", "value": 3.0},
         {"feature": "close", "comparison": ">", "value_from": "swing_high_distance_atr"},
+        {"feature": "close", "comparison": ">", "value_from": "swing_low_distance_atr"},
     ):
         spec = StrategySpec.from_dict({**raw, "entry_rules": {"operator": "AND", "conditions": [condition]}})
         verdict = template_space.validate_strategy(spec)
         assert not verdict["approved_for_backtest"] and "BLOCK_UNKNOWN_FEATURE" in verdict["block_reasons"], condition
 
 
-def test_the_proposal_prompt_does_not_offer_a_structure_column():
-    """The model proposer is told the vocabulary it may use. It is not told about these."""
-    prompt = proposer.build_proposal_prompt(existing_families=[t.family for t in template_space.TEMPLATES])
-    assert "rsi" in prompt                       # the prompt does list the vocabulary
-    assert not [column for column in COLUMNS if column in prompt]
+def test_the_proposal_prompt_does_not_offer_an_evidence_only_structure_column():
+    """The model proposer is told the vocabulary it may use. It is not told about these six."""
+    prompt = proposer.build_proposal_prompt(existing_families=[])
+    named = set(re.findall(r"[a-z0-9_]+", prompt))        # whole names: `fvg_touch` is inside `fvg_touch_size_atr`
+    assert "rsi" in named                        # the prompt does list the vocabulary
+    assert not (set(EVIDENCE) & named)
 
 
 def test_every_row_carries_the_columns_and_their_previous_bar():

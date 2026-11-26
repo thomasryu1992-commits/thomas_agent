@@ -47,6 +47,7 @@
 | 포지셔닝 괴리 | 주요 6종목, 1h | 진입 기준 미달, 계열을 닫음 | `POSITIONING_DIVERGENCE_V0.1` |
 | 시세에서 진입 신호 찾기(재현 장치) | 5종목 + 처음 보는 5종목 | 미확인 두 번, 닫음 | `HISTORICAL_FORWARD_REPLAY_V0.1`, `HISTORICAL_FORWARD_REPLAY_HELDOUT_V0.1`, `PRE_WINDOW_REPLAY_V0.1` |
 | 국면 판별과 국면별 전략 36개 | 상위 30 | 확인 0 | `CRYPTO_REGIME_STRATEGY_SET_V0.1`, `CRYPTO_REGIME_STRATEGY_SET_V0.2` |
+| 가격 구조 계열 네 쌍: 스윙 수준의 넘음을 따라 듦(BOS, CHoCH), 넘음을 거슬러 듦, 세 봉의 안 겹침(FVG)으로 되돌아옴. **사전 예상: 통과 3%** | factory의 종목, 1h·4h·1d | 결과 없음(2026-11-26에 틀 목록에 더함). 양식의 1 – 3번 줄을 근거로 채우지 못했고, 올린 것은 Thomas의 결정이다. factory의 잣대로 판정한다 | `docs/history/2026-11-26-structure-families.md` |
 
 ### 3.2 여러 종목, 횡단면 바스켓 (연구 경로)
 

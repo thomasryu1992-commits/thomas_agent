@@ -85,6 +85,10 @@ ECONOMIC_FAMILY_MARKERS: tuple[tuple[str, str], ...] = (
     ("volatility_squeeze", "volatility_compression"), ("bollinger_break", "breakout(bollinger)"),
     ("breakout", "breakout"), ("breakdown", "breakout"), ("mean_reversion", "mean_reversion"),
     ("trend_pullback", "trend_following"), ("ma_cross", "trend_following"), ("macd", "momentum"),
+    # Thomas 2026-11-25: three cells for the price-structure families, appended so no earlier
+    # label changes cell. Follow and fade stay apart because their signs can be opposite.
+    ("structure_follow", "structure(follow)"), ("structure_fade", "structure(fade)"),
+    ("fvg_", "gap(fvg)"),
 )
 EXPERIMENTAL = "mined/experimental"
 FUSED = "hybrid(fused)"

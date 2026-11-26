@@ -2986,6 +2986,10 @@ def test_binance_mints_every_template():
             t.family for t in factory.TEMPLATES
             if t.family not in template_space.POSITIONING_FAMILIES
         }
+        # The structure families are narrowed by TIMEFRAME, by decision (1h, 4h, 1d), which is
+        # not the venue gate this pins: at 15m they are absent on every venue.
+        if timeframe not in template_space.STRUCTURE_TIMEFRAMES:
+            unscoped_families -= template_space.STRUCTURE_FAMILIES
         assert {t.family for t in scoped} >= unscoped_families - template_space.HTF_FAMILIES
 
 
@@ -3142,6 +3146,9 @@ _FADE_FAMILIES = frozenset({
     # unwinds, which is the whole rule this split encodes.
     "htf_reversal_long", "htf_reversal_short",
     "taker_flow_fade_long", "taker_flow_fade_short",
+    # 2026-11-26. A close through a swing level, taken the other way: complete when price is back
+    # inside the level. Its follow siblings and the gap pair mint from the trend space.
+    "structure_fade_long", "structure_fade_short",
 })
 
 
@@ -4372,13 +4379,19 @@ def _families_walked(symbol, timeframe, *, fires, kept, start_rule):
 
 
 def test_a_shortfall_keeping_half_its_slice_still_reaches_every_family_of_btc_1h():
-    """BTCUSDT 1h has 40 families, so the batch walks one parity of slices and the shortfall the other. Keeping
-    the slice's head every fire cut ten families off for good; turning the start per visit reaches them all."""
+    """BTCUSDT 1h has a multiple of eight families (40 when this was found, 48 since the structure pairs of
+    2026-11-26), so the batch walks one parity of slices and the shortfall the other. Keeping the slice's head
+    every fire cut a quarter of the library off for good; turning the start per visit reaches them all.
+
+    The fire count is the library's slice count, not a literal: each shortfall slice needs two visits to be
+    seen whole at ``kept=2``, and that is one fire per slice of four. A literal 10 was right for 40 families and
+    stopped two slices short at 48 — the rule had lost nothing, the walk was just not finished."""
     library = {t.family for t in template_space.templates_for_timeframe("1h", symbol="BTCUSDT")}
     assert len(library) % 8 == 0, "the fixture must be a library where the old rule loses families"
-    _, head_only = _families_walked("BTCUSDT", "1h", fires=10, kept=2, start_rule=lambda *a: 0)
+    fires = len(library) // 4
+    _, head_only = _families_walked("BTCUSDT", "1h", fires=fires, kept=2, start_rule=lambda *a: 0)
     assert library - head_only, "the head-only rule must lose families here, or this test proves nothing"
-    _, turned = _families_walked("BTCUSDT", "1h", fires=10, kept=2, start_rule=shortfall_slice_start)
+    _, turned = _families_walked("BTCUSDT", "1h", fires=fires, kept=2, start_rule=shortfall_slice_start)
     assert turned == library
 
 
