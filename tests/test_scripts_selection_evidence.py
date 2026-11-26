@@ -155,7 +155,11 @@ def test_the_family_grouping_is_frozen_until_thomas_changes_it():
     # Moved once, Thomas 2026-11-25 (before the 2027-03-22 boundary): three markers appended for the
     # price-structure families — structure(follow), structure(fade), gap(fvg). Recorded in
     # docs/history/2026-11-26-structure-families.md and SELECTION_EVIDENCE_V0.1. Was 5c73cbd9…b2dcb8.
-    assert se.family_markers_sha256() == "16cadabf10fe45229e35e4470b80d1a7ab362bdfdebed115e8ac7259e7bc4202"
+    #
+    # Moved again, Thomas 2026-11-26 ("예, 선례대로", before the boundary): one marker appended for the
+    # order-block pair — zone(order_block). Recorded in docs/history/2026-11-26-order-block-family.md
+    # and SELECTION_EVIDENCE_V0.1. Was 16cadabf…bc4202.
+    assert se.family_markers_sha256() == "aba353d8b3c6940950d3f3c7799168ef57b90644da86160093440eac2af80de5"
 
 
 def test_the_structure_markers_added_three_cells_and_moved_no_earlier_label():
@@ -166,8 +170,8 @@ def test_the_structure_markers_added_three_cells_and_moved_no_earlier_label():
 
     added = (("structure_follow", "structure(follow)"), ("structure_fade", "structure(fade)"),
              ("fvg_", "gap(fvg)"))
-    assert se.ECONOMIC_FAMILY_MARKERS[-3:] == added
-    before = se.ECONOMIC_FAMILY_MARKERS[:-3]
+    assert se.ECONOMIC_FAMILY_MARKERS[-4:-1] == added
+    before = se.ECONOMIC_FAMILY_MARKERS[:-4]
 
     def classified_before(label):
         return next((family for marker, family in before if marker in label), "other:" + label)
@@ -177,12 +181,31 @@ def test_the_structure_markers_added_three_cells_and_moved_no_earlier_label():
     assert moved == set(template_space.STRUCTURE_FAMILIES)
     assert {name: se.economic_family(name) for name in sorted(moved)} == {
         "fvg_return_long": "gap(fvg)", "fvg_return_short": "gap(fvg)",
+        "order_block_return_long": "zone(order_block)", "order_block_return_short": "zone(order_block)",
         "structure_fade_long": "structure(fade)", "structure_fade_short": "structure(fade)",
         "structure_follow_bos_long": "structure(follow)", "structure_follow_bos_short": "structure(follow)",
         "structure_follow_choch_long": "structure(follow)", "structure_follow_choch_short": "structure(follow)",
     }
     # a fused or mined label is decided before the table is read, as it was
     assert se.economic_family("breakout+structure_fade_long") == se.FUSED
+
+
+def test_the_order_block_marker_added_one_cell_and_moved_no_earlier_label():
+    """The 2026-11-26 change is an APPEND of one marker. Called with and without it, over every family
+    the library has ever held: only the two order-block names change cell, and they land in the new one."""
+    from runtime.mvp_runtime.crypto import template_space
+
+    assert se.ECONOMIC_FAMILY_MARKERS[-1] == ("order_block", "zone(order_block)")
+    before = se.ECONOMIC_FAMILY_MARKERS[:-1]
+
+    def classified_before(label):
+        return next((family for marker, family in before if marker in label), "other:" + label)
+
+    names = sorted({t.family for t in template_space.TEMPLATES} | set(template_space.RETIRED_FAMILIES))
+    moved = {name: se.economic_family(name) for name in names if se.economic_family(name) != classified_before(name)}
+    assert moved == {"order_block_return_long": "zone(order_block)", "order_block_return_short": "zone(order_block)"}
+    assert "zone(order_block)" not in {family for _marker, family in before}
+    assert se.economic_family("order_block_return_long+fvg_return_long") == se.FUSED
 
 
 def test_holm_steps_down_and_stops_at_the_first_miss():
