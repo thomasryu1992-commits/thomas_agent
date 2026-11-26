@@ -229,17 +229,19 @@ DAY_TYPE_VALUES = frozenset({"WEEKDAY", "WEEKEND"})
 MAX_SESSION_BAR_MINUTES = 4 * 60
 
 # --- price structure: swings, breaks through them, three-bar gaps, order blocks, retracements ---
-# Four of the fifteen columns are mintable (the families that read them are in `template_space`,
+# Five of the fifteen columns are mintable (the families that read them are in `template_space`,
 # see `STRUCTURE_FAMILIES` there): the break label, the break's size and the touched band's size
-# since Thomas's 2026-11-25 decisions, the touched order block's size since 2026-11-26 —
-# `STRUCTURE_MINTABLE_NUMERIC_COLUMNS` and `STRUCTURE_MINTABLE_LABELS` below. The other eleven stay EVIDENCE ONLY: on the row, in neither
+# since Thomas's 2026-11-25 decisions, the touched order block's size and the retracement touch
+# since 2026-11-26 —
+# `STRUCTURE_MINTABLE_NUMERIC_COLUMNS` and `STRUCTURE_MINTABLE_LABELS` below. The other ten stay EVIDENCE ONLY: on the row, in neither
 # mintable vocabulary, so no template, generated spec, fusion child or proposed trial passes the
 # validator naming one. (A spec an operator imports is not validated and the evaluator reads
 # whatever a spec names, which is true of every evidence column on the row.) Admitting a column
-# is a decision of its own; no family reads those eleven, so nothing asked for them. Three of
+# is a decision of its own; no family reads those ten, so nothing asked for them. Three of
 # them are order-block columns (Thomas 2026-11-26, "예, 가까운 봉으로"; the fourth was admitted the
-# same day with the `order_block_return_*` pair, "예, 선례대로"), and two are the retracement
-# columns (Thomas 2026-11-26, "예, 구조 구간에 꼴 가로": evidence only).
+# same day with the `order_block_return_*` pair, "예, 선례대로"), and one is the structure leg's
+# size (Thomas 2026-11-26, "예, 구조 구간에 꼴 가로"; the touch beside it was admitted the same
+# day with the `fib_return_*` pair, "계열 한 쌍 더함").
 #
 # The definitions, the three constants and why each is what it is are written out in
 # `docs/history/2026-11-25-structure-columns.md`; the order block's in
@@ -296,10 +298,12 @@ STRUCTURE_COLUMNS = (
     *ORDER_BLOCK_COLUMNS,
     *FIB_COLUMNS,
 )
-# The mintable four. The three sizes are in ATR and signed by direction, and each is a real 0.0
-# on a bar with no event — so a threshold on any of them must stay strictly away from zero (the
-# `ParamSpec` floors in `template_space` do, and a test holds them to it).
-STRUCTURE_MINTABLE_NUMERIC_COLUMNS = ("structure_break_atr", "fvg_touch_size_atr", "order_block_touch_size_atr")
+# The mintable five. The three sizes are in ATR and signed by direction, the retracement touch
+# is a ratio signed by direction, and each is a real 0.0 on a bar with no event — so a threshold
+# on any of them must stay strictly away from zero (the `ParamSpec` floors in `template_space`
+# do, the retracement's levels are all above zero, and a test holds them to it).
+STRUCTURE_MINTABLE_NUMERIC_COLUMNS = ("structure_break_atr", "fvg_touch_size_atr", "order_block_touch_size_atr",
+                                      "fib_touch_ratio")
 STRUCTURE_MINTABLE_LABELS = {"structure_break": STRUCTURE_BREAK_VALUES}
 STRUCTURE_EVIDENCE_COLUMNS = tuple(
     column for column in STRUCTURE_COLUMNS
@@ -1471,7 +1475,7 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             # Positioning: who is HOLDING, from the store the runtime accumulates itself. The
             # only columns here that OHLCV cannot reproduce — see `_positioning_columns`.
             **{col: positioning[col][i] for col in POSITIONING_COLUMNS},
-            # Price structure — four mintable, eleven evidence only (see STRUCTURE_COLUMNS).
+            # Price structure — five mintable, ten evidence only (see STRUCTURE_COLUMNS).
             **{col: structure[col][i] for col in STRUCTURE_COLUMNS},
         }
         row["market_regime"] = classify_market_regime(row)

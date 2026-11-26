@@ -361,7 +361,8 @@ def test_the_four_columns_ride_on_the_row_and_exactly_one_is_mintable():
                        "order_block_touch_age_bars")
     assert set(EVIDENCE) <= set(features.STRUCTURE_EVIDENCE_COLUMNS) and len(EVIDENCE) == 3
     assert MINTABLE not in features.STRUCTURE_EVIDENCE_COLUMNS
-    assert features.STRUCTURE_MINTABLE_NUMERIC_COLUMNS == ("structure_break_atr", "fvg_touch_size_atr", MINTABLE)
+    assert MINTABLE in features.STRUCTURE_MINTABLE_NUMERIC_COLUMNS
+    assert not (set(EVIDENCE) & set(features.STRUCTURE_MINTABLE_NUMERIC_COLUMNS))
     assert set(features.STRUCTURE_MINTABLE_LABELS) == {"structure_break"}
     row = features.build_feature_rows({"candles": _ohlc_walk(51, 80)})[-1]
     for column in COLUMNS:

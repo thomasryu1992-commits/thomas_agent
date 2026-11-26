@@ -159,29 +159,46 @@ def test_the_family_grouping_is_frozen_until_thomas_changes_it():
     # Moved again, Thomas 2026-11-26 ("예, 선례대로", before the boundary): one marker appended for the
     # order-block pair — zone(order_block). Recorded in docs/history/2026-11-26-order-block-family.md
     # and SELECTION_EVIDENCE_V0.1. Was 16cadabf…bc4202.
-    assert se.family_markers_sha256() == "aba353d8b3c6940950d3f3c7799168ef57b90644da86160093440eac2af80de5"
+    #
+    # Moved a third time, Thomas 2026-11-26 ("예, 그렇게", before the boundary): one marker appended for
+    # the retracement pair — retrace(fib). Recorded in docs/history/2026-11-26-fib-return-family.md and
+    # SELECTION_EVIDENCE_V0.1. Was aba353d8…f80de5.
+    assert se.family_markers_sha256() == "1eda512dd7057c2643d97ed4937fafbf02d5e5ae318f0b9bcf2eeb09f0a99ce5"
+
+
+STRUCTURE_MARKERS = (("structure_follow", "structure(follow)"), ("structure_fade", "structure(fade)"),
+                     ("fvg_", "gap(fvg)"))
+ORDER_BLOCK_MARKER = ("order_block", "zone(order_block)")
+FIB_MARKER = ("fib_", "retrace(fib)")
+
+
+def _moved_by(added):
+    """Every family the library has ever held whose cell is different with ``added`` in the table than
+    without them, as ``{name: cell with them}``. Called on the classifier, first match wins as it does."""
+    from runtime.mvp_runtime.crypto import template_space
+
+    without = tuple(marker for marker in se.ECONOMIC_FAMILY_MARKERS if marker not in added)
+
+    def classified_without(label):
+        return next((family for marker, family in without if marker in label), "other:" + label)
+
+    names = sorted({t.family for t in template_space.TEMPLATES} | set(template_space.RETIRED_FAMILIES))
+    return {name: se.economic_family(name) for name in names if se.economic_family(name) != classified_without(name)}
+
+
+def test_every_marker_added_since_the_freeze_is_an_append_in_the_order_it_was_decided():
+    assert se.ECONOMIC_FAMILY_MARKERS[-5:] == (*STRUCTURE_MARKERS, ORDER_BLOCK_MARKER, FIB_MARKER)
+    cells = [family for _marker, family in se.ECONOMIC_FAMILY_MARKERS]
+    for _marker, family in (*STRUCTURE_MARKERS, ORDER_BLOCK_MARKER, FIB_MARKER):
+        assert cells.count(family) == 1                   # each is a new cell, not a second door to an old one
 
 
 def test_the_structure_markers_added_three_cells_and_moved_no_earlier_label():
     """The 2026-11-25 change is an APPEND. First match wins, so appended markers can only catch a label
     no earlier marker did — every label the table already placed stays where it was. Asserted by
     calling the classifier with and without the three, over every family the library has ever held."""
-    from runtime.mvp_runtime.crypto import template_space
-
-    added = (("structure_follow", "structure(follow)"), ("structure_fade", "structure(fade)"),
-             ("fvg_", "gap(fvg)"))
-    assert se.ECONOMIC_FAMILY_MARKERS[-4:-1] == added
-    before = se.ECONOMIC_FAMILY_MARKERS[:-4]
-
-    def classified_before(label):
-        return next((family for marker, family in before if marker in label), "other:" + label)
-
-    names = sorted({t.family for t in template_space.TEMPLATES} | set(template_space.RETIRED_FAMILIES))
-    moved = {name for name in names if se.economic_family(name) != classified_before(name)}
-    assert moved == set(template_space.STRUCTURE_FAMILIES)
-    assert {name: se.economic_family(name) for name in sorted(moved)} == {
+    assert _moved_by(STRUCTURE_MARKERS) == {
         "fvg_return_long": "gap(fvg)", "fvg_return_short": "gap(fvg)",
-        "order_block_return_long": "zone(order_block)", "order_block_return_short": "zone(order_block)",
         "structure_fade_long": "structure(fade)", "structure_fade_short": "structure(fade)",
         "structure_follow_bos_long": "structure(follow)", "structure_follow_bos_short": "structure(follow)",
         "structure_follow_choch_long": "structure(follow)", "structure_follow_choch_short": "structure(follow)",
@@ -191,21 +208,16 @@ def test_the_structure_markers_added_three_cells_and_moved_no_earlier_label():
 
 
 def test_the_order_block_marker_added_one_cell_and_moved_no_earlier_label():
-    """The 2026-11-26 change is an APPEND of one marker. Called with and without it, over every family
-    the library has ever held: only the two order-block names change cell, and they land in the new one."""
-    from runtime.mvp_runtime.crypto import template_space
-
-    assert se.ECONOMIC_FAMILY_MARKERS[-1] == ("order_block", "zone(order_block)")
-    before = se.ECONOMIC_FAMILY_MARKERS[:-1]
-
-    def classified_before(label):
-        return next((family for marker, family in before if marker in label), "other:" + label)
-
-    names = sorted({t.family for t in template_space.TEMPLATES} | set(template_space.RETIRED_FAMILIES))
-    moved = {name: se.economic_family(name) for name in names if se.economic_family(name) != classified_before(name)}
-    assert moved == {"order_block_return_long": "zone(order_block)", "order_block_return_short": "zone(order_block)"}
-    assert "zone(order_block)" not in {family for _marker, family in before}
+    """The first 2026-11-26 change: only the two order-block names change cell, into the new one."""
+    assert _moved_by((ORDER_BLOCK_MARKER,)) == {
+        "order_block_return_long": "zone(order_block)", "order_block_return_short": "zone(order_block)"}
     assert se.economic_family("order_block_return_long+fvg_return_long") == se.FUSED
+
+
+def test_the_retracement_marker_added_one_cell_and_moved_no_earlier_label():
+    """The second 2026-11-26 change: only the two retracement names change cell, into the new one."""
+    assert _moved_by((FIB_MARKER,)) == {"fib_return_long": "retrace(fib)", "fib_return_short": "retrace(fib)"}
+    assert se.economic_family("fib_return_long+fvg_return_long") == se.FUSED
 
 
 def test_holm_steps_down_and_stops_at_the_first_miss():

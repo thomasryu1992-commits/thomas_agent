@@ -174,8 +174,8 @@ NUMERIC_FEATURES = frozenset({
     # until the store's coverage says so. Membership gates what a spec MAY reference; the family
     # gate decides what gets built.
     *features.POSITIONING_NUMERIC_COLUMNS,
-    # Price structure (see features.STRUCTURE_COLUMNS; Thomas 2026-11-25 and 2026-11-26). Three of
-    # the fifteen: the size of a break through a swing level, the size of the three-bar gap a bar
+    # Price structure (see features.STRUCTURE_COLUMNS; Thomas 2026-11-25 and 2026-11-26). Four of
+    # the fifteen (the fourth is the retracement touch, a ratio rather than a size in ATR): the size of a break through a swing level, the size of the three-bar gap a bar
     # came back to and the size of the order block a bar came back to,
     # all in ATR and signed by direction — the normalized-only rule, so a mined threshold means
     # the same on every symbol and timeframe. Only what `STRUCTURE_FAMILIES` read is admitted; the
@@ -1087,6 +1087,13 @@ def _volatility_squeeze_short_entry(p: dict) -> list[dict]:
 #                                opposite-close bar before a break), entered in the break's
 #                                direction. Every value follows `fvg_return_*`.
 #
+# A sixth pair, Thomas 2026-11-26 ("계열 한 쌍 더함", then "예, 그렇게";
+# `docs/history/2026-11-26-fib-return-family.md`):
+#
+# - `fib_return_*`             — a bar coming back to 0.382, 0.5 or 0.618 of the structure leg,
+#                                entered in the leg's direction. Its threshold is one of those
+#                                three levels, drawn evenly; the rest follows `fvg_return_*`.
+#
 # **No measured edge stands behind any of them.** The survey found no after-cost evidence for
 # these concepts (history file); they are in because Thomas chose to put them in front of the
 # factory's own yardstick — coin-flip twin, holdout, forward cohort — rather than argue it on
@@ -1201,6 +1208,38 @@ def _order_block_return_short_entry(p: dict) -> list[dict]:
     ]
 
 
+def _fib_level(p: dict) -> float:
+    """The retracement level this spec waits for, chosen by the seeded draw.
+
+    `fib_touch_ratio` takes three values, so "touch >= r" has three meanings and no more: from
+    0.382, from 0.5, or 0.618 alone. A continuous threshold would mostly change nothing (every
+    value under 0.382 is the same spec's behaviour, and so is every value between two levels),
+    and one drawn above 0.618 could never fire. So the parameter is an index into the levels —
+    the `session_index` shape — and the literal on the condition is the level ITSELF, taken from
+    the same tuple the column is built from: the boundary is float equality, and a retyped number
+    is a different float."""
+    return features.FIB_RETRACE_LEVELS[int(p["fib_level_index"]) % len(features.FIB_RETRACE_LEVELS)]
+
+
+def _fib_return_long_entry(p: dict) -> list[dict]:
+    # This bar came back to the drawn level (or a deeper one) of an UP structure leg for the first
+    # time since the leg's end last moved. One condition, the `fvg_return` argument: an up leg's
+    # touch is positive, a down leg's negative, no touch is 0.0. Trend exit space for the same
+    # reason too: the entry is a pullback and the claim is that the leg resumes.
+    #
+    # Same side as `fvg_return_long` and `order_block_return_long` when one bar reaches more than
+    # one of the three; `paper.route_entries` takes one primary among them, so nothing stacks.
+    return [
+        {"feature": "fib_touch_ratio", "comparison": ">=", "value": _fib_level(p)},
+    ]
+
+
+def _fib_return_short_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "fib_touch_ratio", "comparison": "<=", "value": -_fib_level(p)},
+    ]
+
+
 # One threshold space for the three break pairs and one for the gap pair, each floored strictly
 # above zero (see the vocabulary note: both sizes are 0.0 on a bar with no event, so a threshold
 # at zero is every quiet bar). 0.05 ATR is that floor and not a finding. The ceiling of one ATR
@@ -1218,6 +1257,13 @@ _FVG_RETURN_BASE = {"fvg_atr_min": 0.3}
 # keeps a quiet bar's 0.0 out, which is what it is for; the range bites in its upper part.
 _ORDER_BLOCK_RETURN_SPACE = {"block_atr_min": ParamSpec(0.05, 1.0)}
 _ORDER_BLOCK_RETURN_BASE = {"block_atr_min": 0.3}
+# Thomas 2026-11-26 ("예, 그렇게"): one of the three levels, drawn EVENLY. `ordered=False` is what
+# makes the draw even (`mutate_params`): the levels do have an order, but an ordered integer over
+# [0, 2] is perturbed by a fraction of its range and rounded, which leaves it on its base. The
+# base is index 0 (from 0.382, the widest of the three); the draw does not read it.
+_FIB_RETURN_SPACE = {"fib_level_index": ParamSpec(0, len(features.FIB_RETRACE_LEVELS) - 1,
+                                                  integer=True, ordered=False)}
+_FIB_RETURN_BASE = {"fib_level_index": 0}
 
 
 TEMPLATES: tuple[StrategyTemplate, ...] = (
@@ -1498,6 +1544,13 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
     StrategyTemplate("order_block_return_short", "short", "1h",
                      {**_ORDER_BLOCK_RETURN_SPACE, **_EXIT_PARAMS},
                      {**_ORDER_BLOCK_RETURN_BASE, **_EXIT_BASE}, _order_block_return_short_entry),
+    # The retracement pair (Thomas 2026-11-26) — appended after the ten, same gate.
+    StrategyTemplate("fib_return_long", "long", "1h",
+                     {**_FIB_RETURN_SPACE, **_EXIT_PARAMS},
+                     {**_FIB_RETURN_BASE, **_EXIT_BASE}, _fib_return_long_entry),
+    StrategyTemplate("fib_return_short", "short", "1h",
+                     {**_FIB_RETURN_SPACE, **_EXIT_PARAMS},
+                     {**_FIB_RETURN_BASE, **_EXIT_BASE}, _fib_return_short_entry),
 )
 
 # Families whose builders exist and which are deliberately NOT minted.
@@ -1658,7 +1711,7 @@ CROSS_SECTION_FAMILIES = frozenset({"xs_reversion_long", "xs_reversion_short"})
 POSITIONING_FAMILIES = frozenset({"positioning_divergence_long", "positioning_divergence_short"})
 
 # Families whose entry rules read the price-structure columns — minted at the three timeframes
-# Thomas named (2026-11-25: 1h, 4h and 1d; the order-block pair of 2026-11-26 the same) and at no other. The columns themselves exist at every
+# Thomas named (2026-11-25: 1h, 4h and 1d; the order-block and retracement pairs of 2026-11-26 the same) and at no other. The columns themselves exist at every
 # timeframe; this is a statement of what was decided, not of what the data can supply. 15m is
 # authorable (`strategy.ALLOWED_TIMEFRAMES`) and was not asked for, and it is the rung where
 # friction eats the largest share of 1R (the `_GENERATION_SPACES` note), so widening this set is
@@ -1669,6 +1722,7 @@ STRUCTURE_FAMILIES = frozenset({
     "structure_fade_long", "structure_fade_short",
     "fvg_return_long", "fvg_return_short",
     "order_block_return_long", "order_block_return_short",
+    "fib_return_long", "fib_return_short",
 })
 STRUCTURE_TIMEFRAMES = frozenset({"1h", "4h", "1d"})
 
@@ -1996,8 +2050,10 @@ _FEATURE_FEED: dict[str, str] = {
         # than swept in from `CATEGORICAL_FEATURES`, because a future categorical need not be
         # candle-derived — a funding or positioning REGIME would be a label over a feed.
         "market_regime", "htf_market_regime", "ref_market_regime", "session", "day_type",
-        # Swings, breaks, three-bar gaps and order blocks: a pure function of this symbol's own candles.
+        # Swings, breaks, three-bar gaps, order blocks and retracements: a pure function of this
+        # symbol's own candles.
         "structure_break", "structure_break_atr", "fvg_touch_size_atr", "order_block_touch_size_atr",
+        "fib_touch_ratio",
     )},
     "funding_rate": market_data.FEED_FUNDING,
     "funding_zscore": market_data.FEED_FUNDING,

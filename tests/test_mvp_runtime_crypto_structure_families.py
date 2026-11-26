@@ -1,22 +1,24 @@
-"""The five price-structure pairs (Thomas 2026-11-25 and 2026-11-26): what they read, where they mint,
+"""The six price-structure pairs (Thomas 2026-11-25 and 2026-11-26): what they read, where they mint,
 how they meet.
 
-`structure_follow_bos_*`, `structure_follow_choch_*`, `structure_fade_*`, `fvg_return_*` and (since
-2026-11-26, "예, 선례대로") `order_block_return_*` read four of the fifteen structure columns
-(`features._structure_columns`). Pinned here, each by calling the thing:
+`structure_follow_bos_*`, `structure_follow_choch_*`, `structure_fade_*`, `fvg_return_*` and, since
+2026-11-26, `order_block_return_*` ("예, 선례대로") and `fib_return_*` ("계열 한 쌍 더함", "예, 그렇게")
+read five of the fifteen structure columns (`features._structure_columns`). Pinned here, each by calling
+the thing:
 
 - **where:** in the rotation at 1h, 4h and 1d and at no other timeframe, appended after every earlier
   family;
-- **what:** exactly four structure columns are mintable and the other eleven stay evidence only;
+- **what:** exactly five structure columns are mintable and the other ten stay evidence only;
 - **zero is not an event:** the size columns are a real 0.0 on a quiet bar, so no draw of any of the
-  ten may match a bar on which nothing happened, and none may match on an absent column;
+  twelve may match a bar on which nothing happened, and none may match on an absent column;
 - **the pairs:** long and short of one pair never share a row; follow and fade DO, by decision, and
   fade is the mirror of the two follow families together at the same draw; the order-block pair and
   the gap pair can enter the SAME side on one bar, and the router then takes one of them;
 - **the path:** each fires on rows built from candles and closes trades in the replay.
 
 The definitions and the reasons live in `docs/history/2026-11-26-structure-families.md` and, for the
-fifth pair, `docs/history/2026-11-26-order-block-family.md`.
+fifth and sixth pairs, `docs/history/2026-11-26-order-block-family.md` and
+`docs/history/2026-11-26-fib-return-family.md`.
 """
 
 from __future__ import annotations
@@ -38,10 +40,13 @@ PAIRS = (
     ("structure_fade_long", "structure_fade_short"),
     ("fvg_return_long", "fvg_return_short"),
     ("order_block_return_long", "order_block_return_short"),
+    ("fib_return_long", "fib_return_short"),
 )
 THRESHOLD = {family: ("fvg_atr_min" if family.startswith("fvg_") else
-                      "block_atr_min" if family.startswith("order_block_") else "break_atr_min")
+                      "block_atr_min" if family.startswith("order_block_") else
+                      "fib_level_index" if family.startswith("fib_") else "break_atr_min")
              for family in FAMILIES}
+INDEXED = {family for family in FAMILIES if THRESHOLD[family] == "fib_level_index"}   # a level, not a range
 MINTABLE = (*features.STRUCTURE_MINTABLE_NUMERIC_COLUMNS, *features.STRUCTURE_MINTABLE_LABELS)
 T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -58,8 +63,11 @@ def _spec(family, **overrides):
 
 
 def _draws(family):
-    """The spec at the floor, the base and the ceiling of its one threshold."""
+    """The spec at the floor, the base and the ceiling of its one threshold; for the retracement pair,
+    whose threshold is one of three levels, the spec at each of the three."""
     space = _template(family).param_space[THRESHOLD[family]]
+    if family in INDEXED:
+        return [_spec(family, fib_level_index=index) for index in range(int(space.lo), int(space.hi) + 1)]
     return [_spec(family, **{THRESHOLD[family]: value})
             for value in (space.lo, _template(family).base_params[THRESHOLD[family]], space.hi)]
 
@@ -108,12 +116,13 @@ def test_no_structure_family_is_minted_at_a_timeframe_nobody_decided():
     assert not (fast & FAMILIES)
 
 
-def test_the_ten_are_appended_so_every_earlier_family_keeps_its_place():
+def test_the_twelve_are_appended_so_every_earlier_family_keeps_its_place():
     families = [t.family for t in template_space.TEMPLATES]
-    assert set(families[-10:]) == FAMILIES and len(FAMILIES) == 10
-    assert not (set(families[:-10]) & FAMILIES)
-    # the order-block pair came after the eight, so the eight kept their places too
-    assert families[-2:] == ["order_block_return_long", "order_block_return_short"]
+    assert set(families[-12:]) == FAMILIES and len(FAMILIES) == 12
+    assert not (set(families[:-12]) & FAMILIES)
+    # each later pair came after the ones before it, so those kept their places too
+    assert families[-4:] == ["order_block_return_long", "order_block_return_short",
+                             "fib_return_long", "fib_return_short"]
     assert not (FAMILIES & template_space.RETIRED_FAMILIES)
     for long_name, short_name in PAIRS:
         assert _template(long_name).direction == "long" and _template(short_name).direction == "short"
@@ -128,10 +137,11 @@ def test_the_hold_is_capped_at_1d_like_every_other_trend_space_family():
 
 # --- what they may read -----------------------------------------------------------------------
 
-def test_exactly_four_structure_columns_are_mintable_and_they_are_the_ones_the_families_read():
+def test_exactly_five_structure_columns_are_mintable_and_they_are_the_ones_the_families_read():
     vocabulary = set(template_space.NUMERIC_FEATURES) | set(template_space.CATEGORICAL_FEATURES)
     assert set(MINTABLE) == {"structure_break", "structure_break_atr", "fvg_touch_size_atr",
-                             "order_block_touch_size_atr"}
+                             "order_block_touch_size_atr", "fib_touch_ratio"}
+    assert template_space.template_features(_template("fib_return_long")) == {"fib_touch_ratio"}
     assert template_space.template_features(_template("order_block_return_long")) == {"order_block_touch_size_atr"}
     assert vocabulary & set(features.STRUCTURE_COLUMNS) == set(MINTABLE)
     assert set(features.STRUCTURE_EVIDENCE_COLUMNS) == set(features.STRUCTURE_COLUMNS) - set(MINTABLE)
@@ -149,7 +159,7 @@ def test_every_draw_of_every_family_passes_the_validator(family):
         assert verdict["approved_for_backtest"], (family, verdict["block_reasons"])
 
 
-def test_the_proposal_prompt_offers_the_mintable_four_and_not_the_other_eleven():
+def test_the_proposal_prompt_offers_the_mintable_five_and_not_the_other_ten():
     prompt = proposer.build_proposal_prompt(existing_families=[])
     named = set(re.findall(r"[a-z0-9_]+", prompt))        # whole names: `fvg_touch` is inside `fvg_touch_size_atr`
     assert set(MINTABLE) <= named
@@ -159,7 +169,7 @@ def test_the_proposal_prompt_offers_the_mintable_four_and_not_the_other_eleven()
 # --- zero is not an event, and absence is not a match -----------------------------------------
 
 QUIET = {"structure_break": "NONE", "structure_break_atr": 0.0, "fvg_touch_size_atr": 0.0,
-         "order_block_touch_size_atr": 0.0}
+         "order_block_touch_size_atr": 0.0, "fib_touch_ratio": 0.0}
 
 
 @pytest.mark.parametrize("family", sorted(FAMILIES))
@@ -169,8 +179,12 @@ def test_no_draw_matches_a_bar_on_which_nothing_happened(family):
     draw is silent on the quiet row. Each condition alone is silent too: the ablation lattice may keep
     a proper subset of a spec's conditions, and a subset must not become every bar."""
     space = _template(family).param_space[THRESHOLD[family]]
-    assert space.lo > 0.0
+    if family not in INDEXED:
+        assert space.lo > 0.0
     for spec in _draws(family):
+        # whatever the parameter is, every number the builder WROTE on a condition is away from zero
+        literals = [abs(c.value) for c in spec.entry_rules.conditions if isinstance(c.value, (int, float))]
+        assert literals and min(literals) > 0.0, (family, literals)
         assert evaluate_spec(spec, QUIET).matched is False
         results = evaluate_spec(spec, QUIET).condition_results
         assert all(result is False for result in results), (family, results)
@@ -189,6 +203,8 @@ def test_a_family_is_silent_when_a_column_it_reads_is_absent_or_empty(family):
         "fvg_return_short": {"fvg_touch_size_atr": -0.8},
         "order_block_return_long": {"order_block_touch_size_atr": 0.8},
         "order_block_return_short": {"order_block_touch_size_atr": -0.8},
+        "fib_return_long": {"fib_touch_ratio": 0.5},
+        "fib_return_short": {"fib_touch_ratio": -0.5},
     }[family]
     spec = _spec(family)
     assert evaluate_spec(spec, event).matched is True, "the condition never fires at all"
@@ -199,6 +215,7 @@ def test_a_family_is_silent_when_a_column_it_reads_is_absent_or_empty(family):
 
 # --- the pairs --------------------------------------------------------------------------------
 
+_FIB_VALUES = (*(sign * level for level in features.FIB_RETRACE_LEVELS for sign in (1, -1)), 0.0, None)
 BREAK_ROWS = [
     {"structure_break": label, "structure_break_atr": size, "fvg_touch_size_atr": gap,
      "order_block_touch_size_atr": block}
@@ -207,6 +224,8 @@ BREAK_ROWS = [
     for gap in (-2.0, -0.05, 0.0, 0.05, 2.0, None)
     for block in (-2.0, -0.05, 0.0, 0.05, 2.0, None)
 ]
+# The retracement touch takes every value it can, in turn (not a full product: only its own pair reads it).
+BREAK_ROWS = [{**row, "fib_touch_ratio": _FIB_VALUES[i % len(_FIB_VALUES)]} for i, row in enumerate(BREAK_ROWS)]
 
 
 @pytest.mark.parametrize("long_name,short_name", PAIRS)
@@ -291,6 +310,63 @@ def test_the_order_block_pair_carries_the_gap_pairs_range_base_and_exit_space_by
         assert exits == [name for name in gap.param_space if name != "fvg_atr_min"]
         assert all(block.param_space[name] is gap.param_space[name] for name in exits)
         assert all(block.base_params[name] == gap.base_params[name] for name in exits)
+
+
+# --- the retracement pair: a level, not a range ------------------------------------------------
+
+def test_the_retracement_threshold_is_one_of_three_levels_and_the_literal_is_the_level_itself(rows):
+    """`fib_touch_ratio` takes three values, so its threshold is an index into them. The number on the
+    condition is the very float the column carries, which matters: "touch >= 0.5" against a value of
+    exactly 0.5 is float equality at the boundary."""
+    space = _template("fib_return_long").param_space["fib_level_index"]
+    assert (space.lo, space.hi, space.integer, space.ordered) == (0, 2, True, False)
+    assert _template("fib_return_long").base_params["fib_level_index"] == 0
+    reaches = {0: {0.382, 0.5, 0.618}, 1: {0.5, 0.618}, 2: {0.618}}
+    for index, level in enumerate(features.FIB_RETRACE_LEVELS):
+        for side, sign in (("long", 1), ("short", -1)):
+            spec = _spec(f"fib_return_{side}", fib_level_index=index)
+            (condition,) = spec.entry_rules.conditions
+            assert condition.value == sign * level and abs(condition.value) in features.FIB_RETRACE_LEVELS
+            matched = _matches(spec, rows)
+            wanted = {i for i, row in enumerate(rows)
+                      if row["fib_touch_ratio"] is not None and sign * row["fib_touch_ratio"] in reaches[index]}
+            assert matched == wanted and matched, (side, index)
+
+
+def test_the_draw_visits_the_three_levels_evenly_and_an_ordered_index_would_not():
+    """Thomas 2026-11-26: one of the three, drawn EVENLY. The real draw function over the real template:
+    each level comes up about a third of the time. The same range declared ordered is perturbed around
+    its base and rounded, and stays on the base far more than a third of the time: that is why the
+    index is declared unordered although the levels do have an order."""
+    template = _template("fib_return_long")
+    rng = random.Random(20261126)
+    drawn = [int(generator.mutate_params(dict(template.base_params), template.param_space, rng)["fib_level_index"])
+             for _ in range(900)]
+    counts = {index: drawn.count(index) for index in (0, 1, 2)}
+    assert sum(counts.values()) == 900 and all(240 <= count <= 360 for count in counts.values()), counts
+    ordered = {**template.param_space, "fib_level_index": template_space.ParamSpec(0, 2, integer=True)}
+    rng = random.Random(20261126)
+    stuck = [int(generator.mutate_params(dict(template.base_params), ordered, rng)["fib_level_index"])
+             for _ in range(900)]
+    assert stuck.count(0) > 450, stuck.count(0)
+
+
+def test_the_retracement_pair_carries_the_gap_pairs_exit_space_by_decision():
+    for side in ("long", "short"):
+        pair, gap = _template(f"fib_return_{side}"), _template(f"fvg_return_{side}")
+        exits = [name for name in pair.param_space if name != "fib_level_index"]
+        assert exits == [name for name in gap.param_space if name != "fvg_atr_min"]
+        assert all(pair.param_space[name] is gap.param_space[name] for name in exits)
+        assert all(pair.base_params[name] == gap.base_params[name] for name in exits)
+
+
+def test_the_three_return_pairs_can_enter_the_same_side_on_one_bar():
+    """A bar that comes back to a gap, an order block and a retracement level at once is a long for all
+    three pairs. The router takes one of them (pinned above with two)."""
+    row = {**QUIET, "fvg_touch_size_atr": 0.8, "order_block_touch_size_atr": 0.8, "fib_touch_ratio": 0.5}
+    for family in ("fvg_return_long", "order_block_return_long", "fib_return_long"):
+        assert evaluate_spec(_spec(family), row).matched is True, family
+    assert evaluate_spec(_spec("fib_return_short"), row).matched is False
 
 
 def test_only_the_fade_pair_mints_from_the_fade_exit_space():
