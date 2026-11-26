@@ -411,12 +411,17 @@ def test_a_context_covers_its_library_when_generation_ids_stride():
     pair took the gcd from 12 to 2 and the four-pass contrast collapsed — the test said in its
     own failure message that this meant rewrite, so this is that rewrite. "Covers its library
     within one pass" is what the cursor actually promises and what an operator depends on;
-    "covers it eventually" is a coincidence of the library's size."""
-    symbol, timeframe, contexts = "ETHUSDT", "1h", 15
-    templates = templates_for_timeframe(timeframe, symbol=symbol)
-    runs = -(-len(templates) // 4)  # ceil: fires needed to cover the library once
+    "covers it eventually" is a coincidence of the library's size.
 
-    def families_over(fires, *, use_rotation_index):
+    **The contrast is asked of several libraries, for the same reason** (rewritten 2026-11-26, when
+    the order-block pair took ETHUSDT 1h to 52). At 52 families `gcd(15 * 4, 52)` is 4, the slice
+    width itself, so the strided generation number happens to tile that one library in a single
+    pass and the starvation half had nothing to show there. The cursor half is asserted on every
+    library below; the starvation half must show on at least one of them, or this test would pass
+    with the cursor ignored."""
+    contexts = 15
+
+    def families_over(symbol, timeframe, fires, *, use_rotation_index):
         seen = set()
         for fire in range(fires):
             generation = 695 + fire * contexts  # the global counter, strided
@@ -427,21 +432,29 @@ def test_a_context_covers_its_library_when_generation_ids_stride():
             seen.update(spec["strategy_family"] for spec in batch["specs"])
         return seen
 
-    # The cursor: one context covers its whole library in ceil(total/count) of its own fires.
-    covered = families_over(runs, use_rotation_index=True)
-    assert covered == {t.family for t in templates}, (
-        f"unreachable with the per-context cursor: {sorted({t.family for t in templates} - covered)}"
-    )
+    starved_somewhere = []
+    for symbol, timeframe in (("ETHUSDT", "1h"), ("BTCUSDT", "1h"), ("ETHUSDT", "1d"), ("BTCUSDT", "1d")):
+        templates = templates_for_timeframe(timeframe, symbol=symbol)
+        runs = -(-len(templates) // 4)  # ceil: fires needed to cover the library once
 
-    # The generation number, over the SAME fires: short of the library. Pinned as an inequality
-    # rather than an exact count — how far short depends on the stride arithmetic and moves
-    # whenever a family joins or leaves.
-    starved = families_over(runs, use_rotation_index=False)
-    assert len(starved) < len(templates), (
-        "the global generation number covered the whole library in one pass — if the rotation "
-        "arithmetic changed so this is now true, this test is measuring nothing and should be "
-        "rewritten (do NOT relax it to more passes: 'covers eventually' is a property of the "
-        "library's size, not of the cursor this exists to protect)"
+        # The cursor: one context covers its whole library in ceil(total/count) of its own fires.
+        covered = families_over(symbol, timeframe, runs, use_rotation_index=True)
+        assert covered == {t.family for t in templates}, (
+            f"{symbol} {timeframe}: unreachable with the per-context cursor: "
+            f"{sorted({t.family for t in templates} - covered)}"
+        )
+
+        # The generation number, over the SAME fires. Counted rather than asserted per library:
+        # how far short it falls depends on the stride arithmetic and moves whenever a family
+        # joins or leaves.
+        if len(families_over(symbol, timeframe, runs, use_rotation_index=False)) < len(templates):
+            starved_somewhere.append((symbol, timeframe))
+
+    assert starved_somewhere, (
+        "the global generation number covered every one of these libraries in one pass — if the "
+        "rotation arithmetic changed so this is now true, this test is measuring nothing and "
+        "should be rewritten (do NOT relax it to more passes: 'covers eventually' is a property "
+        "of the library's size, not of the cursor this exists to protect)"
     )
 
 
@@ -1563,7 +1576,6 @@ def test_scheduler_factory_fire_appends_candidates_and_ledgers(tmp_path):
     # here — the number this asserted before the shortfall draw existed — is now the reading
     # that would mean the fusion half of the budget had been discarded.
     # (mock collector data is fine for MINING, not for trading)
-    assert len(candidates) == 8
     assert summary["results"][0]["status"].startswith("generated=8/8 fused=0 topup=4 tilted=")
     # What ablation did rides the same line: the lattice spends replays with no cadence
     # change, and the status line is where that spend and its yield are legible per fire.
@@ -1572,6 +1584,18 @@ def test_scheduler_factory_fire_appends_candidates_and_ledgers(tmp_path):
     rows = [json.loads(line) for line in
             (tmp_path / LEDGER_REL / RECORDS_FILE).read_text(encoding="utf-8").splitlines()]
     assert any(r["kind"] == "crypto_factory" for r in rows)
+    # All eight drawn specs are stored, less the ones this fire's slice drew from families the MOCK's
+    # bars cannot feed: the mock ties its highs at every peak, a tie is no swing, and so every
+    # column that hangs on a swing is empty on it (`test_on_the_mocks_own_bars_the_break_column_is_
+    # empty_rather_than_invented`). Which families a first fire draws moves with the library's
+    # size; that a spec is lost ONLY for that reason does not.
+    rejected = [x for r in rows if r["kind"] == "crypto_factory" for x in r["record"]["rejected"]]
+    unfed = [x for x in rejected if "never supplies" in x.get("reason", "")]
+    swing_fed = {"structure_break", "structure_break_atr", "order_block_touch_size_atr"}
+    for x in unfed:
+        template = next(t for t in template_space.TEMPLATES if t.family == x["strategy_family"])
+        assert template_space.template_features(template) & swing_fed, x
+    assert candidates and len(candidates) == 8 - len(unfed)
 
 
 def test_scheduled_factory_fire_attempts_fusion_over_durable_parents(tmp_path, monkeypatch):
@@ -2258,10 +2282,18 @@ def test_the_shortfall_draw_takes_the_next_rotation_slice(tmp_path):
     context's cursor and the shortfall draw slice 2k+1, so what fusion hands back buys breadth —
     families this fire's batch did not draw — instead of a denser pass over the same ones."""
     control, result = _declined_fusion_runs(tmp_path)
-    this_slice = {c["strategy_spec"]["strategy_family"] for c in control["candidates"]}
+
+    def drew(run):
+        # Every family the fire drew a spec from, kept or not. The fixture has no peer candles, so a
+        # slice that lands on the cross-section pair stores nothing; counting only stored candidates
+        # would make this test depend on where the rotation happens to stand for this library size.
+        return ({c["strategy_spec"]["strategy_family"] for c in run["candidates"]}
+                | {x["strategy_family"] for x in run["rejected"]})
+
+    this_slice = drew(control)
     assert result["fused_count"] == 0 and len(result["candidates"]) > len(control["candidates"])
-    assert this_slice, "the control fire must actually mint something to compare against"
-    drawn = {c["strategy_spec"]["strategy_family"] for c in result["candidates"]}
+    assert this_slice, "the control fire must actually draw something to compare against"
+    drawn = drew(result)
     assert drawn - this_slice, "the shortfall must reach families outside this fire's own slice"
     assert this_slice <= drawn  # the batch itself is unchanged
 
@@ -4378,20 +4410,26 @@ def _families_walked(symbol, timeframe, *, fires, kept, start_rule):
     return total, seen
 
 
-def test_a_shortfall_keeping_half_its_slice_still_reaches_every_family_of_btc_1h():
-    """BTCUSDT 1h has a multiple of eight families (40 when this was found, 48 since the structure pairs of
-    2026-11-26), so the batch walks one parity of slices and the shortfall the other. Keeping the slice's head
-    every fire cut a quarter of the library off for good; turning the start per visit reaches them all.
+def test_a_shortfall_keeping_half_its_slice_still_reaches_every_family_of_a_library_of_eights():
+    """A library with a multiple of eight families walks one parity of slices with the batch and the other
+    with the shortfall. Keeping the slice's head every fire cut a quarter of the library off for good;
+    turning the start per visit reaches them all. Found on BTCUSDT 1h at 40 families; it was 48 after the
+    structure pairs and is 50 since the order-block pair (2026-11-26), so the fixture is whichever mined
+    context has a multiple of eight today (BTCUSDT 15m, 40), and it says so if none does.
 
     The fire count is the library's slice count, not a literal: each shortfall slice needs two visits to be
     seen whole at ``kept=2``, and that is one fire per slice of four. A literal 10 was right for 40 families and
     stopped two slices short at 48 — the rule had lost nothing, the walk was just not finished."""
-    library = {t.family for t in template_space.templates_for_timeframe("1h", symbol="BTCUSDT")}
-    assert len(library) % 8 == 0, "the fixture must be a library where the old rule loses families"
+    eights = [(symbol, timeframe) for timeframe in ("1h", "4h", "1d", "15m") for symbol in ("BTCUSDT", "ETHUSDT")
+              if len(template_space.templates_for_timeframe(timeframe, symbol=symbol)) % 8 == 0]
+    assert eights, ("no mined context has a multiple of eight families today; the offsets test below still "
+                    "covers the sizes, pick a fixture here when one returns")
+    symbol, timeframe = eights[0]
+    library = {t.family for t in template_space.templates_for_timeframe(timeframe, symbol=symbol)}
     fires = len(library) // 4
-    _, head_only = _families_walked("BTCUSDT", "1h", fires=fires, kept=2, start_rule=lambda *a: 0)
+    _, head_only = _families_walked(symbol, timeframe, fires=fires, kept=2, start_rule=lambda *a: 0)
     assert library - head_only, "the head-only rule must lose families here, or this test proves nothing"
-    _, turned = _families_walked("BTCUSDT", "1h", fires=fires, kept=2, start_rule=shortfall_slice_start)
+    _, turned = _families_walked(symbol, timeframe, fires=fires, kept=2, start_rule=shortfall_slice_start)
     assert turned == library
 
 

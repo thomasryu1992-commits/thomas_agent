@@ -19,7 +19,7 @@ import copy
 from datetime import datetime, timedelta, timezone
 
 from runtime.mvp_runtime import timeutil
-from runtime.mvp_runtime.crypto import pool, robustness
+from runtime.mvp_runtime.crypto import pool, robustness, template_space
 from runtime.mvp_runtime.crypto.factory import (
     ABLATION_MAX_CONDITIONS,
     ablate_hypothesis,
@@ -351,9 +351,19 @@ def test_the_mint_output_charges_by_its_own_blocks():
 # --- (g) the extra evidence key changes no ranking and no door -------------------------
 
 def test_the_ablation_block_is_inert_to_quality_backlog_and_the_store(tmp_path):
-    result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
-                         existing_candidates=[], now=NOW)
-    carrying = [c for c in result["candidates"] if "ablation" in c["backtest_evidence"]]
+    # The first fire whose slice mints through the lattice. Which slice a context's first fire draws
+    # moves whenever a family joins the library, and a slice of one-condition families (the structure
+    # and order-block pairs, since 2026-11-26) has nothing for the lattice to ablate. So the context
+    # is walked forward, each fire seeing the rows before it, for at most one pass of its library.
+    library = template_space.templates_for_timeframe("1d", symbol=_trending_snapshot()["symbol"])
+    seen: list[dict] = []
+    for _ in range(-(-len(library) // 4)):
+        result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                             existing_candidates=seen, now=NOW)
+        carrying = [c for c in result["candidates"] if "ablation" in c["backtest_evidence"]]
+        if carrying:
+            break
+        seen = seen + result["candidates"]
     assert carrying, "the fixture must mint through the lattice, or this asserts nothing"
     for candidate in carrying:
         stripped = copy.deepcopy(candidate)

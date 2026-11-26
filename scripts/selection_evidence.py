@@ -89,6 +89,8 @@ ECONOMIC_FAMILY_MARKERS: tuple[tuple[str, str], ...] = (
     # label changes cell. Follow and fade stay apart because their signs can be opposite.
     ("structure_follow", "structure(follow)"), ("structure_fade", "structure(fade)"),
     ("fvg_", "gap(fvg)"),
+    # Thomas 2026-11-26: one more cell, for the order-block pair, appended for the same reason.
+    ("order_block", "zone(order_block)"),
 )
 EXPERIMENTAL = "mined/experimental"
 FUSED = "hybrid(fused)"

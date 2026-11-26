@@ -1,10 +1,11 @@
-"""The order-block columns: the last opposite-close bar before a break, as a zone (evidence only).
+"""The order-block columns: the last opposite-close bar before a break, as a zone.
 
 Thomas 2026-11-26: "예, 가까운 봉으로". ``docs/history/2026-11-26-order-block-columns.md`` carries the
 definition. These tests pin what the four columns DO, each by building bars and reading the row: which
 bar becomes the block, when there is no zone, when a zone is touched and when it is gone, that a
-frame which starts later says the same thing or nothing, and that nothing the factory makes can read
-them. The nine columns that were there before are pinned in ``test_mvp_runtime_crypto_structure_columns``;
+frame which starts later says the same thing or nothing, and that the factory can read exactly one of
+them (the touched block's size, admitted with the `order_block_return_*` pair the same day, "예,
+선례대로"; the pair itself is pinned in ``test_mvp_runtime_crypto_structure_families``). The nine columns that were there before are pinned in ``test_mvp_runtime_crypto_structure_columns``;
 here only that an unreadable open leaves them alone. All bars are synthetic."""
 
 from __future__ import annotations
@@ -23,6 +24,8 @@ from runtime.mvp_runtime.crypto.strategy import StrategySpec
 K = features.STRUCTURE_SWING_BARS
 LIFE = features.FVG_BAND_LIFE_BARS
 COLUMNS = features.ORDER_BLOCK_COLUMNS
+MINTABLE = "order_block_touch_size_atr"                        # the one column a family reads
+EVIDENCE = tuple(column for column in COLUMNS if column != MINTABLE)
 T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 Bar = tuple[float, float, float, float]            # open, high, low, close
@@ -351,26 +354,29 @@ def test_the_label_stays_inside_its_closed_vocabulary_and_the_signs_agree():
             assert row["order_block_touch_size_atr"] == 0.0 and row["order_block_touch_age_bars"] == 0.0
 
 
-# --- evidence only ----------------------------------------------------------------------------
+# --- one column is mintable, three are evidence only -------------------------------------------
 
-def test_the_four_columns_ride_on_the_row_and_are_evidence_only():
+def test_the_four_columns_ride_on_the_row_and_exactly_one_is_mintable():
     assert COLUMNS == ("order_block_size_atr", "order_block_touch", "order_block_touch_size_atr",
                        "order_block_touch_age_bars")
-    assert set(COLUMNS) <= set(features.STRUCTURE_EVIDENCE_COLUMNS)
-    assert features.STRUCTURE_MINTABLE_NUMERIC_COLUMNS == ("structure_break_atr", "fvg_touch_size_atr")
+    assert set(EVIDENCE) <= set(features.STRUCTURE_EVIDENCE_COLUMNS) and len(EVIDENCE) == 3
+    assert MINTABLE not in features.STRUCTURE_EVIDENCE_COLUMNS
+    assert features.STRUCTURE_MINTABLE_NUMERIC_COLUMNS == ("structure_break_atr", "fvg_touch_size_atr", MINTABLE)
     assert set(features.STRUCTURE_MINTABLE_LABELS) == {"structure_break"}
     row = features.build_feature_rows({"candles": _ohlc_walk(51, 80)})[-1]
     for column in COLUMNS:
         assert column in row and f"{features.PREVIOUS_BAR_PREFIX}{column}" in row, column
 
 
-def test_nothing_the_factory_makes_can_read_an_order_block_column():
-    """Absent from both mintable vocabularies, so the validator every generated spec, fusion child and
-    proposed trial passes through refuses a spec naming one, as a feature and as a ``value_from``."""
-    for column in COLUMNS:
+def test_the_factory_can_read_the_touched_blocks_size_and_none_of_the_other_three():
+    """The three are absent from both mintable vocabularies, so the validator every generated spec,
+    fusion child and proposed trial passes through refuses a spec naming one, as a feature and as a
+    ``value_from``. The fourth is admitted, and a spec naming it passes."""
+    numeric, categorical = template_space.known_features("binance_futures")
+    assert MINTABLE in template_space.NUMERIC_FEATURES and MINTABLE in numeric
+    for column in EVIDENCE:
         assert column not in template_space.NUMERIC_FEATURES, column
         assert column not in template_space.CATEGORICAL_FEATURES, column
-        numeric, categorical = template_space.known_features("binance_futures")
         assert column not in numeric and column not in categorical, column
     template = template_space.TEMPLATES[0]
     raw = generator.build_spec_dict(template, dict(template.base_params), strategy_id="strategy_test",
@@ -378,26 +384,31 @@ def test_nothing_the_factory_makes_can_read_an_order_block_column():
     for condition in (
         {"feature": "order_block_size_atr", "comparison": ">", "value": 0.5},
         {"feature": "order_block_touch", "comparison": "==", "value": "UP_BLOCK"},
-        {"feature": "order_block_touch_size_atr", "comparison": ">=", "value": 0.3},
         {"feature": "order_block_touch_age_bars", "comparison": ">=", "value": 3.0},
-        {"feature": "close", "comparison": ">", "value_from": "order_block_touch_size_atr"},
+        {"feature": "close", "comparison": ">", "value_from": "order_block_size_atr"},
     ):
         spec = StrategySpec.from_dict({**raw, "entry_rules": {"operator": "AND", "conditions": [condition]}})
         verdict = template_space.validate_strategy(spec)
         assert not verdict["approved_for_backtest"] and "BLOCK_UNKNOWN_FEATURE" in verdict["block_reasons"], condition
+    admitted = StrategySpec.from_dict({**raw, "entry_rules": {"operator": "AND", "conditions": [
+        {"feature": MINTABLE, "comparison": ">=", "value": 0.3}]}})
+    assert "BLOCK_UNKNOWN_FEATURE" not in template_space.validate_strategy(admitted)["block_reasons"]
 
 
-def test_the_proposal_prompt_does_not_offer_an_order_block_column():
+def test_the_proposal_prompt_offers_exactly_one_order_block_column():
     prompt = proposer.build_proposal_prompt(existing_families=[])
     named = set(re.findall(r"[a-z0-9_]+", prompt))
-    assert "fvg_touch_size_atr" in named                 # the prompt does list the structure vocabulary
-    assert not (set(COLUMNS) & named)
+    assert set(COLUMNS) & named == {MINTABLE}
 
 
-def test_no_template_reads_an_order_block_column():
+def test_only_the_order_block_pair_reads_an_order_block_column_and_only_the_one():
+    readers = set()
     for template in template_space.TEMPLATES:
         raw = generator.build_spec_dict(template, dict(template.base_params), strategy_id="strategy_test",
                                         generation_id="generation_test")
         named = {c.get("feature") for c in raw["entry_rules"]["conditions"]} | {
             c.get("value_from") for c in raw["entry_rules"]["conditions"]}
-        assert not (named & set(COLUMNS)), template.family
+        assert not (named & set(EVIDENCE)), template.family
+        if MINTABLE in named:
+            readers.add(template.family)
+    assert readers == {"order_block_return_long", "order_block_return_short"}
