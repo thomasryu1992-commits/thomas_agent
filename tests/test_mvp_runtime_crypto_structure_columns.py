@@ -192,13 +192,14 @@ def test_a_hole_in_the_candles_restarts_the_run():
     full = _structure(candles)
     broken = [dict(c) for c in candles]
     broken[150]["high"] = None
+    opens = [c["open"] for c in broken]
     highs = [c["high"] for c in broken]
     lows = [c["low"] for c in broken]
     closes = [c["close"] for c in broken]
     atr = [row["atr"] for row in features.build_feature_rows({"candles": candles})]
-    out = features._structure_columns(highs, lows, closes, atr)
+    out = features._structure_columns(opens, highs, lows, closes, atr)
     assert all(out[col][150] is None for col in COLUMNS)
-    tail = features._structure_columns(highs[151:], lows[151:], closes[151:], atr[151:])
+    tail = features._structure_columns(opens[151:], highs[151:], lows[151:], closes[151:], atr[151:])
     for col in COLUMNS:
         for offset in range(0, 149, 7):
             value = out[col][151 + offset]
@@ -219,13 +220,16 @@ def test_the_labels_stay_inside_their_closed_vocabularies():
     assert {r["structure_state"] for r in rows} <= features.STRUCTURE_STATE_VALUES | {None}
     assert {r["structure_break"] for r in rows} <= features.STRUCTURE_BREAK_VALUES | {None}
     assert {r["fvg_touch"] for r in rows} <= features.FVG_TOUCH_VALUES | {None}
+    assert {r["order_block_touch"] for r in rows} <= features.ORDER_BLOCK_TOUCH_VALUES | {None}
     breaks = {r["structure_break"] for r in rows}
     assert {"BOS_UP", "BOS_DOWN", "CHOCH_UP", "CHOCH_DOWN", "NONE"} <= breaks       # the walk exercises all five
 
 
-# --- evidence only: the six columns no family reads ------------------------------------------
+# --- evidence only: the columns no family reads ----------------------------------------------
 # Three columns became mintable with the structure families (Thomas 2026-11-25); those are pinned in
-# `test_mvp_runtime_crypto_structure_families.py`. What stays true here is the other six.
+# `test_mvp_runtime_crypto_structure_families.py`. What stays true here is the other ten: the six below
+# and the four order-block columns (Thomas 2026-11-26), whose own refusals are pinned in
+# `test_mvp_runtime_crypto_order_block_columns.py`.
 
 EVIDENCE = features.STRUCTURE_EVIDENCE_COLUMNS
 
@@ -236,7 +240,7 @@ def test_nothing_the_factory_makes_can_read_an_evidence_only_structure_column():
     column, as a condition's feature and as its ``value_from``. (An operator-imported spec is not
     validated; that is true of every evidence column and is not what this pins.)"""
     assert set(EVIDENCE) == {"swing_high_distance_atr", "swing_low_distance_atr", "structure_state",
-                             "fvg_size_atr", "fvg_touch", "fvg_touch_age_bars"}
+                             "fvg_size_atr", "fvg_touch", "fvg_touch_age_bars", *features.ORDER_BLOCK_COLUMNS}
     for column in EVIDENCE:
         assert column not in template_space.NUMERIC_FEATURES, column
         assert column not in template_space.CATEGORICAL_FEATURES, column
@@ -257,7 +261,7 @@ def test_nothing_the_factory_makes_can_read_an_evidence_only_structure_column():
 
 
 def test_the_proposal_prompt_does_not_offer_an_evidence_only_structure_column():
-    """The model proposer is told the vocabulary it may use. It is not told about these six."""
+    """The model proposer is told the vocabulary it may use. It is not told about these ten."""
     prompt = proposer.build_proposal_prompt(existing_families=[])
     named = set(re.findall(r"[a-z0-9_]+", prompt))        # whole names: `fvg_touch` is inside `fvg_touch_size_atr`
     assert "rsi" in named                        # the prompt does list the vocabulary
