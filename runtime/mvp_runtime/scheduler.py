@@ -1837,7 +1837,10 @@ def _execute(
             """One fully-attached leg. Returns None when the venue is degraded for it.
 
             A leg whose bars are not known to be real comes back BARE: the caller skips the
-            fire, so no feed is read and no vendor row is kept for a fire that will not mine.
+            fire, and that leg's feeds are never read nor its vendor rows kept. One collector
+            serves every leg, so in practice a skipped fire reads no feed at all; a cohort that
+            mixed real and synthetic legs would have attached the real ones before it reached
+            the synthetic one.
             """
             try:
                 built, _ = collect_market_data(

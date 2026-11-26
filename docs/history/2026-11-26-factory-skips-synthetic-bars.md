@@ -27,8 +27,10 @@ control or candidates already stored.
 
 **The change.** In the factory fire, as soon as a leg's bars are collected:
 
-- a leg that does not say `is_synthetic: False` is returned bare, before `attach_mining_legs`, so no feed is read
-  and no vendor row is kept for a fire that will not mine;
+- a leg that does not say `is_synthetic: False` is returned bare, before `attach_mining_legs`, so that leg's feeds
+  are not read and its vendor rows are not kept. One collector serves every leg, so in practice a skipped fire
+  reads no feed at all. A cohort that mixed real and synthetic legs would attach the real legs it reaches first
+  (the mixed-cohort test does exactly that);
 - the fire then returns `skipped_market_data_synthetic`, for the primary leg and for any cohort leg. One
   synthetic leg skips the whole fire, as one degraded leg already did.
 
@@ -58,7 +60,8 @@ readiness board already show `SYNTHETIC` in that state.
 - New, on the default selection: a single-symbol and a cohort fire mine nothing, attach no leg, spawn no child,
   store no candidate, write no factory ledger row, and the next day's fire answers the same.
 - New: a collector that is not the mock class but marks its bars synthetic is skipped; a cohort whose second leg
-  is synthetic is skipped whole; bars with no flag are skipped.
+  is synthetic is skipped whole (its real first leg is attached, no child is spawned); bars with no flag are
+  skipped. Each stores no candidate and writes no factory ledger row.
 - Five deliberate breakages of the new lines each fail at least one of these: the early return removed, the
   primary check removed, the cohort check removed, a missing flag let through, the flag inverted.
 
@@ -70,6 +73,8 @@ readiness board already show `SYNTHETIC` in that state.
 - Two operator scripts read collector bars and do not ask about the mark: `scripts/seed_forward_book.py` and
   `scripts/rescore_stale_holdout_candidates.py`. What they write on synthetic bars was not read here.
 - `run_factory` itself is unchanged and still pure: it mines whatever frame it is given, which is what its own
-  tests rely on. The scheduler is its only caller in `runtime/` and `scripts/`.
+  tests rely on. In the runtime the scheduler is its only caller. Two research replays call it directly
+  (`scripts/research/forward_replay.py`, `forward_replay_heldout.py`), on stored lake bars that are marked real
+  (`scripts/research/lake.py`); they do not pass through the scheduler and are untouched.
 
 **Deploy.** Not deployed by this change. On deploy, the first factory fire should read `generated=…` as before.
