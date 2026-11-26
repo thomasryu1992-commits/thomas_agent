@@ -107,7 +107,10 @@ def test_on_the_mocks_own_bars_the_break_column_is_empty_rather_than_invented():
     does not enter on mock data — the posture of every column a feed cannot supply, never a made-up 0.0."""
     snapshot, collector = _bare()
     attach_mining_legs(snapshot, collector=collector, timeframe="1h", now=NOW)
-    assert latest_feature_row(snapshot)["structure_break_atr"] is None
+    row = latest_feature_row(snapshot)
+    assert row["structure_break_atr"] is None
+    # No level, no break, no state, so no order block and no structure leg either.
+    assert row["order_block_touch_size_atr"] is None and row["fib_touch_ratio"] is None
 
 
 def test_each_leg_is_load_bearing():

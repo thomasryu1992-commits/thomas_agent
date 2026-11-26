@@ -91,6 +91,8 @@ ECONOMIC_FAMILY_MARKERS: tuple[tuple[str, str], ...] = (
     ("fvg_", "gap(fvg)"),
     # Thomas 2026-11-26: one more cell, for the order-block pair, appended for the same reason.
     ("order_block", "zone(order_block)"),
+    # Thomas 2026-11-26: and one for the retracement pair.
+    ("fib_", "retrace(fib)"),
 )
 EXPERIMENTAL = "mined/experimental"
 FUSED = "hybrid(fused)"

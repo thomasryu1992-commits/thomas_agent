@@ -335,16 +335,19 @@ def test_an_unordered_continuous_parameter_is_refused():
 
 def test_the_session_families_declare_their_index_unordered():
     """The fix is only real where it is declared, so the declaration is pinned rather than the
-    behaviour of one template."""
+    behaviour of one template.
+
+    A second unordered parameter since 2026-11-26, by Thomas's decision ("예, 그렇게"): the retracement
+    pair's `fib_level_index`, one of three levels drawn evenly. Its levels do have an order; it is
+    declared unordered because that is what makes the draw even. Any third name here is a decision to
+    record, not a default to inherit."""
     for family in ("session_trend_long", "session_trend_short"):
         template = next(t for t in factory.TEMPLATES if t.family == family)
         assert not template.param_space["session_index"].ordered
-    assert all(
-        spec.ordered
-        for template in factory.TEMPLATES
-        for name, spec in template.param_space.items()
-        if name != "session_index"
-    )
+    unordered = {(template.family, name) for template in factory.TEMPLATES
+                 for name, spec in template.param_space.items() if not spec.ordered}
+    assert unordered == {("session_trend_long", "session_index"), ("session_trend_short", "session_index"),
+                         ("fib_return_long", "fib_level_index"), ("fib_return_short", "fib_level_index")}
 
 
 def test_every_family_in_the_library_is_reachable_across_generations():
@@ -1591,7 +1594,7 @@ def test_scheduler_factory_fire_appends_candidates_and_ledgers(tmp_path):
     # size; that a spec is lost ONLY for that reason does not.
     rejected = [x for r in rows if r["kind"] == "crypto_factory" for x in r["record"]["rejected"]]
     unfed = [x for x in rejected if "never supplies" in x.get("reason", "")]
-    swing_fed = {"structure_break", "structure_break_atr", "order_block_touch_size_atr"}
+    swing_fed = {"structure_break", "structure_break_atr", "order_block_touch_size_atr", "fib_touch_ratio"}
     for x in unfed:
         template = next(t for t in template_space.TEMPLATES if t.family == x["strategy_family"])
         assert template_space.template_features(template) & swing_fed, x

@@ -1,9 +1,10 @@
-"""The retracement columns: a bar coming back to 0.382, 0.5 or 0.618 of the structure leg (evidence only).
+"""The retracement columns: a bar coming back to 0.382, 0.5 or 0.618 of the structure leg.
 
 Thomas 2026-11-26: "예, 구조 구간에 꼴 가로". ``docs/history/2026-11-26-fib-touch-columns.md`` carries the
 definition. These tests pin what the two columns DO, each by building bars and reading the row: where the
 leg starts and ends, which bar carries a level and which does not, that a frame which starts later says the
-same thing or nothing, and that nothing the factory makes can read them. All bars are synthetic. No level in
+same thing or nothing, and that the factory can read the touch and not the leg's size (the touch was
+admitted the same day with the `fib_return_*` pair, pinned in ``test_mvp_runtime_crypto_structure_families``). All bars are synthetic. No level in
 the hand-built bars sits exactly on a ratio: the touch compares a quotient, and a low placed on a level
 could land a hair either side of it."""
 
@@ -331,43 +332,52 @@ def test_the_touch_takes_only_the_three_ratios_and_agrees_with_the_legs_side():
             assert row["structure_leg_size_atr"] != 0.0               # a state, not an event: a leg has a size
 
 
-# --- evidence only ----------------------------------------------------------------------------
+# --- the touch is mintable, the leg's size is evidence only ------------------------------------
 
-def test_the_two_columns_ride_on_the_row_and_are_evidence_only():
+def test_the_two_columns_ride_on_the_row_and_only_the_touch_is_mintable():
     assert COLUMNS == ("structure_leg_size_atr", "fib_touch_ratio")
-    assert set(COLUMNS) <= set(features.STRUCTURE_EVIDENCE_COLUMNS)
+    assert "structure_leg_size_atr" in features.STRUCTURE_EVIDENCE_COLUMNS
+    assert "fib_touch_ratio" not in features.STRUCTURE_EVIDENCE_COLUMNS
     assert features.STRUCTURE_MINTABLE_NUMERIC_COLUMNS == ("structure_break_atr", "fvg_touch_size_atr",
-                                                           "order_block_touch_size_atr")
+                                                           "order_block_touch_size_atr", "fib_touch_ratio")
     row = features.build_feature_rows({"candles": _ohlc_walk(51, 80)})[-1]
     for column in COLUMNS:
         assert column in row and f"{features.PREVIOUS_BAR_PREFIX}{column}" in row, column
 
 
-def test_nothing_the_factory_makes_can_read_a_retracement_column():
+def test_the_factory_can_read_the_touch_and_not_the_legs_size():
+    """The leg's size is a state (a value on every bar a leg exists), so as a filter it would be a
+    condition that is true on quiet bars. It stays evidence."""
     numeric, categorical = template_space.known_features("binance_futures")
-    for column in COLUMNS:
-        assert column not in template_space.NUMERIC_FEATURES and column not in template_space.CATEGORICAL_FEATURES
-        assert column not in numeric and column not in categorical, column
+    assert "fib_touch_ratio" in template_space.NUMERIC_FEATURES and "fib_touch_ratio" in numeric
+    column = "structure_leg_size_atr"
+    assert column not in template_space.NUMERIC_FEATURES and column not in template_space.CATEGORICAL_FEATURES
+    assert column not in numeric and column not in categorical
     template = template_space.TEMPLATES[0]
     raw = generator.build_spec_dict(template, dict(template.base_params), strategy_id="strategy_test",
                                     generation_id="generation_test")
     for condition in (
-        {"feature": "fib_touch_ratio", "comparison": ">=", "value": 0.5},
         {"feature": "structure_leg_size_atr", "comparison": ">=", "value": 3.0},
         {"feature": "close", "comparison": ">", "value_from": "structure_leg_size_atr"},
     ):
         spec = StrategySpec.from_dict({**raw, "entry_rules": {"operator": "AND", "conditions": [condition]}})
         verdict = template_space.validate_strategy(spec)
         assert not verdict["approved_for_backtest"] and "BLOCK_UNKNOWN_FEATURE" in verdict["block_reasons"], condition
+    admitted = StrategySpec.from_dict({**raw, "entry_rules": {"operator": "AND", "conditions": [
+        {"feature": "fib_touch_ratio", "comparison": ">=", "value": 0.5}]}})
+    assert "BLOCK_UNKNOWN_FEATURE" not in template_space.validate_strategy(admitted)["block_reasons"]
 
 
-def test_the_proposal_prompt_does_not_offer_a_retracement_column():
+def test_the_proposal_prompt_offers_the_touch_and_not_the_legs_size():
     prompt = proposer.build_proposal_prompt(existing_families=[])
     named = set(re.findall(r"[a-z0-9_]+", prompt))
-    assert "order_block_touch_size_atr" in named         # the prompt does list the structure vocabulary
-    assert not (set(COLUMNS) & named)
+    assert set(COLUMNS) & named == {"fib_touch_ratio"}
 
 
-def test_no_template_reads_a_retracement_column():
-    for template in template_space.TEMPLATES:
-        assert not (template_space.template_features(template) & set(COLUMNS)), template.family
+def test_only_the_retracement_pair_reads_a_retracement_column_and_only_the_touch():
+    readers = {template.family for template in template_space.TEMPLATES
+               if template_space.template_features(template) & set(COLUMNS)}
+    assert readers == {"fib_return_long", "fib_return_short"}
+    for family in readers:
+        template = next(t for t in template_space.TEMPLATES if t.family == family)
+        assert template_space.template_features(template) == {"fib_touch_ratio"}
