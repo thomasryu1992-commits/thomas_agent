@@ -610,6 +610,16 @@ class MockMarketDataCollector:
     anchored at 2026-01-01T00:00:00Z and a hash-derived price walk, honestly marked
     ``is_synthetic=True`` so downstream health checks treat it as non-trade-eligible
     (the source system's synthetic-collector contract).
+
+    **Each bar's wicks are its own** (2026-11-26). The high is the larger of open and close
+    times 1.005 to 1.007, the low the smaller times 0.993 to 0.995, the exact factor drawn
+    from the bar's own hash. Until then both factors were constants, and since a bar opens at
+    the previous close, the two bars around every peak shared one high (lows likewise at a
+    trough). A swing is a STRICT extreme (``features._structure_columns``), so the mock's own
+    bars never formed one and every swing-fed column was empty on them: ten structure families
+    could not be fed, and three test fixtures untied the bars by hand. Bar ``i`` still depends
+    on ``(symbol, timeframe, i)`` alone, never on ``limit``, and still contains its open and
+    close.
     """
 
     tool_id = MARKET_DATA_TOOL_ID
@@ -632,8 +642,8 @@ class MockMarketDataCollector:
             open_price = close
             drift = (_frac(f"{symbol}|{timeframe}|{i}") - 0.5) * 0.04
             close = round(open_price * (1.0 + drift), 6)
-            high = round(max(open_price, close) * 1.005, 6)
-            low = round(min(open_price, close) * 0.995, 6)
+            high = round(max(open_price, close) * (1.005 + 0.002 * _frac(f"{symbol}|{timeframe}|h{i}")), 6)
+            low = round(min(open_price, close) * (0.995 - 0.002 * _frac(f"{symbol}|{timeframe}|l{i}")), 6)
             volume = round(1000.0 * (0.5 + _frac(f"{symbol}|{timeframe}|v{i}")), 3)
             # Flow legs, synthesized on the same hash walk so a mock run exercises the
             # taker_* columns instead of leaving them permanently indeterminate. The buy
