@@ -50,9 +50,14 @@ previous close, the merged columns; no market data was read):
    pass the base of 0.3 and 27 – 34% pass the ceiling of 1.0. So between 0.05 and 0.3 the parameter filters about
    one touch in ten, and it is still counted as a free parameter. The range is Thomas's by the table and was not
    changed; this was put at the top of the merge question.
-2. **A 1d holdout is under the 25-trade floor at every draw.** Long-side matches per 600 bars (the holdout of a
-   2,000-bar 1d frame): 21 – 25 at the floor, 20 – 22 at the base, about 7 at the ceiling. Matches are an upper
-   bound on trades. At 4h (1,800 holdout bars) and 1h (7,200) the same counts are three and twelve times larger.
+2. **At 1d one symbol's holdout sits at or under the 25-trade floor, and a cohort's is summed.** Long-side
+   matches per 600 bars (one symbol's holdout in a 2,000-bar 1d frame): 21 – 25 at the floor draw, 20 – 22 at the
+   base, about 7 at the ceiling. Only the long side was counted, and matches are an upper bound on trades. That is
+   one symbol. A 4h or 1d fire whose schedule names a cohort scores one spec over every leg, and
+   `backtest._holdout_evidence` pools the legs' holdout tails into one block, so the floor is met by the sum:
+   with five legs the same counts are about five times larger. Whether this machine's 1d schedule names a cohort
+   was not read. At 4h (1,800 holdout bars a symbol) and 1h (7,200) one symbol's counts are three and twelve
+   times the 1d ones.
 
 **How it meets the families already there.**
 
@@ -96,4 +101,6 @@ once the library grew:
 
 **Not known.** Everything about market bars: how large touched blocks are there, how often this pair and
 `fvg_return_*` share a bar, how often real bars tie at a peak, and whether any timeframe's holdout is judgeable.
-Which timeframes this machine's schedules mine was not read.
+Which timeframes this machine's schedules mine, and whether its 4h and 1d schedules name a cohort, were not read.
+Whether any stored label already contains `order_block` was not read either; one that did would now be read into
+the new cell (the same unknown recorded for the three structure markers).
