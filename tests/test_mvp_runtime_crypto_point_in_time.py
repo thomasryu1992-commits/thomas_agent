@@ -43,22 +43,15 @@ TF_HOURS = {"4h": 4, "1h": 1, "15m": 0.25}
 BARS = {"4h": 600, "1h": 1200, "15m": 2400}
 
 
-def _untied(candles: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The mock's highs and lows, moved apart by a hair. The mock sets every high to 1.005 x the larger of
-    open and close and a bar opens at the previous close, so the two bars around every peak share one high
-    (lows likewise). A tie is no swing (`features._structure_columns`), so on the mock's own bars the
-    structure columns would stay empty and a leak in them would compare None with None. The high only
-    moves up and the low only down, so each bar still contains its open and close."""
-    return [{**c, "high": c["high"] * (1 + 0.0004 * (1 + math.sin(1.3 * i))),
-             "low": c["low"] * (1 - 0.0004 * (1 + math.cos(1.7 * i)))} for i, c in enumerate(candles)]
-
-
 def _full_snapshot(timeframe: str = "4h") -> dict[str, Any]:
     """Every leg the factory attaches, on one frame, with values that move on every reading."""
     bars = BARS[timeframe]
     higher = HIGHER_TIMEFRAME[timeframe]
     htf_bars = int(bars * TF_HOURS[timeframe] / {"1d": 24, "4h": 4, "1h": 1}[higher]) + 60
-    candles = _untied(_candles("ETHUSDT", timeframe, bars))
+    # The mock's own bars. Until 2026-11-26 they tied at every peak, no swing formed, the structure
+    # columns stayed empty and a leak in them would have compared None with None, so this fixture
+    # untied them by hand. The mock's wicks are each bar's own now.
+    candles = _candles("ETHUSDT", timeframe, bars)
     first, last = candles[0]["open_time"], candles[-1]["close_time"]
     days = []
     day = timeutil.parse_iso(first[:10] + "T00:00:00Z")

@@ -21,6 +21,7 @@ from runtime.mvp_runtime.crypto.strategy import StrategySpec
 from runtime.mvp_runtime.scheduler import KIND_FACTORY, ScheduleStore, build_schedule, run_due
 from runtime.mvp_runtime.store import LEDGER_REL, RECORDS_FILE, LedgerStore
 from tests.test_mvp_runtime_crypto_factory import NOW, _trending_snapshot, _weak_trend_snapshot
+from tests.test_mvp_runtime_crypto_mining_frame import _UNREACHABLE_WITH_A_MOCK
 
 
 def _proposal_spec(*, family="proposed_trend_long", timeframe="1d", conditions=None):
@@ -475,13 +476,13 @@ def test_a_cohort_fire_stores_a_trial_row_that_carries_the_form_beside_its_rotat
     assert trial["trial_source"]["hypothesis"] == form
     assert record["trial"]["minted"][0]["hypothesis"] == form
     # Every rotation row the fire accepted is stored, less the ones whose family reads a column the
-    # MOCK's bars cannot feed: the mock ties its highs at every peak, a tie is no swing, so every
-    # swing-fed column is empty on it. Which families the fire draws moves with the library's size;
-    # that a row is lost only for that reason does not.
+    # MOCK cannot feed: the ones that come from another feed (`_UNREACHABLE_WITH_A_MOCK`). Which
+    # families the fire draws moves with the library's size; that a row is lost only for that
+    # reason does not. Until 2026-11-26 the swing-fed columns were in that set too, because the
+    # mock's highs tied at every peak.
     unfed = [x for x in record["rejected"] if "never supplies" in x.get("reason", "")]
-    swing_fed = {"structure_break", "structure_break_atr", "order_block_touch_size_atr", "fib_touch_ratio"}
     for x in unfed:
         template = next(t for t in template_space.TEMPLATES if t.family == x["strategy_family"])
-        assert template_space.template_features(template) & swing_fed, x
+        assert template_space.template_features(template) & _UNREACHABLE_WITH_A_MOCK, x
     rotation_rows = sum(1 for r in stored if not factory.is_trial(r))
     assert rotation_rows == record["accepted_count"] - len(unfed) and rotation_rows > 0

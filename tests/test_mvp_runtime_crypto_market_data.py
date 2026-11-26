@@ -9,7 +9,6 @@ Authorization and a fully mocked urlopen (no real network)."""
 from __future__ import annotations
 
 import json
-import math
 import time
 import urllib.error
 import urllib.parse
@@ -210,6 +209,46 @@ def test_a_venue_a_collector_invents_stops_at_the_factory():
     assert exc.value.reason_code == "UNKNOWN_VENUE"
 
 
+# --- the mock's own bars ------------------------------------------------------------------------
+
+def _mock_candles(symbol="ETHUSDT", timeframe="1h", limit=600):
+    snapshot, _ = collect_market_data(symbol, timeframe, collector=MockMarketDataCollector(), now=NOW, limit=limit)
+    return snapshot["candles"]
+
+
+@pytest.mark.parametrize("symbol,timeframe", [("ETHUSDT", "1h"), ("BTCUSDT", "4h"), ("SOLUSDT", "1d"), ("BTCUSDT", "15m")])
+def test_no_two_neighbouring_mock_bars_share_a_high_or_a_low(symbol, timeframe):
+    """The defect, stated as what it did: a bar opens at the previous close, and with constant wick
+    factors the two bars around every peak had one high and the two around every trough one low. A
+    swing is a strict extreme, so the mock's bars formed none and every swing-fed column was empty."""
+    candles = _mock_candles(symbol, timeframe)
+    assert all(a["high"] != b["high"] and a["low"] != b["low"] for a, b in zip(candles, candles[1:]))
+
+
+def test_every_mock_bar_contains_its_open_and_close_and_its_wicks_stay_in_their_band():
+    candles = _mock_candles(limit=800)
+    for candle in candles:
+        body_high, body_low = max(candle["open"], candle["close"]), min(candle["open"], candle["close"])
+        assert candle["low"] < body_low and body_high < candle["high"]
+        assert 1.005 - 1e-6 <= candle["high"] / body_high < 1.007 + 1e-6
+        assert 0.993 - 1e-6 < candle["low"] / body_low <= 0.995 + 1e-6
+    factors = {round(candle["high"] / max(candle["open"], candle["close"]), 4) for candle in candles}
+    assert len(factors) > 10                      # each bar's own, not one constant
+
+
+def test_a_mock_bar_does_not_depend_on_how_many_bars_were_asked_for():
+    """The point-in-time contract re-collects a shorter frame and compares bar for bar."""
+    long, short = _mock_candles(limit=300), _mock_candles(limit=120)
+    assert short == long[:120]
+
+
+def test_the_mock_is_still_marked_synthetic_and_its_closes_are_the_walk_they_were():
+    snapshot, _ = collect_market_data("ETHUSDT", "1h", collector=MockMarketDataCollector(), now=NOW, limit=50)
+    assert snapshot["is_synthetic"] is True
+    candles = snapshot["candles"]
+    assert all(b["open"] == a["close"] for a, b in zip(candles, candles[1:]))
+
+
 def test_the_factory_mines_the_venue_the_snapshot_came_from():
     """End to end: collector → snapshot → minted spec, with nothing to pass by hand.
 
@@ -226,10 +265,10 @@ def test_the_factory_mines_the_venue_the_snapshot_came_from():
     this test stop covering the families it happens to skip.
 
     **It moved again on 2026-11-26** (the library went to 56), onto the structure families, and
-    what they lacked was not a leg: the mock sets every high to 1.005 x the larger of open and
-    close, so the two bars around every peak tie, a tie is no swing, and every swing-fed column
-    is empty on the mock's own bars. The highs and lows are moved apart by a hair, as the
-    mining-frame test does, which is the shape of bars production mines."""
+    what they lacked was not a leg: the mock set every high to 1.005 x the larger of open and
+    close, so the two bars around every peak tied, a tie is no swing, and every swing-fed column
+    was empty on the mock's own bars. This test untied them by hand for a day; the mock's wicks
+    are each bar's own since, so it runs on the mock's own bars again."""
     class HyperliquidLike(MockMarketDataCollector):
         provider_id = market_data.HYPERLIQUID
         source = "hyperliquid_public"
@@ -238,11 +277,6 @@ def test_the_factory_mines_the_venue_the_snapshot_came_from():
     snapshot, _ = collect_market_data(
         "BTCUSDT", "1h", collector=collector, now=NOW, limit=400
     )
-    snapshot["candles"] = [
-        {**c, "high": c["high"] * (1 + 0.0004 * (1 + math.sin(1.3 * i))),
-         "low": c["low"] * (1 - 0.0004 * (1 + math.cos(1.7 * i)))}
-        for i, c in enumerate(snapshot["candles"])
-    ]
     assert cycle.attach_htf(snapshot, collector=collector, now=NOW) is None, (
         "the higher-timeframe leg degraded, so this test would be asserting on a snapshot "
         "thinner than the one the scheduler mines"

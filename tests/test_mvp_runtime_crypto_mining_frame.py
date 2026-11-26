@@ -16,13 +16,11 @@ that used it would report the reference leg as broken and be wrong.
 
 from __future__ import annotations
 
-import math
-
 import pytest
 
 from runtime.mvp_runtime.crypto import template_space
 from runtime.mvp_runtime.crypto.feed_assembly import attach_mining_legs
-from runtime.mvp_runtime.crypto.features import latest_feature_row
+from runtime.mvp_runtime.crypto.features import build_feature_rows, latest_feature_row
 from runtime.mvp_runtime.crypto.market_data import (
     MockMarketDataCollector,
     collect_market_data,
@@ -57,16 +55,6 @@ def _bare(timeframe="1h"):
     return snapshot, collector
 
 
-def _untied(candles):
-    """The mock's highs and lows, moved apart by a hair. The mock sets every high to 1.005 x the larger of
-    open and close and a bar opens at the previous close, so the two bars around every peak share one high
-    (lows likewise) and no swing ever forms (`features._structure_columns`: a tie is no swing). That is a
-    property of the mock's bars, not of the legs, so the fixture is fixed rather than the column excused:
-    the high only moves up and the low only down, and every bar still contains its open and close."""
-    return [{**c, "high": c["high"] * (1 + 0.0004 * (1 + math.sin(1.3 * i))),
-             "low": c["low"] * (1 - 0.0004 * (1 + math.cos(1.7 * i)))} for i, c in enumerate(candles)]
-
-
 def _supplied(snapshot):
     return {name for name, value in latest_feature_row(snapshot).items() if value is not None}
 
@@ -95,22 +83,26 @@ def test_attach_mining_legs_supplies_every_reachable_mintable_column():
     row can supply. Asserted over the whole mintable vocabulary rather than a sample, so a
     future column needing a sixth leg fails here instead of silently scoring zero trades."""
     snapshot, collector = _bare()
-    snapshot["candles"] = _untied(snapshot["candles"])
     attach_mining_legs(snapshot, collector=collector, timeframe="1h", now=NOW)
     missing = (set(template_space.NUMERIC_FEATURES) - _supplied(snapshot)) - _UNREACHABLE_WITH_A_MOCK
     assert not missing, f"mining frame cannot supply mintable columns: {sorted(missing)}"
 
 
-def test_on_the_mocks_own_bars_the_break_column_is_empty_rather_than_invented():
-    """Why the test above unties the bars, pinned as the fact it is: the mock's highs tie at every peak, a
-    tie is no swing, so with no level to break `structure_break_atr` is None and a structure family simply
-    does not enter on mock data — the posture of every column a feed cannot supply, never a made-up 0.0."""
-    snapshot, collector = _bare()
-    attach_mining_legs(snapshot, collector=collector, timeframe="1h", now=NOW)
-    row = latest_feature_row(snapshot)
-    assert row["structure_break_atr"] is None
-    # No level, no break, no state, so no order block and no structure leg either.
-    assert row["order_block_touch_size_atr"] is None and row["fib_touch_ratio"] is None
+@pytest.mark.parametrize("timeframe", ["1h", "4h", "1d"])
+def test_the_mocks_own_bars_feed_every_swing_fed_column(timeframe):
+    """Until 2026-11-26 the mock's highs tied at every peak, a tie is no swing, and these columns were
+    empty on its bars: this test used to pin that emptiness and the test above untied the bars by hand.
+    The mock's wicks are each bar's own now, so on its own bars, at every timeframe the structure
+    families mint at, a level is broken, an order block and a gap are touched, a leg is retraced."""
+    snapshot, collector = _bare(timeframe)
+    attach_mining_legs(snapshot, collector=collector, timeframe=timeframe, now=NOW)
+    rows = build_feature_rows(snapshot)
+    for column in ("structure_break_atr", "fvg_touch_size_atr", "order_block_touch_size_atr", "fib_touch_ratio"):
+        values = [row[column] for row in rows]
+        assert values[-1] is not None, (timeframe, column)
+        assert sum(1 for value in values if value not in (None, 0.0)) >= 3, (timeframe, column)
+    labels = {str(row["structure_break"]) for row in rows}
+    assert any(label.startswith("BOS_") for label in labels) and any(label.startswith("CHOCH_") for label in labels)
 
 
 def test_each_leg_is_load_bearing():

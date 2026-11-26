@@ -53,6 +53,7 @@ from runtime.mvp_runtime.scheduler import (
     run_due,
 )
 from runtime.mvp_runtime.store import LEDGER_REL, RECORDS_FILE, LedgerStore
+from tests.test_mvp_runtime_crypto_mining_frame import _UNREACHABLE_WITH_A_MOCK
 
 from scripts.promote_strategy_candidates import run_promotion
 
@@ -1587,17 +1588,17 @@ def test_scheduler_factory_fire_appends_candidates_and_ledgers(tmp_path):
     rows = [json.loads(line) for line in
             (tmp_path / LEDGER_REL / RECORDS_FILE).read_text(encoding="utf-8").splitlines()]
     assert any(r["kind"] == "crypto_factory" for r in rows)
-    # All eight drawn specs are stored, less the ones this fire's slice drew from families the MOCK's
-    # bars cannot feed: the mock ties its highs at every peak, a tie is no swing, and so every
-    # column that hangs on a swing is empty on it (`test_on_the_mocks_own_bars_the_break_column_is_
-    # empty_rather_than_invented`). Which families a first fire draws moves with the library's
-    # size; that a spec is lost ONLY for that reason does not.
+    # All eight drawn specs are stored, less the ones this fire's slice drew from families the MOCK
+    # cannot feed. Which families a first fire draws moves with the library's size; that a spec is
+    # lost ONLY for that reason does not. The mock feeds candles, so it cannot feed the columns
+    # that come from another feed (open interest, liquidations, positioning: the set
+    # `_UNREACHABLE_WITH_A_MOCK` names). Until 2026-11-26 it could not feed the swing-fed columns
+    # either, because its highs tied at every peak; its wicks are each bar's own now.
     rejected = [x for r in rows if r["kind"] == "crypto_factory" for x in r["record"]["rejected"]]
     unfed = [x for x in rejected if "never supplies" in x.get("reason", "")]
-    swing_fed = {"structure_break", "structure_break_atr", "order_block_touch_size_atr", "fib_touch_ratio"}
     for x in unfed:
         template = next(t for t in template_space.TEMPLATES if t.family == x["strategy_family"])
-        assert template_space.template_features(template) & swing_fed, x
+        assert template_space.template_features(template) & _UNREACHABLE_WITH_A_MOCK, x
     assert candidates and len(candidates) == 8 - len(unfed)
 
 
