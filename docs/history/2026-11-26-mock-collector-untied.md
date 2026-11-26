@@ -35,9 +35,11 @@ to be settled in the PR.
 number; sha256, so the same on every Python version and operating system). The high's factor is in [1.005, 1.007)
 and the low's in (0.993, 0.995].
 
-What did not change, each held by a test: a bar contains its open and close; bar `i` depends on symbol, timeframe
-and `i` alone, never on how many bars were asked for (the point-in-time contract re-collects a shorter frame and
-compares bar for bar); the close walk, volume and taker legs; the `is_synthetic` mark.
+What did not change. Held by tests: a bar contains its open and close; bar `i` depends on symbol, timeframe and
+`i` alone, never on how many bars were asked for (the point-in-time contract re-collects a shorter frame and
+compares bar for bar); the `is_synthetic` mark. Compared directly against the collector before this change, over
+6,000 bars (three symbols, four timeframes): the only candle fields that differ are `high` and `low`, and no
+snapshot field differs. So the close walk, volume and taker legs are the numbers they were; no test pins that.
 
 **What Claude chose in the PR** (written in the loop record §201 before the code):
 
@@ -56,11 +58,19 @@ changed and nothing else, the full suite on this host had exactly one failure, t
 deliberate breakages of the new lines each fail a test (either wick constant again, a wick keyed on the bar count,
 a high below the body, a low above it, a band twice as wide, one hash shared by every bar).
 
+The two tests' allowance ("a spec is lost only when its family reads a column the mock cannot feed") was walked
+over the whole library, not only the slice today's rotation draws: on mock snapshots with the mining legs attached,
+every template at its base draw, for BTCUSDT and ETHUSDT at 1d and 1h and ETHUSDT at 4h. At 1d, the context both
+tests fire in, no family is refused at all, so there the allowance has nothing to allow today. At 1h and 4h four
+families are refused (`oi_squeeze_*`, `oi_unwind_*`), each for an open-interest column in `_UNREACHABLE_WITH_A_MOCK`.
+No family is refused for a column outside that set.
+
 **What changes outside the tests.**
 
 - On a machine whose market-data opt-in is absent the collector selection returns the mock, so a factory fire there
-  mines on mock bars. Candidates mined that way carry no synthetic mark: nothing in the factory, the pool, the
-  promotion door or the forward cohort reads one. Trading on synthetic data is refused by the data-health guard,
+  mines on mock bars. Candidates mined that way carry no synthetic mark: a search of the factory, the pool, the
+  promotion door and the forward cohort finds no line that reads one. Whether another gate (cost basis, evidence
+  depth) would refuse a mock-mined candidate anyway was not read. Trading on synthetic data is refused by the data-health guard,
   and the candle archive refuses synthetic bars. That was already so for every family the mock could feed; this
   change extends it to the ten swing-fed ones. **No guard is added here.** It is recorded as a follow-up, not fixed.
 - The Docker smoke job ticks the scheduler once on an empty state directory and expects "fired 0"; it runs no
