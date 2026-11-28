@@ -232,7 +232,11 @@ KLINES = "klines"
 KLINES_INTERVAL = "1d"
 SYMBOLS_FILENAME = "symbols.json"
 KLINES_KINDS = {"klines-1d": "1d", "klines-1h": "1h"}      # monthly kline kinds and their bucket interval
-MONTHLY_KINDS = (*KLINES_KINDS, FUNDING)
+# The premium index's daily bars (perps only): the same monthly layout as klines, under its own folder. The venue's
+# API gave these for the symbols an earlier search asked for; the archive holds them for every symbol, delisted too.
+PREMIUM_KIND = "premiumIndexKlines-1d"
+PREMIUM_FOLDER, PREMIUM_INTERVAL = "premiumIndexKlines", "1d"
+MONTHLY_KINDS = (*KLINES_KINDS, FUNDING, PREMIUM_KIND)
 # A USDT-margined perpetual: quarterly contracts carry `_YYMMDD`, and USDC/BUSD pairs are another quote.
 _PERP_SYMBOL = re.compile(r"\A[A-Z0-9]{2,20}USDT\Z")
 _S3_NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
@@ -311,6 +315,8 @@ def monthly_folder(kind: str, symbol: str, market: str = "um") -> str:
         return f"{MARKETS[market]}{KLINES}/{symbol}/{KLINES_KINDS[kind]}/"
     if kind == FUNDING and market == "um":
         return f"{LISTING_PREFIX}{FUNDING}/{symbol}/"
+    if kind == PREMIUM_KIND and market == "um":
+        return f"{LISTING_PREFIX}{PREMIUM_FOLDER}/{symbol}/{PREMIUM_INTERVAL}/"
     raise ValueError(f"unknown monthly kind {kind!r}")
 
 
@@ -548,7 +554,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             wanted = list(json.loads(listed.read_text(encoding="utf-8")))
         try:
             if args.market == "spot" and args.kind != "klines-1d":
-                print("REFUSED: the spot archive holds no funding", file=sys.stderr)
+                print("REFUSED: the spot archive holds daily klines only (no funding, no premium index)", file=sys.stderr)
                 return 2
             counts = fetch_monthly(args.dest, kind=args.kind, symbols=wanted, start=args.start, end=args.end,
                                    market=args.market,
